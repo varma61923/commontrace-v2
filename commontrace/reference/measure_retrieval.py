@@ -25,7 +25,7 @@ the eight fields pollute at 1.72x-2.50x; against the shipped scorer,
 1.72x-2.33x. Tuning the floor against THIS corpus alone would buy far more
 (1.00x-1.28x at floor=0.10), but a second corpus bounds how high the floor
 can go -- see DEFAULT_FLOOR in commontrace/retrieval.py and benchmark/
-STATUS.md §9.6, which records why it was lowered to 0.04 after shipping.
+The benchmark methodology, which records why it was lowered to 0.04 after shipping.
 The SPREAD barely moves either way (1.45x to 1.36x), because the old scorer
 was bad in every field roughly equally. A spread-only gate would have called
 that regression acceptable.
@@ -66,13 +66,6 @@ from commontrace import retrieval  # noqa: E402
 
 SCHEMA_VERSION = "1.0.0"
 
-# The corpus ships inside the package (pyproject.toml package-data), so this
-# one join resolves in both environments without special-casing: `_REPO` is the
-# package's PARENT, which is the repo root in a checkout and site-packages in
-# an install. Keeping the corpus out of the wheel would have reproduced the
-# exact failure that made semantic retrieval unreachable -- a command that only
-# works from a repo checkout, for a claim ("retrieval works as well in your
-# field as in ours") a customer should be able to re-run themselves.
 DEFAULT_FIXTURES = os.path.join(_REPO, "commontrace", "fixtures", "fields")
 
 
@@ -85,7 +78,6 @@ def load_fields(fixtures_dir):
 
 
 def _as_ranker_input(lessons):
-    """The (path, frontmatter) shape rank_lessons takes, same as a real store."""
     return [(f"<fixture>/{lesson['name']}.md", dict(lesson)) for lesson in lessons]
 
 
@@ -123,9 +115,6 @@ def measure_field(doc, top_k=3, floor=None, scorer=retrieval.SCORER_IDF):
         "recall_at_k": found / n_q if n_q else None,
         "mrr": reciprocal / n_q if n_q else None,
         "collateral_at_k": collateral,
-        # How many assignments a fleet would log per assignment that is
-        # actually about the lesson. 1.0 is clean; the observed failure was
-        # roughly 3.1.
         "pollution_ratio": (retrieved_total / found) if found else None,
     }
 
@@ -143,8 +132,6 @@ def compute(fixtures_dir=DEFAULT_FIXTURES, top_k=3, floor=None,
         "floor": retrieval.default_floor(scorer) if floor is None else floor,
         "top_k": top_k,
         "fields": fields,
-        # The gate. A mean would let a change that helps one field and hurts
-        # another look like an improvement; this cannot.
         "pollution_spread": (worst / best) if (worst and best) else None,
         "worst_field": max(fields, key=lambda f: f["pollution_ratio"] or 0)["field"] if fields else None,
         "mean_precision_at_1": (

@@ -108,32 +108,6 @@ def _outcome_from_args(args: argparse.Namespace) -> dict:
 
 
 def _id_suffix(trace_id: str) -> str:
-    """Filesystem-safe fragment of a trace id, for the filename only.
-
-    A uuid4's first 8 chars are already safe; an operator-supplied
-    --occasion-id may contain slashes, spaces or anything else a ticket
-    system emits, and that must not escape the traces directory or produce
-    an unopenable name. The id INSIDE the file is untouched -- only this
-    fragment is sanitized, so the experiment join still sees the real id.
-
-    MUST BE INJECTIVE, and a plain prefix is not. This truncated to the first
-    16 characters, and the filename is `<date>_<title-slug>_<suffix>.md`, so
-    two occasions captured on the same day with the same title whose ids
-    differ only after character 16 computed the SAME path -- and the write
-    path has no existence check, because `_find_trace_by_occasion` correctly
-    declines to match them (it compares the full id inside the file). So the
-    second capture silently replaced the first.
-
-    That is not an exotic input. PILOT.md tells operators to use "a ticket
-    number, a run id, a job id", and real ones are prefixed:
-    JIRA-ROBOTICS-PLATFORM-4711 and ...-4712 share their first 25 characters.
-    Reproduced: five captures under such ids left ONE file on disk.
-
-    Hashing the tail keeps the name readable (the prefix still shows which
-    occasion it is), keeps it deterministic so the fast-path glob in
-    `_find_trace_by_occasion` still finds it, and makes a collision require a
-    blake2s collision rather than a shared prefix.
-    """
     safe = re.sub(r"[^A-Za-z0-9._-]+", "-", trace_id).strip("-.")
     if not safe:
         return "trace"
@@ -149,12 +123,6 @@ def _slugify(title: str) -> str:
 
 
 def _free_path(out_path: str, trace_id: str) -> str:
-    """`out_path`, or a variant of it not already holding a DIFFERENT trace.
-
-    Returns `out_path` unchanged when nothing is there, or when what is there
-    is this same trace (the caller's own re-capture, which it handles by
-    merging). Only a genuine stranger at that path causes a rename.
-    """
     if not os.path.exists(out_path):
         return out_path
     try:
@@ -172,11 +140,6 @@ def _free_path(out_path: str, trace_id: str) -> str:
 
 
 def _find_trace_by_occasion(tdir: str, occasion_id: str) -> str | None:
-    """Locate an existing trace file whose `id` is `occasion_id`, regardless
-    of its current filename. A filename is `<date>_<title-slug>_<id-suffix>.md`
-    -- both the date and the slug can differ between two captures under the
-    SAME occasion id (a later day, a refined title), so matching on the
-    computed path alone misses a file that is very much already there."""
     suffix = _id_suffix(occasion_id)
     for path in sorted(glob.glob(os.path.join(tdir, f"*_{suffix}.md"))):
         try:
@@ -203,9 +166,6 @@ def run(args: argparse.Namespace) -> int:
         what="trace",
     ):
         return 1
-    # A credential that leaked into the experience is redacted before the
-    # trace is written (commontrace/memory_guard.py:redact_secrets): the
-    # rest of what happened is kept, the key is not.
     title, found_title = memory_guard.redact_secrets(args.title)
     context, found_context = memory_guard.redact_secrets(args.context)
     solution, found_solution = memory_guard.redact_secrets(args.solution)
@@ -220,15 +180,6 @@ def run(args: argparse.Namespace) -> int:
     tdir = paths.traces_dir(root)
     os.makedirs(tdir, exist_ok=True)
 
-    # The randomized-holdout experiment (commontrace/experiment.py) joins a
-    # logged arm assignment to an outcome on the OCCASION id, and
-    # experiment_cmd._outcomes_by_occasion reads that from the trace's `id`.
-    # With no way to set it, capture minted a random uuid4, nothing ever
-    # joined, and `commontrace experiment` reported every assignment as
-    # "no recorded outcome for that occasion yet" -- so the causal
-    # measurement this product's strongest claim rests on could not be run
-    # end to end at all. trace.schema.json anticipates this: id is any
-    # non-empty string, "Locally-only traces MAY use a temporary local id".
     occasion_id = (args.occasion_id or "").strip()
     if args.occasion_id is not None and not occasion_id:
         print("[commontrace] --occasion-id cannot be empty.", file=sys.stderr)
@@ -237,81 +188,22 @@ def run(args: argparse.Namespace) -> int:
     tags = [t.strip() for t in args.tags.split(",") if t.strip()]
     date = datetime.date.today().isoformat()
     slug = _slugify(title)
-    # The trace id is in the filename unconditionally, not only as a
-    # collision fallback. `if os.path.exists(): pick another name` is
-    # check-then-act: two agents capturing a same-titled trace in the same
-    # second both see False and both write `<date>_<slug>.md`, so one
-    # silently overwrites the other -- and concurrent capture is the normal
-    # case for a fleet, not an edge case. Including the id makes the name
-    # unique by construction, with no window to lose.
     out_path = os.path.join(tdir, f"{date}_{slug}_{_id_suffix(trace_id)}.md")
 
-    # One occasion is one task, so re-capturing it updates that task's
-    # outcome rather than adding a second. Located by scanning for the
-    # occasion id INSIDE existing trace files, not by checking whether
-    # `out_path` already exists: `out_path` is derived from today's date
-    # and the CURRENT call's title, so a re-capture on a later day, or
-    # with a refined title, would compute a different path and never find
-    # the original -- silently creating a duplicate trace under the same
-    # occasion id instead of updating it, exactly the failure
-    # _outcomes_by_occasion's dict-keyed-on-id lookup depends on not
-    # happening.
     agent_id = args.agent_id
     outcome = _outcome_from_args(args)
     created_at = None
 
-    # Serializes the whole find-existing -> read -> merge -> write sequence
-    # below against any OTHER process capturing under the SAME occasion id
-    # at the same time -- e.g. two agents in a fleet both attaching an
-    # outcome to the same ticket within moments of each other. Locked on a
-    # path derived from the occasion id itself, not `out_path`: the
-    # existing-file scan just below can find a DIFFERENT filename than the
-    # one already computed (a prior capture on an earlier date, or with a
-    # different title slug), so locking only after that scan would leave
-    # the scan itself -- and the window between it and the eventual write
-    # -- unprotected. Without this, two concurrent re-captures under the
-    # same occasion id (one marking --resolved, one marking --escalated)
-    # each read the SAME prior outcome dict, merge in their own one field,
-    # and whichever write() lands last wins outright: the other's outcome
-    # field is silently lost, not merged, with no error and no trace of the
-    # loss. A brand-new occasion id has no file to race over yet, but
-    # locking here still guarantees that if two processes race a FIRST
-    # capture under the same fresh occasion id, the second to acquire the
-    # lock re-scans and correctly finds (and merges into) the first one's
-    # file instead of unconditionally overwriting it.
     lock_target = os.path.join(tdir, f".occasion-{_id_suffix(trace_id)}") if occasion_id else out_path
     with locked(lock_target):
         existing_path = _find_trace_by_occasion(tdir, occasion_id) if occasion_id else None
         if existing_path is None:
-            # Belt and braces. `_id_suffix` is injective now, so this should
-            # not fire -- but the failure it guards against destroyed data
-            # silently for every occasion id sharing a 16-character prefix,
-            # and a check that costs one stat() is cheap next to that. If the
-            # computed path is taken by a DIFFERENT trace, step aside rather
-            # than overwrite it.
             out_path = _free_path(out_path, trace_id)
         if existing_path is not None:
             out_path = existing_path
             print(f"[commontrace] note: updating the existing trace for occasion "
                   f"{occasion_id!r}.", file=sys.stderr)
             if not args.overwrite:
-                # Preserve the historical narrative AND every previously
-                # recorded outcome/tag/identity field by default:
-                # re-capturing under the same occasion-id exists to attach
-                # an outcome once a task concludes (--resolved/--escalated/
-                # etc, possibly minutes or hours after the occasion was
-                # first logged), not to edit history. --title/--context/
-                # --solution are still required on every call, so without
-                # this the second call's placeholder or abbreviated text
-                # silently replaced the original trace body wholesale.
-                # Likewise outcome/tags/agent_id/created_at were being
-                # unconditionally overwritten with this call's (often
-                # empty/default) values instead of merged -- so re-capturing
-                # a trace that already had `--tokens-used 4200 --tags
-                # linux,gcc` with only `--resolved` silently erased
-                # tokens_used, the tags, and the original creation
-                # timestamp. --overwrite exists precisely for the caller
-                # who DOES want a clean reset.
                 existing_instance, _existing_body = trace_io.read(existing_path)
                 title = existing_instance.get("title") or title
                 context = existing_instance.get("context_text") or context
@@ -331,12 +223,6 @@ def run(args: argparse.Namespace) -> int:
             fm["created_at"] = created_at
         body = templates.trace_body(context, solution)
 
-        # Validate BEFORE writing, so the store is invalid-by-construction
-        # impossible rather than invalid-until-someone-audits-it. Without
-        # this, `--tokens-used -5` lands on disk, `trace validate` only
-        # flags it on a later separate run, and pilot_metrics averages the
-        # negative number in the meantime -- a wrong cost figure in a
-        # customer-facing report.
         instance = dict(fm)
         instance["context_text"] = context
         instance["solution_text"] = solution
@@ -349,13 +235,6 @@ def run(args: argparse.Namespace) -> int:
             )
             return 1
 
-        # frontmatter.write (NamedTemporaryFile + os.replace), not a raw
-        # open("w"): a direct write leaves the file readable in a torn state
-        # for as long as it takes to flush, so anything scanning
-        # memory/traces/ concurrently -- `lesson distill`, `bench`, the
-        # attention indexer -- can read a truncated or zero-byte file and
-        # fail to parse it. The rename is atomic, so a reader sees either
-        # the old file or the whole new one, never a partial one.
         frontmatter.write(out_path, fm, body)
 
     print(f"[commontrace] captured trace {trace_id} -> {out_path}", file=sys.stderr)

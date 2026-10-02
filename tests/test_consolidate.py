@@ -1,20 +1,3 @@
-"""Corpus hygiene, without the optional attention extra.
-
-DOCUMENTATION.md §6.4 describes fusion/archive/contradiction detection as
-delegated to a companion skill outside this repository, using pairwise
-cosine over the optional semantic index. Every one of these tests runs
-against the core install alone -- PyYAML, nothing else -- because that is
-the whole point: corpus hygiene should not require the attention extra any
-more than lexical retrieval does.
-
-`consolidate.build_report` composes three signals, two of them owned by
-other modules and tested there: fusion is `commontrace/redundancy.py`
-(tests/test_redundancy.py), contradiction is the pre-existing
-`commontrace/reliability.py:find_contradictions` (tests/test_reliability.py).
-What belongs here is the COMPOSITION -- only active lessons feed all three,
-`never_hit` is a plain schema-only signal, `is_clean`/`--strict` reads the
-right severity -- and the CLI surface end to end.
-"""
 from __future__ import annotations
 
 import json
@@ -46,36 +29,20 @@ class TestNeverHit:
         assert not consolidate.never_hit({"uses": 1, "last_hit": "2026-01-01"})
 
     def test_a_dated_last_hit_with_zero_uses_is_not_flagged(self):
-        """Internally inconsistent, but not the unambiguous "never once
-        fired" signal this function exists to report -- report only what is
-        certain."""
         assert not consolidate.never_hit({"uses": 0, "last_hit": "2026-01-01"})
 
     def test_a_missing_last_hit_is_not_flagged(self):
-        """`last_hit` is schema-required (protocol/schemas/lesson.schema.json),
-        so a real lesson always has it; a dict missing it entirely is a
-        malformed record, not a legitimate "never hit" one, and the
-        conservative answer is not to flag it -- same posture
-        `dosage.is_core` takes for a missing `core` field."""
         assert not consolidate.never_hit({"uses": 0})
 
     def test_a_null_uses_behaves_like_zero(self):
-        """`uses: null` in hand-edited YAML is an empty field, not a
-        malformed one -- equivalent to `uses: 0`."""
         assert consolidate.never_hit({"uses": None, "last_hit": "NEVER"})
 
     def test_a_non_numeric_uses_field_does_not_crash(self):
-        """Same tolerant posture as dosage.is_core: a hand-edited YAML file
-        can put anything in `uses`, and a malformed value must not crash a
-        corpus-wide report over one bad file."""
         assert not consolidate.never_hit({"uses": "not-a-number", "last_hit": "NEVER"})
 
 
 class TestBuildReport:
     def test_only_active_lessons_are_considered_for_fusion(self):
-        """A candidate still in review is not yet competing for a retrieval
-        slot -- same reasoning the write-time duplicate gate
-        (lesson_cmd.py:_active_lesson_texts) documents."""
         lessons = [
             _lesson("first", "Payment webhook delivered more than once.",
                     "A webhook is retried after a timeout.", SAME_RULE),
@@ -117,15 +84,11 @@ class TestBuildReport:
         assert report.archive == ("unused",)
 
     def test_review_lessons_are_never_archive_candidates(self):
-        """Archiving is about a lesson that IS competing and never wins.
-        One still in review has never competed at all."""
         lessons = [_lesson("draft", "x", "y", "z", status="review", uses=0, last_hit="NEVER")]
         report = consolidate.build_report(lessons)
         assert report.archive == ()
 
     def test_contradictions_are_delegated_to_reliability_py(self):
-        """Not reinvented -- the existing, independently tested
-        find_contradictions is what runs here."""
         lessons = [
             _lesson("always", "Always retry a failed webhook delivery",
                     "a webhook delivery fails transiently", "body"),
@@ -158,12 +121,6 @@ class TestIsClean:
         assert not consolidate.build_report(lessons).is_clean
 
     def test_only_high_severity_contradictions_are_not_clean(self):
-        """Matches `commontrace reliability --strict`'s own precedent: a
-        review-severity (lexical-only) contradiction is worth surfacing but
-        not worth failing a build over. Constructed directly rather than
-        through `build_report`, to isolate `is_clean`'s own logic from
-        whatever fusion/archive signals a real lesson pair would also
-        trigger."""
         from commontrace import reliability as rel
 
         review_contradiction = rel.Contradiction(
@@ -284,9 +241,6 @@ class TestConsolidateCLI:
         assert main(["consolidate", "--dest", str(store), "--strict"]) == 0
 
     def test_custom_redundancy_threshold_is_forwarded(self, store, capsys):
-        """A store's own retrieval redundancy_threshold and this report's
-        threshold are independently configurable -- both read the same
-        module default, but nothing forces a caller to use it."""
         main(["init", "--agent-type", "code", "--dest", str(store)])
         _write_lesson(store, "payments", "Payment webhook delivered more than once.",
                       "A webhook is retried after a timeout.", SAME_RULE)
@@ -294,8 +248,6 @@ class TestConsolidateCLI:
                       "A service account key is older than the rotation policy.",
                       "Rotate service account credentials every ninety days.")
         capsys.readouterr()
-        # A near-zero threshold makes even unrelated lessons "fuse"
-        # candidates -- proves the flag actually reaches build_report.
         assert main([
             "consolidate", "--dest", str(store), "--redundancy-threshold", "0.01",
         ]) == 0
@@ -304,8 +256,6 @@ class TestConsolidateCLI:
 
 
 class TestConsolidateDraft:
-    """`--draft` writes new review-status drafts and never changes the originals."""
-
     def _pair(self, store):
         main(["init", "--agent-type", "code", "--dest", str(store)])
         _write_lesson(store, "first", "Payment webhook delivered more than once.",
@@ -337,7 +287,6 @@ class TestConsolidateDraft:
         assert fm["merges"] == ["first", "second"]
         assert fm["llm_draft"]["cited_evidence"] == ["first", "second"]
         assert reply["rule"] in body
-        # The originals are untouched and still active.
         for slug in ("first", "second"):
             orig, _ = frontmatter.read(os.path.join(paths.lessons_dir(str(store)), f"lesson_{slug}.md"))
             assert orig["status"] == "active"

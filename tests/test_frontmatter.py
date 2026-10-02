@@ -1,4 +1,3 @@
-"""Tests for frontmatter parsing utilities (benchmark + query fallback parsers)."""
 import os
 import sys
 
@@ -10,8 +9,6 @@ import measure_performance as bm
 
 
 class TestMinimalYamlParser:
-    """Tests for parse_yaml_minimal (stdlib fallback, no PyYAML dependency)."""
-
     def test_string_field(self):
         text = "name: my-lesson\n"
         result = bm.parse_yaml_minimal(text)
@@ -71,13 +68,11 @@ class TestMinimalYamlParser:
         assert result["hub_trace_id"] is None
 
     def test_nested_mapping(self):
-        """PyYAML block-dumps a nested dict as 'key:\\n  subkey: value', not inline."""
         text = "outcome:\n  resolved: true\n  tokens_used: 100\n  baseline: false\n"
         result = bm.parse_yaml_minimal(text)
         assert result["outcome"] == {"resolved": True, "tokens_used": 100, "baseline": False}
 
     def test_block_list_of_scalars(self):
-        """PyYAML's actual default output style for a list is block ('- item'), not '[a, b]'."""
         text = "tags:\n- refunds\n- tone\n"
         result = bm.parse_yaml_minimal(text)
         assert result["tags"] == ["refunds", "tone"]
@@ -90,7 +85,6 @@ class TestMinimalYamlParser:
         ]
 
     def test_keys_after_a_block_list_are_not_dropped(self):
-        """Regression: a block-list value must not swallow the rest of the mapping."""
         text = "tags:\n- a\n- b\nagent_type: support\nstatus: active\n"
         result = bm.parse_yaml_minimal(text)
         assert result == {"tags": ["a", "b"], "agent_type": "support", "status": "active"}
@@ -111,9 +105,6 @@ class TestMinimalYamlParser:
         assert result["title"] == "before # after"
 
     def test_pyyaml_line_wrapped_long_value_is_not_truncated(self):
-        """Regression: PyYAML wraps scalars > width=80 across continuation lines. The
-        parser used to stop at the first line without a 'key:' pattern, truncating the
-        value AND silently dropping every key after it."""
         text = (
             "importance_rationale: Prevented a force-push that would have destroyed two "
             "days of reviewer work.\n"
@@ -121,7 +112,6 @@ class TestMinimalYamlParser:
             "branch without confirming with the team first.\n"
             "uses: 0\nstatus: active\n"
         )
-        # Reproduce PyYAML's actual wrapping via safe_dump so this is testing the real shape.
         import yaml as _yaml
         wrapped = _yaml.safe_dump(_yaml.safe_load(text), sort_keys=False)
         result = bm.parse_yaml_minimal(wrapped)
@@ -131,8 +121,6 @@ class TestMinimalYamlParser:
         assert "team first." in result["applies_when"]
 
     def test_colon_without_trailing_space_is_not_a_key(self):
-        """Regression: a bare colon inside a list-item scalar (e.g. a URL or ratio) with
-        no following space must not be misread as a nested 'key: value'."""
         text = "tags:\n- see http://example.com:8080/path for details\n- ratio 3:1\n"
         result = bm.parse_yaml_minimal(text)
         assert result["tags"] == [
@@ -141,36 +129,21 @@ class TestMinimalYamlParser:
         ]
 
     def test_quoted_list_item_containing_colon_space(self):
-        """Regression: a quoted scalar list item containing ': ' (why PyYAML quoted it)
-        must not have the internal colon misread as a mapping key."""
         text = "items:\n- 'first part: second part'\n- plain\n"
         result = bm.parse_yaml_minimal(text)
         assert result["items"] == ["first part: second part", "plain"]
 
     def test_scientific_notation_follows_pyyamls_resolver(self):
-        """Regression: PyYAML's YAML-1.1 float resolver needs BOTH a literal '.'
-        in the mantissa AND a signed exponent.
-
-        This test previously asserted that '7.0e3' parsed as a float and said
-        it matched PyYAML. It does not -- real PyYAML resolves '7.0e3' to the
-        string '7.0e3', because the exponent sign is mandatory. The assertion
-        was encoding the bug, so the ground truth is now read from PyYAML here
-        rather than hard-coded from memory.
-        """
         for literal in ("7E3", "7.0e3", "7.0e+3", "1e5", "1.5e-3"):
             text = f"a: {literal}\n"
             assert bm.parse_yaml_minimal(text)["a"] == yaml.safe_load(text)["a"], literal
 
     def test_integer_forms_follow_pyyamls_resolver(self):
-        """Bare-leading-zero octal is the dangerous one: '010' is 8, and
-        reading it as 10 produces a plausible wrong number, not an error."""
         for literal in ("0", "007", "010", "0x1f", "0b101", "1_000", "-42", "+7"):
             text = f"a: {literal}\n"
             assert bm.parse_yaml_minimal(text)["a"] == yaml.safe_load(text)["a"], literal
 
     def test_flow_list_of_dicts_not_shredded_by_naive_comma_split(self):
-        # date is an unquoted YAML date scalar -- real PyYAML resolves it to
-        # datetime.date too (confirmed against yaml.safe_load), not a string.
         import datetime as _dt
 
         text = "importance_history: [{date: 2026-01-01, old: 3, new: 4, reason: bumped}]\n"
@@ -186,7 +159,6 @@ class TestMinimalYamlParser:
         assert result["after"] == "y"
 
     def test_round_trips_against_real_pyyaml_output(self):
-        """The fallback parser must agree with real PyYAML on this project's own frontmatter shape."""
         import yaml as _yaml
 
         text = (
@@ -200,11 +172,6 @@ class TestMinimalYamlParser:
 
 
 class TestFrontmatterDelimiterHandling:
-    """commontrace/frontmatter.py must split on '---' delimiter LINES, not the substring
-    '---' anywhere in the file -- an ordinary title/description containing '---' should
-    not corrupt every other field.
-    """
-
     def test_field_value_containing_triple_dash_does_not_corrupt_parse(self, tmp_path):
         from commontrace import frontmatter
 
@@ -231,10 +198,6 @@ class TestFrontmatterDelimiterHandling:
 
 
 class TestFrontmatterMalformedInput:
-    """commontrace/frontmatter.py must raise a clean, catchable error on hostile or
-    malformed frontmatter -- never an uncaught yaml.YAMLError/AttributeError traceback.
-    """
-
     def test_invalid_yaml_syntax_raises_frontmatter_error(self, tmp_path):
         from commontrace import frontmatter
 
@@ -244,15 +207,11 @@ class TestFrontmatterMalformedInput:
             frontmatter.read(str(path))
 
     def test_frontmatter_error_is_a_value_error(self, tmp_path):
-        """Callers doing a broad `except ValueError` (a natural instinct for bad input)
-        must still catch this."""
         from commontrace import frontmatter
 
         assert issubclass(frontmatter.FrontmatterError, ValueError)
 
     def test_top_level_scalar_raises_frontmatter_error(self, tmp_path):
-        """A frontmatter block that parses to a plain string, not a mapping, must not
-        silently become an object callers then call `.get(...)` on."""
         from commontrace import frontmatter
 
         path = tmp_path / "scalar.md"
@@ -269,8 +228,6 @@ class TestFrontmatterMalformedInput:
             frontmatter.read(str(path))
 
     def test_empty_frontmatter_block_returns_empty_dict(self, tmp_path):
-        """An empty block (---\\n---\\n) is valid YAML (None) and should stay a
-        no-op empty mapping, not an error."""
         from commontrace import frontmatter
 
         path = tmp_path / "empty.md"
@@ -280,10 +237,6 @@ class TestFrontmatterMalformedInput:
         assert body.strip() == "body"
 
     def test_a_plain_markdown_file_with_no_frontmatter_at_all_is_not_an_error(self, tmp_path):
-        """A file that never starts with `---` (an ordinary note, a README, a
-        file `commontrace` didn't write) must read as {} + the whole file as
-        body -- not raise, since nothing about this is malformed frontmatter,
-        there simply isn't any."""
         from commontrace import frontmatter
 
         path = tmp_path / "plain.md"
@@ -293,12 +246,6 @@ class TestFrontmatterMalformedInput:
         assert body == "# Just a heading\n\nSome text, no frontmatter here.\n"
 
     def test_an_opening_delimiter_with_no_closing_one_is_treated_as_no_frontmatter(self, tmp_path):
-        """A file that starts with `---` but is truncated or was never
-        finished (a partial write outside frontmatter.write()'s atomic path,
-        a user typing `---` at the top of a plain note) has fewer than 2
-        delimiter lines -- read() must fall back to "no frontmatter" rather
-        than raise or hang trying to find a closing delimiter that isn't
-        there."""
         from commontrace import frontmatter
 
         path = tmp_path / "truncated.md"
@@ -310,17 +257,6 @@ class TestFrontmatterMalformedInput:
 
 
 class TestFrontmatterRejectsYamlAnchorsAndAliases:
-    """SafeLoader ("safe" = no arbitrary Python object construction) still
-    resolves YAML anchors/aliases, which is a different hazard entirely: a
-    handful of nested anchors referencing each other expands exponentially
-    at parse time (the classic "billion laughs" pattern) -- a payload well
-    under 1KB inflates to gigabytes in memory and multi-second CPU time.
-    A trace/lesson file is exactly the kind of untrusted input this project
-    already threat-models for a different file (index.npz's model_name,
-    memory/attention/query.py) -- one could equally arrive via a cloned or
-    forked repo. No frontmatter field has any legitimate use for either
-    construct, so both are rejected outright."""
-
     def test_an_alias_reference_is_rejected(self, tmp_path):
         from commontrace import frontmatter
 
@@ -332,10 +268,6 @@ class TestFrontmatterRejectsYamlAnchorsAndAliases:
             frontmatter.read(str(path))
 
     def test_a_bare_anchor_definition_with_no_alias_is_also_rejected(self, tmp_path):
-        """The anchor declaration itself is refused, not just its use --
-        matters because the expansion in a real payload happens across many
-        small documents/fields, and catching only *alias would still let an
-        attacker define (harmless on its own, but suspicious) anchors."""
         from commontrace import frontmatter
 
         path = tmp_path / "anchor_only.md"
@@ -372,16 +304,6 @@ class TestFrontmatterRejectsYamlAnchorsAndAliases:
 
 
 class TestFrontmatterYaml11BoolCoercion:
-    """PyYAML's default (YAML 1.1) resolver silently coerces a bare
-    yes/no/on/off (any case) to a Python bool. Every protocol field that
-    should be a string -- agent_type, domain, tags entries -- is exposed
-    to this if a lesson/trace file is hand-edited (this protocol's
-    approve/reject workflow explicitly relies on manual edits). The CLI's
-    own write path (yaml.safe_dump) auto-quotes these on output, so a
-    round-tripped file is never at risk; these tests are specifically
-    about content nobody generated through this CLI.
-    """
-
     def test_no_stays_a_string_not_a_bool(self, tmp_path):
         from commontrace import frontmatter
 
@@ -401,8 +323,6 @@ class TestFrontmatterYaml11BoolCoercion:
         assert all(isinstance(t, str) for t in fm["tags"])
 
     def test_true_false_variants_still_parse_as_real_booleans(self, tmp_path):
-        """The fix must narrow the bool resolver, not disable it -- an
-        actual boolean field must still come back as bool, not string."""
         from commontrace import frontmatter
 
         path = tmp_path / "bools.md"
@@ -415,8 +335,6 @@ class TestFrontmatterYaml11BoolCoercion:
         assert all(isinstance(v, bool) for v in fm.values())
 
     def test_other_scalar_resolution_is_unaffected(self, tmp_path):
-        """Only the bool resolver narrows -- ints, nulls, and normal
-        strings must resolve exactly as plain yaml.safe_load would."""
         from commontrace import frontmatter
 
         path = tmp_path / "mixed.md"
@@ -428,10 +346,6 @@ class TestFrontmatterYaml11BoolCoercion:
         assert fm == {"importance": 3, "last_hit": "NEVER", "nothing": None, "name": "lesson_x"}
 
     def test_does_not_mutate_pyyamls_global_resolver_state(self, tmp_path):
-        """Regression guard for the wrong fix: patching
-        yaml.SafeLoader.yaml_implicit_resolvers in place would silently
-        change bool resolution for every other yaml.safe_load call in the
-        process, including third-party code, not just this module."""
         from commontrace import frontmatter  # noqa: F401  (import triggers class definition)
 
         assert yaml.safe_load("x: NO") == {"x": False}, (
@@ -439,10 +353,6 @@ class TestFrontmatterYaml11BoolCoercion:
         )
 
     def test_cli_written_file_round_trips_through_the_stricter_loader(self, tmp_path):
-        """The write path already auto-quotes ambiguous tokens
-        (yaml.safe_dump), so round-tripping CLI-generated content through
-        the narrowed loader must be a no-op -- this isn't just a read-side
-        change, it must not break the write/read cycle."""
         from commontrace import frontmatter
 
         path = tmp_path / "roundtrip.md"
@@ -453,10 +363,6 @@ class TestFrontmatterYaml11BoolCoercion:
 
 
 class TestTraceIoSectionParsing:
-    """commontrace/trace_io.py must not truncate Context/Solution at an unrelated '## '
-    sub-heading embedded inside the section's own text.
-    """
-
     def test_solution_with_embedded_subheading_is_not_truncated(self, tmp_path):
         from commontrace import frontmatter, trace_io
 
@@ -472,17 +378,12 @@ class TestTraceIoSectionParsing:
 
 
 class TestLessonFrontmatterRequiredFields:
-    """Verify that real lesson template files satisfy expected schema."""
-
     REQUIRED_FIELDS = [
         "name", "description", "tags", "agent_type", "domain", "importance",
         "importance_rationale", "applies_when", "do_not_apply_when",
         "uses", "last_hit", "source_traces", "status",
     ]
 
-    # `domain` is an open vocabulary at the protocol level (protocol/PROTOCOL.md#7-taxonomy-open-not-closed).
-    # This is the code-review profile's historical starter set — informational only,
-    # NOT enforced as a closed list. See test_example_lessons_domain_is_nonempty_string.
     CODE_PROFILE_DOMAINS = {
         "git-safety", "cuda-gpu", "refactor", "testing",
         "subagents", "performance", "other",
@@ -514,7 +415,6 @@ class TestLessonFrontmatterRequiredFields:
                 assert field in fm, f"Missing '{field}' in {os.path.basename(path)}"
 
     def test_example_lessons_domain_is_nonempty_string(self):
-        """`domain` is open vocabulary (protocol/PROTOCOL.md#7-taxonomy-open-not-closed) — only shape is checked."""
         repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         import glob
         lessons_dir = os.path.join(repo_root, "memory", "lessons")
@@ -563,14 +463,12 @@ class TestLessonFrontmatterRequiredFields:
             fm = self._load_lesson(path)
             imp = fm.get("importance")
             if imp is None:
-                continue  # missing importance handled gracefully (defaults to 3)
+                continue
             assert isinstance(imp, int), f"{path}: importance must be int, got {type(imp)}"
             assert 1 <= imp <= 5, f"{path}: importance {imp} out of range [1,5]"
 
 
 class TestEpisodeFrontmatterRequiredFields:
-    """Verify that real episode files satisfy expected schema."""
-
     REQUIRED_FIELDS = [
         "name", "description", "agent_type", "task_invocation", "tags", "project", "verdict",
         "importance", "n_iterations", "commit_sha", "duration_minutes",
@@ -592,7 +490,6 @@ class TestEpisodeFrontmatterRequiredFields:
         assert fm is not None
 
     def test_episode_template_verdict_is_conform(self):
-        """Template verdict must be CONFORM (not CONFORME) to guide users correctly."""
         repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         template = os.path.join(repo_root, "memory", "episodes", "episode_template.md")
         fm = self._load_episode(template)
@@ -613,3 +510,106 @@ class TestEpisodeFrontmatterRequiredFields:
             assert verdict in self.VALID_VERDICTS, (
                 f"{os.path.basename(path)}: verdict '{verdict}' not in {self.VALID_VERDICTS}"
             )
+
+
+class TestParsedFrontmatterIsMemoised:
+    def _lesson(self, tmp_path, description="Retry with a key.", name="l"):
+        from commontrace import frontmatter
+
+        path = tmp_path / f"lesson_{name}.md"
+        frontmatter.write(str(path), {"name": name, "description": description, "tags": ["a"]}, "## Rule\nx\n")
+        return str(path)
+
+    def test_an_unchanged_file_is_parsed_once(self, tmp_path, monkeypatch):
+        from commontrace import frontmatter
+
+        path = self._lesson(tmp_path, name="once")
+        frontmatter._PARSED.clear()
+        calls = []
+        real = frontmatter.yaml.load
+        monkeypatch.setattr(frontmatter.yaml, "load", lambda *a, **k: calls.append(1) or real(*a, **k))
+        for _ in range(3):
+            assert frontmatter.read(path)[0]["description"] == "Retry with a key."
+        assert len(calls) == 1
+
+    def test_an_edited_file_is_parsed_again(self, tmp_path):
+        from commontrace import frontmatter
+
+        path = self._lesson(tmp_path, name="edit")
+        frontmatter.read(path)
+        self._lesson(tmp_path, description="Changed.", name="edit")
+        assert frontmatter.read(path)[0]["description"] == "Changed."
+
+    def test_each_read_gets_its_own_copy(self, tmp_path):
+        from commontrace import frontmatter
+
+        path = self._lesson(tmp_path, name="copy")
+        first, _ = frontmatter.read(path)
+        first["tags"].append("mutated")
+        first["description"] = "mutated"
+        second, _ = frontmatter.read(path)
+        assert second["tags"] == ["a"] and second["description"] == "Retry with a key."
+
+    def test_malformed_frontmatter_is_never_cached(self, tmp_path):
+        import pytest
+
+        from commontrace import frontmatter
+
+        path = tmp_path / "lesson_bad.md"
+        path.write_text("---\nname: [unclosed\n---\nbody\n", encoding="utf-8")
+        for _ in range(2):
+            with pytest.raises(frontmatter.FrontmatterError):
+                frontmatter.read(str(path))
+        assert "name: [unclosed\n" not in frontmatter._PARSED
+
+    def test_the_memo_is_bounded(self, tmp_path, monkeypatch):
+        from commontrace import frontmatter
+
+        monkeypatch.setattr(frontmatter, "_PARSED_MAX", 3)
+        frontmatter._PARSED.clear()
+        for i in range(6):
+            frontmatter.read(self._lesson(tmp_path, description=f"d{i}", name=f"b{i}"))
+        assert len(frontmatter._PARSED) == 3
+
+
+class TestTheStrictParseOnLibyaml:
+    SAMPLES = [
+        "name: on\ndomain: NO\ntags: [on, off, yes]\nlast_hit: 2026-07-01\nflag: true\nn: 3\nf: 1.5\nz: null\n",
+        "description: \"quoted: value\"\napplies_when: |\n  a block\n  of text\nlist:\n  - a\n  - b\n",
+        "desc: R&D costs 5*3\n",
+        "unicode: café — 日本語\n",
+        "",
+    ]
+
+    def test_strict_rules_hold(self):
+        from commontrace import frontmatter
+
+        fm = frontmatter.load_text(self.SAMPLES[0])
+        assert fm["name"] == "on" and fm["domain"] == "NO" and fm["tags"] == ["on", "off", "yes"]
+        assert fm["last_hit"] == "2026-07-01" and fm["flag"] is True
+
+    def test_anchors_are_refused_whichever_parser_is_installed(self):
+        import pytest
+        import yaml
+
+        from commontrace import frontmatter
+
+        with pytest.raises(yaml.YAMLError, match="anchors/aliases are not permitted"):
+            frontmatter.load_text("a: &x [1, 2]\nb: *x\n")
+
+    def test_same_data_and_errors_as_the_pure_python_loader(self):
+        import pytest
+        import yaml
+
+        from commontrace import frontmatter
+
+        if frontmatter._CStrictBoolLoader is None:
+            pytest.skip("PyYAML here was built without libyaml")
+        for text in self.SAMPLES:
+            assert frontmatter.load_text(text) == yaml.load(text, Loader=frontmatter._StrictBoolLoader)
+        bad = "bad: [unclosed\n"
+        with pytest.raises(yaml.YAMLError) as python_error:
+            yaml.load(bad, Loader=frontmatter._StrictBoolLoader)
+        with pytest.raises(yaml.YAMLError) as ours:
+            frontmatter.load_text(bad)
+        assert str(ours.value) == str(python_error.value)

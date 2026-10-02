@@ -1,8 +1,3 @@
-"""Tests for `commontrace export` -- the missing counterpart to
-`commontrace/import_data.py`'s bulk importer. No competitor comparison
-here; this closes a plain, verifiable gap: there was no way to get a
-store's own corpus out as one portable file at all.
-"""
 from __future__ import annotations
 
 import glob
@@ -142,10 +137,6 @@ class TestExportBasics:
 
 
 class TestTraceRoundTrip:
-    """A trace exported here must be re-importable with no field-mapping
-    flags -- the whole point of writing it in the GENERIC importer's own
-    flat shape."""
-
     def test_an_exported_trace_reimports_cleanly_into_a_second_store(
         self, store, tmp_path,
     ):
@@ -178,9 +169,6 @@ class TestTraceRoundTrip:
     def test_a_lesson_row_in_a_mixed_export_is_skipped_not_crashed_on_reimport(
         self, store, tmp_path, capsys,
     ):
-        """A `--kind all` export mixes lesson and trace rows in one file;
-        commontrace import has no lesson importer, so a lesson row must be
-        skipped with a reason, never a crash or a silently-wrong trace."""
         _lesson(str(store), "a")
         _capture(store, "a real trace")
         out_path = str(tmp_path / "out.jsonl")
@@ -195,4 +183,4 @@ class TestTraceRoundTrip:
             p for p in glob.glob(os.path.join(paths.traces_dir(second_store), "*.md"))
             if os.path.basename(p) != "README.md"
         ]
-        assert len(imported) == 1  # only the trace row, not the lesson row
+        assert len(imported) == 1

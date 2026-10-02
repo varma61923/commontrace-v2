@@ -1,12 +1,3 @@
-"""rank_candidates: the pure ranking primitive, no database.
-
-Split from hub/tests/test_commons_search.py because that module carries a
-module-level asyncio mark and these are synchronous. The property they
-guard is the same one hub/tests/test_commons.py pins for best_matches: the
-numpy fast path and the pure-Python reference path must agree exactly, or
-the commons returns confident wrong similarity numbers on whichever hosts
-happen to have numpy.
-"""
 from __future__ import annotations
 
 import pytest
@@ -28,11 +19,6 @@ POOL = (
 
 
 class TestRankCandidatesUnit:
-    """rank_candidates has a numpy path and a pure-Python path, and they must
-    agree exactly -- the same property hub/tests/test_commons.py pins for
-    best_matches. A fast path that quietly diverges produces confident wrong
-    similarity numbers, the worst failure mode available here."""
-
     def test_both_implementations_agree(self, monkeypatch):
         pytest.importorskip("numpy")
         query = commons.signature_for("payment webhook delivered twice", "", [])

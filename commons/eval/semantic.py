@@ -1,60 +1,3 @@
-"""Does semantic similarity fix the coverage bar's recall -- and does it
-actually cost the privacy guarantee?
-
-WHAT THIS ANSWERS. commons/eval/RESULTS.md measured the shipped matcher at
-10.9% recall with a 0% false-positive rate, attributed it to representation
-rather than tuning, and named the fix: "semantic rather than lexical
-similarity -- embedding each failure and comparing vectors." It then
-recorded a blocker:
-
-    That is a real change, not a tweak, because it breaks the current
-    privacy story: MinHash signatures are exchanged today precisely
-    because failure text never leaves the fleet, and an embedding is
-    computed by a model that has to see the text.
-
-commons/eval/representations.py has since closed the cheaper door: every
-tokenization candidate measured *worse* than shipped on the held-out set.
-Lexical representation is exhausted, so the semantic question is the only
-one left, and this file measures it.
-
-THE BLOCKER RESTS ON A FALSE PREMISE, AND THAT MATTERS MORE THAN THE NUMBER.
-
-"A model has to see the text" is true and harmless. What the privacy
-guarantee actually forbids is the *operator* seeing a customer's failure
-text -- not a model running on the customer's own machine, on text that
-machine already holds.
-
-And the other side of the comparison is not secret at all. The Knowledge
-Base is operator-curated substrate knowledge, published in this repository
-as commons/seed/substrate-v1.jsonl. There is no confidentiality to protect
-on the corpus side, which means the whole comparison can happen on the
-client:
-
-    corpus embeddings  <- public content, computed anywhere, distributable
-    failure embedding  <- computed locally, from text already on that machine
-    similarity         <- computed locally, against a local corpus index
-
-The Hub is not a participant. It learns nothing -- not the text, not an
-embedding, not even the MinHash signature it receives today. That is
-STRICTLY MORE PRIVATE than what currently ships, which is the opposite of
-what the recorded blocker assumes.
-
-So the trade this file evaluates is not "recall versus privacy". It is
-"recall and privacy, versus a model dependency and an index to distribute".
-
-WHAT WOULD MAKE THIS WORTH SHIPPING. The same falsifiable test the other
-experiments use, and for the same reason: a coverage number that every
-customer sees must not be raised by lowering the bar. Recall rising while
-the negative controls stay at zero is a real improvement. Recall rising
-alongside false positives is the bar dropping, and the gain is fake. Both
-are printed for every threshold, on both probe sets, and probes-v2 is the
-held-out number to believe.
-
-This file changes nothing that ships. It imports the corpus and the probes,
-and writes no product code.
-
-Run:  python commons/eval/semantic.py
-"""
 from __future__ import annotations
 
 import json
@@ -70,16 +13,8 @@ from hub import commons  # noqa: E402
 CORPUS = ROOT / "commons" / "seed" / "substrate-v1.jsonl"
 HERE = Path(__file__).resolve().parent
 
-# Small, CPU-friendly, and already the family this repository uses for its
-# own attention layer (requirements.txt / memory/attention/build_index.py),
-# so this measures a model the project could actually ship rather than a
-# research-grade one it could not.
 MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 
-# Cosine thresholds to sweep. The shipped Jaccard threshold (0.30) is not
-# comparable to a cosine, so there is no "the" threshold to reuse -- the
-# operating point has to be chosen from this table the same way the Jaccard
-# one was, by the highest recall that still holds false positives at zero.
 THRESHOLDS = (0.80, 0.75, 0.70, 0.65, 0.60, 0.55, 0.50, 0.45, 0.40)
 
 
@@ -88,8 +23,6 @@ def _load(path: Path) -> list[dict]:
 
 
 def _probe_text(p: dict) -> str:
-    """Signed exactly as production signs a failure: title + context + tags
-    (hub/commons.py:matchable_text), so the two sides stay symmetric."""
     return commons.matchable_text(p.get("label", ""), p.get("text", ""), p.get("tags"))
 
 
@@ -174,9 +107,6 @@ def main() -> int:
         h = score(model, held, corpus, t)
         print(f"{t:>9.2f} {d['recall']:>10.1%} {d['false_positive']:>8.1%} "
               f"{h['recall']:>11.1%} {h['false_positive']:>9.1%}")
-        # The operating point is chosen the way the shipped one was: the most
-        # recall available while BOTH probe sets still report zero false
-        # positives. Read off the held-out column, never the dev one.
         if d["false_positive"] == 0.0 and h["false_positive"] == 0.0:
             if best_safe is None or h["recall"] > best_safe[1]["recall"]:
                 best_safe = (t, h)

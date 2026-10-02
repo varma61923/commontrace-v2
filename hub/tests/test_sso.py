@@ -1,27 +1,3 @@
-"""Verifying a bearer JWT came from a trusted OIDC issuer.
-
-What these tests defend, in order of how badly getting it wrong would hurt:
-
-1. **Algorithm confusion cannot forge an identity.** An attacker who knows a
-   deployment's RSA PUBLIC key (which is, by definition, public) can try to
-   sign an HS256 token using that public key's bytes as the HMAC secret. A
-   verifier that ever passes the same key material into both an asymmetric
-   and a symmetric check is forgeable by anyone. The forged token here is
-   built by hand, byte for byte, rather than through `jwt.encode` -- PyJWT's
-   own encoder refuses to build it, which would make the test pass for a
-   reason that says nothing about the verifier.
-2. **`alg: none` is refused.** A spec-legal, signature-free token must not
-   authenticate anyone.
-3. **Issuer, audience, and expiry are all actually checked** -- not merely
-   present in the code, but changing any one of them independently is
-   caught.
-4. **No network on the hot path.** `JWKSCache` refetches only after its TTL,
-   verified with an injected clock rather than a real sleep.
-5. **`kid` selects a key; it is never guessed.** A JWKS with more than one
-   active key (the normal case mid-rotation) must not silently pick the
-   wrong one, and a token naming no `kid` at all must not fall back to "the
-   only key" quietly.
-"""
 from __future__ import annotations
 
 import base64
@@ -100,8 +76,6 @@ class TestAValidToken:
     def test_a_token_missing_sub_is_refused(self, signing_key, provider):
         key, _ = signing_key
         now = int(time.time())
-        # Build without 'sub' -- jwt.encode requires nothing about claim
-        # shape, so this constructs a technically-valid, subject-less JWT.
         payload = {"iss": ISSUER, "aud": AUDIENCE, "iat": now, "exp": now + 300}
         token = jwt.encode(payload, key, algorithm="RS256", headers={"kid": "k1"})
         with pytest.raises(sso.IdentityError, match='"sub"'):
@@ -109,15 +83,7 @@ class TestAValidToken:
 
 
 class TestAlgorithmConfusion:
-    """The attack this exists to make impossible: an attacker holds the
-    deployment's PUBLIC key (public by definition) and tries to use it as an
-    HMAC secret for a forged HS256 token."""
-
     def _forge_hs256_with_public_key(self, pub, kid: str) -> str:
-        """Built byte-for-byte, not via jwt.encode -- PyJWT's own encoder
-        refuses to sign with a key that looks like a PEM-encoded asymmetric
-        key, which would make this test pass without ever exercising the
-        verifier's own defense."""
         def b64u(data: bytes) -> bytes:
             return base64.urlsafe_b64encode(data).rstrip(b"=")
 
@@ -174,18 +140,14 @@ class TestClaimVerification:
             sso.verify_bearer_token(token, provider)
 
     def test_a_token_from_a_different_key_is_rejected(self, provider):
-        """Simulates a stolen 'kid' with the wrong signature behind it: a
-        second, unrelated key claiming the same kid as the trusted one."""
         other_key, _ = _keypair()
-        token = _token(other_key, "k1")  # kid matches, signature does not
+        token = _token(other_key, "k1")
         with pytest.raises(sso.IdentityError):
             sso.verify_bearer_token(token, provider)
 
     def test_clock_skew_within_tolerance_is_accepted(self, signing_key, provider):
         key, _ = signing_key
         now = int(time.time())
-        # Issued 30s "in the future" from this server's clock -- ordinary
-        # NTP drift, not an attack.
         token = _token(key, "k1", now=now + 30)
         sso.verify_bearer_token(token, provider, clock_skew_seconds=60)
 
@@ -208,13 +170,10 @@ class TestKeySelection:
         assert claims.subject == "user-1"
 
     def test_a_token_with_no_kid_is_refused_rather_than_guessed(self, signing_key, provider):
-        """Even with exactly one key in the JWKS, a missing kid must not
-        silently resolve to it -- an IdP with more than one active key
-        mid-rotation makes that guess wrong, silently."""
         key, _ = signing_key
         now = int(time.time())
         payload = {"iss": ISSUER, "aud": AUDIENCE, "sub": "x", "iat": now, "exp": now + 300}
-        token = jwt.encode(payload, key, algorithm="RS256")  # no kid header
+        token = jwt.encode(payload, key, algorithm="RS256")
         with pytest.raises(sso.IdentityError, match="kid"):
             sso.verify_bearer_token(token, provider)
 
@@ -264,8 +223,8 @@ class TestJWKSCache:
         times = iter([0.0, 5.0, 4000.0])
         cache = sso.JWKSCache(fetch, ttl_seconds=3600, clock=lambda: next(times))
         cache.get("uri")
-        cache.get("uri")  # within TTL, not refetched
-        cache.get("uri")  # past TTL, refetched
+        cache.get("uri")
+        cache.get("uri")
         assert len(calls) == 2
 
     def test_different_uris_are_cached_independently(self):
@@ -313,8 +272,6 @@ class TestJWKSCache:
         assert calls == ["https://idp/jwks.json"]
 
     def test_a_jwks_uri_provider_without_a_cache_is_refused(self, signing_key):
-        """Verifying without a cache would mean fetching on every single
-        request -- refused loudly rather than silently doing that."""
         key, pub = signing_key
         provider = sso.IdentityProvider(
             issuer=ISSUER, audience=AUDIENCE, jwks_uri="https://idp/jwks.json"
@@ -355,3 +312,78 @@ class TestLooksLikeJwt:
         assert not sso.looks_like_jwt("..")
         assert not sso.looks_like_jwt("a.b")
         assert not sso.looks_like_jwt("")
+
+
+class TestKeyRotation:
+    def _setup(self, clock):
+        old_key, old_pub = _keypair()
+        new_key, new_pub = _keypair()
+        published = {"keys": [_jwk(old_pub, "old")]}
+        fetches = []
+
+        def fetch(uri):
+            fetches.append(uri)
+            return json.loads(json.dumps(published))
+
+        cache = sso.JWKSCache(fetch, clock=clock)
+        provider = sso.IdentityProvider(
+            issuer=ISSUER, audience=AUDIENCE, jwks_uri="https://idp/jwks.json"
+        )
+        return old_key, new_key, new_pub, published, fetches, cache, provider
+
+    def test_a_token_signed_with_a_freshly_rotated_key_verifies(self):
+        now = [0.0]
+        old_key, new_key, new_pub, published, fetches, cache, provider = self._setup(lambda: now[0])
+        assert sso.verify_bearer_token(_token(old_key, "old"), provider, jwks_cache=cache)
+        published["keys"].append(_jwk(new_pub, "new"))
+        now[0] = sso.UNKNOWN_KID_REFETCH_SECONDS + 1
+        claims = sso.verify_bearer_token(_token(new_key, "new"), provider, jwks_cache=cache)
+        assert claims.subject == "user-1"
+        assert len(fetches) == 2
+
+    def test_unknown_kids_refetch_at_most_once_per_interval(self):
+        now = [0.0]
+        old_key, new_key, _pub, _published, fetches, cache, provider = self._setup(lambda: now[0])
+        sso.verify_bearer_token(_token(old_key, "old"), provider, jwks_cache=cache)
+        for i in range(50):
+            with pytest.raises(sso.IdentityError):
+                sso.verify_bearer_token(_token(new_key, f"bogus-{i}"), provider, jwks_cache=cache)
+        assert len(fetches) == 1
+        now[0] = sso.UNKNOWN_KID_REFETCH_SECONDS + 1
+        for i in range(50):
+            with pytest.raises(sso.IdentityError):
+                sso.verify_bearer_token(_token(new_key, f"bogus2-{i}"), provider, jwks_cache=cache)
+        assert len(fetches) == 2
+
+    def test_a_static_jwks_is_never_refetched(self, signing_key, provider):
+        key, _pub = signing_key
+        with pytest.raises(sso.IdentityError, match="matches kid"):
+            sso.verify_bearer_token(_token(key, "nope"), provider)
+
+
+class TestTheJwkMustFitTheTokensAlgorithm:
+    def test_a_jwk_declaring_a_different_alg_is_refused(self, signing_key):
+        key, pub = signing_key
+        provider = _provider({"keys": [_jwk(pub, "k1", alg="RS512")]})
+        with pytest.raises(sso.IdentityError, match="published for"):
+            sso.verify_bearer_token(_token(key, "k1", alg="RS256"), provider)
+
+    def test_an_encryption_key_is_not_a_signing_key(self, signing_key):
+        key, pub = signing_key
+        jwk = _jwk(pub, "k1")
+        jwk["use"] = "enc"
+        with pytest.raises(sso.IdentityError, match="not a signing key"):
+            sso.verify_bearer_token(_token(key, "k1"), _provider({"keys": [jwk]}))
+
+    def test_an_rsa_token_against_a_non_rsa_jwk_is_refused(self, signing_key):
+        key, _pub = signing_key
+        oct_jwk = {"kid": "k1", "kty": "oct", "k": "c2VjcmV0", "use": "sig"}
+        with pytest.raises(sso.IdentityError, match="kty"):
+            sso.verify_bearer_token(_token(key, "k1"), _provider({"keys": [oct_jwk]}))
+
+    def test_a_jwk_without_alg_still_verifies_with_the_tokens_alg(self, signing_key):
+        key, pub = signing_key
+        jwk = _jwk(pub, "k1")
+        del jwk["alg"]
+        claims = sso.verify_bearer_token(_token(key, "k1", alg="RS384"), _provider({"keys": [jwk]}))
+        assert claims.subject == "user-1"

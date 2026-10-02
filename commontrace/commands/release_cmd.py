@@ -1,25 +1,4 @@
-"""`commontrace release` -- what the fleet is running, as one named thing.
-
-A lesson has a slug (mutable), and its text has a revision
-(commontrace/revision.py). Neither answers the question every operational
-conversation is actually about: what was the fleet running on Monday, and
-how do I put that back?
-
-    release cut       record the active set as an immutable snapshot
-    release list      every release, newest last
-    release show      one release's contents
-    release diff      what changed between two releases
-    release rollback  return to an earlier release, and record having done so
-    release promote   record which release a named environment is running
-    release current   the release one environment is running right now
-    release pending   promotions scheduled for the future, for one environment
-
-See commontrace/release.py for why a release stores revisions rather than
-text, and why rolling back appends rather than rewinds. See
-commontrace/environments.py for why `promote` is pure record-keeping (it
-does not change what retrieval serves) and for the real, storage-level
-reason it cannot yet.
-"""
+"""`commontrace release` -- what the fleet is running, as one named thing."""
 from __future__ import annotations
 
 import argparse
@@ -214,9 +193,6 @@ def run_diff(args: argparse.Namespace) -> int:
                 print(f"[commontrace] no such release: {args.after}", file=sys.stderr)
                 return 1
         else:
-            # The live set, as an unrecorded release: "what has changed since
-            # that release" is the question asked far more often than
-            # "what changed between two things I already wrote down".
             after = release.Release(
                 release_id="(live)", parent_id=before.release_id,
                 entries=release.active_entries(root), created_at="", actor="", reason="",

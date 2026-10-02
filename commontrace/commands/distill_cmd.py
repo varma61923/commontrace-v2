@@ -28,22 +28,21 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         "instead of 'TODO: ...' placeholders. Falls back per-cluster, with a stated "
         "reason, if no provider is configured or it refuses.",
     )
+    p.add_argument(
+        "--failed", action="store_true",
+        help="Only cluster traces recorded as failures (outcome.resolved false or repeated_error): "
+        "a lesson drafted from what went wrong, not from everything that happened.",
+    )
+    p.add_argument(
+        "--signal", default=None, metavar="NAME",
+        help="Only the traces of one named failure signal (exact name from `commontrace signals list`); "
+        "implies --failed.",
+    )
     p.add_argument("--dest", default=None)
     p.set_defaults(func=run)
 
 
 def _safe_tags(raw: object) -> list[str]:
-    """Coerce a frontmatter `tags` value to a list of strings.
-
-    A hand-edited trace file can have `tags` as a bare scalar
-    (`tags: auth,billing` without list brackets parses as the plain string
-    "auth,billing", not a list) instead of a proper YAML list. The previous
-    `list(instance.get("tags") or [])` iterated that string character by
-    character, feeding distill.TraceCandidate.tags -- and therefore the
-    tag-overlap clustering signal and propose_tags/propose_domain -- garbage
-    single-character "tags". Same guard as overlap_cmd.py's _safe_tags for
-    the identical class of malformed input.
-    """
     return [str(t) for t in raw if t is not None] if isinstance(raw, (list, tuple)) else []
 
 
@@ -69,14 +68,6 @@ def _load_traces(root: str, agent_type: str | None) -> list[distill.TraceCandida
         try:
             instance, _ = trace_io.read(path)
         except FrontmatterError as exc:
-            # A single hand-edited trace with corrupt YAML must not take
-            # down `distill` for the whole store -- distill exists to
-            # report on a corpus that includes messy files, the same
-            # reasoning already applied to measure_performance's episode/
-            # lesson loading (commontrace/reference/measure_performance.py).
-            # Skipped and warned, not silently dropped, so the operator
-            # knows a trace was excluded rather than assuming it was
-            # considered and found irrelevant.
             print(f"[commontrace] warning: skipping unreadable trace {path}: {exc}", file=sys.stderr)
             continue
         if agent_type and instance.get("agent_type") != agent_type:
@@ -97,17 +88,25 @@ def _load_traces(root: str, agent_type: str | None) -> list[distill.TraceCandida
     return out
 
 
+def _failure_scope(root: str, args: argparse.Namespace) -> tuple[set[str], str | None]:
+    from commontrace import failure_signals
+
+    if not args.signal:
+        return {o.id for o in failure_signals.load_failure_occurrences(root, args.agent_type)}, None
+    signals, _ = failure_signals.build_signals(root, agent_type=args.agent_type)
+    for signal in signals:
+        if signal.name == args.signal:
+            return set(signal.trace_ids), None
+    names = ", ".join(repr(x.name) for x in signals[:5]) or "none found"
+    return set(), f"no failure signal named {args.signal!r} (signals: {names}). See `commontrace signals list`."
+
+
 def _existing_source_traces(root: str) -> list[list[str]]:
     out = []
     for path in _iter_lesson_paths(root):
         try:
             fm, _ = frontmatter.read(path)
         except FrontmatterError as exc:
-            # Same reasoning as _load_traces: a lesson with corrupt
-            # hand-edited YAML must not crash `distill` for the whole
-            # store. This only feeds the "already covered by an existing
-            # lesson" de-dup check, so skipping it costs nothing beyond a
-            # possible near-duplicate proposal an operator can reject.
             print(f"[commontrace] warning: skipping unreadable lesson {path}: {exc}", file=sys.stderr)
             continue
         out.append(list(fm.get("source_traces") or []) + list(fm.get("source_episodes") or []))
@@ -124,10 +123,6 @@ def _unique_candidate_slug(ldir: str, date: str, n: int) -> str:
 
 
 def _evidence_lines(cluster: distill.Cluster) -> list[str]:
-    """The same grouped situation/solution evidence `_candidate_body` shows
-    a human, as plain text for an LLM prompt -- one source of what counts
-    as evidence for a cluster, read by both a human reviewer and (with
-    `--draft`) a model, rather than two descriptions that could drift."""
     n = len(cluster.traces)
     contexts = distill.variants([t.context_text for t in cluster.traces])
     solutions = distill.variants([t.solution_text for t in cluster.traces])
@@ -139,35 +134,6 @@ def _evidence_lines(cluster: distill.Cluster) -> list[str]:
 
 
 def _candidate_body(cluster: distill.Cluster, llm_draft=None) -> list[str]:
-    """The evidence a reviewer needs, in the file they are reviewing.
-
-    What this used to emit was one line per trace, context only, with a UUID
-    on each -- so a 12-trace cluster printed the same paragraph twelve times
-    and the SOLUTION TEXT, the single thing anyone needs in order to write
-    the Rule, appeared nowhere at all. Writing a lesson meant opening twelve
-    trace files to find what had actually worked. That is the throughput
-    limit on this entire product: coverage stays low because curating is
-    expensive, retrieval returns nothing because coverage is low, and the
-    causal experiment stays underpowered because there is nothing to
-    measure.
-
-    So the evidence is grouped, and both halves are shown: the situation and
-    what resolved it. `distill.variants` collapses the repeats and counts
-    them, which also surfaces the case that matters most -- more than one
-    distinct solution to the same symptom means the cluster is really two
-    problems, and the candidate should be split rather than written up as
-    one rule.
-
-    The TODOs stay by default. `applies_when`, `do_not_apply_when` and the
-    Rule are JUDGEMENTS, and filling them in from a term-frequency count
-    would put fabricated text past the scaffolding guard that exists to
-    stop exactly that (commontrace/templates.py). Proposing better evidence
-    is honest; proposing the conclusion from a heuristic is not -- but
-    `--draft` asking a model to read the SAME evidence and propose a
-    conclusion, refused outright if it isn't a strict, evidence-grounded
-    answer (commontrace/llm.py), is a different claim, and `llm_draft`,
-    when given, replaces the "## Rule" TODO with exactly that.
-    """
     n = len(cluster.traces)
     contexts = distill.variants([t.context_text for t in cluster.traces])
     solutions = distill.variants([t.solution_text for t in cluster.traces])
@@ -197,10 +163,10 @@ def _candidate_body(cluster: distill.Cluster, llm_draft=None) -> list[str]:
         "<!-- Source traces are listed in `source_traces` above. -->",
         "",
         "## How to apply",
-        "TODO: when to invoke it, how to use it concretely.",
+        llm_draft.applies_when if llm_draft else "TODO: when to invoke it, how to use it concretely.",
         "",
         "## Counter-examples",
-        "TODO: cases where the rule does NOT apply.",
+        llm_draft.do_not_apply_when if llm_draft else "TODO: cases where the rule does NOT apply.",
     ]
     if llm_draft is not None:
         lines += ["", "## LLM draft evidence", f"Cited: {', '.join(llm_draft.evidence) or '(none)'}"]
@@ -225,6 +191,15 @@ def _variant_lines(items: list[tuple[str, int]], total: int) -> list[str]:
 def run(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
     traces = _load_traces(root, args.agent_type)
+    if args.failed or args.signal:
+        keep, error = _failure_scope(root, args)
+        if error:
+            print(f"[commontrace] {error}", file=sys.stderr)
+            return 2
+        traces = [t for t in traces if t.id in keep]
+        if not traces:
+            print("[commontrace] no failed traces in scope -- nothing to distill.")
+            return 0
     if not traces:
         print("[commontrace] no traces found under memory/traces/ -- nothing to distill.")
         return 0
@@ -243,12 +218,6 @@ def run(args: argparse.Namespace) -> int:
             f"(>= {args.min_cluster_size} traces, similarity >= {args.similarity_threshold}). "
             "Nothing proposed."
         )
-        # Distillation looks for REPEATS, so a store with one trace -- or
-        # several unrelated ones -- correctly proposes nothing. Said alone
-        # that reads as a failure, and it is the second of three identical
-        # dead ends a new user hits before anything works. Name the way
-        # forward instead: a rule you already know does not need to be
-        # rediscovered from repetition.
         if len(traces) < args.min_cluster_size:
             print(
                 f"  Distilling finds rules by REPETITION, so it needs at least "
@@ -276,7 +245,7 @@ def run(args: argparse.Namespace) -> int:
 
     print(f"[commontrace] {len(traces)} trace(s) considered, {len(clusters)} candidate cluster(s) found:\n")
     for n, cluster in enumerate(clusters, start=1):
-        agent_type = cluster.traces[0].agent_type or (args.agent_type or "code")
+        agent_type = cluster.traces[0].agent_type or (args.agent_type or paths.GENERAL_AGENT_TYPE)
         slug = _unique_candidate_slug(ldir, date, n)
 
         llm_draft = None

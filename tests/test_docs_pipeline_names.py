@@ -1,10 +1,3 @@
-"""Docs-drift guard for the seven protocol stage names (I05).
-
-protocol/PROTOCOL.md's stage table is normative: every restatement across
-the repo must reproduce the seven names verbatim (unicode arrows), in
-order. An ASCII-arrow restatement (install_cmd.py once had one) silently
-forks the vocabulary the fleet uses to describe its own pipeline.
-"""
 from __future__ import annotations
 
 import os
@@ -31,14 +24,8 @@ def test_canonical_pipeline_names_in_sync():
 
 
 def test_no_ascii_arrow_fork():
-    # tests/ excluded: fixtures may quote historical text.
     checked = []
     for dirpath, _dirnames, filenames in os.walk(ROOT):
-        # os.walk yields native separators, so on Windows "/tests" never
-        # matched this file's own directory (\tests) and the walk scanned
-        # tests/test_docs_pipeline_names.py itself, tripping the assertion
-        # on its own ASCII_CHAIN fixture constant below. Normalizing to "/"
-        # makes the exclusion match on every platform.
         norm_dirpath = dirpath.replace(os.sep, "/")
         if ".git" in norm_dirpath or "/tests" in norm_dirpath:
             continue
@@ -54,8 +41,6 @@ def test_no_ascii_arrow_fork():
 
 
 def test_profile_to_protocol_mapping_documented():
-    # The code-review profile's Phase 0/10/11 agents must be mapped onto the
-    # protocol stages, or a reader cannot tell Inject==Alpha from the diagram.
     for needle in ("Inject = Alpha (Phase 0)", "Extract = Omega (Phase 10)",
                    "Validate = Lambda (Phase 11)"):
         assert needle in _read("SKILL.md"), f"SKILL.md must state {needle!r}"

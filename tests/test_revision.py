@@ -1,10 +1,3 @@
-"""Content identity for a lesson -- what an experiment was actually measuring.
-
-The digest's job is to be sensitive to exactly one thing: a change to what an
-agent reads. Too sensitive and every run is flagged and nobody reads the
-report; not sensitive enough and a rewritten rule slips through as the same
-treatment. Both failures are here.
-"""
 from __future__ import annotations
 
 import pytest
@@ -37,9 +30,6 @@ class TestWhatCountsAsTheSameTreatment:
         ("name", "lesson_renamed"),
     ])
     def test_bookkeeping_does_not_count_as_a_change(self, field, value):
-        """`uses` and `last_hit` move on EVERY retrieval. Hashing them would
-        make every lesson look edited constantly, every experiment would be
-        flagged, and the check would be noise inside a week."""
         fm, body = lesson()
         before = revision.revision_of(fm, body)
         fm[field] = value
@@ -72,9 +62,6 @@ class TestWhatCountsAsTheSameTreatment:
         lambda b: "\n" + b,
     ])
     def test_whitespace_does_not_count(self, mutate):
-        """A reflowed paragraph is not a different instruction, and flagging
-        one as a changed treatment costs the same credibility as missing a
-        real change."""
         fm, body = lesson()
         assert revision.revision_of(fm, mutate(body)) == revision.revision_of(fm, body)
 
@@ -100,15 +87,10 @@ class TestWhatCountsAsTheSameTreatment:
 
 class TestItCoversWhatTheAgentIsActuallyHanded:
     def test_every_injected_frontmatter_field_is_hashed(self):
-        """`mcp_server._lesson_wire` is the surface that hands a lesson to a
-        model. A field that reaches an agent but is not in the digest is a
-        change to the treatment that the stability check cannot see."""
         from commontrace import mcp_server
 
         fm, body = lesson()
         wire = mcp_server._lesson_wire(fm, body, include_body=True)
-        # Excluded on purpose, each for a reason in revision.py's docstring:
-        # identity, telemetry, provenance, lifecycle, and derived fields.
         not_treatment = {
             "slug", "uses", "source_traces", "status", "agent_type",
             "unfilled", "revision", "body", "score", "matched",
@@ -119,8 +101,6 @@ class TestItCoversWhatTheAgentIsActuallyHanded:
         )
 
     def test_the_body_is_hashed(self):
-        """The body is where the Rule actually is; a digest over frontmatter
-        alone would call a rewritten rule the same treatment."""
         fm, body = lesson()
         assert revision.revision_of(fm, body) != revision.revision_of(fm, "")
 
@@ -138,8 +118,6 @@ class TestTraceRevision:
             revision.revision_of_trace("t ", "c\n\n\n", "s", ["b", "a"])
 
     def test_it_uses_the_same_digest_length_as_a_lesson(self):
-        """A revision that meant one thing on one tier and another on the
-        other would make the two integrity reports incomparable."""
         assert len(revision.revision_of_trace("t", "c", "s")) == revision.REVISION_LENGTH
 
 
@@ -158,15 +136,12 @@ class TestTheRevisionJournal:
 
         history = lesson_io.history(root, "lesson_x")
         assert [r["to"] for r in history] == [first, second]
-        assert history[0]["from"] is None      # a new lesson has no predecessor
+        assert history[0]["from"] is None
         assert history[1]["from"] == first
         assert [r["actor"] for r in history] == ["cli:alice", "mcp:agent"]
         assert history[1]["reason"] == "widened"
 
     def test_a_write_that_changes_nothing_is_not_recorded(self, tmp_path):
-        """Approve sets status, retrieval bumps `uses`, a push stamps
-        `hub_trace_id`. Journaling those would bury the changes that matter
-        under the ones that do not."""
         import os
 
         root = str(tmp_path)
@@ -193,8 +168,6 @@ class TestTheRevisionJournal:
             fh.write("{not json\n")
 
         records, corrupt = lesson_io.read_revisions(root)
-        # One torn write must not make the rest of a lesson's history
-        # unreadable, and the count keeps the loss visible.
         assert len(records) == 1 and corrupt == 1
 
     def test_an_unwritten_lesson_has_no_history(self, tmp_path):
@@ -202,19 +175,11 @@ class TestTheRevisionJournal:
 
     @pytest.mark.parametrize("slug", ["../../etc/passwd", "a/b", "..", "lesson name"])
     def test_a_slug_cannot_escape_the_lessons_directory(self, tmp_path, slug):
-        """The one guard now shared by the CLI, the MCP server and the
-        holdout logger -- a second copy would be a second chance to get one
-        of them wrong."""
         assert lesson_io.lesson_path(str(tmp_path), slug) is None
         assert lesson_io.revision_for_slug(str(tmp_path), slug) is None
 
 
 class TestTheHistoryCommand:
-    """An effect size is about a revision, not a slug. This is how someone
-    recovers which -- and it is what makes the 'edited mid-run' finding
-    actionable rather than merely alarming.
-    """
-
     @staticmethod
     def _cli(*argv):
         import os
@@ -242,16 +207,11 @@ class TestTheHistoryCommand:
         assert result.returncode == 0, result.stderr
         out = result.stdout
         assert f"Currently at **{second}**" in out
-        # Chronological: the earlier change must appear above the later one,
-        # so this cross-references against the experiment report's arrow.
         assert out.index(f"(new) -> {first}") < out.index(f"{first} -> {second}")
         assert "cli:alice" in out and "mcp:agent" in out
         assert "widened after new traces" in out
 
     def test_a_lesson_with_no_recorded_history_is_not_a_missing_lesson(self, tmp_path):
-        """Every lesson written before the journal existed is in this state.
-        Reporting it as 'no such lesson' would send someone looking for a
-        file that is right there."""
         import os
 
         from commontrace import frontmatter
@@ -273,8 +233,6 @@ class TestTheHistoryCommand:
         assert "no lesson found" in result.stderr
 
     def test_curating_through_the_cli_records_history(self, tmp_path):
-        """`lesson new` then `lesson approve` is the ordinary path, and it has
-        to leave a record without anyone opting in."""
         root = str(tmp_path / "fleet")
         assert self._cli("init", "--dest", root, "--agent-type", "code").returncode == 0
         result = self._cli("lesson", "new", "--slug", "thing", "--description", "A thing.",

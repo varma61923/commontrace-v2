@@ -4,28 +4,15 @@ on:
   push:
   pull_request:
 
-# A newer commit on the same branch or PR supersedes the run in progress:
-# cancel it rather than queueing both (each run is 14 jobs, and a burst of
-# pushes otherwise leaves the latest commit waiting behind all of them).
-# Never on main, where every commit's result is kept. Push and PR events
-# get separate groups, so one does not cancel the other.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
-# No job below needs to write anything back to the repo, open PRs, or touch
-# packages/deployments -- read-only is the least the default GITHUB_TOKEN can
-# be scoped to, rather than inheriting whatever broad default the
-# organization/repo settings happen to grant. A job that genuinely needs
-# more (e.g. to comment on a PR) should declare that narrower permission on
-# itself, not rely on this file falling back to "everything".
 permissions:
   contents: read
 
 jobs:
   test-core:
-    # Validates the package as an external user would actually get it: `pip install -e .`
-    # with only the one core dependency (PyYAML) — no dev/lint tooling, no [attention] extra.
     name: test (core install, py${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
@@ -50,7 +37,6 @@ jobs:
         run: python -m pytest tests/ -q
 
   test-dev:
-    # The `[dev]` extra (pytest + ruff) is what a contributor installs. Also exercises lint.
     name: test + lint (dev extra, py${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
@@ -74,33 +60,10 @@ jobs:
       - name: Lint with ruff
         run: ruff check .
 
-      # A pure-stdlib AST check (no DB, no heavy deps -- see its own
-      # docstring), so it belongs in the fast job that runs on every push
-      # rather than waiting on test-hub's Postgres-backed job to give the
-      # same feedback minutes later. --noconftest: hub/tests/conftest.py
-      # (loaded automatically for anything under hub/tests/, regardless of
-      # which specific file is targeted) imports sqlalchemy at module
-      # level, which this job's core `.[dev]` install never pulls in --
-      # this test itself needs none of that conftest's fixtures, so skip
-      # loading it rather than installing hub/'s whole dependency stack
-      # just to satisfy an import this test doesn't use.
       - name: Hub server image allowlist stays in sync with hub/'s imports
         run: python -m pytest hub/tests/test_image_contents.py -q --noconftest
 
   perf-gate:
-    # Every benchmark in this repo (hub/bench_scaling.py, bench_retrieval.py,
-    # this one) used to be run by hand and quoted in a doc -- nothing failed
-    # the build if a later change silently regressed it. commontrace/lesson_
-    # cache.py replaced an O(N)-YAML-reparse-per-query local-tier retrieval
-    # path (measured: 8.1s at 6,400 lessons) with an incremental, mostly-O(1)
-    # cache (249ms at the same size, ~33x) -- --max-total-ms is what would
-    # catch that cache silently regressing back to a full reparse; alpha
-    # alone would NOT, because even the correct cached path is still
-    # asymptotically O(N) in lesson count (it must `stat` every file to
-    # detect changes) -- what differs between cached and uncached is the
-    # CONSTANT per lesson, which only an absolute ceiling can gate on.
-    # --max-alpha is a looser backstop against a genuinely worse-than-linear
-    # regression (e.g. an accidental O(N^2)), not the primary gate here.
     name: perf gate (local-tier retrieval latency)
     runs-on: ubuntu-latest
     steps:
@@ -114,12 +77,6 @@ jobs:
       - name: Install commontrace (core, no extras)
         run: python -m pip install -e .
 
-      # Measured on a dev box at 6,400 lessons: ~300ms before the in-memory
-      # lesson-cache memo and per-store ranking index, ~45ms after. CI
-      # runners are slower and noisier, so the ceiling keeps ~10x headroom
-      # over the current number while still failing a regression back to
-      # rebuilding every lesson's statistics per query (and far below the
-      # ~8s of the original uncached YAML re-parsing).
       - name: Local-tier retrieval must not regress back to O(N) re-parsing or re-indexing
         run: |
           python -m commontrace.reference.measure_local_latency \
@@ -127,11 +84,6 @@ jobs:
             --max-total-ms 500 --max-alpha 1.5
 
   sdk-typescript:
-    # audit 6.4: "a TypeScript client is the first [non-Python SDK] worth
-    # building" (sdk/typescript). Built and tested against a real install
-    # of the official @modelcontextprotocol/sdk, the same way test-core
-    # above installs the Python package for real rather than trusting
-    # that its own source compiles.
     name: sdk (typescript)
     runs-on: ubuntu-latest
     defaults:
@@ -154,10 +106,6 @@ jobs:
         run: npm test
 
   test-hub:
-    # The Hub server (hub/) has a much heavier dependency footprint (SQLAlchemy,
-    # asyncpg, Alembic, argon2-cffi, a real Postgres) than the PyYAML-only CLI
-    # core, so it gets its own job with its own Postgres service container
-    # rather than being folded into test-core/test-dev.
     name: hub tests (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
@@ -194,30 +142,14 @@ jobs:
       - name: Install Hub server dependencies
         run: python -m pip install -r hub/requirements.txt pytest pytest-asyncio
 
-      # Applies every migration to an empty database. The hub/tests/ suite
-      # builds its schema from the models (see hub/tests/conftest.py), so
-      # without this step a model change with no matching migration would
-      # pass CI and only fail on a real deploy.
       - name: Verify migrations apply from scratch
         env:
           HUB_DATABASE_URL: postgresql+asyncpg://commontrace:commontrace@localhost:5432/commontrace_migrations
         run: |
           PGPASSWORD=commontrace createdb -h localhost -U commontrace commontrace_migrations
           python -m alembic -c hub/alembic.ini upgrade head
-          # And that models and migrations agree -- catches a model edited
-          # without `alembic revision --autogenerate`.
           python -m alembic -c hub/alembic.ini check
 
-      # 7c4a1d92e5b8 and 8f2b40c17ade each build a CONCURRENTLY index inside
-      # its own op.get_context().autocommit_block() -- which unconditionally
-      # commits whatever transaction precedes it, so that migration's
-      # add_column(s) (and, for 8f2b40c17ade, its backfill UPDATE) are
-      # committed for good the instant the block is entered, independent of
-      # whether the index build that follows ever finishes. A process killed
-      # mid-build (deploy timeout, OOM, an operator's Ctrl-C) then leaves
-      # alembic_version stuck one revision behind with those columns already
-      # present -- exactly the state simulated below by hand -- and a plain
-      # retry must self-heal rather than fail with a duplicate-column error.
       - name: Verify an interrupted CONCURRENTLY-index migration can be retried
         env:
           HUB_DATABASE_URL: postgresql+asyncpg://commontrace:commontrace@localhost:5432/commontrace_migrations_retry
@@ -244,10 +176,6 @@ jobs:
         run: python -m pytest hub/tests/ -q
 
   security-scan:
-    # Static security scanning and known-CVE dependency auditing for the
-    # project's actual dependencies -- neither ran in CI before this job
-    # existed, so a new Medium+ bandit finding or a newly disclosed CVE in
-    # a pinned dependency could land and sit unnoticed indefinitely.
     name: security scan (bandit, pip-audit, mypy)
     runs-on: ubuntu-latest
     steps:
@@ -264,35 +192,11 @@ jobs:
           python -m pip install -r hub/requirements.txt
           python -m pip install bandit pip-audit mypy
 
-      # -x excludes tests/: B101 (assert_used) fires on every pytest
-      # `assert` statement, which is normal test code, not a finding. -ll
-      # gates on Medium+ severity -- Low-severity style findings (e.g.
-      # B311's "don't use random.Random for crypto" on overlap.py's
-      # deterministic, non-secret MinHash permutation seed) stay visible
-      # in a full local run but don't fail the build over a non-issue.
       - name: Bandit static analysis
         run: bandit -r commontrace/ hub/ memory/ -x "*/tests/*,*/test_*" -ll
 
-      # A bare `pip-audit` scans every installed package in the active
-      # environment, including pip/setuptools/wheel themselves -- so a CVE
-      # in ambient build tooling that ships nowhere near a customer's
-      # commontrace install would fail this job for a reason unrelated to
-      # any dependency this project actually declares. Scoped to exactly
-      # what pyproject.toml's [project.dependencies] and
-      # [project.optional-dependencies] list instead, the same
-      # pinned-file pattern hub/requirements.txt already uses below.
       - name: pip-audit -- commontrace's own declared dependencies
         run: |
-          # Read straight from pyproject.toml's own [project.dependencies]
-          # and [project.optional-dependencies], instead of a hand-typed
-          # copy of them: the copy had already drifted from the real
-          # bounds (e.g. an unconstrained `httpx`/`transformers` here vs.
-          # `httpx>=0.27.0`/`transformers>=5.5.0,<7.0` actually declared),
-          # so tightening or loosening a real dependency bound silently
-          # stopped being reflected in what this step audits. Reading the
-          # single source of truth at run time makes that drift structurally
-          # impossible instead of relying on someone remembering to update
-          # both places in lockstep.
           python - <<'PY' > /tmp/commontrace-audit-requirements.txt
           import tomllib
           with open("pyproject.toml", "rb") as f:
@@ -307,21 +211,43 @@ jobs:
       - name: pip-audit -- the Hub server's pinned dependencies
         run: pip-audit -r hub/requirements.txt
 
-      # Informational, not gated: this surfaces genuine pre-existing type
-      # errors this one CI job does not attempt to clear in a single pass,
-      # so it must not fail the build -- the same "visible rather than
-      # silently ignored" policy this repo already applies elsewhere (see
-      # bench_cmd.py's unimplemented --threshold-* flags). Tightening this
-      # to a real gate is follow-up work, deliberately not bundled in here.
       - name: mypy (known findings, informational only)
         continue-on-error: true
         run: mypy commontrace/ hub/ --ignore-missing-imports
 
+  deploy-assets:
+    name: helm and terraform validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install pinned helm and terraform
+        run: |
+          curl -sSfL -o helm.tgz https://get.helm.sh/helm-v3.16.2-linux-amd64.tar.gz
+          echo "9318379b847e333460d33d291d4c088156299a26cd93d570a7f5d0c36e50b5bb  helm.tgz" | sha256sum -c -
+          tar xzf helm.tgz && sudo mv linux-amd64/helm /usr/local/bin/helm
+          curl -sSfL -o tf.zip https://releases.hashicorp.com/terraform/1.9.8/terraform_1.9.8_linux_amd64.zip
+          echo "186e0145f5e5f2eb97cbd785bc78f21bae4ef15119349f6ad4fa535b83b10df8  tf.zip" | sha256sum -c -
+          unzip -q tf.zip && sudo mv terraform /usr/local/bin/terraform
+
+      - name: Lint and render the chart (defaults, and every optional template on)
+        run: |
+          A="--set image.repository=registry.example/hub --set image.tag=1.0.0 --set existingSecret=hub-secrets"
+          helm lint deploy/helm/commontrace-hub $A
+          helm template t deploy/helm/commontrace-hub $A >/dev/null
+          helm template t deploy/helm/commontrace-hub $A --set metrics.alerts=true --set metrics.serviceMonitor=true \
+            --set networkPolicy.enabled=true --set ingress.enabled=true --set ingress.host=h.example \
+            --set autoscaling.enabled=true --set postgres.maxConnections=200 >/dev/null
+
+      - name: Validate Terraform
+        run: |
+          for d in deploy/terraform/aws deploy/terraform/gcp; do
+            terraform -chdir="$d" init -backend=false -input=false
+            terraform -chdir="$d" validate
+            terraform -chdir="$d" fmt -check
+          done
+
   docker-build:
-    # The image could not be built where it was authored (no Docker daemon),
-    # so CI is the first thing that actually proves it builds and that the
-    # server starts inside it. Kept separate from the test jobs: it needs no
-    # Python matrix and no database.
     name: docker image builds and starts
     runs-on: ubuntu-latest
     steps:
@@ -330,23 +256,18 @@ jobs:
       - name: Build the Hub image
         run: docker build -t commontrace-hub:ci .
 
+      - name: Scan the image for known vulnerabilities (Trivy)
+        run: |
+          TRIVY=aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock "$TRIVY" \
+            image --scanners vuln --ignore-unfixed --severity HIGH --exit-code 0 \
+            --no-progress commontrace-hub:ci
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock "$TRIVY" \
+            image --scanners vuln --ignore-unfixed --severity CRITICAL --exit-code 1 \
+            --no-progress commontrace-hub:ci
+
       - name: Container starts and serves /healthz
         run: |
-          # No database configured on purpose: liveness must come up without
-          # one (see hub/DEPLOYMENT.md §4). A HUB_DATABASE_URL is still
-          # required for the process to boot at all.
-          #
-          # HUB_ALLOW_INSECURE_HTTP=true: `-p 8420:8420` publishes the
-          # container's port via Docker's NAT, which only forwards traffic
-          # to a socket the container binds on 0.0.0.0 -- a bind to
-          # 127.0.0.1 *inside* the container is unreachable through that
-          # mapping at all. HubConfig.validate_transport_safety()
-          # (hub/config.py) correctly refuses to start on a non-loopback
-          # HUB_HOST serving plain HTTP unless this is set, exactly as it
-          # should for a real deployment; here it's the same acknowledgment
-          # docker-compose.yml already makes for the same Docker-NAT
-          # reason, on an isolated CI runner with nothing but this curl
-          # loop able to reach the published port at all.
           docker run -d --name hub-ci -p 8420:8420 \
             -e HUB_DATABASE_URL=postgresql+asyncpg://nobody:nobody@127.0.0.1:5432/nodb \
             -e HUB_ALLOW_INSECURE_HTTP=true \
@@ -368,12 +289,6 @@ jobs:
         run: docker rm -f hub-ci || true
 
   compose-stack:
-    # The deployment path a customer actually follows, end to end: bring the
-    # documented stack up, let the one-shot migration gate the app, then drive
-    # the running server over real HTTP through the published port. Every
-    # other job tests a piece -- this is the only one that proves the pieces
-    # compose. It was the last remaining "verified by hand, not by CI" caveat
-    # in hub/DEPLOYMENT.md.
     name: docker compose stack serves real MCP traffic
     runs-on: ubuntu-latest
     steps:
@@ -381,33 +296,10 @@ jobs:
 
       - name: Bring up the documented stack
         env:
-          # The smoke check a few steps down issues its own real traffic
-          # from one source address: the primary org's round trip (tool
-          # listing, contribute, search x2, get, vote, amend x2, list_tags,
-          # account_usage) plus the second org's tenant-isolation round
-          # (initialize, get/vote/amend, commons_overlap) -- close enough to
-          # the documented default HUB_AUTH_ATTEMPTS_BURST=20 that this job
-          # has hit it directly (reproduced: a live CI run returned 429 on
-          # commons_overlap and on session termination from exactly this
-          # traffic). Widened here ONLY, via docker-compose.yml's
-          # ${VAR:-default} overrides, so this job verifies the deployment
-          # path works rather than fighting its own smoke check's request
-          # volume -- a real deployment run with `docker compose up` and
-          # nothing set in its environment still gets the tighter documented
-          # defaults unchanged.
           HUB_AUTH_ATTEMPTS_PER_MINUTE: "600"
           HUB_AUTH_ATTEMPTS_BURST: "200"
           HUB_READ_RATE_LIMIT_PER_MINUTE: "3000"
           HUB_READ_RATE_LIMIT_BURST: "600"
-          # Widened here only, same reasoning as the rate limits above: an
-          # operator running a plain `docker compose up` still gets both
-          # routes absent by default (docker-compose.yml's own ${VAR:-...}
-          # defaults). Set here so this job proves the customer console and
-          # self-serve signup are actually wired up in the real built
-          # image, over real HTTP through the published port -- something
-          # the in-process ASGI tests cannot: they never exercise uvicorn,
-          # the real TCP/HTTP stack, or the middleware exactly as
-          # build_app() assembles it at process startup.
           HUB_CONSOLE_SECRET: "ci-test-console-secret-not-for-production"
           HUB_SIGNUP_ENABLED: "true"
         run: |
@@ -417,8 +309,6 @@ jobs:
 
       - name: Wait for readiness
         run: |
-          # /readyz, not /healthz: this must not pass until the database is
-          # genuinely reachable, which is the whole point of the split.
           for i in $(seq 1 60); do
             if curl -fsS http://127.0.0.1:8420/readyz; then echo; echo "ready"; exit 0; fi
             sleep 2
@@ -465,26 +355,18 @@ jobs:
           code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8420/signup)
           test "$code" = "200" || { echo "GET /signup: expected 200, got $code"; exit 1; }
 
-          # A real signup creates an org and hands back a usable key --
-          # not a 500, not a form that silently does nothing.
           body=$(curl -s -X POST http://127.0.0.1:8420/signup --data-urlencode "org_name=CI Signup Org")
           raw_key=$(echo "$body" | grep -oE 'ct_live_[A-Za-z0-9_-]+' | head -1)
           test -n "$raw_key" || { echo "signup response carried no api key:"; echo "$body"; exit 1; }
           echo "::add-mask::$raw_key"
           echo "self-serve signup issued a key"
 
-          # /app with no session redirects to sign-in -- the console route
-          # is really registered in the running container, not only in the
-          # in-process test client.
           resp=$(curl -s -D - -o /dev/null http://127.0.0.1:8420/app)
           echo "$resp" | grep -qi '^HTTP/[0-9.]* 303' \
             || { echo "GET /app with no session: expected 303"; echo "$resp"; exit 1; }
           echo "$resp" | grep -qi '^location:.*/app/signin' \
             || { echo "GET /app with no session: expected a redirect to /app/signin"; echo "$resp"; exit 1; }
 
-          # The key signup just issued actually signs in to the console --
-          # proving the two newest customer-facing surfaces work together,
-          # not just each in isolation.
           cookie_jar=$(mktemp)
           signin_code=$(curl -s -o /dev/null -w '%{http_code}' -c "$cookie_jar" \
             http://127.0.0.1:8420/app/signin -X POST --data-urlencode "api_key=$raw_key")
@@ -502,15 +384,6 @@ jobs:
           KEY_B: ${{ steps.provision.outputs.key_b }}
         run: |
           python -m pip install --quiet ".[hub-sync]"
-          # Two keys, so the tenant-isolation checks actually run rather than
-          # being skipped -- isolation is the property worth proving before a
-          # customer's data lands in a deployment.
-          # --keep: the restart step below asserts traces SURVIVE a restart,
-          # and needs some to survive. hub.smoke deletes what it wrote by
-          # default (so wiring it into a deploy gate does not accumulate
-          # residue in a real org), which would otherwise leave nothing for
-          # that check to be about. The default path is exercised by its own
-          # step further down.
           python -m hub.smoke \
             --url http://127.0.0.1:8420/mcp \
             --api-key "$KEY_A" \
@@ -519,8 +392,6 @@ jobs:
 
       - name: The stack survives a restart with its data intact
         run: |
-          # A deploy restarts containers. Traces must still be there, and the
-          # named volume is what makes that true.
           before=$(docker compose exec -T db psql -U commontrace -d commontrace_hub -tAc 'SELECT count(*) FROM traces')
           docker compose restart hub
           for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8420/readyz >/dev/null && break; sleep 2; done
@@ -533,12 +404,6 @@ jobs:
         env:
           KEY_A: ${{ steps.provision.outputs.key_a }}
         run: |
-          # The shipped default. Section 12 tells operators this check is
-          # safe to run against production, which invites putting it in a
-          # deploy gate -- so every run leaving two un-quarantined traces
-          # behind would slowly fill a real org's corpus with the check's
-          # own residue, where real agent searches return it and it counts
-          # against the org's plan storage.
           before=$(docker compose exec -T db psql -U commontrace -d commontrace_hub -tAc 'SELECT count(*) FROM traces')
           python -m hub.smoke --url http://127.0.0.1:8420/mcp --api-key "$KEY_A"
           after=$(docker compose exec -T db psql -U commontrace -d commontrace_hub -tAc 'SELECT count(*) FROM traces')

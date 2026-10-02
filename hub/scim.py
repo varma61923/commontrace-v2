@@ -1,89 +1,3 @@
-"""SCIM 2.0 user provisioning (RFC 7643/7644), a narrow, deliberate subset --
-audit 1.2's own remaining line: "SCIM auto-provisioning" was named as still
-open in hub/sso.py's module docstring and hub/README.md's "Auth follow-ups".
-
-WHAT THIS DOES
---------------
-An IdP (Okta, Azure AD, OneLogin, ...) pushes user lifecycle events --
-someone joined, someone left -- to `POST/GET/PUT/PATCH/DELETE
-/scim/v2/Users[/{id}]`, and this Hub creates or deactivates the matching
-`hub/models.py` `User` row automatically, instead of an operator running
-`hub.manage create-user`/`disable-user` by hand for every hire and every
-termination. That last part -- automated, IMMEDIATE deprovisioning when an
-IdP marks someone inactive -- is the security-critical direction: an
-account a leaver still holds a live credential for is a bigger and more
-common real-world exposure than a new hire's account showing up a day
-late.
-
-WHAT THIS DELIBERATELY DOES NOT DO
-------------------------------------
-**SCIM manages the ROW; it does not grant a login.** hub/sso.py's own
-docstring is explicit that OIDC linking is "always an explicit operator
-action (`hub.manage link-sso`), never automatic just-in-time
-provisioning" -- and this module does not change that. A SCIM-created
-`User` row has no `issuer`/`external_subject` populated by this code path
-at all, so it cannot authenticate via `hub/auth.py:verify_user_token`
-until an operator separately links it. Auto-populating those columns from
-whatever `externalId` an IdP happens to push would silently reintroduce
-exactly the auto-provisioning-grants-access risk sso.py declined -- SCIM
-and SSO are, on purpose, two different subsystems here even though the
-same IdP often drives both. What this module DOES automate is the row's
-existence and its `active` state, which is what a real termination event
-needs handled instantly, whether or not that row is linked yet.
-
-**A provisioned account starts as `viewer`, never anything higher**
-(`DEFAULT_PROVISIONED_ROLE`). Proof an IdP vouches someone should have SOME
-account is not proof of what they should be able to DO with it; an
-operator still runs `hub.manage set-user-role` for anything beyond
-read-only access.
-
-**Not the full RFC 7644 grammar.** `filter` supports exactly one shape --
-`userName eq "<value>"`, the one every real IdP integration actually sends
-(checking whether an account exists before creating one) -- and PATCH
-applies only `active` (and, leniently, `displayName`) replace operations;
-anything else in a filter or a PATCH operation is either rejected (an
-unsupported filter) or left untouched rather than guessed at (an
-unsupported PATCH attribute), so an IdP that bundles an unsupported
-attribute into the same request still gets its deprovisioning applied
-instead of the whole call failing.
-
-**A dedicated credential, not a wider door on an existing one.**
-`scopes.SCOPE_SCIM` is its own scope, checked here and NOWHERE an MCP tool
-is (see hub/scopes.py's own docstring): a SCIM-scoped key can manage this
-org's User rows and cannot touch a single trace, and a key scoped for
-ordinary trace access cannot reach this endpoint at all. Issue one with
-`hub.manage issue-key <org_id> [days] scim`.
-
-DELETE DEACTIVATES; IT NEVER REMOVES THE ROW
----------------------------------------------
-Same reasoning as everywhere else in this Hub (hub/models.py:User's own
-docstring): the row is exactly what an auditor asks about later -- who had
-access, with what role, and when it was revoked -- and a SCIM client
-sending `DELETE` when an IdP simply means "this person is no longer here"
-must not erase that history to say so.
-
-DISCOVERY ROUTES ARE UNAUTHENTICATED, ON PURPOSE
---------------------------------------------------
-`ServiceProviderConfig`/`ResourceTypes`/`Schemas` return the same static,
-non-tenant document to anyone -- no `User` row, no org data, nothing a
-`scim`-scoped key gates elsewhere. Some IdP setup flows probe these before
-a token is even entered, and there is nothing here for an unauthenticated
-caller to learn beyond "this server implements SCIM 2.0 for Users".
-
-GROUPS (`/scim/v2/Groups`) ARE MEMBERSHIP METADATA, NOT PERMISSIONS
----------------------------------------------------------------------
-Audit 1.2 named "SCIM Groups" as a declined gap: a real Groups API needs
-many-to-many membership, and `hub/rbac.py` gives one `User` exactly one
-`role` -- no additive permission surface anywhere in this Hub for a group
-to plug into. `hub/models.py:ScimGroup`/`ScimGroupMembership` close the
-data-model half honestly, tracking an IdP's group roster faithfully,
-WITHOUT inventing a second authorization system alongside `role`:
-`hub/rbac.py` and `hub/server.py`'s tool gating never read either table.
-A group here is a label plus a membership list an IdP can keep in sync --
-adding or removing someone from a group changes nothing about what they
-can do.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -111,8 +25,6 @@ SCIM_LIST_RESPONSE_SCHEMA = "urn:ietf:params:scim:api:messages:2.0:ListResponse"
 SCIM_ERROR_SCHEMA = "urn:ietf:params:scim:api:messages:2.0:Error"
 SCIM_CONTENT_TYPE = "application/scim+json"
 
-#: Role a SCIM-created account starts with -- see the module docstring's
-#: "not proof of what they should be able to DO" paragraph.
 DEFAULT_PROVISIONED_ROLE = rbac.ROLE_VIEWER
 
 DEFAULT_PAGE_SIZE = 100
@@ -124,9 +36,6 @@ _MEMBER_FILTER_RE = re.compile(r'^\s*members\[value\s+eq\s+"(.*)"\]\s*$', re.IGN
 
 
 class ScimError(Exception):
-    """A well-formed SCIM error this module refuses on its own terms.
-    `status`/`scim_type` map onto RFC 7644 §3.12's error body."""
-
     def __init__(self, detail: str, *, status: int = 400, scim_type: str | None = None):
         super().__init__(detail)
         self.detail = detail
@@ -181,11 +90,6 @@ async def create_user(session: AsyncSession, org_id: str, body: dict, *, actor: 
 
 
 async def get_user(session: AsyncSession, org_id: str, user_id: str) -> User | None:
-    # A non-UUID-shaped id would otherwise raise asyncpg.DataError against
-    # User.id (a UUID column) instead of resolving to the same not-found a
-    # well-formed-but-nonexistent id already produces -- see
-    # hub/crud.py:_is_uuid's own docstring for why this is checked before
-    # the query runs, not caught after.
     if not _is_uuid(user_id):
         return None
     user = await session.get(User, user_id)
@@ -198,9 +102,6 @@ async def list_users(
     session: AsyncSession, org_id: str, *, user_name: str | None = None,
     start_index: int = 1, count: int = DEFAULT_PAGE_SIZE,
 ) -> tuple[int, list[User]]:
-    """SCIM's own 1-based `startIndex` pagination. `user_name`, when given,
-    is the ONLY filter shape the route layer accepts -- see the module
-    docstring."""
     start_index = max(1, start_index)
     count = max(0, min(count, MAX_PAGE_SIZE))
     query = select(User).where(User.org_id == org_id)
@@ -220,9 +121,6 @@ _ACTIVE_FALSE = {"false", "0"}
 
 
 def _coerce_active(value: object) -> bool | None:
-    """A real JSON boolean is the common case; at least one real IdP
-    integration has been observed sending the STRING `"True"`/`"False"`
-    instead. Accept both; anything else is "no change", never a guess."""
     if isinstance(value, bool):
         return value
     if isinstance(value, str):
@@ -235,8 +133,6 @@ def _coerce_active(value: object) -> bool | None:
 
 
 def _apply_active(user: User, active: bool) -> bool:
-    """Returns whether anything actually changed, so callers only
-    audit-log a real transition, not a same-state PUT/PATCH."""
     was_disabled = user.disabled_at is not None
     if active and was_disabled:
         user.disabled_at = None
@@ -256,10 +152,6 @@ async def _record_active_change(session: AsyncSession, org_id: str, user_id: str
 
 
 async def replace_user(session: AsyncSession, org_id: str, user_id: str, body: dict, *, actor: str) -> User | None:
-    """PUT: full replace of the attributes this Hub actually models.
-    `userName` is deliberately NOT reassignable here -- it is this row's
-    own uniqueness key, and silently repointing which person an existing
-    row's history belongs to is not what "replace" means."""
     user = await get_user(session, org_id, user_id)
     if user is None:
         return None
@@ -272,10 +164,6 @@ async def replace_user(session: AsyncSession, org_id: str, user_id: str, body: d
 
 
 async def patch_user(session: AsyncSession, org_id: str, user_id: str, body: dict, *, actor: str) -> User | None:
-    """PATCH (RFC 7644 §3.5.2), narrowly: only `active` replace/add
-    operations are applied -- by far the dominant real use (an IdP
-    deprovisioning a leaver) -- see the module docstring for why anything
-    else in the operations array is left untouched rather than rejected."""
     user = await get_user(session, org_id, user_id)
     if user is None:
         return None
@@ -299,8 +187,6 @@ async def patch_user(session: AsyncSession, org_id: str, user_id: str, body: dic
             continue
         if active is not None and _apply_active(user, active):
             changed_to = active
-    # A bare {"active": false} with no Operations array -- non-compliant,
-    # but observed in practice, and costs nothing extra to also accept.
     if not operations and "active" in body:
         active = _coerce_active(body.get("active"))
         if active is not None and _apply_active(user, active):
@@ -356,13 +242,6 @@ async def group_to_scim(session: AsyncSession, group: ScimGroup) -> dict:
 
 
 async def _existing_org_user_ids(session: AsyncSession, org_id: str, candidate_ids: set[str]) -> set[str]:
-    """Which of `candidate_ids` are real, well-formed `User` ids in THIS
-    org. A member reference to a nonexistent or cross-org id is silently
-    dropped rather than failing the whole request -- the same "leave the
-    unsupported part alone rather than guess" stance `patch_user` already
-    takes, and the common real cause is an IdP's own group roster having
-    drifted from this Hub's, which a provisioning call cannot fix by
-    refusing outright."""
     uuid_candidates = {uid for uid in candidate_ids if _is_uuid(uid)}
     if not uuid_candidates:
         return set()
@@ -407,9 +286,6 @@ async def _remove_members(session: AsyncSession, group_id: str, user_ids: set[st
 
 
 def _member_values(raw) -> set[str]:
-    """`members` is a list of `{"value": "<user_id>", ...}` objects per
-    RFC 7643 -- anything else (a bare string, a malformed entry) is
-    dropped rather than guessed at."""
     if not isinstance(raw, list):
         return set()
     out = set()
@@ -480,9 +356,6 @@ async def list_groups(
 async def replace_group(
     session: AsyncSession, org_id: str, group_id: str, body: dict, *, actor: str,
 ) -> ScimGroup | None:
-    """PUT: full replace. `members`, when present, becomes the group's
-    ENTIRE membership -- anyone not listed is removed, matching PUT's own
-    replace semantics rather than PATCH's incremental add/remove."""
     group = await get_group(session, org_id, group_id)
     if group is None:
         return None
@@ -501,11 +374,6 @@ async def replace_group(
 
 
 async def patch_group(session: AsyncSession, org_id: str, group_id: str, body: dict, *, actor: str) -> ScimGroup | None:
-    """PATCH (RFC 7644 §3.5.2), narrowly: `displayName` replace, and
-    `members` add/remove -- including the single-member
-    `members[value eq "<id>"]` filtered-path remove shape real IdPs (Okta
-    among them) actually send. Anything else in the operations array is
-    left untouched rather than guessed at, same stance as `patch_user`."""
     group = await get_group(session, org_id, group_id)
     if group is None:
         return None
@@ -541,8 +409,6 @@ async def patch_group(session: AsyncSession, org_id: str, group_id: str, body: d
                     changed = True
             elif verb == "remove":
                 if value is None:
-                    # {"op": "remove", "path": "members"} with no value:
-                    # RFC 7644's own "remove the whole attribute" shape.
                     current = set(await _member_ids(session, group_id))
                     if current:
                         await _remove_members(session, group_id, current)
@@ -562,9 +428,6 @@ async def patch_group(session: AsyncSession, org_id: str, group_id: str, body: d
 
 
 async def delete_group(session: AsyncSession, org_id: str, group_id: str, *, actor: str) -> bool:
-    """A real delete, unlike `deactivate_user` -- a group confers no
-    access, so unlike a `User` row there is no deprovisioning history that
-    removing it could falsify. `ScimGroupMembership` rows cascade with it."""
     group = await get_group(session, org_id, group_id)
     if group is None:
         return False
@@ -576,10 +439,6 @@ async def delete_group(session: AsyncSession, org_id: str, group_id: str, *, act
     await session.delete(group)
     return True
 
-
-# --------------------------------------------------------------------------
-# HTTP layer
-# --------------------------------------------------------------------------
 
 _SERVICE_PROVIDER_CONFIG = {
     "schemas": ["urn:ietf:params:scim:schemas:core:2.0:ServiceProviderConfig"],
@@ -667,11 +526,6 @@ async def _authenticate(
     request: Request, session_factory: async_sessionmaker,
     auth_rate_limiter: RateLimiter, trusted_proxy_hops: int,
 ) -> tuple[str, str] | JSONResponse:
-    """Returns `(org_id, actor)` on success, or a ready-to-return
-    `JSONResponse` on failure. Mirrors hub/server.py's
-    `ApiKeyAuthMiddleware` auth-attempt rate limiting exactly, against a
-    dedicated limiter so SCIM traffic and MCP traffic never share (or
-    starve) the same bucket."""
     client_key = rate_limit_key(request, trusted_proxy_hops)
     allowed, retry_after = await auth_rate_limiter.check(client_key)
     if not allowed:
@@ -685,10 +539,6 @@ async def _authenticate(
     async with session_scope(session_factory) as session:
         key = await auth.verify_api_key(session, raw_token)
     if key is None or not scopes.satisfies(key.scopes, scopes.SCOPE_SCIM):
-        # One message either way -- an invalid token and a valid-but-
-        # unscoped one are not distinguishable at this layer, the same
-        # collapsing hub/auth.py's own verify_api_key already does for
-        # invalid/revoked/expired.
         return _scim_error_response(
             "invalid, expired, revoked, or insufficiently-scoped token", status=401
         )
@@ -700,15 +550,6 @@ def add_scim_routes(
     app, session_factory: async_sessionmaker, *,
     auth_rate_limiter: RateLimiter, trusted_proxy_hops: int = 0,
 ) -> None:
-    """Mount `/scim/v2/*`. Always registered, unlike `/admin`/`/app`: there
-    is no shared deployment-wide secret gating this the way there is for
-    those (HubConfig.admin_token/console_secret) -- access is per-ORG,
-    through the same argon2id-hashed, revocable `ApiKey` machinery the MCP
-    endpoint already relies on, via `scopes.SCOPE_SCIM`. A deployment that
-    never issues a `scim`-scoped key has a mounted endpoint that accepts
-    zero requests -- indistinguishable in practice from not being mounted
-    at all."""
-
     async def service_provider_config(request: Request) -> JSONResponse:
         return _response(_SERVICE_PROVIDER_CONFIG)
 
@@ -735,17 +576,10 @@ def add_scim_routes(
                 try:
                     user = await create_user(session, org_id, body, actor=actor)
                 except ScimError as exc:
-                    # create_user already rolled back internally on the one
-                    # path that mutates before failing (a uniqueness
-                    # conflict); every other ScimError here is raised before
-                    # anything was added, so there is nothing pending to
-                    # discard -- no second rollback needed.
                     return _response(exc.to_body(), exc.status)
                 scim_user = user_to_scim(user)
             return _response(scim_user, 201)
 
-        # GET: list, with SCIM's own startIndex/count pagination and
-        # exactly the one filter shape the module docstring names.
         query = request.query_params
         user_name = None
         raw_filter = query.get("filter")
@@ -806,11 +640,9 @@ def add_scim_routes(
         async with session_scope(session_factory) as session:
             if request.method == "PUT":
                 user = await replace_user(session, org_id, user_id, body, actor=actor)
-            else:  # PATCH
+            else:
                 user = await patch_user(session, org_id, user_id, body, actor=actor)
             if user is None:
-                # Nothing was mutated on a not-found lookup -- no rollback
-                # needed, session_scope's commit-on-exit has nothing to do.
                 return _scim_error_response(f"no such user: {user_id}", status=404)
             scim_user = user_to_scim(user)
         return _response(scim_user)
@@ -836,8 +668,6 @@ def add_scim_routes(
                 scim_group = await group_to_scim(session, group)
             return _response(scim_group, 201)
 
-        # GET: list, with SCIM's own startIndex/count pagination and
-        # exactly the one filter shape supported.
         query = request.query_params
         display_name = None
         raw_filter = query.get("filter")
@@ -899,7 +729,7 @@ def add_scim_routes(
         async with session_scope(session_factory) as session:
             if request.method == "PUT":
                 group = await replace_group(session, org_id, group_id, body, actor=actor)
-            else:  # PATCH
+            else:
                 group = await patch_group(session, org_id, group_id, body, actor=actor)
             if group is None:
                 return _scim_error_response(f"no such group: {group_id}", status=404)

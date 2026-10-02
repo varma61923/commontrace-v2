@@ -1,6 +1,3 @@
-"""`commontrace lesson auto-approve`: LLM drafts activated only through
-the normal approval gates, only with a started holdout, and the holdout
-cannot then be stopped while an auto-approved lesson is active."""
 from __future__ import annotations
 
 import os

@@ -1,33 +1,16 @@
-"""Randomized-holdout arm assignment and its append-only log.
-
-Extracted so there is exactly ONE implementation. Two retrievers now apply
-the holdout -- `commontrace query` (a person or a shell-capable agent) and
-the local MCP server (an agent with no shell) -- and a second copy of a
-randomized assignment is a second chance to bias the causal number the whole
-experiment exists to produce.
-
-The log records *eligibility*: every lesson written here matched the task and
-was then either injected or deliberately withheld. That distinction is what
-makes the later comparison causal rather than confounded, so it is written at
-decision time and never reconstructed.
-"""
+"""Randomized-holdout arm assignment and its append-only log."""
 from __future__ import annotations
 
 import datetime
 import json
 import math
 import os
+import threading
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from commontrace import experiment, frontmatter, lesson_io, paths
 
-# Arm assignment is a deterministic hash of (lesson, occasion, SALT), so the
-# salt is not cosmetic: two retrievers using different salts put the SAME
-# lesson on the SAME occasion into DIFFERENT arms, and the analysis then joins
-# a control-arm assignment to a treated outcome. It lives here, next to the
-# assignment it parameterises, so `commontrace query` and the MCP retriever
-# cannot drift apart by editing one default.
 DEFAULT_SALT = "default"
 
 
@@ -40,24 +23,7 @@ def config_path(root: str) -> str:
 
 @dataclass(frozen=True)
 class ExperimentConfig:
-    """One store's experiment settings, read by EVERY retriever.
-
-    Before this existed the holdout rate was a CLI flag default on `query`
-    and a hardcoded constant in the MCP server, which meant two things, both
-    bad:
-
-    An agent-driven fleet could not change its holdout rate AT ALL. The
-    product could compute, and print, exactly what rate a pilot needed
-    (`experiment --plan`) and then offer the AI-first half of its own
-    customers no way to set it.
-
-    And the two surfaces could silently disagree. A person running `query
-    --holdout-rate 0.5` while the fleet's agents retrieved over MCP at 0.1
-    produced a log with two rates in it -- two different randomizations
-    pooled into one comparison, which `integrity.check_assignment_drift`
-    correctly reports as INVALIDATES. The product made corrupting an
-    experiment as easy as using both of its own interfaces.
-    """
+    """One store's experiment settings, read by EVERY retriever."""
 
     rate: float = experiment.DEFAULT_HOLDOUT_RATE
     salt: str = DEFAULT_SALT
@@ -71,13 +37,7 @@ class ExperimentConfig:
 
 
 def load_config(root: str) -> ExperimentConfig:
-    """The store's experiment settings, or the defaults if none were set.
-
-    Never raises. An unreadable or malformed config falls back to the
-    defaults rather than failing the retrieval that asked for it: refusing to
-    serve a lesson because a settings file is corrupt trades a working fleet
-    for a tidy error.
-    """
+    """The store's experiment settings, or the defaults if none were set."""
     path = config_path(root)
     if not os.path.isfile(path):
         return ExperimentConfig()
@@ -103,23 +63,9 @@ def configure(
     rate: float,
     detect: float = experiment.DEFAULT_PRACTICAL_EFFECT,
     note: str = "",
+    salt: str | None = None,
 ) -> ExperimentConfig:
-    """Start (or restart) this store's experiment. Returns the new settings.
-
-    CHANGING THE RATE ROTATES THE SALT, and that is the whole point rather
-    than a side effect. Assignment is `hash(lesson, occasion, salt) < rate`,
-    so changing the rate re-randomizes every occasion -- the assignments
-    before and after are two different experiments, and pooling them into one
-    comparison lets a single occasion sit in opposite arms.
-
-    Rotating the salt makes that explicit instead of silent: the new
-    assignments are a new experiment, the analysis scopes to the current salt
-    and reports the earlier ones as a prior run, and
-    `integrity.check_assignment_drift` has nothing to flag because nothing
-    was pooled. The alternative -- honouring a new rate under the old salt --
-    is precisely the corruption that check exists to catch, and a product
-    should not offer it as a command.
-    """
+    """Start (or restart) this store's experiment. Returns the new settings."""
     if not 0.0 <= rate < 1.0:
         raise ValueError(f"holdout rate must be in [0.0, 1.0), got {rate}")
     if not 0.0 < detect < 1.0:
@@ -128,14 +74,7 @@ def configure(
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
     config = ExperimentConfig(
         rate=rate,
-        # Derived from the moment it was set rather than random, so the salt
-        # itself records WHEN this randomization began -- which is the first
-        # thing anyone asks when two of them appear in one log. Timestamp
-        # alone has 1-second granularity and collides when configure is
-        # called twice in the same second, pooling two experiments under one
-        # salt; the uuid suffix makes every rotation unique while keeping
-        # the human-readable timestamp prefix.
-        salt=f"{now[:19].replace(':', '').replace('-', '')}-{uuid.uuid4().hex[:8]}-{rate:g}",
+        salt=salt or f"{now[:19].replace(':', '').replace('-', '')}-{uuid.uuid4().hex[:8]}-{rate:g}",
         detect=detect,
         started_at=now,
         note=note,
@@ -156,25 +95,11 @@ def configure(
 
 
 def holdout_log_path(root: str) -> str:
-    """Append-only record of every holdout assignment a retriever made.
-
-    Persisted rather than recomputed because the analysis needs to know a
-    lesson was *eligible* on an occasion -- that it matched the activation
-    condition and was then either injected or withheld. Recomputing
-    eligibility later would silently change it as the corpus changes.
-    """
+    """Append-only record of every holdout assignment a retriever made."""
     return os.path.join(paths.memory_dir(root), "holdout_log.jsonl")
 
 
-def _append_lines(path: str, lines: list[str]) -> None:
-    """Append complete lines to a JSONL file, durably. Caller holds the lock.
-
-    If a previous writer died mid-line, the file ends without a newline, and
-    a plain append would glue this write's first line onto that fragment --
-    so one torn record would take the next good one with it, and the reader
-    would drop both. Terminating the fragment first confines the damage to
-    the line that was actually torn.
-    """
+def _append_lines(path: str, lines: list[str], durable: bool = True) -> None:
     needs_newline = False
     if os.path.isfile(path) and os.path.getsize(path) > 0:
         with open(path, "rb") as fh:
@@ -186,7 +111,8 @@ def _append_lines(path: str, lines: list[str]) -> None:
         for line in lines:
             fh.write(line + "\n")
         fh.flush()
-        os.fsync(fh.fileno())
+        if durable:
+            os.fsync(fh.fileno())
 
 
 def assign_and_log(
@@ -200,58 +126,14 @@ def assign_and_log(
     scorer: str = "",
     floor: float | None = None,
     revisions: dict[str, str | None] | None = None,
+    durable: bool = True,
 ) -> set[str]:
-    """Decide which of `slugs` to withhold on this occasion, and record it.
-
-    Assignment is a deterministic hash of (lesson, occasion, salt), so a
-    retry returns the same answer and an occasion cannot change arms.
-
-    `slugs` must be in rank order; the position is recorded alongside each
-    row. `relevance` maps slug -> the score that made it eligible, and
-    `scorer`/`floor` record the settings that decided eligibility at all.
-
-    WHY THE EVIDENCE IS RECORDED, not just the arm. A row said only that a
-    lesson was eligible on an occasion, which reads as "this lesson was about
-    this task" and frequently was not: retrieval returns top-k, and a lesson
-    that scraped in on one incidental word got a row identical to one that
-    was squarely on topic. The analysis then attributed that occasion's
-    outcome to it. In a six-lesson store this produced a lesson with 246
-    assignments against ~80 occasions actually about it, and a significant
-    HURTS verdict for a lesson that did nothing -- the product's single most
-    important number, wrong, with no way to see why from the log alone.
-    commontrace/integrity.py's check_marginal_eligibility and
-    check_assignment_concentration read these fields; without them they
-    cannot be computed retroactively, because the corpus that produced the
-    scores has moved on.
-
-    `revisions` supplies the revision for ids that are NOT lessons in this
-    store -- a memory held by another system, measured through
-    commontrace/measure.py. Looking such an id up on disk finds nothing and
-    records None, and None is the one value the revision check cannot use
-    (commontrace/integrity.py reports it as unchecked). That matters more
-    for external memories than for lessons, not less: a store that updates
-    a memory in place keeps its id while changing its text, so without a
-    revision one id silently pools occasions treated with different content.
-    An id present here is taken as given, including an explicit None.
-    """
+    """Decide which of `slugs` to withhold on this occasion, and record it."""
     withheld = {s for s in slugs if experiment.is_held_out(s, occasion_id, rate, salt)}
-    # Written on every line from now on. Without it the log says how far an
-    # experiment has got and never when it will get there, and "underpowered"
-    # on day 30 of a 30-day pilot is a spent pilot -- the same fact on day 3
-    # is a holdout rate you can still change (commontrace/integrity.py:project).
-    # Old lines have no `at`; the projection degrades to "no accrual rate"
-    # rather than failing, so an existing log stays readable.
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
     path = holdout_log_path(root)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    # Locked, and flushed inside the lock. O_APPEND makes a single write()
-    # atomic, but Python buffers: a fleet whose agents retrieve concurrently
-    # writes more than one buffer's worth, and a flush boundary can land
-    # mid-line. The corrupted line is then dropped when the log is read --
-    # and A DROPPED OBSERVATION IS NOT NEUTRAL. It removes one arm's data
-    # point from a randomized comparison, biasing the result. Cheap to
-    # prevent, near-impossible to detect after the fact.
     lines: list[str] = []
     with frontmatter.locked(path):
         for rank, slug in enumerate(slugs, start=1):
@@ -262,20 +144,7 @@ def assign_and_log(
                 "rate": rate,
                 "salt": salt,
                 "at": now,
-                # Where this lesson placed among the eligible set, and how
-                # strongly it matched. See this function's docstring.
                 "rank": rank,
-                # WHICH TEXT was eligible on this occasion, not just which
-                # lesson name. A lesson is a file and every surface can
-                # rewrite it -- so a slug alone identifies a mutable
-                # thing, and an experiment keyed on one pools occasions
-                # treated with different instructions into a single arm
-                # and reports an effect for a treatment that no longer
-                # exists (commontrace/revision.py).
-                #
-                # Resolved here, at decision time, rather than passed in:
-                # every caller would otherwise have to remember to, and
-                # the one that forgot would silently log the old shape.
                 "revision": (
                     revisions[slug]
                     if revisions is not None and slug in revisions
@@ -289,21 +158,12 @@ def assign_and_log(
             if floor is not None:
                 row["floor"] = float(floor)
             lines.append(json.dumps(row))
-        _append_lines(path, lines)
+        _append_lines(path, lines, durable)
     return withheld
 
 
 def outcomes_log_path(root: str) -> str:
-    """Append-only record of task outcomes reported by occasion id.
-
-    The experiment joins assignments to outcomes by occasion. For this
-    store's own runs those outcomes already exist -- an episode's verdict, a
-    trace's `outcome.resolved` -- but an application measuring memory held
-    by ANOTHER system (commontrace/measure.py) has neither. It has an
-    occasion id and a yes or no. Asking it to fabricate an episode or a
-    trace file to say that would put invented records into the corpus, so
-    it gets a plain log instead.
-    """
+    """Append-only record of task outcomes reported by occasion id."""
     return os.path.join(paths.memory_dir(root), "occasion_outcomes.jsonl")
 
 
@@ -311,53 +171,79 @@ class ConflictingOutcome(ValueError):
     """An occasion's outcome was reported twice with different answers."""
 
 
+def _parse_outcome_line(line: bytes | str, out: dict[str, bool]) -> None:
+    try:
+        row = json.loads(line)
+    except ValueError:
+        return
+    if not isinstance(row, dict):
+        return
+    occasion, succeeded = row.get("occasion_id"), row.get("succeeded")
+    if isinstance(occasion, str) and occasion and isinstance(succeeded, bool):
+        out[occasion] = succeeded
+
+
+_TAIL_CHECK = 64
+
+
+@dataclass
+class _OutcomeCache:
+    identity: tuple
+    offset: int = 0
+    tail: bytes = b""
+    outcomes: dict = field(default_factory=dict)
+
+
+_outcome_cache: dict[str, _OutcomeCache] = {}
+_outcome_cache_lock = threading.Lock()
+
+
+def _outcomes_shared(path: str) -> dict[str, bool]:
+    try:
+        st = os.stat(path)
+    except OSError:
+        return {}
+    identity = (st.st_dev, st.st_ino)
+    with _outcome_cache_lock:
+        cache = _outcome_cache.get(path)
+        with open(path, "rb") as fh:
+            valid = cache is not None and cache.identity == identity and st.st_size >= cache.offset
+            if valid and cache.tail:
+                fh.seek(cache.offset - len(cache.tail))
+                valid = fh.read(len(cache.tail)) == cache.tail
+            if not valid:
+                cache = _OutcomeCache(identity=identity)
+                _outcome_cache[path] = cache
+            fh.seek(cache.offset)
+            chunk = fh.read()
+        whole = chunk.rfind(b"\n") + 1
+        for line in chunk[:whole].splitlines():
+            _parse_outcome_line(line, cache.outcomes)
+        if whole:
+            cache.offset += whole
+            cache.tail = (cache.tail + chunk[:whole])[-_TAIL_CHECK:]
+        pending = chunk[whole:]
+        if not pending.strip():
+            return cache.outcomes
+        merged = dict(cache.outcomes)
+        _parse_outcome_line(pending, merged)
+        return merged
+
+
 def read_outcomes(root: str) -> dict[str, bool]:
-    """occasion_id -> succeeded, from `outcomes_log_path`. Malformed lines
-    are skipped: a torn write must not take every other outcome with it."""
-    path = outcomes_log_path(root)
-    out: dict[str, bool] = {}
-    if not os.path.isfile(path):
-        return out
-    with open(path, encoding="utf-8") as fh:
-        for line in fh:
-            try:
-                row = json.loads(line)
-            except ValueError:
-                continue
-            if not isinstance(row, dict):
-                continue
-            occasion, succeeded = row.get("occasion_id"), row.get("succeeded")
-            if isinstance(occasion, str) and occasion and isinstance(succeeded, bool):
-                out[occasion] = succeeded
-    return out
+    return dict(_outcomes_shared(outcomes_log_path(root)))
 
 
-def record_outcome(root: str, occasion_id: str, succeeded: bool) -> bool:
-    """Record whether the task on `occasion_id` succeeded.
-
-    Returns True if a line was written, False if the same answer was
-    already on record -- a retry of the same report is expected and
-    harmless, so it does not raise and does not write a duplicate.
-
-    A DIFFERENT answer for an occasion already on record raises
-    ConflictingOutcome instead of overwriting. Occasions are the unit the
-    two arms are compared on; quietly letting the last report win would let
-    one late or mistaken call move an occasion from success to failure
-    after the fact, which is a change to the result, not to the data.
-    Checked and written inside one lock so two concurrent reporters cannot
-    both see "no record" and both write.
-    """
+def record_outcome(root: str, occasion_id: str, succeeded: bool, durable: bool = True) -> bool:
+    """Record whether the task on `occasion_id` succeeded."""
     if not isinstance(occasion_id, str) or not occasion_id.strip():
         raise ValueError("occasion_id must be a non-empty string")
     if not isinstance(succeeded, bool):
-        # bool only: 1/0 or "yes" would be accepted by a truthiness check
-        # and then silently fail read_outcomes' isinstance filter, losing
-        # the outcome on read rather than rejecting it on write.
         raise TypeError(f"succeeded must be a bool, got {type(succeeded).__name__}")
     path = outcomes_log_path(root)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with frontmatter.locked(path):
-        existing = read_outcomes(root).get(occasion_id)
+        existing = _outcomes_shared(path).get(occasion_id)
         if existing is not None:
             if existing == succeeded:
                 return False
@@ -367,123 +253,114 @@ def record_outcome(root: str, occasion_id: str, succeeded: bool) -> bool:
             )
         now = datetime.datetime.now(datetime.timezone.utc).isoformat()
         _append_lines(
-            path, [json.dumps({"occasion_id": occasion_id, "succeeded": succeeded, "at": now})]
+            path, [json.dumps({"occasion_id": occasion_id, "succeeded": succeeded, "at": now})],
+            durable,
         )
     return True
 
 
 @dataclass(frozen=True)
 class LogRecord:
-    """One parsed assignment line. `at` is None on lines written before
-    timestamps were logged."""
-
     lesson: str
     occasion_id: str
     injected: bool
     rate: float
     salt: str
     at: datetime.datetime | None
-    # None on lines written before revisions were recorded, and on a lesson
-    # that could not be read at assignment time. The stability check treats
-    # an unknown revision as unknown rather than as a change -- an old log
-    # must not read as a broken experiment.
     revision: str | None = None
-    # The retrieval evidence behind the assignment: how strongly the lesson
-    # matched, where it placed, and under which settings it was judged
-    # eligible. All None on lines written before these were recorded, and the
-    # integrity checks that read them SKIP such lines rather than assuming a
-    # value -- an old log must degrade to "cannot assess this" rather than
-    # to a finding it has no evidence for.
     relevance: float | None = None
     rank: int | None = None
     scorer: str | None = None
     floor: float | None = None
 
 
-def read_log(root: str) -> tuple[list[LogRecord], int]:
-    """Every assignment ever logged, plus a count of unparseable lines.
-
-    Deliberately returns ALL of them, including duplicates and lines whose
-    occasion has no outcome. `experiment.analyze` needs the opposite -- the
-    resolved, de-duplicated subset -- but the validity checks
-    (commontrace/integrity.py) are mostly ABOUT what analysis drops, so a
-    reader that pre-filtered would be structurally unable to see the failure
-    it exists to find.
-
-    A corrupt line is counted, not raised: one torn write must not make the
-    rest of an experiment unreadable, and the count is surfaced so silent
-    data loss stays visible.
-    """
-    path = holdout_log_path(root)
-    if not os.path.isfile(path):
-        return [], 0
-
-    records: list[LogRecord] = []
-    corrupt = 0
-    with open(path, encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                raw = json.loads(line)
-                lesson = str(raw["lesson"])
-                occasion_id = str(raw["occasion_id"])
-                injected = bool(raw["injected"])
-            except (ValueError, KeyError, TypeError):
-                corrupt += 1
-                continue
+def _parse_log_line(line: str) -> LogRecord | None:
+    line = line.strip()
+    try:
+        raw = json.loads(line)
+        lesson = str(raw["lesson"])
+        occasion_id = str(raw["occasion_id"])
+        injected = bool(raw["injected"])
+    except (ValueError, KeyError, TypeError):
+        return None
+    at = None
+    if raw.get("at"):
+        try:
+            at = datetime.datetime.fromisoformat(str(raw["at"]))
+        except ValueError:
             at = None
-            if raw.get("at"):
-                try:
-                    at = datetime.datetime.fromisoformat(str(raw["at"]))
-                except ValueError:
-                    at = None
-            records.append(LogRecord(
-                lesson=lesson,
-                occasion_id=occasion_id,
-                injected=injected,
-                rate=_float_or(raw.get("rate"), experiment.DEFAULT_HOLDOUT_RATE),
-                # A line with no salt is a line written before salts were
-                # recorded, and back then there was exactly one randomization:
-                # the default. Normalizing here rather than at each reader is
-                # what keeps an old log analysable -- once the analysis began
-                # scoping to a salt, an empty one matched nothing and a store
-                # whose log predated the field silently stopped reporting at
-                # all. Backward compatibility for a measurement is not a
-                # nicety: the alternative is a fleet's entire experiment
-                # history becoming unreadable on upgrade.
-                salt=str(raw.get("salt") or DEFAULT_SALT),
-                at=at,
-                revision=(str(raw["revision"]) if raw.get("revision") else None),
-                relevance=_opt_float(raw.get("relevance")),
-                rank=_opt_int(raw.get("rank")),
-                scorer=(str(raw["scorer"]) if raw.get("scorer") else None),
-                floor=_opt_float(raw.get("floor")),
-            ))
+    return LogRecord(
+        lesson=lesson,
+        occasion_id=occasion_id,
+        injected=injected,
+        rate=_float_or(raw.get("rate"), experiment.DEFAULT_HOLDOUT_RATE),
+        salt=str(raw.get("salt") or DEFAULT_SALT),
+        at=at,
+        revision=(str(raw["revision"]) if raw.get("revision") else None),
+        relevance=_opt_float(raw.get("relevance")),
+        rank=_opt_int(raw.get("rank")),
+        scorer=(str(raw["scorer"]) if raw.get("scorer") else None),
+        floor=_opt_float(raw.get("floor")),
+    )
+
+
+@dataclass
+class _LogCache:
+    identity: tuple
+    offset: int = 0
+    tail: bytes = b""
+    records: list = field(default_factory=list)
+    corrupt: int = 0
+
+
+_log_cache: dict[str, _LogCache] = {}
+_log_cache_lock = threading.Lock()
+
+
+def read_log(root: str) -> tuple[list[LogRecord], int]:
+    """Every assignment ever logged, plus a count of unparseable lines."""
+    path = holdout_log_path(root)
+    try:
+        st = os.stat(path)
+    except OSError:
+        return [], 0
+    identity = (st.st_dev, st.st_ino)
+    with _log_cache_lock:
+        cache = _log_cache.get(path)
+        with open(path, "rb") as fh:
+            valid = cache is not None and cache.identity == identity and st.st_size >= cache.offset
+            if valid and cache.tail:
+                fh.seek(cache.offset - len(cache.tail))
+                valid = fh.read(len(cache.tail)) == cache.tail
+            if not valid:
+                cache = _LogCache(identity=identity)
+                _log_cache[path] = cache
+            fh.seek(cache.offset)
+            chunk = fh.read()
+        whole = chunk.rfind(b"\n") + 1
+        for raw_line in chunk[:whole].decode("utf-8", errors="replace").split("\n"):
+            if not raw_line.strip():
+                continue
+            record = _parse_log_line(raw_line)
+            if record is None:
+                cache.corrupt += 1
+            else:
+                cache.records.append(record)
+        if whole:
+            cache.offset += whole
+            cache.tail = (cache.tail + chunk[:whole])[-_TAIL_CHECK:]
+        records, corrupt = list(cache.records), cache.corrupt
+    pending = chunk[whole:].decode("utf-8", errors="replace")
+    if pending.strip():
+        record = _parse_log_line(pending)
+        if record is None:
+            corrupt += 1
+        else:
+            records.append(record)
     return records, corrupt
 
 
 def injected_slugs_for_occasion(root: str, occasion_id: str) -> set[str]:
-    """Every lesson slug this occasion has already been shown, per the
-    holdout log -- the "only what this occasion has seen so far" filter
-    `commontrace query --exclude-shown`/MCP `retrieve`'s `exclude_shown`
-    read, for a long multi-turn task that calls retrieval more than once
-    and should not re-inject the same guidance every turn.
-
-    Reads `injected=True` rows only -- a lesson this occasion was assigned
-    to the WITHHELD arm of a holdout was never actually shown, so excluding
-    it here would be excluding something the occasion never saw.
-
-    THIS IS SCOPED TO WHAT THE LOG CAN ANSWER, not to every past query:
-    `assign_and_log` only runs under `--experiment`
-    (`commontrace/commands/query_cmd.py`'s `_apply_holdout`), so a plain
-    (non-`--experiment`) prior query for this same `occasion_id` left no
-    record here at all, and this function has no way to know it happened.
-    Returning an empty set in that case is the honest answer -- "nothing
-    on record" -- rather than a guess at what a non-experiment query might
-    have shown.
-    """
     if not occasion_id:
         return set()
     records, _corrupt = read_log(root)
@@ -491,8 +368,6 @@ def injected_slugs_for_occasion(root: str, occasion_id: str) -> set[str]:
 
 
 def _opt_float(value: object) -> float | None:
-    """None rather than a default. A missing score is "not recorded", which
-    the integrity checks must be able to tell apart from a recorded 0.0."""
     if value is None:
         return None
     try:
@@ -508,10 +383,6 @@ def _opt_int(value: object) -> int | None:
     if value is None:
         return None
     try:
-        # `int(float("inf"))` raises OverflowError, not ValueError -- and
-        # JSON's `Infinity`/`-Infinity`/`NaN` tokens are accepted by
-        # `json.loads` by default, so a log line carrying one of those for
-        # `rank` must not be able to crash the whole read.
         return int(value)  # type: ignore[arg-type]
     except (TypeError, ValueError, OverflowError):
         return None
@@ -522,10 +393,6 @@ def _float_or(value: object, default: float) -> float:
         out = float(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return default
-    # NaN/Inf parse successfully but break every downstream consumer:
-    # rate=nan silently stops the experiment (nan > 0 is False) then raises
-    # in is_held_out (math.isfinite check). Fall back to defaults instead,
-    # honouring load_config's "Never raises" contract.
     if not math.isfinite(out):
         return default
     return out

@@ -1,9 +1,3 @@
-"""`commontrace signals`: named, sized, trended clusters of this store's
-FAILING traces, and an export path to a regression dataset an existing
-eval tool (LangSmith, Braintrust) can run against. See
-commontrace/failure_signals.py for what a "signal" is and why the export
-formats are not guessed.
-"""
 from __future__ import annotations
 
 import argparse
@@ -23,7 +17,8 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
 
     ls = sub.add_parser("list", help="List failure signals found in this store.")
     ls.add_argument("--agent-type", default=None)
-    ls.add_argument("--similarity-threshold", type=float, default=0.3)
+    ls.add_argument("--similarity-threshold", type=float, default=failure_signals.DEFAULT_SIMILARITY,
+                    help="Cosine similarity at which failures are one signal (average linkage, IDF-weighted).")
     ls.add_argument("--min-cluster-size", type=int, default=2)
     ls.add_argument("--json", action="store_true")
     ls.add_argument("--dest", default=None)
@@ -35,7 +30,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     exp.add_argument("name", help="A signal's exact name, from `signals list`.")
     exp.add_argument("--format", choices=("langsmith", "braintrust"), required=True)
     exp.add_argument("--agent-type", default=None)
-    exp.add_argument("--similarity-threshold", type=float, default=0.3)
+    exp.add_argument("--similarity-threshold", type=float, default=failure_signals.DEFAULT_SIMILARITY)
     exp.add_argument("--min-cluster-size", type=int, default=2)
     exp.add_argument("--out", default=None, help="Output file. Default: stdout.")
     exp.add_argument("--dest", default=None)

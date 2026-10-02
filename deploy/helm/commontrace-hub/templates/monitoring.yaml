@@ -1,0 +1,32 @@
+{{- if .Values.metrics.serviceMonitor }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "hub.name" . }}
+  labels: {{- include "hub.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      app: {{ include "hub.name" . }}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+      {{- if .Values.metrics.tokenSecretKey }}
+      authorization:
+        credentials:
+          name: {{ include "hub.secret" . }}
+          key: {{ .Values.metrics.tokenSecretKey }}
+      {{- end }}
+{{- end }}
+---
+{{- if .Values.metrics.alerts }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "hub.name" . }}-slo
+  labels: {{- include "hub.labels" . | nindent 4 }}
+spec:
+  groups:
+{{ .Files.Get "files/slo-alerts.yaml" | indent 4 }}
+{{- end }}

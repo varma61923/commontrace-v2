@@ -1,12 +1,3 @@
-"""commontrace/semantic_arm.py returns what the semantic subprocess returns.
-
-The MCP server runs the reference script's `rank()` in-process, holding the
-model and index between calls; `commontrace query` runs the same script as a
-subprocess and parses what it prints. These pin that the two produce the
-same slugs in the same order, that the model is loaded once, and that a
-rebuilt index is picked up. A deterministic fake model stands in for the
-sentence-transformer, as in tests/test_attention_query.py.
-"""
 from __future__ import annotations
 
 import io
@@ -26,9 +17,6 @@ VOCAB = ["retry", "upload", "deploy", "kubernetes", "password", "refund"]
 
 
 class FakeModel:
-    """Bag-of-words over a tiny vocabulary: deterministic, and different
-    queries rank lessons differently."""
-
     def encode(self, text, **_kw):
         words = str(text).lower().split()
         v = np.array([sum(w.startswith(t) for w in words) for t in VOCAB], dtype=np.float32) + 0.01
@@ -67,7 +55,6 @@ def _write_index(root, drop=()):
         encoded_field=np.array("x"), timestamp=np.array("2026-01-01T00:00:00"),
         n_lessons=np.array(len(slugs)),
     )
-    # Newer than every lesson file, as a real build would be.
     future = max(os.path.getmtime(os.path.join(paths.lessons_dir(root), f)) for f in
                  os.listdir(paths.lessons_dir(root))) + 5
     os.utime(semantic_arm.index_path(root), (future, future))
@@ -91,7 +78,6 @@ def arm(monkeypatch):
 
 
 def _printed_slugs(script, root, query, top_k, monkeypatch):
-    """What the subprocess would print, parsed the way the CLI parses it."""
     monkeypatch.setattr(script, "INDEX_PATH", semantic_arm.index_path(root))
     monkeypatch.setattr(script, "LESSONS_DIR", paths.lessons_dir(root))
     monkeypatch.setattr(sys, "argv", ["query.py", "--top-k", str(top_k), "--", query])
@@ -110,7 +96,6 @@ def test_in_process_ranking_is_what_the_subprocess_prints(tmp_path, arm, monkeyp
     rc, slugs, _warnings = semantic_arm.ranked_slugs(root, query, top_k)
     assert rc == 0
     assert slugs == _printed_slugs(script, root, query, top_k, monkeypatch)
-    # The importance>=4 override is part of that output, as it is for the CLI.
     assert {"safe-deploys", "refund-limits"} <= set(slugs)
 
 
@@ -139,12 +124,7 @@ def test_a_corrupt_index_is_an_error_not_a_crash(tmp_path, arm):
     assert rc != 0 and slugs == [] and "corrupted" in warnings[0]
 
 
-# --- the index keeps itself current ------------------------------------------
-
 class WideFakeModel(FakeModel):
-    """FakeModel at the real model's width, so the reference builder (which
-    writes EMBEDDING_DIM-wide rows) can use it."""
-
     def encode(self, text, **kw):
         if isinstance(text, (list, tuple)):
             return np.stack([self.encode(t) for t in text])
@@ -178,7 +158,6 @@ def _add_lesson(root, slug, desc, importance=3):
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(f"---\nname: {slug}\ndescription: {desc}\nimportance: {importance}\n"
                  "status: active\n---\nbody\n")
-    # The index was built a while ago; this lesson was approved since.
     past = os.path.getmtime(path) - 60
     os.utime(semantic_arm.index_path(root), (past, past))
 
@@ -194,16 +173,14 @@ def test_a_stale_index_is_refreshed_before_ranking(tmp_path, wide_arm):
                   encoding="utf-8") as fh:
             fh.write(f"---\nname: {slug}\ndescription: {desc}\nimportance: {imp}\n"
                      "status: active\n---\nbody\n")
-    assert semantic_arm.ensure_fresh(root) == ""  # built from nothing
+    assert semantic_arm.ensure_fresh(root) == ""
     _add_lesson(root, "refund-password-check", "password check before a refund")
-    assert _index_is_unusable(root)  # the precondition: stale
+    assert _index_is_unusable(root)
 
     assert semantic_arm.ensure_fresh(root) == ""
     assert _index_is_unusable(root) == ""
     rc, slugs, _w = semantic_arm.ranked_slugs(root, "password refund", 1)
     assert rc == 0 and slugs[0] == "refund-password-check"
-    # An index built from nothing uses the default model: one load, shared by
-    # build and rank.
     assert wide_arm == ["Snowflake/snowflake-arctic-embed-m-v1.5"]
 
 
@@ -226,8 +203,6 @@ def test_the_cli_refreshes_a_stale_index_and_falls_back_only_if_that_fails(tmp_p
     monkeypatch.setattr(query_cmd, "run_script", lambda *a, **k: (1, ""))
     assert query_cmd._refresh_stale_index(str(tmp_path)) == "no semantic index has been built yet"
 
-
-# --- the embedding model is the index's, from a fixed allow-list --------------
 
 ARCTIC = "Snowflake/snowflake-arctic-embed-m-v1.5"
 MPNET = "multi-qa-mpnet-base-dot-v1"
@@ -276,10 +251,6 @@ def _fresh_store(tmp_path):
 
 
 def test_an_index_keeps_the_model_it_was_built_with(tmp_path, recording_arm):
-    """A store whose index was built with the original model is refreshed
-    and ranked with that model, not the new default: the model decides what
-    the semantic arm surfaces, so changing it would change the treatment a
-    running experiment records."""
     loads, seen = recording_arm
     root = _fresh_store(tmp_path)
     builder = semantic_arm._builder(os.getcwd())
@@ -294,7 +265,7 @@ def test_an_index_keeps_the_model_it_was_built_with(tmp_path, recording_arm):
     assert rc == 0 and slugs[0] == "refund-password-check"
     assert semantic_arm.index_model(root) == MPNET
     assert loads == [MPNET]
-    assert seen[-1] == "password refund"  # the original model takes no query prefix
+    assert seen[-1] == "password refund"
 
 
 def test_the_default_model_is_given_its_query_instruction(tmp_path, recording_arm):
@@ -306,7 +277,6 @@ def test_the_default_model_is_given_its_query_instruction(tmp_path, recording_ar
     assert rc == 0 and semantic_arm.index_model(root) == ARCTIC
     script = semantic_arm._script(os.getcwd())
     assert seen[-1] == script.TRUSTED_MODELS[ARCTIC] + "password refund"
-    # Lessons are encoded as they are, whatever the model.
     assert not any(t.startswith(script.TRUSTED_MODELS[ARCTIC]) for t in seen[:-1])
 
 

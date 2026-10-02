@@ -1,22 +1,4 @@
-"""Writing audit-log entries (hub/models.py: AuditLogEntry).
-
-Two rules callers must follow, because an audit trail that leaks is worse
-than no audit trail:
-
-  1. Never pass a secret. `actor` for an API-key-authenticated action is
-     "api-key:<key_prefix>" -- the short non-secret prefix hub/auth.py
-     stores alongside the argon2 hash, never the raw key.
-  2. Never pass full trace bodies. `summary` is a short, bounded
-     description ("title: 42 chars, 3 tags"), not the content itself.
-     Audit rows survive an org purge on purpose (see AuditLogEntry's
-     docstring); copying customer content into them would defeat that
-     purge.
-
-`record()` adds to the caller's session without committing, so an audit row
-lands in the same transaction as the action it describes: if the action
-rolls back, so does its audit entry, and there is no window where the log
-claims something happened that didn't.
-"""
+"""Writing audit-log entries (hub/models.py: AuditLogEntry)."""
 
 from __future__ import annotations
 

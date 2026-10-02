@@ -1,36 +1,3 @@
-"""Bulk-export this store's lessons and/or traces to one portable JSONL file
--- the missing counterpart to `commontrace/import_data.py`'s bulk importer.
-
-WHY THIS EXISTS
----------------
-`commontrace import` already reads a JSONL/CSV export (generic or from
-LangSmith/Langfuse/Braintrust/OTel) into `memory/traces/`, so a fleet can
-START from its existing history. There was no way to go the other
-direction: get a store's own corpus OUT as one file, for a backup, an
-inspection pass in a spreadsheet or a customer's own tooling, or to seed a
-second store. `commontrace consolidate`/`reliability`/`taxonomy` all read
-the store in place; none of them hand you a portable copy of it.
-
-TRACE ROWS ROUND-TRIP THROUGH THE EXISTING IMPORTER, LESSON ROWS DO NOT
-------------------------------------------------------------------------
-Exported traces are written in exactly the flat shape
-`commontrace/import_data.py`'s GENERIC mapping already expects
-(title/context/solution/tags/id, outcome fields inlined) -- so
-`commontrace export --kind traces` on one store followed by `commontrace
-import` on another is a real, tested round trip, with no new importer
-required. Lessons have no such counterpart command today (there is no
-bulk lesson importer, and building one -- slug collision handling,
-approval-status semantics, schema validation -- is a separate, larger
-project than "let an operator get their corpus out"), so a lesson row
-carries its frontmatter and body as this store's own interchange shape,
-documented as such rather than implied to be import-ready.
-
-Reads only what is on disk locally -- `paths.lessons_dir`/`traces_dir` --
-the same boundary `consolidate`/`reliability` already use. It does not
-reach into the Hub; `commontrace sync --pull` is the existing command for
-moving trace data between a store and the Hub, and this is not a second,
-divergent way to do that.
-"""
 from __future__ import annotations
 
 import argparse
@@ -109,12 +76,6 @@ def _trace_rows(root: str, agent_type: str | None):
         inst, _body = parsed
         if agent_type is not None and str(inst.get("agent_type") or "") != agent_type:
             continue
-        # The exact flat shape import_data.py's GENERIC mapping reads
-        # (title/context/solution/tags/id, outcome fields inlined) -- see
-        # this module's docstring on why that round trip matters. `kind`
-        # is additional and harmless to a re-import: _row_to_trace only
-        # ever looks up the field names it was told to map, so an unknown
-        # key already on the row is ignored, not rejected.
         outcome = inst.get("outcome") or {}
         row = {
             "kind": "trace",

@@ -1,12 +1,3 @@
-"""Faster retrieval that ranks exactly as before.
-
-rank_lessons now keeps a per-store index between calls, and the lesson
-cache keeps its parsed file in memory. Neither may change a single
-relevance: relevance decides which lessons clear the floor, and that is the
-eligibility denominator of every running experiment. These pin that the
-cached path is indistinguishable from a fresh one, and that every kind of
-change to the store is seen.
-"""
 from __future__ import annotations
 
 import json
@@ -73,8 +64,6 @@ def test_the_cached_index_ranks_exactly_like_a_fresh_one(scorer):
 
 
 def test_top_k_is_the_head_of_the_full_ranking():
-    """Selecting the top k must not reorder ties differently from sorting
-    everything and slicing."""
     rng = random.Random(5)
     lessons = [(f"p{i}", _lesson(rng, i)) for i in range(200)]
     for _ in range(40):
@@ -101,9 +90,6 @@ def test_a_changed_stamp_is_a_different_corpus():
 
 
 def test_a_filtered_view_does_not_reuse_the_full_stores_index():
-    """`exclude_shown` hands rank_lessons a subset of the snapshot with the
-    same term cache. Its IDF is the subset's, and excluded lessons must not
-    come back."""
     rng = random.Random(11)
     lessons = [(f"p{i}", _lesson(rng, i)) for i in range(60)]
     tc = _stamped(lessons)
@@ -116,8 +102,6 @@ def test_a_filtered_view_does_not_reuse_the_full_stores_index():
     assert _as_dicts(got) == _as_dicts(retrieval.rank_lessons("retry timeout", subset, top_k=50))
     assert {r.path for r in got} <= {p for p, _fm in subset}
 
-
-# --- the lesson cache ----------------------------------------------------------
 
 def _store(tmp_path, n=12):
     root = str(tmp_path)
@@ -168,14 +152,10 @@ def test_a_new_and_a_deleted_lesson_are_seen(tmp_path):
 
 
 def test_a_cache_file_rewritten_by_another_process_is_reread(tmp_path):
-    """The in-memory copy is keyed on the cache file's identity; a rewrite
-    by someone else (a new inode) must not be served from memory."""
     root = _store(tmp_path)
     lesson_cache.load_active_with_terms(root)
     cpath = lesson_cache.cache_path(root)
     raw = json.load(open(cpath, encoding="utf-8"))
-    # Corrupt one entry's terms in a replaced file: a reader that trusted the
-    # memo would never notice; one that re-reads repairs it from `fm`.
     some = next(iter(raw["entries"]))
     raw["entries"][some]["terms"] = "not-a-list"
     tmp = cpath + ".other"
@@ -187,9 +167,6 @@ def test_a_cache_file_rewritten_by_another_process_is_reread(tmp_path):
 
 
 def test_ties_keep_corpus_order():
-    """Equal relevance, score, importance and uses: the lesson earlier in
-    the store comes first, as a stable sort of the whole ranking put it --
-    so which of two identical lessons fills the last slot never changes."""
     fm = {"description": "retry backoff", "importance": 3, "uses": 1, "status": "active"}
     lessons = [(f"p{i}", {**fm, "name": f"twin-{i}"}) for i in range(6)]
     for k in (1, 3, 6):
@@ -198,10 +175,6 @@ def test_ties_keep_corpus_order():
 
 
 def test_a_cache_file_another_process_left_incomplete_is_rewritten(tmp_path):
-    """The in-memory copy is only trusted while the cache FILE is the one it
-    came from. If another process replaced it with one missing an entry, the
-    next call must write the complete cache back, not assume the file still
-    matches memory."""
     root = _store(tmp_path)
     lesson_cache.load_active_with_terms(root)
     cpath = lesson_cache.cache_path(root)

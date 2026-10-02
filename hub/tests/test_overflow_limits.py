@@ -1,28 +1,3 @@
-"""A caller-supplied `limit`/`offset`/`credit` of float("inf") must not
-crash. `int(x)` raises ValueError for a non-numeric string and TypeError
-for None -- both already routine, expected cases -- but OverflowError
-specifically for a float infinity (`int(float("inf"))`), which is easy to
-miss because it is not the exception either of the other two train you to
-expect.
-
-Every one of these fields is otherwise treated as a request to page or
-award something reasonable, not as content to validate strictly (unlike
-title/context_text/tags, which reject_unstorable_text protects) -- so this
-file pins the SAME tolerant behavior each site already had for a merely
-out-of-range value (silently clamped, never rejected) now also covers a
-malformed one, except commons_search, whose own pre-existing behavior for
-a malformed limit was already a clean rejection rather than a clamp, and
-which this file confirms still rejects rather than crashes.
-
-hub/commons.py:_coerce_signature carries a standing comment naming this
-exact failure mode ("OverflowError on a negative or >2**64-1 value ...
-surfacing as an unhandled 500") for a different call site -- this file is
-the missing coverage for every OTHER site with the same gap, found by
-auditing hub/crud.py for every remaining `int(...)` call on a
-caller-supplied value after the NaN/Infinity fix earlier in this session
-(hub/outcomes.py:_is_number) caught the equivalent bug in outcome's
-numeric fields.
-"""
 from __future__ import annotations
 
 import pytest
@@ -130,11 +105,6 @@ class TestReviewKbSubmissionCredit:
 
 
 class TestCommonsSearchLimit:
-    """Unlike every case above, commons_search's own pre-existing behavior
-    for a malformed limit was already a clean rejection (CommonsInputError)
-    rather than a silent clamp -- this pins that OverflowError now takes
-    the same path as ValueError/TypeError, rather than crashing past it."""
-
     async def test_infinite_limit_is_rejected_cleanly_not_crashed(self, session_factory, org):
         signature = commons.signature_for("x", "y", [])
         async with session_scope(session_factory) as session:

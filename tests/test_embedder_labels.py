@@ -1,7 +1,3 @@
-"""The semantic arm's embedding model is part of the treatment: a fused label
-names it (except the original model, whose labels are unchanged), the gate
-threshold is set per model, and a store rebuilding its index from nothing
-keeps the model its experiment ranked with."""
 from __future__ import annotations
 
 import json
@@ -49,7 +45,6 @@ def test_gate_threshold_is_per_embedder():
     assert rerank_arm.gate_threshold("cross-encoder-fast") == -4.0
     assert rerank_arm.gate_threshold("cross-encoder", "arctic-m") == -8.0
     assert rerank_arm.gate_threshold("cross-encoder-fast", "arctic-m") == -8.0
-    # A model this build has no threshold for gets the strictest one.
     assert rerank_arm.gate_threshold("cross-encoder", "unknown") == -4.0
     admit = rerank_arm.admit_gated({"a"}, "cross-encoder-fast", "arctic-m")
     assert admit("a", -50.0) and admit("b", -7.5) and not admit("b", -8.5)
@@ -72,11 +67,11 @@ def test_a_rebuilt_index_keeps_the_logged_model(tmp_path):
     assert retrieval_io.logged_embedding_model(root) == MPNET
     _log(root, "ce:tinybert2(gated(idf-v2+semantic@arctic-m))")
     assert retrieval_io.logged_embedding_model(root) == ARCTIC
-    _log(root, "semantic@arctic-m")  # the semantic arm alone pins its model too
+    _log(root, "semantic@arctic-m")
     assert retrieval_io.logged_embedding_model(root) == ARCTIC
     _log(root, "semantic")
     assert retrieval_io.logged_embedding_model(root) == MPNET
-    _log(root, "idf-v2")  # a lexical ranking pins no model
+    _log(root, "idf-v2")
     assert retrieval_io.logged_embedding_model(root) is None
 
 
@@ -108,10 +103,10 @@ def test_the_reference_scripts_trust_the_same_models():
 
 def test_pool_depth_is_per_embedder():
     assert rerank_arm.pool_size(5) == 30
-    assert rerank_arm.pool_size(5, "cross-encoder") == 30  # lexical arm alone, or mpnet
+    assert rerank_arm.pool_size(5, "cross-encoder") == 30
     assert rerank_arm.pool_size(5, "cross-encoder", "arctic-m") == 10
     assert rerank_arm.pool_size(5, "cross-encoder-fast", "arctic-m") == 15
-    assert rerank_arm.pool_size(40, "cross-encoder", "arctic-m") == 40  # never below the page
+    assert rerank_arm.pool_size(40, "cross-encoder", "arctic-m") == 40
 
 
 def test_new_stores_default_to_the_accurate_reranker(monkeypatch):

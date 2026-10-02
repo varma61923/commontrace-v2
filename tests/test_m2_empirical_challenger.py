@@ -1,7 +1,3 @@
-"""Empirical Challenger Test Suite for Milestone 2 (M2).
-Storage Reliability, UTF-8 BOM Handling, Atomic File Writes, Validation Loop Resilience,
-Lesson Slug Normalization, and Index Diagnostics.
-"""
 from __future__ import annotations
 
 import importlib
@@ -26,22 +22,13 @@ from commontrace.cli import main as cli_main
 
 @pytest.fixture
 def clean_store(tmp_path):
-    """Initializes a fresh isolated CommonTrace store."""
     cli_main(["init", "--agent-type", "code", "--dest", str(tmp_path)])
     return tmp_path
 
 
 @pytest.fixture
 def attention_modules():
-    """Dynamically loads build_index and query with isolated mock of sentence_transformers if needed."""
     if not HAS_NUMPY:
-        # build_index.py and query.py both `import numpy` at module scope
-        # (they are the memory/attention/* reference scripts, only meant to
-        # run where the `attention` extra is installed), so every test that
-        # goes through this fixture needs it too. The fixture is the single
-        # choke point every dependent test passes through, so guarding here
-        # once is equivalent to (and less repetitive than) marking each of
-        # the six tests that use it individually.
         pytest.skip("numpy not installed")
     had_st = "sentence_transformers" in sys.modules
 
@@ -61,23 +48,17 @@ def attention_modules():
             mock_st.SentenceTransformer = DummySentenceTransformer
             sys.modules["sentence_transformers"] = mock_st
 
-    # commontrace/reference/, on sys.path via conftest
     import build_index
     import query
 
     yield build_index, query
 
-    # Cleanup sys.modules to prevent leakage into other test suites (e.g. test_doctor.py)
     if not had_st and "sentence_transformers" in sys.modules:
         del sys.modules["sentence_transformers"]
 
 
-# ===========================================================================
-# 1. UTF-8 BOM Handling Tests (SEC-04 & MEM-02)
-# ===========================================================================
 class TestUtf8BomHandling:
     def test_frontmatter_read_with_utf8_bom(self, tmp_path):
-        """Verify frontmatter.read() correctly parses files prefixed with UTF-8 BOM (\\xef\\xbb\\xbf)."""
         file_path = tmp_path / "lesson_bom.md"
         raw_bytes = (
             b"\xef\xbb\xbf---\n"
@@ -109,7 +90,6 @@ class TestUtf8BomHandling:
         assert "Always handle BOM cleanly." in body
 
     def test_frontmatter_read_bom_with_crlf_and_unicode(self, tmp_path):
-        """Verify frontmatter.read() handles BOM with CRLF and multi-byte Unicode content."""
         file_path = tmp_path / "lesson_unicode_bom.md"
         raw_bytes = (
             b"\xef\xbb\xbf---\r\n"
@@ -138,7 +118,6 @@ class TestUtf8BomHandling:
         assert "🚀 Launch with unicode support." in body
 
     def test_trace_io_read_with_utf8_bom(self, tmp_path):
-        """Verify trace_io.read() parses trace files prefixed with UTF-8 BOM."""
         trace_path = tmp_path / "trace_bom.md"
         raw_bytes = (
             b"\xef\xbb\xbf---\n"
@@ -165,7 +144,6 @@ class TestUtf8BomHandling:
         assert instance["outcome"]["resolved"] is True
 
     def test_build_index_and_query_with_bom_lessons(self, clean_store, monkeypatch, attention_modules):
-        """Verify build_index.py and query.py handle BOM-encoded active lessons seamlessly."""
         build_index, query = attention_modules
         ldir = paths.lessons_dir(str(clean_store))
         os.makedirs(ldir, exist_ok=True)
@@ -196,19 +174,14 @@ class TestUtf8BomHandling:
         slugs = [slug for slug, _, _ in active_lessons]
         assert "lesson_bom_active" in slugs
 
-        # Test query.load_importances
         monkeypatch.setattr(query, "LESSONS_DIR", ldir)
         importances, n_parsed = query.load_importances()
         assert importances.get("lesson_bom_active") == 5
         assert n_parsed >= 1
 
 
-# ===========================================================================
-# 2. Atomic Writing and Failure Cleanup Tests (SEC-04 & MEM-02 & MEM-03)
-# ===========================================================================
 class TestAtomicWritingAndCleanup:
     def test_frontmatter_write_leaves_no_temp_files_on_success(self, tmp_path):
-        """Verify normal write replaces atomically without leaving tmp files."""
         out_file = tmp_path / "clean_write.md"
         frontmatter.write(
             str(out_file),
@@ -220,16 +193,13 @@ class TestAtomicWritingAndCleanup:
         assert fm["name"] == "clean"
         assert body.strip() == "Clean body content"
 
-        # Check directory for any leftover tmp files
         all_files = list(tmp_path.iterdir())
         assert all_files == [out_file]
 
     def test_frontmatter_write_cleans_up_temp_on_write_interruption(self, tmp_path):
-        """Simulate an unhandled exception/interruption during file writing."""
         target_file = tmp_path / "protected_file.md"
         target_file.write_text("ORIGINAL_SAFE_CONTENT", encoding="utf-8")
 
-        # Mock yaml.safe_dump to simulate an error after tempfile creation
         with patch("yaml.safe_dump", side_effect=IOError("Simulated write interruption")):
             with pytest.raises(IOError, match="Simulated write interruption"):
                 frontmatter.write(
@@ -238,13 +208,11 @@ class TestAtomicWritingAndCleanup:
                     "new body",
                 )
 
-        # Assert original file is intact and no temp files remain
         assert target_file.read_text(encoding="utf-8") == "ORIGINAL_SAFE_CONTENT"
         files_in_dir = list(tmp_path.iterdir())
         assert files_in_dir == [target_file], f"Leftover temp files found: {files_in_dir}"
 
     def test_frontmatter_write_cleans_up_temp_on_replace_failure(self, tmp_path):
-        """Simulate an error during os.replace (e.g. PermissionError or OS crash)."""
         target_file = tmp_path / "replace_target.md"
         target_file.write_text("ORIGINAL_BEFORE_REPLACE", encoding="utf-8")
 
@@ -256,13 +224,11 @@ class TestAtomicWritingAndCleanup:
                     "new body",
                 )
 
-        # Assert original file untouched and temp file removed
         assert target_file.read_text(encoding="utf-8") == "ORIGINAL_BEFORE_REPLACE"
         files_in_dir = list(tmp_path.iterdir())
         assert files_in_dir == [target_file], f"Leftover temp files found: {files_in_dir}"
 
     def test_frontmatter_write_cleans_up_on_base_exception(self, tmp_path):
-        """Verify cleanup happens even on BaseException like KeyboardInterrupt."""
         target_file = tmp_path / "keyboard_target.md"
         target_file.write_text("ORIGINAL_KEYBOARD", encoding="utf-8")
 
@@ -279,24 +245,15 @@ class TestAtomicWritingAndCleanup:
         assert files_in_dir == [target_file], f"Leftover temp files found: {files_in_dir}"
 
     def test_build_index_atomic_write_and_cleanup(self, tmp_path, monkeypatch, attention_modules):
-        """Verify build_index.py writes index atomically and cleans up tmp on failure."""
         build_index, _ = attention_modules
         index_path = tmp_path / "index.npz"
-        # build_index.py names its temp file via tempfile.mkstemp(prefix=...,
-        # suffix=".tmp.npz"), which inserts a random component between them
-        # (e.g. "index.npz.a1b2c3.tmp.npz") -- a hardcoded "index.npz.tmp.npz"
-        # guess never matches any file mkstemp actually creates, so asserting
-        # that exact path doesn't exist was vacuously true whether or not
-        # cleanup worked, or even ran at all. Matched by glob instead, below.
 
-        # Create dummy initial index
         np.savez(str(index_path), slugs=np.array(["test"]), embeddings=np.zeros((1, 4)))
         assert index_path.exists()
 
         monkeypatch.setattr(build_index, "INDEX_PATH", str(index_path))
         monkeypatch.setattr(build_index, "LESSONS_DIR", str(tmp_path))
 
-        # Create a lesson so main() proceeds
         lesson_file = tmp_path / "lesson_idx.md"
         lesson_file.write_text(
             "---\nname: lesson_idx\ndescription: d\nagent_type: code\ndomain: o\n"
@@ -310,20 +267,13 @@ class TestAtomicWritingAndCleanup:
                 with pytest.raises(PermissionError):
                     build_index.main()
 
-        # Temporary file should be unlinked -- glob, not a hardcoded name,
-        # since mkstemp's actual filename has a random component in it.
         leftover = list(tmp_path.glob("*.tmp.npz"))
         assert leftover == [], f"Temporary index files were not cleaned up: {leftover}"
-        # Original index preserved
         assert index_path.exists()
 
 
-# ===========================================================================
-# 3. Batch Validation Resilience Tests (SEC-05)
-# ===========================================================================
 class TestBatchValidationResilience:
     def test_lesson_validate_batch_continues_past_malformed_and_invalid_files(self, clean_store, capsys):
-        """Verify lesson validate checks ALL files in store even when several are malformed YAML or bad schemas."""
         ldir = paths.lessons_dir(str(clean_store))
 
         def make_lesson(filename, content):
@@ -332,7 +282,6 @@ class TestBatchValidationResilience:
                 fh.write(content)
             return p
 
-        # 1. Valid lesson
         make_lesson(
             "lesson_01_valid.md",
             "---\nname: lesson_01\ndescription: valid 1\nagent_type: code\ndomain: testing\n"
@@ -340,13 +289,11 @@ class TestBatchValidationResilience:
             "uses: 0\nlast_hit: NEVER\nsource_traces: []\nstatus: active\ntags: []\n---\n\n## Rule\nr1\n",
         )
 
-        # 2. Syntax Error in YAML (Malformed YAML)
         make_lesson(
             "lesson_02_bad_yaml.md",
             "---\nname: lesson_02\nkey: [unclosed bracket\n---\n\nbody\n",
         )
 
-        # 3. Valid lesson
         make_lesson(
             "lesson_03_valid.md",
             "---\nname: lesson_03\ndescription: valid 3\nagent_type: code\ndomain: testing\n"
@@ -354,13 +301,11 @@ class TestBatchValidationResilience:
             "uses: 0\nlast_hit: NEVER\nsource_traces: []\nstatus: active\ntags: []\n---\n\n## Rule\nr3\n",
         )
 
-        # 4. Frontmatter is top-level scalar (Not a mapping)
         make_lesson(
             "lesson_04_scalar.md",
             "---\n\"just a raw scalar string\"\n---\n\nbody\n",
         )
 
-        # 5. Schema violation (importance out of range)
         make_lesson(
             "lesson_05_schema_err.md",
             "---\nname: lesson_05\ndescription: d\nagent_type: code\ndomain: testing\n"
@@ -368,7 +313,6 @@ class TestBatchValidationResilience:
             "uses: 0\nlast_hit: NEVER\nsource_traces: []\nstatus: active\ntags: []\n---\n\n## Rule\nr5\n",
         )
 
-        # 6. Valid lesson
         make_lesson(
             "lesson_06_valid.md",
             "---\nname: lesson_06\ndescription: valid 6\nagent_type: code\ndomain: testing\n"
@@ -380,7 +324,7 @@ class TestBatchValidationResilience:
         rc = cli_main(["lesson", "validate", "--dest", str(clean_store)])
         out = capsys.readouterr().out
 
-        assert rc == 1  # Failures exist
+        assert rc == 1
         assert "OK   " in out
         assert "FAIL " in out
         assert "lesson_01_valid.md" in out
@@ -392,7 +336,6 @@ class TestBatchValidationResilience:
         assert "3/6 lessons valid" in out
 
     def test_trace_validate_batch_continues_past_malformed_and_invalid_files(self, clean_store, capsys):
-        """Verify trace validate checks ALL traces in store even when several are malformed YAML or bad schemas."""
         tdir = paths.traces_dir(str(clean_store))
 
         def make_trace(filename, content):
@@ -401,40 +344,34 @@ class TestBatchValidationResilience:
                 fh.write(content)
             return p
 
-        # 1. Valid trace
         make_trace(
             "trace_01_valid.md",
             "---\nid: trc_1\ntitle: Valid Trace 1\nagent_type: code\ntags: []\nprofile: code-review\n"
             "outcome:\n  resolved: true\n---\n\n## Context\nc1\n\n## Solution\ns1\n",
         )
 
-        # 2. Malformed YAML
         make_trace(
             "trace_02_bad_yaml.md",
             "---\nid: trc_2\nmalformed: {unclosed\n---\n\n## Context\nc\n\n## Solution\ns\n",
         )
 
-        # 3. Valid trace
         make_trace(
             "trace_03_valid.md",
             "---\nid: trc_3\ntitle: Valid Trace 3\nagent_type: code\ntags: []\nprofile: code-review\n"
             "outcome:\n  resolved: false\n---\n\n## Context\nc3\n\n## Solution\ns3\n",
         )
 
-        # 4. Scalar frontmatter
         make_trace(
             "trace_04_scalar.md",
             "---\n12345\n---\n\n## Context\nc\n\n## Solution\ns\n",
         )
 
-        # 5. Schema violation (resolved not boolean)
         make_trace(
             "trace_05_schema_err.md",
             "---\nid: trc_5\ntitle: Bad Schema\nagent_type: code\ntags: []\nprofile: code-review\n"
             "outcome:\n  resolved: 'not-a-bool'\n---\n\n## Context\nc5\n\n## Solution\ns5\n",
         )
 
-        # 6. Valid trace
         make_trace(
             "trace_06_valid.md",
             "---\nid: trc_6\ntitle: Valid Trace 6\nagent_type: code\ntags: []\nprofile: code-review\n"
@@ -455,7 +392,6 @@ class TestBatchValidationResilience:
         assert "3/6 traces valid" in out
 
     def test_validation_explicit_missing_file_diagnostic(self, clean_store, capsys):
-        """Verify validating an explicit missing file exits 1 and emits clean error."""
         capsys.readouterr()
         rc = cli_main(["lesson", "validate", "/nonexistent/path/lesson_none.md", "--dest", str(clean_store)])
         assert rc == 1
@@ -463,12 +399,8 @@ class TestBatchValidationResilience:
         assert "cannot read" in err
 
 
-# ===========================================================================
-# 4. Slug Normalization & Indexing Invariant Tests (MEM-06)
-# ===========================================================================
 class TestLessonSlugNormalizationAndIndexing:
     def test_lesson_new_without_prefix_creates_prefixed_file(self, clean_store):
-        """commontrace lesson new --slug my_slug must create lesson_my_slug.md."""
         rc = cli_main(
             [
                 "lesson", "new",
@@ -488,7 +420,6 @@ class TestLessonSlugNormalizationAndIndexing:
         assert fm["name"] == "my_custom_slug"
 
     def test_lesson_new_with_prefix_avoids_double_prefix(self, clean_store):
-        """commontrace lesson new --slug lesson_already_prefixed must create lesson_already_prefixed.md."""
         rc = cli_main(
             [
                 "lesson", "new",
@@ -507,7 +438,6 @@ class TestLessonSlugNormalizationAndIndexing:
         assert not os.path.exists(wrong_file)
 
     def test_slug_resolution_and_approval_workflow(self, clean_store, capsys):
-        """Verify lesson approve / reject commands resolve both slug forms."""
         cli_main(
             [
                 "lesson", "new",
@@ -521,10 +451,6 @@ class TestLessonSlugNormalizationAndIndexing:
         ldir = paths.lessons_dir(str(clean_store))
         lesson_file = os.path.join(ldir, "lesson_review_candidate.md")
 
-        # Set status to review, with real content: `lesson approve` refuses a
-        # lesson still carrying `lesson new`'s scaffolding, since an active
-        # lesson is injected into agents verbatim. This test is about slug
-        # resolution, so it approves a lesson that is actually written.
         fm, body = frontmatter.read(lesson_file)
         fm["status"] = "review"
         fm["applies_when"] = "A test asserts on wall-clock time"
@@ -537,7 +463,6 @@ class TestLessonSlugNormalizationAndIndexing:
         )
         frontmatter.write(lesson_file, fm, body)
 
-        # Approve using un-prefixed slug
         rc = cli_main([
             "lesson", "approve", "review_candidate", "--rationale", "Looks good", "--dest", str(clean_store),
         ])
@@ -546,7 +471,6 @@ class TestLessonSlugNormalizationAndIndexing:
         assert fm["status"] == "active"
         assert "Looks good" in body
 
-        # Set status back to review and reject using prefixed slug
         fm["status"] = "review"
         frontmatter.write(lesson_file, fm, body)
         rc = cli_main([
@@ -558,7 +482,6 @@ class TestLessonSlugNormalizationAndIndexing:
         assert "Not ready" in body
 
     def test_normalized_lessons_match_indexer_glob(self, clean_store, attention_modules):
-        """Ensure all created lessons match glob 'lesson_*.md' and are indexed by build_index."""
         build_index, _ = attention_modules
         cli_main(
             [
@@ -582,10 +505,6 @@ class TestLessonSlugNormalizationAndIndexing:
         )
 
         ldir = paths.lessons_dir(str(clean_store))
-        # `lesson new` scaffolds at status=review; only an approved lesson is
-        # active, and iter_active_lessons reads exactly those. The glob/slug
-        # normalization under test is unchanged either way -- activate them so
-        # the assertion is about naming rather than about lifecycle.
         for filename in ("lesson_auto_norm_1.md", "lesson_auto_norm_2.md"):
             path = os.path.join(ldir, filename)
             fm, body = frontmatter.read(path)
@@ -597,12 +516,8 @@ class TestLessonSlugNormalizationAndIndexing:
         assert "lesson_auto_norm_2" in active_slugs
 
 
-# ===========================================================================
-# 5. Corrupted Index Handling & Diagnostics (MEM-04)
-# ===========================================================================
 class TestCorruptedIndexDiagnostics:
     def test_query_handles_empty_zero_byte_index(self, tmp_path, monkeypatch, capsys, attention_modules):
-        """query.py must handle zero-byte index.npz gracefully with exit code 1 and clean error."""
         _, query = attention_modules
         idx = tmp_path / "index.npz"
         idx.write_bytes(b"")
@@ -617,7 +532,6 @@ class TestCorruptedIndexDiagnostics:
         assert "rebuild the index" in err
 
     def test_query_handles_corrupted_garbage_index(self, tmp_path, monkeypatch, capsys, attention_modules):
-        """query.py must handle random non-zip bytes in index.npz."""
         _, query = attention_modules
         idx = tmp_path / "index.npz"
         idx.write_bytes(b"THIS IS NOT A VALID NPZ OR ZIP FILE AT ALL 1234567890")
@@ -632,13 +546,11 @@ class TestCorruptedIndexDiagnostics:
         assert "rebuild the index" in err
 
     def test_query_handles_truncated_zip_index(self, tmp_path, monkeypatch, capsys, attention_modules):
-        """query.py must handle truncated zip archive."""
         _, query = attention_modules
         idx = tmp_path / "index.npz"
-        # Write valid zip header then truncate
         np.savez(str(idx), slugs=np.array(["test"]), embeddings=np.zeros((1, 4)))
         raw = idx.read_bytes()
-        idx.write_bytes(raw[: len(raw) // 2])  # truncate in half
+        idx.write_bytes(raw[: len(raw) // 2])
         monkeypatch.setattr(query, "INDEX_PATH", str(idx))
 
         capsys.readouterr()

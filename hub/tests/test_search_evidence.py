@@ -1,14 +1,3 @@
-"""search_traces carries each lesson's causal evidence.
-
-Before this, a search returned a lesson proven to help, one never
-measured, and one measured to make outcomes WORSE in exactly the same
-shape. The holdout knew the difference; only working_set -- which shows
-the winners by construction -- ever said so. These tests pin that the
-verdict now travels with the result, that it is always the SAME verdict
-causal_effects reports, that it is withheld when the experiment is
-compromised, and that the per-org cache behind it neither serves stale
-evidence nor recomputes on every call.
-"""
 from __future__ import annotations
 
 import pytest
@@ -62,8 +51,6 @@ async def _lessons(session_factory, org_id, titles):
 
 
 async def _drive(session_factory, org_id, trace, n, p_injected, p_withheld, prefix):
-    """The same seeded two-arm run test_holdout.py uses, through the real
-    assign/record path."""
     injected_seen = withheld_seen = 0
     for i in range(n):
         occ = f"{prefix}-{i}"
@@ -108,9 +95,6 @@ class TestTheVerdictTravelsWithTheResult:
         assert helps_evidence["n_injected"] > 0 and helps_evidence["n_withheld"] > 0
 
     async def test_it_is_the_same_verdict_causal_effects_reports(self, session_factory, org):
-        """One analysis, two surfaces. A search that said HELPS while the
-        experiment report said UNDERPOWERED would be worse than saying
-        nothing."""
         ids = await _lessons(session_factory, org, ["lesson a", "lesson b"])
         await _drive(session_factory, org, ids[0], 60, 0.9, 0.3, "a")
         await _drive(session_factory, org, ids[1], 400, 0.8, 0.4, "b")
@@ -124,9 +108,6 @@ class TestTheVerdictTravelsWithTheResult:
     async def test_an_org_that_never_ran_an_experiment_gets_no_extra_fields(
         self, session_factory, org
     ):
-        """Every field costs the calling agent tokens on every search;
-        "not measured" on every row of an org that never measured anything
-        says nothing."""
         await _lessons(session_factory, org, ["plain lesson"])
         result = await _search(session_factory, org)
         assert "evidence" not in result
@@ -144,9 +125,6 @@ class TestTheVerdictTravelsWithTheResult:
 
 class TestACompromisedExperimentShowsNoNumbers:
     async def test_the_reporting_gap_case(self, session_factory, org):
-        """Built the way test_holdout.py builds it: every injected occasion
-        reported, most withheld ones not. The effects are biased by a named
-        mechanism, so none are shown -- only why."""
         [trace] = await _lessons(session_factory, org, ["biased lesson"])
         for i in range(120):
             result = await _assign(session_factory, org, [trace], f"g-{i}")
@@ -193,17 +171,10 @@ class TestTheCache:
     async def test_searching_during_an_experiment_does_not_recompute_each_time(
         self, session_factory, org, monkeypatch
     ):
-        """The regression this guards: searching with an occasion_id writes
-        a holdout assignment, so a key that counted assignments rebuilt the
-        whole analysis on every search of an org running an experiment --
-        the one workload the cache exists for. A pending assignment cannot
-        move an effect, which is estimated from resolved occasions only."""
         [trace] = await _lessons(session_factory, org, ["busy lesson"])
         await _drive(session_factory, org, trace, 40, 0.8, 0.4, "b")
         calls = await self._counting(monkeypatch)
         for i in range(5):
-            # What hub/server.py's search_traces tool does with an occasion_id:
-            # search, then assign arms for the results it returned.
             async with session_scope(session_factory) as session:
                 result = await crud.search_traces(session, org, tags=[TAG], limit=20)
                 await crud.holdout_for_results(session, org, result["traces"], f"live-{i}")
@@ -221,8 +192,6 @@ class TestTheCache:
         assert "evidence" not in result
 
     async def test_it_expires_with_time_alone(self, session_factory, org, monkeypatch):
-        """The validity audit judges pending occasions by their age, so its
-        answer can change with no new data at all."""
         [trace] = await _lessons(session_factory, org, ["aging lesson"])
         await _drive(session_factory, org, trace, 40, 0.8, 0.4, "f")
         calls = await self._counting(monkeypatch)

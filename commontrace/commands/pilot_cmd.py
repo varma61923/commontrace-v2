@@ -30,7 +30,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         "pilot",
         help="Run the 30-day pilot report end to end: map the issues into a taxonomy, "
         "check reinforcement progress, measure what changed, and give a yes/no on "
-        "whether CommonTrace is fixing the issues worth fixing. See PILOT.md.",
+        "whether CommonTrace is fixing the issues worth fixing.",
     )
     p.add_argument("--agent-type", default=None)
     p.add_argument("--similarity-threshold", type=_similarity_threshold, default=0.3)
@@ -46,8 +46,6 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
 
 
 def _load_pilot_metrics(root: str, agent_type: str | None) -> dict | None:
-    """Baseline-vs-current resolution rate, via the same script `commontrace
-    bench --pilot` runs -- one number, computed one way, everywhere it's used."""
     extra = ["--json"]
     if agent_type:
         extra += ["--agent-type", agent_type]
@@ -61,13 +59,10 @@ def _load_pilot_metrics(root: str, agent_type: str | None) -> dict | None:
         return None
     try:
         data = json.loads(out)
-        # pilot_metrics.py now emits {"error": ...} JSON (not plain text) when there is
-        # no outcome data. Treat that as "no baseline yet" -- same as before the JSON fix.
         if isinstance(data, dict) and "error" in data:
             return None
         return data
     except json.JSONDecodeError:
-        # Legacy fallback: plain-text "no traces" notice exits 0 but isn't JSON.
         return None
 
 
@@ -80,11 +75,6 @@ def _load_traces(root: str) -> list[tuple[str, dict]]:
         try:
             instance, _ = trace_io.read(path)
         except FrontmatterError as exc:
-            # Same warning as _traces.py's loaders (load_trace_candidates /
-            # load_trace_instances), which this replaces to read the traces
-            # dir once instead of twice: a corrupt trace must drop out of
-            # the report, not disappear from it silently, or a `pilot`
-            # customer's sponsor reads numbers that quietly exclude it.
             print(f"[commontrace] warning: skipping unreadable trace {path}: {exc}", file=sys.stderr)
             continue
         traces.append((path, instance))
@@ -100,10 +90,6 @@ def run(args: argparse.Namespace) -> int:
 
     raw_traces = _load_traces(root)
     all_instances = [inst for _, inst in raw_traces]
-    # Filtered once, not twice: trace_instances and trace_candidates below
-    # both used to re-apply this identical agent_type condition in their
-    # own comprehensions, a second full pass over raw_traces with the two
-    # copies free to drift out of sync.
     matched_traces = [
         (path, inst) for path, inst in raw_traces
         if not args.agent_type or inst.get("agent_type") == args.agent_type
@@ -145,28 +131,13 @@ def run(args: argparse.Namespace) -> int:
     ) if evidence else []
     harmful_lesson_slugs = [s.slug for s in scores if s.verdict == reliability.VERDICT_HARMFUL]
 
-    # Scoped to the current randomization, same as `commontrace experiment`
-    # and the MCP `experiment_status` tool: pooling assignments from a
-    # rotated-away salt with the current one is a comparison of nothing
-    # against nothing, and would make `commontrace pilot` -- the document a
-    # customer's sponsor reads for a renewal decision -- disagree with
-    # `commontrace experiment` on the very same store after a holdout-rate
-    # change, exactly the class of bug scope_to_current_salt exists to close
-    # everywhere the holdout log is analyzed.
     all_rows, _rate, _corrupt = experiment_cmd._load(root)
     holdout_rows, _wanted_salt, _other = experiment_cmd.scope_to_current_salt(root, all_rows)
     obs = experiment_cmd._observations(holdout_rows)
-    # The pilot report is the document a customer's sponsor reads to decide
-    # whether to renew, so a causal claim inside it needs the same validity
-    # gate `commontrace experiment` puts in front of one. A compromised run
-    # yields no effects here rather than effects with a caveat elsewhere on
-    # the page -- in a renewal deck the caveat does not survive the copy-paste.
     causal_report = integrity.audit(holdout_rows) if holdout_rows else None
     n_lines = causal_report.n_assignments if causal_report else 0
     causal_effects = (
         None if not holdout_rows
-        # sequential=True: the same reading `commontrace experiment` and the
-        # MCP tools give, which is the agreement this report depends on.
         else (experiment.analyze(obs, sequential=True) if (obs and causal_report.readable) else [])
     )
 
@@ -180,21 +151,6 @@ def run(args: argparse.Namespace) -> int:
         resolution_baseline = resolution_current = None
         n_baseline_traces = n_current_traces = 0
 
-    # `is not None`, not `not in (None, 0)`: a literal 0.0 baseline
-    # resolution rate is real, computable data -- "nothing was resolved
-    # before CommonTrace" -- and treating it the same as "no baseline data
-    # at all" reported `resolution_delta = None` ("change: N/A") AND fed
-    # `None` into `pilot.determine_result`'s `resolution_delta is not
-    # None` gate, so the fleet with the most dramatic, most reportable
-    # improvement (0% -> 80%) fell all the way through to a "NOT YET"
-    # verdict -- "resolution rate has not improved" -- exactly backwards.
-    # A true RELATIVE change from a zero baseline is undefined (division
-    # by zero), but resolution_rate is always a bounded [0, 1] rate, not
-    # an unbounded quantity: any improvement off a genuine 0% baseline is
-    # unambiguously the maximal positive signal this bounded metric can
-    # report, so it is treated as a full +100% relative change (clearing
-    # determine_result's `> 0.05` "improved" threshold, same as it would
-    # for any other real improvement) rather than as "unknown."
     resolution_delta = None
     if resolution_baseline is not None and resolution_current is not None:
         if resolution_baseline == 0:

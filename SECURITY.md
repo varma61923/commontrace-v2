@@ -2,8 +2,7 @@
 
 CommonTrace's Hub tier is a multi-tenant service that stores customer trace
 data and holds an Argon2-hashed API key per organization; the local CLI tier
-touches nothing beyond the operator's own machine (see
-[`DATA_RETENTION.md`](DATA_RETENTION.md) for exactly what each tier stores).
+touches nothing beyond the operator's own machine.
 That combination — other people's data, on infrastructure this project's own
 code is responsible for isolating — is why a vulnerability here deserves a
 private report rather than a public issue, and why this file exists before

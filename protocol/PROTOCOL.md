@@ -295,3 +295,30 @@ can ignore it entirely.
   `commontrace/frontmatter.py` are the current file-backed read/write seam a
   second backend would need to sit behind (no such backend exists yet —
   there is no `commontrace/store.py` in the codebase today).
+
+## 13. Conformance
+
+An implementation is "CommonTrace-compatible" at the layers it passes of `commontrace conformance` (vectors,
+store, gateway). The reference answers are in `protocol/conformance/vectors.json`; a Go implementation of the
+first three functions, written from this section alone, is in `protocol/conformance/examples/go`. An
+implementation may cover a subset (`--only assign,ledger,digest`) and says which.
+
+**13.1 Assignment.** Whether memory `lesson` is withheld on occasion `occasion` in the experiment named `salt` at
+holdout rate `rate`:
+`rate <= 0` is never; `rate >= 1` is always; otherwise
+`u = uint64_big_endian(BLAKE2b(digest_size=8, UTF-8(salt + U+001F + lesson + U+001F + occasion))) / 2^64`, and the
+memory is withheld iff `u < rate`. Nothing else may influence the arm.
+
+**13.2 Value ledger.** For rows `i = 0..n-1` of `(slug, verdict, occasions_improved, rate)`, with
+`money = occasions_improved * rate` and every number printed with exactly six decimals (`%.6f`):
+`row_i = join(U+001F, [i, slug, verdict, occasions_improved, rate, money])`,
+`h_i = hex(SHA-256(UTF-8(h_(i-1) + U+001F + row_i)))`, and `h_(-1) = hex(SHA-256("commontrace-value-ledger-v1"))`.
+
+**13.3 Raw-assignments digest.** Each row is its cells joined by U+001F; the rows are sorted by code point; the
+digest is `hex(SHA-256(UTF-8("commontrace-raw-assignments-v1" + U+001E + join(U+001E, rows))))`.
+
+**13.4 Lesson revision.** The first 12 hex characters of `SHA-256` over the compact JSON (keys sorted, no spaces,
+non-ASCII kept) of an object with the keys `description, domain, tags, importance, applies_when,
+do_not_apply_when` (absent is `null`; a list is sorted; a string has CRLF and CR turned into LF, trailing spaces and
+tabs removed from every line, runs of three or more newlines reduced to two, and the ends trimmed) plus `_body`
+(the body, normalized the same way).

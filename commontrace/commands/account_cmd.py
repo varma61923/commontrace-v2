@@ -1,22 +1,4 @@
-"""`commontrace account` — self-service deletion against a CommonTrace Hub.
-
-Two different risk shapes, two different flows:
-
-`delete-trace` removes one of your own traces (and its full amendment
-chain) immediately. Irreversible, but scoped to one trace -- not
-categorically riskier than what a compromised key can already do via
-`amend`, which is why it takes effect in a single call.
-
-`request-deletion` / `confirm-deletion` remove your ENTIRE organization --
-every trace, vote, api key, and Knowledge Base submission. That is
-deliberately NOT a single call: `request-deletion` deletes nothing, it
-only returns a one-time confirmation token and a minimum wait before that
-token can be used. `confirm-deletion` needs the token AND the wait to have
-elapsed. The gap exists so a single compromised API key cannot wipe an
-org's history with no window for anyone to notice -- see
-hub/crud.py:request_org_deletion for the full reasoning. `cancel-deletion`
-stands down a pending request at any point before it is confirmed.
-"""
+"""`commontrace account` — self-service deletion against a CommonTrace Hub."""
 from __future__ import annotations
 
 import argparse

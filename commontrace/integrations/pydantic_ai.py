@@ -1,17 +1,3 @@
-"""Pydantic AI: a memory tool keyed on the run's own `conversation_id`
-(or `run_id`), so `CausalMemory`'s holdout and outcome join need no
-caller-invented id.
-
-    from commontrace.integrations.pydantic_ai import memory_tool, record_outcome
-
-    agent = Agent(model, tools=[memory_tool(memory)])
-    result = agent.run_sync("...")
-    record_outcome(memory, result, succeeded=passed)
-
-Verified against pydantic-ai 2.52 with its TestModel. No
-`from __future__ import annotations` here: Pydantic AI reads the tool's
-`RunContext` annotation as a real object to know to pass the context.
-"""
 from typing import Any
 
 from commontrace.measure import default_text
@@ -33,8 +19,6 @@ def _text(item: Any) -> str:
 
 
 def memory_tool(memory: Any, *, occasion: str = "conversation_id", name: str = "recall_memory"):
-    """A tool the agent calls to retrieve memory, with the holdout applied.
-    `memory` is a CausalMemory or a memory_adapters.MeasuredMemory."""
     from pydantic_ai import RunContext, Tool
 
     def recall_memory(ctx: RunContext[Any], query: str) -> list[str]:

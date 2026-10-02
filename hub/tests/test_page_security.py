@@ -1,13 +1,3 @@
-"""Every HTML page the Hub serves carries a Content-Security-Policy that
-allows exactly its own inline scripts, and nothing else.
-
-The policy is only useful if it matches: a script whose hash is missing
-silently stops running (the double-submit guard, the auto-refresh, the
-confirm prompt), and one that needs `'unsafe-inline'` to run makes the
-policy decorative. So these tests hash every `<script>` a page actually
-renders and hold the header to exactly that set.
-"""
-
 from __future__ import annotations
 
 import base64
@@ -80,21 +70,24 @@ def test_forms_may_post_only_here_or_to_stripe():
 
 @pytest.mark.parametrize("path", sorted(p.name for p in HUB.glob("*.py")))
 def test_no_page_uses_an_inline_event_handler(path):
-    """The policy forbids them, so one would silently do nothing."""
     source = (HUB / path).read_text()
     assert not re.search(r"""\son(click|submit|change|input|load|focus|blur)\s*=\s*['"\\]""", source), path
 
 
 def test_the_nav_marks_the_current_page():
     page = console._page("Users & roles", "").body.decode()
-    assert re.search(r'<a href="[^"]*/users" aria-current=page>Users</a>', page)
+    assert re.search(
+        r'<a href="[^"]*/users" data-key="[^"]*" aria-current=page>'
+        r'<svg[^>]*aria-hidden="true"[^>]*>.*?</svg><span>Users</span><kbd aria-hidden="true">',
+        page,
+    )
     assert page.count(" aria-current=page>") == 1
     assert " aria-current=page>" not in console._page("Something else", "").body.decode()
 
 
 def test_the_page_offers_a_skip_link_to_its_content():
     page = console._page("Proof", "<p>x</p>").body.decode()
-    assert '<a class="skip" href="#main">' in page and '<main id="main">' in page
+    assert '<a class="skip" href="#main">' in page and '<main id="main" tabindex="-1">' in page
 
 
 @pytest.mark.parametrize("render", [
@@ -102,9 +95,6 @@ def test_the_page_offers_a_skip_link_to_its_content():
     lambda s: admin._page("Overview", "", auto_refresh_seconds=s),
 ])
 def test_a_live_page_can_be_paused(render):
-    """WCAG 2.2.1: a page that reloads itself must let the reader stop it.
-    The control starts hidden, so it never shows without the script that
-    makes it work."""
     live = render(30).body.decode()
     assert '<button type="button" class="live-toggle" data-live-toggle hidden>' in live
     assert "ct-live-paused" in live
@@ -113,8 +103,6 @@ def test_a_live_page_can_be_paused(render):
 
 
 def test_a_hidden_tab_does_not_reload():
-    """A console left open in a background tab re-ran its queries every
-    few seconds for as long as it stayed open."""
     script = admin.auto_refresh_script(30)
     assert "document.hidden" in script and "visibilitychange" in script
 
@@ -128,16 +116,16 @@ def _request(method: str, **headers: str) -> Request:
 
 @pytest.mark.parametrize(("method", "headers", "refused"), [
     ("POST", {"sec_fetch_site": "same-origin"}, False),
-    ("POST", {"sec_fetch_site": "none"}, False),  # typed or bookmarked by the user
-    ("POST", {"sec_fetch_site": "same-site"}, True),  # a sibling subdomain: gets the cookie
+    ("POST", {"sec_fetch_site": "none"}, False),
+    ("POST", {"sec_fetch_site": "same-site"}, True),
     ("POST", {"sec_fetch_site": "cross-site"}, True),
-    ("POST", {"sec_fetch_site": "same-origin", "origin": "https://evil.example"}, False),  # the browser's word wins
-    ("POST", {"origin": "https://hub.example.com", "host": "hub.example.com"}, False),  # older browser, own page
+    ("POST", {"sec_fetch_site": "same-origin", "origin": "https://evil.example"}, False),
+    ("POST", {"origin": "https://hub.example.com", "host": "hub.example.com"}, False),
     ("POST", {"origin": "https://HUB.example.com", "host": "hub.example.com"}, False),
     ("POST", {"origin": "https://evil.example", "host": "hub.example.com"}, True),
-    ("POST", {"origin": "null", "host": "hub.example.com"}, True),  # a sandboxed frame or data: page
-    ("POST", {"host": "hub.example.com"}, False),  # not a browser: the session cookie decides
-    ("GET", {"sec_fetch_site": "cross-site"}, False),  # a link from elsewhere is fine
+    ("POST", {"origin": "null", "host": "hub.example.com"}, True),
+    ("POST", {"host": "hub.example.com"}, False),
+    ("GET", {"sec_fetch_site": "cross-site"}, False),
 ])
 def test_a_state_changing_request_from_another_origin_is_refused(method, headers, refused):
     assert admin.cross_origin_refused(_request(method, **headers)) is refused
@@ -145,8 +133,6 @@ def test_a_state_changing_request_from_another_origin_is_refused(method, headers
 
 @pytest.mark.parametrize("module", [console, signup])
 def test_every_form_post_route_is_guarded(module):
-    """A POST route registered without the guard would be the one a forged
-    form targets."""
     source = pathlib.Path(module.__file__).read_text()
     routes = source.split("app.add_route(")[1:]
     posts = [r.split("\n\n", 1)[0] for r in routes if '"POST"' in r.split("methods=", 1)[1].split("]", 1)[0]]
@@ -155,9 +141,6 @@ def test_every_form_post_route_is_guarded(module):
 
 
 def test_a_shown_once_secret_is_labelled_and_copyable():
-    """The Copy button starts hidden and the page's (CSP-hashed) script
-    reveals it, so a browser without script never shows one that does
-    nothing; the field is named by its visible heading."""
     field = admin.secret_field('ct_live_"<x>', "key-label")
     assert 'aria-labelledby="key-label"' in field
     assert 'value="ct_live_&quot;&lt;x&gt;"' in field
@@ -177,9 +160,6 @@ _IRREVERSIBLE = re.compile(
 
 @pytest.mark.parametrize("module", [console, admin])
 def test_an_irreversible_action_asks_first(module):
-    """One misclick on Revoke broke every agent using that key, with no way
-    back. Each such form carries `data-confirm`, which the page's script
-    turns into a confirmation prompt."""
     source = pathlib.Path(module.__file__).read_text()
     checked = 0
     for m in re.finditer(r'<form method="post" action="([^"]*)"', source):

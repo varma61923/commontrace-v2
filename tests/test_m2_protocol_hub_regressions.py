@@ -1,17 +1,3 @@
-"""Dedicated regression tests for Milestone M2: Hub, Commons, & Protocol Conformance.
-
-Covers:
-1. `validate_outcome` with explicit `None` for nullable outcome fields (resolved,
-   escalated, repeated_error, frustration_signal, tokens_used, llm_calls).
-2. `memory/lessons/lesson_template.md` schema conformance against lesson.schema.json.
-3. `search_traces` SQL query inspection / mock confirming Trace.org_id == org_id is
-   present in the retrieval counter update statement.
-4. `amend_trace` wire dictionary retains `profile` during schema validation.
-5. `protocol/schemas/trace.schema.json` declares and validates `shared_with_commons`,
-   `quarantined`, and `quarantine_reason`.
-6. `commons/eval/representations.py` Unicode token extraction support.
-7. `hub/abuse.py` _SharedPgPool background thread termination on timeout.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -37,8 +23,6 @@ from hub import abuse, outcomes  # noqa: E402 -- must follow importorskip above
 
 
 class TestValidateOutcomeNullableMetrics:
-    """Tests for hub/outcomes.py:validate_outcome allowing None for nullable fields."""
-
     def test_validate_outcome_allows_all_nullable_metrics_as_none(self):
         payload = {
             "resolved": None,
@@ -102,15 +86,11 @@ class TestValidateOutcomeNullableMetrics:
             {"resolved": False, "tokens_used": 300},
         ]
         t = outcomes.tally(trace_outcomes)
-        # 1 success out of 2 evaluated (None excluded)
         assert t.props["resolved"] == (1, 2)
-        # Mean 200 over 2 evaluated (None excluded)
         assert t.means["tokens_used"] == (200.0, 2)
 
 
 class TestLessonTemplateSchemaConformance:
-    """Tests for memory/lessons/lesson_template.md conforming to lesson.schema.json."""
-
     def test_lesson_template_validates_cleanly_against_schema(self):
         schema = validate.load_schema("lesson.schema.json")
         fm, _ = frontmatter.read("memory/lessons/lesson_template.md")
@@ -131,8 +111,6 @@ def _load_protocol_trace_schema() -> dict:
 
 
 class TestTraceSchemaGovernanceAndCommonsFields:
-    """Tests for protocol/schemas/trace.schema.json declaring governance and commons fields."""
-
     def test_trace_schema_accepts_shared_with_commons_and_quarantine_fields(self):
         schema = _load_protocol_trace_schema()
         trace_data = {
@@ -189,17 +167,14 @@ class TestTraceSchemaGovernanceAndCommonsFields:
             "agent_type": "code",
         }
 
-        # shared_with_commons must be boolean
         bad_shared = dict(base_trace, shared_with_commons="true")
         errs = validate.validate(bad_shared, schema)
         assert any("shared_with_commons" in e for e in errs)
 
-        # quarantined must be boolean
         bad_quarantined = dict(base_trace, quarantined=1)
         errs = validate.validate(bad_quarantined, schema)
         assert any("quarantined" in e for e in errs)
 
-        # quarantine_reason must be string or null
         bad_reason = dict(base_trace, quarantine_reason=12345)
         errs = validate.validate(bad_reason, schema)
         assert any("quarantine_reason" in e for e in errs)
@@ -219,7 +194,6 @@ class TestTraceSchemaGovernanceAndCommonsFields:
             "quarantined": False,
             "quarantine_reason": None,
         }
-        # Should not raise
         validate_trace(valid_trace)
 
         bad_trace = dict(valid_trace, shared_with_commons="yes")
@@ -228,8 +202,6 @@ class TestTraceSchemaGovernanceAndCommonsFields:
 
 
 class TestSearchTracesTenantIsolation:
-    """Tests for hub/crud.py:search_traces retrieval counter update SQL query."""
-
     def test_search_traces_retrieval_update_includes_org_id_in_where_clause(self):
         pytest.importorskip("sqlalchemy", reason="hub[server] extra not installed in this env")
         pytest.importorskip("hub", reason="hub package not importable in this env")
@@ -261,11 +233,6 @@ class TestSearchTracesTenantIsolation:
 
             session.execute.return_value = result_mock
 
-            # _attach_evidence is patched out for the same reason _hydrate is:
-            # this test is about the retrieval-count UPDATE, and the evidence
-            # step's aggregate query cannot be answered by a mocked session.
-            # It issues only SELECTs; its own org scoping is tested against a
-            # real database in hub/tests/test_search_evidence.py.
             with patch("hub.crud._hydrate", new_callable=AsyncMock) as mock_hydrate, \
                     patch("hub.crud._attach_evidence", new_callable=AsyncMock):
                 mock_hydrate.return_value = []
@@ -278,7 +245,6 @@ class TestSearchTracesTenantIsolation:
             assert len(update_calls) == 1, "Expected exactly one UPDATE statement execution"
             update_stmt = update_calls[0][0][0]
 
-            # Verify the where clause contains both org_id constraint and id.in_ constraint
             where_clauses = list(update_stmt.whereclause.clauses)
             where_strs = [str(clause) for clause in where_clauses]
 
@@ -293,8 +259,6 @@ class TestSearchTracesTenantIsolation:
 
 
 class TestAmendTraceProfileRetention:
-    """Tests for hub/crud.py:amend_trace preserving profile in wire validation."""
-
     def test_amend_trace_passes_profile_to_wire_validation(self):
         pytest.importorskip("sqlalchemy", reason="hub[server] extra not installed in this env")
         pytest.importorskip("hub", reason="hub package not importable in this env")
@@ -307,7 +271,7 @@ class TestAmendTraceProfileRetention:
             from hub.plans import DEFAULT_PLAN, get
 
             session = AsyncMock()
-            session.add = MagicMock()  # synchronous in SQLAlchemy
+            session.add = MagicMock()
             org_id = str(uuid.uuid4())
             trace_id = str(uuid.uuid4())
             original_trace = Trace(
@@ -358,8 +322,6 @@ class TestAmendTraceProfileRetention:
 
 
 class TestCommonsEvalRepresentationsUnicode:
-    """Tests for commons/eval/representations.py Unicode token extraction."""
-
     def test_word_regex_extracts_unicode_tokens(self):
         sample = "déjà vu résumé connexion connexión 日本語 123"
         tokens = representations._WORD.findall(sample)
@@ -376,8 +338,6 @@ class TestCommonsEvalRepresentationsUnicode:
 
 
 class TestSharedPgPoolThreadCleanupOnTimeout:
-    """Tests for hub/abuse.py:_SharedPgPool clean termination on timeout."""
-
     def test_shared_pg_pool_cleans_up_thread_on_timeout(self):
         async def hanging_setup(*args, **kwargs):
             await asyncio.sleep(10)
@@ -389,15 +349,12 @@ class TestSharedPgPoolThreadCleanupOnTimeout:
                     with pytest.raises(TimeoutError, match="timed out after 0.05s"):
                         abuse._SharedPgPool("postgresql://user:pass@localhost:5432/testdb")
 
-        # Allow thread event loop to process cancellation and exit
         time.sleep(0.1)
         alive_threads = [t for t in threading.enumerate() if t.name == "hub-ratelimit-pg"]
         assert len(alive_threads) == 0, f"Thread leaked after timeout: {alive_threads}"
 
 
 class TestHubAuthArgon2Remediation:
-    """Tests for hub/auth.py argon2 graceful fallback and import resilience."""
-
     @pytest.fixture(autouse=True)
     def require_hub(self):
         pytest.importorskip("sqlalchemy", reason="hub[server] extra not installed in this env")

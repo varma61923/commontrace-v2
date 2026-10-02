@@ -1,31 +1,3 @@
-"""Threshold alerts and periodic reports on top of the existing webhook
-pipeline (audit §8.3: "no alerting, scheduled reports, BI export").
-
-Webhooks (6.3, hub/events.py) already tell a receiver WHEN something
-happened. This module adds WHETHER a number an operator cares about has
-crossed a line (`AlertRule` + `check_rules`), and a periodic summary of
-what a number has been doing (`generate_report`) -- both delivered
-through the SAME signed, at-least-once queue, so an org's already-
-configured endpoint and signature verification cover these for free. An
-alert or a report is a kind of event, not a second delivery mechanism.
-
-NO SCHEDULER OF ITS OWN. `check_rules` and `generate_report` are pure
-functions; something else has to call them on a schedule. That something
-is either an operator's own cron invoking `hub.manage check-alerts`/
-`generate-report` -- the exact same shape as `webhook-deliver`'s existing
-redelivery sweep -- or, opt-in, `hub/scheduler.py`'s in-process loop, for
-an operator who would rather the Hub process own its heartbeat than wire
-up cron next to it. Neither lives in this module: this stays a pure
-function either way.
-
-METRICS ARE A CLOSED, NAMED SET, NOT A FREE-FORM EXPRESSION LANGUAGE.
-Each one is a small function against tables this Hub already has (never
-a customer-supplied query string) -- "deny by construction" for an
-unknown metric name, matching hub/rbac.py's own philosophy for an
-unmapped tool: refused at rule-creation time, not silently skipped at
-evaluation time.
-"""
-
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -47,22 +19,14 @@ COMPARATOR_GT = "gt"
 COMPARATOR_LT = "lt"
 COMPARATORS = (COMPARATOR_GT, COMPARATOR_LT)
 
-#: A rule that just fired stays quiet for at least this long even if the
-#: metric is still past its threshold on the next check-alerts run.
 DEFAULT_COOLDOWN_MINUTES = 60
 
 
 class AlertError(ValueError):
-    """A well-formed request this module refuses on its own terms (an
-    unknown metric or comparator, a nonexistent org or rule) -- reported
-    as `invalid_request`/`not_found`, the same convention hub/collab.py
-    and hub/manage.py already use for their own input errors."""
+    ...
 
 
 async def _quarantine_rate(session: AsyncSession, org_id: str) -> float | None:
-    """Percent of this org's traces currently quarantined. None (not
-    computable) for an org with no traces yet -- a rate over zero traces
-    is not a signal, it is division by zero wearing a signal's clothes."""
     total = await session.scalar(
         select(func.count()).select_from(Trace).where(Trace.org_id == org_id)
     )
@@ -77,8 +41,6 @@ async def _quarantine_rate(session: AsyncSession, org_id: str) -> float | None:
 
 
 async def _commons_queries_used_pct(session: AsyncSession, org_id: str) -> float | None:
-    """None for an unlimited allowance (the operator plan) -- a percentage
-    of infinity is not a number a threshold can compare against."""
     ent = await crud.entitlements(session, org_id)
     allowance = ent["commons_queries"]["allowance"]
     if allowance in (plans.UNLIMITED, 0):
@@ -102,8 +64,6 @@ _METRIC_FUNCS = {
 
 
 async def compute_metric(session: AsyncSession, org_id: str, metric: str) -> float | None:
-    """The metric's current value for one org, or None if it cannot be
-    computed right now (no data yet, or an unlimited entitlement)."""
     try:
         fn = _METRIC_FUNCS[metric]
     except KeyError:
@@ -169,12 +129,6 @@ async def delete_rule(session: AsyncSession, rule_id: str) -> bool:
 async def check_rules(
     session: AsyncSession, org_id: str | None = None, *, now: datetime | None = None,
 ) -> list[dict]:
-    """Evaluate every enabled rule (optionally scoped to one org), firing
-    `alert.triggered` for any whose metric has crossed its threshold and
-    whose cooldown has elapsed. Returns a summary of what fired, for the
-    CLI to print -- the return value is not itself the alert; the emitted
-    event is.
-    """
     moment = now or datetime.now(timezone.utc)
     query = select(AlertRule).where(AlertRule.enabled.is_(True))
     if org_id is not None:
@@ -203,16 +157,6 @@ async def check_rules(
 
 
 async def generate_report(session: AsyncSession, org_id: str) -> dict:
-    """Emit one periodic summary for an org, over the same billing period
-    `account_usage`/`entitlements` already report by -- so a report and a
-    live `account_usage` call describe the same window rather than two
-    that could disagree.
-
-    A BI-shaped export already exists for experiment data
-    (`export-assignments`, per-arm CSV); this is the operational-usage
-    counterpart, delivered through the webhook pipeline instead of a
-    file, since a periodic push is what "scheduled report" asks for.
-    """
     org = await session.get(Organization, org_id)
     if org is None:
         raise AlertError(f"no such organization: {org_id}")

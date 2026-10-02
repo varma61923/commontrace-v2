@@ -64,8 +64,8 @@ pip install -e ".[attention]"
 ### 2 — Bootstrap a store for your fleet
 
 ```bash
-commontrace init --agent-type support        # any field: code, sales, hr, marketing,
-                                             # ops, robotics, legal, ... (open taxonomy)
+commontrace init --function support          # support | sales | hr | coding | custom
+commontrace init --agent-type robotics       # any slug (open taxonomy); bare `init` = general
 commontrace doctor                            # sanity-check the environment
 ```
 
@@ -345,7 +345,7 @@ commontrace overlap report --ours acme.json --theirs partner.json
 Answers *"of the failures we keep hitting, how many has another fleet
 already solved?"* for two fleets who have agreed to compare notes directly
 — distinct from the CommonTrace Knowledge Base below, which has no
-fleet-to-fleet data flow at all (see [`STRATEGY.md`](STRATEGY.md)).
+fleet-to-fleet data flow at all.
 Neither side sends the other any lesson or trace text; only MinHash
 signatures are exchanged.
 
@@ -439,6 +439,26 @@ the optional `attention` extra (semantic embeddings) isn't installed —
 `commontrace query` always returns something with just the core install,
 rather than failing outright.
 
+With the `attention` extra, the first query starts a background worker
+that keeps the embedding model, the cross-encoder, the parsed lesson store
+and its ranking index loaded, and runs later `commontrace query` calls
+itself, in the caller's environment and directory. On a 1000-lesson store on
+a 4-core CPU, a query with the default fusion and reranking takes about
+0.55 s instead of 7-8.5 s; at 10,000 lessons about 0.47 s (p95 0.55 s)
+instead of about 1 s with the models alone kept loaded. Nearly all that
+remains is the models' own forward passes: the accurate cross-encoder is
+about 230 ms of it. A store that chooses the fast one (`commontrace
+retrieval --rerank cross-encoder-fast`, a new treatment, measured in the
+reranker's own docstring) answers an agent over MCP in about 234 ms p50 /
+306 ms p95 at 10,000 lessons. The first query after a
+lesson changes refreshes the index through the same worker, re-reading only
+the lessons that changed: about 2 s instead of 16-18 s. The output is what the
+one-shot run would have printed, byte for byte (the same models, loaded the
+same way; stderr arrives before stdout rather than interleaved), and any
+problem with the worker falls back to the one-shot run. It is Unix-only, listens on a
+socket only you can reach, and exits after 10 idle minutes
+(`COMMONTRACE_WARM_IDLE`, in seconds); `COMMONTRACE_WARM=0` turns it off.
+
 Ranking can also weigh a lesson's own track record and freshness, not just
 today's topical match — opt-in, and never a change to which lessons are
 *eligible* at all (the relevance floor is unaffected either way):
@@ -499,7 +519,7 @@ commontrace experiment                  # causal effect per lesson, validity che
 commontrace experiment --strict         # non-zero exit if a lesson HURTS, or if the run is not valid
 ```
 
-**Step-by-step, with the sample sizes you need: [PILOT.md](PILOT.md).**
+**Plan the sample size first: `commontrace experiment --plan`.**
 
 Every other number in this repo — including `reliability`'s `lift` — is
 **correlational**, and the confound is structural: a lesson is retrieved
@@ -644,7 +664,25 @@ matching [the Plans section below](#plans-and-what-they-actually-enforce)'s
 `bench --pilot`'s resolution-rate delta into one report, and its yes/no gate
 is deliberately conservative: a causal result from `commontrace experiment`
 (§9 above) always outranks a correlational one, and correlational data alone
-never earns an outright yes — see PILOT.md.
+never earns an outright yes.
+
+### 10b — Block a release that should not ship
+
+```bash
+commontrace gate                                   # exit 1 names every blocking reason
+commontrace gate --format junit --output gate.xml  # one test case per check, for CI test reports
+commontrace gate --format github                   # GitHub Actions annotations on the run
+commontrace gate --strict                          # warnings block too
+```
+
+Run it before `release promote`. It fails on a COMPROMISED experiment, an
+active lesson whose anytime-valid verdict is HURTS (a warning instead if
+`--on-harm withdraw` already keeps it out of injection), and an active lesson
+that trips the content screen (a secret or an injection payload written in
+after approval) or still carries `TODO:` scaffolding. Contradicting active
+lessons, and a store with no verdicts yet, warn; `--strict` makes them block.
+Output names the check and the lesson, never the lesson's text, because CI
+logs travel further than the store does.
 
 ### 11 — More commands
 
@@ -662,22 +700,79 @@ commontrace lesson suggest-rewrite <slug>
 commontrace kb list
 commontrace kb install kubernetes-deployment
 
+# Any function: support sales hr coding marketing robotics legal finance clinical, or your own kit file
+commontrace function list
+commontrace init --function support           # or --kit my_function.json
+commontrace function forecast --daily 40      # at your volume, how long until a verdict
+commontrace function demo                     # synthetic data in an empty store, to see a report
+
+# The Agent Learning Proof: plan, run, report, and let anyone re-derive it from the raw data
+commontrace proof start support --label "Acme" --daily 300 --value-per-occasion 12
+commontrace proof status
+commontrace proof report --key-file KEY        # report.md + proof.json + assignments.csv, signed
+commontrace proof verify proof-acme --key-file KEY   # recomputes everything from the CSV
+commontrace proof demo --value-per-occasion 12  # the same on synthetic data, clearly labelled
+
 # Failure signals, exportable as eval datasets
 commontrace signals list
 commontrace signals export "<name>" --format langsmith|braintrust
 
 # Reproduce the causal-detection claim against seeded ground truth
 python -m commons.eval.causal_harness
+python -m commons.eval.coverage_harness        # per memory adapter, 200 seeds
+commontrace retrieval --on-harm withdraw       # stop delivering a memory measured to hurt (any store)
 ```
 
 LangGraph: `commontrace.integrations.langgraph.with_lessons(node, memory)`.
 Hub: `HUB_OTLP_INGEST_ENABLED=true` accepts OTLP/JSON spans at `POST /v1/traces`.
+
+Hub outcome connectors (Zendesk, GitHub): a system of record's signed webhooks record how occasions
+turned out. Needs `HUB_ENCRYPTION_KEY`; a connector starts in dry-run.
+
+```bash
+HUB_CONNECTORS_ENABLED=true                      # mounts POST /connectors/{id}/events + the sweep
+HUB_CONNECTOR_SECRET=<vendor signing secret> python -m hub.manage connector-add <org_id> zendesk '{"window_days": 7}'
+python -m hub.manage connector-deliveries <connector_id>   # what it WOULD record
+python -m hub.manage connector-live <connector_id>
+```
 
 See [`protocol/PROTOCOL.md`](protocol/PROTOCOL.md) for the object model these
 commands produce, and `commontrace --help` / `commontrace <subcommand> --help`
 for the full CLI reference.
 
 ---
+
+### 12 — Any agent, any language, any robot: the gateway and console
+
+```bash
+commontrace gateway --env real --protect safety/      # HTTP + JSON; prints an API URL and a console URL
+commontrace gateway --stdio                           # one JSON object per line, no network
+commontrace proof wizard support --label acme --daily 400   # plan, confirm, start (add --simulate to rehearse)
+commontrace fleet adopt robot-1/ --dest robot-2/           # robot-2 randomizes exactly as robot-1 does
+commontrace fleet merge robot-1/ robot-2/ --dest pooled/   # refuses what cannot honestly be pooled
+
+curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"occasion_id":"ep-1","agent_id":"arm-7","items":[{"id":"grasp/soft-cup","text":"..."}]}' \
+  http://localhost:8787/v1/recall          # then POST /v1/outcome {occasion_id, succeeded | signals}
+```
+
+```bash
+commontrace gateway --allow-approval                  # the console can also review, edit, approve, reject drafts
+commontrace dream --recipe cron                       # a scheduled pass that only writes status=review drafts
+commontrace function precision labelled.jsonl         # how often the outcome detector agrees with a person
+commontrace bill template                             # the terms YOU set; there are no default prices
+commontrace bill invoice --schedule prices.json --org acme --period 2026-Q1 \
+    --agent-months 36 --package proof-acme/ --key-file KEY          # preview; add --commit to record
+commontrace conformance exec "./your-implementation"  # check any language against the protocol vectors
+commontrace doctor --troubleshooting                  # what each check means and how to fix it
+```
+
+Deploy the Hub with [`deploy/`](deploy/README.md) (a Helm chart and Terraform for Postgres on AWS and GCP).
+
+The caller brings its own memories; protected ones (safety constraints) are never withheld,
+simulation and reality are never pooled, and nothing is withheld until an experiment is
+started on purpose. Open the printed console URL for the verdicts, who is calling, and what
+is being withheld or withdrawn (no build step; works at phone width, light or dark).
 
 ## Quick Start — Agents with no terminal (MCP)
 
@@ -876,6 +971,8 @@ clone the repo and run scripts from within it, everything works out of the box.
 | Variable | Default | Description |
 |---|---|---|
 | `COMMONTRACE_ROOT` | Auto-detected from script location | Root of the skill installation |
+| `COMMONTRACE_WARM` | on (Unix) | `0` runs every semantic query as a one-shot process instead of through the warm worker |
+| `COMMONTRACE_WARM_IDLE` | `600` | Seconds without a query before the warm worker exits |
 
 Only set `COMMONTRACE_ROOT` if you need to override the auto-detected path (e.g., scripts
 are running from a different location than the memory store).
@@ -940,8 +1037,7 @@ turn in the top 10 for 70.6% of questions, against 56.1% for mpnet.
 | `implicit_retrieval` | % of Alpha-retrieved lessons that actually helped |
 | `transfer_gap` | % of hits that crossed project boundaries |
 
-Run periodically (every 5-10 `/commontrace` runs). See `benchmark/STATUS.md` for
-interpretation guidelines and the roadmap.
+Run periodically (every 5-10 `/commontrace` runs).
 
 `measure_performance.py` answers "is the protocol machinery healthy" — is
 generation (Omega) and retrieval (Alpha) doing its job. It does **not**
@@ -1016,7 +1112,6 @@ significantly *hurting* outcomes when it was fine.
 The gate is deliberately two-sided (a ceiling on the worst field **and** the
 worst÷best spread): the historical scorer polluted at 1.89×–2.50× while its
 *spread* was 1.32×, so a spread-only gate would have called it acceptable.
-Methodology, thresholds and limitations: [`benchmark/STATUS.md`](benchmark/STATUS.md) §9.
 
 ---
 
@@ -1233,8 +1328,7 @@ them recovers it:
 | **`commons ask` (ranked)** | **89.1%** | **95.7%** | **100%** | **No** |
 
 Measured on 46 held-out failures written in on-call vocabulary
-(`python commons/eval/search_modes.py`, recorded in
-[`commons/eval/RESULTS.md`](commons/eval/RESULTS.md)). Your question is
+(`python commons/eval/search_modes.py`). Your question is
 MinHashed locally exactly as `sign` does it — **no failure text leaves your
 machine for either command.**
 
@@ -1343,7 +1437,7 @@ a different amount per submission). A **rejected or still-pending** one
 earns nothing.
 
 That "earns nothing until accepted" rule is the entire fix for the problem
-an earlier, retired design had (§3 in `STRATEGY.md`): a credit for the act
+an earlier, retired design had: a credit for the act
 of *sharing* rewards volume, and an org keeps its best lessons while
 farming credit with filler. A credit for *acceptance* rewards quality
 instead, because filler gets rejected. It does not make the underlying
@@ -1603,10 +1697,20 @@ organisation by its own API key:
 
 | Page | What it answers |
 | --- | --- |
-| **Overview** | How much memory this fleet has, how many agents it runs, and how often a search comes back with nothing |
-| **Proof** | Is the memory working — with **"can this be trusted?" rendered above the effect sizes**, not in a footnote under them |
+| **Overview** | How much memory this fleet has, how many agents it runs, how often a search comes back with nothing; a setup checklist until the first measured answer; weekly success with memory against without it, and traces captured per week |
+| **Proof** | Is the memory working — with **"can this be trusted?" rendered above the effect sizes**, not in a footnote under them; each memory's effect and 95% interval on one forest plot, with the figures as a table |
 | **Memory** | The corpus, searched the way the agents search it, showing which terms matched and which were too common to discriminate |
 | **Knowledge Base** | Proposals sent, consultations used, credit earned |
+| **Users, API Keys, Alerts, Webhooks, Audit log** | Administration for an admin-scoped session; every change goes through the same audited functions the CLI uses |
+
+The pages share one shell: grouped navigation, a command palette (Ctrl/⌘ K)
+and `g` + letter shortcuts, light, dark or system theme, sortable and
+filterable tables, and print-ready Proof. Every chart has a data table beside
+it, a week with fewer than 5 occasions in an arm is drawn as a gap rather than
+a 0% or 100%, and every page passes an axe-core audit in both themes. Nothing
+is built: the HTML is rendered on the server, and the only scripts are inline
+ones the CSP allows by hash. Without script, every page still reads and every
+form still submits.
 
 ```bash
 HUB_CONSOLE_SECRET=$(python -c "import secrets; print(secrets.token_urlsafe(48))")
@@ -1615,14 +1719,15 @@ HUB_CONSOLE_SECRET=$(python -c "import secrets; print(secrets.token_urlsafe(48))
 
 Four properties, each ruling something out:
 
-- **It writes no queries of its own.** Every number comes from a function
-  that already takes and filters on `org_id`. A cross-tenant leak is the
-  worst failure this product has available, so the isolation argument rests
-  on the one set of filters the tenant-isolation suite already exercises.
-- **It is read-only.** Everything you could change from a browser alters
-  either a measurement or a shared corpus, and both already have audited,
-  authenticated paths. That is also why there are no CSRF tokens: there is
-  no state-changing request for a forged one to trigger.
+- **It writes no queries of its own.** Every number comes from a `hub/crud.py`
+  function that takes and filters on `org_id`, the weekly chart series
+  included. A cross-tenant leak is the worst failure this product has
+  available, so the isolation argument rests on the one set of filters the
+  tenant-isolation suite exercises.
+- **Its changes are the CLI's changes.** Inviting a user, rotating a key or
+  stopping an experiment calls the same function the CLI does, audited under
+  the credential that signed in, and needs an admin-scoped key. Those requests
+  are same-origin POSTs on a `SameSite=Strict` cookie.
 - **Revoking a key ends the browser sessions it opened**, checked on every
   request. Revocation that leaves a session alive for another eight hours is
   a false belief about the state of a credential.
@@ -1751,8 +1856,7 @@ Storage is real cost and grows monotonically. **Knowledge Base queries are
 the metered unit** because that is the only call whose value comes from
 content the org did not itself produce — everything else an org does is
 with its own data, and charging per query against your own memory is rent,
-not price. Purging frees storage allowance, so the deletion right in
-`DATA_RETENTION.md` is not a right in name only. The flat plan grant above
+not price. Purging frees storage allowance, so the deletion right is not a right in name only. The flat plan grant above
 is the floor, not the ceiling — see "Propose an entry" for the one way an
 org can permanently raise it, by having a Knowledge Base submission
 accepted rather than by the act of submitting.
@@ -1853,7 +1957,7 @@ prospect decides on. So it is measured rather than asserted, against probes
 the corpus was not built from:
 
 ```bash
-python commons/eval/run.py        # commons/eval/RESULTS.md records the run
+python commons/eval/run.py        
 ```
 
 46 held-out positives (real failures the corpus contains, written
@@ -1890,8 +1994,7 @@ similarity, and it is not a tweak — embeddings require a model to see the
 failure text, which is exactly what the current design refuses to transmit.
 That trade is unresolved and is written down as unresolved.
 
-`commons/eval/RESULTS.md` carries the sensitivity table and the limits in
-full — the most important being that the same author wrote both the corpus
+The most important limit: the same author wrote both the corpus
 and the probes, which makes 10.9% an optimistic bound rather than an
 estimate of a real fleet. The measurement that would settle it is a run
 against failures a customer actually collected, and it has not happened.
@@ -1962,19 +2065,15 @@ tests, not left to convention:
 | Health checks | `/healthz` (liveness, no DB dependency — a database blip must not trigger a restart storm) and `/readyz` (readiness, real query). |
 | Observability | Structured JSON logs with a per-request correlation id; CI fails the build if an API key or DB password ever appears in log output. |
 | Audit trail | Every mutation and every operator action writes a content-free audit row that survives the data it describes. |
-| Data deletion | Self-service via an org's own API key (`delete_trace`; `request_account_deletion`/`confirm_account_deletion` for a whole org, two calls with a mandatory delay between them), or operator-CLI (`manage.py purge-trace`/`purge-org`). All four perform hard deletes and follow amendment chains. See [`DATA_RETENTION.md`](DATA_RETENTION.md). |
-| Data retention | Per-org policies by object type and status, a purge plan you read before anything happens, and legal holds that outrank every policy. `manage.py set-retention` / `retention-plan` / `retention-apply` / `legal-hold`. See [`DATA_RETENTION.md`](DATA_RETENTION.md) §2. |
+| Data deletion | Self-service via an org's own API key (`delete_trace`; `request_account_deletion`/`confirm_account_deletion` for a whole org, two calls with a mandatory delay between them), or operator-CLI (`manage.py purge-trace`/`purge-org`). All four perform hard deletes and follow amendment chains. |
+| Data retention | Per-org policies by object type and status, a purge plan you read before anything happens, and legal holds that outrank every policy. `manage.py set-retention` / `retention-plan` / `retention-apply` / `legal-hold`. |
 | Event export | Signed, at-least-once webhooks carrying ids, counts and verdicts — **never trace content**, enforced by a per-event-type field whitelist. `manage.py webhook-add`. See `hub/README.md` "Event export". |
 | Rate limiting | Per-org token bucket. **Known limitation:** it is process-local, so N replicas allow roughly N× the configured rate — see `hub/DEPLOYMENT.md` §6 for the mitigations. |
 
 **What this does *not* have** is as important as the table above, and is
 written down rather than left to be discovered: no legal entity, no SOC 2,
 no penetration test, no SAML or browser-based login (OIDC, SCIM and human
-user accounts do exist), no residency commitment and no support SLA. [`TRUST.md`](TRUST.md) states the trust boundary and lists every gap at
-full weight; [`AUDIT_RESPONSE.md`](AUDIT_RESPONSE.md) answers a third-party
-readiness audit finding by finding, marking each one done, partial, not
-applicable, or *requires business action* — with the rule that the last
-category is never quietly downgraded by building something adjacent to it.
+user accounts do exist), no residency commitment and no support SLA.
 
 Before putting a client's data on it, work through the security checklist in
 `hub/DEPLOYMENT.md` §10 and the deliberately-documented limitations in §11.
@@ -2020,14 +2119,12 @@ commontrace-v2/
                                   yet published to PyPI (`pip install commontrace` is the
                                   intended path once it is).
   SKILL.md                     — Code-review reference profile spec (pipeline, agent briefs)
-  DOCUMENTATION.md             — Deep-dive on the code-review profile: design decisions, research refs
   README.md                    — This file
   AGENTS.md                    — Agent-facing guidance (any platform)
   requirements.txt             — Python deps for the code-review profile's attention layer
   install.sh                   — Setup script for the code-review profile (SKILL.md route)
   assets/                      — Architecture diagrams (.dot + .png)
   memory/                      — Local store: lessons/ (any agent_type), traces/ (generic), episodes/ (code profile)
-  benchmark/                   — measure_performance.py (protocol health) + pilot_metrics.py (business outcomes)
   tests/                       — pytest suite (frontmatter contract, benchmark, CLI)
   .devin/                      — Devin-specific skill config (optional)
 ```

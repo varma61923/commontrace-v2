@@ -1,7 +1,3 @@
-"""`commontrace kb`: list and install curated substrate lesson packs.
-See commontrace/kb_packs.py for where the content comes from and why an
-installed lesson lands at `status: review`.
-"""
 from __future__ import annotations
 
 import argparse

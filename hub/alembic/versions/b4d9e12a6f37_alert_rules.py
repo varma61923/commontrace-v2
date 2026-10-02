@@ -1,18 +1,4 @@
-"""alert rules (threshold alerting on top of the existing webhook pipeline)
-
-Revision ID: b4d9e12a6f37
-Revises: a7c3e91f4b28
-Create Date: 2026-09-12 07:00:00.000000
-
-Audit §8.3: "No alerting, scheduled reports, BI export." Webhooks (6.3,
-hub/events.py) already tell a receiver WHEN something happened; this adds
-WHETHER a number has crossed a line an operator cares about, firing
-through that same signed, at-least-once queue rather than a second
-delivery mechanism.
-
-Same row-level security every other org-scoped table in this Hub gets
-(d5c8b3a91e77).
-"""
+"""alert rules (threshold alerting on top of the existing webhook pipeline)"""
 from __future__ import annotations
 
 from collections.abc import Sequence

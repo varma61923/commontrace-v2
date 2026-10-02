@@ -1,21 +1,3 @@
-"""Tests for `commontrace prove` — the client path to the Hub's causal
-instrument.
-
-The gap this closes is worth naming, because it was mine and it repeated a
-mistake one layer up. `holdout_assign`, `record_occasion_outcome` and
-`fleet_outcomes` were added to the Hub and wired to nothing a customer
-could reach: no `hub_client` function, no CLI command. A fleet would have
-had to hand-write MCP calls to run the experiment that STRATEGY.md §13.2
-calls the cheapest falsifier available. Building an instrument and leaving
-it where the users are not is the exact failure §19 corrected for the Hub,
-committed again at the client boundary in the same session.
-
-The rendering is what most of these test, because the ordering carries a
-claim: the causal answer is printed FIRST when one exists. Burying it
-under the observational table invites a reader to quote the weaker number
-because they saw it first, and the weaker number is the one that dies to
-"what else changed that quarter?".
-"""
 from __future__ import annotations
 
 import argparse
@@ -75,9 +57,6 @@ def _report(causal):
 
 class TestRenderOrdering:
     def test_the_causal_answer_is_printed_before_the_observational_one(self):
-        """The ordering IS the claim. A reader who meets the before/after
-        table first will quote it, and it is the number that dies to 'what
-        else changed that quarter?'."""
         out = prove_cmd.render_outcomes(_report(_causal([_effect("HELPS")])))
         assert out.index("randomized holdout") < out.index("Observed change")
 
@@ -88,8 +67,6 @@ class TestRenderOrdering:
         assert "95% CI [+21.7%, +36.7%]" in out
 
     def test_a_harmful_lesson_is_rendered_with_equal_prominence(self):
-        """The verdict correlational scoring cannot produce, so it must not
-        be softened or buried when it appears."""
         out = prove_cmd.render_outcomes(_report(_causal([_effect("HURTS", effect=-0.24)])))
         assert "HURTS" in out
         assert "-24.0%" in out
@@ -102,8 +79,6 @@ class TestRenderOrdering:
         assert "p=" not in out
 
     def test_no_experiment_says_nothing_here_is_causal(self):
-        """The most important empty state: a reader must not take the
-        observational table below for a causal result."""
         out = prove_cmd.render_outcomes(_report(_causal([], running=False, n_obs=0, n_occ=0)))
         assert "No experiment is running, so nothing below is causal" in out
         assert "start-experiment" in out
@@ -170,8 +145,6 @@ class TestRecord:
         assert "3 observation(s) resolved" in capsys.readouterr().out
 
     def test_zero_resolved_names_both_likely_causes(self, capsys, monkeypatch):
-        """A bare '0 resolved' leaves a user with no idea whether they
-        double-reported or never assigned."""
         monkeypatch.setattr(
             prove_cmd.hub_client, "record_occasion_outcome",
             lambda *a, **k: _async({"occasion_id": "ticket-1", "observations_resolved": 0}),
@@ -186,9 +159,6 @@ class TestRecord:
 
 class TestParser:
     def test_record_requires_an_explicit_outcome(self):
-        """--succeeded and --failed are a required mutually exclusive
-        group: defaulting to success would quietly bias every unreported
-        task toward the treated arm looking good."""
         import pytest
 
         parser = argparse.ArgumentParser()
@@ -204,8 +174,6 @@ class TestParser:
 
 
 def _async(value):
-    """asyncio.run() needs a coroutine; the CLI wraps every hub_client call
-    in one, so a monkeypatched stand-in has to return one too."""
     async def _inner():
         return value
 
@@ -213,11 +181,6 @@ def _async(value):
 
 
 class TestTheValidityVerdictIsAboveTheEffects:
-    """`prove outcomes` is the document that goes into a renewal
-    conversation, which is the worst place for a caveat under a table: the
-    number gets quoted and the footnote does not travel with it.
-    """
-
     @staticmethod
     def _report(integrity: dict) -> str:
         from commontrace.commands import prove_cmd
@@ -253,7 +216,6 @@ class TestTheValidityVerdictIsAboveTheEffects:
         })
         assert "Do not quote the effect sizes" in text
         assert "more data will not fix it" in text
-        # Position, not presence: above the verdict it is warning about.
         assert text.index("Do not quote") < text.index("HURTS")
 
     def test_a_weakened_sample_says_so_without_suppressing_the_estimate(self):
@@ -264,12 +226,9 @@ class TestTheValidityVerdictIsAboveTheEffects:
                           "detail": ""}],
         })
         assert "Weakened" in text and "38.0%" in text
-        assert "HURTS" in text  # still an estimate, still shown
+        assert "HURTS" in text
 
     def test_a_clean_run_says_what_was_checked_and_what_was_not(self):
-        """Silence would read as coverage. Contamination -- an agent using a
-        memory it was told to withhold -- leaves no trace and is not checked
-        anywhere, so the report has to say so."""
         text = self._report({"verdict": "SOUND", "effects_readable": True, "findings": []})
         assert "Validity checked" in text
         assert "told to withhold" in text

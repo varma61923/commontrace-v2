@@ -1,0 +1,1782 @@
+{
+ "assign": [
+  {
+   "held_out": false,
+   "lesson": "lesson-a",
+   "occasion": "ocčasion-ß",
+   "rate": 0.25,
+   "salt": "ünï"
+  },
+  {
+   "held_out": false,
+   "lesson": "a b",
+   "occasion": "ocčasion-ß",
+   "rate": 0.5,
+   "salt": "salt-1"
+  },
+  {
+   "held_out": true,
+   "lesson": "refund-policy",
+   "occasion": "robot-3/ep-2",
+   "rate": 0.75,
+   "salt": "ünï"
+  },
+  {
+   "held_out": false,
+   "lesson": "grasp/soft-cup",
+   "occasion": "ocčasion-ß",
+   "rate": 0.05,
+   "salt": "exp-2026-q1"
+  },
+  {
+   "held_out": true,
+   "lesson": "refund-policy",
+   "occasion": "ep-203259",
+   "rate": 1.0,
+   "salt": "default"
+  },
+  {
+   "held_out": false,
+   "lesson": "lesson-a",
+   "occasion": "ep-977241",
+   "rate": 0.1,
+   "salt": "exp-2026-q1"
+  },
+  {
+   "held_out": true,
+   "lesson": "a\u001fb",
+   "occasion": "ocčasion-ß",
+   "rate": 1.0,
+   "salt": "salt-1"
+  },
+  {
+   "held_out": false,
+   "lesson": "a\u001fb",
+   "occasion": "7",
+   "rate": 0.5,
+   "salt": "default"
+  },
+  {
+   "held_out": false,
+   "lesson": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "occasion": "ocčasion-ß",
+   "rate": 0.0,
+   "salt": "salt-1"
+  },
+  {
+   "held_out": false,
+   "lesson": "a\u001fb",
+   "occasion": "ep-683753",
+   "rate": 0.05,
+   "salt": "ünï"
+  },
+  {
+   "held_out": false,
+   "lesson": "a\u001fb",
+   "occasion": "robot-2/ep-10",
+   "rate": 0.05,
+   "salt": "default"
+  },
+  {
+   "held_out": true,
+   "lesson": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "occasion": "11",
+   "rate": 1.0,
+   "salt": "salt-1"
+  },
+  {
+   "held_out": false,
+   "lesson": "ünïcode-leçon",
+   "occasion": "ep-438310",
+   "rate": 0.0,
+   "salt": "ünï"
+  },
+  {
+   "held_out": false,
+   "lesson": "a\u001fb",
+   "occasion": "ocčasion-ß",
+   "rate": 0.9,
+   "salt": "exp-2026-q1"
+  },
+  {
+   "held_out": false,
+   "lesson": "ünïcode-leçon",
+   "occasion": "14",
+   "rate": 0.0,
+   "salt": "ünï"
+  },
+  {
+   "held_out": false,
+   "lesson": "a b",
+   "occasion": "ocčasion-ß",
+   "rate": 0.75,
+   "salt": "default"
+  },
+  {
+   "held_out": true,
+   "lesson": "a\u001fb",
+   "occasion": "ep-740019",
+   "rate": 1.0,
+   "salt": "exp-2026-q1"
+  },
+  {
+   "held_out": true,
+   "lesson": "refund-policy",
+   "occasion": "ep-672296",
+   "rate": 0.5,
+   "salt": "salt-1"
+  },
+  {
+   "held_out": true,
+   "lesson": "a\u001fb",
+   "occasion": "robot-5/ep-18",
+   "rate": 0.1,
+   "salt": "ünï"
+  },
+  {
+   "held_out": false,
+   "lesson": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "occasion": "19",
+   "rate": 0.1,
+   "salt": "salt-1"
+  },
+  {
+   "held_out": false,
+   "lesson": "a\u001fb",
+   "occasion": "ep-758450",
+   "rate": 0.1,
+   "salt": "exp-2026-q1"
+  },
+  {
+   "held_out": false,
+   "lesson": "ünïcode-leçon",
+   "occasion": "21",
+   "rate": 0.25,
+   "salt": "ünï"
+  },
+  {
+   "held_out": false,
+   "lesson": "refund-policy",
+   "occasion": "ocčasion-ß",
+   "rate": 0.0,
+   "salt": "default"
+  },
+  {
+   "held_out": true,
+   "lesson": "refund-policy",
+   "occasion": "23",
+   "rate": 1.0,
+   "salt": "exp-2026-q1"
+  },
+  {
+   "held_out": false,
+   "lesson": "a\u001fb",
+   "occasion": "ep-712288",
+   "rate": 0.1,
+   "salt": "exp-2026-q1"
+  },
+  {
+   "held_out": false,
+   "lesson": "ünïcode-leçon",
+   "occasion": "ocčasion-ß",
+   "rate": 0.1,
+   "salt": "ünï"
+  },
+  {
+   "held_out": false,
+   "lesson": "lesson-a",
+   "occasion": "26",
+   "rate": 0.05,
+   "salt": "ünï"
+  },
+  {
+   "held_out": true,
+   "lesson": "a\u001fb",
+   "occasion": "robot-7/ep-27",
+   "rate": 0.9,
+   "salt": "salt-1"
+  },
+  {
+   "held_out": false,
+   "lesson": "refund-policy",
+   "occasion": "ep-682539",
+   "rate": 0.5,
+   "salt": "salt-1"
+  },
+  {
+   "held_out": true,
+   "lesson": "a\u001fb",
+   "occasion": "robot-5/ep-29",
+   "rate": 0.9,
+   "salt": "salt-1"
+  },
+  {
+   "held_out": true,
+   "lesson": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "occasion": "30",
+   "rate": 0.75,
+   "salt": "ünï"
+  },
+  {
+   "held_out": true,
+   "lesson": "lesson-a",
+   "occasion": "robot-1/ep-31",
+   "rate": 0.9,
+   "salt": "exp-2026-q1"
+  },
+  {
+   "held_out": false,
+   "lesson": "a\u001fb",
+   "occasion": "32",
+   "rate": 0.0,
+   "salt": "exp-2026-q1"
+  },
+  {
+   "held_out": false,
+   "lesson": "grasp/soft-cup",
+   "occasion": "ocčasion-ß",
+   "rate": 0.25,
+   "salt": "default"
+  },
+  {
+   "held_out": true,
+   "lesson": "a b",
+   "occasion": "robot-5/ep-34",
+   "rate": 1.0,
+   "salt": "ünï"
+  },
+  {
+   "held_out": true,
+   "lesson": "ünïcode-leçon",
+   "occasion": "35",
+   "rate": 0.05,
+   "salt": "default"
+  },
+  {
+   "held_out": false,
+   "lesson": "grasp/soft-cup",
+   "occasion": "ocčasion-ß",
+   "rate": 0.0,
+   "salt": "ünï"
+  },
+  {
+   "held_out": true,
+   "lesson": "grasp/soft-cup",
+   "occasion": "37",
+   "rate": 1.0,
+   "salt": "exp-2026-q1"
+  },
+  {
+   "held_out": false,
+   "lesson": "refund-policy",
+   "occasion": "ep-623385",
+   "rate": 0.05,
+   "salt": "salt-1"
+  },
+  {
+   "held_out": false,
+   "lesson": "ünïcode-leçon",
+   "occasion": "39",
+   "rate": 0.5,
+   "salt": "default"
+  },
+  {
+   "held_out": false,
+   "lesson": "a\u001fb",
+   "occasion": "ocčasion-ß",
+   "rate": 0.5,
+   "salt": "exp-2026-q1"
+  },
+  {
+   "held_out": true,
+   "lesson": "grasp/soft-cup",
+   "occasion": "41",
+   "rate": 1.0,
+   "salt": "ünï"
+  },
+  {
+   "held_out": false,
+   "lesson": "a b",
+   "occasion": "robot-1/ep-42",
+   "rate": 0.1,
+   "salt": "exp-2026-q1"
+  },
+  {
+   "held_out": true,
+   "lesson": "ünïcode-leçon",
+   "occasion": "ocčasion-ß",
+   "rate": 0.25,
+   "salt": "ünï"
+  },
+  {
+   "held_out": false,
+   "lesson": "ünïcode-leçon",
+   "occasion": "ocčasion-ß",
+   "rate": 0.1,
+   "salt": "default"
+  },
+  {
+   "held_out": false,
+   "lesson": "ünïcode-leçon",
+   "occasion": "45",
+   "rate": 0.1,
+   "salt": "exp-2026-q1"
+  },
+  {
+   "held_out": false,
+   "lesson": "a\u001fb",
+   "occasion": "46",
+   "rate": 0.0,
+   "salt": "salt-1"
+  },
+  {
+   "held_out": true,
+   "lesson": "a\u001fb",
+   "occasion": "ep-372226",
+   "rate": 0.9,
+   "salt": "exp-2026-q1"
+  },
+  {
+   "held_out": false,
+   "lesson": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "occasion": "robot-4/ep-48",
+   "rate": 0.25,
+   "salt": "default"
+  },
+  {
+   "held_out": false,
+   "lesson": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "occasion": "robot-2/ep-49",
+   "rate": 0.1,
+   "salt": "default"
+  },
+  {
+   "held_out": true,
+   "lesson": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "occasion": "50",
+   "rate": 0.9,
+   "salt": "exp-2026-q1"
+  },
+  {
+   "held_out": false,
+   "lesson": "ünïcode-leçon",
+   "occasion": "robot-3/ep-51",
+   "rate": 0.0,
+   "salt": "salt-1"
+  },
+  {
+   "held_out": false,
+   "lesson": "a b",
+   "occasion": "52",
+   "rate": 0.0,
+   "salt": "exp-2026-q1"
+  },
+  {
+   "held_out": false,
+   "lesson": "grasp/soft-cup",
+   "occasion": "53",
+   "rate": 0.1,
+   "salt": "exp-2026-q1"
+  },
+  {
+   "held_out": false,
+   "lesson": "a\u001fb",
+   "occasion": "ocčasion-ß",
+   "rate": 0.05,
+   "salt": "salt-1"
+  },
+  {
+   "held_out": false,
+   "lesson": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "occasion": "ep-577255",
+   "rate": 0.0,
+   "salt": "default"
+  },
+  {
+   "held_out": false,
+   "lesson": "ünïcode-leçon",
+   "occasion": "robot-9/ep-56",
+   "rate": 0.5,
+   "salt": "salt-1"
+  },
+  {
+   "held_out": true,
+   "lesson": "refund-policy",
+   "occasion": "ocčasion-ß",
+   "rate": 0.25,
+   "salt": "default"
+  },
+  {
+   "held_out": true,
+   "lesson": "refund-policy",
+   "occasion": "ep-753199",
+   "rate": 1.0,
+   "salt": "exp-2026-q1"
+  },
+  {
+   "held_out": true,
+   "lesson": "refund-policy",
+   "occasion": "robot-7/ep-59",
+   "rate": 1.0,
+   "salt": "default"
+  },
+  {
+   "held_out": false,
+   "lesson": "a b",
+   "occasion": "60",
+   "rate": 0.1,
+   "salt": "default"
+  },
+  {
+   "held_out": true,
+   "lesson": "ünïcode-leçon",
+   "occasion": "ep-750279",
+   "rate": 0.5,
+   "salt": "exp-2026-q1"
+  },
+  {
+   "held_out": false,
+   "lesson": "lesson-a",
+   "occasion": "62",
+   "rate": 0.5,
+   "salt": "exp-2026-q1"
+  },
+  {
+   "held_out": true,
+   "lesson": "lesson-a",
+   "occasion": "ep-939082",
+   "rate": 0.75,
+   "salt": "ünï"
+  },
+  {
+   "held_out": false,
+   "lesson": "lesson-a",
+   "occasion": "ep-26212",
+   "rate": 0.05,
+   "salt": "ünï"
+  },
+  {
+   "held_out": false,
+   "lesson": "refund-policy",
+   "occasion": "ocčasion-ß",
+   "rate": 0.05,
+   "salt": "salt-1"
+  },
+  {
+   "held_out": true,
+   "lesson": "grasp/soft-cup",
+   "occasion": "66",
+   "rate": 0.5,
+   "salt": "ünï"
+  },
+  {
+   "held_out": false,
+   "lesson": "refund-policy",
+   "occasion": "67",
+   "rate": 0.1,
+   "salt": "exp-2026-q1"
+  },
+  {
+   "held_out": true,
+   "lesson": "ünïcode-leçon",
+   "occasion": "robot-1/ep-68",
+   "rate": 0.9,
+   "salt": "exp-2026-q1"
+  },
+  {
+   "held_out": false,
+   "lesson": "a b",
+   "occasion": "69",
+   "rate": 0.05,
+   "salt": "default"
+  },
+  {
+   "held_out": false,
+   "lesson": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "occasion": "ocčasion-ß",
+   "rate": 0.5,
+   "salt": "ünï"
+  },
+  {
+   "held_out": true,
+   "lesson": "a\u001fb",
+   "occasion": "ep-546473",
+   "rate": 1.0,
+   "salt": "salt-1"
+  },
+  {
+   "held_out": true,
+   "lesson": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "occasion": "ep-625131",
+   "rate": 0.75,
+   "salt": "exp-2026-q1"
+  },
+  {
+   "held_out": true,
+   "lesson": "grasp/soft-cup",
+   "occasion": "73",
+   "rate": 0.9,
+   "salt": "salt-1"
+  },
+  {
+   "held_out": true,
+   "lesson": "a b",
+   "occasion": "ep-106800",
+   "rate": 0.5,
+   "salt": "exp-2026-q1"
+  },
+  {
+   "held_out": false,
+   "lesson": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "occasion": "robot-7/ep-75",
+   "rate": 0.1,
+   "salt": "exp-2026-q1"
+  },
+  {
+   "held_out": false,
+   "lesson": "grasp/soft-cup",
+   "occasion": "76",
+   "rate": 0.05,
+   "salt": "salt-1"
+  },
+  {
+   "held_out": false,
+   "lesson": "lesson-a",
+   "occasion": "ep-468416",
+   "rate": 0.5,
+   "salt": "ünï"
+  },
+  {
+   "held_out": true,
+   "lesson": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "occasion": "ep-342763",
+   "rate": 0.9,
+   "salt": "default"
+  },
+  {
+   "held_out": true,
+   "lesson": "refund-policy",
+   "occasion": "ocčasion-ß",
+   "rate": 0.9,
+   "salt": "salt-1"
+  },
+  {
+   "held_out": false,
+   "lesson": "a b",
+   "occasion": "robot-2/ep-80",
+   "rate": 0.0,
+   "salt": "exp-2026-q1"
+  },
+  {
+   "held_out": true,
+   "lesson": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "occasion": "ocčasion-ß",
+   "rate": 0.9,
+   "salt": "exp-2026-q1"
+  },
+  {
+   "held_out": true,
+   "lesson": "ünïcode-leçon",
+   "occasion": "ocčasion-ß",
+   "rate": 0.9,
+   "salt": "salt-1"
+  },
+  {
+   "held_out": false,
+   "lesson": "a\u001fb",
+   "occasion": "ocčasion-ß",
+   "rate": 0.0,
+   "salt": "ünï"
+  },
+  {
+   "held_out": true,
+   "lesson": "grasp/soft-cup",
+   "occasion": "ocčasion-ß",
+   "rate": 1.0,
+   "salt": "default"
+  },
+  {
+   "held_out": false,
+   "lesson": "a b",
+   "occasion": "ocčasion-ß",
+   "rate": 0.5,
+   "salt": "salt-1"
+  },
+  {
+   "held_out": false,
+   "lesson": "a b",
+   "occasion": "robot-3/ep-86",
+   "rate": 0.0,
+   "salt": "default"
+  },
+  {
+   "held_out": true,
+   "lesson": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "occasion": "ep-67302",
+   "rate": 0.1,
+   "salt": "exp-2026-q1"
+  },
+  {
+   "held_out": true,
+   "lesson": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "occasion": "88",
+   "rate": 1.0,
+   "salt": "salt-1"
+  },
+  {
+   "held_out": false,
+   "lesson": "ünïcode-leçon",
+   "occasion": "89",
+   "rate": 0.5,
+   "salt": "ünï"
+  },
+  {
+   "held_out": true,
+   "lesson": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "occasion": "ocčasion-ß",
+   "rate": 0.75,
+   "salt": "ünï"
+  },
+  {
+   "held_out": false,
+   "lesson": "a\u001fb",
+   "occasion": "robot-5/ep-91",
+   "rate": 0.5,
+   "salt": "ünï"
+  },
+  {
+   "held_out": false,
+   "lesson": "a\u001fb",
+   "occasion": "ep-946402",
+   "rate": 0.25,
+   "salt": "default"
+  },
+  {
+   "held_out": true,
+   "lesson": "a b",
+   "occasion": "robot-2/ep-93",
+   "rate": 1.0,
+   "salt": "exp-2026-q1"
+  },
+  {
+   "held_out": false,
+   "lesson": "a\u001fb",
+   "occasion": "ep-4102",
+   "rate": 0.5,
+   "salt": "default"
+  },
+  {
+   "held_out": true,
+   "lesson": "a\u001fb",
+   "occasion": "ocčasion-ß",
+   "rate": 0.5,
+   "salt": "salt-1"
+  },
+  {
+   "held_out": false,
+   "lesson": "lesson-a",
+   "occasion": "ocčasion-ß",
+   "rate": 0.05,
+   "salt": "default"
+  },
+  {
+   "held_out": true,
+   "lesson": "ünïcode-leçon",
+   "occasion": "robot-8/ep-97",
+   "rate": 1.0,
+   "salt": "ünï"
+  },
+  {
+   "held_out": true,
+   "lesson": "lesson-a",
+   "occasion": "ep-818609",
+   "rate": 1.0,
+   "salt": "salt-1"
+  },
+  {
+   "held_out": true,
+   "lesson": "refund-policy",
+   "occasion": "ep-943",
+   "rate": 1.0,
+   "salt": "default"
+  },
+  {
+   "held_out": true,
+   "lesson": "ünïcode-leçon",
+   "occasion": "100",
+   "rate": 0.9,
+   "salt": "default"
+  },
+  {
+   "held_out": false,
+   "lesson": "grasp/soft-cup",
+   "occasion": "101",
+   "rate": 0.25,
+   "salt": "salt-1"
+  },
+  {
+   "held_out": true,
+   "lesson": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "occasion": "ocčasion-ß",
+   "rate": 0.9,
+   "salt": "ünï"
+  },
+  {
+   "held_out": false,
+   "lesson": "ünïcode-leçon",
+   "occasion": "ep-724996",
+   "rate": 0.05,
+   "salt": "ünï"
+  },
+  {
+   "held_out": false,
+   "lesson": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "occasion": "ep-327078",
+   "rate": 0.5,
+   "salt": "salt-1"
+  },
+  {
+   "held_out": false,
+   "lesson": "a\u001fb",
+   "occasion": "105",
+   "rate": 0.05,
+   "salt": "salt-1"
+  },
+  {
+   "held_out": false,
+   "lesson": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "occasion": "106",
+   "rate": 0.25,
+   "salt": "ünï"
+  },
+  {
+   "held_out": true,
+   "lesson": "lesson-a",
+   "occasion": "ocčasion-ß",
+   "rate": 0.75,
+   "salt": "ünï"
+  },
+  {
+   "held_out": true,
+   "lesson": "refund-policy",
+   "occasion": "108",
+   "rate": 1.0,
+   "salt": "salt-1"
+  },
+  {
+   "held_out": true,
+   "lesson": "lesson-a",
+   "occasion": "robot-9/ep-109",
+   "rate": 0.5,
+   "salt": "default"
+  },
+  {
+   "held_out": false,
+   "lesson": "ünïcode-leçon",
+   "occasion": "110",
+   "rate": 0.1,
+   "salt": "ünï"
+  },
+  {
+   "held_out": true,
+   "lesson": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "occasion": "ocčasion-ß",
+   "rate": 0.9,
+   "salt": "exp-2026-q1"
+  },
+  {
+   "held_out": true,
+   "lesson": "ünïcode-leçon",
+   "occasion": "robot-2/ep-112",
+   "rate": 1.0,
+   "salt": "salt-1"
+  },
+  {
+   "held_out": true,
+   "lesson": "lesson-a",
+   "occasion": "ocčasion-ß",
+   "rate": 0.5,
+   "salt": "exp-2026-q1"
+  },
+  {
+   "held_out": false,
+   "lesson": "grasp/soft-cup",
+   "occasion": "114",
+   "rate": 0.25,
+   "salt": "default"
+  },
+  {
+   "held_out": false,
+   "lesson": "lesson-a",
+   "occasion": "ocčasion-ß",
+   "rate": 0.1,
+   "salt": "exp-2026-q1"
+  },
+  {
+   "held_out": true,
+   "lesson": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "occasion": "robot-4/ep-116",
+   "rate": 1.0,
+   "salt": "default"
+  },
+  {
+   "held_out": false,
+   "lesson": "a b",
+   "occasion": "ocčasion-ß",
+   "rate": 0.05,
+   "salt": "exp-2026-q1"
+  },
+  {
+   "held_out": true,
+   "lesson": "lesson-a",
+   "occasion": "robot-9/ep-118",
+   "rate": 0.75,
+   "salt": "default"
+  },
+  {
+   "held_out": true,
+   "lesson": "a\u001fb",
+   "occasion": "ocčasion-ß",
+   "rate": 0.75,
+   "salt": "salt-1"
+  },
+  {
+   "held_out": false,
+   "lesson": "grasp/soft-cup",
+   "occasion": "ep-734842",
+   "rate": 0.05,
+   "salt": "ünï"
+  },
+  {
+   "held_out": false,
+   "lesson": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "occasion": "ocčasion-ß",
+   "rate": 0.1,
+   "salt": "default"
+  },
+  {
+   "held_out": false,
+   "lesson": "ünïcode-leçon",
+   "occasion": "ep-879168",
+   "rate": 0.05,
+   "salt": "ünï"
+  },
+  {
+   "held_out": true,
+   "lesson": "a\u001fb",
+   "occasion": "ocčasion-ß",
+   "rate": 0.9,
+   "salt": "salt-1"
+  },
+  {
+   "held_out": true,
+   "lesson": "refund-policy",
+   "occasion": "124",
+   "rate": 1.0,
+   "salt": "ünï"
+  },
+  {
+   "held_out": false,
+   "lesson": "a\u001fb",
+   "occasion": "ep-149702",
+   "rate": 0.9,
+   "salt": "ünï"
+  },
+  {
+   "held_out": false,
+   "lesson": "a\u001fb",
+   "occasion": "ep-61331",
+   "rate": 0.25,
+   "salt": "exp-2026-q1"
+  },
+  {
+   "held_out": false,
+   "lesson": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "occasion": "robot-9/ep-127",
+   "rate": 0.5,
+   "salt": "default"
+  },
+  {
+   "held_out": false,
+   "lesson": "ünïcode-leçon",
+   "occasion": "128",
+   "rate": 0.1,
+   "salt": "salt-1"
+  },
+  {
+   "held_out": true,
+   "lesson": "refund-policy",
+   "occasion": "ep-500649",
+   "rate": 0.25,
+   "salt": "exp-2026-q1"
+  },
+  {
+   "held_out": false,
+   "lesson": "ünïcode-leçon",
+   "occasion": "ep-276735",
+   "rate": 0.05,
+   "salt": "exp-2026-q1"
+  },
+  {
+   "held_out": false,
+   "lesson": "ünïcode-leçon",
+   "occasion": "131",
+   "rate": 0.1,
+   "salt": "ünï"
+  },
+  {
+   "held_out": false,
+   "lesson": "refund-policy",
+   "occasion": "robot-6/ep-132",
+   "rate": 0.25,
+   "salt": "salt-1"
+  },
+  {
+   "held_out": true,
+   "lesson": "a b",
+   "occasion": "robot-4/ep-133",
+   "rate": 0.25,
+   "salt": "exp-2026-q1"
+  },
+  {
+   "held_out": false,
+   "lesson": "grasp/soft-cup",
+   "occasion": "134",
+   "rate": 0.0,
+   "salt": "ünï"
+  },
+  {
+   "held_out": true,
+   "lesson": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "occasion": "ep-300033",
+   "rate": 0.9,
+   "salt": "ünï"
+  },
+  {
+   "held_out": true,
+   "lesson": "ünïcode-leçon",
+   "occasion": "136",
+   "rate": 0.25,
+   "salt": "ünï"
+  },
+  {
+   "held_out": true,
+   "lesson": "lesson-a",
+   "occasion": "robot-8/ep-137",
+   "rate": 0.9,
+   "salt": "salt-1"
+  },
+  {
+   "held_out": true,
+   "lesson": "lesson-a",
+   "occasion": "ep-356592",
+   "rate": 0.05,
+   "salt": "exp-2026-q1"
+  },
+  {
+   "held_out": false,
+   "lesson": "refund-policy",
+   "occasion": "ocčasion-ß",
+   "rate": 0.5,
+   "salt": "exp-2026-q1"
+  },
+  {
+   "held_out": false,
+   "lesson": "lesson-a",
+   "occasion": "140",
+   "rate": 0.25,
+   "salt": "salt-1"
+  },
+  {
+   "held_out": true,
+   "lesson": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "occasion": "141",
+   "rate": 1.0,
+   "salt": "salt-1"
+  },
+  {
+   "held_out": true,
+   "lesson": "a\u001fb",
+   "occasion": "robot-6/ep-142",
+   "rate": 0.9,
+   "salt": "ünï"
+  },
+  {
+   "held_out": false,
+   "lesson": "ünïcode-leçon",
+   "occasion": "143",
+   "rate": 0.75,
+   "salt": "exp-2026-q1"
+  },
+  {
+   "held_out": false,
+   "lesson": "grasp/soft-cup",
+   "occasion": "robot-2/ep-144",
+   "rate": 0.1,
+   "salt": "exp-2026-q1"
+  },
+  {
+   "held_out": true,
+   "lesson": "ünïcode-leçon",
+   "occasion": "robot-9/ep-145",
+   "rate": 0.9,
+   "salt": "default"
+  },
+  {
+   "held_out": false,
+   "lesson": "lesson-a",
+   "occasion": "robot-7/ep-146",
+   "rate": 0.05,
+   "salt": "exp-2026-q1"
+  },
+  {
+   "held_out": false,
+   "lesson": "ünïcode-leçon",
+   "occasion": "147",
+   "rate": 0.25,
+   "salt": "default"
+  },
+  {
+   "held_out": true,
+   "lesson": "grasp/soft-cup",
+   "occasion": "148",
+   "rate": 0.75,
+   "salt": "salt-1"
+  },
+  {
+   "held_out": true,
+   "lesson": "refund-policy",
+   "occasion": "149",
+   "rate": 1.0,
+   "salt": "salt-1"
+  },
+  {
+   "held_out": true,
+   "lesson": "refund-policy",
+   "occasion": "ocčasion-ß",
+   "rate": 0.9,
+   "salt": "salt-1"
+  },
+  {
+   "held_out": false,
+   "lesson": "ünïcode-leçon",
+   "occasion": "robot-2/ep-151",
+   "rate": 0.05,
+   "salt": "exp-2026-q1"
+  },
+  {
+   "held_out": false,
+   "lesson": "lesson-a",
+   "occasion": "152",
+   "rate": 0.5,
+   "salt": "ünï"
+  },
+  {
+   "held_out": true,
+   "lesson": "ünïcode-leçon",
+   "occasion": "ep-119147",
+   "rate": 0.9,
+   "salt": "default"
+  },
+  {
+   "held_out": false,
+   "lesson": "lesson-a",
+   "occasion": "ocčasion-ß",
+   "rate": 0.25,
+   "salt": "default"
+  },
+  {
+   "held_out": true,
+   "lesson": "a\u001fb",
+   "occasion": "ep-430884",
+   "rate": 0.25,
+   "salt": "exp-2026-q1"
+  },
+  {
+   "held_out": false,
+   "lesson": "ünïcode-leçon",
+   "occasion": "156",
+   "rate": 0.75,
+   "salt": "default"
+  },
+  {
+   "held_out": false,
+   "lesson": "lesson-a",
+   "occasion": "ocčasion-ß",
+   "rate": 0.05,
+   "salt": "exp-2026-q1"
+  },
+  {
+   "held_out": false,
+   "lesson": "a b",
+   "occasion": "ocčasion-ß",
+   "rate": 0.25,
+   "salt": "ünï"
+  },
+  {
+   "held_out": false,
+   "lesson": "refund-policy",
+   "occasion": "159",
+   "rate": 0.75,
+   "salt": "ünï"
+  }
+ ],
+ "digest": [
+  {
+   "digest": "6d32eebc86fd053c6bdfbf1b668b0cf9ea53212f5d8c49fbf597a0caf6b66c42",
+   "rows": []
+  },
+  {
+   "digest": "33ed123432c1b53baebc5abb3c48446e28d4e2f37c98021de658ff7f01f208ea",
+   "rows": [
+    [
+     "m1",
+     "o0",
+     "injected",
+     "",
+     "2026-01-01T00:00:00+00:00",
+     "",
+     "r1",
+     "0.5",
+     "salt-1"
+    ]
+   ]
+  },
+  {
+   "digest": "cd676d8077dcb630899ab6b3b698082c1d6f87dcae3df87ac2ab22ae2bdb71c4",
+   "rows": [
+    [
+     "m0",
+     "o0",
+     "withheld",
+     "false",
+     "2026-01-01T00:00:00+00:00",
+     "",
+     "r1",
+     "0.5",
+     "salt-1"
+    ],
+    [
+     "m0",
+     "o1",
+     "withheld",
+     "",
+     "2026-01-01T00:00:00+00:00",
+     "",
+     "r1",
+     "0.5",
+     "salt-1"
+    ],
+    [
+     "m3",
+     "o2",
+     "withheld",
+     "",
+     "2026-01-01T00:00:00+00:00",
+     "",
+     "r1",
+     "0.5",
+     "salt-1"
+    ],
+    [
+     "m1",
+     "o3",
+     "injected",
+     "false",
+     "2026-01-01T00:00:00+00:00",
+     "",
+     "r1",
+     "0.5",
+     "salt-1"
+    ],
+    [
+     "m1",
+     "o4",
+     "injected",
+     "true",
+     "2026-01-01T00:00:00+00:00",
+     "",
+     "r1",
+     "0.5",
+     "salt-1"
+    ]
+   ]
+  },
+  {
+   "digest": "d490feadc0bda4410c0d951b3a1b0e65706e8f45cb119e146b664c387ca8659d",
+   "rows": [
+    [
+     "m2",
+     "o0",
+     "withheld",
+     "true",
+     "2026-01-01T00:00:00+00:00",
+     "",
+     "r1",
+     "0.5",
+     "salt-1"
+    ],
+    [
+     "m1",
+     "o1",
+     "injected",
+     "",
+     "2026-01-01T00:00:00+00:00",
+     "",
+     "r1",
+     "0.5",
+     "salt-1"
+    ],
+    [
+     "m3",
+     "o2",
+     "injected",
+     "",
+     "2026-01-01T00:00:00+00:00",
+     "",
+     "r1",
+     "0.5",
+     "salt-1"
+    ],
+    [
+     "m1",
+     "o3",
+     "withheld",
+     "true",
+     "2026-01-01T00:00:00+00:00",
+     "",
+     "r1",
+     "0.5",
+     "salt-1"
+    ],
+    [
+     "m0",
+     "o4",
+     "withheld",
+     "false",
+     "2026-01-01T00:00:00+00:00",
+     "",
+     "r1",
+     "0.5",
+     "salt-1"
+    ],
+    [
+     "m0",
+     "o5",
+     "injected",
+     "",
+     "2026-01-01T00:00:00+00:00",
+     "",
+     "r1",
+     "0.5",
+     "salt-1"
+    ],
+    [
+     "m1",
+     "o6",
+     "injected",
+     "",
+     "2026-01-01T00:00:00+00:00",
+     "",
+     "r1",
+     "0.5",
+     "salt-1"
+    ],
+    [
+     "m3",
+     "o7",
+     "injected",
+     "true",
+     "2026-01-01T00:00:00+00:00",
+     "",
+     "r1",
+     "0.5",
+     "salt-1"
+    ],
+    [
+     "m2",
+     "o8",
+     "injected",
+     "true",
+     "2026-01-01T00:00:00+00:00",
+     "",
+     "r1",
+     "0.5",
+     "salt-1"
+    ],
+    [
+     "m0",
+     "o9",
+     "withheld",
+     "true",
+     "2026-01-01T00:00:00+00:00",
+     "",
+     "r1",
+     "0.5",
+     "salt-1"
+    ],
+    [
+     "m3",
+     "o10",
+     "injected",
+     "",
+     "2026-01-01T00:00:00+00:00",
+     "",
+     "r1",
+     "0.5",
+     "salt-1"
+    ],
+    [
+     "m1",
+     "o11",
+     "withheld",
+     "",
+     "2026-01-01T00:00:00+00:00",
+     "",
+     "r1",
+     "0.5",
+     "salt-1"
+    ],
+    [
+     "m3",
+     "o12",
+     "withheld",
+     "",
+     "2026-01-01T00:00:00+00:00",
+     "",
+     "r1",
+     "0.5",
+     "salt-1"
+    ],
+    [
+     "m3",
+     "o13",
+     "withheld",
+     "true",
+     "2026-01-01T00:00:00+00:00",
+     "",
+     "r1",
+     "0.5",
+     "salt-1"
+    ],
+    [
+     "m1",
+     "o14",
+     "injected",
+     "true",
+     "2026-01-01T00:00:00+00:00",
+     "",
+     "r1",
+     "0.5",
+     "salt-1"
+    ],
+    [
+     "m0",
+     "o15",
+     "injected",
+     "true",
+     "2026-01-01T00:00:00+00:00",
+     "",
+     "r1",
+     "0.5",
+     "salt-1"
+    ],
+    [
+     "m1",
+     "o16",
+     "injected",
+     "true",
+     "2026-01-01T00:00:00+00:00",
+     "",
+     "r1",
+     "0.5",
+     "salt-1"
+    ],
+    [
+     "m0",
+     "o17",
+     "injected",
+     "",
+     "2026-01-01T00:00:00+00:00",
+     "",
+     "r1",
+     "0.5",
+     "salt-1"
+    ],
+    [
+     "m3",
+     "o18",
+     "injected",
+     "false",
+     "2026-01-01T00:00:00+00:00",
+     "",
+     "r1",
+     "0.5",
+     "salt-1"
+    ],
+    [
+     "m1",
+     "o19",
+     "injected",
+     "true",
+     "2026-01-01T00:00:00+00:00",
+     "",
+     "r1",
+     "0.5",
+     "salt-1"
+    ],
+    [
+     "m0",
+     "o20",
+     "injected",
+     "true",
+     "2026-01-01T00:00:00+00:00",
+     "",
+     "r1",
+     "0.5",
+     "salt-1"
+    ],
+    [
+     "m0",
+     "o21",
+     "withheld",
+     "",
+     "2026-01-01T00:00:00+00:00",
+     "",
+     "r1",
+     "0.5",
+     "salt-1"
+    ],
+    [
+     "m1",
+     "o22",
+     "injected",
+     "",
+     "2026-01-01T00:00:00+00:00",
+     "",
+     "r1",
+     "0.5",
+     "salt-1"
+    ],
+    [
+     "m1",
+     "o23",
+     "injected",
+     "false",
+     "2026-01-01T00:00:00+00:00",
+     "",
+     "r1",
+     "0.5",
+     "salt-1"
+    ],
+    [
+     "m1",
+     "o24",
+     "injected",
+     "true",
+     "2026-01-01T00:00:00+00:00",
+     "",
+     "r1",
+     "0.5",
+     "salt-1"
+    ],
+    [
+     "m1",
+     "o25",
+     "injected",
+     "",
+     "2026-01-01T00:00:00+00:00",
+     "",
+     "r1",
+     "0.5",
+     "salt-1"
+    ],
+    [
+     "m1",
+     "o26",
+     "injected",
+     "true",
+     "2026-01-01T00:00:00+00:00",
+     "",
+     "r1",
+     "0.5",
+     "salt-1"
+    ],
+    [
+     "m2",
+     "o27",
+     "injected",
+     "false",
+     "2026-01-01T00:00:00+00:00",
+     "",
+     "r1",
+     "0.5",
+     "salt-1"
+    ],
+    [
+     "m2",
+     "o28",
+     "injected",
+     "",
+     "2026-01-01T00:00:00+00:00",
+     "",
+     "r1",
+     "0.5",
+     "salt-1"
+    ],
+    [
+     "m1",
+     "o29",
+     "withheld",
+     "false",
+     "2026-01-01T00:00:00+00:00",
+     "",
+     "r1",
+     "0.5",
+     "salt-1"
+    ],
+    [
+     "m3",
+     "o30",
+     "injected",
+     "false",
+     "2026-01-01T00:00:00+00:00",
+     "",
+     "r1",
+     "0.5",
+     "salt-1"
+    ],
+    [
+     "m0",
+     "o31",
+     "withheld",
+     "false",
+     "2026-01-01T00:00:00+00:00",
+     "",
+     "r1",
+     "0.5",
+     "salt-1"
+    ],
+    [
+     "m0",
+     "o32",
+     "injected",
+     "",
+     "2026-01-01T00:00:00+00:00",
+     "",
+     "r1",
+     "0.5",
+     "salt-1"
+    ],
+    [
+     "m1",
+     "o33",
+     "withheld",
+     "true",
+     "2026-01-01T00:00:00+00:00",
+     "",
+     "r1",
+     "0.5",
+     "salt-1"
+    ],
+    [
+     "m3",
+     "o34",
+     "withheld",
+     "true",
+     "2026-01-01T00:00:00+00:00",
+     "",
+     "r1",
+     "0.5",
+     "salt-1"
+    ],
+    [
+     "m2",
+     "o35",
+     "withheld",
+     "false",
+     "2026-01-01T00:00:00+00:00",
+     "",
+     "r1",
+     "0.5",
+     "salt-1"
+    ],
+    [
+     "m0",
+     "o36",
+     "injected",
+     "false",
+     "2026-01-01T00:00:00+00:00",
+     "",
+     "r1",
+     "0.5",
+     "salt-1"
+    ],
+    [
+     "m2",
+     "o37",
+     "injected",
+     "true",
+     "2026-01-01T00:00:00+00:00",
+     "",
+     "r1",
+     "0.5",
+     "salt-1"
+    ],
+    [
+     "m0",
+     "o38",
+     "withheld",
+     "true",
+     "2026-01-01T00:00:00+00:00",
+     "",
+     "r1",
+     "0.5",
+     "salt-1"
+    ],
+    [
+     "m1",
+     "o39",
+     "withheld",
+     "true",
+     "2026-01-01T00:00:00+00:00",
+     "",
+     "r1",
+     "0.5",
+     "salt-1"
+    ]
+   ]
+  }
+ ],
+ "ledger": [
+  {
+   "hashes": [],
+   "rows": []
+  },
+  {
+   "hashes": [
+    "82f4086a2530eb93a946c475d1bd94fdef97a09c6f93081a06e64f3d41866840"
+   ],
+   "rows": [
+    {
+     "occasions_improved": 131.529,
+     "rate": 68.16,
+     "slug": "memory-0",
+     "verdict": "HURTS"
+    }
+   ]
+  },
+  {
+   "hashes": [
+    "a1a5a8f7b2b3b25a3eeda4662b0123b4190bb5f372d8c464370131882afff93c",
+    "6e25dd35944ee1311a74b1ec7026505edd840e916e751ff0eb25b6a60d850c6f",
+    "c05d4922f160db093781683d0eeb1a3377050401d9a178ce71a8dbbb376becc9"
+   ],
+   "rows": [
+    {
+     "occasions_improved": 286.382,
+     "rate": 12.27,
+     "slug": "memory-0",
+     "verdict": "HELPS"
+    },
+    {
+     "occasions_improved": 390.468,
+     "rate": 18.77,
+     "slug": "memory-1",
+     "verdict": "HURTS"
+    },
+    {
+     "occasions_improved": 179.514,
+     "rate": 10.25,
+     "slug": "memory-2",
+     "verdict": "HELPS"
+    }
+   ]
+  },
+  {
+   "hashes": [
+    "1038edd86bc1f83dec8ce10242000995132611044afafa2a0b1d916a3d560cb5",
+    "4d4e87c764fbd174e56eaace32259ca8a631e64906056390b0a7d2ebcc0105a2",
+    "0ae8eb37800b5166f4554d7b4b09292a15baf027462b8ca3038979e2ef8efd0c",
+    "bf60c98e4ace32ac9e53de9553c782ef250255910ce62e8bb7e186b0f42203bc",
+    "7393dcb6e861dabdbdc549b8f033976d751a00b48d3df7bd66453cf8fba49fcd",
+    "a7f9ba2003c3ea0f1d10bdc81b7a905873e7c039a874e07d20a6bfec6bd16312"
+   ],
+   "rows": [
+    {
+     "occasions_improved": 133.333,
+     "rate": 48.18,
+     "slug": "memory-0",
+     "verdict": "HURTS"
+    },
+    {
+     "occasions_improved": 135.882,
+     "rate": 24.32,
+     "slug": "memory-1",
+     "verdict": "HURTS"
+    },
+    {
+     "occasions_improved": 23.217,
+     "rate": 30.5,
+     "slug": "memory-2",
+     "verdict": "HURTS"
+    },
+    {
+     "occasions_improved": 127.192,
+     "rate": 14.66,
+     "slug": "memory-3",
+     "verdict": "HURTS"
+    },
+    {
+     "occasions_improved": 190.013,
+     "rate": 8.41,
+     "slug": "memory-4",
+     "verdict": "HURTS"
+    },
+    {
+     "occasions_improved": -0.074,
+     "rate": 22.37,
+     "slug": "memory-5",
+     "verdict": "HELPS"
+    }
+   ]
+  }
+ ],
+ "protocol": "2.0.0",
+ "revision": [
+  {
+   "body": "## Rule\nLink the policy.\n",
+   "frontmatter": {
+    "applies_when": "when  a  refund  is asked",
+    "do_not_apply_when": "never",
+    "tags": [
+     "b",
+     "a"
+    ]
+   },
+   "revision": "c2eaafa04215"
+  },
+  {
+   "body": "## Rule\r\nLink the policy.\r\n\r\n\r\n",
+   "frontmatter": {
+    "applies_when": "when a refund is asked",
+    "do_not_apply_when": "never",
+    "tags": [
+     "a",
+     "b"
+    ]
+   },
+   "revision": "136e0c73e0c1"
+  },
+  {
+   "body": "",
+   "frontmatter": {
+    "applies_when": "ünï",
+    "do_not_apply_when": "",
+    "tags": []
+   },
+   "revision": "f04e8277d43a"
+  }
+ ],
+ "suite": "1"
+}

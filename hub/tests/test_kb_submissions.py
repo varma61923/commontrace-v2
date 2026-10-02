@@ -1,18 +1,3 @@
-"""The community-submission channel: `submit_kb_entry` -> operator review
-(`review_kb_submission`) -> an accepted submission becomes a Knowledge Base
-entry and raises the submitting org's query allowance.
-
-The property that matters most: a submission is NOT a second door into the
-Knowledge Base the way the retired `share_trace` was. It writes to a table
-`commons_overlap`/`commons_search` never read, so a pending or rejected
-submission cannot surface to any org, submitter included, no matter how
-exactly its signature matches. Only `review_kb_submission`'s approve path --
-called only from hub/manage.py, never from an MCP tool -- can turn one into
-a real `Trace(commons_source='seed')`. See hub/models.py:
-KnowledgeBaseSubmission and hub/plans.py "why bonus_commons_queries is not
-the same mistake twice" for why review, not opt-in, is what keeps this from
-repeating the adverse-selection failure the retired design had.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -76,10 +61,6 @@ class TestSubmissionIsCreatedNotPublished:
     async def test_a_pending_submission_never_surfaces_via_commons_overlap(
         self, session_factory, config, orgs
     ):
-        """The strongest possible probe: query with the EXACT signature of
-        the pending submission, from a DIFFERENT org. It must still find
-        nothing -- commons_overlap only ever reads Trace rows, and a
-        submission is not one."""
         await _submit(session_factory, config, orgs["submitter"], "Stripe webhooks retry", context_text="ctx")
         async with session_scope(session_factory) as session:
             report = await crud.commons_overlap(
@@ -241,7 +222,6 @@ class TestReviewSubmissionApprove:
     async def test_the_credit_actually_raises_the_query_allowance(
         self, session_factory, config, orgs, monkeypatch
     ):
-        """The credit has to be spendable, not just displayed."""
         monkeypatch.setitem(
             plans.PLANS, "free",
             plans.Plan("free", max_traces=1_000, commons_queries_per_month=1,
@@ -253,7 +233,6 @@ class TestReviewSubmissionApprove:
                 session, s["id"], "approve", orgs["operator"], reviewer="op", credit=3,
             )
 
-        # 1 granted + 3 earned = 4 queries before it refuses.
         for _ in range(4):
             async with session_scope(session_factory) as session:
                 await crud.commons_overlap(
@@ -372,11 +351,6 @@ class TestConcurrentSubmissionApproval:
     async def test_two_concurrent_approvals_of_the_same_submission_only_one_wins(
         self, session_factory, config, orgs
     ):
-        """SELECT ... FOR UPDATE ... WHERE status='pending' means only the
-        first of two concurrent reviewers can ever find the row still
-        pending -- the second sees it already decided and gets None,
-        never a double-credited org or two Trace rows for one submission.
-        """
         s = await _submit(session_factory, config, orgs["submitter"], "t")
 
         async def one():
@@ -395,21 +369,6 @@ class TestConcurrentSubmissionApproval:
     async def test_ten_distinct_submissions_approved_concurrently_all_credit(
         self, session_factory, config, orgs
     ):
-        """Distinct from the test above: this is 10 DIFFERENT pending
-        submissions from the SAME org, approved concurrently -- not
-        repeated attempts on one submission. The `SELECT ... FOR UPDATE
-        ... WHERE status='pending'` lock is per-submission, so it does
-        nothing to serialize these against each other; each approval
-        independently read the submitting org's bonus_commons_queries and
-        wrote back `old + awarded` in plain Python, so whichever commit
-        landed last overwrote the column with its own stale total and
-        silently discarded every other concurrent approval's credit, even
-        though each one's own submission.credit_awarded and audit log
-        entry still say it was granted. Fixed via an atomic SQL-level
-        increment (see hub/crud.py:review_kb_submission). Reproduced
-        before that fix: bonus_commons_queries landed well under
-        10 * SUBMISSION_ACCEPTANCE_CREDIT within a handful of runs.
-        """
         submissions = [
             await _submit(session_factory, config, orgs["submitter"], title=f"failure {i}")
             for i in range(10)

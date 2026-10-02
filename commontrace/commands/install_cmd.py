@@ -9,41 +9,19 @@ from commontrace import mcp_tools, paths
 
 TARGETS = ["claude-code", "cursor", "devin", "windsurf", "generic-mcp", "generic"]
 
-# The Hub's full tool surface, advertised in the generated MCP config so a
-# reader knows what they are connecting to. Kept in sync with hub/smoke.py's
-# EXPECTED_TOOLS by hub/tests/test_install_template_surface.py -- this list
-# had drifted to the original six while the Hub kept growing, so a
-# customer running `commontrace install` was told the Hub could do a third
-# of what it does. Restated here rather than imported because this is the
-# CLIENT package: it installs with PyYAML alone, and hub/ needs SQLAlchemy,
-# asyncpg and a database.
 _HUB_TOOLS = [
-    # the six protocol tools
     "search_traces", "contribute_trace", "get_trace", "vote_trace", "amend_trace", "list_tags",
-    # measurement: is this working, did the memory cause it, and what was
-    # that worth (the last one is the pricing basis, STRATEGY.md 11.5)
     "fleet_outcomes", "holdout_assign", "record_occasion_outcome",
     "value_delivered",
-    # the graduated subset of that measurement: the memories whose effect
-    # is already established, rendered once per session as a pinnable
-    # block instead of paid for on every query
     "working_set",
-    # entitlements
     "account_usage",
-    # self-service deletion
     "delete_trace", "request_account_deletion", "confirm_account_deletion",
     "cancel_account_deletion",
-    # the optional Knowledge Base (absent when HUB_COMMONS_ENABLED=false)
     "commons_overlap", "commons_search", "commons_export",
     "submit_kb_entry", "list_my_kb_submissions",
-    # collaboration on a trace for a customer's own team: comments,
-    # assignment, and a per-person notification inbox
     "add_comment", "list_comments", "assign_trace", "unassign_trace",
     "list_my_notifications", "mark_notification_read",
-    # locating traces for a subject-erasure request
     "search_trace_content",
-    # structured subject tagging + exact-match find/purge, the other half
-    # of subject-erasure support
     "tag_trace_subjects", "find_traces_by_subject", "purge_traces_by_subject",
 ]
 
@@ -126,9 +104,6 @@ is sound.
 
 
 def _hub_mcp_example() -> str:
-    # Built via json.dumps (not an f-string template) so the generated file is guaranteed
-    # valid JSON even though the comment text below embeds a quoted tool list -- a raw
-    # f-string previously let those quotes leak in unescaped and break parsing.
     tools = ", ".join(_HUB_TOOLS)
     doc = {
         "_comment": (
@@ -141,11 +116,6 @@ def _hub_mcp_example() -> str:
             "mcp.json) to .gitignore before committing — do not check in Hub credentials."
         ),
         "mcpServers": {
-            # The Hub speaks streamable-HTTP (hub/main.py serves MCP at
-            # HUB_HOST:HUB_PORT/mcp), so this is the http transport shape --
-            # url + headers -- not the stdio `command`/`args`/`env` shape. A
-            # stdio block here cannot carry an endpoint or a bearer token, so
-            # anyone pasting it would simply fail to connect.
             "commontrace": {
                 "type": "http",
                 "url": "https://<your-hub-host>/mcp",
@@ -157,20 +127,6 @@ def _hub_mcp_example() -> str:
 
 
 def _local_mcp_config(root: str) -> str:
-    """The stdio MCP entry that attaches an agent to THIS machine's store.
-
-    Distinct from _hub_mcp_example above, and both are usually wanted: the Hub
-    is the shared knowledge base over HTTP, this is the fleet's own memory on
-    this machine over stdio. An agent with only the Hub entry can search what
-    other people published and cannot read or write a single one of its own
-    lessons.
-
-    Written with a real, absolute `--dest`, not a relative one: an MCP client
-    launches the server as a subprocess with a working directory of its own
-    choosing, so a relative root resolves somewhere else -- usually to a new,
-    empty store, which fails by silently having no lessons rather than by
-    erroring.
-    """
     tools = ", ".join(mcp_tools.LOCAL_TOOLS)
     doc = {
         "_comment": (
@@ -210,14 +166,6 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
 
 
 def _find_skill_md(root: str, dest: str) -> str | None:
-    # cwd first, then `root` (paths.resolve_root(), which honors
-    # COMMONTRACE_ROOT/JUSTDOIT_ROOT): `install` is normally run from
-    # inside the commontrace checkout that actually has SKILL.md, but an
-    # operator with COMMONTRACE_ROOT exported to point at their OWN active
-    # store (e.g. a wrapper script that always sets it) and running
-    # `install --dest /some/other/project` from a plain shell got THAT
-    # unrelated store's SKILL.md silently, instead of the one next to the
-    # command actually being run.
     candidates = [
         os.path.join(os.getcwd(), "SKILL.md"),
         os.path.join(root, "SKILL.md"),
@@ -230,23 +178,6 @@ def _find_skill_md(root: str, dest: str) -> str | None:
 
 
 def _break_symlink(path: str, base_dir: str | None = None) -> None:
-    """Replace a symlink at `path` (and any intermediate directory symlinks) with
-    a normal file/directory, before writing it.
-
-    Both `open(path, "w")` and `shutil.copyfile` FOLLOW a symlink and write
-    through to whatever it points at. `install` writes to fixed, predictable
-    locations inside someone else's workspace (`.claude/skills/commontrace/
-    SKILL.md`, `.cursor/rules/commontrace.mdc`), so a symlink planted at one
-    of those paths -- or left there by an earlier dotfile-manager setup that
-    links config into a repo -- silently redirects the write to an arbitrary
-    file. Reproduced: with SKILL.md symlinked to a file outside the project,
-    `install` overwrote that file's contents and left the symlink in place,
-    so nothing in the output revealed what had happened.
-
-    `os.path.isfile` does not help here -- it follows the link too, and
-    returns True for a symlink to a regular file. `os.path.islink` is the
-    only check that sees the link itself.
-    """
     path_abs = os.path.abspath(path)
     if base_dir is not None:
         base_abs = os.path.abspath(base_dir)
@@ -315,12 +246,6 @@ def _print_hub_credential_warning(example_path: str) -> None:
 
 def run(args: argparse.Namespace) -> int:
     dest = os.path.abspath(args.dest)
-    # Resolve the commontrace store root from the *destination* directory, not
-    # from cwd: when --dest points at a separate checkout or agent home, the
-    # generated .mcp.json must reference that store's root path, not the
-    # operator's working directory (which leaks host paths and likely points at
-    # the wrong store). resolve_root(dest) inspects dest for a memory/ dir and
-    # falls back to dest itself -- correct for both in-repo and external installs.
     root = paths.resolve_root(dest)
     skill_md = _find_skill_md(root, dest)
     print(f"[commontrace] installing target='{args.target}' into {dest}")
@@ -382,7 +307,7 @@ def run(args: argparse.Namespace) -> int:
         _print_hub_credential_warning(example)
         _write_local_mcp(dest, root)
 
-    else:  # generic
+    else:
         out = os.path.join(dest, "COMMONTRACE.md")
         _write(
             out,

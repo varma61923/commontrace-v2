@@ -1,22 +1,3 @@
-"""Named environments a release is promoted to, with scheduled activation
-and an approval gate on protected ones (audit 4.2).
-
-What these tests defend, in order of how badly getting it wrong would
-hurt:
-
-1. **This is pure record-keeping.** Nothing here is asserted about
-   retrieval, because nothing here is supposed to change it -- see
-   commontrace/environments.py's own module docstring for why serving a
-   frozen release's content is not something this codebase can do
-   honestly yet.
-2. **Scheduled activation needs no separate flip.** A future promotion
-   has no effect until its moment arrives; comparing against `now` is
-   the whole mechanism.
-3. **The approval gate reuses commontrace/approval.py's own
-   separation-of-duties logic exactly** -- not a second, differently-
-   behaved copy of it -- and only re-litigates lessons NEWLY entering
-   the environment, not everything already running there.
-"""
 from __future__ import annotations
 
 import datetime
@@ -169,17 +150,11 @@ class TestApprovalGate:
         assert environments.current(str(tmp_path), "dev") == cut.release_id
 
     def test_a_lesson_already_running_in_prod_is_not_re_litigated(self, tmp_path):
-        """Only lessons NEWLY entering the environment need a second
-        author -- one already running there was already reviewed once."""
         _write_policy(tmp_path, "mode: two-person\n")
         _lesson(tmp_path, "alpha", actor="cli:alice")
         first = _cut(tmp_path, actor="cli:alice")
         environments.promote(str(tmp_path), first.release_id, "prod", actor="cli:bob")
 
-        # A second release that keeps alpha (already in prod, written only
-        # by alice) and adds beta (written only by bob) -- alice may
-        # promote it, because alpha is not NEW to prod and beta was not
-        # written by her.
         _lesson(tmp_path, "beta", actor="cli:bob")
         second = _cut(tmp_path, actor="cli:alice")
         environments.promote(str(tmp_path), second.release_id, "prod", actor="cli:alice")
@@ -193,10 +168,7 @@ class TestApprovalGate:
             environments.promote(str(tmp_path), cut.release_id, "prod", actor="mcp:agent-1")
 
     def test_a_lesson_with_no_recorded_authors_refuses_under_two_person(self, tmp_path):
-        """Matches approval.check's own rule for a single lesson: no
-        provenance to separate from is a refusal, not a pass."""
         _write_policy(tmp_path, "mode: two-person\n")
-        # Written directly, bypassing lesson_io.write_lesson's journal.
         from commontrace import frontmatter
 
         ldir = paths.lessons_dir(str(tmp_path))

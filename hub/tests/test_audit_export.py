@@ -1,4 +1,3 @@
-"""hub/audit_export.py and `hub.manage export-audit`."""
 from __future__ import annotations
 
 import json

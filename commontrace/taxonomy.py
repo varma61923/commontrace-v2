@@ -1,22 +1,3 @@
-"""`commontrace taxonomy` — "Map the issues": group recurring failures into a
-clear, structured taxonomy.
-
-This is the first of the pilot's three leave-behinds (see PILOT.md and
-STRATEGY.md's outcome-metrics framing): "a structured map of the failure
-patterns CommonTrace can address."
-
-It reuses commontrace/distill.py's clustering (word-overlap Jaccard over
-title+context, no LLM call) rather than reimplementing pattern-finding —
-that module already IS "group recurring failures by similarity", and a
-second clustering algorithm here would just be a second thing to keep in
-sync with it. The difference from `commontrace distill` is intent and side
-effects: `distill` is the Curator step and writes new candidate lesson
-files at status=review; `taxonomy` is read-only reporting -- it never
-writes anything, and (unlike `distill`) it deliberately does NOT exclude
-traces already covered by an existing lesson, because a pilot needs to see
-the whole map -- what CommonTrace already addresses and what it does not --
-not just the unaddressed remainder.
-"""
 from __future__ import annotations
 
 import dataclasses
@@ -58,26 +39,11 @@ class Taxonomy:
 
 
 def _best_covering_lesson(trace_ids: set[str], lessons: list[dict]) -> str | None:
-    """The active lesson whose source_traces overlaps this pattern's traces
-    the most, or None if no active lesson references any of them.
-
-    Ties broken by lesson name for determinism -- an arbitrary dict-order
-    pick would make the reported coverage flicker between otherwise-identical
-    runs.
-    """
     best_slug = None
     best_overlap = 0
     for fm in sorted(lessons, key=lambda lesson: str(lesson.get("name", ""))):
         if fm.get("status") != "active":
             continue
-        # A lesson that is still unedited scaffolding covers nothing, and
-        # counting it is worse than counting nothing: this number is the
-        # "Already covered by an active lesson" line in `commontrace
-        # taxonomy` and `commontrace pilot`, i.e. the number a customer
-        # reads to decide which failure patterns still need work.
-        # Reproduced before this guard: an all-"TODO:" candidate reported a
-        # real recurring pattern as covered and drove the pilot report's
-        # "Gaps: 0", telling the customer there was nothing left to do.
         if templates.unfilled_placeholders(fm, str(fm.get(templates.BODY_KEY) or "")):
             continue
         source = set(str(t) for t in (fm.get("source_traces") or []))
@@ -96,7 +62,7 @@ def build_taxonomy(
 ) -> Taxonomy:
     clusters = distill.find_clusters(
         traces,
-        existing_lessons_source_traces=[],  # taxonomy maps everything, covered or not
+        existing_lessons_source_traces=[],
         similarity_threshold=similarity_threshold,
         min_cluster_size=min_cluster_size,
     )
@@ -147,9 +113,6 @@ def build_taxonomy(
 
 
 def to_dict(tax: Taxonomy) -> dict:
-    """dataclasses.asdict() skips DomainGroup.n_traces (a computed property,
-    not a field) -- this includes it, since it's the number the markdown/HTML
-    renderers lead with and JSON consumers should not have to re-derive it."""
     out = dataclasses.asdict(tax)
     for domain_dict, group in zip(out["domains"], tax.domains):
         domain_dict["n_traces"] = group.n_traces
@@ -161,7 +124,7 @@ def render_markdown(tax: Taxonomy) -> str:
         "# CommonTrace Taxonomy",
         "",
         "A structured map of the failure patterns CommonTrace can address, "
-        "built from recurring traces (PILOT.md step 1: \"Map the issues\").",
+        "built from recurring traces (the pilot design step 1: \"Map the issues\").",
         "",
         f"- Traces considered: **{tax.n_traces_total}**",
         f"- Recurring patterns found: **{tax.n_patterns}**",

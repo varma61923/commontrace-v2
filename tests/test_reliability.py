@@ -1,10 +1,3 @@
-"""Tests for commontrace/reliability.py.
-
-The behavior worth protecting here is not "it produces numbers" but that it
-produces the *right diagnosis*: a rule that is wrong and a rule that merely
-fires too often need opposite remedies, and conflating them sends people to
-rewrite correct rules.
-"""
 import pytest
 
 from commontrace import reliability as rel
@@ -16,8 +9,6 @@ class TestWilsonLowerBound:
         assert rel.wilson_lower_bound(9, 10) < rel.wilson_lower_bound(90, 100)
 
     def test_a_single_lucky_hit_does_not_outrank_a_long_track_record(self):
-        """The whole reason the raw ratio is not used: 1/1 is 100% and 45/50
-        is 90%, but the second is obviously the more trustworthy lesson."""
         assert rel.wilson_lower_bound(45, 50) > rel.wilson_lower_bound(1, 1)
 
     def test_zero_successes_never_claims_a_positive_rate(self):
@@ -38,24 +29,18 @@ class TestVerdicts:
         assert r.verdict == rel.VERDICT_RELIABLE
 
     def test_unproven_below_the_evidence_floor_even_if_perfect(self):
-        """Two perfect hits is not evidence. Refusing to call this reliable
-        is the point -- a corpus that calls everything reliable on first
-        contact is worse than no scoring at all."""
         ev = [Evidence(f"e{i}", ["new"], ["new"], True) for i in range(2)]
         r = rel.score_lessons(ev, min_evidence=5)[0]
         assert r.verdict == rel.VERDICT_UNPROVEN
         assert "noise" in r.rationale
 
     def test_miscalibrated_when_it_fires_constantly_but_rarely_helps(self):
-        """The activation condition is too broad. The rule may be perfectly
-        correct -- which is why this is not HARMFUL."""
         ev = [Evidence(f"e{i}", ["broad"], [], True) for i in range(12)]
         r = rel.score_lessons(ev)[0]
         assert r.verdict == rel.VERDICT_MISCALIBRATED
         assert "activation-condition" in r.rationale
 
     def test_harmful_when_tasks_go_worse_with_it_injected(self):
-        # baseline succeeds often; this lesson's occasions mostly fail
         ev = [Evidence(f"ok{i}", ["other"], ["other"], True) for i in range(12)]
         ev += [Evidence(f"bad{i}", ["bad"], ["bad"], False) for i in range(8)]
         by = {r.slug: r for r in rel.score_lessons(ev)}
@@ -63,9 +48,6 @@ class TestVerdicts:
         assert by["bad"].lift is not None and by["bad"].lift < 0
 
     def test_harmful_and_miscalibrated_are_distinguished(self):
-        """The central diagnostic claim. A high-hit-rate lesson whose tasks
-        still fail is a *wrong rule*; a low-hit-rate lesson whose tasks
-        succeed is a *broad trigger*. They must not collapse together."""
         ev = [Evidence(f"base{i}", ["ok"], ["ok"], True) for i in range(12)]
         ev += [Evidence(f"h{i}", ["wrong_rule"], ["wrong_rule"], False) for i in range(8)]
         ev += [Evidence(f"m{i}", ["broad_trigger"], [], True) for i in range(12)]
@@ -74,8 +56,6 @@ class TestVerdicts:
         assert by["broad_trigger"].verdict == rel.VERDICT_MISCALIBRATED
 
     def test_a_hit_without_a_retrieval_is_not_counted(self):
-        """Otherwise a retro pass that credits a lesson it never injected
-        yields precision above 1.0."""
         ev = [Evidence("e1", ["a"], ["a", "never_retrieved"], True)]
         slugs = {r.slug for r in rel.score_lessons(ev)}
         assert "never_retrieved" not in slugs
@@ -127,8 +107,6 @@ class TestContradictions:
         assert {found[0].slug_a, found[0].slug_b} == {"always", "never"}
 
     def test_opposite_rules_on_unrelated_triggers_are_not_flagged(self):
-        """Two lessons that never fire in the same situation cannot conflict
-        in practice, however opposed their wording."""
         lessons = [
             _lesson("a", "Always retry the request", "a webhook to the payment provider fails", ["webhooks"]),
             _lesson("b", "Never retry the request", "a cuda kernel returns nondeterministic tensors", ["cuda"]),
@@ -136,7 +114,6 @@ class TestContradictions:
         assert rel.find_contradictions(lessons) == []
 
     def test_archived_lessons_are_ignored(self):
-        """Only lessons that can actually be injected together matter."""
         lessons = [
             _lesson("a", "Always retry the webhook", "a webhook delivery fails transiently", ["webhooks"]),
             _lesson("b", "Never retry the webhook", "a webhook delivery fails transiently",
@@ -152,8 +129,6 @@ class TestContradictions:
         assert rel.find_contradictions(lessons) == []
 
     def test_opposite_measured_effect_is_a_high_severity_signal(self):
-        """Empirical divergence outranks the lexical heuristic: it cannot be
-        fooled by phrasing."""
         lessons = [
             _lesson("a", "Handle the webhook this way", "a webhook delivery fails transiently", ["webhooks"]),
             _lesson("b", "Handle the webhook that way", "a webhook delivery fails transiently", ["webhooks"]),
@@ -178,15 +153,10 @@ class TestRender:
         assert "Needs attention" in out and "MISCALIBRATED" in out
 
     def test_states_its_own_limitations(self):
-        """A report that drives decisions must carry its caveats with it."""
         out = rel.render([], [], 5)
         assert "lexical" in out and "Wilson" in out
 
     def test_says_out_loud_that_lift_is_correlational(self):
-        """The report puts `lift` in a table next to a HARMFUL verdict. Without
-        this caveat a reader takes it as a causal claim, and it is not one --
-        the lesson fired *because* the situation matched it. The pointer to
-        the experiment command has to travel with the number."""
         out = rel.render([], [], 5)
         assert "correlational, not causal" in out
         assert "commontrace experiment" in out
@@ -225,9 +195,6 @@ class TestReliabilityCLI:
         assert "never_captured" in err
 
     def test_uncaptured_retrievals_appear_alongside_scored_lessons(self, store, capsys):
-        """Once at least one lesson HAS captured evidence, an uncaptured
-        one for a DIFFERENT lesson must still be visible -- not just in the
-        all-empty case above."""
         import yaml
 
         from commontrace import holdout_io
@@ -249,7 +216,7 @@ class TestReliabilityCLI:
         out = capsys.readouterr().out
         assert "Under-reported" in out
         assert "never_captured" in out
-        assert "scored" in out  # the normally-scored lesson still renders
+        assert "scored" in out
 
     def test_json_output_carries_uncaptured_retrievals(self, store, capsys):
         import json
@@ -322,9 +289,6 @@ class TestReliabilityCLI:
 
 
 class TestRankingAdjustments:
-    """rel.ranking_adjustments -- the one place a verdict becomes a number
-    commontrace/retrieval.py's optional reliability_weight can use."""
-
     def test_harmful_gets_the_largest_penalty(self):
         scores = [rel.LessonReliability(
             slug="x", n_retrieved=10, n_hit=2, precision=0.2, precision_lower=0.05,
@@ -333,9 +297,6 @@ class TestRankingAdjustments:
         assert rel.ranking_adjustments(scores) == {"x": -1.0}
 
     def test_miscalibrated_penalty_is_real_but_smaller_than_harmful(self):
-        """A rule that fires too often still helps sometimes -- it must not
-        rank behind one that measurably makes tasks worse, by the same
-        amount (see the module docstring on why these are two verdicts)."""
         scores = [rel.LessonReliability(
             slug="x", n_retrieved=10, n_hit=2, precision=0.2, precision_lower=0.05,
             success_rate=None, lift=None, verdict=rel.VERDICT_MISCALIBRATED, rationale="",
@@ -358,7 +319,4 @@ class TestRankingAdjustments:
         assert rel.ranking_adjustments(scores) == {"x": 1.0}
 
     def test_a_slug_with_no_verdict_is_simply_absent(self):
-        """No evidence is not evidence of harm -- retrieval.rank_lessons
-        reads a missing slug as 0.0, the same as UNPROVEN, and this
-        function must not manufacture an entry to say so."""
         assert rel.ranking_adjustments([]) == {}

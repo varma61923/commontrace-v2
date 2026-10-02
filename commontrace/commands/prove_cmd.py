@@ -1,31 +1,4 @@
-"""`commontrace prove` — is the memory actually helping, and can you show it?
-
-Two questions that sound the same and are not:
-
-`prove outcomes` asks whether your fleet's recorded numbers have moved
-since its baseline window. That is a real question with a real answer, and
-it is **observational**: a model upgrade or a shift in your task mix sits
-inside the same window, so the comparison cannot separate them from
-anything this product did. It says so on every response.
-
-`prove assign` / `prove record` run a **randomized holdout**, which can.
-Some fraction of eligible memory is deliberately withheld, so your fleet
-generates its own control arm; the comparison is then two arms of the same
-fleet in the same window, differing only by whether the memory was
-injected. That is what makes it survive "what else changed that quarter?".
-
-The holdout is the loop an agent runs, not something a person types:
-before injecting retrieved memory, ask `assign` which of it to use; after
-the task, `record` how it went. Both are here as commands so the loop can
-be driven from a shell script or a Makefile without writing MCP calls by
-hand, and so it can be exercised once by a human before being wired into a
-fleet.
-
-An operator has to start an experiment first
-(`python -m hub.manage start-experiment <org_id> <rate>`); until then
-`assign` reports that none is running rather than silently injecting
-everything.
-"""
+"""`commontrace prove` — is the memory actually helping, and can you show it?"""
 from __future__ import annotations
 
 import argparse
@@ -84,14 +57,6 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
 
 
 def _validity_lines(report: dict) -> list[str]:
-    """The validity verdict, placed ABOVE the effect sizes.
-
-    `prove` is the document that goes into a renewal conversation, which is
-    the worst possible place for a caveat under a table: the number gets
-    quoted and the footnote does not travel with it. When the sample cannot
-    support the estimate, that is the first thing on this section -- and the
-    effects that follow are labelled, not silently printed.
-    """
     if not report:
         return []
     verdict = report.get("verdict", "")
@@ -132,9 +97,6 @@ def render_outcomes(report: dict) -> str:
     causal = report.get("causal") or {}
     effects = causal.get("effects") or []
 
-    # The causal answer FIRST when there is one. It is the stronger claim,
-    # and burying it under the observational table invites a reader to
-    # quote the weaker number because they saw it first.
     if effects:
         lines += [
             "## Caused by the memory (randomized holdout)",
@@ -257,10 +219,6 @@ def run_record(args: argparse.Namespace) -> int:
     n = result.get("observations_resolved", 0)
     print(f"occasion {result['occasion_id']}: {n} observation(s) resolved.")
     if n == 0:
-        # Not an error: the common causes are a already-reported occasion
-        # (only the first report counts, deliberately) and an occasion that
-        # never had an assignment. Both are worth naming rather than
-        # leaving a bare zero.
         print(
             "  Nothing to resolve. Either this occasion was already reported (only the "
             "first report counts, so a result already counted cannot be flipped), or "

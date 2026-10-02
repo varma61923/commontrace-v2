@@ -62,57 +62,21 @@ try:
 except ImportError:
     SentenceTransformer = None
 
-# Delimiter must be its own line, not just the substring "---" anywhere in the file --
-# a plain content.split("---", 2) corrupts any field whose value contains "---".
-# \r is allowed so CRLF content parses too.
 _DELIM_RE = re.compile(r"^---[ \t]*\r?$", re.MULTILINE)
 
-# Same charset commontrace/commands/lesson_cmd.py's own _SLUG_RE enforces
-# when a lesson is created or looked up through the CLI. A lesson file is
-# meant to be hand-editable, though (commontrace/frontmatter.py), so a
-# `name` that never went through the CLI at all reaches this read path
-# unvalidated -- and query.py's retrieval brief is `|`-delimited
-# (`f"{slug} | cosine=... | importance=..."`), so a `name` containing a
-# pipe corrupts every line built from it, not just its own.
 _SLUG_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
-# Every model this script builds with. query.py holds the same allow-list, with
-# the query prefix each model needs, and loads only a model named in it: see its
-# comment for why an index file's own model_name is not trusted input, and for
-# each model's measured recall.
 TRUSTED_MODELS = ("multi-qa-mpnet-base-dot-v1", "Snowflake/snowflake-arctic-embed-m-v1.5")
-#: What a NEW index is built with. An existing index keeps its model
-#: (`index_model`), because the model decides which lessons the semantic arm
-#: surfaces: changing it under a running experiment would change its treatment.
 DEFAULT_MODEL_NAME = "Snowflake/snowflake-arctic-embed-m-v1.5"
 _TRUSTED_MODEL_NAME = DEFAULT_MODEL_NAME
 MODEL_NAME = DEFAULT_MODEL_NAME
-# Every trusted model's fixed sentence-embedding output width. Needed
-# to write a correctly-shaped 0-row embeddings array when there are no
-# active lessons to encode (see main()'s `not slugs` branch below), without
-# having to load the model just to ask it -- the whole point of that branch
-# is to skip the (slow) model load entirely when there is nothing to encode.
 EMBEDDING_DIM = 768
 
-# ---------------------------------------------------------------------------
-# Path configuration — provider-agnostic
-#
-# Priority:
-#   1. COMMONTRACE_ROOT env var (explicit override)
-#   2. JUSTDOIT_ROOT env var (legacy backward compatibility)
-#   3. Auto-detect from this script's location (works out of the box)
-#
-# Example: export COMMONTRACE_ROOT=/opt/commontrace
-# ---------------------------------------------------------------------------
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-_AUTO_ROOT = os.path.dirname(os.path.dirname(_SCRIPT_DIR))  # memory/attention → memory → ROOT
+_AUTO_ROOT = os.path.dirname(os.path.dirname(_SCRIPT_DIR))
 _ROOT = os.environ.get("COMMONTRACE_ROOT") or os.environ.get("JUSTDOIT_ROOT") or _AUTO_ROOT
 LESSONS_DIR = os.path.join(_ROOT, "memory", "lessons")
 INDEX_PATH = os.path.join(_ROOT, "memory", "attention", "index.npz")
-# Bumped when the indexed content or columns change, so build_index.py's own
-# staleness check (and query.py's guard) reject an index built by an older
-# version instead of silently using it. The v2 suffix marks the addition of
-# the agent_types column.
 ENCODED_FIELD = "description+domain+tags+applies_when+do_not_apply_when+rule|v2"
 
 
@@ -126,43 +90,18 @@ def _safe_mtime(path: str) -> float:
         return 0.0
 
 
-
 def extract_rule(body: str) -> str:
-    """Extract the ## Rule section content from a lesson body (between ## Rule and next ##).
-
-    IGNORECASE, and tolerant of trailing whitespace after "Rule": lesson
-    bodies are explicitly meant to be hand-edited (commontrace/frontmatter.py),
-    and a literal `"## Rule" not in body` / `body.split("## Rule", 1)` pair
-    silently extracted nothing for a hand-written `## rule` or `## Rule ` --
-    the exact class of case-sensitivity bug trace_io.py's own `_SECTION_RE`
-    already fixed for `## Context`/`## Solution` (see its docstring).
-    """
+    """Extract the ## Rule section content from a lesson body (between ## Rule and next ##)."""
     m = _RULE_RE.search(body)
     return m.group(1).strip() if m else ""
 
 
 def _load_frontmatter(fm_text: str):
-    """Parse with commontrace's strict loader when it is importable.
-
-    Plain yaml.safe_load applies YAML 1.1 rules, so `domain: NO` became
-    False and `tags: [on, off]` became [True, False] -- the domain then
-    dropped out of the embedded query text entirely and the tags embedded as
-    booleans. commontrace/frontmatter.py already solved this; this script
-    predates that and kept its own parse. Falls back to safe_load so the
-    script still runs standalone from a checkout without the package
-    installed, which is how it is documented to be usable.
-    """
     try:
-        from commontrace.frontmatter import _StrictBoolLoader
+        from commontrace.frontmatter import load_text
     except Exception:  # noqa: BLE001 - standalone use, any import problem
         return yaml.safe_load(fm_text)
-    # bandit flags any yaml.load() call regardless of Loader, but
-    # _StrictBoolLoader IS a yaml.SafeLoader subclass (see its docstring in
-    # commontrace/frontmatter.py) that only narrows two implicit-conversion
-    # rules -- it accepts no more of the YAML spec than SafeLoader does, so
-    # this carries none of the arbitrary-object-instantiation risk B506
-    # exists to catch.
-    return yaml.load(fm_text, Loader=_StrictBoolLoader)  # nosec B506
+    return load_text(fm_text)
 
 
 def build_query_text(frontmatter: dict, body: str) -> str:
@@ -196,17 +135,7 @@ class ActiveLesson(tuple):
 
 
 def iter_active_lessons(lessons_dir: str):
-    """Yield ActiveLesson(slug, query_text, agent_type, importance, status) for each ACTIVE lesson.
-
-    agent_type travels with the embedding so `query.py --agent-type` can scope
-    results to one fleet. Without it the semantic retriever had no way to
-    filter, and `commontrace query --agent-type` printed "not supported by the
-    semantic retriever and was NOT applied" -- which meant a single
-    organisation running several fleets out of one store (its coding agents,
-    its HR agents, its legal agents) could not scope semantic retrieval to the
-    fleet asking. The lexical path could, so the two retrievers answered
-    different questions from the same store.
-    """
+    """Yield ActiveLesson(slug, query_text, agent_type, importance, status) for each ACTIVE lesson."""
     for path in sorted(glob.glob(os.path.join(lessons_dir, "lesson_*.md"))):
         fname = os.path.basename(path)
         if fname == "lesson_template.md":
@@ -215,18 +144,10 @@ def iter_active_lessons(lessons_dir: str):
             with open(path, "r", encoding="utf-8-sig") as fh:
                 content = fh.read()
         except OSError as exc:
-            # A file glob matched but became unreadable by the time we get
-            # here (permissions, deleted between glob() and open() by a
-            # concurrent capture/lesson command, a broken symlink) -- one
-            # such lesson must not abort the whole index rebuild. Same
-            # guard memory/attention/query.py's load_importances() already
-            # has for the identical failure mode; this script predates it
-            # and had fallen out of sync.
             print(f"[WARN] skipping unreadable lesson {fname}: {exc}", file=sys.stderr)
             continue
         delims = list(_DELIM_RE.finditer(content))
         if len(delims) < 2:
-            # Malformed: no closing frontmatter
             continue
         fm_text = content[delims[0].end():delims[1].start()]
         body = content[delims[1].end():]
@@ -235,10 +156,6 @@ def iter_active_lessons(lessons_dir: str):
         except yaml.YAMLError as exc:
             print(f"[WARN] YAML parse failed for {fname}: {exc}", file=sys.stderr)
             continue
-        # A frontmatter block that parses to a scalar (`---\njust text\n---`)
-        # yields a str, and `.get()` on it raises AttributeError -- which the
-        # except above does not catch, so one malformed lesson crashed the
-        # whole indexer and took the semantic retrieval pipeline with it.
         if not isinstance(frontmatter, dict):
             print(f"[WARN] frontmatter in {fname} is {type(frontmatter).__name__}, "
                   "not a mapping -- skipping", file=sys.stderr)
@@ -281,19 +198,11 @@ def _write_index(
     statuses: "list[str]" = None,
     model_name: str = MODEL_NAME,
 ) -> None:
-    """Atomically write index.npz: build to a unique per-process tmp file
-    under the same directory, then os.replace() over the final path.
-
-    A hardcoded ".tmp.npz" name would let two processes rebuilding the index
-    at once (realistic if a rebuild is ever triggered from a hook rather
-    than run by hand) interleave or clobber each other's np.savez before
-    either reached os.replace; a unique name per call avoids that.
-    """
     os.makedirs(os.path.dirname(index_path), exist_ok=True)
     tmp_fd, tmp_path = tempfile.mkstemp(
         dir=os.path.dirname(index_path), prefix=os.path.basename(index_path) + ".", suffix=".tmp.npz"
     )
-    os.close(tmp_fd)  # np.savez wants a path/fd it opens itself, not this one held open
+    os.close(tmp_fd)
     try:
         np.savez(
             tmp_path,
@@ -305,10 +214,6 @@ def _write_index(
             statuses=np.array(statuses if statuses is not None else ["active"] * len(slugs)),
             model_name=np.array(model_name),
             encoded_field=np.array(ENCODED_FIELD),
-            # UTC, not a naive local timestamp: PROTOCOL.md specifies
-            # ISO-8601 UTC everywhere, and a naive local time cannot be
-            # sorted or compared across multi-agent runners in different
-            # timezones -- see the identical fix in query.py's telemetry.
             timestamp=np.array(datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")),
             n_lessons=np.array(len(slugs)),
         )
@@ -323,11 +228,6 @@ def _write_index(
 
 
 def index_model(index_path: str, fallback: "str | None" = None) -> str:
-    """The model to (re)build `index_path` with when none is named: the one it
-    was built with, if that is trusted and the index holds any lesson, else
-    `fallback` (a trusted name: the model a store's experiment log says it
-    ranked with), else DEFAULT_MODEL_NAME. An empty index (what `commontrace
-    init` writes) pins nothing: no lesson was ever ranked with it."""
     try:
         with np.load(index_path, allow_pickle=False) as data:
             name = str(data["model_name"])
@@ -340,10 +240,6 @@ def index_model(index_path: str, fallback: "str | None" = None) -> str:
 
 @contextlib.contextmanager
 def _no_progress_bars():
-    """Quiet the library's "Loading weights" bars for a load from the local
-    cache: they are noise on every query. A real download keeps its bars.
-    transformers keeps its own switch beside huggingface_hub's; both are
-    restored afterwards."""
     restore = []
     try:
         from huggingface_hub import utils as hub_utils
@@ -375,18 +271,8 @@ def build_or_update_index(
     force_rebuild: bool = False,
     model: Any = None,
     log: Any = print,
+    items: Any = None,
 ) -> dict[str, Any]:
-    """Computes SHA-256 hash of lesson content. Reuses precomputed embeddings for unchanged
-    hashes from output_path. Encodes only new/modified lessons.
-    Saves embeddings, slugs, hashes, importances, and statuses into output_path (.npz).
-
-    `model_name` defaults to `index_model(output_path)`; a name outside
-    TRUSTED_MODELS is refused. `model` is an already-loaded instance of
-    `model_name`, for a long-lived process
-    that holds one (commontrace/semantic_arm.py); `log` receives the progress lines,
-    which such a process must keep off stdout -- the MCP server's stdout is its
-    protocol channel.
-    """
     if np is None:
         raise ImportError("numpy is required to build or update the attention index.")
     if model_name is None:
@@ -395,7 +281,7 @@ def build_or_update_index(
         raise ValueError(
             f"{model_name!r} is not a trusted embedding model; expected one of {list(TRUSTED_MODELS)}")
 
-    active_items = list(iter_active_lessons(lessons_dir))
+    active_items = list(items) if items is not None else list(iter_active_lessons(lessons_dir))
     slugs = [item[0] for item in active_items]
     texts = [item[1] for item in active_items]
     agent_types = [item[2] for item in active_items]
@@ -460,8 +346,6 @@ def build_or_update_index(
                     "sentence_transformers is required to encode new or modified lessons.")
             log(f"Loading model {model_name} (cached under ~/.cache/huggingface/) ...")
             try:
-                # From the local cache when it is there: a cached model
-                # otherwise still costs a Hugging Face Hub round trip.
                 with _no_progress_bars():
                     model = SentenceTransformer(model_name, local_files_only=True)
             except Exception:  # noqa: BLE001 - not cached, or an older library: fetch it
@@ -531,7 +415,7 @@ def main() -> int:
     args = parser.parse_args()
     model_name = args.model or index_model(INDEX_PATH, args.fallback_model)
 
-    # Staleness check: if not args.force, check if the index is already fully up-to-date
+    items = None
     if os.path.exists(INDEX_PATH) and not args.force:
         index_mtime = _safe_mtime(INDEX_PATH)
         newest_lesson = max(
@@ -551,13 +435,15 @@ def main() -> int:
             indexed_slugs = None
             model_matches = False
 
-        active_slugs = {item[0] for item in iter_active_lessons(LESSONS_DIR)}
+        items = list(iter_active_lessons(LESSONS_DIR))
+        active_slugs = {item[0] for item in items}
         same_slugs = indexed_slugs is not None and indexed_slugs == active_slugs
         if newest_lesson <= index_mtime and same_slugs and model_matches:
             print(f"Index up-to-date at {INDEX_PATH} (use --force or --rebuild to rebuild anyway)")
             return 0
 
-    res = build_or_update_index(LESSONS_DIR, INDEX_PATH, model_name=model_name, force_rebuild=args.force)
+    res = build_or_update_index(
+        LESSONS_DIR, INDEX_PATH, model_name=model_name, force_rebuild=args.force, items=items)
     print(
         f"Index built: {res['n_lessons']} lessons ({res['encoded_count']} encoded, "
         f"{res['reused_count']} reused from cache), "

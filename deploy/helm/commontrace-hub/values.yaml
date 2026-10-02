@@ -1,0 +1,65 @@
+image:
+  repository: ""
+  tag: ""
+  pullPolicy: IfNotPresent
+
+existingSecret: ""
+
+replicaCount: 2
+config:
+  HUB_HOST: "0.0.0.0"
+  HUB_PORT: "8420"
+  HUB_LOG_LEVEL: "INFO"
+  HUB_ALLOW_INSECURE_HTTP: "true"        # TLS ends at the ingress; see hub/DEPLOYMENT.md §10
+  HUB_TRUSTED_PROXY_HOPS: "0"            # set to the exact number of trusted proxies in front
+  HUB_RATE_LIMIT_BACKEND: "postgres"
+  HUB_DB_POOL_SIZE: "10"
+  HUB_DB_MAX_OVERFLOW: "5"
+  HUB_REQUIRE_RLS: "true"
+  HUB_DATA_REGION: ""                    # e.g. eu or us; reported by /disclosure
+  HUB_AUTH_CACHE_SECONDS: ""             # 0-60; revocations reach every replica by NOTIFY (hub/.env.example)
+
+postgres:
+  maxConnections: 0
+
+migrations:
+  enabled: true                          # a pre-install/pre-upgrade hook Job
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+resources:
+  requests: { cpu: 250m, memory: 256Mi }
+  limits: { cpu: "1", memory: 512Mi }
+
+service:
+  type: ClusterIP
+  port: 8420
+
+ingress:
+  enabled: false
+  className: ""
+  host: ""
+  tlsSecretName: ""
+  annotations: {}
+
+networkPolicy:
+  enabled: false
+  allowedNamespaceLabels: []             # e.g. [{kubernetes.io/metadata.name: ingress-nginx}]
+  postgresCIDR: ""                       # egress to the database; empty = allow all egress
+
+metrics:
+  serviceMonitor: false
+  alerts: false
+  tokenSecretKey: ""                     # a key in existingSecret holding HUB_METRICS_TOKEN, if set
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

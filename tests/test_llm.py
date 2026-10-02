@@ -1,12 +1,9 @@
-"""commontrace/llm.py: strict-JSON LLM drafting, and the refusal paths that
-matter more than the happy path -- a draft this module accepts is one that
-skips straight past `distill`'s own "proposing the conclusion is not honest"
-scaffold, so what it refuses is the point.
-"""
 from __future__ import annotations
 
 import io
 import json
+import sys
+import types
 import urllib.error
 import urllib.request
 
@@ -45,7 +42,7 @@ class TestLoadConfig:
 
     def test_unsupported_provider_is_unavailable(self, monkeypatch):
         monkeypatch.setenv("COMMONTRACE_LLM_API_KEY", "k")
-        monkeypatch.setenv("COMMONTRACE_LLM_PROVIDER", "bedrock")
+        monkeypatch.setenv("COMMONTRACE_LLM_PROVIDER", "cohere")
         with pytest.raises(llm.LLMUnavailable, match="not supported"):
             llm.load_config()
 
@@ -231,3 +228,116 @@ class TestHttpLayer:
         monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
         with pytest.raises(llm.LLMUnavailable, match="could not reach"):
             llm.draft("prompt", config=_config())
+
+
+class TestCloudProviders:
+    REPLY = ('{"rule": "r", "applies_when": "a", "do_not_apply_when": "d", "evidence": ["e1"]}')
+
+    def _env(self, monkeypatch, provider, **extra):
+        for k in ("COMMONTRACE_LLM_API_KEY", "COMMONTRACE_LLM_MODEL", "COMMONTRACE_LLM_REGION",
+                  "COMMONTRACE_LLM_PROJECT", "AWS_REGION", "COMMONTRACE_LLM_PRICES"):
+            monkeypatch.delenv(k, raising=False)
+        monkeypatch.setenv("COMMONTRACE_LLM_PROVIDER", provider)
+        for k, v in extra.items():
+            monkeypatch.setenv(k, v)
+
+    def test_cloud_providers_need_no_api_key_but_name_their_model_and_place(self, monkeypatch):
+        self._env(monkeypatch, "bedrock")
+        with pytest.raises(llm.LLMUnavailable, match="COMMONTRACE_LLM_MODEL, COMMONTRACE_LLM_REGION"):
+            llm.load_config()
+        self._env(monkeypatch, "bedrock", COMMONTRACE_LLM_MODEL="m", AWS_REGION="eu-west-1")
+        assert llm.load_config().region == "eu-west-1"
+        self._env(monkeypatch, "vertex", COMMONTRACE_LLM_MODEL="m", COMMONTRACE_LLM_REGION="europe-west4")
+        with pytest.raises(llm.LLMUnavailable, match="COMMONTRACE_LLM_PROJECT"):
+            llm.load_config()
+
+    def test_an_api_key_is_still_required_for_the_others(self, monkeypatch):
+        self._env(monkeypatch, "anthropic")
+        with pytest.raises(llm.LLMUnavailable, match="COMMONTRACE_LLM_API_KEY"):
+            llm.load_config()
+
+    def test_bedrock_uses_the_converse_shape(self, monkeypatch):
+        calls = {}
+
+        class Client:
+            def converse(self, **kw):
+                calls.update(kw)
+                return {"output": {"message": {"role": "assistant", "content": [{"text": TestCloudProviders.REPLY}]}},
+                        "usage": {"inputTokens": 11, "outputTokens": 7}}
+
+        fake = types.SimpleNamespace(client=lambda service, region_name=None: (
+            calls.update(service=service, region=region_name), Client())[1])
+        monkeypatch.setitem(sys.modules, "boto3", fake)
+        cfg = llm.Config(provider="bedrock", model="m-1", api_key="", region="eu-west-1")
+        d = llm.draft("p", allowed_evidence_ids={"e1"}, config=cfg)
+        assert calls["service"] == "bedrock-runtime" and calls["region"] == "eu-west-1"
+        assert calls["modelId"] == "m-1" and calls["messages"][0]["content"] == [{"text": "p"}]
+        assert calls["inferenceConfig"]["temperature"] == 0
+        assert d.rule == "r" and d.provenance["usage"] == {"input_tokens": 11, "output_tokens": 7, "estimated": False}
+
+    def test_vertex_uses_the_genai_client_in_vertex_mode(self, monkeypatch):
+        seen = {}
+
+        class Models:
+            def generate_content(self, *, model, contents, config):
+                seen.update(model=model, contents=contents, temperature=config.temperature)
+                return types.SimpleNamespace(
+                    text=TestCloudProviders.REPLY,
+                    usage_metadata=types.SimpleNamespace(prompt_token_count=5, candidates_token_count=3))
+
+        class Client:
+            def __init__(self, **kw):
+                seen["client"] = kw
+                self.models = Models()
+
+        genai = pytest.importorskip("google.genai")
+        monkeypatch.setattr(genai, "Client", Client)
+        cfg = llm.Config(provider="vertex", model="gem", api_key="", region="europe-west4", project="proj")
+        d = llm.draft("p", allowed_evidence_ids={"e1"}, config=cfg)
+        assert seen["client"] == {"vertexai": True, "project": "proj", "location": "europe-west4"}
+        assert seen["model"] == "gem" and seen["temperature"] == 0
+        assert d.provenance["usage"]["input_tokens"] == 5
+
+    @pytest.mark.parametrize("provider,module", [("bedrock", "boto3"), ("vertex", "google")])
+    def test_a_missing_sdk_degrades_with_the_extra_named(self, monkeypatch, provider, module):
+        monkeypatch.setitem(sys.modules, module, None)
+        cfg = llm.Config(provider=provider, model="m", api_key="", region="r", project="p")
+        with pytest.raises(llm.LLMUnavailable, match=r"commontrace\[llm\]"):
+            llm.draft("p", config=cfg)
+
+    def test_an_sdk_failure_is_unavailable_not_a_crash(self, monkeypatch):
+        class Client:
+            def converse(self, **kw):
+                raise RuntimeError("AccessDeniedException")
+
+        monkeypatch.setitem(sys.modules, "boto3", types.SimpleNamespace(client=lambda *a, **k: Client()))
+        with pytest.raises(llm.LLMUnavailable, match="AccessDeniedException"):
+            llm.draft("p", config=llm.Config(provider="bedrock", model="m", api_key="", region="r"))
+
+
+class TestCost:
+    PRICES = {"m": {"input_per_mtok": 3.0, "output_per_mtok": 15.0}}
+
+    def test_cost_comes_only_from_the_owners_price_table(self, tmp_path, monkeypatch):
+        usage = {"input_tokens": 2000, "output_tokens": 500}
+        assert llm.cost_usd(usage, "m", self.PRICES) == pytest.approx((2000 * 3 + 500 * 15) / 1e6)
+        assert llm.cost_usd(usage, "other-model", self.PRICES) is None
+        monkeypatch.delenv("COMMONTRACE_LLM_PRICES", raising=False)
+        assert llm.cost_usd(usage, "m") is None
+        path = tmp_path / "prices.json"
+        path.write_text(json.dumps(self.PRICES))
+        monkeypatch.setenv("COMMONTRACE_LLM_PRICES", str(path))
+        assert llm.cost_usd(usage, "m") == pytest.approx(0.0135)
+        path.write_text("not json")
+        assert llm.cost_usd(usage, "m") is None
+
+    def test_a_draft_carries_cost_when_a_table_exists_and_not_otherwise(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(llm, "_call_anthropic", lambda cfg, prompt: (
+            TestCloudProviders.REPLY, {"input_tokens": 1000, "output_tokens": 100}))
+        cfg = llm.Config(provider="anthropic", model="m", api_key="k")
+        monkeypatch.delenv("COMMONTRACE_LLM_PRICES", raising=False)
+        assert "cost_usd" not in llm.draft("p", config=cfg).provenance
+        path = tmp_path / "p.json"
+        path.write_text(json.dumps(self.PRICES))
+        monkeypatch.setenv("COMMONTRACE_LLM_PRICES", str(path))
+        assert llm.draft("p", config=cfg).provenance["cost_usd"] == pytest.approx(0.0045)

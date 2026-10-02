@@ -1,21 +1,3 @@
-"""Retrieval imprecision must not silently become a causal claim.
-
-The product's most valuable output is a causally-measured effect size, and it
-was reachable by a path nobody could see from the log: `query --experiment`
-logged an assignment for EVERY retrieved lesson, with no record of how well
-each one matched. A lesson that scraped into top-k on an incidental word got a
-row identical to one that was squarely on topic, and the occasion's outcome was
-attributed to both.
-
-Observed running six fleets: one lesson accumulated 246 assignments against
-roughly 80 occasions actually about it, and was reported as significantly
-HURTING outcomes (-14.5pp, 95% CI [-26.3, -2.7], p=0.018) after
-Benjamini-Hochberg correction. The lesson was fine. The retrieval was not, and
-nothing in the log could say so.
-
-These tests cover the three checks that make that visible, and the evidence
-they need being recorded in the first place.
-"""
 import json
 
 import pytest
@@ -50,10 +32,6 @@ class TestTheEvidenceIsRecorded:
         assert by_lesson["a"].floor == pytest.approx(0.10)
 
     def test_an_older_log_without_the_evidence_still_reads(self, tmp_path):
-        """The precedent holdout_io.read_log already sets for `salt` and
-        `revision`: backward compatibility for a measurement is not a nicety,
-        because the alternative is a fleet's experiment history becoming
-        unreadable on upgrade."""
         root = str(tmp_path)
         (tmp_path / "memory").mkdir()
         with open(holdout_io.holdout_log_path(root), "w", encoding="utf-8") as fh:
@@ -81,13 +59,10 @@ class TestTheEvidenceIsRecorded:
 
 class TestMarginalEligibility:
     def test_the_246_versus_80_case_is_caught(self):
-        """The exact failure, reconstructed."""
         rows = [
             _row("polluted", f"real-{i}", injected=(i % 2 == 0), relevance=0.52)
             for i in range(80)
         ] + [
-            # Pulled in on an incidental word, just over the floor. The
-            # outcomes of these occasions say nothing about this lesson.
             _row("polluted", f"collateral-{i}", injected=(i % 2 == 0), relevance=0.12)
             for i in range(166)
         ]
@@ -109,8 +84,6 @@ class TestMarginalEligibility:
         assert integrity.check_marginal_eligibility(rows).severity == integrity.SEVERITY_OK
 
     def test_unscored_rows_are_skipped_not_assumed(self):
-        """An old log must degrade to "cannot assess" rather than to a
-        finding there is no evidence for."""
         rows = [
             integrity.Assignment(lesson="a", occasion_id=f"o-{i}", injected=True, salt="s")
             for i in range(50)
@@ -138,9 +111,6 @@ class TestAssignmentConcentration:
         assert finding.numbers["flagged"] == ["greedy"]
 
     def test_a_genuinely_broad_lesson_matching_strongly_is_not_flagged(self):
-        """Breadth alone is not a defect. A lesson that applies to many
-        occasions AND matches them as well as its peers match theirs is doing
-        its job, and flagging it would train people to ignore this check."""
         rows = self._peers() + [
             _row("broad", f"b-{i}", relevance=0.60) for i in range(246)
         ]
@@ -159,8 +129,6 @@ class TestScorerDrift:
         assert integrity.check_scorer_drift(rows).severity == integrity.SEVERITY_OK
 
     def test_a_changed_scorer_invalidates(self):
-        """Same reasoning as check_assignment_drift, one level up: that check
-        catches a changed randomization, this catches a changed denominator."""
         rows = [_row("a", f"o-{i}", scorer="count-v1") for i in range(10)]
         rows += [_row("a", f"n-{i}", scorer="idf-v2") for i in range(10)]
         finding = integrity.check_scorer_drift(rows)
@@ -190,6 +158,4 @@ class TestTheChecksAreWiredIntoTheReport:
         checks = {f.check for f in report.findings}
         assert {"marginal_eligibility", "assignment_concentration", "scorer_drift"} <= checks
         assert report.verdict == integrity.VERDICT_COMPROMISED
-        # "A compromised experiment produces no number. Not a hedged number
-        # -- none." (commontrace/value.py)
         assert not report.readable

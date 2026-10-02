@@ -1,6 +1,3 @@
-"""Tests for memory performance, chunked deduplication,
-inverted-index lexical pruning, and incremental vector caching.
-"""
 import hashlib
 import os
 
@@ -50,12 +47,8 @@ Testing only.
         fh.write(content)
     return path
 
-# ============================================================================
-# 1. compute_semantic_duplicates & Chunking Tests
-# ============================================================================
 
 def _naive_pairwise_duplicates(embeddings: np.ndarray, slugs: list[str], threshold: float = 0.85):
-    """Naive, non-chunked all-pairs ground truth dot product."""
     n = len(slugs)
     embs = np.asarray(embeddings, dtype=np.float32)
     sim = embs @ embs.T
@@ -71,11 +64,9 @@ def _naive_pairwise_duplicates(embeddings: np.ndarray, slugs: list[str], thresho
 
 class TestSemanticDuplicatesPerformance:
     def test_chunked_vs_naive_equivalence(self):
-        """Verify chunked float32 block multiplication produces identical pairs to naive dot product."""
         rng = np.random.default_rng(42)
         n = 50
         dim = 64
-        # Generate random normalized vectors
         raw = rng.standard_normal((n, dim), dtype=np.float32)
         norms = np.linalg.norm(raw, axis=1, keepdims=True)
         embeddings = raw / norms
@@ -84,7 +75,6 @@ class TestSemanticDuplicatesPerformance:
         threshold = 0.25
         naive_result = _naive_pairwise_duplicates(embeddings, slugs, threshold=threshold)
 
-        # Test varying chunk sizes: 1, 7, 25, 50, 100
         for chunk_size in [1, 7, 25, 50, 100]:
             chunked_pairs = _chunked_pairwise_duplicates(
                 embeddings, slugs, threshold=threshold, chunk_size=chunk_size
@@ -96,7 +86,6 @@ class TestSemanticDuplicatesPerformance:
                 assert pytest.approx(c_score, rel=1e-5, abs=1e-5) == n_score
 
     def test_float32_vs_float64_input_compatibility(self):
-        """Verify both float32 and float64 arrays are handled cleanly by compute_semantic_duplicates."""
         rng = np.random.default_rng(123)
         n = 10
         dim = 32
@@ -104,11 +93,9 @@ class TestSemanticDuplicatesPerformance:
         embeddings_f64 = raw_f64 / np.linalg.norm(raw_f64, axis=1, keepdims=True)
         slugs = [f"slug_{i}" for i in range(n)]
 
-        # Call with float64
         res_f64 = compute_semantic_duplicates(embeddings_f64, slugs, threshold=0.1, chunk_size=3)
         assert isinstance(res_f64, SemanticDuplicatesResult)
 
-        # Call with float32
         embeddings_f32 = embeddings_f64.astype(np.float32)
         res_f32 = compute_semantic_duplicates(embeddings_f32, slugs, threshold=0.1, chunk_size=3)
 
@@ -119,7 +106,6 @@ class TestSemanticDuplicatesPerformance:
             assert pytest.approx(s1, abs=1e-5) == s2
 
     def test_direct_interface_semantic_duplicates_result(self):
-        """Verify SemanticDuplicatesResult behaves as 2-tuple and dict-like object."""
         embs = np.array([[1.0, 0.0], [0.99, 0.1], [0.0, 1.0]], dtype=np.float32)
         norms = np.linalg.norm(embs, axis=1, keepdims=True)
         embs = embs / norms
@@ -127,14 +113,12 @@ class TestSemanticDuplicatesPerformance:
 
         res = compute_semantic_duplicates(embs, slugs, threshold=0.8)
 
-        # Tuple unpacking
         count, pairs = res
         assert count == 1
         assert len(pairs) == 1
         assert pairs[0][0] == "a"
         assert pairs[0][1] == "b"
 
-        # Dict-like access
         assert res["count"] == 1
         assert len(res["pairs"]) == 1
         assert res["available"] is True
@@ -143,7 +127,6 @@ class TestSemanticDuplicatesPerformance:
         assert "pairs" in res
         assert "unknown_key" not in res
 
-        # Attribute access
         assert res.count == 1
         assert res.n_lessons == 3
         assert res.available is True
@@ -171,18 +154,12 @@ class TestSemanticDuplicatesPerformance:
         assert res["pairs"][0][0] == "lesson_1"
         assert res["pairs"][0][1] == "lesson_2"
 
-        # Nonexistent path
         missing_res = compute_semantic_duplicates(str(tmp_path / "missing.npz"))
         assert missing_res["available"] is False
         assert "No attention index found" in missing_res["message"]
 
 
-# ============================================================================
-# 2. compute_lexical_duplicates & Inverted Index Pruning Tests
-# ============================================================================
-
 def _naive_lexical_duplicates(lessons: dict, threshold: float):
-    """Naive all-pairs O(N^2) Jaccard duplicate calculation."""
     items = []
     for name, fm in sorted(lessons.items()):
         toks = _lexical_tokens(fm.get("description")) | _lexical_tokens(fm.get("applies_when"))
@@ -211,7 +188,6 @@ def _naive_lexical_duplicates(lessons: dict, threshold: float):
 
 class TestLexicalDuplicatesPerformance:
     def test_inverted_index_vs_naive_equivalence(self):
-        """Verify inverted index with length pruning produces identical results to naive loop."""
         lessons = {
             "lesson_01": {
                 "description": "Handle git checkout and branch switching safely",
@@ -251,10 +227,6 @@ class TestLexicalDuplicatesPerformance:
                 assert p_fast["score"] == p_naive["score"]
 
     def test_length_pruning_boundary(self):
-        """Verify candidate pairs with length ratio < threshold are pruned without computing Jaccard."""
-        # Lesson A has 2 tokens; Lesson B has 20 tokens.
-        # Jaccard(A, B) <= 2 / 20 = 0.1.
-        # If threshold is 0.5, length pruning must immediately bypass pair (A, B).
         lessons = {
             "short": {
                 "description": "alpha beta",
@@ -290,12 +262,7 @@ class TestLexicalDuplicatesPerformance:
         assert res["pairs"][0]["score"] >= 0.5
 
 
-# ============================================================================
-# 3. build_or_update_index Incremental Caching Tests
-# ============================================================================
-
 class MockSentenceTransformer:
-    """Mock encoder that tracks encode calls and returns deterministic embeddings."""
     total_calls = 0
     encoded_texts_history: list[list[str]] = []
 
@@ -306,7 +273,6 @@ class MockSentenceTransformer:
         MockSentenceTransformer.total_calls += 1
         MockSentenceTransformer.encoded_texts_history.append(list(texts))
         n = len(texts)
-        # Deterministic pseudo-embeddings derived from text hashes
         embs = np.zeros((n, EMBEDDING_DIM), dtype=np.float32)
         for i, t in enumerate(texts):
             h = hashlib.sha256(t.encode("utf-8")).digest()
@@ -333,12 +299,10 @@ class TestIncrementalVectorCaching:
         lessons_dir.mkdir(parents=True)
         output_npz = str(tmp_path / "index.npz")
 
-        # Step 1: Create 3 lessons
         _write_test_lesson(lessons_dir, "lesson_alpha", description="Alpha rule", rule="Do alpha")
         _write_test_lesson(lessons_dir, "lesson_beta", description="Beta rule", rule="Do beta")
         _write_test_lesson(lessons_dir, "lesson_gamma", description="Gamma rule", rule="Do gamma")
 
-        # Run 1: Clean build
         res1 = build_or_update_index(str(lessons_dir), output_npz)
         assert res1["n_lessons"] == 3
         assert res1["encoded_count"] == 3
@@ -346,7 +310,6 @@ class TestIncrementalVectorCaching:
         assert MockSentenceTransformer.total_calls == 1
         assert len(MockSentenceTransformer.encoded_texts_history[0]) == 3
 
-        # Verify output .npz contents
         assert os.path.exists(output_npz)
         with np.load(output_npz, allow_pickle=False) as data:
             assert len(data["slugs"]) == 3
@@ -355,15 +318,12 @@ class TestIncrementalVectorCaching:
             assert "importances" in data.files
             assert "statuses" in data.files
 
-        # Run 2: Unchanged lessons -> fully reused from cache, 0 encoding calls
         res2 = build_or_update_index(str(lessons_dir), output_npz)
         assert res2["n_lessons"] == 3
         assert res2["encoded_count"] == 0
         assert res2["reused_count"] == 3
-        # Model.encode should not have been called again
         assert MockSentenceTransformer.total_calls == 1
 
-        # Run 3: Modify 1 lesson -> only 1 lesson encoded, 2 reused
         _write_test_lesson(lessons_dir, "lesson_beta", description="Beta rule MODIFIED", rule="Do beta modified")
         res3 = build_or_update_index(str(lessons_dir), output_npz)
         assert res3["n_lessons"] == 3
@@ -372,7 +332,6 @@ class TestIncrementalVectorCaching:
         assert MockSentenceTransformer.total_calls == 2
         assert len(MockSentenceTransformer.encoded_texts_history[-1]) == 1
 
-        # Run 4: Add 1 new lesson -> 1 encoded, 3 reused
         _write_test_lesson(lessons_dir, "lesson_delta", description="Delta rule", rule="Do delta")
         res4 = build_or_update_index(str(lessons_dir), output_npz)
         assert res4["n_lessons"] == 4
@@ -380,7 +339,6 @@ class TestIncrementalVectorCaching:
         assert res4["reused_count"] == 3
         assert MockSentenceTransformer.total_calls == 3
 
-        # Run 5: force_rebuild=True -> all 4 lessons re-encoded
         res5 = build_or_update_index(str(lessons_dir), output_npz, force_rebuild=True)
         assert res5["n_lessons"] == 4
         assert res5["encoded_count"] == 4

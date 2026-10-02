@@ -1,29 +1,4 @@
-"""Post-deploy smoke check: prove a running Hub actually works.
-
-Run this against a deployment you just brought up, before you hand a key to
-a customer. It is deliberately end-to-end and deliberately paranoid: it
-exercises the full MCP tool surface against the live server over real
-HTTP, and it verifies the properties that matter more than uptime does --
-that an unauthenticated caller is refused, that one tenant cannot see
-another's data, and that a trace a customer contributed never surfaces to
-another org through the Knowledge Base -- the Knowledge Base holds only
-operator-curated content, never customer contributions.
-
-    python -m hub.smoke --url https://hub.example.com --api-key ct_live_...
-
-    # Also verify isolation, which needs a second org's key:
-    python -m hub.smoke --url ... --api-key ct_live_A --other-api-key ct_live_B
-
-Exits 0 if every check passes, 1 otherwise, and prints one line per check so
-a failure says which property broke. Safe to run against production: it
-writes traces tagged `commontrace-smoke` under the calling org and nothing
-else, and `--cleanup-hint` prints how to purge them afterwards.
-
-Why a script and not just the test suite: the tests run against a database
-fixture in CI. This runs against the thing you actually deployed, through
-the network path, the TLS terminator, and the proxy your platform put in
-front of it -- which is where deployments really fail.
-"""
+"""Post-deploy smoke check: prove a running Hub actually works."""
 from __future__ import annotations
 
 import argparse
@@ -32,16 +7,12 @@ import json
 import sys
 import uuid
 
-# The only hub-side import in this file: the plan table is the definition of
-# what an entitlement check should see, and duplicating the names here would
-# let the smoke check quietly pass against a Hub whose plans have changed.
 from hub import plans
 
 SMOKE_TAG = "commontrace-smoke"
 
 
 def _content(result):
-    """MCP tool results arrive as structured content or as a JSON text block."""
     structured = getattr(result, "structured_content", None)
     if structured:
         return structured
@@ -55,30 +26,6 @@ def _content(result):
 
 
 async def _call(session, report: "Reporter", label: str, tool: str, args: dict):
-    """Call an MCP tool and return its content, or record `label` as a
-    failed check and return None if the call itself raises.
-
-    A tool call can fail two structurally different ways. The server can
-    answer with a shaped error (bad input, not_found, entitlement_exceeded)
-    -- an ordinary CallToolResult that _content() reads into a dict with an
-    "error" key, which the caller's own report.check() already handles. Or
-    the call can never get a result at all: a 429 from the Hub's own rate
-    limiter, a dropped connection, a protocol-level error -- the mcp client
-    library RAISES for that case instead of returning anything. Without
-    this wrapper, that second kind used to abort the whole run with an
-    unhandled ExceptionGroup: every later check silently never ran, and the
-    only visible output was an opaque traceback that names no property at
-    all -- the "one line per check" promise this file's own module
-    docstring makes, broken by construction on exactly the failure a
-    deployment check exists to catch cleanly.
-
-    Reproduced live, not hypothetically: running this file's own documented
-    --other-api-key workflow against a real Hub under its default rate
-    limits is, by itself, enough requests from one source address to
-    exhaust HUB_AUTH_ATTEMPTS_BURST -- the smoke check's own traffic
-    tripped its target's rate limiter and then crashed uninformatively
-    reporting that fact.
-    """
     try:
         return _content(await session.call_tool(tool, args))
     except Exception as exc:  # noqa: BLE001 - must become one [FAIL] line, never an uncaught crash
@@ -87,12 +34,6 @@ async def _call(session, report: "Reporter", label: str, tool: str, args: dict):
 
 
 async def _initialize(session, report: "Reporter", label: str) -> bool:
-    """session.initialize() is the first request a session makes, and can
-    fail exactly the way any tool call can (a 429 from the Hub's own rate
-    limiter included) -- but it is not a call_tool(), so _call() cannot
-    wrap it. Same treatment: one clean [FAIL] line and a return value the
-    caller can act on, rather than an unhandled exception aborting the run
-    before a single check has even run."""
     try:
         await session.initialize()
         return True
@@ -113,18 +54,6 @@ class Reporter:
         self.failures.append(label)
 
     def check(self, label: str, condition: bool, detail: str = "", fail_detail: str = "") -> bool:
-        """`detail` is what a PASS prints; `fail_detail`, when given, is what
-        a FAIL prints instead.
-
-        One shared string used to be printed either way, so a detail written
-        to explain a failure was printed verbatim next to `[PASS]`. The worst
-        of them was on the tenant-isolation check that matters most, which
-        announced "the other org's commons_overlap returned our trace: {...}"
-        on a run where nothing leaked -- an operator running this to gain
-        confidence in a fresh deployment would reasonably conclude the
-        opposite. A check that reports a passing result in the language of
-        failure is worse than one that prints nothing.
-        """
         if condition:
             self.ok(label, detail)
         else:
@@ -133,7 +62,6 @@ class Reporter:
 
 
 def _session(url: str, api_key: str):
-    """An MCP client session against the live server, carrying the API key."""
     import httpx
     from mcp.client.streamable_http import streamable_http_client
 
@@ -143,17 +71,6 @@ def _session(url: str, api_key: str):
 
 
 def _preflight(url: str, api_key: str) -> str | None:
-    """Probe the endpoint over plain HTTP before opening an MCP session.
-
-    The MCP client collapses an HTTP 401 into a generic JSON-RPC internal
-    error, so by the time a session fails there is no way to tell "your key
-    was rejected" from "the server blew up". A raw request first keeps those
-    distinguishable, which is the difference between an operator fixing a
-    credential and an operator paging whoever owns the service.
-
-    Returns a message describing the problem, or None if the endpoint is
-    reachable and the key is accepted.
-    """
     import httpx
 
     payload = {
@@ -181,18 +98,6 @@ def _preflight(url: str, api_key: str) -> str | None:
         return (f"HTTP 404 at {url}. The MCP endpoint path is probably wrong -- "
                 "it defaults to /mcp (HUB_STREAMABLE_HTTP_PATH).")
     if response.status_code == 429:
-        # NOT the same as "reachable, key accepted": the auth-attempt
-        # limiter in hub/server.py's ApiKeyAuthMiddleware runs BEFORE the
-        # key is even parsed, so a 429 here says nothing about the key at
-        # all -- it fires identically for a real key, a bogus one, or no
-        # Authorization header. Falling through to `return None` (this
-        # function's own "the key was accepted" contract) used to make
-        # _rejects_bad_credentials read a rate-limited bogus-key probe as
-        # "the server ACCEPTED a bogus key" -- a false, alarming security
-        # failure for a check that never actually ran. Reproduced live:
-        # this smoke check's own request volume (particularly the full
-        # --other-api-key workflow) is enough to trip a tightly-configured
-        # HUB_AUTH_ATTEMPTS_BURST by itself.
         return ("the server rate-limited this request (HTTP 429) before it could evaluate "
                 "the API key -- inconclusive, not a rejection or an acceptance. This can be "
                 "the smoke check's own request volume tripping HUB_AUTH_ATTEMPTS_BURST; wait "
@@ -203,72 +108,29 @@ def _preflight(url: str, api_key: str) -> str | None:
     return None
 
 
-# The tool surface, asserted exactly rather than as a subset: a tool
-# appearing that this file does not know about is exactly as interesting
-# as one going missing, since the surface is what a customer's key can
-# reach. Split in two because HUB_COMMONS_ENABLED (hub/config.py) changes
-# what a live deployment actually exposes -- smoke has no access to the
-# operator's env, only what it observes over MCP, so it checks internal
-# consistency (all of COMMONS_TOOLS present together or all absent
-# together) rather than one fixed list. Update these deliberately when
-# the surface changes.
 CORE_TOOLS = [
-    # the six org-scoped tools
     "amend_trace", "contribute_trace", "get_trace", "list_tags",
     "search_traces", "vote_trace",
-    # self-service deletion (hub/crud.py) -- org-scoped like the six above,
-    # unaffected by HUB_COMMONS_ENABLED
     "delete_trace", "request_account_deletion", "cancel_account_deletion",
     "confirm_account_deletion",
-    # entitlements (hub/plans.py) -- unaffected by HUB_COMMONS_ENABLED,
-    # since it reports an org's own plan and usage, never another org's data
     "account_usage",
-    # outcome measurement (hub/outcomes.py) -- reads the caller's own
-    # outcome history only, so it is org-scoped and unmetered like the six
     "fleet_outcomes",
-    # randomized holdout (hub/crud.py) -- the causal instrument, org-scoped
     "holdout_assign", "record_occasion_outcome",
-    # what that instrument was WORTH (commontrace/value.py) -- the causal
-    # effect turned into a quantity a price can attach to, which STRATEGY.md
-    # 11.5 names as this product's pricing basis. Org-scoped and unmetered.
     "value_delivered",
-    # the graduated subset of that instrument (hub/crud.py:working_set) --
-    # the memories whose effect is already established, rendered once per
-    # session as a pinnable block instead of paid for on every query.
-    # Org-scoped and unmetered like the rest of this list.
     "working_set",
-    # collaboration on a trace (hub/collab.py) -- comments, assignment,
-    # and a notification inbox for a customer's own team. Org-scoped and
-    # unmetered like the rest of this list; unaffected by
-    # HUB_COMMONS_ENABLED, which only toggles cross-org sharing.
     "add_comment", "list_comments", "assign_trace", "unassign_trace",
     "list_my_notifications", "mark_notification_read",
-    # locating traces for a subject-erasure request (hub/crud.py:
-    # search_trace_content) -- org-scoped and unmetered like the rest of
-    # this list; unaffected by HUB_COMMONS_ENABLED.
     "search_trace_content",
-    # structured subject tagging + exact-match find/purge (hub/crud.py:
-    # tag_trace_subjects/find_traces_by_subject/purge_traces_by_subject) --
-    # the other half of subject-erasure support, for content a curator
-    # explicitly tagged. Org-scoped and unmetered like the rest of this
-    # list; unaffected by HUB_COMMONS_ENABLED.
     "tag_trace_subjects", "find_traces_by_subject", "purge_traces_by_subject",
 ]
 COMMONS_TOOLS = [
     "commons_overlap", "commons_search", "commons_export",
     "submit_kb_entry", "list_my_kb_submissions",
 ]
-EXPECTED_TOOLS = CORE_TOOLS + COMMONS_TOOLS  # kept for external callers/tests
+EXPECTED_TOOLS = CORE_TOOLS + COMMONS_TOOLS
 
 
 async def _tool_surface(session, report: Reporter) -> bool:
-    """Returns whether the commons tools are present, so later checks know
-    whether to expect commons_overlap etc. to exist at all. False (commons
-    treated as absent, the more conservative assumption) if list_tools()
-    itself fails -- see _call()'s docstring for why that must be a clean
-    [FAIL], not a crash, and _round_trip below still runs regardless: the
-    tool surface and the write path are independent things to know about a
-    deployment."""
     label = "MCP tool surface is exactly core+commons or core-only"
     try:
         listed = await session.list_tools()
@@ -293,7 +155,6 @@ async def _tool_surface(session, report: Reporter) -> bool:
 
 
 async def _round_trip(session, report: Reporter, marker: str) -> str | None:
-    """contribute -> search -> get -> vote -> amend, the full write path."""
     created = await _call(session, report, "contribute_trace writes", "contribute_trace", {
         "title": f"smoke check {marker}",
         "context_text": f"Automated post-deploy smoke check {marker}. Safe to delete.",
@@ -302,7 +163,7 @@ async def _round_trip(session, report: Reporter, marker: str) -> str | None:
         "agent_type": "custom",
     })
     if created is None:
-        return None  # _call already recorded why
+        return None
     trace_id = created.get("id") if isinstance(created, dict) else None
     if not report.check("contribute_trace writes", bool(trace_id), f"returned {created!r}"):
         return None
@@ -313,13 +174,6 @@ async def _round_trip(session, report: Reporter, marker: str) -> str | None:
         report.check("search_traces finds it", trace_id in ids,
                      f"searched for {marker!r}, got {len(ids)} result(s)")
 
-    # The same trace, asked for the way an agent actually asks: a sentence,
-    # in words that only PARTLY overlap what was stored. The single-token
-    # search above passes under a conjunctive matcher and under a relaxed
-    # one alike, so it cannot tell them apart -- and a deployment whose
-    # query terms are ANDed returns nothing here while every other check on
-    # this page stays green (hub/RETRIEVAL.md: 0.0% recall@1, 100%
-    # zero-result, HTTP 200 throughout). This is the check that fails.
     phrased = await _call(
         session, report, "search_traces finds it from a natural-language description",
         "search_traces", {"query": f"automated deploy verification {marker} nothing needs doing here"},
@@ -369,14 +223,6 @@ async def _round_trip(session, report: Reporter, marker: str) -> str | None:
         )
         amended_id = amended.get("id") if isinstance(amended, dict) else None
 
-    # A retry with the same idempotency_key -- over the real deployed MCP
-    # protocol, not just the crud.py layer the unit tests exercise --
-    # simulating a client that timed out waiting for the first response and
-    # tried again. Without a live check here, a regression in the tool
-    # wrapper's parameter wiring (server.py, distinct from the crud.py logic
-    # it calls) would ship invisibly: nothing else in this file calls
-    # amend_trace twice with the same key. Skipped if the first amend_trace
-    # call already failed -- there is nothing to retry.
     if amended_id is not None:
         retried = await _call(
             session, report, "amend_trace with a repeated idempotency_key returns the original, not a fork",
@@ -398,16 +244,9 @@ async def _round_trip(session, report: Reporter, marker: str) -> str | None:
 
 
 async def _entitlements(session, report: Reporter) -> None:
-    """The plan is only real if the server can state it.
-
-    Checked post-deploy because an entitlement layer that fails open is
-    invisible until the bill is wrong: every request still succeeds, so
-    nothing looks broken. A misconfigured deployment that reports every org
-    as unlimited passes every other check in this file.
-    """
     usage = await _call(session, report, "account_usage responds", "account_usage", {})
     if usage is None:
-        return  # _call already recorded why
+        return
     if usage.get("error"):
         report.fail("account_usage responds", str(usage))
         return
@@ -431,26 +270,12 @@ async def _entitlements(session, report: Reporter) -> None:
 
 
 async def _rejects_bad_credentials(url: str, report: Reporter) -> None:
-    """Must observe an actual HTTP 401/403 from the server, not merely "some
-    exception happened" while opening the MCP session. The bare `except
-    Exception: report.ok(...)` this replaced treated a TLS failure, a
-    timeout, or a proxy connection reset identically to a genuine
-    credential rejection -- all three raise from inside the MCP session
-    the same way, and all three reported [PASS] "an invalid API key is
-    refused" without the server having rejected anything, or even having
-    been reached. _preflight already exists for exactly this reason (see
-    its own docstring): a raw HTTP request whose real status code can be
-    told apart from a connection failure, used here with the bogus key
-    instead of the real one.
-    """
     problem = _preflight(url, "ct_live_definitely-not-a-real-key")
     if problem is None:
         report.fail("an invalid API key is refused", "the server ACCEPTED a bogus key")
     elif "rejected the API key" in problem:
         report.ok("an invalid API key is refused")
     else:
-        # Reachable-but-not-a-401 (404, 5xx) or entirely unreachable: this
-        # check did not observe a rejection, so it must not report success.
         report.fail("an invalid API key is refused", f"could not verify: {problem}")
 
 
@@ -458,7 +283,6 @@ async def _tenant_isolation(
     url: str, other_key: str, foreign_id: str, marker: str, report: Reporter,
     commons_enabled: bool = True,
 ) -> None:
-    """The other org must not be able to read, vote on, or amend our trace."""
     from mcp import ClientSession
 
     async with _session(url, other_key) as (read, write, *_):
@@ -473,29 +297,17 @@ async def _tenant_isolation(
                 label = f"{tool} across a tenant boundary is refused"
                 result = await _call(session, report, label, tool, args)
                 if result is None:
-                    continue  # _call already recorded why
+                    continue
                 denied = isinstance(result, dict) and result.get("error") == "not_found"
                 report.check(
                     label, denied,
-                    # not_found rather than forbidden: a wrong answer here leaks
-                    # that the id exists, which is itself a disclosure.
                     detail="refused with error=not_found, disclosing nothing about the id",
                     fail_detail=f"expected error=not_found, got {result!r}",
                 )
 
             if not commons_enabled:
-                # Nothing to probe: _tool_surface already proved these two
-                # tools are entirely absent from the server, which is a
-                # stronger guarantee than "refused when called" -- there is
-                # no path left to check.
                 return
 
-            # The Knowledge Base holds only operator-curated content
-            # (commons_source == "seed"), never a customer's own traces, so
-            # a deployment check has to prove a customer-contributed trace
-            # never surfaces there. Probing with a signature built from its
-            # EXACT text -- the strongest possible probe -- must still find
-            # nothing.
             from hub import commons
 
             probe = commons.signature_for(
@@ -561,25 +373,6 @@ async def run(args: argparse.Namespace) -> int:
             commons_enabled=commons_enabled,
         )
 
-    # Clean up before reporting, and on failure as well as success: the
-    # traces exist either way, and the run that failed is the one most
-    # likely to be repeated.
-    #
-    # WHY THIS IS NOT OPTIONAL HOUSEKEEPING. Section 12 tells operators this
-    # check is safe to run against production, which invites wiring it into
-    # a deploy gate -- and every run permanently added two traces (the
-    # original plus its amendment) to a real customer org. They are not
-    # quarantined, so they come back in `search_traces` results for real
-    # agent queries, they count against the org's plan storage, and they
-    # inflate its trace counts. Measured on a deployment smoked a handful of
-    # times: 12 of 12 traces in the org were this check's own residue. An
-    # acceptance check that degrades the thing it certifies is a bad trade,
-    # and "remove them with: python -m hub.manage purge-trace <id>" put that
-    # work on a human, once per deploy, forever.
-    #
-    # delete_trace is the right instrument: it is org-scoped, it is reached
-    # with the same key the check already holds, and it removes the whole
-    # amendment chain -- so one call covers both traces.
     if trace_id and not args.keep:
         await _cleanup(args.url, args.api_key, trace_id)
 
@@ -594,13 +387,6 @@ async def run(args: argparse.Namespace) -> int:
 
 
 async def _cleanup(url: str, api_key: str, trace_id: str) -> None:
-    """Delete what this run wrote, and say so either way.
-
-    A failure here is reported, never raised: the checks have already run
-    and their verdict is what the caller came for. What must not happen is
-    silence -- an operator who is not told cleanup failed has no reason to
-    look, and the residue accumulates in a customer's corpus.
-    """
     from mcp import ClientSession
 
     try:
@@ -627,7 +413,6 @@ async def _cleanup(url: str, api_key: str, trace_id: str) -> None:
 
 
 def _diagnose(error: BaseException) -> str:
-    """Turn a transport or protocol failure into one actionable sentence."""
     seen: list[str] = []
 
     def walk(exc: BaseException) -> None:
@@ -645,15 +430,6 @@ def _diagnose(error: BaseException) -> str:
     if any(m in joined for m in ("401", "unauthorized", "invalid", "revoked", "expired")):
         return "the server rejected the API key. It may be wrong, revoked, or expired."
     if "429" in joined or "rate limit" in joined or "too many requests" in joined:
-        # Every _call() site already turns a rate-limited tool call into a
-        # clean [FAIL] line rather than raising -- this branch is for
-        # whatever isn't a tool call (session.initialize(), the transport's
-        # own connect/close sequence). Distinguished from "the deployment is
-        # broken": this check's OWN traffic can trip the Hub's default
-        # per-source-address auth-attempt limit (HUB_AUTH_ATTEMPTS_BURST),
-        # especially running the full --other-api-key workflow, which is
-        # more requests from one address than a quiet production key
-        # normally sends in a burst.
         return (
             "the server rate-limited this check's own requests (HTTP 429). This is not "
             "necessarily a deployment problem -- running with --other-api-key issues enough "
@@ -695,13 +471,6 @@ def main(argv: list[str] | None = None) -> int:
               file=sys.stderr)
         return 2
     except Exception as exc:
-        # An operator running this against a deployment that is down, or with
-        # a key that was revoked, should be told which of those it is -- not
-        # handed a traceback through an anyio task group. Same reasoning as
-        # hub/manage.py: a stack trace reads as "the tool is broken" when the
-        # actual news is "the thing you deployed is not reachable".
-        # Plain `except`, not `except*`: this must run on Python 3.10, and
-        # _diagnose walks ExceptionGroup.exceptions itself.
         print(f"[smoke] FAILED: {_diagnose(exc)}", file=sys.stderr)
         return 1
 

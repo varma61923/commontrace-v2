@@ -45,7 +45,7 @@ whether your memory is helping; see "The randomized holdout" below.
 count -- `effect x times injected`, established memories only, HURTING ones
 subtracted rather than dropped, nothing at all if the experiment is
 COMPROMISED -- and attaches your own supplied rate to it if you pass one;
-this is this product's pricing basis (STRATEGY.md §11.5), so it is worth
+this is this product's pricing basis, so it is worth
 knowing it exists even though it reads like a footnote to `fleet_outcomes`.
 `working_set(budget_chars)` is the other end of that same instrument: it
 returns only the memories whose effect is already *established* as helping,
@@ -92,16 +92,18 @@ hub/rest.py         JSON API at /api/v1/* for the CommonTrace Claude Code plugin
                     HUB_REST_API_ENABLED is set)
 hub/otlp.py         POST /v1/traces: a live OpenTelemetry SDK/Collector ingests directly (OTLP/JSON
                     only; off unless HUB_OTLP_INGEST_ENABLED is set)
+hub/connectors/     outcome connectors (Zendesk, GitHub): a system of record's signed webhooks record
+                    how occasions turned out; see base.py for the model (off unless
+                    HUB_CONNECTORS_ENABLED is set); hub/connector_routes.py mounts the route
 hub/plans.py       entitlements: what each plan grants, and the credit contributors earn
 hub/outcomes.py    before/after fleet outcome measurement (observational; statistics imported from commontrace/experiment.py)
-hub/bench_scaling.py  does serving one customer get more expensive as their corpus grows? (see SCALING.md)
+hub/bench_scaling.py  does serving one customer get more expensive as their corpus grows?
 hub/crud.py        every tool's actual query logic -- ALWAYS org_id-scoped in SQL
 hub/server.py      thin MCP wiring: auth middleware + tool handlers that call crud.py
 hub/main.py        `python -m hub.main` -- run the server
 hub/manage.py       `python -m hub.manage <cmd>` -- org/API-key operator CLI
 hub/alembic/        migrations (see "Running locally" below)
 hub/DEPLOYMENT.md   running it for real: probes, scaling, backups, security checklist
-hub/SCALING.md      measured cost-to-serve vs. corpus size, per read path
 hub/tests/          pytest suite, including test_tenant_isolation.py
 ```
 
@@ -340,7 +342,7 @@ Knowledge Base query will ever match against:
 
 The boundary being drawn on *content* is **substrate knowledge is
 Knowledge-Base material; any customer's business logic is theirs alone**
-(`STRATEGY.md` §4). That call belongs to the operator authoring the
+That call belongs to the operator authoring the
 corpus, not to any customer, because no customer's own trace ever reaches
 it to need a call made about it.
 
@@ -447,7 +449,7 @@ discard the most safety-relevant report this system can receive.
 
 `submit_kb_entry` reopens a contribution channel the retired `share_trace`
 design also had, and it would reopen the same adverse-selection problem
-(`STRATEGY.md` §3) if contribution alone earned the reward: an org keeps
+if contribution alone earned the reward: an org keeps
 its genuinely valuable lessons and submits generic filler to collect
 `bonus_commons_queries`. The fix is where the credit attaches.
 
@@ -487,12 +489,11 @@ loop. The comparison is then two arms of the same fleet in the same
 window, differing only by the treatment — so "what else changed that
 quarter?" has an answer, and the answer is "nothing, by construction".
 
-`STRATEGY.md` §11.3 names causally-measured memory as the **entire moat**,
-and §13.2 calls running this *"the cheapest falsifier in the document"* and
-says to run it first. Both were already true of
+Causally-measured memory is this product's moat, and running this is the cheapest
+falsifier of the claim, so run it first. That was already possible with
 `commontrace/experiment.py` — which works against a local file store.
-Nothing in the Hub could do it, so the most gating falsifier in the
-strategy could not be run on the surface paying customers are actually on.
+Nothing in the Hub could do it, so the experiment could not be run on the
+surface paying customers are actually on.
 
 An operator starts one per org:
 
@@ -548,11 +549,11 @@ traces captured *before* lessons were being injected. Every
 that column in exactly two places (copying it onto the wire projection,
 carrying it forward on amend) and computed nothing.
 
-That was not a missing report. `STRATEGY.md` §11.3 names measured effect
-on the customer's own data as the whole moat — "nobody rips out the thing
-with a measured effect size on their own data" — and §11.5 names measured
-resolution-rate improvement as the only pricing denominator this product
-can defend. Both were claims about a number the service could not compute.
+That was not a missing report. Measured effect on the customer's own data is
+the whole moat — nobody rips out the thing with a measured effect size on their
+own data — and measured resolution-rate improvement is the only pricing
+denominator this product can defend. Both are claims about a number the
+service could not compute.
 A customer who thought to run `commontrace impact` got a local version
 against files on their own disk; the operator had nothing.
 
@@ -675,8 +676,7 @@ It is deliberately **not** a delete: the row, its votes, and its hit
 history survive, because "how many fleets did we serve this to before we
 pulled it, and what did they say" is answerable only from exactly the
 data a `DELETE` would destroy. `kb-restore` undoes it. For actually
-removing content, `purge-trace` is still the path (see
-`DATA_RETENTION.md` §3).
+removing content, `purge-trace` is still the path.
 
 ### Self-service deletion: one call for a trace, two for an organization
 

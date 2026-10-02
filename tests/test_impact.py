@@ -1,11 +1,3 @@
-"""Tests for commontrace/impact.py and `commontrace impact` -- the Impact
-Dashboard ("errors avoided, lessons reused, value generated or saved").
-
-The property that matters most: no dollar figure is ever produced unless
-the caller explicitly supplies a rate. Fabricating one to fill in a
-flattering number would contradict hub/plans.py's "no currency appears
-anywhere in this repository, and that is deliberate."
-"""
 from __future__ import annotations
 
 import json
@@ -34,23 +26,20 @@ class TestComputeImpact:
             Evidence("e3", retrieved=["lesson_y"], hit=[], succeeded=False),
         ]
         r = impact.compute_impact(ev, traces=[])
-        assert r.lessons_reused == 2  # lesson_x hit twice; lesson_y never hit
+        assert r.lessons_reused == 2
         assert r.n_occasions_with_lesson == 3
 
     def test_a_hit_not_in_retrieved_does_not_count(self):
-        """Mirrors reliability.score_lessons: a hit only counts if the lesson
-        was actually retrieved on that occasion -- otherwise a stray hit
-        entry could inflate the count past what was ever injected."""
         ev = [Evidence("e1", retrieved=["lesson_x"], hit=["lesson_never_retrieved"], succeeded=True)]
         r = impact.compute_impact(ev, traces=[])
         assert r.lessons_reused == 0
 
     def test_errors_avoided_counts_successful_hits_only(self):
         ev = [
-            Evidence("e1", retrieved=["x"], hit=["x"], succeeded=True),   # avoided
-            Evidence("e2", retrieved=["x"], hit=["x"], succeeded=False),  # hit but still failed
-            Evidence("e3", retrieved=["x"], hit=[], succeeded=True),      # no hit -- excluded
-            Evidence("e4", retrieved=["x"], hit=["x"], succeeded=None),   # unknown outcome -- excluded
+            Evidence("e1", retrieved=["x"], hit=["x"], succeeded=True),
+            Evidence("e2", retrieved=["x"], hit=["x"], succeeded=False),
+            Evidence("e3", retrieved=["x"], hit=[], succeeded=True),
+            Evidence("e4", retrieved=["x"], hit=["x"], succeeded=None),
         ]
         r = impact.compute_impact(ev, traces=[])
         assert r.errors_avoided == 1
@@ -58,17 +47,6 @@ class TestComputeImpact:
         assert r.errors_avoided_rate == pytest.approx(0.5)
 
     def test_a_hit_not_in_retrieved_does_not_count_toward_errors_avoided(self):
-        """Same rule as test_a_hit_not_in_retrieved_does_not_count above,
-        applied to errors_avoided instead of lessons_reused -- both are
-        computed from the same `evidence` in the same function, and only
-        lessons_reused was applying reliability.score_lessons's documented
-        rule ('a hit only counts as evidence if the lesson was actually
-        retrieved on that occasion; otherwise a lesson credited by a retro
-        pass would get precision > 1'). Without the same intersection
-        here, an occasion whose lessons_hit was populated by something
-        other than this occasion's own retrieval call inflated
-        errors_avoided/errors_avoided_basis with a success this product's
-        own retrieval cannot take credit for."""
         ev = [Evidence("e1", retrieved=["lesson_x"], hit=["lesson_never_retrieved"], succeeded=True)]
         r = impact.compute_impact(ev, traces=[])
         assert r.errors_avoided == 0
@@ -90,12 +68,9 @@ class TestComputeImpact:
         assert r.avg_tokens_baseline == pytest.approx(400.0)
         assert r.avg_tokens_current == pytest.approx(200.0)
         assert r.tokens_saved_per_task == pytest.approx(200.0)
-        assert r.tokens_saved_total == pytest.approx(400.0)  # 200 * 2 current traces
+        assert r.tokens_saved_total == pytest.approx(400.0)
 
     def test_negative_savings_are_reported_not_clipped(self):
-        """Cost going UP must show as a negative number, never silently
-        floored to zero -- this dashboard reports what happened, flattering
-        or not."""
         traces = [_trace("b1", tokens_used=100, baseline=True), _trace("c1", tokens_used=300, baseline=False)]
         r = impact.compute_impact([], traces)
         assert r.tokens_saved_per_task == pytest.approx(-200.0)
@@ -118,7 +93,6 @@ class TestComputeImpact:
     def test_dollar_value_from_cost_per_1k_tokens_only(self):
         traces = [_trace("b1", tokens_used=2000, baseline=True), _trace("c1", tokens_used=1000, baseline=False)]
         r = impact.compute_impact([], traces, cost_per_1k_tokens=1.0)
-        # saved 1000 tokens/task * 1 current trace = 1000 tokens saved total -> $1.00
         assert r.dollar_value_tokens == pytest.approx(1.0)
         assert r.dollar_value_errors is None
         assert r.dollar_value_total == pytest.approx(1.0)

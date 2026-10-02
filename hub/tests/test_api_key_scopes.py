@@ -1,20 +1,3 @@
-"""Least-privilege workload tokens: what one key may do, not just whose.
-
-Before scopes there was one identity per org and one privilege level, so a
-credential minted for a CI job could also delete the organization. The
-audit's exit criterion for this row is narrow and checkable -- "least
-privilege keys cannot escalate" -- so these tests are mostly about the
-refusals, and specifically about the ways a refusal could be accidentally
-undone:
-
-  * a tool registered without a scope decision at all (the old default:
-    any authenticated key may call anything),
-  * a scope silently implying another,
-  * a narrow key reaching a wide tool because enforcement lives in the
-    handler rather than at registration,
-  * an existing key breaking on upgrade, which is how a security change
-    gets reverted in practice.
-"""
 from __future__ import annotations
 
 import json
@@ -30,7 +13,6 @@ from hub.server import build_mcp_server
 
 
 def payload(result) -> dict:
-    """The dict a tool returned, out of whichever envelope the SDK used."""
     if getattr(result, "structured_content", None):
         sc = result.structured_content
         return sc.get("result", sc)
@@ -52,8 +34,6 @@ async def mcp(config, session_factory):
 
 
 class _Scoped:
-    """Run a block as a key holding exactly `granted`."""
-
     def __init__(self, org_id: str, granted):
         self._org_id = org_id
         self._granted = granted
@@ -77,12 +57,6 @@ class TestTheScopeVocabulary:
         assert scopes.parse(["admin", "read"]) == ("read", "admin")
 
     def test_parse_defaults_to_every_original_scope(self):
-        """The pre-scopes behaviour, preserved: `issue-key <org>` with no
-        scope argument must keep minting the key it always did --
-        read+write+admin. NOT scopes.ALL_SCOPES: `scim` joined that set
-        later and is materially more sensitive (hub/scopes.py's own
-        SCOPE_SCIM docstring), so omitting `--scopes` must never silently
-        include it."""
         assert scopes.parse(None) == scopes.DEFAULT_SCOPES
         assert scopes.SCOPE_SCIM not in scopes.parse(None)
 
@@ -91,8 +65,6 @@ class TestTheScopeVocabulary:
         assert scopes.parse("read,scim") == (scopes.SCOPE_READ, scopes.SCOPE_SCIM)
 
     def test_an_unknown_scope_is_refused_not_dropped(self):
-        """A typo that silently narrows a credential is a privilege change
-        nobody reviews; one that silently widens it is worse."""
         with pytest.raises(scopes.ScopeError, match="unknown scope"):
             scopes.parse("read,wrote")
 
@@ -101,37 +73,22 @@ class TestTheScopeVocabulary:
             scopes.parse("")
 
     def test_scopes_do_not_imply_each_other(self):
-        """The property that makes "can this key escalate?" answerable by
-        reading one row instead of simulating a hierarchy."""
         assert not scopes.satisfies(("admin",), scopes.SCOPE_READ)
         assert not scopes.satisfies(("write",), scopes.SCOPE_READ)
         assert not scopes.satisfies(("read",), scopes.SCOPE_WRITE)
 
     def test_a_legacy_key_with_no_scope_list_holds_every_original_scope(self):
-        """NULL means "issued before the column existed", which is a key
-        that could do all of read/write/admin. An EMPTY list is a
-        deliberate narrowing and must not be confused with it."""
         for scope in (scopes.SCOPE_READ, scopes.SCOPE_WRITE, scopes.SCOPE_ADMIN):
             assert scopes.satisfies(None, scope)
             assert not scopes.satisfies((), scope)
 
     def test_a_legacy_key_does_not_gain_a_scope_added_after_it_was_issued(self):
-        """The whole point of `_LEGACY_IMPLIED_SCOPES` being fixed
-        independent of ALL_SCOPES: adding `scim` to the vocabulary later
-        must not retroactively hand every already-issued full-access
-        production key a brand new, more sensitive capability it was never
-        asked to hold."""
         assert not scopes.satisfies(None, scopes.SCOPE_SCIM)
 
 
 @pytest.mark.asyncio
 class TestEveryToolDeclaresAScope:
     async def test_no_tool_is_registered_without_a_scope_decision(self, mcp):
-        """The failure this prevents: a tool added later that silently
-        inherits "any authenticated key may call this", which is the exact
-        state the whole surface was in before scopes existed. Registration
-        goes through `scoped_tool`, so a missing decision cannot compile --
-        this asserts nobody routed around it with a bare `@mcp.tool()`."""
         registered = {tool.name for tool in await mcp.list_tools()}
         declared = set(mcp.commontrace_tool_scopes)
         assert registered == declared, (
@@ -143,15 +100,9 @@ class TestEveryToolDeclaresAScope:
         assert set(mcp.commontrace_tool_scopes.values()) <= set(scopes.ALL_SCOPES)
 
     async def test_no_mcp_tool_is_scim_scoped(self, mcp):
-        """`scim` gates hub/scim.py's own HTTP endpoint only -- it must
-        never satisfy an MCP tool's scope requirement, since a SCIM-only
-        key is meant to manage User rows and nothing about an org's trace
-        corpus at all."""
         assert scopes.SCOPE_SCIM not in set(mcp.commontrace_tool_scopes.values())
 
     async def test_the_destructive_tools_are_admin_scoped(self, mcp):
-        """Named explicitly rather than derived, so that moving one of these
-        to a weaker scope has to be a deliberate edit to this list."""
         declared = mcp.commontrace_tool_scopes
         for tool in (
             "delete_trace",
@@ -189,17 +140,12 @@ class TestANarrowKeyCannotEscalate:
         assert result["required_scope"] == scopes.SCOPE_ADMIN
 
     async def test_a_read_write_key_still_cannot_delete_the_organization(self, mcp, org):
-        """The separation that matters most commercially: a production agent
-        holds read+write forever, and must not be one compromised prompt away
-        from ending the account."""
         with _Scoped(org, ("read", "write")):
             result = payload(await mcp.call_tool("request_account_deletion", {}))
         assert result["error"] == "forbidden"
         assert result["required_scope"] == scopes.SCOPE_ADMIN
 
     async def test_an_admin_only_key_cannot_read_the_corpus(self, mcp, org):
-        """Scopes do not imply each other, at the tool surface and not only
-        in the helper."""
         with _Scoped(org, ("admin",)):
             result = payload(await mcp.call_tool("search_traces", {"query": "x"}))
         assert result["error"] == "forbidden"
@@ -215,8 +161,6 @@ class TestANarrowKeyCannotEscalate:
                 assert payload(await mcp.call_tool(tool, args))["error"] == "forbidden"
 
     async def test_the_refusal_says_re_authenticating_will_not_help(self, mcp, org):
-        """A caller that reads this as a transient auth failure will retry
-        forever with the same key."""
         with _Scoped(org, ("read",)):
             result = payload(await mcp.call_tool("vote_trace", {"id": "x", "vote": "up"}))
         assert "will not help" in result["detail"]
@@ -230,10 +174,6 @@ class TestAWideKeyStillWorks:
         assert result.get("error") != "forbidden"
 
     async def test_a_legacy_key_reaches_every_tool_surface(self, mcp, org):
-        """The upgrade property. A key issued before this column existed
-        carries no scope list, and must keep working exactly as it did --
-        otherwise the security change is the thing that takes a customer's
-        fleet down, and it gets reverted."""
         with _Scoped(org, None):
             for tool, args in (
                 ("search_traces", {"query": "x"}),
@@ -246,17 +186,12 @@ class TestAWideKeyStillWorks:
 @pytest.mark.asyncio
 class TestIssuanceRecordsTheGrant:
     async def test_a_key_is_issued_with_every_original_scope_by_default(self, session_factory, org):
-        """NOT scopes.ALL_SCOPES -- see scopes.DEFAULT_SCOPES's own
-        docstring: `scim` must always be an explicit ask."""
         async with session_scope(session_factory) as session:
             issued = await auth.issue_api_key(session, org)
         assert issued.scopes == scopes.DEFAULT_SCOPES
         assert scopes.SCOPE_SCIM not in issued.scopes
 
     async def test_a_narrow_key_is_stored_and_verified_narrow(self, session_factory, org):
-        """End to end through the real verification path, not just the
-        issuance return value: the scopes a request is judged against are
-        the ones read back out of the row."""
         async with session_scope(session_factory) as session:
             issued = await auth.issue_api_key(session, org, scopes="read")
         assert issued.scopes == ("read",)
@@ -268,8 +203,6 @@ class TestIssuanceRecordsTheGrant:
         assert not scopes.satisfies(verified.scopes, scopes.SCOPE_ADMIN)
 
     async def test_an_unknown_scope_issues_no_key_at_all(self, session_factory, org):
-        """Validated before the row exists, so a rejected request cannot
-        leave a half-issued credential behind."""
         from sqlalchemy import func, select
 
         from hub.models import ApiKey
@@ -293,8 +226,4 @@ class TestIssuanceRecordsTheGrant:
 @pytest.mark.asyncio
 class TestRequireScopeOutsideARequest:
     async def test_operator_paths_are_not_gated_by_scopes(self):
-        """hub/manage.py, the benchmarks and alembic run with no
-        authenticated key in context. They were never gated by a key's
-        capabilities, and gating them now would break the operator CLI in
-        the name of restricting credentials it does not use."""
-        auth.require_scope(scopes.SCOPE_ADMIN)  # must not raise
+        auth.require_scope(scopes.SCOPE_ADMIN)

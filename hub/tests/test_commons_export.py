@@ -1,17 +1,3 @@
-"""`crud.export_commons` -- handing over the corpus so matching can happen
-on the client.
-
-Every other Knowledge Base read answers a question ABOUT a failure, which
-means telling the Hub that this fleet is asking and roughly what about. A
-MinHash signature is a small disclosure, but it is one, and it has always
-been the price of using the corpus.
-
-This read removes the price: a fleet holding the records computes its own
-coverage locally, with no query, no signature and no record that it looked.
-What these tests pin is that the removal does not quietly cost anything
-else -- the tenant boundary, the plan boundary, and the operator's own
-control over whether their curation is downloadable at all.
-"""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -40,7 +26,6 @@ async def orgs(session_factory):
 
 
 def _exporting(config: HubConfig) -> HubConfig:
-    """The same config with bulk export turned on, as an operator would."""
     import dataclasses
     return dataclasses.replace(config, commons_export_enabled=True)
 
@@ -66,10 +51,6 @@ async def _seed(session_factory, org_id, title="Pool exhausted", *,
 
 
 class TestTheOperatorDecidesWhetherToPublishInBulk:
-    """Consulting the corpus is the product working. Handing over every
-    record in one call is giving away what curation produced, so it is off
-    unless an operator says otherwise."""
-
     async def test_it_is_refused_by_default(self, session_factory, config, orgs):
         await _seed(session_factory, orgs["operator"])
         async with session_scope(session_factory) as session:
@@ -80,9 +61,6 @@ class TestTheOperatorDecidesWhetherToPublishInBulk:
     async def test_the_refusal_names_the_surface_that_still_works(
         self, session_factory, config, orgs
     ):
-        """A deployment that will not bulk-export has not withdrawn the
-        Knowledge Base; the per-failure tools are unaffected, and the error
-        should not leave a reader thinking otherwise."""
         async with session_scope(session_factory) as session:
             with pytest.raises(plans.EntitlementExceeded) as exc:
                 await crud.export_commons(session, orgs["reader"], config)
@@ -98,9 +76,6 @@ class TestTheOperatorDecidesWhetherToPublishInBulk:
 
 
 class TestTheBoundariesSurviveABulkRead:
-    """A read that returns everything is exactly where a scoping mistake
-    stops being a wrong number and becomes a disclosure."""
-
     async def test_another_orgs_private_trace_never_appears(
         self, session_factory, config, orgs
     ):
@@ -125,8 +100,6 @@ class TestTheBoundariesSurviveABulkRead:
     async def test_a_plan_without_the_knowledge_base_is_refused(
         self, session_factory, config, orgs, monkeypatch
     ):
-        """The plan boundary still holds: bulk export must not be a second
-        door into content the plan excludes."""
         await _seed(session_factory, orgs["operator"])
 
         real = crud._plan_and_bonus_for
@@ -145,9 +118,6 @@ class TestTheBoundariesSurviveABulkRead:
 
 class TestWhatTheClientNeedsToMatchOffline:
     async def test_solutions_are_full_not_previews(self, session_factory, config, orgs):
-        """`browse_commons` truncates on purpose -- it is a shop window. This
-        is the opposite: a corpus of truncated solutions cannot answer a
-        question offline, which is the only reason to hold one."""
         long_solution = "step. " * 400
         await _seed(session_factory, orgs["operator"], solution=long_solution)
         async with session_scope(session_factory) as session:
@@ -155,9 +125,6 @@ class TestWhatTheClientNeedsToMatchOffline:
         assert result["entries"][0]["solution_text"] == long_solution
 
     async def test_standing_travels_with_the_entry(self, session_factory, config, orgs):
-        """A client that cannot see standing would rank a disputed entry as
-        an equal answer, which is the one thing the Hub's own ranking is
-        careful not to do."""
         await _seed(session_factory, orgs["operator"])
         async with session_scope(session_factory) as session:
             result = await crud.export_commons(session, orgs["reader"], _exporting(config))
@@ -170,9 +137,6 @@ class TestItIsNotMeteredPerFailure:
     async def test_exporting_does_not_spend_the_consultation_allowance(
         self, session_factory, config, orgs
     ):
-        """The allowance prices per-failure consultations. This is one bulk
-        read that REPLACES them, and charging per record would price the
-        private path far above the one that discloses more."""
         await _seed(session_factory, orgs["operator"], "a")
         await _seed(session_factory, orgs["operator"], "b")
         async with session_scope(session_factory) as session:
@@ -187,10 +151,6 @@ class TestItIsNotMeteredPerFailure:
     async def test_exporting_does_not_credit_commons_hits(
         self, session_factory, config, orgs
     ):
-        """`commons_hits` is the operator's quality signal for its own
-        content -- 'this entry covered a real recurring failure'. A bulk
-        download is not that, and crediting it would make the one metric
-        that resists noise trivially inflatable."""
         trace_id = await _seed(session_factory, orgs["operator"])
         async with session_scope(session_factory) as session:
             await crud.export_commons(session, orgs["reader"], _exporting(config))

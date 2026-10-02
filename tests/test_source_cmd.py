@@ -1,8 +1,3 @@
-"""Tests for `commontrace source` -- the CLI surface over
-commontrace/memory_sources.py. The module itself is covered end-to-end in
-tests/test_memory_sources.py; this file checks that the CLI wires arguments
-to it correctly and reports the right things on each path.
-"""
 from __future__ import annotations
 
 import json
@@ -31,12 +26,6 @@ def store(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     claude_md = tmp_path / "CLAUDE.md"
     claude_md.write_text(FIXTURE, encoding="utf-8")
-    # Rate 0: these tests check that the CLI wires arguments to
-    # memory_sources.py correctly, not the holdout draw itself (that is
-    # tests/test_memory_sources.py's job). Without this, the store's
-    # default 10% holdout rate makes delivery of a given section on a given
-    # occasion id a deterministic-but-unobvious coin flip, which would make
-    # e.g. "reinstated section is delivered again" flaky by construction.
     holdout_io.configure(str(tmp_path), rate=0.0)
     return tmp_path
 

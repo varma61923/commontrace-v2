@@ -1,11 +1,3 @@
-"""Tier 2: Boundary & Corner Cases for Attention & Memory Performance (Milestone 2).
-
-Covers Features:
-- R2-F1: Bounded-Memory Semantic Deduplication (chunk sizes, threshold epsilons, extreme embeddings)
-- R2-F2: Incremental Embedding Indexing (corrupt cache, missing files, non-markdown files, mtime edges)
-- R2-F3: Fast Query Metadata Co-location (missing index keys, corrupt metadata arrays, extreme importance values)
-- R2-F4: Inverted-Index Lexical Deduplication (zero tokens, stopword edges, unicode diacritics, massive repetitive tokens)
-"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -16,9 +8,7 @@ import pytest
 np = pytest.importorskip("numpy", reason="numpy is required for attention memory boundary tests")
 
 
-
 class DummyEmbeddingModel:
-    """Mock SentenceTransformer for deterministic vector generation without external downloads."""
     def __init__(self, model_name: str = "multi-qa-mpnet-base-dot-v1"):
         self.model_name = model_name
 
@@ -41,12 +31,7 @@ class DummyEmbeddingModel:
         return out
 
 
-# ============================================================================
-# R2-F1: Bounded-Memory Semantic Deduplication Boundaries (>=5 tests)
-# ============================================================================
-
 def test_r2_f1_boundary_chunk_size_one() -> None:
-    """Validate compute_semantic_duplicates when chunk_size=1 (extreme boundary)."""
     from commontrace.reference.measure_performance import compute_semantic_duplicates
 
     n = 6
@@ -55,7 +40,6 @@ def test_r2_f1_boundary_chunk_size_one() -> None:
     embs = rng.standard_normal((n, dim), dtype=np.float32)
     embs /= np.linalg.norm(embs, axis=1, keepdims=True)
 
-    # Force item 0 and item 3 to be identical
     embs[3] = embs[0].copy()
 
     slugs = [f"lesson_{i}" for i in range(n)]
@@ -68,7 +52,6 @@ def test_r2_f1_boundary_chunk_size_one() -> None:
 
 
 def test_r2_f1_boundary_chunk_size_exceeds_total_items() -> None:
-    """Validate compute_semantic_duplicates when chunk_size exceeds dataset size."""
     from commontrace.reference.measure_performance import compute_semantic_duplicates
 
     n = 5
@@ -86,7 +69,6 @@ def test_r2_f1_boundary_chunk_size_exceeds_total_items() -> None:
 
 
 def test_r2_f1_boundary_identical_all_elements() -> None:
-    """Validate all-identical embeddings produces exactly n*(n-1)/2 pairs."""
     from commontrace.reference.measure_performance import compute_semantic_duplicates
 
     n = 5
@@ -104,10 +86,8 @@ def test_r2_f1_boundary_identical_all_elements() -> None:
 
 
 def test_r2_f1_boundary_strictly_orthogonal_embeddings() -> None:
-    """Validate strictly orthogonal embeddings yield 0 duplicates at threshold > 0."""
     from commontrace.reference.measure_performance import compute_semantic_duplicates
 
-    # Standard basis in 4 dimensions (all dot products between different vectors = 0)
     embs = np.eye(4, dtype=np.float32)
     slugs = ["b0", "b1", "b2", "b3"]
 
@@ -117,7 +97,6 @@ def test_r2_f1_boundary_strictly_orthogonal_embeddings() -> None:
 
 
 def test_r2_f1_boundary_threshold_epsilon_above_one() -> None:
-    """Validate threshold >= 1.0 produces 0 duplicates when vectors are not strictly identical."""
     from commontrace.reference.measure_performance import compute_semantic_duplicates
 
     rng = np.random.default_rng(303)
@@ -130,21 +109,15 @@ def test_r2_f1_boundary_threshold_epsilon_above_one() -> None:
     assert pairs == []
 
 
-# ============================================================================
-# R2-F2: Incremental Embedding Indexing Boundaries (>=5 tests)
-# ============================================================================
-
 def test_r2_f2_boundary_corrupt_index_npz_recovery(
     isolated_store: Path,
     monkeypatch: pytest.MonkeyPatch,
     lesson_factory: Callable[..., Path],
 ) -> None:
-    """Validate that a corrupted index.npz triggers a clean rebuild without crashing."""
     from commontrace.reference import build_index
 
     monkeypatch.setattr(build_index, "SentenceTransformer", DummyEmbeddingModel)
 
-    # Seed two lessons
     lesson_factory(isolated_store, slug="lesson_corrupt_recov_1", title="Recov 1")
     lesson_factory(isolated_store, slug="lesson_corrupt_recov_2", title="Recov 2")
 
@@ -152,7 +125,6 @@ def test_r2_f2_boundary_corrupt_index_npz_recovery(
     attention_dir.mkdir(parents=True, exist_ok=True)
     index_npz = attention_dir / "index.npz"
 
-    # Write corrupt junk bytes to index.npz
     index_npz.write_bytes(b"\x00\xff\xfeCORRUPT_NOT_A_ZIP_ARCHIVE\x00")
 
     res = build_index.build_or_update_index(
@@ -172,7 +144,6 @@ def test_r2_f2_boundary_non_markdown_and_templates_ignored(
     monkeypatch: pytest.MonkeyPatch,
     lesson_factory: Callable[..., Path],
 ) -> None:
-    """Validate scanner ignores non-markdown files and lesson_template.md."""
     from commontrace.reference import build_index
 
     monkeypatch.setattr(build_index, "SentenceTransformer", DummyEmbeddingModel)
@@ -180,7 +151,6 @@ def test_r2_f2_boundary_non_markdown_and_templates_ignored(
     lessons_dir = isolated_store / "memory" / "lessons"
     lesson_factory(isolated_store, slug="lesson_valid_md", title="Valid Markdown")
 
-    # Create ignored files
     (lessons_dir / "lesson_template.md").write_text("# Template\nNot a real lesson.")
     (lessons_dir / "notes.txt").write_text("Random notes")
     (lessons_dir / "data.json").write_text('{"key": "value"}')
@@ -205,7 +175,6 @@ def test_r2_f2_boundary_zero_lessons_creates_valid_empty_index(
     isolated_store: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Validate indexer handling an empty lessons directory creates valid empty index."""
     from commontrace.reference import build_index
 
     monkeypatch.setattr(build_index, "SentenceTransformer", DummyEmbeddingModel)
@@ -229,7 +198,6 @@ def test_r2_f2_boundary_partial_deletion_of_indexed_files(
     monkeypatch: pytest.MonkeyPatch,
     lesson_factory: Callable[..., Path],
 ) -> None:
-    """Validate deleting a previously-indexed lesson purges it on next index update."""
     from commontrace.reference import build_index
 
     monkeypatch.setattr(build_index, "SentenceTransformer", DummyEmbeddingModel)
@@ -240,14 +208,11 @@ def test_r2_f2_boundary_partial_deletion_of_indexed_files(
     output_file = isolated_store / "memory" / "attention" / "index.npz"
     output_file.parent.mkdir(parents=True, exist_ok=True)
 
-    # First build
     res1 = build_index.build_or_update_index(str(isolated_store / "memory" / "lessons"), str(output_file))
     assert res1["n_lessons"] == 2
 
-    # Delete l2
     l2.unlink()
 
-    # Second build
     res2 = build_index.build_or_update_index(str(isolated_store / "memory" / "lessons"), str(output_file))
     assert res2["n_lessons"] == 1
 
@@ -262,7 +227,6 @@ def test_r2_f2_boundary_mtime_unchanged_skips_encoding(
     monkeypatch: pytest.MonkeyPatch,
     lesson_factory: Callable[..., Path],
 ) -> None:
-    """Validate that files whose SHA-256 hasn't changed are reused without re-encoding."""
     from commontrace.reference import build_index
 
     monkeypatch.setattr(build_index, "SentenceTransformer", DummyEmbeddingModel)
@@ -271,32 +235,24 @@ def test_r2_f2_boundary_mtime_unchanged_skips_encoding(
     output_file = isolated_store / "memory" / "attention" / "index.npz"
     output_file.parent.mkdir(parents=True, exist_ok=True)
 
-    # First build: encodes 1
     res1 = build_index.build_or_update_index(str(isolated_store / "memory" / "lessons"), str(output_file))
     assert res1["encoded_count"] == 1
     assert res1["reused_count"] == 0
 
-    # Second run without modifying file: reuses 1
     res2 = build_index.build_or_update_index(str(isolated_store / "memory" / "lessons"), str(output_file))
     assert res2["encoded_count"] == 0
     assert res2["reused_count"] == 1
 
 
-# ============================================================================
-# R2-F3: Fast Query Metadata Co-location Boundaries (>=5 tests)
-# ============================================================================
-
 def test_r2_f3_boundary_missing_importances_key_fallback(
     isolated_store: Path,
 ) -> None:
-    """Validate load_importances_from_index returns None when keys are missing."""
     from commontrace.reference.query import load_importances_from_index
 
     attention_dir = isolated_store / "memory" / "attention"
     attention_dir.mkdir(parents=True, exist_ok=True)
     npz_path = attention_dir / "index.npz"
 
-    # Save npz with only slugs and embeddings, omitting importances and statuses
     np.savez(
         str(npz_path),
         embeddings=np.ones((2, 768), dtype=np.float32),
@@ -305,14 +261,12 @@ def test_r2_f3_boundary_missing_importances_key_fallback(
 
     with np.load(str(npz_path), allow_pickle=False) as data:
         res = load_importances_from_index(data)
-    # When missing co-located metadata, returns None
     assert res is None
 
 
 def test_r2_f3_boundary_corrupt_importance_values(
     isolated_store: Path,
 ) -> None:
-    """Validate load_importances_from_index handles corrupt or unexpected value types."""
     from commontrace.reference.query import load_importances_from_index
 
     attention_dir = isolated_store / "memory" / "attention"
@@ -339,7 +293,6 @@ def test_r2_f3_boundary_corrupt_importance_values(
 def test_r2_f3_boundary_status_filtering_in_fast_loader(
     isolated_store: Path,
 ) -> None:
-    """Validate load_importances_from_index only loads active lessons into importances dict."""
     from commontrace.reference.query import load_importances_from_index
 
     attention_dir = isolated_store / "memory" / "attention"
@@ -361,14 +314,12 @@ def test_r2_f3_boundary_status_filtering_in_fast_loader(
     imp_dict = res[0]
     assert "active_one" in imp_dict
     assert "active_three" in imp_dict
-    # Inactive/review lesson excluded from fast active importances dict
     assert "inactive_two" not in imp_dict
 
 
 def test_r2_f3_boundary_corrupt_index_file_raises_cleanly(
     isolated_store: Path,
 ) -> None:
-    """Validate query handling of completely corrupt npz file."""
     attention_dir = isolated_store / "memory" / "attention"
     attention_dir.mkdir(parents=True, exist_ok=True)
     npz_path = attention_dir / "index.npz"
@@ -380,12 +331,11 @@ def test_r2_f3_boundary_corrupt_index_file_raises_cleanly(
 
 
 def test_r2_f3_boundary_cosine_similarity_computation() -> None:
-    """Validate dot product between L2 normalized query and doc embeddings."""
     q_emb = np.array([1.0, 0.0, 0.0], dtype=np.float32)
     doc_embs = np.array([
-        [-1.0, 0.0, 0.0],  # cos = -1.0
-        [0.0, 1.0, 0.0],   # cos = 0.0
-        [1.0, 0.0, 0.0],   # cos = 1.0
+        [-1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [1.0, 0.0, 0.0],
     ], dtype=np.float32)
 
     scores = doc_embs @ q_emb
@@ -394,12 +344,7 @@ def test_r2_f3_boundary_cosine_similarity_computation() -> None:
     assert scores[2] == 1.0
 
 
-# ============================================================================
-# R2-F4: Inverted-Index Lexical Deduplication Boundaries (>=5 tests)
-# ============================================================================
-
 def test_r2_f4_boundary_zero_tokens_and_whitespace_only() -> None:
-    """Validate lexical deduplication when documents contain only whitespace or punctuation."""
     from commontrace.reference.measure_performance import compute_lexical_duplicates
 
     lessons = {
@@ -409,11 +354,10 @@ def test_r2_f4_boundary_zero_tokens_and_whitespace_only() -> None:
 
     res = compute_lexical_duplicates(lessons, threshold=0.7)
     assert res["pairs"] == []
-    assert res["n_lessons"] == 0  # no tokens
+    assert res["n_lessons"] == 0
 
 
 def test_r2_f4_boundary_single_shared_token_below_threshold() -> None:
-    """Validate lexical deduplication when documents share only 1 token among many."""
     from commontrace.reference.measure_performance import compute_lexical_duplicates
 
     lessons = {
@@ -427,13 +371,11 @@ def test_r2_f4_boundary_single_shared_token_below_threshold() -> None:
         },
     }
 
-    # At threshold 0.8, sharing 1 token out of ~15 is not a duplicate
     res = compute_lexical_duplicates(lessons, threshold=0.8)
     assert len(res["pairs"]) == 0
 
 
 def test_r2_f4_boundary_identical_wording_detected() -> None:
-    """Validate compute_lexical_duplicates detects identical wording at threshold 0.9."""
     from commontrace.reference.measure_performance import compute_lexical_duplicates
 
     text = "thorough system integration testing and boundary verification protocol"
@@ -450,7 +392,6 @@ def test_r2_f4_boundary_identical_wording_detected() -> None:
 
 
 def test_r2_f4_boundary_degenerate_threshold_zero() -> None:
-    """Validate compute_lexical_duplicates handles threshold <= 0 without error."""
     from commontrace.reference.measure_performance import compute_lexical_duplicates
 
     lessons = {
@@ -464,7 +405,6 @@ def test_r2_f4_boundary_degenerate_threshold_zero() -> None:
 
 
 def test_r2_f4_boundary_disjoint_vocabularies_zero_pairs() -> None:
-    """Validate compute_lexical_duplicates with completely disjoint vocabularies."""
     from commontrace.reference.measure_performance import compute_lexical_duplicates
 
     lessons = {

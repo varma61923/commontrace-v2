@@ -34,9 +34,12 @@ The full pipeline spec lives in `SKILL.md`. Architecture diagrams are in `assets
 | `protocol/PROTOCOL.md` | Canonical, implementation-independent protocol spec — read this first if you're not doing coding-agent double-review |
 | `protocol/schemas/*.json` | JSON Schema for `Trace` and `Lesson` |
 | `commontrace/cli.py` | CLI entry point (`commontrace <subcommand>`) |
+| `commontrace/gateway.py`, `workbench.py`, `ui/` | The language-neutral HTTP/stdio door for any agent or robot, and the console it serves (verdicts, live, review queue). No build step; everything dynamic is rendered as text. |
+| `commontrace/pricing.py`, `hub/value_billing.py` | Billing on proven value: no default prices, verified evidence only. |
+| `commontrace/conformance.py`, `protocol/conformance/` | The conformance suite and its vectors; PROTOCOL.md section 13 is the spec they test. |
+| `deploy/` | Helm chart and Terraform; validated in CI, never applied by it. |
 | `SKILL.md` | Code-review reference profile pipeline spec |
 | `README.md` | User-facing quick-start and reference |
-| `DOCUMENTATION.md` | Deep design doc on the code-review profile, research refs, roadmap |
 | `requirements.txt` | Python deps for the code-review profile's attention layer (numpy, sentence-transformers, PyYAML) |
 | `install.sh` | Setup script for the code-review profile (SKILL.md route) |
 | `memory/INDEX.md` | Index of all stored lessons/traces/episodes |

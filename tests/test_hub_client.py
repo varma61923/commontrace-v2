@@ -1,7 +1,3 @@
-"""Unit tests for commontrace/hub_client.py's pure logic (section parsing,
-file writing) that don't need a running Hub. hub/tests/test_tenant_isolation.py
-and friends cover the server side against a real Postgres; hub/ itself is
-outside the scope of this lightweight, PyYAML-only test suite."""
 import os
 
 import pytest
@@ -55,9 +51,6 @@ def test_iter_active_lesson_paths_skips_template_and_non_active(store):
     basenames = {os.path.basename(p) for p in paths_found}
     assert "lesson_a.md" in basenames
     assert "lesson_template.md" not in basenames
-    # archived lessons are still yielded by the path iterator (status is
-    # filtered by the caller, push_active_lessons) -- assert the iterator
-    # doesn't silently drop them, which would hide a status-filter bug.
     assert "lesson_b.md" in basenames
 
 
@@ -67,24 +60,12 @@ class _FakeResponse:
 
 
 class _FakeHTTPStatusError(Exception):
-    """Shaped like httpx.HTTPStatusError (an `exc.response.status_code`
-    attribute) without requiring httpx to be installed to run this test."""
-
     def __init__(self, status_code):
         super().__init__(f"HTTP error {status_code}")
         self.response = _FakeResponse(status_code)
 
 
 class TestIsRetryable:
-    """_is_retryable used to classify every exception purely by matching
-    substrings in str(exc) -- fragile in both directions: a genuinely
-    transient error whose message happens to contain "invalid" or "403"
-    (a URL, a nested upstream error, ...) is misclassified as permanent,
-    and a permanent error whose message doesn't happen to contain any
-    listed marker falls through to the retryable-substring check. A real
-    HTTP status code, when the exception carries one, is authoritative and
-    checked first."""
-
     def test_a_structured_401_is_not_retried_even_with_a_confusing_message(self):
         exc = _FakeHTTPStatusError(401)
         exc.args = ("this response is definitely not invalid, all good",)
@@ -104,15 +85,6 @@ class TestIsRetryable:
 
 
 class TestHubUrlSchemeGuard:
-    """The commit that added path-traversal sanitization to this module
-    also claimed to 'enforce http/https-only URLs', but no such check
-    existed in the code -- httpx merely refuses non-http(s) "connections"
-    on its own, which is safety incidental to the HTTP client, not a
-    guarantee this module made. Left unchecked, a bad scheme also burned
-    the full retry budget (3 attempts, exponential backoff) on something
-    that can never succeed, surfacing as an opaque "unhandled errors in a
-    TaskGroup" instead of a clear message."""
-
     @pytest.mark.parametrize("bad_url", [
         "file:///etc/passwd",
         "ftp://example.com/mcp",
@@ -131,22 +103,17 @@ class TestHubUrlSchemeGuard:
         "http://[::1]:8420/mcp",
     ])
     def test_https_and_loopback_http_pass(self, good_url):
-        hub_client._validate_hub_url(good_url)  # must not raise
+        hub_client._validate_hub_url(good_url)
 
     def test_plaintext_http_to_a_remote_host_is_rejected(self):
-        """SEC-03: the Authorization: Bearer header carrying the org's API
-        key goes out on every call, and a Hub URL is normally set once and
-        trusted forever with no per-call review. Loopback is exempt because
-        traffic to it never leaves the host."""
         with pytest.raises(hub_client.HubConnectionError, match="plaintext http"):
             hub_client._validate_hub_url("http://hub.example.com/mcp")
 
     @pytest.mark.parametrize("metadata_url", [
         "https://169.254.169.254/latest/meta-data/",
-        "https://169.254.170.2/v2/credentials/",  # ECS task metadata, same /16
-        "https://[fd00:ec2::254]/latest/meta-data/",  # AWS IPv6 metadata (a ULA, not link-local)
+        "https://169.254.170.2/v2/credentials/",
+        "https://[fd00:ec2::254]/latest/meta-data/",
         "https://[fe80::1]/",
-        # The resolver reads each of these as 169.254.169.254:
         "https://2852039166/",
         "https://0xa9fea9fe/",
         "https://0251.0376.0251.0376/",
@@ -156,18 +123,10 @@ class TestHubUrlSchemeGuard:
         "https://[::ffff:a9fe:a9fe]/",
     ])
     def test_link_local_and_cloud_metadata_addresses_are_rejected(self, metadata_url):
-        """169.254.0.0/16 (IPv4 link-local) is where AWS/GCP/Azure's
-        instance-metadata service lives -- it serves credentials over plain
-        HTTP with no auth of its own. A Hub URL that got misconfigured or
-        tampered with pointing here would leak the org's Bearer API key
-        straight into an SSRF against the host's own cloud credentials."""
         with pytest.raises(hub_client.HubConnectionError, match="link-local|cloud-metadata"):
             hub_client._validate_hub_url(metadata_url)
 
     def test_plaintext_http_to_a_metadata_address_is_also_rejected(self):
-        """Caught by the plaintext-http-to-non-loopback check before ever
-        reaching the link-local check -- still rejected, just for the
-        earlier-triggered reason. Blocked either way."""
         with pytest.raises(hub_client.HubConnectionError, match="plaintext http"):
             hub_client._validate_hub_url("http://169.254.169.254/latest/meta-data/")
 
@@ -176,21 +135,16 @@ class TestHubUrlSchemeGuard:
         "https://192.168.1.50/mcp",
         "https://172.16.0.1/mcp",
         "https://hub.example.com./mcp",
-        "https://abc/mcp",  # a name, not hex: inet_aton refuses it
+        "https://abc/mcp",
     ])
     def test_ordinary_private_network_addresses_still_pass(self, private_url):
-        """Must not overreach into blocking RFC1918 space generally -- a
-        Hub deployed on a private network address is the documented,
-        supported case, not an attack."""
-        hub_client._validate_hub_url(private_url)  # must not raise
+        hub_client._validate_hub_url(private_url)
 
     def test_plaintext_http_to_an_ip_that_is_not_loopback_is_rejected(self):
         with pytest.raises(hub_client.HubConnectionError, match="plaintext http"):
             hub_client._validate_hub_url("http://10.0.0.5:8420/mcp")
 
     def test_the_rejection_happens_before_any_retry(self, monkeypatch):
-        """Fail fast: a bad scheme can never succeed, so it must not consume
-        the retry budget or reach the network at all."""
         import asyncio
 
         calls = []
@@ -218,13 +172,6 @@ def _write_active_lesson(ldir, name, description, applies_when, rule, tags=None,
 
 
 class TestPushPropagatesEdits:
-    """push_active_lessons used to skip ANY lesson that already had a
-    hub_trace_id, forever -- a local edit to an already-pushed lesson's
-    rule/description/applies-when/tags never reached the Hub again, so the
-    two copies silently diverged the moment anyone edited a promoted
-    lesson. It now fingerprints the pushed fields and calls amend_trace
-    when they've changed since the last push."""
-
     def test_first_push_contributes_and_stamps_a_fingerprint(self, store, monkeypatch):
         import asyncio
 
@@ -292,8 +239,6 @@ class TestPushPropagatesEdits:
         assert len(calls) == 1
         assert calls[0][0] == "amend_trace"
         assert results[0].hub_trace_id == "trace-2"
-        # hub_trace_id must move forward to the amended (superseding) id --
-        # amend_trace never mutates the original in place.
         fm, _ = frontmatter.read(os.path.join(ldir, "lesson_a.md"))
         assert fm["hub_trace_id"] == "trace-2"
         assert fm["hub_pushed_fingerprint"] != stale_fingerprint
@@ -301,10 +246,6 @@ class TestPushPropagatesEdits:
     def test_never_pushed_lesson_with_no_stored_fingerprint_but_a_hub_id_still_amends(
         self, store, monkeypatch
     ):
-        """A lesson pushed before this fix has hub_trace_id set but no
-        hub_pushed_fingerprint at all -- must be treated as "possibly
-        changed" (propagate) rather than crashing on a missing key or being
-        silently skipped forever."""
         import asyncio
 
         ldir = paths.lessons_dir(str(store))
@@ -319,15 +260,6 @@ class TestPushPropagatesEdits:
         assert results[0].hub_trace_id == "trace-2"
 
     def test_amend_carries_an_idempotency_key_so_a_retry_cannot_fork_the_chain(self, store, monkeypatch):
-        """_call_tool retries transport-level failures (timeout, 5xx,
-        connection reset) up to DEFAULT_MAX_ATTEMPTS times, and this client
-        cannot tell "never arrived" from "arrived, reply lost" -- exactly
-        the scenario contribute_trace's idempotency_key already exists to
-        make safe. amend_trace needed the same protection (found by
-        auditing this call site after adding idempotency_key support to
-        hub/crud.py:amend_trace itself) or the client's own retry loop
-        could still fork the supersession chain despite the server-side
-        fix, simply by never asking for it."""
         import asyncio
 
         ldir = paths.lessons_dir(str(store))
@@ -354,12 +286,6 @@ class TestPushPropagatesEdits:
         assert key == hub_client._amend_idempotency_key("lesson_a", new_fingerprint)
 
     def test_two_genuinely_different_edits_get_different_idempotency_keys(self):
-        """The reason this can't reuse contribute_trace's f"lesson:{slug}"
-        pattern unmodified: a lesson can be legitimately amended many times
-        as its content actually changes, and each edit is a different
-        logical write that must NOT collide -- a fixed per-lesson key would
-        make every edit after the first raise IdempotencyKeyConflict
-        against the previous one's stored request_hash."""
         fp1 = hub_client._push_fingerprint("desc v1", "when", "rule v1", [])
         fp2 = hub_client._push_fingerprint("desc v2", "when", "rule v2", [])
         assert hub_client._amend_idempotency_key("lesson_a", fp1) != hub_client._amend_idempotency_key(
@@ -367,21 +293,12 @@ class TestPushPropagatesEdits:
         )
 
     def test_the_same_edit_retried_gets_the_same_idempotency_key(self):
-        """The property that actually matters: _call_tool retrying the
-        SAME push attempt (same content, same fingerprint) must produce the
-        identical key both times, or the retry protection does nothing."""
         fp = hub_client._push_fingerprint("desc", "when", "rule", ["a", "b"])
         assert hub_client._amend_idempotency_key("lesson_a", fp) == hub_client._amend_idempotency_key(
             "lesson_a", fp
         )
 
     def test_a_malformed_lesson_file_does_not_abort_the_others(self, store, monkeypatch):
-        """Reproduced before this fix: frontmatter.read(path) raising on one
-        corrupted lesson file (broken YAML from a hand-edit, a partial
-        write) propagated straight out of push_active_lessons, aborting
-        the WHOLE run -- every other lesson in the same directory, valid
-        and ready to push, never got pushed either. One bad file silently
-        blocked an entire fleet's lessons."""
         import asyncio
 
         ldir = paths.lessons_dir(str(store))
@@ -402,17 +319,6 @@ class TestPushPropagatesEdits:
         assert by_slug["lesson_bad"].error is not None
 
     def test_a_local_write_failure_does_not_abort_the_whole_batch(self, store, monkeypatch):
-        """Reproduced before this fix: push_active_lessons/push_captured_traces
-        awaited asyncio.gather() with the default return_exceptions=False, and
-        the frontmatter re-read/write that records hub_trace_id locally after
-        a successful Hub call had no try/except of its own. An unexpected
-        exception there (disk full, a permission error, the file vanishing
-        mid-run) propagated straight out of _push_one, out of gather(), and
-        out of push_active_lessons -- discarding every PushResult already
-        computed in the same concurrent batch, including lessons whose Hub
-        push had ALREADY succeeded, with no report of what (if anything) got
-        through. Now the write-back failure becomes that one file's own
-        PushResult.error instead."""
         import asyncio
 
         ldir = paths.lessons_dir(str(store))
@@ -433,7 +339,6 @@ class TestPushPropagatesEdits:
 
         monkeypatch.setattr(hub_client, "_write_hub_push_fields", flaky_write)
 
-        # Must not raise -- that's the regression this test pins.
         results = asyncio.run(hub_client.push_active_lessons("http://localhost:8420/mcp", "key", str(store)))
 
         by_slug = {r.slug: r for r in results}
@@ -444,15 +349,6 @@ class TestPushPropagatesEdits:
         assert "disk full" in by_slug["lesson_bad"].error
 
     def test_local_write_back_runs_off_the_event_loop(self, store, monkeypatch):
-        """frontmatter.locked() takes a blocking OS-level fcntl.flock -- if
-        the write-back that records hub_trace_id ran it directly on a
-        coroutine (as it did before this fix), lock contention on one file
-        (e.g. a concurrent `lesson approve` on that same file) would freeze
-        the WHOLE event loop for as long as the wait takes, stalling every
-        other push's already-in-flight Hub call in the same bounded-
-        concurrency batch, not just the one task waiting on the lock. Pin
-        that the write-back is dispatched via asyncio.to_thread, which runs
-        it on a worker thread instead."""
         import asyncio
 
         ldir = paths.lessons_dir(str(store))
@@ -480,12 +376,6 @@ class TestPushPropagatesEdits:
         )
 
     def test_pushes_run_concurrently_but_bounded(self, store, monkeypatch):
-        """Same fix, same reasoning as push_captured_traces's identical
-        test: N independent lessons used to mean N sequential round trips.
-        Tracking actual concurrent in-flight calls (not wall-clock time,
-        which is flaky under CI load) proves both that calls now overlap
-        and that the overlap stays bounded rather than firing every call
-        at once and risking the Hub's write rate limiter."""
         import asyncio
 
         ldir = paths.lessons_dir(str(store))
@@ -530,13 +420,6 @@ def _write_captured_trace(
 
 
 class TestPushCapturedTraces:
-    """push_captured_traces is the bridge push_active_lessons does not
-    provide: lessons and traces are different local stores, and outcome
-    data (--resolved/--tokens-used/..., hub/outcomes.py) only ever lives on
-    a trace. Without this, the documented `commontrace capture` + `sync`
-    workflow had no way to ever get outcome data to the Hub, even after
-    hub/crud.py:contribute_trace grew an `outcome` parameter to accept it."""
-
     def test_first_push_contributes_with_outcome_and_stamps_a_fingerprint(self, store, monkeypatch):
         import asyncio
 
@@ -565,11 +448,6 @@ class TestPushCapturedTraces:
         assert fm["hub_pushed_fingerprint"]
 
     def test_first_push_forwards_the_local_profile(self, store, monkeypatch):
-        """`commontrace capture --profile ...` is a real, user-facing local
-        flag (protocol/schemas/trace.schema.json's extension-profile
-        mechanism) -- before this fix, contribute_trace had no `profile`
-        parameter at all, so a captured trace's profile was silently
-        dropped the moment it reached the Hub, with no error anywhere."""
         import asyncio
 
         tdir = paths.traces_dir(str(store))
@@ -612,12 +490,6 @@ class TestPushCapturedTraces:
         asyncio.run(hub_client.push_captured_traces("http://localhost:8420/mcp", "key", str(store)))
 
     def test_the_traces_dir_readme_is_never_pushed(self, store, monkeypatch):
-        """init_cmd.py writes a README.md into every traces_dir. It has no
-        frontmatter delimiter, so trace_io.read() doesn't raise on it --
-        it silently returns a near-empty instance instead -- and without
-        excluding it explicitly, that reached _call_tool as a doomed
-        contribute_trace(title="", context_text="", ...) on every single
-        --push-traces run, alongside whatever real traces existed."""
         import asyncio
 
         tdir = paths.traces_dir(str(store))
@@ -640,12 +512,6 @@ class TestPushCapturedTraces:
         assert results[0].hub_trace_id == "hub-trace-1"
 
     def test_a_local_write_failure_does_not_abort_the_whole_batch(self, store, monkeypatch):
-        """Same regression, same fix as push_active_lessons's identical
-        test: an unexpected exception from the post-push frontmatter
-        write-back used to propagate out of asyncio.gather() (default
-        return_exceptions=False) and abort push_captured_traces entirely,
-        discarding every PushResult already computed in the same batch --
-        including traces whose Hub push had already succeeded."""
         import asyncio
 
         tdir = paths.traces_dir(str(store))
@@ -676,16 +542,6 @@ class TestPushCapturedTraces:
         assert "disk full" in by_slug["occasion-bad"].error
 
     def test_pushes_run_concurrently_but_bounded(self, store, monkeypatch):
-        """20 independent files used to mean 20 sequential network round
-        trips (~150ms each in practice -> ~3s for just this many, ~75s for
-        a real 500-file sync). Tracking the actual number of calls
-        in-flight at once -- rather than asserting on wall-clock time,
-        which is flaky under CI load -- proves both halves of the fix:
-        more than one call in flight at a time (not still sequential), and
-        never more than _PUSH_CONCURRENCY at once (bounded, not
-        `asyncio.gather` over everything unbounded -- see hub_client.py's
-        own comment on why: tripping the Hub's write rate limiter would
-        turn pushes that succeed serially into 429s)."""
         import asyncio
 
         tdir = paths.traces_dir(str(store))
@@ -734,10 +590,6 @@ class TestPushCapturedTraces:
         assert results[0].hub_trace_id == "hub-trace-1"
 
     def test_a_recapture_that_only_attaches_an_outcome_is_propagated_via_amend(self, store, monkeypatch):
-        """The exact scenario capture_cmd.py documents: `--occasion-id`
-        pins the trace id, and a later recapture attaches --resolved/etc.
-        without changing title/context/solution at all. This must still be
-        detected as a change worth pushing."""
         import asyncio
 
         tdir = paths.traces_dir(str(store))
@@ -793,9 +645,6 @@ class TestPushCapturedTraces:
         assert key == hub_client._trace_amend_idempotency_key("occasion-1", new_fingerprint)
 
     def test_two_pushes_with_different_outcomes_get_different_fingerprints(self):
-        """The property that makes the fingerprint comparison actually
-        catch an outcome-only edit: two otherwise-identical traces with
-        different outcome dicts must not fingerprint the same."""
         fp1 = hub_client._trace_push_fingerprint("t", "c", "s", [], {"resolved": True})
         fp2 = hub_client._trace_push_fingerprint("t", "c", "s", [], {"resolved": False})
         assert fp1 != fp2
@@ -818,11 +667,6 @@ class TestPushCapturedTraces:
         assert fm.get("hub_trace_id") is None
 
     def test_a_malformed_trace_file_does_not_abort_the_others(self, store, monkeypatch):
-        """Same guard as push_active_lessons's identical fix, and arguably
-        higher-stakes here: one corrupted trace file used to abort the
-        whole push before this fix, which for --push-traces specifically
-        means every other trace's outcome data -- the entire reason this
-        function exists -- silently never reaches the Hub either."""
         import asyncio
 
         tdir = paths.traces_dir(str(store))
@@ -846,11 +690,6 @@ class TestPushCapturedTraces:
 
 
 class TestPullPaginatesAllResults:
-    """pull_search_results used to call search_traces exactly once --
-    search_traces caps a single response at 50 results, so a Hub with more
-    than one page of matches silently returned only the first page with no
-    indication anything was left out."""
-
     def test_pages_until_has_more_is_false(self, store, monkeypatch):
         import asyncio
 
@@ -895,16 +734,6 @@ class TestPullPaginatesAllResults:
 
 
 class TestPullSurfacesTermsTheHubDidNotSearchOn:
-    """`terms_ignored` is why an empty pull is readable.
-
-    The Hub drops query terms that appear in too much of the org's corpus
-    to distinguish one trace from another (hub/search.py:choose_terms). A
-    client that discards that field turns two different situations -- "your
-    corpus has no answer" and "the words you used are in nearly every trace
-    you have" -- into the same silent empty result, and only the second one
-    is fixed by rephrasing.
-    """
-
     def test_ignored_terms_are_carried_up(self, store, monkeypatch):
         import asyncio
 
@@ -920,8 +749,6 @@ class TestPullSurfacesTermsTheHubDidNotSearchOn:
         assert result.ignored_terms == ["retri", "timeout"]
 
     def test_an_older_hub_without_the_field_is_not_an_error(self, store, monkeypatch):
-        """The client is versioned separately from the Hub it talks to, so a
-        missing key must read as 'nothing was ignored', never as a crash."""
         import asyncio
 
         async def fake_call_tool(hub_url, api_key, name, arguments, **kw):

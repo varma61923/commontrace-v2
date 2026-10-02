@@ -1,0 +1,7 @@
+# State and variable files can hold secrets and account ids; keep them in a remote backend.
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+crash.log

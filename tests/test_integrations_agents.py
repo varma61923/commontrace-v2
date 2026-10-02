@@ -1,7 +1,3 @@
-"""commontrace/integrations/pydantic_ai.py and openai_agents.py, run as
-real agent loops with offline models: Pydantic AI's TestModel, and a
-scripted Model for the OpenAI Agents SDK. Skipped when the framework is
-not installed."""
 from __future__ import annotations
 
 import asyncio
@@ -88,8 +84,6 @@ class TestOpenAIAgents:
 
     @staticmethod
     def _tracing(enabled):
-        # The SDK reads OPENAI_AGENTS_DISABLE_TRACING once per process, so
-        # set it through the SDK's own switch instead of the environment.
         import agents
 
         agents.set_tracing_disabled(not enabled)

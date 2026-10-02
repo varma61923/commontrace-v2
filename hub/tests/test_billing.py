@@ -1,24 +1,3 @@
-"""Tests for hub/billing.py -- self-serve Stripe upgrades and the webhook
-that keeps Organization.plan in sync with what was actually paid for.
-
-Four layers, tested separately:
-
-1. Webhook signature verification -- pure, no DB, no network. The one
-   thing standing between "/billing/webhook" and an attacker who can POST
-   an arbitrary plan upgrade for any org_id.
-2. StripeSettings' price<->plan mapping -- pure, no DB.
-3. apply_webhook_event -- needs a real Organization row, but no network:
-   this is the actual state-mutation logic, tested against Postgres so a
-   wrong query (e.g. matching on the wrong column) shows up here rather
-   than only in production.
-4. create_checkout_session / create_billing_portal_session -- outbound
-   Stripe API calls, monkeypatched at billing._post exactly the way this
-   codebase injects session_factory everywhere else, so these tests never
-   touch the real network and never need a Stripe account.
-5. The webhook ROUTE, end-to-end through a real Starlette app + database,
-   proving the signature check actually gates the handler and a valid
-   delivery actually lands in the database.
-"""
 from __future__ import annotations
 
 import hashlib
@@ -48,9 +27,6 @@ def _sign(payload: bytes, secret: str = WEBHOOK_SECRET, ts: int | None = None) -
     return f"t={ts},v1={sig}"
 
 
-# --- Webhook signature verification -----------------------------------------
-
-
 class TestWebhookSignatureVerification:
     async def test_a_validly_signed_payload_verifies(self):
         payload = b'{"type": "checkout.session.completed"}'
@@ -73,17 +49,14 @@ class TestWebhookSignatureVerification:
 
     @pytest.mark.parametrize("header", [
         "not-a-signature-header",
-        "t=12345",             # no v1
-        "v1=deadbeef",          # no t
+        "t=12345",
+        "v1=deadbeef",
         "t=not-a-number,v1=deadbeef",
     ])
     async def test_a_malformed_header_is_rejected(self, header):
         assert billing.verify_webhook_signature(b"{}", header, WEBHOOK_SECRET) is False
 
     async def test_a_timestamp_outside_tolerance_is_rejected(self):
-        """Without this bound, a captured, validly-signed payload could be
-        replayed against this endpoint indefinitely -- the signature alone
-        never expires."""
         payload = b"{}"
         old_header = _sign(payload, ts=int(time.time()) - 10_000)
         assert billing.verify_webhook_signature(payload, old_header, WEBHOOK_SECRET) is False
@@ -94,9 +67,6 @@ class TestWebhookSignatureVerification:
         assert billing.verify_webhook_signature(payload, header, WEBHOOK_SECRET, tolerance=300) is True
 
     async def test_a_rotating_secret_is_matched_by_either_v1_value(self):
-        """Stripe sends multiple v1 values while a webhook signing secret is
-        being rotated -- this Hub must accept a payload signed by either the
-        old or the new one, not only the first in the header."""
         payload = b"{}"
         ts = int(time.time())
         old_sig = _sign(payload, secret="whsec_old", ts=ts).split("v1=")[1]
@@ -110,9 +80,6 @@ class TestWebhookSignatureVerification:
         assert billing.verify_webhook_signature(payload, header, "") is False
 
 
-# --- StripeSettings price/plan mapping --------------------------------------
-
-
 class TestStripeSettings:
     async def test_checkout_configured_needs_a_secret_key_and_at_least_one_price(self):
         assert StripeSettings().checkout_configured is False
@@ -123,13 +90,6 @@ class TestStripeSettings:
         assert StripeSettings(price_team="price_team").checkout_configured is False
 
     async def test_checkout_configured_also_needs_a_webhook_secret(self):
-        """The severe case this guards: secret_key + a price with NO
-        webhook_secret would let Checkout collect a real payment while
-        add_billing_webhook_route (gated on webhook_secret, hub/server.py)
-        stays unregistered -- so Organization.plan never learns the
-        payment happened. Charged and never upgraded is worse than the
-        button not existing at all, so checkout_configured must require
-        the whole round trip, not just the sellable half."""
         assert StripeSettings(secret_key="sk_test", price_team="price_team").checkout_configured is False
         assert StripeSettings(
             secret_key="sk_test", webhook_secret="whsec", price_team="price_team"
@@ -149,14 +109,8 @@ class TestStripeSettings:
         assert settings.plan_for_price("price_unknown") is None
 
     async def test_an_unset_price_never_matches_an_empty_string(self):
-        """Two plans sharing an unset (empty-string) price must not alias to
-        each other -- otherwise plan_for_price('') would resolve to
-        whichever plan happens to come first in the mapping."""
         settings = StripeSettings(secret_key="sk", price_team="price_t")
         assert settings.plan_for_price("") is None
-
-
-# --- apply_webhook_event: the actual state mutation, against real Postgres --
 
 
 @pytest_asyncio.fixture
@@ -211,10 +165,6 @@ class TestCheckoutSessionCompleted:
         assert "no such org" in outcome
 
     async def test_a_malformed_org_id_never_crashes_the_webhook(self, session_factory):
-        """Stripe's own event never carries anything but what this Hub put
-        into metadata at Checkout Session creation, but the webhook must
-        not trust that -- a public, network-facing handler that raises on
-        unexpected input is a reliability bug independent of trust."""
         settings = StripeSettings(secret_key="sk", price_team="price_t")
         event = _event("checkout.session.completed", {
             "client_reference_id": "not-a-uuid-at-all", "customer": "cus_1",
@@ -249,12 +199,6 @@ class TestCheckoutSessionCompleted:
 
 
 class TestEventIdempotency:
-    """apply_webhook_event must not re-run a handler for an event id it
-    has already applied -- Stripe's delivery guarantee is at-least-once,
-    and this is what stops a replay from being a structural non-issue
-    rather than an accident of every handler currently being a pure
-    overwrite (see alembic revision 37d2580be8db)."""
-
     async def test_replaying_the_same_event_id_does_not_reapply_it(
         self, session_factory, org
     ):
@@ -269,11 +213,6 @@ class TestEventIdempotency:
             first = await billing.apply_webhook_event(session, settings, event)
         assert "plan -> team" in first
 
-        # A second org, unrelated, so a re-applied handler would be
-        # detectable: if the event were re-run against this SAME event
-        # dict, nothing would even change (same org_id in the payload) --
-        # the real assertion is on the returned outcome string saying it
-        # was skipped, not just on the plan value being (still) correct.
         async with session_scope(session_factory) as session:
             second = await billing.apply_webhook_event(session, settings, event)
         assert "already processed" in second
@@ -299,9 +238,6 @@ class TestEventIdempotency:
         assert "plan -> team" in row.outcome
 
     async def test_different_event_ids_are_both_applied(self, session_factory, org):
-        """The ledger keys on event id, not on event content -- two
-        genuinely distinct events with the same effect must both land,
-        not get collapsed into one because they look alike."""
         settings = StripeSettings(secret_key="sk", price_team="price_t")
         event_a = _event("checkout.session.completed", {
             "client_reference_id": org, "customer": "cus_a", "subscription": "sub_a",
@@ -321,10 +257,6 @@ class TestEventIdempotency:
     async def test_an_event_with_no_id_is_applied_but_never_deduplicated(
         self, session_factory, org
     ):
-        """A malformed event (or a hand-built test fixture) with no `id`
-        has nothing to key a ledger row on -- it is still applied (never
-        silently dropped), just not protected against a replay, since
-        there is no identifier to detect one by."""
         settings = StripeSettings(secret_key="sk", price_team="price_t")
         event = _event("checkout.session.completed", {
             "client_reference_id": org, "customer": "cus_noid", "subscription": "sub_noid",
@@ -337,8 +269,6 @@ class TestEventIdempotency:
         assert "plan -> team" in first
         async with session_scope(session_factory) as session:
             second = await billing.apply_webhook_event(session, settings, event)
-        # Applied again, not "already processed" -- there is no id to
-        # have deduplicated it by.
         assert "plan -> team" in second
 
 
@@ -359,9 +289,6 @@ class TestSubscriptionLifecycle:
             fresh = await session.get(Organization, org)
             assert fresh.plan == "free"
             assert fresh.stripe_subscription_id is None
-            # The customer id is NOT cleared -- a canceled subscriber who
-            # resubscribes later should reuse the same Stripe Customer
-            # rather than fragmenting their billing history.
             assert fresh.stripe_customer_id == "cus_1"
 
     async def test_an_active_update_resolves_the_plan_from_the_price_id(self, session_factory, org):
@@ -399,9 +326,6 @@ class TestSubscriptionLifecycle:
         assert "plan -> free" in outcome
 
     async def test_an_unresolvable_price_leaves_the_plan_untouched(self, session_factory, org):
-        """A price id this deployment has no mapping for (a plan sold
-        outside this Hub's own price ids, or a dashboard-side price change
-        mid-migration) must not silently downgrade or upgrade anyone."""
         settings = StripeSettings(secret_key="sk", price_team="price_t")
         async with session_scope(session_factory) as session:
             o = await session.get(Organization, org)
@@ -432,9 +356,6 @@ class TestSubscriptionLifecycle:
         async with session_scope(session_factory) as session:
             outcome = await billing.apply_webhook_event(session, settings, event)
         assert "ignored" in outcome
-
-
-# --- Outbound Stripe API calls, monkeypatched at billing._post -------------
 
 
 class TestCreateCheckoutSession:
@@ -485,7 +406,7 @@ class TestCreateCheckoutSession:
             raise AssertionError("must not call Stripe for an unpriced plan")
 
         monkeypatch.setattr(billing, "_post", fake_post)
-        settings = StripeSettings(secret_key="sk_test")  # no prices configured
+        settings = StripeSettings(secret_key="sk_test")
         org = Organization(id="org-3", name="Acme")
         with pytest.raises(ValueError, match="team"):
             await billing.create_checkout_session(
@@ -513,12 +434,6 @@ class TestCreateBillingPortalSession:
 
 
 class TestCancelSubscription:
-    """Called before permanently deleting an org that has a live
-    subscription (hub/crud.py:confirm_org_deletion,
-    hub/manage.py:purge_org) -- see cancel_subscription's own docstring
-    for why leaving it uncancelled is worse than a deletion that has to
-    be retried."""
-
     async def test_it_deletes_the_subscription_by_id(self, monkeypatch):
         captured = {}
 
@@ -585,9 +500,6 @@ class TestPostRaisesOnAnErrorResponse:
             await billing._post("checkout/sessions", "sk_test", {})
 
 
-# --- The webhook route, end-to-end ------------------------------------------
-
-
 def _app(stripe: StripeSettings, session_factory) -> Starlette:
     app = Starlette()
     billing.add_billing_webhook_route(app, session_factory, stripe=stripe)
@@ -652,3 +564,37 @@ class TestWebhookRoute:
                 headers={"stripe-signature": _sign(body, secret=WEBHOOK_SECRET)},
             )
         assert response.status_code == 400
+
+
+class TestConcurrentReplay:
+    async def test_the_same_event_delivered_at_once_applies_once_and_never_errors(
+        self, session_factory, org
+    ):
+        import asyncio
+
+        from sqlalchemy import func, select
+
+        from hub.models import ProcessedWebhookEvent
+
+        settings = StripeSettings(secret_key="sk", webhook_secret=WEBHOOK_SECRET, price_team="price_t")
+        body = json.dumps({
+            "id": "evt_race_1",
+            "type": "checkout.session.completed",
+            "data": {"object": {
+                "client_reference_id": org, "customer": "cus_race", "subscription": "sub_race",
+                "metadata": {"org_id": org, "plan": "team"},
+            }},
+        }).encode()
+        headers = {"stripe-signature": _sign(body, secret=WEBHOOK_SECRET)}
+        async with _client(_app(settings, session_factory)) as client:
+            responses = await asyncio.gather(*[
+                client.post("/billing/webhook", content=body, headers=headers) for _ in range(8)
+            ])
+        assert [r.status_code for r in responses] == [200] * 8
+        async with session_scope(session_factory) as session:
+            assert (await session.get(Organization, org)).plan == "team"
+            count = (await session.execute(
+                select(func.count()).select_from(ProcessedWebhookEvent)
+                .where(ProcessedWebhookEvent.id == "evt_race_1")
+            )).scalar_one()
+        assert count == 1

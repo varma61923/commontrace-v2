@@ -1,64 +1,4 @@
-"""Envelope encryption for the handful of at-rest fields where it is safe.
-
-WHY THIS DOES NOT TOUCH Trace.title / context_text / solution_text
---------------------------------------------------------------------
-hub/models.py's `Trace.search_vector` is a Postgres GENERATED STORED column,
-computed by Postgres itself directly from those three columns
-(`to_tsvector('english', title || ' ' || context_text || ' ' || solution_text)`).
-Encrypting them at the application layer would mean Postgres builds that
-tsvector from ciphertext -- `search_traces` would still run without error,
-it would just never match anything, silently, forever. A search feature
-that quietly stops finding results is worse than no encryption at all,
-because nothing signals that it broke.
-
-The same conflict rules out `Trace.subject_ids`: `find_traces_by_subject`/
-`purge_traces_by_subject` (hub/crud.py) rely on exact array-membership
-matches against a GIN index, which application-layer encryption (with a
-fresh nonce per value, as this module deliberately uses -- see `encrypt`)
-makes impossible, since the same subject id would encrypt to a different
-ciphertext every time.
-
-The right place to encrypt content a database has to compute over --
-full-text search, exact-match array containment -- is the storage layer
-underneath Postgres: a managed provider's encryption-at-rest (RDS/Cloud
-SQL), an encrypted filesystem (LUKS), or a Postgres TDE extension, none of
-which this application can configure on an operator's behalf. See
-hub/DEPLOYMENT.md's "Encryption at rest" section for what to set up there.
-SOC2_READINESS.md's Confidentiality table documents this as a deliberate
-split rather than leaving "what about at-rest encryption?" unanswered.
-
-WHAT THIS DOES TOUCH
----------------------
-Fields the database never computes over and never matches with a partial
-or exact predicate -- currently `WebhookEndpoint.url` (hub/events.py). A
-webhook URL is often unique to one org, is never searched, and sometimes
-carries a bearer token or shared secret in its path or query string --
-exactly the kind of value that should not sit in plaintext in a Postgres
-dump or a `pg_dump` backup. Encrypting it costs nothing functionally: the
-column is only ever read back whole, to deliver a webhook or to show an
-operator what they registered.
-
-OPT-IN, LIKE EVERYTHING ELSE OF THIS SHAPE IN hub/config.py
---------------------------------------------------------------
-No `HUB_ENCRYPTION_KEY` set -> `cipher().enabled` is False -> `encrypt`/
-`decrypt` are the identity function. An existing deployment that never sets
-this env var is completely unaffected: `WebhookEndpoint.url` keeps being
-stored as plaintext, exactly as it always was. This matches `oidc_issuer`,
-`admin_token`, `console_secret`, and `stripe_secret_key` in hub/config.py:
-an operator opts in to each capability by setting its config, and the
-absence of a value means "this deployment does not use this," never
-"this deployment forgot to configure something."
-
-KEY ROTATION
-------------
-`HUB_ENCRYPTION_KEY_PREVIOUS` is a comma-separated list of retired keys,
-kept only so a value encrypted under one of them can still be decrypted.
-`encrypt` always uses the CURRENT key; nothing here re-encrypts existing
-rows under a new key automatically -- a rotation is "the current key
-changed" until something re-writes each row, which for `WebhookEndpoint`
-happens naturally the next time an operator re-registers or rotates that
-endpoint's signing secret.
-"""
+"""Envelope encryption for the handful of at-rest fields where it is safe."""
 
 from __future__ import annotations
 
@@ -77,21 +17,10 @@ _NONCE_BYTES = 12
 
 
 class EncryptionError(ValueError):
-    """A configured HUB_ENCRYPTION_KEY (or a HUB_ENCRYPTION_KEY_PREVIOUS
-    entry) is malformed, or a stored envelope could not be decrypted with
-    any configured key.
-
-    A ValueError subclass, like every other HubConfig field-format error
-    (hub/config.py's `_env_int_in_range`, `rate_limit_backend`) -- this is
-    raised eagerly from `HubConfig.__post_init__`, so `hub/manage.py`'s
-    existing `except (ValueError, LookupError)` in `main()` already reports
-    it as a clean operator-facing message instead of a raw traceback."""
+    ...
 
 
 def generate_key() -> str:
-    """A fresh, correctly-sized key for HUB_ENCRYPTION_KEY. This is what
-    `hub.manage generate-encryption-key` prints -- not used internally,
-    since this module never generates a key on an operator's behalf."""
     return base64.urlsafe_b64encode(_secrets.token_bytes(_KEY_BYTES)).decode("ascii")
 
 
@@ -111,15 +40,6 @@ def _decode_key(value: str, *, source: str) -> bytes:
 
 @dataclass(frozen=True)
 class EnvelopeCipher:
-    """AES-256-GCM with one active key plus zero or more retired keys kept
-    only for decrypting data written before a rotation.
-
-    A disabled cipher (`current is None`, the default) makes both
-    directions the identity function -- see the module docstring's "opt-in"
-    section for why that, not an exception, is the right behavior for an
-    unconfigured deployment.
-    """
-
     current: bytes | None = None
     previous: tuple[bytes, ...] = ()
 
@@ -159,9 +79,6 @@ class EnvelopeCipher:
         return _PREFIX + base64.urlsafe_b64encode(nonce + ciphertext).decode("ascii")
 
     def decrypt(self, value: str) -> str:
-        """Legacy plaintext (no envelope prefix) passes through unchanged,
-        the same as it would with a disabled cipher -- a value written
-        before encryption was enabled must stay readable after."""
         if not value.startswith(_PREFIX):
             return value
         if AESGCM is None:
@@ -186,8 +103,4 @@ class EnvelopeCipher:
         )
 
 
-#: Shared disabled instance for call sites that accept an optional cipher --
-#: identical in behavior to `EnvelopeCipher()`, spelled out so it's obvious
-#: at each call site that "no cipher given" and "encryption disabled" are
-#: the same state, not two different defaults to reconcile.
 NULL_CIPHER = EnvelopeCipher()

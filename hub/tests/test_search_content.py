@@ -1,26 +1,3 @@
-"""hub/crud.py:search_trace_content -- audit 2.2's "a customer who needs
-subject-level erasure over trace content must locate the traces
-themselves; there is no field this system could search on to do it for
-them." This is the tool that locates them.
-
-What these tests defend, in order of how badly getting it wrong would
-hurt:
-
-1. **It finds an exact identifier `search_traces` could miss.** Stemming
-   is right for relevance search and wrong for an exact subject
-   identifier -- this function must not stem, tokenize, or rank.
-2. **Only one regex engine is ever consulted.** Postgres validates and
-   matches `regex=True` patterns end to end; there is no separate
-   Python-side `re` pass that could disagree with it or reject a pattern
-   Postgres would have accepted (see the function's own docstring).
-3. **Quarantined traces are still findable** -- unlike `search_traces`,
-   which deliberately excludes them. A quarantined trace still contains
-   whatever a subject-erasure request is looking for.
-4. **Tenancy**: never a hit across an org boundary.
-5. **A non-match is never mistaken for proof of absence** by anything
-   this function returns -- there is no "0 results" claim beyond "0
-   results for this exact pattern."
-"""
 from __future__ import annotations
 
 import pytest
@@ -93,9 +70,6 @@ class TestLiteralMatch:
         assert results[0]["matched_field"] == "title"
 
     async def test_a_quarantined_trace_is_still_found(self, session_factory, org):
-        """Unlike search_traces, which excludes quarantined traces --
-        a quarantined trace still contains whatever an erasure request
-        is looking for."""
         await _trace(session_factory, org, context="jane.smith@example.com", quarantined=True)
         async with session_scope(session_factory) as session:
             results = await crud.search_trace_content(session, org, "jane.smith@example.com")
@@ -166,8 +140,6 @@ class TestMatchedFieldPrecedence:
         assert results[0]["matched_field"] == "title"
 
 
-# --- through a real MCP tool call ---------------------------------------------
-
 @pytest_asyncio.fixture
 async def mcp(config, session_factory):
     return build_mcp_server(config, session_factory, make_rate_limiter(config))
@@ -182,9 +154,6 @@ def _payload(result) -> dict:
 
 
 class _Scoped:
-    """Same idiom as hub/tests/test_api_key_scopes.py's own helper: set
-    the contextvars a real API-key request's middleware would set."""
-
     def __init__(self, org_id: str, scopes: tuple[str, ...]):
         self._org_id = org_id
         self._scopes = scopes

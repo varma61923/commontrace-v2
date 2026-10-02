@@ -1,15 +1,3 @@
-"""Content-safety screening for lesson/trace text (OWASP ASI06: Memory &
-Context Poisoning).
-
-Three independent questions, tested separately because they carry
-different consequences: a HIGH-confidence secret or an injection pattern
-is severe enough to block on its own (`Finding.blocking`); PII never is,
-by design -- it is surfaced for a human to weigh, not acted on alone. The
-false-positive tests below matter as much as the true-positive ones: this
-module's whole value proposition is that a legitimate lesson about, say,
-"how to rotate an API key" does not get refused just for mentioning the
-concept.
-"""
 from __future__ import annotations
 
 from commontrace import memory_guard as mg
@@ -93,14 +81,10 @@ class TestPII:
         assert any(f.label == "US SSN-shaped number" for f in findings)
 
     def test_a_luhn_valid_card_number_is_found(self):
-        # 4111 1111 1111 1111 is the standard Luhn-valid test Visa number.
         findings = mg.scan_text("Card on file: 4111 1111 1111 1111")
         assert any(f.label == "card number (Luhn-valid)" for f in findings)
 
     def test_a_luhn_invalid_16_digit_number_is_not_reported_as_a_card(self):
-        """The failure mode this check exists to avoid: a trace id, order
-        id, or session id that happens to be 16 digits long is common and
-        must not be reported as a leaked card number just for its length."""
         findings = mg.scan_text("order id 1234567890123456")
         assert not [f for f in findings if f.label.startswith("card number")]
 
@@ -144,9 +128,6 @@ class TestPromptInjection:
         assert any(f.label == "hidden/bidi-override Unicode character" for f in findings)
 
     def test_ordinary_troubleshooting_prose_does_not_trigger(self):
-        """The false-positive check that matters most: this product's own
-        domain vocabulary (retries, ignoring a stale cache, prior incidents)
-        must not itself read as an injection attempt."""
         findings = mg.scan_text(
             "If the request times out, retry once with backoff. Ignore any "
             "stale cache entry from a prior deploy and re-fetch the config."
@@ -194,8 +175,6 @@ class TestScanFieldsAndReport:
         assert not report.should_block
 
 
-# --- Redaction of raw experience ---------------------------------------------
-
 AWS = "AKIAIOSFODNN7EXAMPLE"
 GITHUB = "ghp_" + "a" * 36
 
@@ -230,7 +209,7 @@ def test_capture_stores_no_credential_anywhere_in_the_trace(tmp_path, capsys):
     assert main(["capture", "--dest", root, "--title", f"deploy with {AWS}",
                  "--context", f"used {AWS}", "--solution", f"rotate {GITHUB}"]) == 0
     stored = _captured(root)
-    assert AWS not in stored and GITHUB not in stored  # the filename included
+    assert AWS not in stored and GITHUB not in stored
     assert "[REDACTED AWS access key ID]" in stored and "[REDACTED GitHub token]" in stored
     assert "redacted 3 credential(s)" in capsys.readouterr().err
 
@@ -292,17 +271,17 @@ def test_redact_cleans_a_store_that_predates_redaction(tmp_path, capsys):
 
     root, path = _old_store(tmp_path)
     assert main(["redact", "--dest", root, "--dry-run"]) == 0
-    assert path.read_text(encoding="utf-8") == _OLD_TRACE  # a dry run writes nothing
+    assert path.read_text(encoding="utf-8") == _OLD_TRACE
     assert "would redact 3" in capsys.readouterr().out
 
     assert main(["redact", "--dest", root]) == 0
     stored = _captured(root)
     assert AWS not in stored and GITHUB not in stored and "akiaiosfodnn7example" not in stored
-    assert not path.exists()  # renamed away from the key in its name
+    assert not path.exists()
     (renamed,) = [p for p in (tmp_path / "old" / "memory" / "traces").glob("2026-01-01_*.md")]
     fm, _body = frontmatter.read(str(renamed))
     assert fm["id"] == "abcd1234-0000-0000-0000-000000000001" and fm["tags"] == ["deploy"]
-    assert fm["title"] == "deploy with [REDACTED AWS access key ID]"  # still a string, not a YAML list
+    assert fm["title"] == "deploy with [REDACTED AWS access key ID]"
 
     capsys.readouterr()
     assert main(["redact", "--dest", root]) == 0

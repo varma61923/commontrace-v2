@@ -1,19 +1,4 @@
-"""collaboration: comments, assignments, notifications
-
-Revision ID: a7c3e91f4b28
-Revises: c2f8a4d16e93
-Create Date: 2026-09-12 06:30:00.000000
-
-Audit §8.1: "No reviewer queue, comments, assignments, notification inbox,
-ownership." hub/manage.py's Knowledge Base review queue is an OPERATOR
-surface (cross-tenant, staff-only) -- this is the missing piece for a
-customer's OWN team: discussing and dividing up work on their own traces.
-Built on c2f8a4d16e93's human users, since none of this means anything for
-a shared workload API key with no notion of who is behind it.
-
-Same row-level security every other org-scoped table in this Hub gets
-(d5c8b3a91e77).
-"""
+"""collaboration: comments, assignments, notifications"""
 from __future__ import annotations
 
 from collections.abc import Sequence

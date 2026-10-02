@@ -1,12 +1,3 @@
-"""The local `retrieve` tool carries each lesson's measured causal evidence.
-
-The Hub's search does (hub/tests/test_search_evidence.py); a fleet on the
-local store gets the same answer from the same kind of analysis. These
-pin that the verdict on a retrieved lesson is the one `experiment_status`
-reports, that a compromised experiment shows no numbers, that a store with
-no experiment gets no extra fields, and that retrieving during an
-experiment does not recompute the analysis on every call.
-"""
 from __future__ import annotations
 
 import pytest
@@ -36,8 +27,6 @@ def fleet(tmp_path):
 
 
 def _run(server, root, slug, n, *, report):
-    """Retrieve for n occasions and report outcomes by occasion id.
-    `report(i, injected)` returns True/False to record, or None to skip."""
     for i in range(n):
         occ = f"occ-{i}"
         out = call(server, "retrieve", task=TASK, occasion_id=occ)
@@ -65,7 +54,6 @@ def test_no_experiment_means_no_extra_fields(fleet):
 def test_a_lesson_that_helps_says_so_and_agrees_with_experiment_status(fleet):
     root, server, slug = fleet
     holdout_io.configure(root, rate=0.5)
-    # Seeded ground truth: the task succeeds exactly when the lesson was used.
     _run(server, root, slug, 120, report=lambda i, injected: injected)
 
     out = call(server, "retrieve", task=TASK)
@@ -80,8 +68,6 @@ def test_a_lesson_that_helps_says_so_and_agrees_with_experiment_status(fleet):
 
 
 def test_a_compromised_experiment_shows_no_numbers(fleet):
-    """Every injected occasion reported, most withheld ones not: the effect
-    is biased by a named mechanism, so only the reason is shown."""
     root, server, slug = fleet
     holdout_io.configure(root, rate=0.5)
     _run(server, root, slug, 120,
@@ -96,9 +82,6 @@ def test_a_compromised_experiment_shows_no_numbers(fleet):
 
 
 def test_retrieving_during_an_experiment_does_not_recompute_each_time(fleet, monkeypatch):
-    """`retrieve` with an occasion_id appends to the holdout log, so a cache
-    keyed on that log rebuilt the analysis on every retrieval of a store
-    running an experiment. Effects come from resolved occasions only."""
     root, server, slug = fleet
     holdout_io.configure(root, rate=0.5)
     _run(server, root, slug, 30, report=lambda i, injected: injected)

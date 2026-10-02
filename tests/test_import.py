@@ -1,6 +1,3 @@
-"""Tests for commontrace/import_data.py's parsing logic and the
-`commontrace import` CLI command -- the generic "start from your historical
-traces" onboarding path."""
 import io
 import json
 import os
@@ -59,13 +56,6 @@ class TestParseJsonl:
         assert imported[0].outcome == {"resolved": True, "escalated": False, "tokens_used": 150}
 
     def test_extracts_nested_outcome_fields(self):
-        """Regression test for a real bug: trace.schema.json declares
-        `outcome` as a nested object, so this product's OWN exports (a
-        `sync --pull` dump, a Hub search_traces JSONL export) write outcome
-        fields nested under an "outcome" key -- but _extract_outcome only
-        ever checked top-level keys, so re-importing our own output
-        silently dropped every outcome field (baseline, resolved, ...) with
-        no error."""
         lines = [
             '{"title": "t1", "context": "c1", "solution": "s1", '
             '"outcome": {"resolved": true, "baseline": true, "tokens_used": 150}}'
@@ -101,7 +91,7 @@ class TestParseCsv:
         csv_text = "title,context,solution\nt1,,s1\n"
         imported, skipped = import_data.parse_csv(io.StringIO(csv_text), FieldMapping())
         assert imported == []
-        assert skipped[0].line_no == 2  # header is line 1, first data row is line 2
+        assert skipped[0].line_no == 2
 
 
 class TestBoolParsing:
@@ -139,7 +129,7 @@ class TestImportCommand:
         assert len(written) == 1
         content = (traces_dir / written[0]).read_text(encoding="utf-8")
         assert "Refund confusion" in content
-        assert "TICKET-1" in content  # provenance comment
+        assert "TICKET-1" in content
 
     def test_dry_run_writes_nothing(self, store, tmp_path, capsys):
         main(["init", "--agent-type", "support", "--dest", str(store)])
@@ -154,12 +144,6 @@ class TestImportCommand:
         assert "--dry-run" in capsys.readouterr().out
 
     def test_every_row_skipped_returns_nonzero_not_success(self, store, tmp_path, capsys):
-        """[BUG-CLI-03]: n_rejected (schema-invalid rows) already made this
-        return 1, but a row missing every required field is *skipped*
-        before it ever reaches schema validation -- n_rejected stayed 0,
-        so a file where literally every row was unusable still exited 0.
-        A CI/CD ingestion pipeline checking $? cannot tell that apart from
-        a real success."""
         main(["init", "--agent-type", "support", "--dest", str(store)])
         jsonl_path = tmp_path / "export.jsonl"
         jsonl_path.write_text('{"unrelated_field": "no usable columns here"}\n', encoding="utf-8")
@@ -180,13 +164,6 @@ class TestImportCommand:
     def test_dry_run_reports_a_schema_invalid_row_as_rejected_not_written(
         self, store, tmp_path, capsys
     ):
-        """A row can pass the presence/parse check `import_data` runs but
-        still fail schema validation (e.g. trace.schema.json floors
-        `tokens_used` at 0, which nothing before validation enforces).
-        Schema validation used to run only in the real (non-dry-run) path,
-        so `--dry-run` counted such a row as one that "would be created"
-        while a real run on the identical file rejected it and exited
-        non-zero -- the dry run's whole purpose is to predict that outcome."""
         main(["init", "--agent-type", "support", "--dest", str(store)])
         jsonl_path = tmp_path / "export.jsonl"
         jsonl_path.write_text(
@@ -200,7 +177,6 @@ class TestImportCommand:
         assert "0 trace(s) would be created" in captured.out
         assert "would be rejected as schema-invalid" in captured.err
 
-        # And the real run on the identical file must reject it the same way.
         capsys.readouterr()
         rc = main(["import", str(jsonl_path), "--agent-type", "support", "--dest", str(store)])
         assert rc == 1
@@ -237,14 +213,6 @@ class TestImportCommand:
 
 
 class TestSourceIdCannotInjectMarkdownSections:
-    """The imported row's source_id is embedded verbatim in an HTML
-    comment ahead of the real ## Context/## Solution sections. That comment
-    is plain text to trace_io._first_wins's regex, not a real boundary --
-    an unsanitized source_id containing "...\\n## Context\\nfake\\n" injects
-    a same-named section BEFORE the real one, and "first occurrence wins"
-    means every downstream reader (bench, query, lesson promotion) sees the
-    injected text instead of this row's actual imported content."""
-
     def test_a_newline_in_source_id_cannot_inject_a_context_section(self, store, tmp_path, capsys):
         from commontrace import trace_io
 
@@ -290,10 +258,6 @@ def _one(row, mapping=None):
 
 
 def test_protocol_field_names_import_without_flags():
-    """The product's own output uses the protocol's names (context_text /
-    solution_text) -- `sync --pull` writes them, `search_traces` returns them.
-    Requiring --context-field to rename a field into the name we ourselves
-    emitted made round-tripping our own export fail by default."""
     parsed, skipped = _one({"title": "t", "context_text": "ctx", "solution_text": "sol", "tags": ["a"]})
     assert skipped == []
     assert parsed[0].context_text == "ctx" and parsed[0].solution_text == "sol"

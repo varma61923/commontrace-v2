@@ -1,17 +1,3 @@
-"""Agents under management: the expansion meter.
-
-STRATEGY.md §12.6 concludes the variable to run this business on is
-"agents under management, not logos", and §13.1 asserted it was already
-measurable. It was not: `agent_type` is a CATEGORY ("support"), so a fleet
-of 25 support agents shared one value and nothing in the system could count
-agents at all. The deck's per-agent pricing was therefore unenforceable.
-
-What is tested here is the part that is easy to get catastrophically wrong.
-A storage cap that refuses a write costs the customer one trace. An agent
-cap that refuses the wrong write takes a running fleet off the air. So the
-central property below is not "the limit is enforced" -- it is that the
-limit blocks EXPANSION and never blocks OPERATION.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -62,7 +48,6 @@ async def _agents(session_factory, org_id):
 
 
 async def _age_traces(session_factory, org_id, days):
-    """Backdate every trace for an org, to test the trailing window."""
     async with session_scope(session_factory) as session:
         await session.execute(
             update(Trace).where(Trace.org_id == org_id).values(
@@ -71,13 +56,10 @@ async def _age_traces(session_factory, org_id, days):
         )
 
 
-# --- Counting -----------------------------------------------------------
-
-
 class TestCounting:
     async def test_distinct_named_agents_are_counted_once_each(self, session_factory, config, orgs):
         for i in range(3):
-            for run in range(4):  # each agent writes repeatedly
+            for run in range(4):
                 await _contribute(session_factory, config, orgs["fleet"], f"t{i}-{run}",
                                   agent_id=f"agent-{i}")
         a = await _agents(session_factory, orgs["fleet"])
@@ -86,15 +68,13 @@ class TestCounting:
         assert a["is_floor"] is False
 
     async def test_agent_type_does_not_distinguish_agents(self, session_factory, config, orgs):
-        """The defect this column exists to fix: every one of these shares an
-        agent_type, and before agent_id they were indistinguishable."""
         for i in range(5):
             await _contribute(session_factory, config, orgs["fleet"], f"t{i}", agent_id=f"a{i}")
         assert (await _agents(session_factory, orgs["fleet"]))["active"] == 5
 
     async def test_unattributed_traces_collapse_to_exactly_one_agent(self, session_factory, config, orgs):
         for i in range(10):
-            await _contribute(session_factory, config, orgs["fleet"], f"t{i}")  # no agent_id
+            await _contribute(session_factory, config, orgs["fleet"], f"t{i}")
         a = await _agents(session_factory, orgs["fleet"])
         assert a["active"] == 1
         assert a["named"] == 0
@@ -106,7 +86,7 @@ class TestCounting:
         await _contribute(session_factory, config, orgs["fleet"], "anon")
         a = await _agents(session_factory, orgs["fleet"])
         assert a["is_floor"] is True
-        assert a["active"] == 2  # a1 + the single unattributed sentinel
+        assert a["active"] == 2
 
     async def test_an_empty_org_has_no_agents(self, session_factory, orgs):
         a = await _agents(session_factory, orgs["fleet"])
@@ -114,8 +94,6 @@ class TestCounting:
         assert a["is_floor"] is False
 
     async def test_another_orgs_agents_are_never_counted(self, session_factory, config, orgs):
-        """Tenant isolation, same property hub/tests/test_tenant_isolation.py
-        pins for every other read path."""
         for i in range(4):
             await _contribute(session_factory, config, orgs["neighbour"], f"n{i}", agent_id=f"n-{i}")
         assert (await _agents(session_factory, orgs["fleet"]))["active"] == 0
@@ -130,8 +108,6 @@ class TestTrailingWindow:
         assert (await _agents(session_factory, orgs["fleet"]))["active"] == 0
 
     async def test_the_count_can_fall_which_is_the_whole_point(self, session_factory, config, orgs):
-        """An all-time distinct count only ever grows, so it can never show
-        churn and would bill forever for a decommissioned agent."""
         for i in range(3):
             await _contribute(session_factory, config, orgs["fleet"], f"t{i}", agent_id=f"a{i}")
         assert (await _agents(session_factory, orgs["fleet"]))["active"] == 3
@@ -146,20 +122,13 @@ class TestTrailingWindow:
         assert (await _agents(session_factory, orgs["fleet"]))["is_floor"] is False
 
 
-# --- Enforcement: the part that must not take a fleet down ---------------
-
-
 class TestEnforcementBlocksExpansionNotOperation:
     async def test_an_agent_already_active_keeps_working_at_the_cap(self, session_factory, config, orgs):
-        """THE property. An org sitting exactly at its limit must keep
-        serving the fleet it already has -- refusing those writes turns a
-        commercial limit into a production outage."""
         cap = plans.get("free").max_agents
         for i in range(cap):
             await _contribute(session_factory, config, orgs["fleet"], f"t{i}", agent_id=f"a{i}")
         assert (await _agents(session_factory, orgs["fleet"]))["active"] == cap
 
-        # Every existing agent writes again, repeatedly. None may be refused.
         for round_ in range(3):
             for i in range(cap):
                 await _contribute(session_factory, config, orgs["fleet"],
@@ -189,8 +158,6 @@ class TestEnforcementBlocksExpansionNotOperation:
         assert found is None
 
     async def test_unattributed_writes_are_never_refused_even_at_the_cap(self, session_factory, config, orgs):
-        """A client that predates agent identity must not start failing
-        because a metering concern its author never saw was added."""
         cap = plans.get("free").max_agents
         for i in range(cap):
             await _contribute(session_factory, config, orgs["fleet"], f"t{i}", agent_id=f"a{i}")
@@ -198,22 +165,17 @@ class TestEnforcementBlocksExpansionNotOperation:
         assert result["id"]
 
     async def test_a_downgrade_does_not_break_an_already_oversized_fleet(self, session_factory, config, orgs):
-        """Over the cap because the LIMIT moved, not because the fleet grew.
-        Those agents are already running; the overage belongs in the
-        operator's usage report, not in failing production writes."""
         await _set_plan(session_factory, orgs["fleet"], "team")
         for i in range(plans.get("free").max_agents + 3):
             await _contribute(session_factory, config, orgs["fleet"], f"t{i}", agent_id=f"a{i}")
-        await _set_plan(session_factory, orgs["fleet"], "free")  # downgrade
+        await _set_plan(session_factory, orgs["fleet"], "free")
 
-        for i in range(plans.get("free").max_agents + 3):  # everyone keeps writing
+        for i in range(plans.get("free").max_agents + 3):
             await _contribute(session_factory, config, orgs["fleet"], f"after-{i}", agent_id=f"a{i}")
         a = await _agents(session_factory, orgs["fleet"])
         assert a["active"] > plans.get("free").max_agents
 
     async def test_an_agent_that_aged_out_can_be_replaced(self, session_factory, config, orgs):
-        """Retiring an agent must actually free the slot, or the limit is a
-        ratchet -- the same reason purging frees storage allowance."""
         cap = plans.get("free").max_agents
         for i in range(cap):
             await _contribute(session_factory, config, orgs["fleet"], f"t{i}", agent_id=f"a{i}")
@@ -228,8 +190,6 @@ class TestEnforcementBlocksExpansionNotOperation:
         assert (await _agents(session_factory, orgs["fleet"]))["active"] == plans.get("free").max_agents + 5
 
     async def test_a_retry_of_an_existing_agent_is_not_a_new_registration(self, session_factory, config, orgs):
-        """Idempotent replay stores nothing and registers no agent, so it
-        must not be refused at the cap."""
         cap = plans.get("free").max_agents
         for i in range(cap):
             await _contribute(session_factory, config, orgs["fleet"], f"t{i}", agent_id=f"a{i}")
@@ -242,8 +202,6 @@ class TestEnforcementBlocksExpansionNotOperation:
 
 class TestConcurrency:
     async def test_concurrent_new_agents_cannot_both_pass_the_last_slot(self, session_factory, config, orgs):
-        """Count-then-insert is a TOCTOU race without the org row lock: two
-        registrations racing for one remaining slot would both see room."""
         cap = plans.get("free").max_agents
         for i in range(cap - 1):
             await _contribute(session_factory, config, orgs["fleet"], f"t{i}", agent_id=f"a{i}")
@@ -270,8 +228,6 @@ class TestEntitlementsSurface:
         assert ent["agents"]["window_days"] == plans.ACTIVE_AGENT_WINDOW_DAYS
 
     async def test_reading_entitlements_consumes_no_quota(self, session_factory, config, orgs):
-        """Same property the commons meter has: a meter that charges you for
-        checking the meter ends up in a support thread."""
         async with session_scope(session_factory) as session:
             before = await crud.entitlements(session, orgs["fleet"])
             after = await crud.entitlements(session, orgs["fleet"])
@@ -289,7 +245,5 @@ class TestStorage:
             )
         assert stored == "worker-7"
 
-        # Over the String(128) column width: must be a clean rejection, not
-        # an opaque 500 from asyncpg's StringDataRightTruncation.
         with pytest.raises(TraceRejected):
             await _contribute(session_factory, config, orgs["fleet"], "t2", agent_id="x" * 129)

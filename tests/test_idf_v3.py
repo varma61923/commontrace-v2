@@ -1,11 +1,3 @@
-"""The opt-in idf-v3 scorer: idf-v2 with Porter stemming, and its own floor.
-
-Pins what it buys (inflected forms match), what must not move (the default
-stays idf-v2, so no store changes scorer on upgrade), how a store opts in,
-and that it clears the same per-field quality gates the default is held to
-at its own floor. commontrace/retrieval.py's IDF_V3_FLOOR comment has the
-measurements and the one field where it is noisier.
-"""
 from __future__ import annotations
 
 import importlib.util
@@ -39,8 +31,6 @@ def test_v3_records_its_own_identity():
 
 
 def test_the_default_is_unchanged(tmp_path):
-    """No store changes scorer on upgrade: a new scorer changes which
-    lessons are eligible, and that is a new experiment."""
     assert retrieval.SCORER_IDF == retrieval.SCORER_IDF_V2 == "idf-v2"
     assert main(["init", "--dest", str(tmp_path)]) == 0
     config = retrieval_io.load_config(str(tmp_path))
@@ -59,7 +49,6 @@ def test_opting_in_takes_v3s_own_floor_and_switching_back_restores_v2s(tmp_path)
     config = retrieval_io.load_config(root)
     assert (config.scorer, config.floor) == ("idf-v2", retrieval.IDF_V2_FLOOR)
 
-    # An explicit floor is kept, and a floor change alone keeps the scorer.
     assert main(["retrieval", "--scorer", "idf-v3", "--floor", "0.09", "--dest", root]) == 0
     assert main(["retrieval", "--max-lessons", "4", "--dest", root]) == 0
     config = retrieval_io.load_config(root)
@@ -77,8 +66,6 @@ def test_a_config_file_naming_v3_without_a_floor_gets_v3s_floor(tmp_path):
 
 
 def test_the_holdout_log_records_v3_when_the_store_uses_it(tmp_path):
-    """check_scorer_drift can only catch a mid-run switch if the label is
-    the scorer that actually ran."""
     root = str(tmp_path)
     assert main(["init", "--dest", root]) == 0
     from tests.test_mcp_server import _write_lesson
@@ -103,9 +90,6 @@ def _field_report(scorer):
 
 
 def test_v3_clears_the_quality_gates_at_its_own_floor():
-    """The same bars tests/test_cross_field_retrieval.py holds the default
-    to: every relevant lesson found, the right one first, and no field
-    polluted past the ceiling."""
     from tests.test_cross_field_retrieval import MAX_POLLUTION
 
     report = _field_report(retrieval.SCORER_IDF_V3)

@@ -1,0 +1,12 @@
+{{- include "hub.guards" . -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "hub.name" . }}-config
+  labels: {{- include "hub.labels" . | nindent 4 }}
+data:
+  {{- range $key, $value := .Values.config }}
+  {{- if ne (toString $value) "" }}
+  {{ $key }}: {{ $value | quote }}
+  {{- end }}
+  {{- end }}

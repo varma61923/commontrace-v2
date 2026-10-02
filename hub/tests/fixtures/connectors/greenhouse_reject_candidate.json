@@ -1,0 +1,148 @@
+{
+  "action": "reject_candidate",
+  "payload": {
+    "application": {
+      "applied_at": "2013-03-22T00:00:00Z",
+      "candidate": {
+        "addresses": [],
+        "attachments": [
+          {
+            "filename": "resume.pdf",
+            "type": "resume",
+            "url": "https://prod-heroku.s3.amazonaws.com/..."
+          }
+        ],
+        "can_email": true,
+        "company": null,
+        "coordinator": null,
+        "created_at": "2013-10-04T01:24:48Z",
+        "custom_fields": {
+          "favorite_color": {
+            "name": "Favorite Color",
+            "type": "short_text",
+            "value": "Blue"
+          }
+        },
+        "educations": [
+          {
+            "degree": "Bachelor's Degree",
+            "discipline": "Information Systems",
+            "end_date": "01/01/2016",
+            "school_name": "Harvard University",
+            "start_date": "01/01/2012"
+          }
+        ],
+        "email_addresses": [
+          {
+            "type": "personal",
+            "value": "hector.porter.265788@example.com"
+          }
+        ],
+        "employments": [
+          {
+            "company_name": "Greenhouse",
+            "end_date": "01/01/2016",
+            "start_date": "01/01/2012",
+            "title": "Engineer"
+          }
+        ],
+        "external_id": null,
+        "first_name": "Hector",
+        "id": 265788,
+        "is_private": false,
+        "last_name": "Porter",
+        "phone_numbers": [
+          {
+            "type": "home",
+            "value": "330-281-8004"
+          }
+        ],
+        "photo_url": null,
+        "recruiter": null,
+        "social_media_addresses": [],
+        "tags": [
+          "Imported"
+        ],
+        "title": null,
+        "website_addresses": []
+      },
+      "credited_to": null,
+      "current_stage": {
+        "id": 2708728,
+        "interviews": [],
+        "name": "Offer"
+      },
+      "custom_fields": {
+        "custom_application_field": {
+          "name": "Custom Application Field",
+          "type": "short_text",
+          "value": "Example123"
+        }
+      },
+      "id": 265293,
+      "jobs": [
+        {
+          "closed_at": null,
+          "confidential": false,
+          "created_at": "2013-10-02T22:59:29Z",
+          "created_by_id": 273555,
+          "custom_fields": {
+            "employment_type": {
+              "name": "Employment Type",
+              "type": "single_select",
+              "value": "Full Time"
+            }
+          },
+          "departments": [
+            {
+              "external_id": "ex-dept-1",
+              "id": 237,
+              "name": "Community"
+            }
+          ],
+          "id": 371417,
+          "job_post_id": 54321,
+          "name": "Designer",
+          "notes": "Digital and print",
+          "offices": [
+            {
+              "external_id": "ex-office-1",
+              "id": 9099,
+              "location": "New York, NY",
+              "name": "New York"
+            }
+          ],
+          "opened_at": "2015-01-23T00:25:04Z",
+          "requisition_id": null,
+          "status": "open"
+        }
+      ],
+      "last_activity_at": "2015-02-11T15:50:41Z",
+      "prospect": false,
+      "rejected_at": "2015-02-11T15:50:41Z",
+      "rejection_details": {
+        "custom_fields": {
+          "custom_rejection_question_field": {
+            "name": "Custom Rejection Question Field",
+            "type": "short_text",
+            "value": "Example"
+          }
+        }
+      },
+      "rejection_reason": {
+        "id": 14,
+        "name": "Too Junior",
+        "type": {
+          "id": 3,
+          "name": "Wrong skill set"
+        }
+      },
+      "source": {
+        "id": 27,
+        "public_name": "LinkedIn"
+      },
+      "status": "rejected",
+      "url": "https://app.greenhouse.io/people/265788?application_id=265293"
+    }
+  }
+}

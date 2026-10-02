@@ -1,19 +1,3 @@
-"""Telling "not yet" apart from "never".
-
-The bug these tests exist for is the one that punished the product for
-working. Outcomes are reported some time AFTER the arm is assigned, and a
-lesson that helps concludes its occasions sooner -- so at any moment before a
-run has finished, the injected arm has more outcomes on the books purely
-because it got there first. `check_differential_attrition` compared terminal
-rates, read that head start as one arm losing data, and returned INVALIDATES:
-"do not quote the effect sizes, and more data will not fix it".
-
-Both halves of that are wrong when nothing was actually lost. The estimate was
-suppressed exactly when the memory was working, and the better the lesson the
-faster it was disqualified.
-
-`TestTheRunThatWasPunishedForWorking` is the regression test for it.
-"""
 from __future__ import annotations
 
 import datetime as dt
@@ -33,9 +17,6 @@ class TestKaplanMeier:
         assert [round(s.survival, 3) for s in curve] == [0.75, 0.5, 0.25, 0.0]
 
     def test_censored_occasions_leave_the_risk_set_without_counting_as_events(self):
-        """THE property that makes this worth having. Two reported, two still
-        waiting: S plateaus at 0.5 rather than being dragged to zero by
-        occasions that simply have not concluded."""
         curve = survival.kaplan_meier(
             [_obs(1, True), _obs(2, True), _obs(9, False), _obs(9, False)]
         )
@@ -74,19 +55,11 @@ class TestLogRank:
         assert survival.log_rank_test([], [_obs(1, True)]) == (0.0, 1.0)
 
     def test_no_events_at_all_is_unanswerable(self):
-        """Every occasion still pending. There is no schedule to compare yet,
-        and inventing one would manufacture a finding out of an empty run."""
         pending = [_obs(float(i), False) for i in range(10)]
         assert survival.log_rank_test(pending, list(pending)) == (0.0, 1.0)
 
 
 def _fleet(treated_takes_min, control_takes_min, n=120, span_min=180, lost_control=0):
-    """A fleet assigning occasions continuously over `span_min`.
-
-    Every occasion eventually reports unless it is one of `lost_control`, which
-    models genuine loss. `treated_takes_min` / `control_takes_min` are how long
-    each arm takes to report, so the two arms differ in SPEED only.
-    """
     rows = []
     for i in range(n):
         age = span_min * i / n
@@ -97,20 +70,10 @@ def _fleet(treated_takes_min, control_takes_min, n=120, span_min=180, lost_contr
         ):
             lost = (not injected) and i < lost_control
             reported = (age >= takes) and not lost
-            # Outcomes have to VARY or `check_outcome_variation` rightly calls
-            # the run unreadable: a log where everything succeeded carries no
-            # contrast to measure an effect from. 80% against 50% is a
-            # plausible working lesson, fixed by index so the fixture is
-            # deterministic.
             went_well = (i % 10 < 8) if injected else (i % 10 < 5)
             rows.append(
                 integrity.Assignment(
                     lesson="L", occasion_id=f"{tag}{i}", injected=injected,
-                    # Every occasion here is assigned to both arms, so the
-                    # realized withheld share is 50%. Declaring rate=0.5 keeps
-                    # `check_arm_balance` reading the split it was actually
-                    # configured for -- otherwise these fixtures trip a
-                    # different check and stop testing what they are named for.
                     rate=0.5,
                     succeeded=went_well if reported else None, at=at,
                     resolved_at=at + dt.timedelta(minutes=takes) if reported else None,
@@ -120,8 +83,6 @@ def _fleet(treated_takes_min, control_takes_min, n=120, span_min=180, lost_contr
 
 
 class TestTheRunThatWasPunishedForWorking:
-    """The regression test. Same data, two readings."""
-
     def test_a_fast_treated_arm_is_no_longer_called_attrition(self):
         rows = _fleet(treated_takes_min=5, control_takes_min=90)
         finding = integrity.check_differential_attrition(rows, now=NOW)
@@ -131,10 +92,6 @@ class TestTheRunThatWasPunishedForWorking:
         )
 
     def test_the_same_data_read_without_timestamps_still_shows_the_old_verdict(self):
-        """Proves the fix is the timing and nothing else: strip `at` /
-        `resolved_at` from the identical rows and the old false positive
-        returns. This is also the backward-compatibility guarantee -- a log
-        that cannot be timed is judged exactly as it always was."""
         rows = _fleet(treated_takes_min=5, control_takes_min=90)
         untimed = [
             integrity.Assignment(
@@ -149,9 +106,6 @@ class TestTheRunThatWasPunishedForWorking:
         )
 
     def test_genuine_loss_is_still_caught(self):
-        """The check must not have been softened into uselessness: a control
-        arm that really does drop occasions, on a run old enough that every
-        survivor has long since reported, is still INVALIDATES."""
         rows = _fleet(
             treated_takes_min=5, control_takes_min=6, span_min=600, lost_control=40
         )
@@ -168,9 +122,6 @@ class TestTheRunThatWasPunishedForWorking:
 
 class TestTheHorizonTakesTheSlowerArm:
     def test_a_slow_control_arm_is_judged_on_its_own_clock(self):
-        """Pooling the two arms' reporting curves would let the fast arm set
-        the horizon and judge the slow arm prematurely -- the same false
-        positive, one level down. The horizon is the SLOWER arm's."""
         rows = _fleet(treated_takes_min=5, control_takes_min=90)
         finding = integrity.check_differential_attrition(rows, now=NOW)
         horizon = finding.numbers["maturity_horizon_seconds"]
@@ -188,9 +139,6 @@ class TestCensoringHazard:
         )
 
     def test_a_speed_gap_with_work_still_pending_says_wait_not_biased(self):
-        """The severity is the point. A speed difference is not bias -- the
-        occasions are pending, not lost -- so this may never reach
-        INVALIDATES. It says the run is being read mid-drain."""
         rows = _fleet(treated_takes_min=5, control_takes_min=90)
         finding = integrity.check_censoring_hazard(rows, now=NOW)
         assert finding.severity == integrity.SEVERITY_WEAKENS
@@ -219,9 +167,6 @@ class TestTheAuditCarriesIt:
         assert any(f.check == "censoring_hazard" for f in report.findings)
 
     def test_a_working_lesson_no_longer_compromises_its_own_run(self):
-        """End to end: the whole audit, on a run where nothing was lost and
-        the treated arm merely concluded sooner, must not come back
-        COMPROMISED -- which is what made the effect unquotable."""
         rows = _fleet(treated_takes_min=5, control_takes_min=90)
         report = integrity.audit(rows, now=NOW)
         assert report.verdict != integrity.VERDICT_COMPROMISED

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 
 from commontrace import paths, templates
 from commontrace.commands import _validators
@@ -14,12 +15,25 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Scaffold a local CommonTrace store (memory/) for a fleet or project.",
     )
     p.add_argument(
+        "--function",
+        default=None,
+        help="Business function kit: support, sales, hr, coding, marketing, robotics, legal, "
+             "finance, clinical (`commontrace function list`), or 'custom' to take the slug "
+             f"from --agent-type. Without --function or --agent-type the store is "
+             f"'{paths.GENERAL_AGENT_TYPE}'.",
+    )
+    p.add_argument(
+        "--kit", default=None, metavar="FILE",
+        help="A function kit spec (JSON) for a function not built in; "
+             "validate it first with `commontrace function check`.",
+    )
+    p.add_argument(
         "--agent-type",
         type=_validators.agent_type,
-        default="code",
-        help="Kind of agent this store is for, as a lowercase slug (default: code). "
-             "Any field works -- e.g. code, support, sales, hr, marketing, ops, "
-             "robotics, legal. The taxonomy is open: see "
+        default=None,
+        help="Kind of agent this store is for, as a lowercase slug (default: "
+             f"{paths.GENERAL_AGENT_TYPE}). Any field works -- e.g. code, support, sales, "
+             "hr, marketing, ops, robotics, legal. The taxonomy is open: see "
              "protocol/PROTOCOL.md#7-taxonomy-open-not-closed.",
     )
     p.add_argument(
@@ -33,26 +47,50 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p.set_defaults(func=run)
 
 
-# The profiles whose pipelines write memory/episodes/ rather than
-# memory/traces/. Episodes are a property of the PROFILE, not of the fleet:
-# SKILL.md's double-review loop emits them, and any fleet could in principle
-# run that loop. Keying the store layout on `agent_type == "code"` instead
-# made "code" the only first-class agent type in a product whose taxonomy is
-# explicitly open (protocol/PROTOCOL.md#7).
 EPISODE_PROFILES = frozenset({"code-review"})
 
 
 def _profile_for(args: argparse.Namespace) -> str:
     if args.profile is not None:
         return args.profile.strip()
-    # Preserves the historical default exactly: `commontrace init` with no
-    # arguments has always scaffolded episodes/, and the code-review profile
-    # is why.
     return "code-review" if args.agent_type == "code" else ""
 
 
+def resolve_kit(function: str | None, kit_file: str | None):
+    """The kit named by --function / --kit, or None. Raises functions.KitError."""
+    from commontrace import functions
+
+    if function and kit_file:
+        raise functions.KitError("pass --function or --kit, not both")
+    if kit_file:
+        return functions.load_file(kit_file)
+    if function and function != "custom":
+        return functions.resolve(function)
+    return None
+
+
+def resolve_agent_type(function: str | None, agent_type: str | None, kit=None) -> str:
+    """The agent_type to stamp on the store. Raises ValueError on a conflict."""
+    if kit is None:
+        return agent_type or (function and "custom") or paths.GENERAL_AGENT_TYPE
+    if agent_type and agent_type != kit.agent_type:
+        raise ValueError(
+            f"function {kit.key!r} stores as agent_type {kit.agent_type!r}, "
+            f"which conflicts with --agent-type {agent_type!r}"
+        )
+    return kit.agent_type
+
+
 def run(args: argparse.Namespace) -> int:
+    try:
+        kit = resolve_kit(args.function, args.kit)
+        args.agent_type = resolve_agent_type(args.function, args.agent_type, kit)
+    except ValueError as exc:
+        print(f"[commontrace] error: {exc}", file=sys.stderr)
+        return 2
     root = os.path.abspath(args.dest)
+    if kit is not None:
+        paths.STARTER_DOMAINS.setdefault(kit.agent_type, list(kit.domains) or ["other"])
     profile = _profile_for(args)
     mem = paths.memory_dir(root)
     lessons = paths.lessons_dir(root)
@@ -84,8 +122,6 @@ def run(args: argparse.Namespace) -> int:
                     index_file,
                     slugs=np.array([], dtype=str),
                     embeddings=np.zeros((0, 768), dtype=np.float32),
-                    # An empty index pins no model: the first build uses
-                    # the default (build_index.index_model).
                     model_name="Snowflake/snowflake-arctic-embed-m-v1.5",
                     encoded_field="description+domain+tags+applies_when+do_not_apply_when+rule",
                     timestamp="",
@@ -127,12 +163,18 @@ def run(args: argparse.Namespace) -> int:
                 has_episodes=os.path.isdir(paths.episodes_dir(root)),
             ))
 
+        if kit is not None:
+            from commontrace import functions
+
+            functions.save_to_store(root, kit)
         print(f"[commontrace] Initialized a {args.agent_type} store at {mem}")
+        if kit is not None:
+            print(f"  Occasion: one {kit.occasion_label} (e.g. {kit.occasion_example}). "
+                  f"Success: {kit.outcome.success}.")
+            print(f"  `commontrace function forecast {kit.key} --daily <occasions per day>` "
+                  "says how long a verdict takes at your volume.")
 
     if has_attention_deps():
-        # Recommended, not switched on: whether a store fuses must be its
-        # recorded decision, not a side effect of what happens to be
-        # installed on the machine that ran `init`.
         print(
             "[commontrace] The attention extra is installed, so retrieval searches by "
             "keyword and meaning and a cross-encoder decides what reaches the page "

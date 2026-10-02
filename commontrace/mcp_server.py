@@ -88,6 +88,7 @@ from commontrace import (
     frontmatter,
     harm,
     holdout_io,
+    injection_guard,
     lesson_cache,
     lesson_io,
     mcp_tools,
@@ -113,15 +114,6 @@ from commontrace.commands._validators import REFUSE_CHARS, check_text_size
 
 logger = logging.getLogger(__name__)
 
-# The lesson fields an agent may set. Anything outside this set is ignored
-# rather than written: `uses`, `last_hit` and `hub_trace_id` are maintained by
-# the tooling that owns them, and letting a caller set them would corrupt the
-# retrieval telemetry the measurement layer reads.
-# Re-exported from commontrace.mcp_tools, which owns the one definition and
-# imports nothing. `commontrace install` needs these names and must stay
-# importable where PyYAML is absent -- importing this module to read a tuple
-# of strings pulled in the entire retrieval stack and broke the Hub's test
-# job, which installs no client dependencies at all.
 LOCAL_TOOLS = mcp_tools.LOCAL_TOOLS
 APPROVAL_TOOLS = mcp_tools.APPROVAL_TOOLS
 
@@ -148,25 +140,6 @@ def _err(message: str, **extra: Any) -> dict:
     exception escaping into the MCP framework is not.
     """
     return {"ok": False, "error": message, **extra}
-
-
-# --- talking to the CLI without corrupting the transport -----------------
-#
-# On stdio, THIS PROCESS'S STDOUT IS THE MCP WIRE. Every JSON-RPC frame the
-# client reads comes out of it, in order, with nothing else interleaved.
-#
-# The command modules below are the same ones `commontrace` runs from a
-# terminal, and they print: `capture` prints the path it wrote, the loaders
-# print a warning for an unreadable file. On a terminal that is helpful; here
-# a single stray line lands in the middle of a frame and the client's parser
-# fails on the whole session -- not on that one tool call. The failure looks
-# like the server crashed, and it would be triggered by something as ordinary
-# as one malformed trace file in the store.
-#
-# So nothing reaches stdout except through the MCP framing. Everything a
-# command prints is captured: its stdout because we need the value (capture
-# prints the path it wrote), its stderr so the reason for a refusal can be
-# returned to the agent instead of vanishing.
 
 
 @contextlib.contextmanager
@@ -196,17 +169,6 @@ def _run_cli(command: str, argv: list[str]) -> tuple[int, str, str]:
     module.add_parser(subparsers)
 
     out, err = io.StringIO(), io.StringIO()
-    # parse_args itself, not just args.func(args), needs to be inside the
-    # redirect AND inside the SystemExit guard: an argparse `type=` validator
-    # that rejects its input (e.g. distill_cmd.py's --similarity-threshold
-    # range check) makes argparse print a usage/error message and call
-    # parser.exit() -> sys.exit(2), the same as the shell CLI's normal
-    # invalid-argument path. SystemExit is a BaseException, not an Exception,
-    # so it passed straight through every caller's `except Exception` here --
-    # reproduced live: it printed the error to this PROCESS's real stderr
-    # (parse_args ran outside the redirect) and then propagated out of the
-    # MCP tool call entirely, rather than becoming this function's normal
-    # (rc, out, err) contract every other failure already uses.
     try:
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             args = parser.parse_args([command, *argv])
@@ -267,7 +229,7 @@ def _lesson_path(root: str, slug: str) -> str:
     return path
 
 
-def _apply_dosage(matched, active, config):
+def _apply_dosage(matched, active, config, quarantined=None):
     """Admit core lessons and enforce the budget, returning the wire items.
 
     Core lessons are loaded from the whole active set rather than from the
@@ -293,10 +255,13 @@ def _apply_dosage(matched, active, config):
             continue
         item = _lesson_wire(fm_full, body, include_body=True)
         item["core"] = True
+        clean, bad = injection_guard.screen([item])
+        if bad:
+            if quarantined is not None:
+                quarantined.extend(bad)
+            continue
         core_items.append(item)
 
-    # A core lesson that also matched keeps its core priority rather than
-    # competing for a ranked slot, which is the whole point of the flag.
     core_slugs = {str(fm.get("name", "")) for _, fm in active if dosage.is_core(fm)}
     for item in matched:
         if item.get("slug") in core_slugs:
@@ -307,18 +272,10 @@ def _apply_dosage(matched, active, config):
     candidates = [
         dosage.Candidate(
             slug=item.get("slug", ""),
-            # The real text, so the character budget is spent against what
-            # the agent will actually be handed rather than an estimate.
             text=item.get("body") or "",
             core=bool(item.get("core", False)),
             importance=int(item.get("importance") or 0),
             revision=str(item.get("revision", "")),
-            # What redundancy is judged on -- description + applies_when +
-            # do_not_apply_when + body, same fields `commontrace consolidate`
-            # and the authoring-time check compare, via `_lesson_wire`'s own
-            # projection of the frontmatter rather than a second read of the
-            # file. See commontrace/redundancy.py's module docstring for why
-            # `tags`/`domain` are deliberately excluded.
             compare_text=redundancy.comparable_text(item, item.get("body") or ""),
         )
         for item in considered
@@ -364,10 +321,6 @@ def _record_receipt(root, occasion_id, task, active, injected, held, dose, confi
         )
         for position, item in enumerate(injected, start=1)
     )
-    # The withheld-for-the-experiment set and the didn't-fit-the-budget set
-    # are both "not injected" and are NOT the same fact: one is a control
-    # arm, the other is a capacity limit. Labelled distinctly so a later
-    # reader is not left to guess which.
     withheld = tuple(
         [(item.get("slug", ""), "control arm (holdout)") for item in held]
         + [(d.slug, d.reason) for d in dose.dropped]
@@ -402,15 +355,7 @@ def _lesson_wire(fm: dict, body: str = "", *, include_body: bool = False) -> dic
         "do_not_apply_when": fm.get("do_not_apply_when"),
         "uses": fm.get("uses"),
         "source_traces": list(fm.get("source_traces") or []),
-        # Surfaced on every projection: an agent deciding whether to inject a
-        # lesson, or whether to finish writing one, needs to know it is still
-        # scaffolding. Leaving it implicit is how template text reached
-        # production in the first place.
         "unfilled": templates.unfilled_placeholders(fm, body),
-        # Content identity of exactly this text. An experiment measuring this
-        # lesson is measuring THIS revision; report it back with the outcome
-        # if you keep your own records, and expect the effect estimate to be
-        # about it rather than about the slug.
         "revision": revision.revision_of(fm, body),
     }
     if include_body:
@@ -460,12 +405,6 @@ def build_server(root: str, *, allow_approval: bool = True):
     try:
         from mcp.server.mcpserver import MCPServer
     except ModuleNotFoundError as exc:  # pragma: no cover - environment-dependent
-        # The client package installs with PyYAML alone (pyproject.toml), so
-        # the SDK is genuinely absent on a default install. Raised as a
-        # sentence with the fix in it rather than as a bare ImportError from
-        # inside a subprocess an MCP client spawned: there, the traceback is
-        # not shown to anyone -- the client reports only that the server
-        # exited, which is indistinguishable from a crash.
         raise LocalStoreError(
             "`commontrace serve` needs the MCP SDK, which the base install does "
             "not include. Install it with:  pip install 'commontrace[serve]'"
@@ -531,10 +470,12 @@ def build_server(root: str, *, allow_approval: bool = True):
         "go ahead" -- is answered immediately with `skipped: true` and no
         ranking pass, because there is nothing in it for a lesson to match.
         """
-        # Before the store is read, and before any arm is assigned. Both halves
-        # of that ordering matter: the saving is the corpus parse this skips,
-        # and the safety is that a skipped turn never becomes an occasion, so
-        # nothing is filtered after its arm is known (commontrace/cache_gate.py).
+        with lesson_cache.one_scan():
+            return _retrieve(task, top_k, occasion_id, agent_type, exclude_shown)
+
+    def _retrieve(
+        task: str, top_k: int, occasion_id: str, agent_type: str, exclude_shown: str,
+    ) -> dict:
         if cache_gate.is_trivial_prompt(task):
             return _ok(
                 lessons=[], n_active=0, occasion_id=occasion_id or None,
@@ -547,31 +488,11 @@ def build_server(root: str, *, allow_approval: bool = True):
                 ),
             )
         try:
-            # The SAME loader and ranker `commontrace query` uses, on the same
-            # (path, frontmatter) shape -- not a parallel implementation. If
-            # the two surfaces ranked differently, a fleet's shell-capable and
-            # shell-less agents would be reading different memory.
-            # Lexical always runs; the semantic arm is fused in below only
-            # when the store configured fusion AND its index is fresh -- the
-            # same rule `commontrace query` applies, via the same function
-            # (commontrace/semantic_arm.py). Lexical reads the lesson files
-            # as they are right now and cannot go stale, which is why it is
-            # the fallback on both surfaces.
-            # `load_active_with_terms`, not `query_cmd._iter_active_lessons`
-            # directly, so this long-lived server benefits from the same
-            # incremental cache the CLI does -- re-tokenizing only the lesson
-            # files that changed since the LAST `retrieve` call, not the
-            # whole store on every one. This is where that matters most: a
-            # one-shot CLI process pays the parse once regardless; this
-            # process answers many `retrieve` calls without exiting.
             with _quiet():
                 active, term_cache = lesson_cache.load_active_with_terms(
                     root, agent_type or None,
                     reader=lambda p: read_or_warn(frontmatter.read, p),
                 )
-            # Never drops a `core: true` lesson (see
-            # commontrace/dosage.py's module docstring) -- core is the
-            # fleet's unconditional position, present every call by design.
             already_shown: set[str] = set()
             if exclude_shown:
                 already_shown = holdout_io.injected_slugs_for_occasion(root, exclude_shown)
@@ -580,17 +501,7 @@ def build_server(root: str, *, allow_approval: bool = True):
                         (p, fm) for p, fm in active
                         if dosage.is_core(fm) or str(fm.get("name", "")) not in already_shown
                     ]
-            # The store's own retrieval settings, for the same reason the
-            # holdout config below is read from the store rather than
-            # hardcoded here: scorer and floor decide which lessons are
-            # ELIGIBLE, so this surface disagreeing with `commontrace query`
-            # would put two different treatments in one experiment.
             retrieval_config = retrieval_io.load_config(root)
-            # None (not computed at all) unless this store opted in --
-            # `evidence_io.reliability_snapshot` globs episodes/traces and
-            # `recency.recency_lookup` parses every lesson's `last_hit`, and
-            # a store that has not set either weight should not pay either
-            # cost on a surface a long-lived server answers many calls on.
             reliability_lookup = (
                 evidence_io.reliability_snapshot(root)
                 if retrieval_config.reliability_weight > 0 else None
@@ -599,20 +510,9 @@ def build_server(root: str, *, allow_approval: bool = True):
                 recency.recency_lookup(active)
                 if retrieval_config.recency_weight > 0 else None
             )
-            # Lessons this store's experiment measured making outcomes worse,
-            # if it withdraws them (commontrace/harm.py). Ranked WITH the rest
-            # and removed afterwards, over-fetching by their number, so every
-            # other lesson's relevance and the slot a withdrawn one vacates
-            # are exactly what they would be if it did not exist.
             harmful = evidence_mod.withdrawn(root, retrieval_config.harm_policy)
             want = max(1, min(int(top_k), 50))
-            # A reranking store hands the reranker a deeper pool than the
-            # page (commontrace/rerank_arm.py), and only if it can actually
-            # rerank: otherwise it ranks for the page, as if it had not asked.
             rerank_skipped = ""
-            # With no active lesson there is nothing to reorder: loading a
-            # model for seconds would change no page (`commontrace query`
-            # decides the same way).
             if retrieval_config.rerank != retrieval_io.RERANK_NONE and active:
                 with _quiet():
                     rerank_skipped = rerank_arm.ready(retrieval_config.rerank)
@@ -620,10 +520,6 @@ def build_server(root: str, *, allow_approval: bool = True):
                 retrieval_config.rerank != retrieval_io.RERANK_NONE and not rerank_skipped and bool(active)
             )
             depth = rerank_arm.pool_size(want, retrieval_config.rerank) if reranking else want
-            # A fused pool's depth is set per semantic-arm model
-            # (rerank_arm.POOL_DEPTHS), read from the index before ranking;
-            # the lexical ranking keeps `depth`, which every fallback below
-            # (reranked lexical retrieval) is ranked at.
             fused_depth = depth
             if reranking and retrieval_config.fusion != retrieval_io.FUSION_NONE:
                 from commontrace import semantic_arm
@@ -634,9 +530,6 @@ def build_server(root: str, *, allow_approval: bool = True):
                     fused_depth = rerank_arm.pool_size(
                         want, retrieval_config.rerank,
                         retrieval_io.embedder_tag(semantic_arm.stored_model(root)))
-            # Gated fusion ranks below the floor too: such a lesson can still
-            # reach the page if the reranker vouches for it (`floor_cleared`
-            # below keeps the ones that need no vouching).
             gated = retrieval_config.fusion == retrieval_io.FUSION_GATED and reranking
             ranked = retrieval.rank_lessons(
                 task, active,
@@ -653,8 +546,6 @@ def build_server(root: str, *, allow_approval: bool = True):
             return _err(f"could not read the lesson store: {type(exc).__name__}: {exc}")
 
         core_slugs = {str(fm.get("name", "")) for _, fm in active if dosage.is_core(fm)}
-        # The fused pool's lexical half, split at the pool's own depth (as
-        # `commontrace query` splits it), before `ranked` is cut to `depth`.
         pool_lexical, withdrawn_pool = harm.split(ranked, harmful, core_slugs, fused_depth)
         ranked, withdrawn_ranked = harm.split(ranked, harmful, core_slugs, depth)
         withdrawn_order = [r.slug for r in withdrawn_ranked]
@@ -662,16 +553,7 @@ def build_server(root: str, *, allow_approval: bool = True):
             r.slug for r in ranked + withdrawn_ranked if r.relevance >= retrieval_config.floor
         }
 
-        # The semantic arm, fused with the lexical one by rank, when the store
-        # configured fusion -- the same function `commontrace query` runs in
-        # a subprocess, held in memory here (commontrace/semantic_arm.py), and
-        # the same steps as its `_run_hybrid`: the same index-freshness gate
-        # (a stale or empty index falls back to lexical, as there), the same
-        # over-fetch and harm split, the same exclude_shown filter on this
-        # arm's output, the same RRF constant. A surface that fused
-        # differently would be a second treatment in the same experiment.
         fused: list[tuple[str, float]] | None = None
-        # The semantic arm's embedding model, as its label tag, once it ran.
         embedder = ""
         fusion_skipped = ""
         if retrieval_config.fusion == retrieval_io.FUSION_GATED and not gated and active:
@@ -688,8 +570,6 @@ def build_server(root: str, *, allow_approval: bool = True):
                     "(`pip install commontrace[attention]`)"
                 )
             else:
-                # Refreshed first if stale (commontrace/semantic_arm.py): a
-                # stale index used to send the store back to lexical here.
                 with _quiet():
                     fusion_skipped = semantic_arm.ensure_fresh(root)
             if not fusion_skipped:
@@ -709,8 +589,6 @@ def build_server(root: str, *, allow_approval: bool = True):
                             s for s in semantic if s in core_slugs or s not in already_shown
                         ]
                     if gated:
-                        # The pool, not a ranking: the reranker orders it and
-                        # the gate decides what may be on the page.
                         fused = [
                             (slug, 0.0)
                             for slug in dict.fromkeys([r.slug for r in pool_lexical] + semantic)
@@ -723,14 +601,9 @@ def build_server(root: str, *, allow_approval: bool = True):
                     withdrawn_order = list(dict.fromkeys(
                         [r.slug for r in withdrawn_pool] + list(withdrawn_semantic)))
         if gated and fused is None:
-            # The semantic arm did not run, so this is plain reranked lexical
-            # retrieval and is labelled as such: the floor applies, as there.
             ranked = [r for r in ranked if r.slug in floor_cleared]
             withdrawn_order = [s for s in withdrawn_order if s in floor_cleared]
 
-        # Second stage: the reranker reorders the pool and keeps the page
-        # (commontrace/rerank_arm.py). Same step, same order, as
-        # `commontrace query`'s _rerank_pool.
         path_by_slug = {str(fm.get("name", "")): path for path, fm in active}
         first_stage = fused if fused is not None else [(r.slug, r.relevance) for r in ranked]
         reranked: list[tuple[str, float]] | None = None
@@ -751,13 +624,7 @@ def build_server(root: str, *, allow_approval: bool = True):
             except Exception as exc:  # noqa: BLE001 - a failed rerank serves the first stage
                 rerank_skipped = f"the reranker failed: {type(exc).__name__}: {exc}"
         if reranking and reranked is None:
-            # The model loaded (rerank_arm.ready) and then failed to score --
-            # out of memory, in practice. Serve the pool's head rather than
-            # nothing. Withdrawn lessons found anywhere in the pool stay
-            # named: over-naming a lesson measured to hurt is the safe side.
             if gated:
-                # Unvetted semantic and below-floor candidates never reach
-                # the page: serve the floor-cleared lexical head, labelled so.
                 ranked = [r for r in ranked if r.slug in floor_cleared]
                 fused = None
             ranked = ranked[:want]
@@ -771,8 +638,6 @@ def build_server(root: str, *, allow_approval: bool = True):
             for slug in withdrawn_order
         ]
 
-        # The label every assignment records, and the relevance beside it:
-        # what actually ranked this retrieval.
         eligibility_label = retrieval_io.rerank_label(
             retrieval_config.eligibility_label_for(fused=fused is not None, embedder=embedder),
             retrieval_config.rerank if reranked is not None else retrieval_io.RERANK_NONE,
@@ -790,57 +655,32 @@ def build_server(root: str, *, allow_approval: bool = True):
             to_read = [(r.slug, r.path, r.relevance) for r in ranked]
 
         matched_items = []
+        quarantined: list[dict] = []
         for slug, path, relevance in to_read:
-            # Re-read for the BODY. `_iter_active_lessons` returns frontmatter
-            # only, and the body is where the rule actually is -- returning a
-            # lesson without it would hand the agent a title and no
-            # instruction. Only the top-k are re-read, not the whole store.
             try:
                 fm, body = frontmatter.read(path)
             except Exception:  # noqa: BLE001
                 continue
             item = _lesson_wire(fm, body, include_body=True)
+            _clean, _bad = injection_guard.screen([item])
+            if _bad:
+                quarantined.extend(_bad)
+                continue
             lexical_hit = lexical_by_slug.get(slug)
             if fused is None and reranked is None:
                 item["score"] = round(lexical_hit.score, 3)
             else:
-                # The fused or reranked score: what decided this position.
                 item["score"] = round(relevance, 4)
             item["matched"] = list(lexical_hit.matched_terms or []) if lexical_hit else []
             item["_relevance"] = relevance
             matched_items.append(item)
 
-        # ALWAYS-ON lessons, and the budget everything is admitted against
-        # (commontrace/dosage.py). `top_k` bounds the COUNT and says nothing
-        # about the size, so ten terse lessons and ten pages of prose were
-        # the same budget -- and a lesson that is the fleet's position
-        # rather than a match for today's task had no way to be reliably
-        # present except by matching everything, which is the same as making
-        # retrieval worse.
-        #
-        # BEFORE the arms are assigned, and that ordering is the whole point.
-        # A lesson the budget crowds out is never administered. Assigning it
-        # an arm first would log it as TREATED on an occasion it was never
-        # present for, and an occasion counted as treated where no memory was
-        # injected pulls the measured effect toward zero -- silently, and
-        # worse the tighter the budget is. Only lessons that will actually be
-        # handed over are eligible to be randomized.
         admitted_items, core_items, dose = _apply_dosage(
-            matched_items, active, retrieval_config
+            matched_items, active, retrieval_config, quarantined
         )
 
         withheld: set[str] = set()
-        # The STORE's settings, not this module's constants. Hardcoding them
-        # here meant an agent-driven fleet could not change its holdout rate
-        # at all -- the product could compute exactly what rate a pilot needed
-        # and then offer its AI-first half no way to set it -- and it let this
-        # surface silently disagree with `commontrace query`, which pools two
-        # randomizations into one comparison.
         config = holdout_io.load_config(root)
-        # Core lessons are excluded from randomization: they are unconditional
-        # by definition, so withholding one contradicts the flag. They are
-        # also constant across both arms, which is exactly why they cannot
-        # confound the comparison -- every occasion gets them.
         eligible = [
             item["slug"] for item in admitted_items
             if item.get("slug") and not item.get("core")
@@ -852,18 +692,11 @@ def build_server(root: str, *, allow_approval: bool = True):
                     occasion_id=occasion_id,
                     rate=config.rate,
                     salt=config.salt,
-                    # Same evidence `commontrace query` records. Omitting it
-                    # here would make an agent-driven fleet's log unauditable
-                    # by exactly the checks a shell-driven one gets.
                     relevance=relevance_by_slug,
                     scorer=eligibility_label,
                     floor=retrieval_config.floor,
                 )
             except Exception as exc:  # noqa: BLE001
-                # An assignment that could not be LOGGED must not be acted on:
-                # honouring an unrecorded holdout withholds a lesson from the
-                # agent and leaves no record that it was withheld, which is the
-                # one failure that corrupts the causal number silently.
                 return _err(
                     "could not record the holdout assignment, so no lesson was withheld: "
                     f"{type(exc).__name__}: {exc}"
@@ -875,23 +708,6 @@ def build_server(root: str, *, allow_approval: bool = True):
             if item.get("slug") not in withheld:
                 injected.append(item)
                 continue
-            # A withheld lesson is the control arm: the agent is told never
-            # to act on it, so its BODY -- the actual instructional text --
-            # has no legitimate use once it crosses the wire, only cost
-            # (this can run to MAX_TEXT_CHARS-scale content, on EVERY
-            # retrieve() call while an experiment is running -- exactly the
-            # calls a customer rigorously proving this product's causal
-            # claim makes most of) and a small, avoidable priming risk: an
-            # agent that has read the rule anyway is not the same
-            # experiment as one that has not. Everything except the body
-            # still ships, so `withheld` stays informative about WHAT was
-            # suppressed, just not usable. Matches `commontrace query`'s own
-            # CLI behavior, which has never printed a withheld lesson's body.
-            #
-            # The slot it vacates is NOT backfilled with the next-ranked
-            # lesson. Substituting one would make the control arm "a
-            # different lesson" rather than "no lesson", and the contrast
-            # this experiment reports would no longer be the one it claims.
             item.pop("body", None)
             held.append(item)
 
@@ -900,13 +716,11 @@ def build_server(root: str, *, allow_approval: bool = True):
             "n_active": len(active),
             "occasion_id": occasion_id or None,
             "budget": dose.gauge(),
+            "notice": injection_guard.NOTICE,
         }
+        if quarantined:
+            result["quarantined"] = quarantined
         if retrieval_config.fusion != retrieval_io.FUSION_NONE and fused is None and active:
-            # Configured but not run -- said out loud, because the store asked
-            # for a DIFFERENT eligibility rule. The assignment records the
-            # lexical label, which is what actually ran, so integrity.
-            # check_scorer_drift sees the mix; `commontrace query` falls back
-            # the same way, for the same reasons.
             result["fusion_note"] = (
                 f"this store configures fusion={retrieval_config.fusion!r}, but this "
                 f"retrieval was lexical: {fusion_skipped or 'fusion did not run'}. "
@@ -914,7 +728,6 @@ def build_server(root: str, *, allow_approval: bool = True):
                 "accordingly."
             )
         if retrieval_config.rerank != retrieval_io.RERANK_NONE and reranked is None and active:
-            # Same posture as fusion_note: asked for, not run, said so.
             result["rerank_note"] = (
                 f"this store configures rerank={retrieval_config.rerank!r}, but this "
                 f"retrieval kept the first stage's order: {rerank_skipped or 'the reranker did not run'}. "
@@ -923,25 +736,14 @@ def build_server(root: str, *, allow_approval: bool = True):
         if core_items:
             result["core"] = [item["slug"] for item in core_items if item.get("slug")]
         if dose.dropped:
-            # Named, never silent: an agent given nine of ten lessons and
-            # told it was given ten acts on the missing one's absence as
-            # though it were the fleet's position.
             result["not_injected"] = [
                 {"slug": d.slug, "reason": d.reason} for d in dose.dropped
             ]
         if dose.noted:
-            # A core lesson duplicates another admitted lesson. Never
-            # suppressed (see commontrace/dosage.py's module docstring), so
-            # both are still in `lessons` -- this is a configuration signal
-            # for `commontrace consolidate`, not a thing that happened to
-            # this occasion.
             result["core_redundancy"] = [
                 {"slug": d.slug, "reason": d.reason} for d in dose.noted
             ]
         if withdrawn_items:
-            # Named, never silent -- the same rule as `not_injected`. No body:
-            # like a withheld lesson, it is here to say what was not handed
-            # over and why, not to be used.
             result["withdrawn"] = withdrawn_items
             result["withdrawn_note"] = harm.note(len(withdrawn_items))
         if occasion_id:
@@ -955,7 +757,7 @@ def build_server(root: str, *, allow_approval: bool = True):
                 "nothing causal can be measured. An operator starts one with "
                 "`commontrace experiment --configure --rate <r>`."
             )
-        if not injected and not held and not withdrawn_items:
+        if not injected and not held and not withdrawn_items and not quarantined:
             result["note"] = (
                 "No active lesson matched. That is a real answer -- proceed on your own "
                 "judgement, then `capture` what happened so the gap can become a lesson."
@@ -963,22 +765,6 @@ def build_server(root: str, *, allow_approval: bool = True):
                 _no_active_lessons_note(root)
             )
 
-        # The receipt: what was VISIBLE, what was admitted, and why the rest
-        # was not (commontrace/receipts.py). The holdout log records
-        # eligibility and arm, which starts one step too late -- a lesson
-        # that was never a candidate does not appear in it at all, so "the
-        # memory did not help" and "the memory was never offered" are
-        # indistinguishable afterwards, and they have opposite remedies.
-        #
-        # Failure here must not fail the retrieval: unlike a holdout
-        # assignment (which CHANGES what the agent is given, so an unlogged
-        # one corrupts the experiment silently), a receipt only records what
-        # already happened. Losing one costs an audit trail entry; refusing
-        # to serve a lesson over it costs the fleet its memory.
-        # Each returned lesson's measured causal verdict, as the Hub's search
-        # carries it (commontrace/evidence.py). Failure must not fail the
-        # retrieval, for the same reason as the receipt below: it describes
-        # what was retrieved rather than changing it.
         try:
             with _quiet():
                 evidence_mod.attach(root, result, "lessons", "withheld", "withdrawn")
@@ -1064,10 +850,6 @@ def build_server(root: str, *, allow_approval: bool = True):
         if not path or not os.path.exists(path):
             return _err(f"capture reported success but wrote no readable trace: {out!r}")
         instance, _ = trace_io.read(path)
-        # Read back off disk rather than echoed from the arguments. Capturing
-        # twice under one occasion id MERGES outcomes with the earlier trace,
-        # so what this call passed and what the trace now holds are different
-        # things -- and the second is the one the experiment will read.
         recorded = dict(instance.get("outcome") or {})
         return _ok(
             trace_id=instance.get("id"),
@@ -1096,11 +878,6 @@ def build_server(root: str, *, allow_approval: bool = True):
         Traces already covered by an existing lesson are skipped, so running
         this repeatedly does not re-propose what is already curated.
         """
-        # `commontrace distill`, not a copy of it. The first draft of this
-        # method reimplemented the loop and got the candidate naming wrong
-        # (the slug already carries its `lesson_` prefix), producing files the
-        # rest of the tooling could not resolve. Every candidate this surface
-        # writes is now byte-for-byte the one the CLI writes.
         before = set(glob.glob(os.path.join(paths.lessons_dir(root), "lesson_*.md")))
         argv = ["--dest", root,
                 "--min-cluster-size", str(max(2, int(min_cluster))),
@@ -1112,8 +889,6 @@ def build_server(root: str, *, allow_approval: bool = True):
         if rc != 0:
             return _err(err.strip() or out.strip() or "distill failed.")
 
-        # Which candidates appeared, read off disk rather than parsed out of
-        # the command's prose: the human-readable output is free to change.
         written = []
         for path in sorted(set(glob.glob(os.path.join(paths.lessons_dir(root), "lesson_*.md"))) - before):
             try:
@@ -1225,9 +1000,6 @@ def build_server(root: str, *, allow_approval: bool = True):
                 "trim the sections and try again."
             )
         try:
-            # Locked read-modify-write: a fleet may have several agents
-            # drafting at once, and two independent read-then-writes silently
-            # lose one of the edits (commontrace/frontmatter.py:locked).
             with frontmatter.locked(path):
                 fm, body = frontmatter.read(path)
                 for key, value in fields.items():
@@ -1314,12 +1086,6 @@ def build_server(root: str, *, allow_approval: bool = True):
                     if errors:
                         return _err(f"refusing to activate {slug!r}: it does not satisfy the "
                                     "lesson schema.", schema_errors=errors)
-                    # Separation of duties, where the store asks for it
-                    # (memory/approval-policy.yaml). Absent, this is a
-                    # no-op and an agent may still approve its own draft --
-                    # the documented default. Set `mode: two-person` or
-                    # `require_human: true` and this is the gate that stops
-                    # the agent curating its own output unattended.
                     try:
                         policy = approval.load_policy(root)
                         approval.check(
@@ -1329,16 +1095,6 @@ def build_server(root: str, *, allow_approval: bool = True):
                     except (approval.ApprovalDenied, approval.PolicyError) as exc:
                         return _err(f"refusing to activate {slug!r}: {exc}")
 
-                    # OWASP ASI06 (Memory & Context Poisoning): an active
-                    # lesson is injected into every later retrieval verbatim
-                    # (this tool's own docstring), so a credential or a
-                    # prompt-injection payload reaching `active` here would
-                    # be replayed into every later decision the lesson
-                    # matches. No --force equivalent on this path, unlike
-                    # the CLI's `lesson approve`: an agent approving its own
-                    # draft has no interactive human to confirm a deliberate
-                    # override, so a HIGH-confidence finding refuses outright
-                    # -- edit the lesson and call approve_lesson again.
                     from commontrace.commands.lesson_cmd import _guard_fields
                     guard = memory_guard.scan_fields(_guard_fields(fm, body))
                     if guard.should_block:
@@ -1353,23 +1109,6 @@ def build_server(root: str, *, allow_approval: bool = True):
                             ],
                         )
 
-                    # Near-duplicate check (commontrace/redundancy.py), same
-                    # gate and same reasoning as the CLI's `lesson approve`
-                    # (commontrace/commands/lesson_cmd.py:run_approve): this
-                    # is the first point the lesson's real content exists
-                    # rather than template scaffolding, and the first point
-                    # activating it actually starts competing with the rest
-                    # of the corpus for a retrieval slot. An agent curating
-                    # unattended re-derives the same rule from a second
-                    # trace cluster and has no reason to notice the corpus
-                    # already has it -- this is the notice.
-                    #
-                    # No --force equivalent here, for the same reason the
-                    # guard check above has none: an agent approving its own
-                    # draft has no interactive human to confirm a deliberate
-                    # override. Edit the content to genuinely differentiate
-                    # it, or archive the other lesson, and call
-                    # approve_lesson again.
                     from commontrace.commands.lesson_cmd import _active_lesson_texts
 
                     duplicate = redundancy.closest(
@@ -1465,9 +1204,6 @@ def build_server(root: str, *, allow_approval: bool = True):
         """
         import dataclasses
 
-        # commontrace/evidence.py:analyse is the one place the local
-        # experiment is computed, so this report and the evidence `retrieve`
-        # attaches to each lesson can never disagree.
         try:
             with _quiet():
                 analysis = evidence_mod.analyse(root)
@@ -1483,13 +1219,6 @@ def build_server(root: str, *, allow_approval: bool = True):
                      "correlation.",
             )
 
-        # SCOPED TO ONE RANDOMIZATION, matching `commontrace experiment` (the CLI
-        # report) and what the Hub already does in SQL. Without this, changing
-        # the holdout rate (which rotates the salt) makes every assignment ever
-        # logged pool into one comparison, which `integrity.audit` correctly
-        # flags as COMPROMISED even when the currently-running experiment is
-        # perfectly clean -- and the CLI and this tool would then disagree
-        # about the same store.
         rows, wanted_salt, n_other_salt = analysis.rows, analysis.wanted_salt, analysis.n_other_salt
         if not rows:
             return _ok(
@@ -1504,15 +1233,6 @@ def build_server(root: str, *, allow_approval: bool = True):
         report, effects = analysis.report, analysis.effects
         return _ok(
             running=True,
-            # NOT `rate` from `_load()` above -- that is an average over
-            # `all_rows`, every randomization ever logged, computed before
-            # the scoping just above happened. Everything else returned here
-            # (n_assignments/effects/report) is scoped to `rows` (the
-            # current salt only); a rate blended across old and new
-            # randomizations would silently disagree with them, the exact
-            # class of bug this tool's own salt-scoping fix exists to
-            # prevent -- one field over. `rows` is non-empty here (guarded
-            # by `if not rows` above).
             holdout_rate=sum(r.rate for r in rows) / len(rows),
             n_assignments=report.n_assignments,
             n_resolved=report.n_resolved,
@@ -1544,11 +1264,6 @@ def build_server(root: str, *, allow_approval: bool = True):
         """
         try:
             traces = load_trace_candidates(root, None)
-            # One disk read, not two: all_lessons (status=None) is a strict
-            # superset of the active-only list build_taxonomy needs, so the
-            # active subset is filtered in memory with the same rule
-            # evidence_io.load_active_lessons applies internally, instead of
-            # re-globbing and re-parsing every lesson_*.md a second time.
             all_lessons = evidence_io.load_active_lessons(root, status=None)
             lessons = [lesson for lesson in all_lessons if (lesson.get("status") or "active") == "active"]
             tax = taxonomy.build_taxonomy(traces, lessons)

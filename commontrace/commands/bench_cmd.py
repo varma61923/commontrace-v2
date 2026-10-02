@@ -64,7 +64,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
              "corpus (commontrace/fixtures/fields/): precision@1, recall@k, MRR, and the "
              "pollution ratio that turns retrieval imprecision into a wrong causal "
              "verdict. This is what keeps 'works for any agent type' a tested property "
-             "rather than a claim -- see benchmark/STATUS.md.",
+             "rather than a claim.",
     )
     p.add_argument(
         "--max-pollution", type=float, default=None,
@@ -106,14 +106,6 @@ def run(args: argparse.Namespace) -> int:
         )
     if args.pilot:
         if args.strict:
-            # pilot_metrics.py has no --strict flag and implements no
-            # threshold-based pass/fail logic at all -- it only reports
-            # baseline-vs-current numbers. Silently dropping --strict here
-            # (never forwarding it) meant `bench --pilot --strict` in a CI
-            # regression gate ALWAYS exited 0, regardless of what the pilot
-            # metrics actually showed: the gate looked wired up and enforced
-            # nothing. Refusing outright is safer than accepting a flag this
-            # mode cannot honor.
             print(
                 "[commontrace] --strict is not supported with --pilot: pilot_metrics.py "
                 "reports baseline-vs-current numbers but implements no threshold-based "
@@ -166,13 +158,6 @@ def run(args: argparse.Namespace) -> int:
         extra += [f"--threshold-unimodal={args.threshold_unimodal}"]
     if args.threshold_semantic is not None:
         extra += [f"--threshold-semantic={args.threshold_semantic}"]
-    # These three used to be accepted here, forwarded, and then read by
-    # nothing -- a fleet could set a quality gate, watch it never fire, and
-    # conclude quality was fine. The warning that stood here said
-    # "implement or delete them deliberately; do not leave them quiet";
-    # they are now implemented (measure_performance.py:
-    # compute_lexical_duplicates / compute_freshness / compute_composite),
-    # each raising a real alert and, under --strict, a real non-zero exit.
     for flag, value in (
         ("--threshold-lexical", args.threshold_lexical),
         ("--threshold-freshness", args.threshold_freshness),

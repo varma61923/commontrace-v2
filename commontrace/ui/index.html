@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>CommonTrace console</title>
+  <link rel="icon" href="/ui/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/ui/app.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="bar">
+    <div class="brand"><img src="/ui/favicon.svg" alt="" width="28" height="28"><span>CommonTrace</span></div>
+    <span id="env" class="chip" hidden></span>
+    <span class="spacer"></span>
+    <p id="conn" class="conn" role="status" aria-live="polite">Connecting…</p>
+    <label class="theme"><span class="sr">Theme</span>
+      <select id="theme">
+        <option value="system">System</option>
+        <option value="light">Light</option>
+        <option value="dark">Dark</option>
+      </select>
+    </label>
+  </header>
+  <nav class="tabs" aria-label="Console sections" id="nav"></nav>
+  <main id="main" tabindex="-1"></main>
+  <script src="/ui/app.js"></script>
+</body>
+</html>

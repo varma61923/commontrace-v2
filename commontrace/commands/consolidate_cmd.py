@@ -66,8 +66,6 @@ _SPLIT = (
 
 
 def _draft_from_pair(root: str, by_slug: dict, a: str, b: str, kind: str) -> str | None:
-    """Write one review-status draft for a fuse pair or contradiction.
-    Returns the draft slug, or None when it was skipped (with a reason)."""
     slug = f"{lesson_io.canonical_slug(a)}-{kind}-{lesson_io.canonical_slug(b)}"[:120]
     out_path = os.path.join(paths.lessons_dir(root), f"lesson_{slug}.md")
     if os.path.exists(out_path):

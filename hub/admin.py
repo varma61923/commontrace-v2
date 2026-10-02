@@ -57,6 +57,7 @@ from __future__ import annotations
 import hmac
 import html
 import logging
+import uuid
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
@@ -68,7 +69,7 @@ from starlette.responses import HTMLResponse, Response
 
 from hub import audit as audit_module
 from hub import auth, crud, events, manage, plans, rbac, retention, scopes
-from hub.abuse import RateLimiter, rate_limit_key
+from hub.abuse import RateLimiter, make_named_limiter, rate_limit_key
 from hub.config import HubConfig
 from hub.db import session_scope
 from hub.models import (
@@ -85,28 +86,15 @@ from hub.models import (
 logger = logging.getLogger("commontrace.hub.admin")
 
 ADMIN_PATH = "/admin"
-# Every moderation decision made here writes the same audit row the CLI path
-# writes, under an actor that says which surface it came from -- so "who
-# published this entry" is answerable after the fact, and a console decision
-# is distinguishable from a terminal one.
 _ADMIN_ACTOR = "operator-console"
 _REALM = "CommonTrace Hub operator console"
 
-# How many rows each list renders. A console is for noticing, not for bulk
-# export -- an unbounded query here would be a way to turn one page load
-# into a full table scan of every tenant's traces.
 _MAX_ROWS = 200
 _AUDIT_ROWS = 40
 
 
 def h(value: object) -> str:
-    """Escape anything before it reaches the page.
-
-    `quote=True` so the result is safe inside an attribute as well as in
-    text. See this module's docstring: the content passing through here is
-    customer-supplied and the reader is the one operator with cross-tenant
-    visibility.
-    """
+    """Escape anything before it reaches the page."""
     return html.escape("" if value is None else str(value), quote=True)
 
 
@@ -121,11 +109,8 @@ def _num(value: object) -> str:
 
 
 def _limit(value: object) -> str:
-    """A plan limit, where UNLIMITED is a sentinel rather than a number."""
     return "unlimited" if value == plans.UNLIMITED else _num(value)
 
-
-# --- Chrome -----------------------------------------------------------------
 
 _CSS = """
 :root{
@@ -245,19 +230,6 @@ form.stack input:focus-visible,form.stack textarea:focus-visible{
 
 
 def auto_refresh_script(seconds: int) -> str:
-    """A dependency-free "this page is live" mechanism: reloads on a
-    timer, so an operator watching for a queue to grow or a rate to
-    climb (this console's whole reason to exist -- see the module
-    docstring's "actually needs, which is *noticing*") does not have to
-    remember to hit reload.
-
-    Skipped, and retried shortly after, while the visitor has a form
-    control focused -- a background reload that wiped a half-typed
-    reason or subject id would make "live" read as "broken", and this
-    page has more forms on it than most. Scroll position round-trips
-    through sessionStorage because a plain reload otherwise snaps back
-    to the top of what can be a long page.
-    """
     return (
         "<script>(function(){"
         "var KEY='ct-scroll-'+location.pathname+location.search,PAUSE='ct-live-paused',timer=null;"
@@ -270,9 +242,6 @@ def auto_refresh_script(seconds: int) -> str:
         "btn.setAttribute('aria-pressed',p?'true':'false');}"
         "function isEditing(){var el=document.activeElement;"
         "return !!el&&(el.tagName==='INPUT'||el.tagName==='TEXTAREA'||el.tagName==='SELECT');}"
-        # A tab nobody is looking at does not reload: it waits until it is
-        # shown again, instead of re-running the page's queries (up to 1.4s
-        # of statistics on the console overview) every few seconds forever.
         "function tick(){if(paused())return;"
         "if(document.hidden){document.addEventListener('visibilitychange',function v(){"
         "if(!document.hidden){document.removeEventListener('visibilitychange',v);tick();}});return;}"
@@ -287,12 +256,6 @@ def auto_refresh_script(seconds: int) -> str:
 
 
 def live_badge(seconds: int) -> str:
-    """The header's "live" marker for an auto-refreshing page, and the
-    control that pauses it. WCAG 2.2.1 asks that a time limit -- here, a
-    reload every few seconds -- can be turned off: someone reading slowly,
-    or with a screen reader, loses their place on every reload. The button
-    stays hidden unless the refresh script runs, and the choice is kept for
-    every page in this browser."""
     if not seconds:
         return ""
     return (
@@ -302,29 +265,6 @@ def live_badge(seconds: int) -> str:
     )
 
 
-# Every form here is POST-then-redirect (see _back's own comment), so a
-# double click or an impatient second click while the first request is
-# still in flight would fire the SAME mutation twice before either
-# response comes back -- harmless for an idempotent one, but a second
-# "issue a key" or "purge" click is not a no-op. Marking the form as
-# in-flight and cancelling any SECOND submit closes that window without a
-# network call of its own; the browser's native first submit proceeds
-# untouched.
-#
-# It deliberately does NOT disable the clicked button, which is what an
-# earlier version of this guard did. A disabled control is barred from
-# form submission, so disabling the submitter drops its own name/value
-# pair -- and a multi-button form carries its ACTION there
-# (`<button name="vote" value="up">`). That silently turned "vote up"
-# into a request with no vote at all. Caught in a real browser; every
-# test here posts with httpx, which runs no JavaScript and so could not
-# have seen it. The class is cosmetic precisely so that nothing about
-# what gets submitted depends on this script running.
-#
-# It also carries the pages' two other behaviours, so that no page needs an
-# inline event handler (which the Content-Security-Policy below forbids):
-# a form with `data-confirm` asks first, and a read-only input with
-# `data-autoselect` selects itself on click, for copying a key or link.
 _FORM_GUARD_SCRIPT = (
     "<script>document.addEventListener('submit',function(ev){"
     "var f=ev.target;"
@@ -350,10 +290,6 @@ _FORM_GUARD_SCRIPT = (
 
 
 def secret_field(value: str, label_id: str) -> str:
-    """A shown-once value (API key, signing secret, share link): read-only,
-    selected on click, labelled by the element `label_id`, with a Copy
-    button. The button starts hidden and `_FORM_GUARD_SCRIPT` reveals it, so
-    a browser without script never shows a button that does nothing."""
     return (
         '<div class="copy-row">'
         f'<input type="text" readonly aria-labelledby="{h(label_id)}" value="{h(value)}" '
@@ -364,14 +300,7 @@ def secret_field(value: str, label_id: str) -> str:
 
 
 def content_security_policy(*scripts: str) -> str:
-    """A Content-Security-Policy that lets exactly these inline scripts run.
-
-    Every page here is server-rendered with its scripts inline, so the
-    policy allows each by its SHA-256 and nothing else: text that escaped
-    `h()` by some future mistake still could not run. Styles stay inline
-    (style attributes cannot be hashed), and forms may post only to this
-    origin or to Stripe, where the billing buttons redirect.
-    """
+    """A Content-Security-Policy that lets exactly these inline scripts run."""
     import base64
     import hashlib
     import re
@@ -390,20 +319,13 @@ def content_security_policy(*scripts: str) -> str:
     )
 
 
-# Headers every HTML page here sends: the policy above, and no caching --
-# this is live tenant data, and a cached copy in a shared browser is one
-# more place it sits at rest.
 def html_headers(*scripts: str, referrer: str = "same-origin") -> dict[str, str]:
     return {
         "Cache-Control": "no-store, private", "Referrer-Policy": referrer,
         "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY",
         "Content-Security-Policy": content_security_policy(*scripts),
-        # A window another site opened (or that opened this one) gets no
-        # handle to it, and no other origin can load it as a subresource.
         "Cross-Origin-Opener-Policy": "same-origin",
         "Cross-Origin-Resource-Policy": "same-origin",
-        # Nothing here uses these; a script injected despite the CSP gets
-        # none of them either.
         "Permissions-Policy": "camera=(), microphone=(), geolocation=(), usb=(), payment=()",
     }
 
@@ -412,19 +334,7 @@ _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 
 def cross_origin_refused(request: Request) -> bool:
-    """Whether a state-changing request came from another origin's page.
-
-    The console's session cookie is `SameSite=Strict`, which keeps it off
-    requests from other *sites* -- but a page on a sibling subdomain (a
-    user-content host, a staging app, anything under the same registrable
-    domain) is the same site, gets the cookie attached, and could post a
-    console form in a signed-in user's name. The browser says where a
-    request came from: `Sec-Fetch-Site` on every current browser, and
-    `Origin` on older ones, which is compared with the Host it was sent to
-    (the same two-step check as Go's net/http CrossOriginProtection). A
-    request carrying neither is not a browser's cross-origin form post and
-    goes through: the session cookie still has to be valid.
-    """
+    """Whether a state-changing request came from another origin's page."""
     if request.method in _SAFE_METHODS:
         return False
     site = request.headers.get("sec-fetch-site")
@@ -436,13 +346,37 @@ def cross_origin_refused(request: Request) -> bool:
     return urlsplit(origin).netloc.lower() != request.headers.get("host", "").lower()
 
 
-def refuse_cross_origin(handler):
-    """`handler`, answering 403 to a cross-origin state-changing request
-    (see `cross_origin_refused`) instead of acting on it."""
+def malformed_id_param(request: Request) -> str | None:
+    """The name of a `*_id` path parameter that is not a UUID, else None."""
+    for name, value in request.path_params.items():
+        if not name.endswith("_id"):
+            continue
+        try:
+            uuid.UUID(str(value))
+        except ValueError:
+            return name
+    return None
 
+
+def require_uuid_params(handler):
+    """`handler`, answering 404 when a `*_id` path parameter is not a UUID."""
+
+    async def guarded(request: Request) -> Response:
+        if malformed_id_param(request):
+            return Response("not found", status_code=404)
+        return await handler(request)
+
+    guarded.__name__ = getattr(handler, "__name__", "guarded")
+    guarded.__doc__ = handler.__doc__
+    return guarded
+
+
+def refuse_cross_origin(handler):
     async def guarded(request: Request) -> Response:
         if cross_origin_refused(request):
             return Response("cross-origin request refused", status_code=403)
+        if malformed_id_param(request):
+            return Response("not found", status_code=404)
         return await handler(request)
 
     guarded.__name__ = getattr(handler, "__name__", "guarded")
@@ -477,36 +411,6 @@ def _cmd(what: str, command: str) -> str:
     return f'<div class="cmd"><div class="what">{h(what)}</div><code>{h(command)}</code></div>'
 
 
-# --- Auth -------------------------------------------------------------------
-
-
-# WHICH ACTIONS THIS CONSOLE MAY PERFORM
-# --------------------------------------
-# The original rule here was "read-only, everything else is CLI". That was
-# right about the destructive actions and wrong about moderation, and the
-# difference is reversibility:
-#
-#   IRREVERSIBLE or CREDENTIAL-BEARING -> stays in the CLI.
-#     purge-org destroys one customer's entire history for good; issue-key
-#     and rotate-key render a live credential that would then sit in browser
-#     history, the page cache, and any screenshot. A hijacked console session
-#     must not reach these.
-#
-#   REVERSIBLE MODERATION -> belongs here.
-#     Accepting a submission publishes an entry that kb-retract withdraws;
-#     retract and restore are an explicitly reversible pair. These are also
-#     the HIGH-FREQUENCY actions: a Knowledge Base is only as good as its
-#     review queue, and a queue that can only be worked from a terminal is a
-#     queue that does not get worked. Every one of them writes the same audit
-#     row the CLI path writes.
-#
-# CSRF matters specifically because auth here is HTTP Basic: a browser
-# re-sends those credentials on a cross-site form POST, so a mutating
-# endpoint without a token is forgeable by any page the operator visits while
-# authenticated. The token below is an HMAC of the action and its target
-# under the admin secret -- unforgeable without that secret, and scoped so a
-# token minted for "reject submission X" cannot be replayed as "approve
-# submission Y".
 def _flash_sig(admin_token: str, message: str) -> str:
     return hmac.new(
         admin_token.encode(), b"flash\0" + message.encode(), "sha256").hexdigest()[:32]
@@ -524,13 +428,6 @@ def _csrf_ok(admin_token: str, action: str, target: str, presented: str) -> bool
 
 
 def _same_site(request: Request) -> bool:
-    """Reject a cross-site form post outright where the browser tells us.
-
-    Defence in depth behind the HMAC, not instead of it: `Sec-Fetch-Site` is
-    set by current browsers and cannot be forged by page script, but it is
-    absent on older ones -- so a missing header is allowed through to the
-    token check rather than treated as an attack.
-    """
     site = request.headers.get("sec-fetch-site")
     return site in (None, "", "same-origin", "same-site", "none")
 
@@ -544,21 +441,6 @@ def _unauthorized() -> Response:
 
 
 def _authorized(request: Request, token: str) -> bool:
-    """HTTP Basic, checked in constant time.
-
-    Basic rather than a login form and a session cookie: this console is
-    read-only, so there is no state-changing request for a cookie to be
-    replayed against, and skipping sessions entirely means there is no
-    session fixation, no CSRF token to get wrong, and nothing to invalidate
-    on logout. The browser handles the credential prompt, and the credential
-    travels exactly as the Hub's existing bearer tokens do -- which is why
-    the Hub refuses to serve a non-loopback bind without an explicit
-    acknowledgment that TLS terminates in front (hub/config.py).
-
-    The username is ignored; the password is the shared operator token.
-    `hmac.compare_digest` rather than `==` so a wrong token cannot be
-    recovered a character at a time from response timing.
-    """
     header = request.headers.get("authorization", "")
     if not header.lower().startswith("basic "):
         return False
@@ -573,17 +455,7 @@ def _authorized(request: Request, token: str) -> bool:
     return hmac.compare_digest(presented, token)
 
 
-# --- Data -------------------------------------------------------------------
-
-
 async def _overview(session) -> dict:
-    """Fleet-wide counts plus a row per org. One query per fact, not one per
-    org: an operator with fifty tenants should not pay fifty round trips to
-    load a page they open all day."""
-    # Bounded like every other list here. An operator with thousands of
-    # tenants should not have one page load render all of them -- and an
-    # unbounded query on the page an operator leaves open all day is a slow
-    # self-inflicted load problem.
     orgs = (await session.execute(
         select(Organization).order_by(Organization.name).limit(_MAX_ROWS)
     )).scalars().all()
@@ -624,15 +496,6 @@ async def _overview(session) -> dict:
         "orgs": rows,
         "total_orgs": total_orgs,
         "truncated": total_orgs > len(rows),
-        # Summed from the *_by_org dicts, not `rows`: those group-by queries
-        # are already unrestricted across every org (no `orgs` join, no
-        # _MAX_ROWS on them), so they hold the true fleet-wide counts. `rows`
-        # covers only the first _MAX_ROWS organizations by name -- summing
-        # from it silently undercounted these three tiles the moment an
-        # operator had more than _MAX_ROWS organizations, with no truncation
-        # notice near the tiles to say so (the one that exists is below the
-        # per-org table, nowhere near the top-line summary an operator scans
-        # first).
         "total_traces": sum(traces_by_org.values()),
         "total_quarantined": sum(quarantined_by_org.values()),
         "total_keys": sum(keys_by_org.values()),
@@ -682,15 +545,6 @@ async def _org_detail(session, org_id: str) -> dict | None:
 
 
 async def _kb_data(session) -> dict:
-    """Everything the Knowledge Base page renders, in one pass.
-
-    `pending` reads the submission table directly rather than through
-    crud.list_kb_submissions because the operator needs one field that
-    projection deliberately omits: WHICH ORG proposed it. That omission is
-    right for the customer-facing tool (an org has no business knowing who
-    else submits) and wrong here -- accepting credits that org's allowance,
-    so the reviewer has to see it.
-    """
     corpus = int(await session.scalar(
         select(func.count()).select_from(Trace).where(*crud.commons_visible())
     ) or 0)
@@ -740,19 +594,8 @@ async def _kb_data(session) -> dict:
         "pending": pending, "pending_total": pending_total,
         "retracted": retracted, "retracted_total": retracted_total,
     }
-    # A summary tile from the CAPPED list above (len(queue)) would silently
-    # read as a total and stop matching the actual queue size past
-    # _MAX_ROWS, exactly like the overview page's fleet-wide tiles once did
-    # (see _overview's fix) -- queue_total is the true, unbounded count
-    # behind the same classification `queue` (bounded, for the table below)
-    # already uses. One call, not kb_review_queue + count_kb_review_queue
-    # separately: each independently re-runs the same Trace + Vote queries
-    # this dashboard load would otherwise pay for twice.
     queue, queue_total = await crud.kb_review_queue_and_total(session, limit=_MAX_ROWS)
     return {**result, "queue": queue, "queue_total": queue_total}
-
-
-# --- Rendering --------------------------------------------------------------
 
 
 def _render_overview(data: dict, admin_token: str, flash: str = "", fresh_key: str = "") -> str:
@@ -1336,16 +1179,6 @@ def _render_org(d: dict, admin_token: str, flash: str = "", fresh_key: str = "")
 
 
 def _render_kb(data: dict, admin_token: str, operator_org_id: str, flash: str = "") -> str:
-    """The Knowledge Base page: the ONE place orgs and the Hub exchange
-    anything, and the only surface where content crosses an org boundary --
-    which it does by passing through an operator, never directly.
-
-    Written to make that boundary legible rather than assumed. An operator
-    reading this page should be able to see, without opening the source,
-    that a customer proposes and an operator publishes; that what gets
-    published is owned by the operator's org and not the submitter's; and
-    that nothing a customer sends is visible to anyone until that happens.
-    """
     corpus, hits = data["corpus"], data["hits"]
     pending, queue, retracted = data["pending"], data["queue"], data["retracted"]
     pending_total = data.get("pending_total", len(pending))
@@ -1376,7 +1209,6 @@ def _render_kb(data: dict, admin_token: str, operator_org_id: str, flash: str = 
         '</div>'
     )
 
-    # --- Proposals awaiting a decision ------------------------------------
     if pending:
         cards = []
         for s in pending:
@@ -1428,7 +1260,6 @@ def _render_kb(data: dict, admin_token: str, operator_org_id: str, flash: str = 
         pending_html = ('<p class="empty">No proposals waiting. Orgs propose entries with '
                         '<code>commontrace commons submit</code>.</p>')
 
-    # --- Published entries that need a human ------------------------------
     if queue:
         rows = []
         for e in queue:
@@ -1455,7 +1286,6 @@ def _render_kb(data: dict, admin_token: str, operator_org_id: str, flash: str = 
     else:
         queue_html = '<p class="empty">Nothing published needs a decision right now.</p>'
 
-    # --- Retracted -------------------------------------------------------
     if retracted:
         rows = []
         for e in retracted:
@@ -1501,9 +1331,6 @@ def _render_kb(data: dict, admin_token: str, operator_org_id: str, flash: str = 
     )
 
 
-# --- Wiring -----------------------------------------------------------------
-
-
 def add_admin_routes(
     app,
     session_factory: async_sessionmaker,
@@ -1514,36 +1341,13 @@ def add_admin_routes(
     operator_org_id: str = "",
     config: HubConfig | None = None,
 ) -> None:
-    """Register the console. Call ONLY when an admin token is configured.
-
-    hub/server.py does not call this at all when `HUB_ADMIN_TOKEN` is unset,
-    so a deployment that has not opted in has no /admin route to find --
-    the same "absent, not merely refused" treatment the Knowledge Base tools
-    get from `HUB_COMMONS_ENABLED`. An unauthenticated prober gets a 404 from
-    the router, which is a stronger property than a 401 from a handler.
-
-    `config` is only needed for the "Amend a trace" form, which calls
-    `manage.amend_trace` -- the one action here that validates and stores
-    trace content (`crud.amend_trace`'s size/rate limits), unlike every
-    other handler, which only ever touches rows that already exist.
-    Passing it explicitly, rather than letting `manage.amend_trace` fall
-    back to its own `HubConfig.from_env()`, matters specifically for
-    tests: they build a `HubConfig` from fixtures and never set
-    `HUB_DATABASE_URL` as a real process environment variable, so that
-    fallback raises in exactly the harness this module's own tests run
-    in. `None` (the default) preserves the pre-existing from-env fallback
-    for a caller that has no config object handy.
-    """
+    """Register the console. Call ONLY when an admin token is configured."""
     if not admin_token:
         raise ValueError("add_admin_routes requires a non-empty admin token")
 
-    limiter = rate_limiter or RateLimiter(per_minute=120, burst=30)
+    limiter = rate_limiter or make_named_limiter(config, 120, 30, "admin_auth")
 
     async def _guard(request: Request) -> Response | None:
-        # Rate limited BEFORE the credential check, keyed by client address,
-        # for the same reason hub/server.py limits auth attempts: the compare
-        # is cheap here, but an unauthenticated endpoint that hits Postgres on
-        # every request is a lever without one.
         client_key = rate_limit_key(request, trusted_proxy_hops)
         allowed, retry_after = await limiter.check(client_key)
         if not allowed:
@@ -1560,9 +1364,6 @@ def add_admin_routes(
             data = await _overview(session)
         return _page(
             "Overview", _render_overview(data, admin_token, flash=flash, fresh_key=fresh_key),
-            # Never auto-refresh a page currently showing a just-issued,
-            # shown-once secret -- a reload before it's copied loses it
-            # for good, since this Hub keeps no other record of it.
             auto_refresh_seconds=0 if fresh_key else 20,
         )
 
@@ -1574,10 +1375,6 @@ def add_admin_routes(
         return await _overview_view(flash=flash)
 
     async def generate_encryption_key_route(request: Request) -> Response:
-        """A stateless utility -- see hub/encryption.py's generate_key. No
-        database write, no org, and nothing to audit: this changes
-        nothing until an operator sets the printed value as
-        HUB_ENCRYPTION_KEY themselves."""
         from hub.encryption import generate_key
 
         _form, _target, denied = await _moderate(request, "target", action_of="generate_encryption_key")
@@ -1590,19 +1387,10 @@ def add_admin_routes(
         if denied is not None:
             return denied
         org_id = request.path_params["org_id"]
-        # The id goes into a UUID column, so a malformed one raises at the
-        # driver rather than returning None. Caught here so a mistyped URL is
-        # a 404 page and not a 500 with a stack trace in the operator's face.
         try:
             async with session_scope(session_factory) as session:
                 data = await _org_detail(session, org_id)
         except SQLAlchemyError:
-            # org_id lands in a UUID column, so a mistyped URL is rejected by
-            # the column type itself and surfaces as a driver-level error
-            # rather than a None row (hub/manage.py's own main() catches the
-            # same class for the same reason). Narrow on purpose: a database
-            # outage must reach the error handler as an outage, not be
-            # reported to the operator as "no such organization".
             logger.info("admin: unresolvable org id in URL", extra={"org_id_len": len(org_id)})
             data = None
         if data is None:
@@ -1647,23 +1435,6 @@ def add_admin_routes(
         )
 
     async def _moderate(request: Request, target_field: str, action_of=None, *, require_commons=False):
-        """Shared front half of every mutating handler: authenticate, refuse
-        a cross-site post, then check the action-scoped CSRF token.
-
-        The token binds the action to its target, so `action_of` derives the
-        action from the parsed form -- the review handler's action is the
-        submitted decision itself, which means a token minted for "reject
-        this submission" cannot be replayed to approve it. The form has to be
-        read before the token can be checked, which is why the ordering here
-        is deliberate rather than incidental.
-
-        `require_commons` is the Knowledge Base handlers' own gate (KB
-        moderation is meaningless with `HUB_COMMONS_ENABLED=false`, since
-        there is no commons for a submission or an entry to belong to);
-        every other mutating handler below leaves it False.
-
-        Returns (form, target, None) to proceed, or (None, None, response).
-        """
         denied = await _guard(request)
         if denied is not None:
             return None, None, denied
@@ -1675,24 +1446,15 @@ def add_admin_routes(
         target = str(form.get(target_field, ""))
         action = action_of(form) if callable(action_of) else str(action_of)
         if not target or not _csrf_ok(admin_token, action, target, str(form.get("csrf", ""))):
-            # Deliberately terse: a caller that failed this check is either
-            # forging or replaying, and neither deserves a hint about which.
             return None, None, Response("invalid or missing request token", status_code=403)
         return form, target, None
 
     def _back(path: str, message: str) -> Response:
-        # POST-then-redirect: without it a reload re-submits the decision,
-        # and a moderation decision is not something to repeat by accident.
-        # The message rides in the URL, so it is signed: see _flash.
         from urllib.parse import quote
         return Response(status_code=303, headers={
             "Location": f"{path}?done={quote(message)}&sig={_flash_sig(admin_token, message)}"})
 
     def _flash(request: Request) -> str:
-        """The `done=` message, only if this console wrote it. Unsigned, any
-        link could make the operator console announce whatever its author
-        liked ("Key revoked.", "Call support on ...") to an operator whose
-        browser already holds the console's credentials."""
         message = request.query_params.get("done", "")[:500]
         signature = request.query_params.get("sig", "")
         if message and hmac.compare_digest(_flash_sig(admin_token, message), signature):
@@ -1710,9 +1472,6 @@ def add_admin_routes(
         if decision not in ("approve", "reject"):
             return Response("unknown decision", status_code=400)
         if decision == "approve" and not operator_org_id:
-            # Fails closed: publishing under the wrong org would put a
-            # customer's id on Knowledge Base content, which is the one
-            # mistake this boundary exists to prevent.
             return Response(
                 "refusing to publish: HUB_OPERATOR_ORG_ID is not set, so there is no "
                 "operator org to own the entry. Set it, or use "
@@ -1757,25 +1516,6 @@ def add_admin_routes(
             return _back(f"{ADMIN_PATH}/kb", "That entry is not currently withdrawn.")
         return _back(f"{ADMIN_PATH}/kb", "Restored. It is being served again.")
 
-    # --- Org-scoped mutations -----------------------------------------------
-    #
-    # Legal holds, retention policy, and quarantine release are all
-    # REVERSIBLE (a hold is released, a policy is cleared, a release does
-    # not delete anything), which is the line drawn in _render_overview's
-    # own note: reversible state changes get a button here, and what
-    # cannot be undone (`purge-org`, the digest-confirmed `retention-apply`)
-    # or would put a live credential in the browser (`issue-key`) stays in
-    # the CLI. Every handler below calls the SAME `hub/retention.py`
-    # functions the CLI does, audited as `_ADMIN_ACTOR` rather than
-    # `operator-cli` -- the same distinction kb_review/_retract/_restore
-    # already draw above.
-    #
-    # CSRF tokens here bind to the ORG rather than to each row the way KB's
-    # tokens bind to one submission/entry: an operator viewing one org's
-    # page is already scoped to that org, and the threat this defends
-    # against is a forged cross-site POST, not one row's token being
-    # replayed against a sibling row in the SAME org the operator is
-    # already looking at.
 
     async def quarantine_release(request: Request) -> Response:
         _form, trace_id, denied = await _moderate(
@@ -1887,10 +1627,6 @@ def add_admin_routes(
         return _back(f"{ADMIN_PATH}/org/{org_id}", "Retention policy cleared.")
 
     async def create_org(request: Request) -> Response:
-        """Additive and reversible in the sense that matters here: there is
-        nothing yet on a brand-new org for a mistaken click to lose. Unlike
-        purge-org, undoing a wrong create-org is `purge-org` on an org with
-        zero traces, keys, or history -- a fundamentally different risk."""
         form, _target, denied = await _moderate(request, "target", action_of="create_org")
         if denied is not None:
             return denied
@@ -1935,14 +1671,6 @@ def add_admin_routes(
             )
         return _back(f"{ADMIN_PATH}/org/{org_id}", f"Plan changed: {was} → {key}.")
 
-    # --- Users, SSO linking, and subject rights -----------------------------
-    #
-    # All reversible: a role can be set again, disable/enable round-trips,
-    # SSO link/unlink round-trips, and tagging a trace's subjects REPLACES
-    # rather than accumulates (same idempotent-under-retry shape
-    # crud.tag_trace_subjects already gives set_user_role). Erasing a
-    # subject's traces (`purge-subject-traces`) is the one irreversible
-    # action in this family and stays CLI-only, same as purge-org.
 
     async def users_create(request: Request) -> Response:
         form, org_id, denied = await _moderate(request, "org_id", action_of="create_user")
@@ -2087,20 +1815,6 @@ def add_admin_routes(
         return _back(
             f"{ADMIN_PATH}/org/{org_id}", f"Tagged with {len(result['subject_ids'])} subject id(s).")
 
-    # --- Issuing/rotating/revoking keys, and the irreversible danger zone --
-    #
-    # Issuing and rotating are shown-once, never-cached (this whole
-    # console sends Cache-Control: no-store) -- the same property that
-    # already made hub/console.py's customer-facing key issuance safe to
-    # ship. Needed here specifically for onboarding: a brand-new org has
-    # no key yet, so it cannot sign into ITS OWN console to issue one.
-    #
-    # purge-trace/purge-org/purge-subject-traces retype the exact
-    # id/name being destroyed -- a STRONGER confirmation than the CLI's
-    # own `_confirm_destructive` (which only asks for the literal word
-    # "yes"), on top of the same CSRF token every other mutation here
-    # requires. Every one of them calls the SAME hub/manage.py or
-    # hub/crud.py function the CLI does.
 
     async def _org_view(org_id: str, admin_token: str, *, flash: str = "", fresh_key: str = "") -> Response:
         async with session_scope(session_factory) as session:
@@ -2111,8 +1825,6 @@ def add_admin_routes(
                                       f'<a href="{ADMIN_PATH}">Back to the overview</a>.</p></section>')
         return _page(
             data["org"].name, _render_org(data, admin_token, flash=flash, fresh_key=fresh_key),
-            # Same rule as the overview page: never auto-refresh out from
-            # under a shown-once secret.
             auto_refresh_seconds=0 if fresh_key else 25,
         )
 
@@ -2147,13 +1859,16 @@ def add_admin_routes(
         if key is None:
             return _back(ADMIN_PATH, "No such key.")
         org_id = key.org_id
-        async with session_scope(session_factory) as session:
-            issued = await auth.rotate_api_key(session, key_id)
-            await audit_module.record(
-                session, actor=_ADMIN_ACTOR, action="rotate_key",
-                org_id=org_id, target_type="api_key", target_id=issued.key_id,
-                summary=f"replaces={key_id}",
-            )
+        try:
+            async with session_scope(session_factory) as session:
+                issued = await auth.rotate_api_key(session, key_id)
+                await audit_module.record(
+                    session, actor=_ADMIN_ACTOR, action="rotate_key",
+                    org_id=org_id, target_type="api_key", target_id=issued.key_id,
+                    summary=f"replaces={key_id}",
+                )
+        except ValueError as exc:
+            return _back(f"{ADMIN_PATH}/org/{org_id}", f"Not rotated: {exc}")
         return await _org_view(org_id, admin_token, fresh_key=issued.raw_key)
 
     async def keys_revoke(request: Request) -> Response:

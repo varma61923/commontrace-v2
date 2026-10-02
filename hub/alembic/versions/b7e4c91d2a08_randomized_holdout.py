@@ -1,17 +1,4 @@
-"""randomized holdout: per-org experiment config + observations
-
-Adds the only structure in the Hub that supports a causal claim
-(`holdout_observations`) plus the two Organization columns that configure
-one experiment per org (`holdout_rate`, `holdout_salt`).
-
-`holdout_rate` defaults to 0.0, so this migration starts no experiment for
-anyone. That is deliberate: a migration that silently began withholding
-memory from every existing customer's agents would change their product's
-behaviour without anyone deciding to.
-
-Revision ID: b7e4c91d2a08
-Revises: 8f2b40c17ade
-"""
+"""randomized holdout: per-org experiment config + observations"""
 from typing import Sequence, Union
 
 import sqlalchemy as sa
@@ -42,10 +29,6 @@ def upgrade() -> None:
             sa.ForeignKey("organizations.id", ondelete="CASCADE"),
             nullable=False,
         ),
-        # Not an FK: a trace can be deleted, and a dangling FK would either
-        # block that deletion or erase the measurement it belongs to. An
-        # observation about a since-deleted trace is still a valid data
-        # point about the experiment that ran.
         sa.Column("trace_id", postgresql.UUID(as_uuid=False), nullable=False),
         sa.Column("occasion_id", sa.String(length=128), nullable=False),
         sa.Column("injected", sa.Boolean(), nullable=False),

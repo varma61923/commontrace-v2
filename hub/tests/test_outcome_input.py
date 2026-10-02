@@ -1,32 +1,3 @@
-"""`Trace.outcome` must actually be settable, or `fleet_outcomes` has
-nothing to measure.
-
-Before this file's fix, `contribute_trace` had no `outcome` parameter at
-all -- not merely unvalidated, genuinely absent from both the crud.py
-function and the MCP tool signature -- despite hub/README.md and
-hub/outcomes.py's own `_is_bool` docstring both stating flatly that
-"contribute_trace writes all of it" / "contribute_trace accepts the
-outcome object largely as given". `amend_trace` only ever carried the
-original's outcome forward unchanged (`outcome=dict(original.outcome or
-{})`), with no override parameter either. `hub/bench_scaling.py`'s raw-SQL
-seed script and test fixtures that build a `Trace(...)` ORM object
-directly were the ONLY things that ever produced a non-empty outcome dict
--- so for any real customer, calling any documented, MCP-exposed tool,
-`fleet_outcomes` could only ever report "No baseline window recorded, so
-there is nothing to compare against", forever, regardless of how their
-fleet actually performed. `outcomes.py`'s statistics, `fleet_outcomes`'s
-SQL aggregation, and this file's sibling `test_fleet_outcomes.py` were all
-correct and all tested -- against an input path that did not exist.
-
-This file tests the input side specifically: that `outcome` is now
-actually accepted, validated the same way every other malformed-input case
-in this Hub already is, merged (not replaced) on amend, correctly
-idempotency-hashed, and -- the test that proves the loop is actually
-closed -- that a `fleet_outcomes` report built entirely from
-`contribute_trace` calls made through this module's own public API, with
-no direct ORM construction anywhere, comes back with real data instead of
-"nothing to compare against".
-"""
 from __future__ import annotations
 
 import pytest
@@ -86,19 +57,11 @@ class TestValidateOutcomeItself:
 
     @pytest.mark.parametrize("field", ["tokens_used", "llm_calls"])
     def test_a_numeric_field_rejects_a_bool(self, field):
-        """isinstance(True, int) is True in Python -- a resolved:true
-        misfiled under tokens_used would otherwise be averaged in as 1."""
         with pytest.raises(ValueError, match=field):
             outcomes.validate_outcome({field: True})
 
     @pytest.mark.parametrize("field", ["tokens_used", "llm_calls"])
     def test_a_numeric_field_rejects_a_float(self, field):
-        """[BUG-PROT-02]: protocol/schemas/trace.schema.json declares both
-        fields "type": ["integer", "null"], not "number" -- a float used to
-        pass this check, land in Postgres JSONB, and only fail the first
-        time anything actually re-validated the trace against the real
-        schema (e.g. a synced local copy through `commontrace trace
-        validate`), far from where the bad value was written."""
         with pytest.raises(ValueError, match=f"{field} must be an integer"):
             outcomes.validate_outcome({field: 1500.5})
 
@@ -122,13 +85,6 @@ class TestValidateOutcomeItself:
     @pytest.mark.parametrize("field", ["tokens_used", "llm_calls"])
     @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")], ids=["nan", "inf", "-inf"])
     def test_a_numeric_field_rejects_nan_and_infinity(self, field, bad):
-        """`value < 0` is False for both NaN (any IEEE 754 comparison with
-        NaN is False) and +Infinity, so the negative-value check alone
-        cannot catch either -- reproduced against a live Postgres before
-        this fix: a NaN reached a JSONB column and crashed uncaught with
-        asyncpg.exceptions.InvalidTextRepresentationError (Postgres's json
-        parser rejects the literal token `NaN`, which is what Python's
-        json.dumps produces for a NaN float by default)."""
         with pytest.raises(ValueError, match=field):
             outcomes.validate_outcome({field: bad})
 
@@ -176,12 +132,6 @@ class TestContributeTraceOutcome:
     async def test_a_nan_token_count_is_rejected_rather_than_reaching_postgres(
         self, session_factory, org, config
     ):
-        """Reproduced against a live Postgres before this fix: `nan < 0` is
-        False (any IEEE 754 comparison with NaN is False), so the
-        negative-value check alone let a NaN through, and it crashed
-        uncaught at the INSERT with asyncpg's InvalidTextRepresentationError
-        -- the same 500-instead-of-400 failure mode this whole module
-        exists to prevent, in code added earlier in this same fix."""
         rate_limiter = make_rate_limiter(config)
         async with session_scope(session_factory) as session:
             with pytest.raises(ValueError, match="tokens_used"):
@@ -253,10 +203,6 @@ class TestAmendTraceOutcome:
                 session, org, trace_id, config, rate_limiter,
                 outcome={"resolved": True}, actor="test",
             )
-        # Amending the HEAD of the chain (first["id"]), not the original
-        # trace_id again -- amend_trace never mutates anything in place, so
-        # re-amending trace_id would supersede the still-unmutated original
-        # (outcome still {}) rather than build on `first`.
         async with session_scope(session_factory) as session:
             result = await crud.amend_trace(
                 session, org, first["id"], config, rate_limiter,
@@ -341,18 +287,11 @@ class TestAmendTraceOutcome:
 
 
 class TestFleetOutcomesEndToEnd:
-    """The test that proves the loop is actually closed: build every trace
-    through contribute_trace's public API (no direct ORM construction, the
-    way hub/bench_scaling.py's seed script and every other fixture in this
-    test suite do it), and confirm fleet_outcomes reports real data instead
-    of 'nothing to compare against'."""
-
     async def test_fleet_outcomes_reports_real_data_from_contribute_trace_alone(
         self, session_factory, org, config
     ):
         rate_limiter = make_rate_limiter(config)
         async with session_scope(session_factory) as session:
-            # A baseline window: 10 traces, 5 resolved.
             for i in range(10):
                 await crud.contribute_trace(
                     session, org, config, rate_limiter,
@@ -360,7 +299,6 @@ class TestFleetOutcomesEndToEnd:
                     tags=[], agent_type="code", actor="test",
                     outcome={"resolved": i < 5, "baseline": True},
                 )
-            # The current window: 10 traces, 9 resolved -- a real improvement.
             for i in range(10):
                 await crud.contribute_trace(
                     session, org, config, rate_limiter,
@@ -375,10 +313,5 @@ class TestFleetOutcomesEndToEnd:
         resolution = next(m for m in report["metrics"] if m["field"] == "resolved")
         assert resolution["baseline"]["rate"] == pytest.approx(0.5)
         assert resolution["current"]["rate"] == pytest.approx(0.9)
-        # This is the assertion that would have failed against the old
-        # code: before the fix, EVERY trace's outcome was {} regardless of
-        # what was passed (there was nowhere to pass it), so baseline/
-        # current rates would both be None and n_baseline_traces would
-        # still show 10 traces existing while carrying no usable data.
         assert resolution["baseline"]["n"] == 10
         assert resolution["current"]["n"] == 10

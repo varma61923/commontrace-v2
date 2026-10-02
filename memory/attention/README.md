@@ -8,8 +8,7 @@ package**, at [`commontrace/reference/`](../../commontrace/reference/):
 | `query.py` — semantic retrieval over the embedding index | `commontrace query "<task>"` |
 | `build_index.py` — (re)build `index.npz` from active lessons | `commontrace index` |
 
-They were moved for the same reason the benchmark scripts were (see
-[`benchmark/README.md`](../../benchmark/README.md)): a plain
+They were moved for the same reason the benchmark scripts were: a plain
 `pip install commontrace[attention]` could install the extra and still not
 reach semantic retrieval, because the scripts shipped only in a repo
 checkout. `commontrace query` would choose the semantic path, fail to find

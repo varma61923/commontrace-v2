@@ -1,0 +1,113 @@
+{
+  "schema": 1,
+  "commontrace": "2.0.0",
+  "machine": {
+    "python": "3.11.15",
+    "platform": "Linux-6.18.44-fc-v50-x86_64-with-glibc2.39",
+    "cpus": 4
+  },
+  "activation": {
+    "fleet": "simulated support fleet, outcomes drawn by this script",
+    "seconds_to_first_trace": 0.26,
+    "seconds_to_first_active_lesson": 0.51,
+    "seconds_to_first_injected_lesson": 0.64,
+    "lesson_injected": true,
+    "seconds_to_compute_first_causal_verdict": 0.16,
+    "simulated_occasions": 800,
+    "seeded_effect": 0.15,
+    "verdict": "HELPS",
+    "occasions_needed_for_5pp_at_70pct_baseline_50pct_holdout": 2638
+  },
+  "query_latency": {
+    "lessons": 1000,
+    "runs": 40,
+    "process": "cold subprocess per query",
+    "p50_ms": 214.9,
+    "p95_ms": 282.0
+  },
+  "hub": {
+    "what": "per-request floor (auth + rate limit) under concurrency, not search latency",
+    "memory": {
+      "1": {
+        "rps": 265,
+        "p95_ms": 5.5
+      },
+      "8": {
+        "rps": 402,
+        "p95_ms": 26.5
+      },
+      "32": {
+        "rps": 296,
+        "p95_ms": 230.3
+      }
+    },
+    "postgres": {
+      "1": {
+        "rps": 94,
+        "p95_ms": 14.4
+      },
+      "8": {
+        "rps": 108,
+        "p95_ms": 99.7
+      },
+      "32": {
+        "rps": 116,
+        "p95_ms": 447.8
+      }
+    }
+  },
+  "install": {
+    "targets": {
+      "claude-code": true,
+      "cursor": true,
+      "devin": true,
+      "windsurf": true,
+      "generic-mcp": true,
+      "generic": true
+    },
+    "success": 6,
+    "of": 6
+  },
+  "cold_start": {
+    "what": "fresh venv: pip install . -> init -> proof wizard --yes -> gateway -> first POST /v1/recall returning a holdout assignment",
+    "seconds_pip_install": 11.6,
+    "seconds_init_and_proof_start": 0.3,
+    "seconds_gateway_to_first_assignment": 1.5,
+    "seconds_total": 13.4,
+    "target_seconds": 600,
+    "met": true,
+    "note": "this machine, warm pip cache for dependencies; a customer on a slow link adds download time"
+  },
+  "signal_clustering": {
+    "what": "adjusted Rand index of failure signals vs labelled failure modes (commons/eval/signal_ari.py)",
+    "before": {
+      "method": "single-linkage word overlap, threshold 0.3",
+      "mean_ari": 0.23,
+      "seeds": 10
+    },
+    "after": {
+      "method": "stemmed IDF-weighted cosine, average linkage, threshold 0.15 (chosen on seeds 100-104)",
+      "mean_ari": 0.945,
+      "min_ari": 0.867,
+      "seeds": "0-19 held out"
+    },
+    "target": 0.8,
+    "met": true,
+    "caveat": "synthetic wording; the threshold is sensitive (0.2 gives 0.79); run `commontrace signals list` on real traces"
+  },
+  "outcome_detection": {
+    "what": "precision of SUCCESS calls on 60 hand-labelled cases (commons/eval/outcome_labelled.jsonl)",
+    "precision": 1.0,
+    "failure_precision": 1.0,
+    "decided_share": 0.8,
+    "target": 0.9,
+    "met": true,
+    "caveat": "written by the detectors' author: a regression suite for the stated rules, not evidence about a real fleet. Needs a design partner's labelled sample."
+  },
+  "draft_quality": {
+    "what": "share of model drafts that pass the approval gates as written (commons/eval/draft_quality.py)",
+    "measured_with_a_model": false,
+    "target": 0.8,
+    "note": "needs COMMONTRACE_LLM_* and a price table; --drafter stub validates the harness only"
+  }
+}

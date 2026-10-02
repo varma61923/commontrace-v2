@@ -1,40 +1,4 @@
-"""webhook event export (endpoints and a durable delivery queue)
-
-Revision ID: e9b4c07d15a8
-Revises: d7f2a63b9c41
-Create Date: 2026-09-12 00:00:00.000000
-
-Everything this Hub knew was readable only by polling it, so a fleet that
-wanted to open a ticket on a quarantine or gate a deploy on an experiment
-verdict had to cron `hub/manage.py` and diff the output against last time.
-
-Two tables:
-
-  webhook_endpoints   where an org wants to be told, and which events it
-                      subscribed to. Note there is NO SECRET COLUMN: unlike
-                      an API key, which is only ever verified and so can be
-                      an argon2 hash, a webhook secret has to be USED on
-                      every delivery. It is derived per endpoint from the
-                      deployment's signing key plus id and key_version
-                      (hub/events.py), so a full dump of this table yields
-                      no ability to forge an event, and rotation bumps an
-                      integer rather than rewriting a stored secret.
-
-  webhook_deliveries  one durable, retried attempt to say one thing. The
-                      moments worth a webhook are precisely the ones a
-                      receiver cannot afford to miss because their load
-                      balancer was restarting, so this is a queue rather
-                      than a fire-and-forget call. Delivery is
-                      at-least-once and the envelope carries a stable
-                      event_id for deduplication.
-
-`payload` holds only the fields its event type declares -- ids, counts and
-verdicts, never trace content. A webhook is egress to a third party and
-that column is the one place where "just this once" would become permanent.
-
-Both carry org_id and get the row-level security d5c8b3a91e77 established.
-
-"""
+"""webhook event export (endpoints and a durable delivery queue)"""
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -64,9 +28,6 @@ def upgrade() -> None:
             sa.ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False,
         ),
         sa.Column("url", sa.String(2000), nullable=False),
-        # The subscribed subset, stored in full rather than as an empty
-        # "all" sentinel: adding a new event type must never silently start
-        # delivering it to endpoints that predate it.
         sa.Column(
             "events", postgresql.ARRAY(sa.String(64)),
             server_default="{}", nullable=False,
@@ -110,7 +71,6 @@ def upgrade() -> None:
     op.create_index(
         "ix_webhook_deliveries_endpoint_id", "webhook_deliveries", ["endpoint_id"]
     )
-    # The drain query, exactly: what is pending and due, oldest first.
     op.create_index(
         "ix_webhook_deliveries_due", "webhook_deliveries",
         ["status", "next_attempt_at"],

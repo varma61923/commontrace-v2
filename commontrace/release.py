@@ -1,63 +1,4 @@
-"""What the fleet was running, as one named, immutable thing.
-
-WHY THIS EXISTS
----------------
-This product had two of the three identities a deployable change needs and
-was missing the third:
-
-    lesson      a slug. Mutable: the same name, different text, over time.
-    revision    commontrace/revision.py -- content identity for ONE lesson,
-                so an experiment can say which text it measured.
-    release     absent.
-
-A revision answers "what did lesson X say?". Nothing answered "what was the
-fleet running?", and that is the question every operational conversation
-turns out to be about:
-
-  * **Rollback.** Something started going wrong on Tuesday. The remedy is
-    "put back what we had on Monday", and there was no Monday to put back --
-    only N lesson files, each of which would have to be reverted by hand, in
-    an order nobody recorded, with no way to tell when you were done.
-  * **Attribution.** An effect appeared after a batch of six lessons was
-    approved over an afternoon. Which six? `status: active` is a property of
-    each file NOW; it carries no memory of when the set changed or what it
-    changed from.
-  * **Atomicity.** Approving six lessons one at a time means the fleet runs
-    five intermediate combinations nobody chose and nobody measured. If the
-    fourth approval is the one that breaks something, the three states in
-    between are not reproducible.
-
-A Release is the missing identity: an immutable, content-addressed snapshot
-of exactly which (lesson, revision) pairs were active together, what it
-replaced, who cut it and why. It is a POINTER TO EXISTING CONTENT -- it
-copies no lesson text and can never disagree with the lessons themselves,
-because it stores their revisions rather than their words.
-
-STALE-BASE REJECTION, AND WHY IT IS NOT OPTIONAL
-------------------------------------------------
-A fleet has several curators and, now, agents that can approve. Two of them
-reading the same active set, each approving a different lesson, each cutting
-a release from what they saw, is the ordinary lost-update problem -- and the
-thing lost is not a text edit but a deployment decision. `cut` therefore
-takes the release the caller believed it was building on and refuses if the
-store has moved since, which is the same discipline ACE and agent-knowledge
-apply to candidate promotion and the same one `frontmatter.locked` already
-applies one level down.
-
-WHAT THIS DOES NOT DO
----------------------
-It does not gate retrieval. Retrieval reads the lessons' own `status`, as it
-always has, and a release RECORDS that set rather than deciding it -- so a
-store that never cuts a release behaves exactly as it does today, and a
-release can never make retrieval and the audit log disagree about what was
-active.
-
-Making the release the thing retrieval resolves through (so a fleet can run
-an older set without editing files, and so canary/ring targeting has
-something to target) is the next step and deliberately not this one: it
-changes what every agent reads, and that belongs behind its own decision
-rather than arriving as a side effect of adding an audit trail.
-"""
+"""What the fleet was running, as one named, immutable thing."""
 
 from __future__ import annotations
 
@@ -81,12 +22,7 @@ class ReleaseError(RuntimeError):
 
 
 class StaleBaseError(ReleaseError):
-    """The store moved between reading it and cutting a release from it.
-
-    Carries both ids so the caller can show the difference rather than only
-    refusing: a lost deployment decision is worth more explanation than a
-    conflict message.
-    """
+    """The store moved between reading it and cutting a release from it."""
 
     def __init__(self, message: str, expected: str, actual: str):
         super().__init__(message)
@@ -155,16 +91,7 @@ def releases_log_path(root: str) -> str:
 
 
 def compute_id(parent_id: str, entries: tuple[Entry, ...]) -> str:
-    """Content-addressed, over the parent and the pinned set.
-
-    Including the parent makes the id a position in a history rather than a
-    description of a set -- so cutting the same set twice, from different
-    bases, produces two different releases, which is correct: they are
-    different deployments that happen to agree about the outcome.
-
-    Sorted by slug and fixed-separated for the same reason the value
-    ledger's rows are: reproducible by anyone holding the printed contents.
-    """
+    """Content-addressed, over the parent and the pinned set."""
     rows = _FIELD_SEP.join(
         f"{e.slug}={e.revision}" for e in sorted(entries, key=lambda e: e.slug)
     )
@@ -174,21 +101,13 @@ def compute_id(parent_id: str, entries: tuple[Entry, ...]) -> str:
 
 
 def active_entries(root: str) -> tuple[Entry, ...]:
-    """Every active lesson in the store, pinned to its current revision.
-
-    Reads the lessons themselves rather than any cached index: a release
-    records what IS active, and a stale index would let it record something
-    that was not.
-    """
+    """Every active lesson in the store, pinned to its current revision."""
     entries: list[Entry] = []
     pattern = os.path.join(paths.lessons_dir(root), "*.md")
     for path in sorted(glob.glob(pattern)):
         try:
             fm, body = frontmatter.read(path)
         except (frontmatter.FrontmatterError, OSError, UnicodeDecodeError):
-            # An unreadable lesson is not silently omitted from a release --
-            # that would record a set the fleet is not running. Named, so
-            # whoever cuts the release can fix it first.
             raise ReleaseError(
                 f"cannot read {path}, so the active set cannot be determined. "
                 "A release that quietly skipped it would claim the fleet is running "
@@ -215,9 +134,6 @@ def read_all(root: str) -> list[Release]:
             try:
                 record = json.loads(line)
             except ValueError:
-                # A corrupt line is skipped rather than fatal, matching
-                # lesson_io.read_revisions: a damaged history is still worth
-                # more than no history, and the gap is visible in the chain.
                 continue
             try:
                 out.append(Release.from_dict(record))
@@ -233,9 +149,6 @@ def current(root: str) -> Release | None:
 
 
 def current_id(root: str) -> str:
-    """The id to pass back as `base_id`. The genesis when nothing has been
-    cut, so a first release has a real parent rather than an empty string
-    that could be spliced onto any other chain."""
     latest = current(root)
     return latest.release_id if latest else _RELEASE_GENESIS
 
@@ -248,13 +161,7 @@ def cut(
     reason: str = "",
     now: datetime.datetime | None = None,
 ) -> Release:
-    """Record the active set as an immutable release.
-
-    `base_id` is the release the caller believed it was building on --
-    `current_id(root)`, read before the change it is now recording. If the
-    store has moved since, this raises `StaleBaseError` rather than
-    overwriting somebody else's deployment decision.
-    """
+    """Record the active set as an immutable release."""
     latest = current_id(root)
     if base_id != latest:
         raise StaleBaseError(
@@ -287,9 +194,6 @@ def cut(
 
 
 def find(root: str, release_id: str) -> Release | None:
-    """By full id or unambiguous prefix. Returns None if nothing matches;
-    raises if a prefix matches more than one, because acting on the wrong
-    release is worse than being asked to type more."""
     releases = read_all(root)
     exact = [r for r in releases if r.release_id == release_id]
     if exact:
@@ -330,13 +234,7 @@ class Diff:
 
 
 def diff(before: Release | None, after: Release) -> Diff:
-    """What `after` changed relative to `before`.
-
-    A REWRITTEN lesson (same slug, different revision) is its own category
-    rather than a remove plus an add: "we changed what this rule says" and
-    "we swapped one rule for another" are different deployments, and a diff
-    that renders them identically is the one an operator misreads at 3am.
-    """
+    """What `after` changed relative to `before`."""
     old = {e.slug: e.revision for e in (before.entries if before else ())}
     new = {e.slug: e.revision for e in after.entries}
 
@@ -361,10 +259,6 @@ class RollbackPlan:
     target: Release
     deactivate: tuple[str, ...] = field(default_factory=tuple)
     reactivate: tuple[str, ...] = field(default_factory=tuple)
-    #: Active in the target at a revision the store no longer holds. These
-    #: CANNOT be restored by flipping a status -- the text is gone -- so a
-    #: rollback that silently reactivated the current text would put back
-    #: something that was never in the target release.
     unrestorable: tuple[tuple[str, str], ...] = field(default_factory=tuple)
 
     @property
@@ -377,13 +271,7 @@ class RollbackPlan:
 
 
 def plan_rollback(root: str, target: Release) -> RollbackPlan:
-    """Work out what returning to `target` involves, without doing it.
-
-    Separated from the doing because the interesting cases are the ones a
-    caller should see first: a lesson whose text has been rewritten since
-    cannot be restored by changing its status, and a rollback that pretended
-    otherwise would put back a different rule under the same name.
-    """
+    """Work out what returning to `target` involves, without doing it."""
     live = {e.slug: e.revision for e in active_entries(root)}
     wanted = {e.slug: e.revision for e in target.entries}
 
@@ -412,17 +300,7 @@ def plan_rollback(root: str, target: Release) -> RollbackPlan:
 def apply_rollback(
     root: str, plan: RollbackPlan, *, actor: str = "", allow_partial: bool = False
 ) -> Release:
-    """Flip statuses to match the plan, then cut a release recording it.
-
-    Refuses a plan with unrestorable entries unless `allow_partial` says the
-    caller has seen them and accepts a partial restore. Rolling back to
-    "nearly Monday" without saying so is how an incident gets a second cause.
-
-    The new release is CUT, not rewound to: history is append-only, so
-    returning to an earlier state is itself a deployment and is recorded as
-    one. A log that could be rewound would lose the fact that the rollback
-    happened, which is the single thing everyone asks about afterwards.
-    """
+    """Flip statuses to match the plan, then cut a release recording it."""
     if plan.unrestorable and not allow_partial:
         listed = ", ".join(f"{slug} ({rev[:12]})" for slug, rev in plan.unrestorable[:5])
         raise ReleaseError(

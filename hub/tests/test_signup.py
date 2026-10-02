@@ -1,16 +1,3 @@
-"""Tests for hub/signup.py -- the public, self-serve org creation route.
-
-Until this route existed, the only way to get an org_id and a first API
-key was an operator running `python -m hub.manage create-org` on request.
-What matters here is different from console.py's tests: there is no
-session to forge or tenant boundary to cross (a signup mints a BRAND NEW
-org, never touches an existing one), so the properties this file actually
-checks are: the route is absent unless enabled, a real key comes back
-that actually works against the rest of the Hub, the honeypot and rate
-limiter hold up an unauthenticated credential-minting endpoint against
-abuse, and name validation rejects nonsense without ever touching the
-database.
-"""
 from __future__ import annotations
 
 import httpx
@@ -38,9 +25,6 @@ def _client(app: Starlette) -> httpx.AsyncClient:
 
 class TestAbsentUnlessEnabled:
     async def test_no_routes_when_not_mounted(self, session_factory):
-        """Mirrors hub/tests/test_console.py's identical property for /app
-        and /admin: a deployment that has not opted in gets a 404 from the
-        router, not a 401 or a redirect from a handler."""
         async with _client(_app(session_factory, enabled=False)) as client:
             get_response = await client.get(signup.SIGNUP_PATH)
             post_response = await client.post(signup.SIGNUP_PATH, data={"org_name": "Acme"})
@@ -64,9 +48,6 @@ class TestSuccessfulSignup:
             assert len(keys) == 1
 
     async def test_the_raw_key_in_the_response_actually_authenticates(self, session_factory):
-        """The strongest possible check that this route did the same thing
-        `hub.manage issue-key` does: the key it hands back must actually
-        verify, not just look plausible in the HTML."""
         import re
 
         async with _client(_app(session_factory)) as client:
@@ -81,9 +62,6 @@ class TestSuccessfulSignup:
         assert authenticated.org_id
 
     async def test_the_issued_key_signs_in_to_the_console(self, session_factory):
-        """End-to-end across both new-user surfaces: a self-serve signup
-        immediately unlocks the self-serve console, with no operator step
-        in between."""
         import re
 
         async with _client(_app(session_factory)) as client:
@@ -113,8 +91,6 @@ class TestSuccessfulSignup:
         assert entries[0].action == "create_org"
 
     async def test_two_signups_from_the_same_address_get_two_distinct_orgs(self, session_factory):
-        """Nothing about this route should collapse concurrent evaluators
-        from behind the same NAT/office IP into one org."""
         async with _client(_app(session_factory)) as client:
             first = await client.post(signup.SIGNUP_PATH, data={"org_name": "Team One"})
             second = await client.post(signup.SIGNUP_PATH, data={"org_name": "Team Two"})
@@ -162,10 +138,6 @@ class TestHoneypot:
 
 class TestSignupIsRateLimited:
     async def test_a_flood_from_one_address_eventually_gets_refused(self, session_factory):
-        """An unauthenticated route that mints a usable credential is the
-        closest thing this Hub has to an open account-creation oracle --
-        without this, nothing stands between the free plan and a scripted
-        flood of orgs."""
         async with _client(_app(session_factory)) as client:
             texts = [
                 (await client.post(signup.SIGNUP_PATH, data={"org_name": f"Org {i}"})).text
@@ -179,5 +151,4 @@ class TestSignupIsRateLimited:
                 await client.post(signup.SIGNUP_PATH, data={"org_name": f"Org {i}"})
         async with session_scope(session_factory) as session:
             count = len((await session.execute(select(Organization.id))).scalars().all())
-        # burst=2 -> at most 2 orgs succeed before the limiter starts refusing.
         assert count <= 2

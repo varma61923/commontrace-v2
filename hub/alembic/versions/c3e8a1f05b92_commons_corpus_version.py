@@ -1,23 +1,4 @@
-"""Knowledge Base corpus version, maintained by triggers
-
-Adds `commons_corpus_state` (one row) and triggers on `traces` that bump
-it whenever a change could alter what the Knowledge Base matcher sees. It
-lets each Hub process keep the corpus's signature matrix in memory and
-reload it only when it actually changed (hub/commons_cache.py), instead of
-reloading and decoding every row on every commons_overlap/commons_search
-call -- which, measured at 20,000 entries, was ~1.4s of a ~1.5s query.
-
-The statements are copied here rather than imported from hub/models.py,
-because a migration is a snapshot of one moment and must not change when
-the model does later. hub/tests/test_commons_cache.py compares the two
-copies, so they cannot drift silently.
-
-No backfill: the version starts at no row, which the cache reads as "not
-yet built", and the first query builds it.
-
-Revision ID: c3e8a1f05b92
-Revises: a1c7e4f93d2b
-"""
+"""Knowledge Base corpus version, maintained by triggers"""
 from typing import Sequence, Union
 
 import sqlalchemy as sa

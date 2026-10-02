@@ -1,10 +1,3 @@
-"""Plan policy invariants -- pure, synchronous, no database.
-
-Kept out of hub/tests/test_agents.py because that module carries a
-module-level asyncio mark, and a synchronous test inheriting it warns on
-every run. The separation is mechanical, not conceptual: these guard the
-same agent entitlement the tests there exercise against a real database.
-"""
 from __future__ import annotations
 
 from hub import plans
@@ -12,16 +5,6 @@ from hub import plans
 
 class TestPlanInvariant:
     def test_every_plan_sets_max_agents_explicitly(self):
-        """Plan.max_agents carries a permissive default so ad-hoc Plans in
-        tests don't accidentally enforce an agent cap they were not written
-        to test. That default must never reach a real customer, so every
-        shipped plan is required to set it.
-
-        Checked by parsing the AST rather than the source text: a
-        string-matching version passes or fails on formatting, which is
-        exactly the wrong sensitivity for an invariant guarding a
-        fail-open default.
-        """
         import ast
         import inspect
 

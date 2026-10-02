@@ -1,20 +1,3 @@
-"""hub/server.py:IpAllowlistMiddleware -- the code-only half of audit
-1.6's "no IP allowlisting / private networking" (see HubConfig.ip_allowlist's
-own docstring for why the other half, actual private networking, stays out
-of scope here).
-
-What these tests defend:
-1. Off by default -- a request from anywhere reaches the app when
-   HUB_IP_ALLOWLIST is unset, unchanged from before this existed.
-2. A source outside the configured CIDR set is refused with 403; one
-   inside it is let through.
-3. /healthz and /readyz are exempt regardless -- an orchestrator's own
-   probes must never be blocked by this. /disclosure is exempt for the
-   opposite reason: it exists specifically for reach from OUTSIDE this
-   deployment's own network.
-4. trusted_proxy_hops is honored: behind a trusted proxy, the real
-   client address (not the proxy's own) is what gets checked.
-"""
 from __future__ import annotations
 
 import ipaddress
@@ -102,19 +85,12 @@ class TestHealthAndReadinessAreAlwaysExempt:
 
 class TestTrustedProxyHops:
     async def test_the_real_client_behind_a_trusted_proxy_is_checked(self):
-        """The proxy's own address (203.0.113.9, request.client.host) is
-        NOT in the allowlist; the real origin it appended to
-        X-Forwarded-For (10.1.2.3) IS -- proves trusted_proxy_hops is
-        honored, not just request.client.host."""
         app = _app(_networks("10.0.0.0/8"), trusted_proxy_hops=1)
         async with _client(app, client_ip="203.0.113.9") as client:
             resp = await client.get("/mcp", headers={"X-Forwarded-For": "10.1.2.3"})
         assert resp.status_code == 200
 
     async def test_a_client_forged_header_cannot_bypass_the_allowlist(self):
-        """trusted_proxy_hops=0 (the default): X-Forwarded-For is entirely
-        client-supplied and must be ignored, exactly as
-        resolve_client_key's own docstring requires."""
         app = _app(_networks("10.0.0.0/8"), trusted_proxy_hops=0)
         async with _client(app, client_ip="203.0.113.9") as client:
             resp = await client.get("/mcp", headers={"X-Forwarded-For": "10.1.2.3"})

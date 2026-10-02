@@ -1,9 +1,3 @@
-"""Audit-log lines for a SIEM: CEF (ArcSight, QRadar, Splunk's CEF input)
-or JSON Lines. One event per line, from `hub.manage export-audit`.
-
-Only fields the audit log already holds, which by design carry no
-secrets or trace content (hub/audit.py).
-"""
 from __future__ import annotations
 
 import json
@@ -13,7 +7,6 @@ from commontrace import __version__
 
 FORMATS = ("jsonl", "cef")
 
-#: Actions that remove data or access. CEF severity 8; everything else 3.
 _HIGH = ("purge", "delete", "revoke", "disable", "unlink", "release")
 
 

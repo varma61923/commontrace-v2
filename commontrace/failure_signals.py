@@ -1,33 +1,3 @@
-"""Failure signals: named, sized, trended clusters of FAILING occasions,
-with an export path to a regression dataset a customer's existing eval
-tool (LangSmith, Braintrust) can run against.
-
-Reuses `commontrace/distill.py`'s clustering -- the same word-overlap
-Jaccard grouping `commontrace distill`/`commontrace taxonomy` already use
--- restricted to traces this store recorded as a FAILURE
-(`outcome.resolved is False`, or `outcome.repeated_error is True` when
-`resolved` itself is unset). `distill`/`taxonomy` deliberately do not
-filter this way: they report on every repeated pattern, not specifically
-ones that failed, and a second clustering algorithm here would be exactly
-the kind of parallel implementation this codebase's own culture (see
-distill.py's own module docstring) refuses to add.
-
-A "signal" adds two things a candidate lesson does not need and a
-regression dataset does: WHEN (is this getting more common, or did it
-stop) and WHO (which agents hit it), both read from fields every Trace
-already carries (`created_at`, `agent_id`) that `distill.TraceCandidate`
-does not -- so this module reads traces directly rather than through that
-narrower shape.
-
-EXPORT FORMATS ARE NOT GUESSED
---------------------------------
-`export_langsmith`/`export_braintrust` use the SAME field names
-`commontrace/adapters.py`'s `_langsmith`/`_braintrust` importers already
-read back OUT of a real export from each vendor (`inputs`/`outputs`
-for LangSmith, `input`/`expected` for Braintrust) -- used here in reverse,
-rather than a second, independently-guessed vocabulary for the same two
-vendors' shapes.
-"""
 from __future__ import annotations
 
 import datetime
@@ -48,8 +18,6 @@ class FailureOccurrence:
     tags: list[str]
     agent_type: str
     agent_id: str
-    #: ISO-8601 from Trace.created_at, or "" if the trace predates it /
-    #: was hand-written without one. Never guessed.
     created_at: str
 
 
@@ -58,12 +26,7 @@ class Signal:
     name: str
     trace_ids: list[str] = field(default_factory=list)
     shared_terms: list[str] = field(default_factory=list)
-    #: Distinct, non-empty agent_id values among this signal's occurrences,
-    #: sorted for a stable report. Empty when no occurrence recorded one --
-    #: never populated from agent_type, which is a category, not an agent.
     affected_agents: list[str] = field(default_factory=list)
-    #: "increasing" | "steady" | "decreasing" | "unknown". See `_trend`'s
-    #: own docstring for exactly what decides each.
     trend: str = "unknown"
     first_seen: str = ""
     last_seen: str = ""
@@ -74,11 +37,6 @@ class Signal:
 
 
 def _is_failure(outcome: dict | None) -> bool:
-    """A trace counts as a failure signal candidate when it says so
-    explicitly. A trace with NO outcome recorded is not a failure by
-    default -- "no signal" and "failed" are different facts, and treating
-    an unrecorded outcome as a failure would silently inflate every
-    signal's size with traces that may have gone fine."""
     if not isinstance(outcome, dict):
         return False
     if outcome.get("resolved") is False:
@@ -91,8 +49,6 @@ def _safe_tags(raw: object) -> list[str]:
 
 
 def load_failure_occurrences(root: str, agent_type: str | None = None) -> list[FailureOccurrence]:
-    """Every trace in this store recorded as a failure, optionally scoped
-    to one `agent_type`."""
     out: list[FailureOccurrence] = []
     for path in sorted(glob.glob(os.path.join(paths.traces_dir(root), "*.md"))):
         if os.path.basename(path) == "README.md":
@@ -121,14 +77,7 @@ def load_failure_occurrences(root: str, agent_type: str | None = None) -> list[F
     return out
 
 
-#: A signal needs at least this many dated occurrences on EACH side of the
-#: chronological split before trend is anything other than "unknown" --
-#: below it, a 1-vs-0 split would report "increasing" from noise.
 _MIN_DATED_PER_HALF = 2
-#: How much the second half has to exceed (or fall short of) the first to
-#: be called a trend rather than "steady" -- a >=30% swing either way,
-#: chosen the same way commontrace/reliability.py picks a boundary rather
-#: than reporting every fluctuation as a trend.
 _TREND_RATIO = 1.3
 
 
@@ -140,20 +89,6 @@ def _parse_iso(ts: str) -> datetime.datetime | None:
 
 
 def _trend(dated: list[str]) -> str:
-    """`dated` is this signal's occurrences' `created_at` values, in no
-    particular order coming in.
-
-    Splits at the TIME midpoint between the earliest and latest occurrence
-    -- not at the rank/count midpoint. Splitting by count instead (an
-    earlier version of this function did) makes each half's size roughly
-    equal BY CONSTRUCTION regardless of how bunched the actual dates are,
-    which means a genuine frequency change can never show up as a count
-    difference at all; reproduced directly, two occurrences in January and
-    seven bunched in February read as "steady" under a count-based split
-    because the median landed inside February. Splitting by elapsed time
-    instead makes a density change visible as a count difference on each
-    side, which is the thing "trend" is actually supposed to mean.
-    """
     parsed = sorted(d for d in (_parse_iso(t) for t in dated) if d is not None)
     if len(parsed) < _MIN_DATED_PER_HALF * 2:
         return "unknown"
@@ -169,30 +104,97 @@ def _trend(dated: list[str]) -> str:
     return "steady"
 
 
+DEFAULT_SIMILARITY = 0.15
+
+
+def _vectors(occurrences: list[FailureOccurrence]) -> list[dict[str, float]]:
+    import math
+    from collections import Counter
+
+    from commontrace import _stem
+    from commontrace._lexical import STOPWORDS, WORD_RE
+
+    def tokens(text: str) -> list[str]:
+        return [_stem.stem(w) for w in WORD_RE.findall(text.lower()) if w not in STOPWORDS and len(w) > 1]
+
+    docs = [Counter(tokens(f"{o.title} {o.context_text}")) for o in occurrences]
+    df: Counter = Counter(t for d in docs for t in d)
+    n = len(docs)
+    out = []
+    for d in docs:
+        v = {t: (1 + math.log(c)) * math.log((n + 1) / (df[t] + 0.5)) for t, c in d.items()}
+        norm = math.sqrt(sum(x * x for x in v.values())) or 1.0
+        out.append({t: x / norm for t, x in v.items()})
+    return out
+
+
+def _average_linkage(vectors: list[dict[str, float]], threshold: float) -> list[list[int]]:
+    import heapq
+
+    n = len(vectors)
+    index: dict[str, list[int]] = {}
+    for i, v in enumerate(vectors):
+        for t in v:
+            index.setdefault(t, []).append(i)
+    sims: dict[int, dict[int, float]] = {i: {} for i in range(n)}
+    for i, v in enumerate(vectors):
+        scores: dict[int, float] = {}
+        for t, x in v.items():
+            for j in index[t]:
+                if j > i:
+                    scores[j] = scores.get(j, 0.0) + x * vectors[j][t]
+        for j, sim in scores.items():
+            if sim > 0:
+                sims[i][j] = sims[j][i] = sim
+    members = {i: [i] for i in range(n)}
+    heap = [(-sim, i, j) for i in range(n) for j, sim in sims[i].items() if j > i]
+    heapq.heapify(heap)
+    next_id = n
+    while heap:
+        neg, a, b = heapq.heappop(heap)
+        if -neg < threshold:
+            break
+        if a not in members or b not in members or sims[a].get(b) != -neg:
+            continue
+        na, nb = len(members[a]), len(members[b])
+        c = next_id
+        next_id += 1
+        merged: dict[int, float] = {}
+        for other in (sims[a].keys() | sims[b].keys()) - {a, b}:
+            merged[other] = (na * sims[a].get(other, 0.0) + nb * sims[b].get(other, 0.0)) / (na + nb)
+        for x in (a, b):
+            for other in sims.pop(x):
+                if other in sims:
+                    sims[other].pop(x, None)
+        sims[c] = merged
+        for other, sim in merged.items():
+            sims[other][c] = sim
+            if sim >= threshold:
+                heapq.heappush(heap, (-sim, min(c, other), max(c, other)))
+        members[c] = members.pop(a) + members.pop(b)
+    return list(members.values())
+
+
 def build_signals(
     root: str, *, agent_type: str | None = None,
-    similarity_threshold: float = 0.3, min_cluster_size: int = 2,
+    similarity_threshold: float = DEFAULT_SIMILARITY, min_cluster_size: int = 2,
 ) -> tuple[list[Signal], dict[str, FailureOccurrence]]:
-    """Cluster this store's failing traces into named signals.
-
-    Returns `(signals, by_id)` -- `by_id` is every occurrence clustered
-    into any returned signal, keyed by trace id, so a caller (the CLI
-    command, `export_langsmith`/`export_braintrust`) can look up the full
-    record for a signal's `trace_ids` without a second read of the store.
-    """
+    """Cluster this store's failing traces into named signals."""
     occurrences = load_failure_occurrences(root, agent_type)
     by_id = {occ.id: occ for occ in occurrences}
-    candidates = [
-        distill.TraceCandidate(
-            id=occ.id, path="", title=occ.title, context_text=occ.context_text,
-            solution_text=occ.solution_text, tags=occ.tags, agent_type=occ.agent_type,
-        )
-        for occ in occurrences
-    ]
-    clusters = distill.find_clusters(
-        candidates, existing_lessons_source_traces=[],
-        similarity_threshold=similarity_threshold, min_cluster_size=min_cluster_size,
-    )
+    groups = _average_linkage(_vectors(occurrences), similarity_threshold) if similarity_threshold > 0 else \
+        [list(range(len(occurrences)))] if occurrences else []
+    clusters = []
+    for group in groups:
+        if len(group) < min_cluster_size:
+            continue
+        traces = [distill.TraceCandidate(
+            id=occurrences[i].id, path="", title=occurrences[i].title, context_text=occurrences[i].context_text,
+            solution_text=occurrences[i].solution_text, tags=occurrences[i].tags,
+            agent_type=occurrences[i].agent_type) for i in group]
+        shared = set.intersection(*(distill._tokenize(f"{t.title} {t.context_text}") for t in traces))
+        clusters.append(distill.Cluster(traces=traces, shared_terms=sorted(shared)[:8]))
+    clusters.sort(key=lambda c: len(c.traces), reverse=True)
 
     signals: list[Signal] = []
     for cluster in clusters:
@@ -212,10 +214,6 @@ def build_signals(
 
 
 def export_langsmith(signal: Signal, by_id: dict[str, FailureOccurrence]) -> list[dict]:
-    """One example per occurrence, in LangSmith's bulk-example shape --
-    the same `inputs`/`outputs` field names `commontrace/adapters.py`'s
-    `_langsmith` importer already reads back OUT of a real LangSmith
-    export, used here in reverse."""
     return [
         {
             "inputs": {"input": occ.context_text},
@@ -231,9 +229,6 @@ def export_langsmith(signal: Signal, by_id: dict[str, FailureOccurrence]) -> lis
 
 
 def export_braintrust(signal: Signal, by_id: dict[str, FailureOccurrence]) -> list[dict]:
-    """One record per occurrence, in Braintrust's bulk dataset-insert shape
-    -- the same `input`/`expected` field names `_braintrust` already reads
-    back OUT of a real Braintrust export."""
     return [
         {
             "input": occ.context_text,

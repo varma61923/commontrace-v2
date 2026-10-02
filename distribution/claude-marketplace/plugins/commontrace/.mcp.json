@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "commontrace": {
+      "command": "commontrace",
+      "args": ["serve"]
+    }
+  }
+}

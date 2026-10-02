@@ -1,11 +1,3 @@
-"""Collaboration on a trace, for a customer's own team (audit §8.1):
-comments, assignment, and a notification inbox (hub/collab.py).
-
-Distinct from hub/manage.py's Knowledge Base review queue, which is an
-operator surface across tenants -- this is a customer's own team working
-on their own traces, and only exists now that hub/models.py:User gives a
-request an actual PERSON to attribute a comment to or assign work to.
-"""
 from __future__ import annotations
 
 import pytest
@@ -66,10 +58,6 @@ def _as_authenticated(user_id: str, org_id: str, role: str, email: str) -> auth.
 
 
 class _AsUser:
-    """Same idiom as hub/tests/test_user_identity.py's `_AsUser` /
-    test_api_key_scopes.py's `_Scoped`: set the contextvars a real
-    request's middleware would set, without standing up an HTTP layer."""
-
     def __init__(self, org_id: str, person: auth.AuthenticatedUser):
         self._org_id = org_id
         self._person = person
@@ -88,8 +76,6 @@ class _AsUser:
         auth.current_org_id.reset(self._org)
         return False
 
-
-# --- hub/collab.py directly ---------------------------------------------------
 
 class TestAddComment:
     async def test_adding_a_comment_returns_the_author_and_body(self, session_factory, org):
@@ -309,8 +295,6 @@ class TestNotifications:
         assert ok is False
 
 
-# --- through real MCP tool calls ----------------------------------------------
-
 @pytest_asyncio.fixture
 async def mcp(config, session_factory):
     return build_mcp_server(config, session_factory, make_rate_limiter(config))
@@ -325,11 +309,6 @@ def _payload(result) -> dict:
 
 
 class TestToolsRequireAPerson:
-    """add_comment/assign_trace/unassign_trace/list_my_notifications/
-    mark_notification_read all need someone to attribute the action to or
-    notify -- an API-key-only request (no signed-in person) is refused,
-    distinctly from a scope or capability denial."""
-
     async def test_add_comment_without_a_person_is_refused(self, mcp, session_factory, org):
         from hub import scopes
 

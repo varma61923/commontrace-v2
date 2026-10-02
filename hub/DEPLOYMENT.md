@@ -486,8 +486,7 @@ column computed directly, in SQL, from `title`/`context_text`/
 tsvector from ciphertext, so `search_traces` would keep running without
 error while silently never matching anything again. `subject_ids` has the
 same conflict one level down: `find_traces_by_subject`/
-`purge_traces_by_subject` (the subject-erasure path `DATA_RETENTION.md`
-documents) depend on exact array-membership matches against a GIN index,
+`purge_traces_by_subject` (the subject-erasure path) depend on exact array-membership matches against a GIN index,
 which a fresh-nonce-per-value scheme (the only kind worth using) makes
 impossible — the same id would encrypt to different ciphertext every time
 it's written.
@@ -506,8 +505,7 @@ on plaintext internally and neither of the above breaks:
   ships one.
 
 None of these are something this codebase can configure on your behalf —
-they're a property of where and how you run Postgres — which is also why
-`SOC2_READINESS.md`'s Confidentiality table lists this as an operator
+they're a property of where and how you run Postgres — which is why this is an operator
 responsibility rather than a control this code implements.
 
 **`WebhookEndpoint.url` (`hub/encryption.py`) is the one column this code
@@ -657,7 +655,7 @@ Search scales differently and is fine: matching goes through the
 scan on a selective query).
 
 That was one measurement at one corpus size, which shows the index works
-and says nothing about *growth*. [`SCALING.md`](SCALING.md) measures the
+and says nothing about *growth*. The scaling benchmark (`hub/bench_scaling.py`) measures the
 growth: across a 64× corpus range, no read path grows linearly with a
 customer's own history — a selective `search_traces` costs 2.2× for 64×
 the data (exponent 0.19), and the worst operator-facing report is 0.74.
@@ -854,8 +852,7 @@ time-boxed emergency token and no requirement for a second person to
 witness the recovery, beyond what `hub.manage`, `audit-log`, and the alert
 above already give you. For a deployment that needs stronger guarantees
 than "whoever can reach `HUB_DATABASE_URL` can do this," that is the next
-thing to build, and it is listed as not done in `AUDIT_RESPONSE.md` §1.2
-rather than implied by this section existing.
+thing to build, and it is not done, rather than implied by this section existing.
 
 ## 10. Security checklist before a client's data lands
 
@@ -910,7 +907,7 @@ rather than implied by this section existing.
       rest". `HUB_ENCRYPTION_KEY` (same section) covers a different,
       narrower column (`WebhookEndpoint.url`) and does not substitute for
       this.
-- [ ] Read [`DATA_RETENTION.md`](../DATA_RETENTION.md) — an org can delete
+- [ ] Know that an org can delete
       its own trace or its entire account self-service
       (`delete_trace` / `request_account_deletion`), backed by an
       operator-CLI path (`purge-trace`/`purge-org`) for when it can't.
@@ -927,7 +924,7 @@ rather than implied by this section existing.
       it deliberately rather than by default — nothing turns it on, and the
       withheld fraction gets a worse product on purpose. It is also the
       only thing here that can answer "is this working?" causally rather
-      than observationally, and STRATEGY.md §13.2 calls it the cheapest
+      than observationally, and it is the cheapest
       falsifier available. See `hub/README.md`, "The randomized holdout".
 - [ ] Put `python -m hub.manage outcomes` on a recurring schedule alongside
       `usage`/`revenue`. Those report consumption, which is a lagging
@@ -950,15 +947,15 @@ rather than implied by this section existing.
 | Limitation | Where |
 |---|---|
 | Rate limiting is per-process | §6, `hub/abuse.py` |
-| No *browser* login: a person authenticates with a bearer JWT their IdP already issued (`hub/sso.py` verifies it), and the console signs in with an API key — there is no OAuth2 Authorization Code/PKCE redirect flow and no SAML, so nothing here can start a login from a browser on its own | `hub/sso.py`, `hub/console.py`, `AUDIT_RESPONSE.md` §1.2 |
-| No self-service withdrawal of a pending Knowledge Base submission before an operator decides it | `DATA_RETENTION.md` §5 |
-| No in-place edit of a Knowledge Base entry — the workflow is `kb-retract` then re-seed, which changes the trace id and resets its hit history | `DATA_RETENTION.md` §5 |
+| No *browser* login: a person authenticates with a bearer JWT their IdP already issued (`hub/sso.py` verifies it), and the console signs in with an API key — there is no OAuth2 Authorization Code/PKCE redirect flow and no SAML, so nothing here can start a login from a browser on its own | `hub/sso.py`, `hub/console.py` |
+| No self-service withdrawal of a pending Knowledge Base submission before an operator decides it | `hub/crud.py` |
+| No in-place edit of a Knowledge Base entry — the workflow is `kb-retract` then re-seed, which changes the trace id and resets its hit history | `hub/manage.py` |
 | Acting on a disputed or security-flagged entry needs an operator running `kb-review`; nothing withdraws content automatically | §10, `hub/README.md` |
 | `fleet_outcomes` is observational (a before/after window), not a randomized experiment — it cannot separate this product's effect from anything else that changed | `hub/outcomes.py`, `commontrace/experiment.py` |
 | Causal verdicts are read from a *running* experiment, so they use an anytime-valid boundary — trustworthy under continuous peeking, but slower to establish a small effect than a fixed threshold would be (measured: 95%→69% power at a +10pp effect within 1,000 occasions, against a false-positive rate of 28%→1.3%) | `commontrace/experiment.py:analyze` |
 | Per-trace value contributions cannot be summed when traces share occasions, which is the normal case here — the policy-level comparison is reported instead | `commontrace/value.py` |
 | A holdout's assignments depend on the org's `holdout_salt`; restarting an experiment starts a new one and earlier observations are no longer pooled | `hub/models.py:Organization.holdout_salt` |
-| The CommonTrace Knowledge Base is lexical-match only; recall against paraphrased failures is ~11% (floor, not estimate) | `commons/eval/RESULTS.md` |
+| The CommonTrace Knowledge Base is lexical-match only; recall against paraphrased failures is ~11% (floor, not estimate) | `commons/eval/search_modes.py` |
 | `CO_RETRIEVED` trace relations not computed | `hub/README.md` |
 | Self-serve billing covers Checkout + the Billing Portal only — no dunning, tax handling, or invoicing UI beyond what Stripe's own hosted pages provide | §4, `hub/billing.py` |
 | Self-serve signup has no email verification and no CAPTCHA (a rate limit + honeypot only) | §4, `hub/signup.py` |

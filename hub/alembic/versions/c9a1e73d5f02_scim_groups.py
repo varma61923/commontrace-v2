@@ -1,25 +1,4 @@
-"""scim groups (permission-inert membership tracking for SCIM /Groups)
-
-Revision ID: c9a1e73d5f02
-Revises: f3a8c6d92e14
-Create Date: 2026-09-12 18:00:00.000000
-
-Audit §1.2 named "SCIM Groups" as a declined gap: a real Groups API needs
-many-to-many membership, and this Hub gives one `User` exactly one `role`
-(hub/rbac.py) -- no additive permission surface a group could plug into.
-
-This closes the data-model half honestly, without inventing a second
-authorization system: `scim_groups`/`scim_group_memberships` track an IdP's
-group roster faithfully (what `/scim/v2/Groups` needs to exist at all), and
-deliberately grant NOTHING -- nothing in `hub/rbac.py` or `hub/server.py`'s
-tool gating reads either table. A "group" here is a label plus a membership
-list, not a bundle of permissions.
-
-Same row-level security every other org-scoped table in this Hub gets
-(d5c8b3a91e77). `scim_group_memberships.org_id` is denormalized from the
-owning group rather than joined, the same choice `comments`/`assignments`
-already made, so RLS has a column on the row itself to scope against.
-"""
+"""scim groups (permission-inert membership tracking for SCIM /Groups)"""
 from __future__ import annotations
 
 from collections.abc import Sequence

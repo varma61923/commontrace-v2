@@ -1,50 +1,3 @@
-"""An embedded NUL byte (0x00) or a lone UTF-16 surrogate in any free-text
-field must get a clean 400, not a crash.
-
-Every string this Hub accepts eventually becomes an asyncpg bind parameter,
-and asyncpg refuses to encode either of these into one at all -- for two
-different reasons that land on the same symptom:
-
-- A NUL byte is valid Unicode and valid UTF-8; Postgres simply cannot store
-  it, because its text type is built on NUL-terminated C strings on-disk.
-  asyncpg raises `CharacterNotInRepertoireError`.
-- A lone surrogate (an unpaired U+D800-U+DFFF half) is not valid Unicode
-  *text* at all -- it cannot be encoded as UTF-8 by anything, Postgres
-  included. A client cannot type one, but `json.loads` happily decodes a
-  malformed `"\\ud800"` escape into exactly this, so any JSON-speaking MCP
-  client -- buggy, not just adversarial -- can produce one without trying.
-  asyncpg raises `DataError`.
-
-Before `hub.abuse.reject_unstorable_text`, the first caller to send either
-got its asyncpg exception raised from deep inside a query, wrapped in a bare
-`DBAPIError` that matches none of `hub/server.py:_error_response`'s specific
-branches. That falls through to a generic `internal_error` and a
-server-side stack trace logged as "unexpected", for input exactly as
-malformed, and exactly as foreseeable, as an over-length title -- which
-every other boundary in this module already rejects cleanly.
-
-This file pins the fix at every entry point it was found missing:
-contribute_trace, amend_trace, and submit_kb_entry's core fields (title,
-context_text, solution_text, tags, agent_type, all routed through
-`abuse.validate_size`); vote_trace's feedback_text; search_traces's query
-and tags; fleet_outcomes/commons_overlap/commons_search's agent_type
-filter; holdout_assign/record_occasion_outcome's occasion_id;
-submit_kb_entry's rationale and idempotency_key; and the operator paths
-retract_kb_entry's reason and review_kb_submission's reviewer/
-rejection_reason.
-
-Every one of these is checked against BOTH failure modes with the SAME
-assertion shape: call it, expect `ValueError` (never a bare `DBAPIError`,
-which is unreachable to any of `_error_response`'s specific branches), and
-check the message names the offending field. That repetition is
-deliberate -- each is verifying that a specific line of code runs before
-the value ever reaches a query, not exercising some general robustness
-property, and a table-driven version of this file would hide exactly which
-call site regressed if one of them stopped checking. The per-call-site
-tests are parametrized over the two corruptions rather than duplicated,
-since within one call site both are exercising the identical line of code
-(`reject_unstorable_text`) and only the input differs.
-"""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -87,9 +40,6 @@ async def trace_id(session_factory, org, config):
 
 @pytest_asyncio.fixture
 async def kb_entry_id(session_factory, org):
-    """A live Knowledge Base entry, built the way commons_seed builds one --
-    for the retract_kb_entry reason test, which needs commons_source ==
-    'seed' rather than an ordinary contributed trace."""
     async with session_scope(session_factory) as session:
         trace = Trace(
             org_id=org, title="kb entry", context_text="c", solution_text="s",
@@ -116,8 +66,6 @@ async def pending_submission_id(session_factory, org, config):
 
 @pytest.mark.filterwarnings("ignore::pytest.PytestWarning")
 class TestRejectUnstorableTextItself:
-    """The shared helper, in isolation."""
-
     def test_a_clean_string_passes(self):
         reject_unstorable_text("perfectly ordinary text", "field")
 
@@ -125,13 +73,6 @@ class TestRejectUnstorableTextItself:
         reject_unstorable_text("", "field")
 
     def test_a_properly_paired_supplementary_character_passes(self):
-        """A real emoji (outside the Basic Multilingual Plane) is ONE
-        Python code point, not a UTF-16 surrogate pair -- PEP 393 str
-        storage has no surrogates in it at all for text that decoded
-        correctly. json.loads also combines a well-formed `\\uD83D\\uDE00`
-        escape PAIR into this same single code point. Only an UNPAIRED
-        surrogate half survives decoding as a lone surrogate -- this test
-        pins that the guard does not overreach and flag ordinary emoji."""
         reject_unstorable_text("great work \U0001F600", "field")
 
     @BAD_FRAGMENTS
@@ -146,9 +87,6 @@ class TestRejectUnstorableTextItself:
                 reject_unstorable_text(value, "field")
 
     def test_other_control_characters_are_not_flagged(self):
-        """This check is specifically about what Postgres cannot store, not
-        a general text sanitizer -- tabs and newlines are ordinary,
-        storable content and must not be rejected as if they were NUL."""
         reject_unstorable_text("line one\nline two\ttabbed\r", "field")
 
 
@@ -222,11 +160,6 @@ class TestContributeTrace:
 
     @BAD_FRAGMENTS
     async def test_bad_fragment_in_agent_id(self, session_factory, org, config, bad):
-        """agent_id is missed by validate_size entirely -- it isn't in
-        contribute_trace's wire dict, only agent_type is -- and is queried
-        on directly by _reserve_agent_slot before validate_size even runs
-        on the other fields, so this pins a distinct call site from every
-        other test in this class."""
         rate_limiter = make_rate_limiter(config)
         async with session_scope(session_factory) as session:
             with pytest.raises(ValueError, match="agent_id"):
@@ -239,12 +172,6 @@ class TestContributeTrace:
 
 
 class TestAmendTrace:
-    """amend_trace routes its wire dict through the same `validate_size`
-    contribute_trace does -- see hub/crud.py's own comment on why it needs
-    the same four guards. One representative field is enough to pin that
-    the shared path is actually exercised; TestContributeTrace above is
-    what proves the check itself is correct field-by-field."""
-
     @BAD_FRAGMENTS
     async def test_bad_fragment_in_amended_title(self, session_factory, org, config, trace_id, bad):
         rate_limiter = make_rate_limiter(config)
@@ -281,8 +208,6 @@ class TestSearchTraces:
                 await crud.search_traces(session, org, tags=["fine", "bad" + bad])
 
     async def test_a_clean_query_still_works(self, session_factory, org, trace_id):
-        """The guard must not reject ordinary text -- a false positive here
-        would be as much of a regression as missing the true one."""
         async with session_scope(session_factory) as session:
             result = await crud.search_traces(session, org, query="ok")
         assert result["traces"]
@@ -392,17 +317,6 @@ class TestRetractKbEntry:
 
 
 class TestSessionIsUsableAfterARejection:
-    """A ValueError raised before any write means the session's transaction
-    never has anything pending to roll back -- but the surrounding
-    `session_scope` still runs its rollback path on any exception, and a
-    NEW session_scope opened right after must work normally. This is what
-    distinguishes a clean validation error from the DBAPIError it replaces:
-    the old failure mode reached Postgres and depended on hub/db.py's
-    `except BaseException: rollback` to avoid poisoning the connection
-    pool; this one avoids ever touching Postgres in the first place, and
-    this test confirms nothing about the fix accidentally leaves the
-    session or the pool in a bad state either way."""
-
     @BAD_FRAGMENTS
     async def test_a_fresh_session_after_a_rejected_call_works_normally(
         self, session_factory, org, config, bad

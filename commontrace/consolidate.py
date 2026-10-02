@@ -1,48 +1,4 @@
-"""Corpus hygiene: which active lessons should be fused, archived, or fixed.
-
-WHY THIS EXISTS
----------------
-DOCUMENTATION.md §6.4 describes exactly this job -- "classic memory
-consolidation (archive/fuse/reformulate/recalibrate lessons)" -- and assigns
-it to a companion skill, Dreamer, that lives outside this repository and
-detects fusion candidates via pairwise cosine similarity over
-`memory/attention/index.npz`. That makes corpus hygiene unavailable to every
-store that never installed the optional `attention` extra, which is the
-default install (`pip install commontrace` pulls PyYAML alone --
-pyproject.toml).
-
-This is the same job -- fusion candidates, archive candidates, contradiction
-candidates -- built on primitives this package already ships without the
-optional extra:
-
-  * **Fuse**: `commontrace/redundancy.py`'s lexical near-duplicate detection,
-    over active lessons' description/applies_when/do_not_apply_when/body.
-    Two lessons a fleet's agent re-derived from two different trace clusters
-    read as the same rule here, whether or not the semantic layer is
-    installed.
-  * **Contradict**: `commontrace/reliability.py`'s existing
-    `find_contradictions` -- not reinvented, exactly the DOCUMENTATION.md
-    §6.4 principle for the fusion mechanism itself ("Proposals submitted to
-    Lambda Phase 11 -- existing mechanism, not reinvented").
-  * **Archive**: active lessons with `uses == 0` and `last_hit == "NEVER"` --
-    a lesson injected on every occasion that ever matched its activation
-    condition and never once counted as used. This is deliberately the
-    NARROWEST honest signal available from the schema alone: there is no
-    `created_at` field to compute an age-based staleness claim from (see
-    commontrace/decay.py, which solves a related but different problem --
-    the freshness of a MEASURED EFFECT, not of a lesson's activity -- and is
-    not reused here for that reason), so this reports only the case that
-    needs no threshold to be true: it has NEVER once been hit.
-
-WHAT THIS DOES NOT DO
-----------------------
-Exactly what commontrace/reliability.py's own module docstring states for
-itself, and for the same reason: "It never modifies a lesson. It produces
-evidence and recommendations; the Validator gate ... stays human." An
-automated system that silently merged, archived, or rewrote lessons based
-on a lexical heuristic would be worse than the redundancy this module
-exists to surface.
-"""
+"""Corpus hygiene: which active lessons should be fused, archived, or fixed."""
 
 from __future__ import annotations
 
@@ -64,27 +20,12 @@ class ConsolidationReport:
 
     @property
     def is_clean(self) -> bool:
-        """Whether a `--strict` gate should pass.
-
-        Every fuse and archive candidate counts -- neither carries a
-        severity gradation the way a contradiction does. Only HIGH-severity
-        contradictions count, matching `commontrace reliability --strict`'s
-        own precedent: a `review`-severity contradiction is exactly the
-        weaker, lexical-only signal that report already treats as worth
-        surfacing but not worth failing a build over.
-        """
+        """Whether a `--strict` gate should pass."""
         return not (self.fuse or self.archive or self.high_severity_contradictions)
 
 
 def never_hit(fm: dict) -> bool:
-    """Whether an active lesson has never once been retrieved.
-
-    Tolerant of the shapes a hand-edited YAML file produces for `uses`
-    (missing, a string, a float that should have been an int) -- the same
-    posture `dosage.is_core` takes for `core`, for the same reason: a
-    malformed field must not crash a report, only fail to flag the lesson
-    it belongs to.
-    """
+    """Whether an active lesson has never once been retrieved."""
     try:
         uses_zero = int(fm.get("uses") or 0) == 0
     except (TypeError, ValueError):
@@ -99,15 +40,6 @@ def build_report(
     redundancy_threshold: float = redundancy.DEFAULT_THRESHOLD,
     activation_overlap: float = reliability.DEFAULT_ACTIVATION_OVERLAP,
 ) -> ConsolidationReport:
-    """`lessons` is `evidence_io.load_active_lessons`'s shape: active-status
-    lesson frontmatter dicts with the body stashed under
-    `templates.BODY_KEY`. Only active lessons are considered for all three
-    signals -- a candidate still in review is not yet costing the corpus
-    anything (see this module's docstring on why fusion in particular
-    checks only what is actually competing for a retrieval slot; the same
-    reasoning `commontrace/commands/lesson_cmd.py:_active_lesson_texts`
-    documents for the write-time duplicate gate).
-    """
     active = [fm for fm in lessons if str(fm.get("status", "")) == "active"]
 
     fuse = redundancy.find_near_duplicates(

@@ -1,13 +1,3 @@
-"""Tests for commontrace/reference/measure_performance.py's Phase 3 additions:
-
-- P3: run persistence by default + --diff + --history
-- P4: alert thresholds (STATUS.md §5 defaults) incl. unimodal importance distribution,
-      and --strict exit-code semantics
-- P5: Operational Cost section reading memory/alpha_telemetry.jsonl
-- P8: Semantic near-duplicates section reading memory/attention/index.npz
-
-Uses tmp directories throughout -- never touches the real repo memory/.
-"""
 import glob
 import importlib.util
 import json
@@ -23,12 +13,6 @@ try:
 except ImportError:
     HAS_NUMPY = False
 
-# Loaded by explicit file path, not `from conftest import ...` -- see
-# tests/test_benchmark.py's identical comment for why: hub/tests/ also has
-# its own conftest.py, and a bare `import conftest` resolves against
-# whichever same-named module pytest's default import mode put on sys.path
-# first, which depends on collection order when both test suites run
-# together (`pytest tests/ hub/tests/`).
 _conftest_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "conftest.py")
 _conftest_spec = importlib.util.spec_from_file_location("commontrace_tests_conftest", _conftest_path)
 _conftest = importlib.util.module_from_spec(_conftest_spec)
@@ -36,10 +20,6 @@ _conftest_spec.loader.exec_module(_conftest)
 write_episode = _conftest.write_episode
 write_lesson = _conftest.write_lesson
 
-
-# ---------------------------------------------------------------------------
-# P4 -- default thresholds match STATUS.md §5 P4 exactly
-# ---------------------------------------------------------------------------
 
 class TestDefaultThresholds:
     def test_defaults_match_status_md_p4(self):
@@ -72,17 +52,16 @@ class TestUnimodalAlert:
         }
 
     def test_unimodal_distribution_fires_alert(self):
-        report = self._make_report({3: 20})  # 100% at importance 3
+        report = self._make_report({3: 20})
         alerts = bm.compute_alerts(report, self._thresholds())
         assert any("nimodal" in a for a in alerts)
 
     def test_balanced_distribution_no_alert(self):
-        report = self._make_report({3: 10, 4: 9, 5: 1})  # mirrors real snapshot in STATUS.md
+        report = self._make_report({3: 10, 4: 9, 5: 1})
         alerts = bm.compute_alerts(report, self._thresholds())
         assert not any("nimodal" in a for a in alerts)
 
     def test_just_under_threshold_no_alert(self):
-        # 94/100 = 94% < 95% default threshold
         report = self._make_report({3: 94, 4: 6})
         alerts = bm.compute_alerts(report, self._thresholds())
         assert not any("nimodal" in a for a in alerts)
@@ -93,7 +72,7 @@ class TestUnimodalAlert:
         assert alerts == []
 
     def test_unimodal_threshold_is_configurable(self):
-        report = self._make_report({3: 8, 4: 2})  # 80%
+        report = self._make_report({3: 8, 4: 2})
         thresholds = self._thresholds()
         thresholds["unimodal"] = 0.99
         assert not any("nimodal" in a for a in bm.compute_alerts(report, thresholds))
@@ -101,17 +80,11 @@ class TestUnimodalAlert:
         assert any("nimodal" in a for a in bm.compute_alerts(report, thresholds))
 
     def test_missing_unimodal_key_defaults_gracefully(self):
-        """compute_alerts must not KeyError when a caller (e.g. existing tests, older
-        callers) passes a thresholds dict without the new 'unimodal' key."""
         report = self._make_report({3: 20})
         thresholds = {"quality": 0.8, "retrieval": 0.7, "never_hit": 0.25}
-        alerts = bm.compute_alerts(report, thresholds)  # must not raise
-        assert any("nimodal" in a for a in alerts)  # falls back to DEFAULT_THRESHOLD_UNIMODAL
+        alerts = bm.compute_alerts(report, thresholds)
+        assert any("nimodal" in a for a in alerts)
 
-
-# ---------------------------------------------------------------------------
-# P3 -- run persistence + --diff + --history
-# ---------------------------------------------------------------------------
 
 class TestPersistReport:
     def test_persist_report_writes_json_with_schema_version(self, tmp_memory):
@@ -135,15 +108,9 @@ class TestPersistReport:
             path = bm.persist_report({"x": 1}, ts=ts)
         finally:
             bm.BASE_DIR = old_base
-        # Microseconds included (L-36): two runs within the same second
-        # previously collided on an identical filename and the second
-        # silently overwrote the first's report.
         assert os.path.basename(path) == "2026-05-27_175746_123456.json"
 
     def test_persist_report_does_not_collide_within_the_same_second(self, tmp_memory):
-        """Even same microsecond -- pinned explicitly, since two runs
-        computed a report fast enough to share one wall-clock tick used to
-        silently overwrite each other with no warning at all."""
         import datetime
         old_base = bm.BASE_DIR
         bm.BASE_DIR = str(tmp_memory)
@@ -191,7 +158,7 @@ def _fake_report(lesson_quality, ir_strict, ir_permissive, transfer_gap):
 class TestComputeDiff:
     def test_flags_delta_over_5pp(self):
         older = _fake_report(0.90, 0.80, 0.90, 0.0)
-        newer = _fake_report(0.80, 0.80, 0.90, 0.0)  # lesson_quality dropped 10pp
+        newer = _fake_report(0.80, 0.80, 0.90, 0.0)
         rows = bm.compute_diff(older, newer)
         lq_row = next(r for r in rows if r["metric"] == "lesson_quality")
         assert lq_row["flagged"] is True
@@ -199,7 +166,7 @@ class TestComputeDiff:
 
     def test_no_flag_under_5pp(self):
         older = _fake_report(0.90, 0.80, 0.90, 0.0)
-        newer = _fake_report(0.92, 0.80, 0.90, 0.0)  # +2pp
+        newer = _fake_report(0.92, 0.80, 0.90, 0.0)
         rows = bm.compute_diff(older, newer)
         lq_row = next(r for r in rows if r["metric"] == "lesson_quality")
         assert lq_row["flagged"] is False
@@ -238,7 +205,7 @@ class TestRunDiff:
         )
         rc = bm.run_diff(reports_dir=str(reports_dir), strict=False)
         out = capsys.readouterr().out
-        assert rc == 0  # informational only without --strict
+        assert rc == 0
         assert "MOVED >5pp" in out
 
     def test_strict_exits_nonzero_when_flagged(self, tmp_memory):
@@ -295,10 +262,6 @@ class TestRunHistory:
         assert "90.0%" in out or "90%" in out
 
 
-# ---------------------------------------------------------------------------
-# P5 -- Operational Cost (Alpha telemetry)
-# ---------------------------------------------------------------------------
-
 class TestOperationalCost:
     def test_missing_file_reports_clearly(self, tmp_path):
         result = bm.compute_operational_cost(str(tmp_path / "alpha_telemetry.jsonl"))
@@ -337,17 +300,9 @@ class TestOperationalCost:
         assert result["available"] is False
 
 
-# ---------------------------------------------------------------------------
-# P8 -- Semantic near-duplicates
-# ---------------------------------------------------------------------------
-
 class TestSemanticDuplicates:
     @pytest.mark.skipif(not HAS_NUMPY, reason="numpy not installed")
     def test_missing_index_reports_clearly(self, tmp_path):
-        # Only reaches the "index file missing" branch when numpy IS
-        # installed (compute_semantic_duplicates checks HAS_NUMPY first --
-        # see test_missing_numpy_reports_clearly for that case, which
-        # monkeypatches HAS_NUMPY rather than depending on the real install).
         result = bm.compute_semantic_duplicates(str(tmp_path / "index.npz"))
         assert result["available"] is False
         assert "No attention index found" in result["message"]
@@ -361,7 +316,6 @@ class TestSemanticDuplicates:
     @pytest.mark.skipif(not HAS_NUMPY, reason="numpy not installed")
     def test_finds_near_duplicate_pair_above_threshold(self, tmp_path):
         index_path = tmp_path / "index.npz"
-        # lesson_a and lesson_b are identical (cosine 1.0); lesson_c is orthogonal.
         embeddings = np.array([
             [1.0, 0.0, 0.0],
             [1.0, 0.0, 0.0],
@@ -402,8 +356,6 @@ class TestSemanticDuplicates:
 
     @pytest.mark.skipif(not HAS_NUMPY, reason="numpy not installed")
     def test_never_deletes_or_modifies_lesson_files(self, tmp_path):
-        """Recommendation-only: compute_semantic_duplicates must not touch the filesystem
-        beyond reading index.npz."""
         index_path = tmp_path / "index.npz"
         embeddings = np.array([[1.0, 0.0], [1.0, 0.0]], dtype=np.float32)
         np.savez(
@@ -421,15 +373,8 @@ class TestSemanticDuplicates:
         assert lesson_file.read_text(encoding="utf-8") == "---\nname: lesson_a\n---\nbody"
 
 
-# ---------------------------------------------------------------------------
-# End-to-end: main() persists by default and doesn't alter existing metrics
-# ---------------------------------------------------------------------------
-
 class TestMainPersistsByDefault:
     def _run_main(self, argv):
-        """main() only calls sys.exit() explicitly on some paths (--diff/--history,
-        the 'no episodes' early return, or --strict with alerts); otherwise it falls off
-        the end and returns None without raising. Treat both as a normal return."""
         old_argv = sys.argv
         sys.argv = argv
         try:
@@ -470,7 +415,6 @@ class TestMainPersistsByDefault:
         assert len(stored) == 0
 
     def test_strict_flag_causes_nonzero_exit_on_alert(self, tmp_memory):
-        # lesson_quality = 0/1 = 0.0, well under the 0.7 default threshold -> alert.
         write_episode(tmp_memory, "2026-01-01_ep1", proposed=["lesson_a"], validated=[])
         old_base = bm.BASE_DIR
         bm.BASE_DIR = str(tmp_memory)
@@ -492,9 +436,6 @@ class TestMainPersistsByDefault:
 
 
 class TestExistingMetricsUnchangedByPhase3:
-    """Regression guard: none of the Phase 3 additions may change the value of an
-    existing metric on the same input data."""
-
     def test_lesson_quality_formula_unchanged(self):
         episodes = [
             {"lessons_proposed_by_omega": ["a", "b", "c"], "lessons_validated_by_lambda": ["a"]},

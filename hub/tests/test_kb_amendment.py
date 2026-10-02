@@ -1,22 +1,3 @@
-"""Correcting a Knowledge Base entry must leave the entry in place.
-
-`commons_visible()` excludes superseded rows, and `amend_trace` INSERTs a
-new row rather than mutating the original. Those two facts combined meant
-that amending a Knowledge Base entry removed it from the Knowledge Base:
-the original went invisible the moment it was superseded, and the new row
-was a plain org trace.
-
-That sits directly on the path this product's governance is built around.
-`kb-review` tells an operator "this entry is disputed" or "this entry is
-stale"; the natural remedy is to amend it; and amending it deleted it,
-silently, along with its accumulated hits. Correcting an article is the
-most ordinary act in a wiki and has to leave the article in place.
-
-What these tests pin is that correction preserves membership, that it does
-NOT preserve the votes cast against text that no longer exists, and that a
-customer's own trace keeps the old behaviour -- re-sharing a correction
-stays an explicit decision for content that is the org's to publish.
-"""
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -76,7 +57,6 @@ async def _browse(session_factory, org_id):
 
 class TestCorrectingAnEntryKeepsItInTheKnowledgeBase:
     async def test_an_amended_entry_is_still_served(self, session_factory, config, orgs):
-        """The regression. Before the fix this went 1 entry -> 0 entries."""
         await _seed_kb(session_factory, orgs["operator"])
         assert (await _browse(session_factory, orgs["reader"]))["total"] == 1
 
@@ -101,8 +81,6 @@ class TestCorrectingAnEntryKeepsItInTheKnowledgeBase:
     async def test_only_one_version_is_served_never_both(
         self, session_factory, config, orgs
     ):
-        """The superseded original must stay invisible. Serving both would
-        answer one question with two contradictory entries."""
         entry_id = await _seed_kb(session_factory, orgs["operator"])
         await _amend(session_factory, config, orgs["operator"], entry_id,
                      solution_text="the corrected advice")
@@ -128,10 +106,6 @@ class TestCorrectingAnEntryKeepsItInTheKnowledgeBase:
 
 class TestWhatCarriesForwardAndWhatDoesNot:
     async def test_hits_carry_forward(self, session_factory, config, orgs):
-        """`commons_hits` measures how often the corpus was asked this
-        question -- a property of the topic, not of the wording. Resetting
-        it would drop a corrected entry into kb_review_queue's "never hit"
-        bucket as though nobody had ever needed it."""
         entry_id = await _seed_kb(session_factory, orgs["operator"], hits=42)
         await _amend(session_factory, config, orgs["operator"], entry_id,
                      solution_text="corrected")
@@ -139,8 +113,6 @@ class TestWhatCarriesForwardAndWhatDoesNot:
         assert (await _browse(session_factory, orgs["reader"]))["entries"][0]["hits"] == 42
 
     async def test_the_review_date_carries_forward(self, session_factory, config, orgs):
-        """A correction is not a re-review. An entry whose version-pinned
-        claim expires in March still expires in March after a typo fix."""
         due = datetime.now(timezone.utc) + timedelta(days=30)
         entry_id = await _seed_kb(session_factory, orgs["operator"], review_after=due)
         amended = await _amend(session_factory, config, orgs["operator"], entry_id,
@@ -151,10 +123,6 @@ class TestWhatCarriesForwardAndWhatDoesNot:
         assert stored.commons_review_after is not None
 
     async def test_votes_do_not_carry_forward(self, session_factory, config, orgs):
-        """`trust`/`commons_votes` are aggregates over Vote rows, and those
-        rows stay keyed to the text they judged. Copying the numbers onto a
-        row with no underlying votes would contradict itself and then be
-        silently overwritten by the next voter's recomputed tally."""
         entry_id = await _seed_kb(session_factory, orgs["operator"], votes=5, trust=0.2)
         await _amend(session_factory, config, orgs["operator"], entry_id,
                      solution_text="corrected")
@@ -166,9 +134,6 @@ class TestWhatCarriesForwardAndWhatDoesNot:
     async def test_the_signature_is_recomputed_from_the_corrected_text(
         self, session_factory, config, orgs
     ):
-        """Carrying the old signature forward would leave a corrected entry
-        answering to the OLD failure's fingerprint -- the quiet
-        wrong-answer failure mode hub/commons.py refuses to risk."""
         entry_id = await _seed_kb(session_factory, orgs["operator"])
         async with session_scope(session_factory) as session:
             before = (await session.get(Trace, entry_id)).commons_signature
@@ -183,10 +148,6 @@ class TestWhatCarriesForwardAndWhatDoesNot:
 
 
 class TestACustomersOwnTraceIsUnaffected:
-    """The existing rule stands where its reasoning still applies: for
-    content that is the org's to publish, re-sharing a correction is an
-    explicit decision `amend_trace` must not make on its behalf."""
-
     async def test_an_ordinary_trace_does_not_become_a_kb_entry(
         self, session_factory, config, orgs
     ):
@@ -208,17 +169,6 @@ class TestACustomersOwnTraceIsUnaffected:
 
 
 class TestAReaderCanTellACorrectedEntryFromANewOne:
-    """The honesty condition on resetting votes.
-
-    `_carry_commons_forward` drops `trust`/`commons_votes` on amendment,
-    for good reasons documented there. The consequence is that a freshly
-    corrected entry and one nobody has ever tried both read `unproven`
-    with zero votes -- indistinguishable, which makes the reset look like
-    amnesia rather than a decision. Saying "revised" is what keeps it
-    honest, and it is the same affordance a wiki's "last edited on"
-    provides.
-    """
-
     async def test_an_untouched_entry_reports_no_revisions(
         self, session_factory, config, orgs
     ):
@@ -233,8 +183,6 @@ class TestAReaderCanTellACorrectedEntryFromANewOne:
 
         entry = (await _browse(session_factory, orgs["reader"]))["entries"][0]
         assert entry["revisions"] == 1
-        # ...and it is otherwise indistinguishable from a new entry, which
-        # is exactly why the count has to be there.
         assert entry["standing"] == commons.STANDING_UNPROVEN
         assert entry["votes"] == 0
 

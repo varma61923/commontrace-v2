@@ -44,94 +44,32 @@ try:
 except ImportError:
     SentenceTransformer = None
 
-# The only model this project's build_index.py ever writes into index.npz. index.npz
-# is a local build artifact, but it can arrive on a machine via a git clone/fork/sync
-# rather than a local `build_index.py` run -- so its `model_name` field is not
-# trustworthy input. Loading whatever string it contains via SentenceTransformer(...)
-# would let a tampered index file point at an arbitrary Hugging Face Hub repo ID,
-# which (per known transformers/sentence-transformers CVEs around
-# trust_remote_code/torch.load) can execute attacker-supplied code on load. Only ever
-# load a model named in this fixed allow-list -- warn, don't trust, if the file
-# names anything else.
-#
-# Each trusted model maps to the text a QUERY is prefixed with before encoding:
-# snowflake-arctic-embed was trained with that instruction on queries and none on
-# documents (build_index.py encodes lessons as-is for every model). An index is
-# ranked with the model that built it, never another: a vector space is only
-# comparable with itself. A store keeps its index's model until it rebuilds with
-# another on purpose (build_index.py --model), because the model decides which
-# lessons the semantic arm surfaces and so is part of the treatment a running
-# experiment records (commontrace/retrieval_io.py labels it).
-#
-# Measured on LoCoMo's 1,531 questions (public dataset), the share of
-# answering turns a model's exact cosine search puts in its top 10:
-#   multi-qa-mpnet-base-dot-v1               0.561   (109M params; the original)
-#   Snowflake/snowflake-arctic-embed-m-v1.5  0.706   (109M params; the default)
 TRUSTED_MODELS = {
     "multi-qa-mpnet-base-dot-v1": "",
     "Snowflake/snowflake-arctic-embed-m-v1.5":
         "Represent this sentence for searching relevant passages: ",
 }
-#: The model a NEW index is built with (build_index.py).
 DEFAULT_MODEL_NAME = "Snowflake/snowflake-arctic-embed-m-v1.5"
-# The name older callers import; the default model.
 _TRUSTED_MODEL_NAME = DEFAULT_MODEL_NAME
 
-# Delimiter must be its own line, not just the substring "---" anywhere in the file --
-# a plain content.split("---", 2) corrupts any field whose value contains "---".
-# \r is allowed so CRLF content parses too.
 _DELIM_RE = re.compile(r"^---[ \t]*\r?$", re.MULTILINE)
 
-# Kept identical to build_index.py's own _SLUG_RE -- see that module's
-# comment. A `name` containing a `|` would otherwise corrupt this module's
-# own `|`-delimited retrieval brief (both the cosine-ranked lines and the
-# missing_from_index "importance floor override" lines below).
 _SLUG_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
-# ---------------------------------------------------------------------------
-# Path configuration — provider-agnostic
-#
-# Priority:
-#   1. COMMONTRACE_ROOT env var (explicit override)
-#   2. JUSTDOIT_ROOT env var (legacy backward compatibility)
-#   3. Auto-detect from this script's location (works out of the box)
-#
-# Example: export COMMONTRACE_ROOT=/opt/commontrace
-# ---------------------------------------------------------------------------
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-_AUTO_ROOT = os.path.dirname(os.path.dirname(_SCRIPT_DIR))  # memory/attention → memory → ROOT
+_AUTO_ROOT = os.path.dirname(os.path.dirname(_SCRIPT_DIR))
 _ROOT = os.environ.get("COMMONTRACE_ROOT") or os.environ.get("JUSTDOIT_ROOT") or _AUTO_ROOT
 INDEX_PATH = os.path.join(_ROOT, "memory", "attention", "index.npz")
 LESSONS_DIR = os.path.join(_ROOT, "memory", "lessons")
-# Alpha operational-cost telemetry (Phase 3, P5): one JSON object appended per invocation.
-# A module-level path (not a literal inlined at the call site) so tests can monkeypatch it
-# to a tmp path, same pattern already used for INDEX_PATH/LESSONS_DIR above.
 TELEMETRY_PATH = os.path.join(_ROOT, "memory", "alpha_telemetry.jsonl")
 
 
 def _load_frontmatter(fm_text: str):
-    """Parse with commontrace's strict loader when it is importable.
-
-    Identical to build_index.py's helper of the same name, and deliberately
-    kept in sync with it rather than shared via import: plain
-    yaml.safe_load applies YAML 1.1 rules, so a lesson `name: on` parses
-    here as the boolean True while build_index.py's index (built with
-    _StrictBoolLoader) keys the same lesson under the string "on" -- an
-    importance>=floor safety-override lookup in this module for that lesson
-    then misses under `importances[slug]` even though the lesson genuinely
-    has a high importance, because the two loaders disagree on what `slug`
-    even is. Falls back to safe_load so this script still runs standalone
-    from a checkout without the package installed, same as build_index.py.
-    """
     try:
-        from commontrace.frontmatter import _StrictBoolLoader
+        from commontrace.frontmatter import load_text
     except Exception:  # noqa: BLE001 - standalone use, any import problem
         return yaml.safe_load(fm_text)
-    # See build_index.py's identical comment: _StrictBoolLoader IS a
-    # yaml.SafeLoader subclass that only narrows two implicit-conversion
-    # rules, so this carries none of the arbitrary-object-instantiation
-    # risk bandit's B506 exists to catch.
-    return yaml.load(fm_text, Loader=_StrictBoolLoader)  # nosec B506
+    return load_text(fm_text)
 
 
 class ImportancesResult(tuple):
@@ -144,10 +82,6 @@ class ImportancesResult(tuple):
 
 
 def load_importances(lessons_dir: str | None = None) -> "ImportancesResult":
-    """Return ({slug: importance} for every ACTIVE lesson (default 3 if missing),
-    n_frontmatters_parsed) -- the second value counts every lesson_*.md (excluding the
-    template) whose frontmatter was successfully parsed, active or not, for Alpha
-    operational-cost telemetry (how many frontmatters retrieval had to read)."""
     out: dict[str, int] = {}
     n_parsed = 0
     newest_active_mtime = 0.0
@@ -163,11 +97,6 @@ def load_importances(lessons_dir: str | None = None) -> "ImportancesResult":
             with open(path, "r", encoding="utf-8-sig") as fh:
                 content = fh.read()
         except OSError as exc:
-            # A file glob matched but the file itself is unreadable by the
-            # time we get to it (permissions, deleted between glob() and
-            # open() by a concurrent capture/lesson command, a broken
-            # symlink) -- one such lesson must not abort retrieval for
-            # every other lesson in the store.
             print(f"[WARN] skipping unreadable lesson {path}: {exc}", file=sys.stderr)
             continue
         delims = list(_DELIM_RE.finditer(content))
@@ -177,21 +106,11 @@ def load_importances(lessons_dir: str | None = None) -> "ImportancesResult":
             frontmatter = _load_frontmatter(content[delims[0].end():delims[1].start()]) or {}
         except yaml.YAMLError:
             continue
-        # Same guard as build_index.py: a scalar frontmatter block parses to
-        # a str, and .get() on it raises AttributeError past the yaml-only
-        # except above.
         if not isinstance(frontmatter, dict):
             continue
         n_parsed += 1
         if frontmatter.get("status", "active") != "active":
             continue
-        # Counted toward staleness before the slug check below: check_staleness's
-        # own slow-path fallback (no precomputed newest_active_mtime) only
-        # requires status=="active" to count a file's mtime, not a well-formed
-        # slug. Gating this on _SLUG_RE too made the fast path here disagree
-        # with that fallback on the exact same on-disk state -- an active
-        # lesson with a malformed `name` would raise a staleness warning via
-        # the slow path but not via this one.
         newest_active_mtime = max(newest_active_mtime, mtime)
         slug = frontmatter.get("name")
         if not slug or not _SLUG_RE.match(str(slug)):
@@ -204,9 +123,6 @@ def load_importances(lessons_dir: str | None = None) -> "ImportancesResult":
 
 
 def load_importances_from_index(data) -> "ImportancesResult | None":
-    """Extract ({slug: importance} for active lessons, n_parsed=0) directly from index.npz.
-    Returns None if importances/statuses metadata is not co-located in the index.
-    """
     if isinstance(data, (str, os.PathLike)):
         try:
             with np.load(data, allow_pickle=False) as npz:
@@ -232,32 +148,10 @@ def load_importances_from_index(data) -> "ImportancesResult | None":
         return None
 
 
-# Each record here is small, fixed-shape operational-cost metadata (see the
-# call site: latency, counts, a token-count estimate, query LENGTH -- never
-# the query text itself), but one gets appended per invocation with no
-# retention limit, so a long-lived store's telemetry file grows without
-# bound. Rotated once it crosses this size rather than left to grow
-# forever.
-_TELEMETRY_MAX_BYTES = 10 * 1024 * 1024  # 10 MiB
+_TELEMETRY_MAX_BYTES = 10 * 1024 * 1024
 
 
 def _append_telemetry(record, path=None):
-    """Append one JSON line to memory/alpha_telemetry.jsonl -- create the file if absent,
-    always append, never truncate existing history. A telemetry write failure (e.g.
-    read-only filesystem) must never break the actual retrieval it's instrumenting, so
-    failures are reported to stderr and swallowed rather than raised.
-
-    Rotation (getsize -> os.replace) and the append that follows are guarded by
-    commontrace.frontmatter.locked(): without it, two concurrent query.py invocations
-    (a multi-agent fleet, or several parallel Alpha calls) can race the check-then-act
-    rotation -- one process's os.replace() can swap the file out from under another
-    that already decided not to rotate, so that process's append lands in the freshly
-    rotated `.1` file instead of a fresh `path`, or raises FileNotFoundError against an
-    inode that no longer exists at that name. The lock is degrade-only (see
-    frontmatter.locked's own docstring): on a platform with neither fcntl nor msvcrt it
-    is a no-op, same as everywhere else this module is used, rather than a reason a
-    telemetry write -- or the retrieval it's instrumenting -- ever fails outright.
-    """
     path = path or TELEMETRY_PATH
     try:
         from commontrace.frontmatter import locked
@@ -268,10 +162,6 @@ def _append_telemetry(record, path=None):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with locked(path):
             if os.path.exists(path) and os.path.getsize(path) >= _TELEMETRY_MAX_BYTES:
-                # Keep exactly one prior generation, the simplest form of
-                # logrotate's own default behavior -- overwrites any previous
-                # .1 rather than accumulating .1, .2, .3, ... forever, which
-                # would just move the unbounded-growth problem sideways.
                 try:
                     os.replace(path, path + ".1")
                 except OSError:
@@ -288,31 +178,8 @@ def check_staleness(
     indexed_slugs: "set[str]",
     active_slugs: "set[str]",
     newest_active_mtime: "float | None" = None,
+    lesson_mtimes=None,
 ):
-    """Return a list of human-readable reasons the on-disk index may no longer match the
-    current lesson store, or [] if it looks current.
-
-    build_index.py already refuses a no-op rebuild once either signal below fires, but
-    that check only runs when someone *remembers* to invoke build_index.py again. Nothing
-    previously stopped `query.py` itself from silently ranking against embeddings that no
-    longer reflect what is on disk -- edit a lesson's wording (same slug, so the
-    importance-floor override above never notices) and every subsequent query keeps
-    scoring the *old* text with no signal anything is wrong. Two independent signals,
-    mirroring build_index.py's own freshness check:
-      1. slug set: the active lesson slugs on disk differ from what got embedded --
-         catches deletions/renames/status changes that don't necessarily advance any
-         *surviving* file's mtime.
-      2. mtime: an ACTIVE lesson file (add or edit) is newer than the index file itself
-         (a same-slug edit -- reworded rule/applies_when -- that signal 1 can't see).
-         Deliberately excludes archived/malformed lessons so touching one of *those*
-         doesn't manufacture a false warning: only a file newer than the index is even
-         opened and frontmatter-parsed, so on the common already-fresh path (nothing
-         postdates the index) this reads nothing and costs one glob + a stat per file --
-         no full second frontmatter-parse pass duplicating load_importances()'s.
-    Best-effort throughout: an unreadable index_path, lessons_dir, or individual lesson
-    file just drops out of the signal it would have fed rather than raising -- staleness
-    detection must never itself break retrieval.
-    """
     reasons: list[str] = []
 
     added = active_slugs - indexed_slugs
@@ -336,15 +203,18 @@ def check_staleness(
                 reasons.append("an active lesson file was modified after the index was last built")
         else:
             newest_active = 0.0
-            for path in glob.glob(os.path.join(lessons_dir, "lesson_*.md")):
+            if lesson_mtimes is None:
+                lesson_mtimes = []
+                for path in glob.glob(os.path.join(lessons_dir, "lesson_*.md")):
+                    try:
+                        lesson_mtimes.append((path, os.path.getmtime(path)))
+                    except OSError:
+                        continue
+            for path, mtime in lesson_mtimes:
+                if mtime <= index_mtime:
+                    continue
                 if os.path.basename(path) == "lesson_template.md":
                     continue
-                try:
-                    mtime = os.path.getmtime(path)
-                except OSError:
-                    continue
-                if mtime <= index_mtime:
-                    continue  # can't raise newest_active past index_mtime either way
                 try:
                     with open(path, "r", encoding="utf-8-sig") as fh:
                         content = fh.read()
@@ -369,12 +239,6 @@ def check_staleness(
 
 
 def _positive_int(raw: str) -> int:
-    """argparse type= for --top-k. `order[:top_k]` below is a Python slice,
-    not a bounds check: `order[:-1]` means "all but the last", not
-    "nothing", so a negative --top-k silently returned nearly the entire
-    index instead of failing -- the opposite of "a small number of
-    results". Rejected at parse time rather than clamped silently, since a
-    negative top-k is a caller bug worth surfacing."""
     value = int(raw)
     if value < 1:
         raise argparse.ArgumentTypeError(f"--top-k must be >= 1, got {value}")
@@ -383,10 +247,6 @@ def _positive_int(raw: str) -> int:
 
 @contextlib.contextmanager
 def _no_progress_bars():
-    """Quiet the library's "Loading weights" bars for a load from the local
-    cache: they are noise on every query. A real download keeps its bars.
-    transformers keeps its own switch beside huggingface_hub's; both are
-    restored afterwards."""
     restore = []
     try:
         from huggingface_hub import utils as hub_utils
@@ -412,9 +272,6 @@ def _no_progress_bars():
 
 
 def _load_cached_first(model_name):
-    """The model from the local Hugging Face cache when it is there, else
-    fetched. A cached model otherwise still costs a Hub round trip on every
-    load (~2s, and a request to a third party each query)."""
     try:
         with _no_progress_bars():
             return SentenceTransformer(model_name, local_files_only=True)
@@ -423,12 +280,7 @@ def _load_cached_first(model_name):
 
 
 class Ranked:
-    """What one semantic retrieval produced, before anything is printed.
-
-    `lines` is exactly the brief `main()` prints -- header lines start with
-    `#`, hit lines are `<slug> | cosine=<x> | importance=<n>` -- and
-    `stderr` the warnings it prints, in order. `rc` is main()'s exit code.
-    """
+    """What one semantic retrieval produced, before anything is printed."""
 
     def __init__(self, rc, lines=(), stderr=(), stats=None):
         self.rc = rc
@@ -441,29 +293,15 @@ _MODELS: dict = {}
 
 
 def load_index(index_path):
-    """(model_name, embeddings, slugs, agent_types, n_lessons, fast_importances)
-    from index.npz, or a `Ranked` failure explaining why it cannot be used."""
     if not os.path.exists(index_path):
         return Ranked(1, stderr=[
             f"[ERR] No index found at {index_path}. Run build_index.py first.",
         ])
     try:
-        # `with`, not a bare np.load(): NpzFile keeps the underlying zip
-        # file open until closed, and array access below (data[...])
-        # decompresses each array into its own independent ndarray in
-        # memory -- so extracting them here and closing on exit from the
-        # `with` loses nothing, while a bare np.load() leaked the file
-        # handle for the rest of the process's lifetime, which on Windows
-        # blocks a subsequent `build_index.py --force` from replacing this
-        # same file (already fixed the same way in build_index.py's own
-        # np.load call; this brings query.py in line with it).
         with np.load(index_path, allow_pickle=False) as data:
             model_name = str(data["model_name"])
-            embeddings = data["embeddings"]  # already L2-normalized
+            embeddings = data["embeddings"]
             slugs = data["slugs"]
-            # Absent in an index built before the agent_types column existed.
-            # None (not an empty array) so the filter below can tell "this
-            # index cannot answer that question" from "no lesson matches".
             agent_types = data["agent_types"] if "agent_types" in data.files else None
             n_lessons = int(data["n_lessons"])
             fast_importances = load_importances_from_index(data)
@@ -476,22 +314,12 @@ def load_index(index_path):
 
 
 def load_model(model_name=DEFAULT_MODEL_NAME):
-    """A trusted model, or a `Ranked` failure. Never a model outside
-    TRUSTED_MODELS: see its comment."""
     if model_name not in TRUSTED_MODELS:
         return Ranked(1, stderr=[
             f"[ERR] {model_name!r} is not a trusted embedding model; expected one of "
             f"{sorted(TRUSTED_MODELS)}.",
         ])
     try:
-        # SentenceTransformer downloads the model from Hugging Face Hub on
-        # first use if it isn't already in the local cache
-        # (~/.cache/huggingface/), which needs internet access this
-        # process may not have -- an air-gapped deployment, or a
-        # cache the operator didn't realize was never populated. Left
-        # uncaught this raised a raw OSError/traceback from deep inside
-        # huggingface_hub instead of the clean, actionable error every
-        # other failure path in this function already gives.
         return _load_cached_first(model_name)
     except OSError as exc:
         return Ranked(1, stderr=[
@@ -503,16 +331,8 @@ def load_model(model_name=DEFAULT_MODEL_NAME):
 
 
 def rank(query, top_k=10, include_importance_floor=4, agent_type=None, *,
-         index_path=None, lessons_dir=None, index=None, model=None) -> Ranked:
-    """One semantic retrieval, as a value. `main()` prints it; a long-lived
-    process (commontrace/semantic_arm.py, behind the MCP server) calls this
-    directly with the index and model it already holds, so the two can never
-    rank differently.
-
-    `index` is load_index()'s tuple and `model` load_model()'s result; either
-    is loaded here when not given; a caller that passes `model` must pass the
-    index's own (`index[0]`, a TRUSTED_MODELS name).
-    """
+         index_path=None, lessons_dir=None, index=None, model=None,
+         lesson_mtimes=None) -> Ranked:
     index_path = INDEX_PATH if index_path is None else index_path
     lessons_dir = LESSONS_DIR if lessons_dir is None else lessons_dir
     stderr: list[str] = []
@@ -531,23 +351,13 @@ def rank(query, top_k=10, include_importance_floor=4, agent_type=None, *,
             "to regenerate a trustworthy index.",
         ])
     if model is None:
-        # The index's own model: its vectors are comparable with no other.
         model = load_model(model_name)
     if isinstance(model, Ranked):
         return model
     q_emb = model.encode(
-        TRUSTED_MODELS[model_name] + query, normalize_embeddings=True, convert_to_numpy=True)
+        TRUSTED_MODELS[model_name] + query, normalize_embeddings=True, convert_to_numpy=True,
+        show_progress_bar=False)
 
-    # An index built by a different (or later, wider) embedding model has a
-    # different column count, and `embeddings @ q_emb` raises numpy's own
-    # ValueError -- "matmul: Input operand 1 has a mismatch in its core
-    # dimension" -- with no mention of build_index.py, from deep inside a
-    # matrix multiply rather than from a guard that names the fix. The
-    # model_name check above catches a MISLABELED index; this catches a
-    # correctly-labeled one that is simply the wrong shape, which the
-    # model_name string alone cannot detect. Row count is checked too:
-    # `slugs[idx]` below indexes unconditionally, so an index truncated by a
-    # previous crash mid-write would raise IndexError past the same point.
     if embeddings.ndim != 2 or embeddings.shape[1] != q_emb.shape[0]:
         return Ranked(1, stderr=[
             f"[ERR] {index_path} has embedding dimension {embeddings.shape}, which "
@@ -561,26 +371,27 @@ def rank(query, top_k=10, include_importance_floor=4, agent_type=None, *,
             "python memory/attention/build_index.py --force",
         ])
 
-    # cosine == dot when both are unit-norm
     scores = embeddings @ q_emb
 
-    # Fast path: load importances directly from co-located index.npz metadata,
-    # eliminating O(N) disk I/O and YAML parsing per query.
-    # Falls back to disk scan (load_importances()) if index lacks metadata.
     if fast_importances is not None:
         importances_res = fast_importances
-        # A copy: the index tuple may be held across calls (semantic_arm),
-        # and the newer-than-index additions below must not accumulate in it.
         importances, n_frontmatters_parsed = dict(importances_res[0]), importances_res[1]
         try:
             idx_mtime = os.path.getmtime(index_path)
         except OSError:
             idx_mtime = 0.0
-        for path in glob.glob(os.path.join(lessons_dir, "lesson_*.md")):
-            if os.path.basename(path) == "lesson_template.md":
+        if lesson_mtimes is None:
+            lesson_mtimes = []
+            for path in glob.glob(os.path.join(lessons_dir, "lesson_*.md")):
+                try:
+                    lesson_mtimes.append((path, os.path.getmtime(path)))
+                except OSError:
+                    pass
+        for path, mtime in lesson_mtimes:
+            if path.endswith("lesson_template.md") and os.path.basename(path) == "lesson_template.md":
                 continue
             try:
-                if os.path.getmtime(path) > idx_mtime:
+                if mtime > idx_mtime:
                     with open(path, "r", encoding="utf-8-sig") as fh:
                         content = fh.read()
                     delims = list(_DELIM_RE.finditer(content))
@@ -600,13 +411,6 @@ def rank(query, top_k=10, include_importance_floor=4, agent_type=None, *,
         importances_res = load_importances(lessons_dir)
         importances, n_frontmatters_parsed = importances_res
 
-    # Top-K by cosine (descending), active lessons only. index.npz keeps a
-    # row for every lesson it was built from; a lesson archived (or deleted
-    # from disk) since the last build_index.py run still has a row and a
-    # cosine score, but it is not in `importances` (load_importances() skips
-    # non-active lessons) -- without this filter it could still take a
-    # top-K slot from a lesson that is actually active, surfacing as
-    # `lesson_x | cosine=0.9xx | importance=0` in the brief.
     order = np.argsort(scores)[::-1]
     active_order = [idx for idx in order if str(slugs[idx]) in importances]
 
@@ -624,21 +428,9 @@ def rank(query, top_k=10, include_importance_floor=4, agent_type=None, *,
             ]
     top_k_idx = list(active_order[: top_k])
 
-    # Safety override: include all active lessons with importance >= floor. This must
-    # check every lesson currently on disk (`importances`, from load_importances()), not
-    # just slugs already present in `slugs` (the index) -- a lesson added/edited since the
-    # last `build_index.py` run exists on disk but not in the index, so iterating only the
-    # index's own slugs silently breaks this script's own documented safety guarantee for
-    # exactly the lessons most likely to need it (freshly-authored critical rules).
     indexed_slugs = {str(s) for s in slugs}
     floor = include_importance_floor
     missing_from_index = []
-    # importance is schema-bounded to [1, 5] (protocol/schemas/lesson.schema.json),
-    # so floor <= 0 can never exclude anything on its own merits -- every lesson's
-    # `importances.get(slug, 0) >= floor` is trivially true, which silently promoted
-    # the ENTIRE lesson store into the brief instead of the intended top-K. Treated
-    # as "override disabled" instead, since that is the only sentinel value below the
-    # valid range and there was previously no way to disable the override at all.
     if floor is not None and floor > 0:
         existing = set(top_k_idx)
         for i, slug in enumerate(slugs):
@@ -653,9 +445,6 @@ def rank(query, top_k=10, include_importance_floor=4, agent_type=None, *,
 
     override_desc = f"+ importance>={floor} override" if floor is not None and floor > 0 else "override disabled"
 
-    # General staleness check (independent of the importance floor above): catches an
-    # edited-but-not-renamed lesson, a below-floor addition/removal, or a forgotten
-    # rebuild after any lesson-store change. See check_staleness()'s docstring.
     stale_reasons = check_staleness(
         index_path,
         lessons_dir,
@@ -664,6 +453,7 @@ def rank(query, top_k=10, include_importance_floor=4, agent_type=None, *,
         newest_active_mtime=(
             getattr(importances_res, "newest_active_mtime", None) if n_frontmatters_parsed > 0 else None
         ),
+        lesson_mtimes=lesson_mtimes,
     )
 
     brief_lines = [
@@ -717,9 +507,6 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    # Latency covers the whole retrieval stage (index load through brief assembly below),
-    # not just the cosine matmul -- that's what actually costs an Alpha invocation wall-clock
-    # time and is what STATUS.md P5 asks to measure.
     _t0 = time.monotonic()
     result = rank(args.query, args.top_k, args.include_importance_floor, args.agent_type)
     for message in result.stderr:
@@ -729,19 +516,11 @@ def main() -> int:
     for line in result.lines:
         print(line)
 
-    # Alpha operational-cost telemetry (Phase 3, P5): latency, frontmatters parsed, number
-    # of candidates the attention layer itself surfaced (top_k_idx -- entries with an actual
-    # embedding/cosine score; missing_from_index entries are a disk fallback, not something
-    # the attention layer surfaced), and a cheap word-count*1.3 estimate of the resulting
-    # brief's token cost (no tokenizer dependency added just for an estimate).
     elapsed_ms = (time.monotonic() - _t0) * 1000.0
     brief_text = "\n".join(result.lines)
     estimated_tokens = len(brief_text.split()) * 1.3
     _append_telemetry(
         {
-            # UTC, not a naive local timestamp: PROTOCOL.md specifies ISO-8601 UTC
-            # everywhere, and a naive local time cannot be sorted or compared across
-            # multi-agent runners in different timezones.
             "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
             "latency_ms": elapsed_ms,
             "n_frontmatters_parsed": result.stats["n_frontmatters_parsed"],

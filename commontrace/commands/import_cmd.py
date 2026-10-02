@@ -67,19 +67,8 @@ def _slugify(title: str) -> str:
     return slug[:60] or "trace"
 
 
-# Only the first N skip/reject reasons are held in memory and printed;
-# beyond that only a count is kept. Unbounded lists of full reasons was the
-# other half of the memory issue this streams around -- a large export with
-# many bad rows would otherwise accumulate a string per row indefinitely.
 _MAX_DETAILS = 20
 
-# `import_data.iter_csv`/`iter_jsonl` stream row by row (no OOM risk the way
-# failure_import.py's fully-materializing read has), but "streamed" is not
-# "unbounded": a multi-gigabyte file handed in by mistake still costs the
-# CPU/IO time to walk the whole thing with no progress signal until it's
-# done. This is a fail-fast bound, generous relative to failure_import.py's
-# 50 MiB (which exists for a stricter reason) precisely because streaming
-# tolerates a much larger file safely.
 _MAX_IMPORT_FILE_BYTES = 500 * 1024 * 1024
 
 
@@ -120,23 +109,12 @@ def run(args: argparse.Namespace) -> int:
     date = datetime.date.today().isoformat()
     schema = validate.load_schema("trace.schema.json")
 
-    # Single pass over the file, streamed via iter_jsonl/iter_csv rather than
-    # collecting parse_jsonl/parse_csv's full result lists: a multi-gigabyte
-    # export was previously read entirely into memory -- as parsed Python
-    # objects for every row, not just raw bytes -- before a single trace file
-    # was written, which OOM-kills a memory-constrained container before it
-    # reports anything at all. Everything below is bounded: counts grow
-    # without limit, but the lists of human-readable detail lines do not.
     n_skipped = 0
     skip_samples: list[str] = []
     n_written = 0
     n_rejected = 0
     reject_samples: list[str] = []
 
-    # utf-8-sig, not plain utf-8: see commontrace/failure_import.py's
-    # read_failures for why -- a BOM-prefixed CSV/JSONL export (Excel,
-    # Windows tools) otherwise lands a literal U+FEFF in the first header
-    # cell or JSON key. Identical to utf-8 for files without a BOM.
     try:
         fh = open(args.file, "r", encoding="utf-8-sig", newline="" if fmt == "csv" else None)
     except OSError as exc:
@@ -161,32 +139,12 @@ def run(args: argparse.Namespace) -> int:
                 trace_id, row.title, args.agent_type, row.tags, args.profile, row.outcome or None
             )
 
-            # Validate before writing, exactly as `capture` does -- and
-            # BEFORE the `--dry-run` early-exit below, not after it. A row
-            # that parses fine but fails schema validation (e.g. a negative
-            # `tokens_used`, which the schema floors at 0 but nothing in the
-            # parse step rejects) used to be counted by `--dry-run` as one
-            # of the traces "would be created," while the real run on the
-            # identical file rejected it and exited non-zero -- the dry
-            # run's whole purpose is to predict that outcome, not skip past
-            # the check that produces it. A bulk import is the likeliest
-            # source of malformed records -- it is someone else's export,
-            # not this tool's output -- so accepting what `capture` refuses
-            # would make the importer the one hole in the store's
-            # invariants, and a bad row would be averaged into
-            # `bench --pilot` until an audit ran.
             instance = dict(fm)
             instance["context_text"] = row.context_text
             instance["solution_text"] = row.solution_text
             errors = validate.validate(instance, schema)
             if errors:
                 n_rejected += 1
-                # Checked per error, not just once before the loop: a single
-                # row that fails several schema checks at once could
-                # otherwise push reject_samples well past _MAX_DETAILS in
-                # one iteration (the check above only gated entry into this
-                # loop, not each append within it), overshooting the "only
-                # the first N are shown" promise printed below.
                 for err in errors:
                     if len(reject_samples) >= _MAX_DETAILS:
                         break
@@ -194,45 +152,16 @@ def run(args: argparse.Namespace) -> int:
                 continue
 
             if args.dry_run:
-                n_written += 1  # counts "would be written" in dry-run mode
+                n_written += 1
                 continue
 
             slug = _slugify(row.title)
-            # Unconditionally id-suffixed, same reasoning as capture_cmd.py:
-            # the `if os.path.exists()` fallback is check-then-act and loses
-            # a row when two imports run at once, which is exactly what a
-            # migration looks like when someone parallelizes it by splitting
-            # the file.
-            #
-            # capture_cmd._id_suffix rather than `trace_id[:8]`, for the same
-            # injectivity reason -- and it matters more here, not less. There
-            # is no existence check on this path at all (by design, per the
-            # comment above), and an import is where volume lives: 8 hex
-            # characters is 32 bits, so a 100k-row migration expects a
-            # collision, and a collision here is a silently dropped row in
-            # the bulk load someone is trusting to move their history.
             out_path = os.path.join(tdir, f"{date}_{slug}_{_id_suffix(trace_id)}.md")
 
             body = templates.trace_body(row.context_text, row.solution_text)
             if row.source_id:
-                # Collapse ALL whitespace (including embedded newlines) to
-                # single spaces before embedding: trace_io._first_wins finds
-                # "## Context"/"## Solution" by matching `^##...` at the
-                # START OF A LINE (re.MULTILINE), and this HTML comment is
-                # plain text to that regex, not a real comment boundary. An
-                # unsanitized source_id containing "...\n## Context\nfake\n"
-                # would inject a same-named section BEFORE the real one, and
-                # "first occurrence wins" means the fake one -- not this
-                # row's actual imported content -- is what every downstream
-                # reader (bench, query, lesson promotion) sees. A source_id
-                # can never legitimately need an embedded newline; the
-                # source system's id is a single token or short string.
                 safe_source_id = " ".join(str(row.source_id).split())
                 body = f"<!-- imported from source id: {safe_source_id} -->\n" + body
-            # Atomic (NamedTemporaryFile + os.replace), same reasoning as
-            # capture_cmd.py -- an import writes many files in a loop, so the
-            # window in which a concurrent reader can see a torn file is not
-            # one write long, it is the whole import.
             frontmatter.write(out_path, fm, body)
             n_written += 1
 
@@ -243,18 +172,8 @@ def run(args: argparse.Namespace) -> int:
     if n_skipped > len(skip_samples):
         print(f"  ... and {n_skipped - len(skip_samples)} more skipped row(s)", file=sys.stderr)
 
-    # n_rejected > 0 (schema-invalid rows) already returns non-zero below.
-    # A file where every row was instead merely *skipped* (missing or
-    # unparseable columns, never even reaching schema validation) still
-    # wrote zero traces but returned 0 -- indistinguishable from success to
-    # a CI/CD ingestion pipeline checking $?.
     all_rows_skipped = n_written == 0 and n_skipped > 0
 
-    # Reported (and folded into the exit code) identically whether or not
-    # this is a dry run: schema validation now runs before the --dry-run
-    # early-exit above, so a row rejected here would ALSO be rejected by a
-    # real run on the same file -- a dry run that hid this would predict a
-    # cleaner import than the file will actually produce.
     if n_rejected:
         verb = "would be rejected as schema-invalid" if args.dry_run else "rejected as schema-invalid and NOT written"
         print(f"[commontrace] {n_rejected} row(s) {verb}:", file=sys.stderr)
@@ -272,7 +191,5 @@ def run(args: argparse.Namespace) -> int:
         "Run `commontrace distill` to find repeated patterns across them."
     )
     if n_rejected or all_rows_skipped:
-        # Non-zero: a partial import that looks successful is how bad rows get
-        # discovered a month later, in a report.
         return 1
     return 0

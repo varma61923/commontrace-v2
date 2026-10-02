@@ -1,31 +1,4 @@
-"""human users and roles (identity distinct from the workload API key)
-
-Revision ID: c2f8a4d16e93
-Revises: e9b4c07d15a8
-Create Date: 2026-09-12 00:00:00.000000
-
-Every request into this Hub resolved to an ORGANIZATION, via one shared
-workload API key -- there was no notion of which person on that org's team
-was acting, so nobody could be individually deprovisioned, and nothing
-distinguished a curator from a validator from an owner. hub/auth.py's own
-module docstring names "Human users, SSO and RBAC" as an explicit,
-not-yet-built follow-up; this is that table.
-
-`role` is one of hub/rbac.py's named roles, checked per MCP tool call in
-ADDITION to the org's existing API-key scope -- this table does not replace
-scoped API keys, it adds a second, finer-grained, per-person gate for the
-subset of callers who authenticate as a person rather than a workload.
-
-Deprovisioning is `disabled_at`, never a delete: the row is exactly what an
-auditor asks about later (who had access, with what role, when it was
-revoked), and it is checked on every authenticated call rather than only at
-token issuance, so revoking access takes effect immediately rather than at
-the token's next natural expiry.
-
-Same row-level security every other org-scoped table in this Hub gets
-(d5c8b3a91e77).
-
-"""
+"""human users and roles (identity distinct from the workload API key)"""
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -68,8 +41,6 @@ def upgrade() -> None:
         sa.UniqueConstraint("org_id", "email", name="uq_users_org_email"),
     )
     op.create_index("ix_users_org_id", "users", ["org_id"])
-    # Partial: rows with no SSO linked yet both carry ("", "") and must not
-    # collide -- only an ACTUAL linked identity has to be globally unique.
     op.create_index(
         "ix_users_issuer_subject", "users", ["issuer", "external_subject"],
         unique=True, postgresql_where=sa.text("external_subject != ''"),

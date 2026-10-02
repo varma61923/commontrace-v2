@@ -1,30 +1,3 @@
-"""Tests for the randomized holdout: the Hub's only causal instrument.
-
-`hub/outcomes.py` compares a fleet against its own past and cannot rule
-out anything else that changed in the same window. This compares two arms
-of the same fleet in the same window, differing only by whether the memory
-was injected -- so it survives "what else changed that quarter?", which is
-the question that kills an observational number.
-
-STRATEGY.md §11.3 names causally-measured memory as the entire moat, and
-§13.2 calls running this "the cheapest falsifier in the document" and says
-to run it first. Both were true of `commontrace/experiment.py`, which
-works against a local file store; nothing in the Hub could do it, so the
-falsifier could not be run on the surface paying customers are on.
-
-What these tests defend, in order of how badly getting it wrong would
-corrupt a result:
-
-1. **Assignment is stable.** A retry must return the same arms. An
-   occasion that moved between arms would not raise -- it would quietly
-   contaminate the comparison.
-2. **Arms are recorded exactly once**, so a retrying client cannot double
-   an occasion's weight.
-3. **Two experiments never pool.** Observations from a previous salt came
-   from a different randomization.
-4. **Missing outcomes are excluded, not counted as failures**, or the arm
-   whose agents crash more looks worse for that reason alone.
-"""
 from __future__ import annotations
 
 from datetime import timedelta
@@ -61,14 +34,6 @@ async def other_org(session_factory):
         return o.id
 
 
-# Genuinely unrelated incident topics, not "topic {i}": crud.holdout_for_
-# results clusters near-duplicate search results (hub/crud.py:
-# _cluster_representatives), and a shared boilerplate sentence differing
-# only by an appended index number still shares enough vocabulary to
-# cluster under Jaccard similarity -- these traces need to share close to
-# NO tokens with each other, the same way distinct real lessons would, so
-# `_traces(..., n)` continues to produce `n` INDEPENDENT randomization
-# units rather than collapsing into one.
 _UNRELATED_TOPICS = [
     "database connection pool exhaustion under concurrent load",
     "stale cache serving expired pricing data to checkout",
@@ -131,10 +96,6 @@ async def _resolve(session_factory, org_id, occasion, succeeded):
 
 class TestAssignment:
     async def test_both_arms_are_produced_over_many_occasions(self, session_factory, org):
-        """At a 50% rate, a run of occasions must land in both arms. A
-        randomizer that silently always returned one arm would look like a
-        working experiment right up until the analysis reported
-        UNDERPOWERED forever."""
         [trace] = await _traces(session_factory, org, 1)
         arms = set()
         for i in range(40):
@@ -143,9 +104,6 @@ class TestAssignment:
         assert arms == {True, False}
 
     async def test_the_same_call_twice_returns_the_same_arms(self, session_factory, org):
-        """The property a retrying client depends on. Assignment is a pure
-        hash of (salt, trace, occasion), so a timeout-and-retry cannot move
-        an occasion between arms."""
         traces = await _traces(session_factory, org, 6)
         first = await _assign(session_factory, org, traces, "occ-1")
         second = await _assign(session_factory, org, traces, "occ-1")
@@ -153,9 +111,6 @@ class TestAssignment:
         assert first["withhold"] == second["withhold"]
 
     async def test_a_retry_records_no_duplicate_rows(self, session_factory, org):
-        """Assignment being deterministic means a duplicate row would land
-        in the SAME arm -- so it would not look wrong, it would just double
-        that occasion's weight in the result."""
         traces = await _traces(session_factory, org, 4)
         for _ in range(3):
             await _assign(session_factory, org, traces, "occ-1")
@@ -167,16 +122,12 @@ class TestAssignment:
         assert n == 4
 
     async def test_two_lessons_land_in_uncorrelated_arms(self, session_factory, org):
-        """Independence per trace is what makes individual effects
-        separable. Two traces that always co-fire must not always share an
-        arm, or their effects are hopelessly confounded."""
         a, b = await _traces(session_factory, org, 2)
         together = 0
         for i in range(60):
             r = await _assign(session_factory, org, [a, b], f"occ-{i}")
             if len(r["inject"]) in (0, 2):
                 together += 1
-        # Perfectly correlated would be 60; independent is ~30.
         assert 10 < together < 50, together
 
     async def test_another_orgs_trace_is_silently_absent(self, session_factory, org, other_org):
@@ -186,9 +137,6 @@ class TestAssignment:
         assert set(result["inject"]) | set(result["withhold"]) == set(mine)
 
     async def test_no_experiment_running_is_a_clean_error(self, session_factory):
-        """Not a silent 'inject everything': a client that believes it is
-        running an experiment and is not would produce an all-injected
-        dataset that reads as underpowered rather than as misconfigured."""
         async with session_scope(session_factory) as session:
             o = Organization(name="no-experiment")
             session.add(o)
@@ -225,20 +173,9 @@ class TestAssignment:
 
 
 class TestSearchIntegration:
-    """The friction that decides whether the experiment ever runs.
-
-    The local tier makes a holdout one flag (`query --experiment`):
-    retrieval withholds and logs, so a fleet opts in without rewriting an
-    agent's loop. Requiring two extra explicit calls around every Hub
-    retrieval is a rewrite, and STRATEGY.md §13.2 calls running this the
-    cheapest falsifier available -- so friction here is not a UX detail.
-    """
-
     async def test_no_occasion_id_leaves_search_completely_unchanged(
         self, session_factory, org
     ):
-        """Backward compatibility is the whole reason this is an optional
-        parameter: every existing caller must see identical behaviour."""
         await _traces(session_factory, org, 3)
         async with session_scope(session_factory) as session:
             result = await crud.search_traces(session, org, query="lesson")
@@ -256,17 +193,6 @@ class TestSearchIntegration:
         assert "must NOT be used" in holdout["note"]
 
     async def test_every_trace_is_still_returned(self, session_factory, org):
-        """A withheld trace is flagged, never omitted. Silently dropping
-        results would break search_traces' contract (PROTOCOL.md §5) and
-        make the experiment invisible to a caller who ignores the block.
-
-        n=20, not some smaller number: assignment is a hash of (salt,
-        trace_id, occasion_id) at holdout_rate=0.5, so each trace is an
-        independent coin flip and `holdout["withhold"]` being empty is a
-        legitimate outcome, not a bug -- just one this test must not see at
-        a rate CI will eventually hit. 20 independent units keeps that
-        chance at 2**-20 instead of the 2**-10 an earlier, smaller n gave
-        (which is exactly what flaked one run)."""
         traces = await _traces(session_factory, org, 20)
         async with session_scope(session_factory) as session:
             found = await crud.search_traces(session, org, limit=50)
@@ -289,10 +215,6 @@ class TestSearchIntegration:
     async def test_no_experiment_running_returns_empty_rather_than_raising(
         self, session_factory
     ):
-        """Quieter than holdout_assign on purpose: a caller of THAT tool
-        explicitly asked to run an experiment and should be told it is off.
-        A caller of search_traces only asked to search, so a passed-through
-        occasion_id must not turn an ordinary search into an error."""
         async with session_scope(session_factory) as session:
             o = Organization(name="no-experiment")
             session.add(o)
@@ -311,17 +233,7 @@ class TestSearchIntegration:
 
 
 class TestNearDuplicateClustering:
-    """A fleet's own habit of contributing a trace of what happened after
-    each occasion creates one new, independent trace id per occasion that
-    is a near-duplicate of whatever lesson it resolved. Without clustering,
-    each duplicate accumulates its own handful of holdout observations
-    instead of one lesson's observations accumulating on one id -- the
-    shape that keeps a real, large effect UNDERPOWERED forever."""
-
     async def _near_duplicates(self, session_factory, config, org_id, n, *, failed_ids=()):
-        """`n` traces that are all near-duplicates of ONE lesson (shared
-        vocabulary, varying only the trailing occasion number), the shape
-        `commontrace capture`-style self-logging actually produces."""
         rate_limiter = make_rate_limiter(config)
         ids = []
         async with session_scope(session_factory) as session:
@@ -338,25 +250,15 @@ class TestNearDuplicateClustering:
         return ids
 
     async def test_near_duplicates_share_one_holdout_decision(self, session_factory, config, org):
-        """The core property: all near-duplicate results in one search page
-        resolve to the SAME withhold/inject verdict, because they are the
-        same randomization unit underneath -- not `n` independent coin
-        flips that would only agree by chance."""
         await self._near_duplicates(session_factory, config, org, 8)
         async with session_scope(session_factory) as session:
             found = await crud.search_traces(session, org, limit=50)
             holdout = await crud.holdout_for_results(session, org, found["traces"], "occ-1")
         withheld = set(holdout["withhold"])
         all_ids = {t["id"] for t in found["traces"]}
-        # Either every one of them is withheld, or none of them are --
-        # never a split, which independent per-id coin flips would produce
-        # with overwhelming probability at n=8.
         assert withheld == all_ids or withheld == set()
 
     async def test_observations_accumulate_on_one_trace_id(self, session_factory, config, org):
-        """This is the statistical-power fix, made concrete: 20 near-
-        duplicate occasions produce ONE trace id with ~20 observations in
-        the causal analysis, not 20 trace ids with ~1 each."""
         await self._near_duplicates(session_factory, config, org, 20)
         async with session_scope(session_factory) as session:
             found = await crud.search_traces(session, org, limit=50)
@@ -375,25 +277,11 @@ class TestNearDuplicateClustering:
     async def test_the_unit_is_stable_as_the_page_composition_changes(
         self, session_factory, config, org
     ):
-        """The failure the `limit=50` tests above structurally cannot see.
-
-        `holdout_for_results` only ever sees ONE SEARCH PAGE, not a
-        cluster's true membership -- so any representative rule that is a
-        function of which members share that page drifts as the fleet logs
-        more occasions and the page composition shifts, re-creating the
-        exact fragmentation the clustering exists to remove, one level up.
-        Measured on the audit's own dynamics before the fix: 17 distinct
-        randomization units for a single lesson.
-
-        A realistic page (limit=5) over a corpus that grows past it is the
-        only shape that exercises this.
-        """
         canonical = (await self._near_duplicates(session_factory, config, org, 1))[0]
         for i in range(12):
             async with session_scope(session_factory) as session:
                 found = await crud.search_traces(session, org, query="connection pool exhausted", limit=5)
                 await crud.holdout_for_results(session, org, found["traces"], f"occ-{i}")
-            # The fleet logs what happened, growing the corpus past one page.
             await self._near_duplicates(session_factory, config, org, 1)
 
         async with session_scope(session_factory) as session:
@@ -406,11 +294,6 @@ class TestNearDuplicateClustering:
         )
 
     async def test_representative_prefers_a_non_failed_member(self, session_factory, config, org):
-        """The one id a cluster's observations get attributed to should not
-        be an unresolved, escalated occasion log when a better-standing
-        member of the same cluster exists -- that id's title is what a
-        customer reading `causal_effects`/`value_delivered` sees as "the
-        lesson"."""
         ids = await self._near_duplicates(
             session_factory, config, org, 6, failed_ids={0, 1, 2, 3, 4}
         )
@@ -425,10 +308,7 @@ class TestNearDuplicateClustering:
         assert [str(t) for t in trace_ids] == [only_ok]
 
     async def test_genuinely_distinct_traces_are_not_merged(self, session_factory, org):
-        """The control: unrelated lessons must keep getting independent
-        holdout decisions -- clustering must never merge traces that
-        share no real content, only coincidental structure."""
-        await _traces(session_factory, org, 6)  # the fixture's own unrelated-topics bank
+        await _traces(session_factory, org, 6)
         async with session_scope(session_factory) as session:
             found = await crud.search_traces(session, org, limit=50)
             for i in range(30):
@@ -442,9 +322,6 @@ class TestNearDuplicateClustering:
     async def test_withhold_list_never_names_an_id_outside_the_input(
         self, session_factory, config, org
     ):
-        """The wire contract is unchanged: `withhold` is drawn from exactly
-        the ids `traces` supplied, even though one shared cluster decision
-        produced every verdict in it."""
         ids = await self._near_duplicates(session_factory, config, org, 5)
         async with session_scope(session_factory) as session:
             found = await crud.search_traces(session, org, limit=50)
@@ -454,15 +331,12 @@ class TestNearDuplicateClustering:
 
 class TestRecordingOutcomes:
     async def test_an_outcome_resolves_both_arms_at_once(self, session_factory, org):
-        """The outcome belongs to the TASK, not to any one memory."""
         traces = await _traces(session_factory, org, 8)
         await _assign(session_factory, org, traces, "occ-1")
         result = await _resolve(session_factory, org, "occ-1", True)
         assert result["observations_resolved"] == 8
 
     async def test_a_second_report_cannot_flip_a_counted_result(self, session_factory, org):
-        """Otherwise a retry loop could walk a result back and forth, and
-        the analysis would depend on which call happened to land last."""
         traces = await _traces(session_factory, org, 3)
         await _assign(session_factory, org, traces, "occ-1")
         await _resolve(session_factory, org, "occ-1", True)
@@ -510,8 +384,6 @@ class TestRecordingOutcomes:
 
 class TestAnalysis:
     async def _run_experiment(self, session_factory, org, trace, n, p_injected, p_withheld):
-        """Drive `n` occasions through the real assign/record path with a
-        seeded difference between the arms."""
         injected_seen = withheld_seen = 0
         for i in range(n):
             occ = f"occ-{i}"
@@ -525,7 +397,6 @@ class TestAnalysis:
             await _resolve(session_factory, org, occ, ok)
 
     async def test_a_real_effect_is_recovered_as_helps(self, session_factory, org):
-        """Seeded at 80% injected vs 40% withheld."""
         [trace] = await _traces(session_factory, org, 1)
         await self._run_experiment(session_factory, org, trace, 400, 0.80, 0.40)
 
@@ -538,8 +409,6 @@ class TestAnalysis:
         assert effect["title"] == "lesson 0"
 
     async def test_a_harmful_lesson_is_reported_as_hurts(self, session_factory, org):
-        """The direction that matters most: an instrument that cannot say
-        a lesson makes things worse cannot credibly say one helps."""
         [trace] = await _traces(session_factory, org, 1)
         await self._run_experiment(session_factory, org, trace, 400, 0.35, 0.75)
 
@@ -562,8 +431,6 @@ class TestAnalysis:
     async def test_unresolved_observations_are_excluded_not_counted_as_failures(
         self, session_factory, org
     ):
-        """An agent that crashed before reporting is missing data. Scoring
-        it as a loss would bias whichever arm crashed more."""
         [trace] = await _traces(session_factory, org, 1)
         for i in range(20):
             await _assign(session_factory, org, [trace], f"occ-{i}")
@@ -576,9 +443,6 @@ class TestAnalysis:
     async def test_observations_from_a_previous_salt_are_not_pooled(
         self, session_factory, org, capsys
     ):
-        """Two experiments are two randomizations. Pooling them compares
-        two mixtures and biases the effect toward zero -- and it would not
-        look broken, it would look like a null result."""
         [trace] = await _traces(session_factory, org, 1)
         await self._run_experiment(session_factory, org, trace, 60, 0.9, 0.3)
         async with session_scope(session_factory) as session:
@@ -638,9 +502,6 @@ class TestOperatorCommands:
     async def test_starting_pre_registers_what_the_run_will_measure(
         self, session_factory, capsys
     ):
-        """Registered at the only moment it means anything. Written later it
-        records what the results turned out to be, not what the run set out
-        to find."""
         from commontrace import prereg
 
         async with session_scope(session_factory) as session:
@@ -661,8 +522,6 @@ class TestOperatorCommands:
         assert registered.primary_outcome == "resolved"
         assert registered.holdout_rate == 0.25
         assert registered.notes == "Q1 pilot"
-        # Bound to THIS randomization: a new salt is a new experiment and
-        # must not inherit the last one's credibility.
         assert registered.salt == org.holdout_salt
 
     async def test_a_registered_run_reports_no_deviations(self, session_factory):
@@ -682,9 +541,6 @@ class TestOperatorCommands:
         assert block["fingerprint"]
 
     async def test_restarting_re_registers_against_the_new_salt(self, session_factory):
-        """The deviation that matters most: a report checked against a
-        registration written for a DIFFERENT randomization is checked against
-        nothing."""
         async with session_scope(session_factory) as session:
             o = Organization(name="fleet")
             session.add(o)
@@ -704,8 +560,6 @@ class TestOperatorCommands:
         assert first["fingerprint"] != second["fingerprint"]
 
     async def test_a_rate_outside_zero_to_one_is_refused(self, session_factory, org, capsys):
-        """0 withholds nothing (no control arm); 1 withholds everything (no
-        treatment arm). Neither is an experiment."""
         for bad in ("0", "1", "1.5", "-0.2"):
             assert not await manage.start_experiment(org, bad, session_factory=session_factory)
             assert "between 0 and 1" in capsys.readouterr().err
@@ -758,25 +612,7 @@ class TestOperatorCommands:
 
 
 class TestTheEstimateIsAuditable:
-    """Excluding unresolved observations (point 4 above) is correct handling
-    and, on its own, not enough.
-
-    Dropping them is unbiased ONLY if both arms lose them at the same rate.
-    The withheld arm is by construction the one working without its memory,
-    so it is the arm more likely to run long, escalate, or be abandoned
-    before anyone reports -- the treatment effect leaking into who gets
-    measured. `causal_effects` used to filter `succeeded IS NOT NULL` in the
-    SQL itself, which meant nothing downstream could even count what was
-    missing, let alone which arm it came from.
-
-    `tests/test_integrity.py` shows what that costs: a lesson with no effect
-    at all reporting a significant verdict with a tight interval.
-    """
-
     async def test_the_report_carries_a_validity_verdict(self, session_factory, org):
-        # 80 occasions rather than 40: assignment hashes a random trace uuid,
-        # so the realized split differs run to run and a marginal sample made
-        # this assertion depend on the draw.
         traces = await _traces(session_factory, org, 1)
         for i in range(80):
             await _assign(session_factory, org, traces, f"occ-{i}")
@@ -790,9 +626,6 @@ class TestTheEstimateIsAuditable:
         assert report["integrity"]["n_resolved"] == 80
 
     async def test_passing_checks_come_back_too_not_just_failures(self, session_factory, org):
-        """A caller cannot tell "checked, clean" from "not checked" when only
-        problems are reported, and those mean opposite things about how far
-        to trust the number underneath."""
         traces = await _traces(session_factory, org, 1)
         for i in range(30):
             await _assign(session_factory, org, traces, f"occ-{i}")
@@ -805,8 +638,6 @@ class TestTheEstimateIsAuditable:
         assert {"differential_attrition", "arm_balance", "consistent_arms"} <= checks
 
     async def test_a_reporting_gap_in_one_arm_is_caught_and_named(self, session_factory, org):
-        """The load-bearing case, built the way it actually happens: every
-        injected occasion gets reported and most withheld ones do not."""
         traces = await _traces(session_factory, org, 1)
         for i in range(120):
             result = await _assign(session_factory, org, traces, f"occ-{i}")
@@ -822,17 +653,11 @@ class TestTheEstimateIsAuditable:
         assert integrity_report["effects_readable"] is False
         blocking = [f for f in integrity_report["findings"] if f["severity"] == "INVALIDATES"]
         assert [f["check"] for f in blocking] == ["differential_attrition"]
-        # The unresolved rows are visible now. Before this they were filtered
-        # out in SQL, so `n_assignments` and `n_resolved` were the same number
-        # and the gap could not be seen from the response at all.
         assert integrity_report["n_assignments"] > integrity_report["n_resolved"]
 
     async def test_a_compromised_report_says_so_in_the_note_an_agent_reads(
         self, session_factory, org
     ):
-        """The MCP response is read by an agent, which acts on whichever field
-        it looks at first. The note that ships beside `effects` has to carry
-        the warning, not only a sibling key it may never open."""
         traces = await _traces(session_factory, org, 1)
         for i in range(120):
             result = await _assign(session_factory, org, traces, f"occ-{i}")
@@ -845,9 +670,6 @@ class TestTheEstimateIsAuditable:
         assert "READ `integrity` FIRST" in report["note"]
 
     async def test_it_projects_when_each_trace_becomes_answerable(self, session_factory, org):
-        """`experiment` already says a lesson is underpowered. What decides
-        whether a pilot lands is WHEN -- told on day 30 the pilot is spent,
-        told on day 3 the holdout rate is still changeable."""
         traces = await _traces(session_factory, org, 1)
         for i in range(20):
             await _assign(session_factory, org, traces, f"occ-{i}")
@@ -862,9 +684,6 @@ class TestTheEstimateIsAuditable:
         assert projection["advice"]
 
     async def test_it_states_what_it_cannot_check(self, session_factory, org):
-        """Contamination -- an agent using a trace it was told to withhold --
-        leaves no trace in the record. Silence about it would read as
-        coverage of a failure nothing here can see."""
         traces = await _traces(session_factory, org, 1)
         await _assign(session_factory, org, traces, "occ-1")
         await _resolve(session_factory, org, "occ-1", True)
@@ -875,8 +694,6 @@ class TestTheEstimateIsAuditable:
         assert "withhold" in report["integrity"]["not_checkable"]
 
     async def test_two_experiments_still_never_pool(self, session_factory, org):
-        """The salt scope is still applied in SQL. Removing the
-        `succeeded IS NOT NULL` filter must not have widened anything else."""
         traces = await _traces(session_factory, org, 1)
         for i in range(10):
             await _assign(session_factory, org, traces, f"occ-{i}")
@@ -894,16 +711,6 @@ class TestTheEstimateIsAuditable:
 
 
 class TestTheTreatmentIsPinnedToItsText:
-    """`trace_id` is a stable id pointing at MUTABLE content: `amend_trace`
-    rewrites title, context and solution in place.
-
-    So an observation recording only the id cannot tell whether every
-    occasion in an arm was treated with the same text -- and when they were
-    not, the pooled effect describes a treatment that is an average of two,
-    one of which no longer exists anywhere. This is the same defect
-    `Organization.holdout_salt` exists to make detectable, one level down.
-    """
-
     async def test_assignment_records_what_the_trace_said(self, session_factory, org):
         traces = await _traces(session_factory, org, 1)
         await _assign(session_factory, org, traces, "occ-1")
@@ -918,9 +725,6 @@ class TestTheTreatmentIsPinnedToItsText:
             )
 
     async def test_amending_a_trace_mid_experiment_is_caught(self, session_factory, org):
-        """The realistic version: a trace is corrected part-way through a run,
-        which is an ordinary and good thing to do -- and silently makes the
-        two halves of the experiment different experiments."""
         traces = await _traces(session_factory, org, 1)
         for i in range(20):
             await _assign(session_factory, org, traces, f"occ-{i}")
@@ -959,9 +763,6 @@ class TestTheTreatmentIsPinnedToItsText:
     async def test_recording_an_outcome_is_not_a_change_to_the_treatment(
         self, session_factory, org
     ):
-        """Outcomes attach AFTER retrieval by definition. Counting them would
-        make every measured trace look edited, which is the false positive
-        that teaches people to ignore a validity report."""
         traces = await _traces(session_factory, org, 1)
         for i in range(20):
             await _assign(session_factory, org, traces, f"occ-{i}")
@@ -984,9 +785,6 @@ class TestTheTreatmentIsPinnedToItsText:
         assert stability["severity"] == "OK", stability
 
     async def test_a_retry_does_not_restamp_the_revision(self, session_factory, org):
-        """ON CONFLICT DO NOTHING: the first assignment's revision is what
-        that occasion was treated with. A retry after an edit must not
-        rewrite history to say otherwise."""
         traces = await _traces(session_factory, org, 1)
         await _assign(session_factory, org, traces, "occ-1")
 
@@ -1010,9 +808,6 @@ class TestTheTreatmentIsPinnedToItsText:
     async def test_rows_written_before_the_column_existed_are_unchecked(
         self, session_factory, org
     ):
-        """NULL is never backfilled: what a trace said at assignment time is
-        unrecoverable once it has been amended, and stamping today's digest
-        would assert stability on exactly the runs where nobody can know."""
         traces = await _traces(session_factory, org, 1)
         for i in range(20):
             await _assign(session_factory, org, traces, f"occ-{i}")
@@ -1035,14 +830,6 @@ class TestTheTreatmentIsPinnedToItsText:
 
 
 class TestWhatTheMemoryWasWorth:
-    """STRATEGY.md §11.5 names the pricing hypothesis this product rests on --
-    price against measured effect per fleet, not seats or trace volume -- and
-    says the mechanism ships. Half of that was true: the effect size shipped,
-    and this file's own surface computed no value at all.
-
-    These check the rules that keep the resulting figure a measurement.
-    """
-
     async def _running_experiment(self, session_factory, org, n=120, helps=True):
         topic = _UNRELATED_TOPICS[0]
         async with session_scope(session_factory) as session:
@@ -1059,7 +846,6 @@ class TestWhatTheMemoryWasWorth:
         for i in range(n):
             result = await _assign(session_factory, org, traces, f"occ-{i}")
             injected = bool(result["inject"])
-            # A real effect, in the direction asked for.
             good = (i % 10 < 8) if (injected == helps) else (i % 10 < 3)
             await _resolve(session_factory, org, f"occ-{i}", good)
         return traces
@@ -1073,8 +859,6 @@ class TestWhatTheMemoryWasWorth:
             priced = await crud.value_delivered(session, org, value_per_occasion=25.0)
 
         assert counted["readable"]
-        # A count on its own; currency only once a rate is supplied, and no
-        # price is stored anywhere.
         assert counted["money"] is None
         assert counted["value_per_occasion"] is None
         assert priced["money"] == pytest.approx(
@@ -1082,9 +866,6 @@ class TestWhatTheMemoryWasWorth:
         assert priced["money_range"] is not None
 
     async def test_a_compromised_experiment_yields_no_figure(self, session_factory, org):
-        """Every injected occasion reported, most withheld ones not -- the
-        attrition case. The effects are biased, so any value computed from
-        them is biased by the same mechanism."""
         traces = await _traces(session_factory, org, 1)
         for i in range(120):
             result = await _assign(session_factory, org, traces, f"occ-{i}")
@@ -1102,8 +883,6 @@ class TestWhatTheMemoryWasWorth:
     async def test_the_value_and_the_effect_table_cannot_disagree(
         self, session_factory, org
     ):
-        """It reads `causal_effects` rather than re-querying, so the two
-        surfaces of the same run are always computed from one set of rows."""
         await self._running_experiment(session_factory, org)
         async with session_scope(session_factory) as session:
             causal = await crud.causal_effects(session, org)
@@ -1117,7 +896,6 @@ class TestWhatTheMemoryWasWorth:
             assert memory["n_injected"] == match["n_injected"]
 
     async def test_a_memory_that_hurts_is_subtracted(self, session_factory, org):
-        """The number this product must be willing to print about itself."""
         await self._running_experiment(session_factory, org, helps=False)
         async with session_scope(session_factory) as session:
             causal = await crud.causal_effects(session, org)
@@ -1148,37 +926,7 @@ class TestWhatTheMemoryWasWorth:
 
 
 class TestTheWorkingSet:
-    """Memory that costs its tokens once per session instead of once per
-    query -- and the rule that decides what gets in.
-
-    The design worth defending here is that membership is EARNED. Only a
-    trace the holdout has established as HELPS is pinned, which is also
-    what keeps the method honest: a trace pinned into every session is
-    injected on every occasion, so pinning one still under test would
-    destroy the control arm still measuring it. A trace is either being
-    randomized or it has graduated -- never both.
-    """
-
     async def _established(self, session_factory, org, n=120, helps=True):
-        """One trace with a real, established effect in the given direction.
-
-        The occasions are CHOSEN so the realized arm split matches the
-        configured rate exactly. Arms are still decided by the production
-        hash (`experiment.is_held_out`) -- this only picks which occasion
-        ids to run -- and that is what makes the fixture deterministic.
-
-        It has to be. Drawing occasions in order gives a fair binomial
-        split, and `integrity.check_arm_balance` reports a split far enough
-        from the configured rate as INVALIDATES at ARM_BALANCE_ALPHA=0.001,
-        on the stated premise that "assignment is a deterministic hash, so
-        this is not sampling noise". For ONE trace over 120 occasions it is
-        sampling noise: measured here, a fair draw trips that check 0.067%
-        of the time, which across the ~20 experiments this suite builds and
-        a 13-job CI matrix is a ~16% chance of one red job per run. It cost
-        exactly that once -- `working_set` correctly returned "COMPROMISED,
-        no block" and every test built on this helper failed for a reason
-        unrelated to what it was testing.
-        """
         [trace] = await _traces(session_factory, org, 1)
         async with session_scope(session_factory) as session:
             record = await session.get(Organization, org)
@@ -1197,9 +945,6 @@ class TestTheWorkingSet:
             elif len(injected) < n - want_withheld:
                 injected.append(occasion)
 
-        # 80% success in the arm the effect favours, 30% in the other, so the
-        # direction is whatever `helps` asks for and the size is far past any
-        # significance threshold.
         for arm_is_injected, occasions in ((False, withheld), (True, injected)):
             favoured = arm_is_injected == helps
             for i, occasion in enumerate(occasions):
@@ -1220,9 +965,6 @@ class TestTheWorkingSet:
     async def test_nothing_is_promoted_before_the_experiment_answers(
         self, session_factory, org
     ):
-        """An empty block is a statement about evidence, not about the
-        corpus -- and it must say so rather than quietly falling back to a
-        most-retrieved list that would look identical but carry none."""
         await _traces(session_factory, org, 3)
         async with session_scope(session_factory) as session:
             ws = await crud.working_set(session, org)
@@ -1231,11 +973,8 @@ class TestTheWorkingSet:
         assert "not about the corpus" in ws["reason"] or "evidence" in ws["reason"]
 
     async def test_a_trace_still_under_test_is_never_pinned(self, session_factory, org):
-        """THE invariant. Pinning a trace that is still being randomized
-        would inject it on every occasion and destroy its own control arm,
-        so an UNDERPOWERED trace must stay out however promising it looks."""
         traces = await _traces(session_factory, org, 1)
-        for i in range(8):  # far too few occasions to establish anything
+        for i in range(8):
             await _assign(session_factory, org, traces, f"occ-{i}")
             await _resolve(session_factory, org, f"occ-{i}", True)
         async with session_scope(session_factory) as session:
@@ -1252,8 +991,6 @@ class TestTheWorkingSet:
         assert ws["entries"] == []
 
     async def test_a_compromised_experiment_yields_no_block(self, session_factory, org):
-        """Same rule as the value figure: a biased selection baked into
-        every future session's prompt is the worst place for it."""
         traces = await _traces(session_factory, org, 1)
         for i in range(120):
             result = await _assign(session_factory, org, traces, f"occ-{i}")
@@ -1282,9 +1019,6 @@ class TestTheWorkingSet:
     async def test_it_is_stable_across_calls_so_the_prefix_cache_survives(
         self, session_factory, org
     ):
-        """The entire cost saving depends on the pasted block not changing
-        between sessions for an unchanged corpus -- a block that reshuffled
-        would invalidate the prefix cache it exists to preserve."""
         await self._established(session_factory, org)
         async with session_scope(session_factory) as session:
             first = await crud.working_set(session, org)
@@ -1300,13 +1034,6 @@ class TestTheWorkingSet:
         assert theirs["entries"] == [] and theirs["block"] == ""
 
     async def test_an_amended_trace_drops_out_of_the_block(self, session_factory, config, org):
-        """The same staleness bi-temporal supersession fixed for
-        search_traces/commons_visible (hub/models.py:Trace.superseded_at),
-        for the ONE surface where it would otherwise never be noticed: this
-        block is pinned into a system prompt and never re-fetched mid
-        -session. Before this test existed, amending a promoted trace left
-        its pre-correction wording pinned here forever -- the effect was
-        real, but the text backing it was gone."""
         [trace] = await self._established(session_factory, org)
         rate_limiter = make_rate_limiter(config)
         async with session_scope(session_factory) as session:
@@ -1321,13 +1048,6 @@ class TestTheWorkingSet:
         assert "amended or removed" in ws["reason"]
 
     async def _backdate(self, session_factory, org_id, days):
-        """Age this org's whole observation history by `days`.
-
-        The horizon is measured from the last RESOLVED observation behind an
-        estimate, so moving `created_at` back is the honest way to reach the
-        expiry branch -- the effect, the arms and the verdict all stay exactly
-        as the analysis computed them.
-        """
         async with session_scope(session_factory) as session:
             await session.execute(
                 sa_update(HoldoutObservation)
@@ -1338,11 +1058,6 @@ class TestTheWorkingSet:
     async def test_the_fixture_builds_an_uncompromised_experiment(
         self, session_factory, org
     ):
-        """Guards the determinism `_established` now buys. Every test in this
-        class reads a `working_set` block, and that block is empty whenever
-        the integrity audit cannot vouch for the sample -- so a fixture whose
-        arm split wanders trips `check_arm_balance` occasionally and fails
-        those tests for a reason none of them is about."""
         await self._established(session_factory, org)
         async with session_scope(session_factory) as session:
             causal = await crud.causal_effects(session, org)
@@ -1356,11 +1071,6 @@ class TestTheWorkingSet:
     async def test_evidence_older_than_the_horizon_is_not_pinned(
         self, session_factory, org
     ):
-        """Graduation expires. Pinning a trace stops it being withheld, which
-        stops the experiment that measured it -- so an effect nobody has
-        observed in a long time is evidence that the lesson worked ONCE, not
-        that it still works. Competing systems age memory out on access
-        recency because they cannot see the difference; this one can."""
         await self._established(session_factory, org)
         await self._backdate(session_factory, org, days=400)
         async with session_scope(session_factory) as session:
@@ -1375,9 +1085,6 @@ class TestTheWorkingSet:
     async def test_evidence_inside_the_horizon_is_still_pinned(
         self, session_factory, org
     ):
-        """The other side of the same boundary: an effect measured recently
-        keeps its place, so the horizon expires stale evidence rather than
-        quietly emptying the block."""
         [trace] = await self._established(session_factory, org)
         await self._backdate(session_factory, org, days=10)
         async with session_scope(session_factory) as session:
@@ -1388,9 +1095,6 @@ class TestTheWorkingSet:
     async def test_each_entry_reports_the_age_of_its_evidence(
         self, session_factory, org
     ):
-        """A caller must be able to see how old the evidence behind a pinned
-        lesson is -- that is the number every competitor has to approximate
-        with an access-recency heuristic."""
         await self._established(session_factory, org)
         await self._backdate(session_factory, org, days=30)
         async with session_scope(session_factory) as session:
@@ -1400,9 +1104,6 @@ class TestTheWorkingSet:
         assert 29 <= entry["evidence_age_days"] <= 31
 
     async def test_the_age_is_kept_out_of_the_pinned_block(self, session_factory, org):
-        """The block's text must not carry anything that changes daily: a
-        block whose text moves invalidates the prefix cache on every session,
-        which is the whole saving this function exists to produce."""
         await self._established(session_factory, org)
         async with session_scope(session_factory) as session:
             fresh = await crud.working_set(session, org)
@@ -1413,9 +1114,6 @@ class TestTheWorkingSet:
         assert aged["entries"][0]["evidence_age_days"] != fresh["entries"][0]["evidence_age_days"]
 
     async def test_causal_effects_dates_every_estimate(self, session_factory, org):
-        """The audit surface carries the date too -- `working_set` reads it
-        from there rather than re-querying, so the two can never disagree
-        about when a trace was last measured."""
         await self._established(session_factory, org)
         async with session_scope(session_factory) as session:
             causal = await crud.causal_effects(session, org)
@@ -1423,10 +1121,6 @@ class TestTheWorkingSet:
         assert all(e["last_measured_at"] for e in causal["effects"])
 
     async def test_a_purged_trace_drops_out_of_the_block(self, session_factory, org):
-        """Same fix, other cause: hub/manage.py:purge_trace removes a row
-        entirely rather than superseding it. Before this test existed the
-        block pinned a '(deleted trace)' placeholder title with an empty
-        solution body -- worse than stale, since there was nothing to read."""
         [trace] = await self._established(session_factory, org)
         await manage.purge_trace(trace, session_factory=session_factory)
         async with session_scope(session_factory) as session:
@@ -1436,18 +1130,6 @@ class TestTheWorkingSet:
 
 
 class TestAPinnedTraceIsNotItsOwnControl:
-    """`working_set` puts a trace in the system prompt for a whole session.
-    Nothing stopped the experiment from later drawing that same trace into
-    the WITHHELD arm for a search result -- and a withheld occasion whose
-    trace is still sitting in the prompt is a treated occasion recorded as a
-    control. `holdout_assign`'s own note describes the consequence exactly:
-    it "does not fail loudly -- it biases the measured effect toward zero".
-
-    `working_set`'s docstring already claimed a trace is "either being
-    randomized or it has graduated, never both". Only the caller knows what
-    it actually pasted, so `pinned` is how it says so.
-    """
-
     async def test_a_pinned_trace_is_never_withheld(self, session_factory, org):
         traces = await _traces(session_factory, org, 3)
         withheld_somewhere = False
@@ -1466,10 +1148,6 @@ class TestAPinnedTraceIsNotItsOwnControl:
         assert pinned_result["pinned"] == [traces[0]]
 
     async def test_a_pinned_trace_records_no_observation(self, session_factory, org):
-        """The load-bearing assertion. Reporting it as `inject` would be no
-        better than withholding it if the row still landed: the occasion
-        would join the treated arm and inflate its own effect. It must
-        contribute to NEITHER arm."""
         traces = await _traces(session_factory, org, 2)
         await _assign_pinned(
             session_factory, org, traces, "occ-pinned", pinned=[traces[0]]
@@ -1487,8 +1165,6 @@ class TestAPinnedTraceIsNotItsOwnControl:
         assert traces[1] in rows, "unpinned traces must still be measured normally"
 
     async def test_omitting_pinned_changes_nothing(self, session_factory, org):
-        """Strictly additive: a client that never passes `pinned` behaves
-        exactly as it did before the parameter existed."""
         traces = await _traces(session_factory, org, 2)
         plain = await _assign(session_factory, org, traces, "occ-plain")
         assert plain["pinned"] == []
@@ -1497,11 +1173,6 @@ class TestAPinnedTraceIsNotItsOwnControl:
     async def test_a_pinned_trace_cannot_return_as_a_cluster_representative(
         self, session_factory, config, org
     ):
-        """`holdout_for_results` clusters near-duplicates and randomizes the
-        whole cluster under one representative. Dropping pinned ids only
-        AFTER assignment would miss this: a pinned trace elected as the
-        representative would hand its arm to every duplicate. They are
-        dropped before clustering for exactly this reason."""
         rate_limiter = make_rate_limiter(config)
         made = []
         async with session_scope(session_factory) as session:
@@ -1535,9 +1206,6 @@ class TestAPinnedTraceIsNotItsOwnControl:
 
 
 class TestTieredValuationAndTheAuditLedger:
-    """Pricing the measured occasions against a contractual rate card, and
-    handing the customer a chain they can recompute themselves."""
-
     async def _established(self, session_factory, org, n=120):
         return await TestTheWorkingSet()._established(session_factory, org, n=n)
 
@@ -1584,18 +1252,7 @@ class TestTieredValuationAndTheAuditLedger:
     async def test_co_injected_traces_produce_no_total_but_still_a_policy_figure(
         self, session_factory, org
     ):
-        """The Hub's NORMAL case, not an edge one: holdout_assign takes a
-        LIST of traces for one occasion, so two traces routinely share
-        occasions -- and adding their contributions would attribute one
-        improved occasion twice, then price it twice.
-
-        Refusing the sum is correct and, alone, useless: it would be the
-        answer for almost every real fleet. The policy-level comparison
-        (occasions that got any memory against occasions that got none)
-        counts each occasion exactly once, so it survives, and is what the
-        customer is told instead."""
         [first] = await self._established(session_factory, org, n=120)
-        # A second trace assigned on the SAME occasions the first ran on.
         [second] = await _traces(session_factory, org, 1)
         for i in range(120):
             occasion = f"occ-{i}"
@@ -1610,13 +1267,10 @@ class TestTieredValuationAndTheAuditLedger:
             "the two traces ran on the same occasions, which is what this asserts "
             "the Hub notices"
         )
-        # Whether the SUM is offered depends on which traces ended up counted;
-        # what must never happen is a priced total over co-injected traces.
         if not worth["aggregate_readable"]:
             assert worth["money"] is None
             assert worth["ledger"] == []
             assert "overlapping occasions" in worth["aggregate_reason"]
-        # The valid aggregate is reported either way, on unique occasions.
         policy = worth["policy_effect"]
         assert policy is not None
         assert policy["n_treated"] + policy["n_control"] <= 120, (
@@ -1626,19 +1280,13 @@ class TestTieredValuationAndTheAuditLedger:
     async def test_no_signing_key_leaves_the_ledger_unsigned_but_explicit(
         self, session_factory, org
     ):
-        """verify_ledger alone proves the chain is internally consistent, not
-        who issued it -- its genesis and algorithm are both public, so a
-        party with write access to storage could fabricate an entire
-        replacement chain that verifies just as cleanly. Without a signing
-        key configured, value_delivered must say so rather than silently
-        returning a ledger that looks more authenticated than it is."""
         await self._established(session_factory, org)
         async with session_scope(session_factory) as session:
             worth = await crud.value_delivered(session, org, rate_tiers=self._TIERS)
         assert worth["signature"] is None
         assert worth["signature_algorithm"] is None
         assert "not configured" in worth["signature_reason"]
-        assert worth["issued_at"]  # still timestamped even when unsigned
+        assert worth["issued_at"]
 
     async def test_a_signing_key_produces_a_verifiable_signature(
         self, session_factory, org
@@ -1669,15 +1317,10 @@ class TestTieredValuationAndTheAuditLedger:
             entries, worth["signature"], key.encode("utf-8"),
             org_id=org, issued_at=worth["issued_at"], **anchors,
         )
-        # The wrong key -- or the right key against a signature minted for a
-        # different org -- must not verify.
         assert not value.verify_ledger_signature(
             entries, worth["signature"], b"wrong-key",
             org_id=org, issued_at=worth["issued_at"], **anchors,
         )
-        # And the anchoring itself: the signature covers WHICH assignment
-        # rows the invoice was computed from, so it cannot be presented
-        # alongside a different export.
         assert not value.verify_ledger_signature(
             entries, worth["signature"], key.encode("utf-8"),
             org_id=org, issued_at=worth["issued_at"],
@@ -1688,9 +1331,6 @@ class TestTieredValuationAndTheAuditLedger:
     async def test_the_report_carries_the_evidence_it_was_computed_from(
         self, session_factory, org
     ):
-        """Every number this product bills on is computed by this product.
-        The digest is what lets a customer check that the assignment export
-        they re-ran the arithmetic from is the one the invoice came from."""
         await self._established(session_factory, org)
         async with session_scope(session_factory) as session:
             worth = await crud.value_delivered(session, org, rate_tiers=self._TIERS)
@@ -1705,9 +1345,6 @@ class TestTieredValuationAndTheAuditLedger:
     async def test_an_unregistered_experiment_says_so_rather_than_passing(
         self, session_factory, org
     ):
-        """Silence would read as approval. These fixtures start an experiment
-        directly rather than through `hub.manage start-experiment`, so there
-        is no registration -- and the absence is itself the finding."""
         await self._established(session_factory, org)
         async with session_scope(session_factory) as session:
             causal = await crud.causal_effects(session, org)
@@ -1716,8 +1353,6 @@ class TestTieredValuationAndTheAuditLedger:
         assert "not pre-registered" in prereg_block["note"]
 
     async def test_no_rate_means_a_count_and_no_ledger(self, session_factory, org):
-        """Unchanged behaviour for every existing caller: ask for no price and
-        you get the measured quantity, with nothing implying an invoice."""
         await self._established(session_factory, org)
         async with session_scope(session_factory) as session:
             worth = await crud.value_delivered(session, org)
@@ -1728,10 +1363,6 @@ class TestTieredValuationAndTheAuditLedger:
     async def test_a_malformed_rate_card_is_refused_rather_than_ignored(
         self, session_factory, org
     ):
-        """Shares that do not cover every occasion price a volume nobody
-        measured. Falling back to some other number would be worse than the
-        error: the customer would be invoiced against an assumption they
-        thought they had replaced."""
         await self._established(session_factory, org)
         with pytest.raises(ValueError, match="sum to"):
             async with session_scope(session_factory) as session:
@@ -1742,16 +1373,6 @@ class TestTieredValuationAndTheAuditLedger:
 
 
 class TestTheOperatorCLIReachesTheSameNumbers:
-    """`hub.manage value` -- crud.value_delivered from the operator CLI.
-
-    Before this command existed, the same numbers were reachable from a
-    customer's own browser session (hub/console.py) and from an
-    authenticated agent (hub/server.py's MCP tool), but an operator
-    investigating one account had no CLI path to them at all. Reuses
-    TestWhatTheMemoryWasWorth's own experiment-seeding helper rather than
-    duplicating it.
-    """
-
     async def _running_experiment(self, session_factory, org, n=120, helps=True):
         return await TestWhatTheMemoryWasWorth()._running_experiment(
             session_factory, org, n=n, helps=helps
@@ -1781,7 +1402,6 @@ class TestTheOperatorCLIReachesTheSameNumbers:
         out = capsys.readouterr().out
         assert "occasions improved" in out
         assert "pass a value-per-occasion rate" in out
-        # No currency is ever printed unless a rate was actually supplied.
         assert "share" not in out
 
     async def test_with_a_rate_it_prints_the_capture_share(self, session_factory, org, capsys):
@@ -1811,16 +1431,6 @@ class TestTheOperatorCLIReachesTheSameNumbers:
 
 
 class TestEvidenceDecayReachesTheInvoice:
-    """The pinned working-set block already expired graduation at a 180-day
-    horizon. The value ledger -- the surface attached to money -- had none, so
-    the two disagreed about whether the same evidence was current and the one
-    that disagreed was the one the customer pays on.
-
-    These go through `crud.value_delivered` rather than `value.compute`
-    directly: the horizon is only worth anything if it is reachable from the
-    call that produces an invoice.
-    """
-
     async def _established(self, session_factory, org, n=120, helps=True):
         return await TestTheWorkingSet()._established(
             session_factory, org, n=n, helps=helps)
@@ -1837,8 +1447,6 @@ class TestEvidenceDecayReachesTheInvoice:
         assert worth["occasions_improved"] > 0
 
     async def test_evidence_past_the_horizon_is_not_billed(self, session_factory, org):
-        """The defect this closes: a memory nobody has re-measured in over a
-        year was still counted at full weight on today's invoice."""
         await self._established(session_factory, org)
         await self._backdate(session_factory, org, days=400)
         async with session_scope(session_factory) as session:
@@ -1857,9 +1465,6 @@ class TestEvidenceDecayReachesTheInvoice:
         assert "Re-run the holdout" in memory["why_not"]
 
     async def test_a_stale_HARM_is_still_counted(self, session_factory, org):
-        """The asymmetry, on the surface that matters. Expiring a stale HURTS
-        would RAISE the invoice -- a vendor deleting its own damage by waiting
-        long enough. It keeps counting until it is re-measured."""
         await self._established(session_factory, org, helps=False)
         await self._backdate(session_factory, org, days=400)
         async with session_scope(session_factory) as session:
@@ -1872,8 +1477,6 @@ class TestEvidenceDecayReachesTheInvoice:
     async def test_the_horizon_can_be_turned_off_for_a_historical_figure(
         self, session_factory, org
     ):
-        """An operator reconstructing what was billed before the horizon
-        existed needs the old behaviour available, explicitly."""
         await self._established(session_factory, org)
         await self._backdate(session_factory, org, days=400)
         async with session_scope(session_factory) as session:
@@ -1882,9 +1485,6 @@ class TestEvidenceDecayReachesTheInvoice:
         assert worth["n_counted"] == 1
 
     async def test_the_hub_and_the_ledger_share_one_horizon(self):
-        """Two constants that must agree is drift waiting to happen, and the
-        two surfaces disagreeing about whether the same evidence is current
-        is the exact defect this closes."""
         from commontrace import decay
 
         assert crud.DEFAULT_EVIDENCE_HORIZON_DAYS == decay.DEFAULT_HORIZON_DAYS

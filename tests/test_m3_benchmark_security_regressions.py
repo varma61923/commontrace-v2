@@ -1,4 +1,3 @@
-"""Regression tests for Milestone 3 fixes: benchmark integrity, security hardening."""
 from __future__ import annotations
 
 import json
@@ -13,16 +12,8 @@ from commontrace.commands import install_cmd
 from commontrace.reference import measure_performance, pilot_metrics
 
 
-# ---------------------------------------------------------------------------
-# 1. persist_report — collision sort order and atomic write
-# ---------------------------------------------------------------------------
 class TestPersistReportCollisionSort:
     def test_collision_suffix_sorts_after_base_file(self):
-        """Collision-resolved filenames must sort AFTER the base file.
-
-        Old '-N' suffix: '2026_base-1.json' < '2026_base.json' ('-'=45 < '.'=46).
-        New '_0001' suffix must sort after the base file.
-        """
         base = "2026-09-05_120000_000000"
         base_file = f"{base}.json"
         collision_file = f"{base}_0001.json"
@@ -39,20 +30,17 @@ class TestPersistReportCollisionSort:
         assert data == {"test": True}
 
     def test_persist_report_no_partial_file_on_write_error(self, tmp_path):
-        """If the write fails after mkstemp, no partial .json should remain."""
-        # Simulate a write failure by patching fdopen to raise
         real_mkstemp = tempfile.mkstemp
 
         def failing_mkstemp(dir, suffix):
             fd, p = real_mkstemp(dir=dir, suffix=suffix)
-            return fd, p  # fd will be closed by the except block
+            return fd, p
 
         with patch.object(measure_performance, "_reports_dir", return_value=str(tmp_path)):
             with patch("os.fdopen", side_effect=OSError("simulated write failure")):
                 with pytest.raises(OSError, match="simulated write failure"):
                     measure_performance.persist_report({"data": 1})
 
-        # No .json should have been committed
         json_files = [f for f in os.listdir(tmp_path) if f.endswith(".json")]
         assert json_files == [], f"No .json should remain after failed write; found {json_files}"
 
@@ -68,12 +56,8 @@ class TestPersistReportCollisionSort:
         assert sorted([n1, n2])[0] < sorted([n1, n2])[1]
 
 
-# ---------------------------------------------------------------------------
-# 2. JSON-mode empty-corpus error output
-# ---------------------------------------------------------------------------
 class TestJsonModeEmptyCorpusOutput:
     def test_bench_empty_episodes_emits_json_error(self, capsys):
-        """When --json and no episodes, stdout must be valid JSON (not plain text)."""
         argv = ["--json", "--no-save"]
         with patch.object(measure_performance, "load_episodes", return_value=([], 0)):
             with patch.object(measure_performance, "load_lessons", return_value=({}, 0)):
@@ -86,7 +70,6 @@ class TestJsonModeEmptyCorpusOutput:
         assert payload.get("error") == "not_enough_episodes"
 
     def test_bench_no_json_flag_emits_plain_text(self, capsys):
-        """Without --json, the human-readable message is printed (not JSON)."""
         argv = ["--no-save"]
         with patch.object(measure_performance, "load_episodes", return_value=([], 0)):
             with patch.object(measure_performance, "load_lessons", return_value=({}, 0)):
@@ -96,12 +79,10 @@ class TestJsonModeEmptyCorpusOutput:
         assert exc_info.value.code == 0
         captured = capsys.readouterr()
         assert "Not enough episodes" in captured.out
-        # Must NOT be valid JSON (it's a plain message)
         with pytest.raises(json.JSONDecodeError):
             json.loads(captured.out)
 
     def test_pilot_metrics_empty_traces_emits_json_error(self, tmp_path, capsys):
-        """When --json and no traces, stdout must be valid JSON."""
         argv = ["--json"]
         with patch.object(pilot_metrics, "load_traces", return_value=[]):
             with patch("sys.argv", ["commontrace"] + argv):
@@ -113,30 +94,19 @@ class TestJsonModeEmptyCorpusOutput:
         assert payload.get("error") == "no_traces"
 
 
-# ---------------------------------------------------------------------------
-# 3. HTML output is produced without error
-# ---------------------------------------------------------------------------
 class TestHtmlRendering:
     def test_render_html_produces_valid_document(self, tmp_path):
-        """render_html runs end-to-end and produces a complete HTML page."""
         argv = ["--html", "--no-save"]
-        # Only verify the HTML code path runs; rely on existing render tests for detail
         with patch.object(measure_performance, "_reports_dir", return_value=str(tmp_path)):
             with patch.object(measure_performance, "load_episodes", return_value=([], 0)):
                 with patch.object(measure_performance, "load_lessons", return_value=({}, 0)):
                     with patch("sys.argv", ["commontrace"] + argv):
                         with pytest.raises(SystemExit):
                             measure_performance.main()
-        # If the HTML path ran but no episodes, exit early — that's fine.
-        # The key check: no unhandled exception.
 
 
-# ---------------------------------------------------------------------------
-# 4. install_cmd root resolved from dest, not cwd
-# ---------------------------------------------------------------------------
 class TestInstallCmdRootResolution:
     def test_root_is_resolved_from_dest_not_cwd(self, tmp_path):
-        """install --dest /some/path should configure .mcp.json with /some/path as root."""
         dest = tmp_path / "agent_home"
         dest.mkdir()
 
@@ -161,9 +131,6 @@ class TestInstallCmdRootResolution:
         )
 
 
-# ---------------------------------------------------------------------------
-# 5. Datetime & Timezone Integrity in compute_freshness
-# ---------------------------------------------------------------------------
 class TestDatetimeTimezoneIntegrity:
     def test_parse_last_hit_handles_iso_with_z_and_offsets(self):
         dt_z = measure_performance._parse_last_hit("2026-09-05T12:00:00Z")
@@ -181,25 +148,20 @@ class TestDatetimeTimezoneIntegrity:
         import datetime
         utc_now = datetime.datetime(2026, 9, 5, 12, 0, 0, tzinfo=datetime.timezone.utc)
         lessons = {
-            "l1": {"last_hit": "2026-09-01"},  # naive date
-            "l2": {"last_hit": "2026-09-02T12:00:00Z"},  # UTC aware
+            "l1": {"last_hit": "2026-09-01"},
+            "l2": {"last_hit": "2026-09-02T12:00:00Z"},
             "l3": {"last_hit": "NEVER"},
         }
-        # Passing UTC-aware now must not raise TypeError when comparing against naive or aware
         val, n = measure_performance.compute_freshness(lessons, now=utc_now)
         assert n == 3
         assert val == pytest.approx(2 / 3)
 
-        # Passing naive now must also work without error
         naive_now = datetime.datetime(2026, 9, 5, 12, 0, 0)
         val2, n2 = measure_performance.compute_freshness(lessons, now=naive_now)
         assert n2 == 3
         assert val2 == pytest.approx(2 / 3)
 
 
-# ---------------------------------------------------------------------------
-# 6. Lexical Tokens Unicode Support
-# ---------------------------------------------------------------------------
 class TestLexicalTokensUnicode:
     def test_lexical_tokens_preserves_non_latin_and_accented_words(self):
         tokens = measure_performance._lexical_tokens("résumé naïve café")
@@ -208,9 +170,6 @@ class TestLexicalTokensUnicode:
         assert "café" in tokens
 
 
-# ---------------------------------------------------------------------------
-# 7. Transfer Gap Memoization
-# ---------------------------------------------------------------------------
 class TestTransferGapMemoization:
     def test_resolve_project_caches_lookups(self, tmp_path):
         ep_dir = tmp_path / "episodes"
@@ -220,15 +179,11 @@ class TestTransferGapMemoization:
         with patch.object(measure_performance, "BASE_DIR", str(tmp_path)):
             episodes = [{"name": "current_ep", "project": "proj_beta", "lessons_hit": ["l1"]}]
             lessons = {"l1": {"source_traces": ["ep1", "ep1"]}}
-            # compute_transfer_gap should resolve ep1 and cache it
             val, n, untraceable = measure_performance.compute_transfer_gap(episodes, lessons)
             assert n == 1
-            assert val == 1.0  # cross-project hit
+            assert val == 1.0
 
 
-# ---------------------------------------------------------------------------
-# 8. Shellout PYTHONUTF8 Unconditional Setting
-# ---------------------------------------------------------------------------
 class TestShelloutPythonUtf8:
     def test_shellout_sets_pythonutf8_even_when_capture_false(self, tmp_path):
         from commontrace.commands import _shellout
@@ -241,9 +196,6 @@ class TestShelloutPythonUtf8:
                 assert env.get("PYTHONUTF8") == "1"
 
 
-# ---------------------------------------------------------------------------
-# 9. Index Command (index_cmd.py)
-# ---------------------------------------------------------------------------
 class TestIndexCmd:
     def test_index_cmd_missing_deps_exits_1(self, capsys):
         from commontrace.commands import index_cmd
@@ -266,9 +218,6 @@ class TestIndexCmd:
                 assert "--force" in extra
 
 
-# ---------------------------------------------------------------------------
-# 10. Install Command Targets (cursor, windsurf, devin, generic-mcp, generic)
-# ---------------------------------------------------------------------------
 class TestInstallCmdTargets:
     @pytest.mark.parametrize("target,expected_file", [
         ("cursor", ".cursor/rules/commontrace.mdc"),
@@ -287,9 +236,6 @@ class TestInstallCmdTargets:
                 assert target_path.is_file(), f"Target {target} failed to write {expected_file}"
 
 
-# ---------------------------------------------------------------------------
-# 11. Report HTML Shared Wrapper (report_html.py)
-# ---------------------------------------------------------------------------
 class TestReportHtml:
     def test_wrap_page_structure(self):
         from commontrace import report_html
@@ -308,9 +254,6 @@ class TestReportHtml:
         assert 'class="note">High accuracy<' in card
 
 
-# ---------------------------------------------------------------------------
-# 12. Approval Policy Unknown Key Validation
-# ---------------------------------------------------------------------------
 class TestApprovalPolicyUnknownKeys:
     def test_load_policy_rejects_typo_keys(self, tmp_path):
         from commontrace import approval
@@ -330,9 +273,6 @@ class TestApprovalPolicyUnknownKeys:
         assert p.require_human is True
 
 
-# ---------------------------------------------------------------------------
-# 13. Import Command File Existence Check Prior to Directory Creation
-# ---------------------------------------------------------------------------
 class TestImportCmdFileCheck:
     def test_import_missing_file_does_not_create_directory(self, tmp_path, capsys):
         import argparse
@@ -357,9 +297,6 @@ class TestImportCmdFileCheck:
         assert not dest.exists(), "Target store directory must not be created when file is missing"
 
 
-# ---------------------------------------------------------------------------
-# 14. MCP Server draft_lesson Error Handling
-# ---------------------------------------------------------------------------
 class TestMcpServerDraftLessonErrorHandling:
     def test_draft_lesson_handles_validation_exception(self, tmp_path):
         import asyncio
@@ -406,9 +343,6 @@ class TestMcpServerDraftLessonErrorHandling:
             assert "could not validate" in data["error"]
 
 
-# ---------------------------------------------------------------------------
-# 15. Trace IO Fallback for Empty Context/Solution Text
-# ---------------------------------------------------------------------------
 class TestTraceIoFallback:
     def test_trace_io_read_falls_back_when_frontmatter_empty_or_none(self, tmp_path):
         from commontrace import trace_io
@@ -433,9 +367,6 @@ class TestTraceIoFallback:
         assert inst["solution_text"] == "Recovered solution text from body section."
 
 
-# ---------------------------------------------------------------------------
-# 16. Scaffold Store Traces and Templates Sanity
-# ---------------------------------------------------------------------------
 class TestScaffoldStoreSanity:
     def test_example_trace_conforms_to_schema(self):
         from commontrace import paths, trace_io, validate
@@ -461,5 +392,4 @@ class TestScaffoldStoreSanity:
         root = paths.resolve_root(None)
         declared = doctor_cmd._declared_agent_type(root)
         assert declared == "code"
-
 

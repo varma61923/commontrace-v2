@@ -20,11 +20,7 @@ from commontrace import (
 )
 from commontrace.commands._format import read_or_warn
 
-# Re-exported from commontrace.holdout_io, which owns the one definition
-# now that the MCP retriever writes this log too.
 holdout_log_path = holdout_io.holdout_log_path
-
-
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -109,12 +105,6 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
 
 
 def _outcomes_by_occasion(root: str) -> dict[str, bool]:
-    """occasion_id -> did the underlying task succeed."""
-    # Outcomes reported by occasion id alone (holdout_io.record_outcome),
-    # which is how an application measuring memory held by another system
-    # reports them -- it has no episode or trace to carry the verdict. Read
-    # FIRST so that where this store does hold its own record of an
-    # occasion, that richer record is the one that stands.
     out: dict[str, bool] = dict(holdout_io.read_outcomes(root))
 
     for path in sorted(glob.glob(os.path.join(paths.episodes_dir(root), "*.md"))):
@@ -148,15 +138,6 @@ def _outcomes_by_occasion(root: str) -> dict[str, bool]:
 
 
 def _load(root: str) -> tuple[list[integrity.Assignment], float, int]:
-    """Every logged assignment, joined to its outcome. Returns (rows, rate, corrupt).
-
-    `succeeded is None` means no outcome was ever recorded for that occasion.
-    Those rows are carried rather than dropped here, which is the difference
-    between this and what it replaced: the estimate cannot use them, but the
-    validity checks are largely ABOUT them, and a loader that filtered first
-    would hand the auditor a record with the evidence already removed
-    (commontrace/integrity.py).
-    """
     records, corrupt = holdout_io.read_log(root)
     if not records:
         return [], experiment.DEFAULT_HOLDOUT_RATE, corrupt
@@ -186,18 +167,7 @@ def _load(root: str) -> tuple[list[integrity.Assignment], float, int]:
 def scope_to_current_salt(
     root: str, all_rows: list[integrity.Assignment], salt: str | None = None,
 ) -> tuple[list[integrity.Assignment], str, int]:
-    """Scope assignment rows to one randomization, matching what the Hub does in SQL.
-
-    Assignment is a hash of (lesson, occasion, salt) against a rate, so a
-    changed salt or rate re-randomizes every occasion -- pooling assignments
-    from two of them is not a larger sample, it is a comparison of nothing
-    against nothing, and `integrity.check_assignment_drift` exists precisely
-    to catch it. Every caller that analyses the holdout log (the CLI report
-    and the MCP `experiment_status` tool alike) must scope through this, or
-    the two surfaces can read the same store and disagree.
-
-    Returns (scoped_rows, salt_used, n_excluded_from_other_randomizations).
-    """
+    """Scope assignment rows to one randomization, matching what the Hub does in SQL."""
     config = holdout_io.load_config(root)
     wanted_salt = salt if salt is not None else config.salt
     rows = [r for r in all_rows if r.salt == wanted_salt]
@@ -205,13 +175,6 @@ def scope_to_current_salt(
 
 
 def _observations(rows: list[integrity.Assignment]) -> list[experiment.HoldoutObservation]:
-    """The resolved, de-duplicated subset the estimate is computed on.
-
-    Collapsing retries is `integrity.normalize`'s job, not a second copy of
-    it here: the auditor and the estimate must agree on what one assignment
-    is, or the attrition rate is reported against a denominator the effect
-    size never used.
-    """
     unique, _ = integrity.normalize(rows)
     return [
         experiment.HoldoutObservation(
@@ -224,25 +187,7 @@ def _observations(rows: list[integrity.Assignment]) -> list[experiment.HoldoutOb
     ]
 
 
-
 def _relevance_sensitivity(rows: list[integrity.Assignment], args) -> dict[str, dict]:
-    """Re-estimate on the strongest half of each lesson's matches only.
-
-    The treatment this experiment measures is "inject the lesson WHEN
-    RETRIEVED", so what counts as retrieved is part of the treatment
-    definition, not a pre-processing detail. Retrieval returns top-k, and a
-    lesson that scraped in on an incidental word is in the same arm as one
-    that was squarely on topic -- the outcome of the first says nothing about
-    the lesson, and dilutes the estimate toward the store's base rate.
-
-    Restricting to the top half by relevance asks: does the effect survive
-    when only the occasions the lesson was actually about are counted? A
-    verdict that flips between the two is the finding, and it is a finding
-    the full-sample estimate cannot show on its own.
-
-    Returns {} when relevance was never recorded -- an older log gets no
-    sensitivity band rather than a fabricated one.
-    """
     scored = [r for r in rows if r.relevance is not None and r.succeeded is not None]
     if len(scored) < 2 * args.min_arm:
         return {}
@@ -280,7 +225,6 @@ def _relevance_sensitivity(rows: list[integrity.Assignment], args) -> dict[str, 
 def _render_sensitivity(
     effects: list, sensitivity: dict[str, dict],
 ) -> str:
-    """Only the lessons whose verdict CHANGES are worth the reader's attention."""
     if not sensitivity:
         return ""
     flipped = []
@@ -318,14 +262,6 @@ def _render_sensitivity(
 
 
 def _revisions_under_test(rows: list[integrity.Assignment]) -> dict[str, list[str]]:
-    """lesson -> the revision(s) its assignments were made against.
-
-    One entry means the effect describes that exact text. More than one means
-    the lesson was edited mid-run and the effect describes neither -- which
-    `integrity.check_treatment_stability` reports as INVALIDATES.
-    """
-    # Chronological (the log is append-ordered), so a lesson that moved reads
-    # in the direction it actually moved.
     out: dict[str, list[str]] = {}
     for r in rows:
         if r.revision and r.revision not in out.setdefault(r.lesson, []):
@@ -334,14 +270,6 @@ def _revisions_under_test(rows: list[integrity.Assignment]) -> dict[str, list[st
 
 
 def _observed_baseline(root: str) -> float | None:
-    """This store's own success rate, for planning against reality.
-
-    A plan is only as good as the baseline it assumes, and the rate a fleet
-    actually resolves at is sitting in its own traces. Falls back to 0.5 when
-    there is nothing to read, which is the most pessimistic assumption
-    (variance peaks there) and therefore the one that will not understate the
-    sample a real experiment needs.
-    """
     outcomes = list(_outcomes_by_occasion(root).values())
     if len(outcomes) < 20:
         return None
@@ -349,7 +277,6 @@ def _observed_baseline(root: str) -> float | None:
 
 
 def _run_configure(args: argparse.Namespace, root: str) -> int:
-    """Start, change or stop this store's experiment."""
     if args.rate is None:
         current = holdout_io.load_config(root)
         print(_render_config(current, root))
@@ -382,7 +309,6 @@ def _run_configure(args: argparse.Namespace, root: str) -> int:
     print(f"[commontrace] holdout set to {config.rate:.0%} for this store.")
     print(f"  Salt: {config.salt}")
     print()
-    # The consequence people get wrong, stated at the moment they cause it.
     print("  This starts a FRESH randomization. Assignment is a hash of (lesson, "
           "occasion, salt)\n"
           "  compared against the rate, so a new rate re-randomizes every occasion --\n"
@@ -450,8 +376,6 @@ def _run_plan(args: argparse.Namespace, root: str) -> int:
                "assumed: fewer than 20 recorded outcomes here to read one from. 50% is the "
                "most pessimistic assumption, so this will not understate the sample._")
         )
-    # A design that no budget can answer is a planning failure, and a script
-    # running this before a pilot should be able to act on it.
     return 1 if design.verdict == "infeasible" else 0
 
 
@@ -462,17 +386,6 @@ def run(args: argparse.Namespace) -> int:
     if args.plan:
         return _run_plan(args, root)
     all_rows, rate, n_corrupt = _load(root)
-    # SCOPED TO ONE RANDOMIZATION, matching what the Hub already does in SQL.
-    # Assignment is a hash of (lesson, occasion, salt) against a rate, so
-    # changing either re-randomizes every occasion -- and pooling assignments
-    # from two of them lets a single occasion sit in opposite arms. That is
-    # not a larger sample, it is a comparison of nothing against nothing, and
-    # `integrity.check_assignment_drift` exists precisely to catch it.
-    #
-    # Before this the local report analysed every line in the log, so the
-    # first time anyone changed their holdout rate the report became
-    # permanently invalid -- and said so, via a finding, which is better than
-    # silence but worse than not doing it.
     rows, wanted_salt, other = scope_to_current_salt(root, all_rows, args.salt)
     if all_rows and not rows:
         print(
@@ -526,14 +439,6 @@ def run(args: argparse.Namespace) -> int:
         )
         return 0
 
-    # A look at a RUNNING experiment unless the caller says otherwise. This
-    # command is exactly what gets looked at repeatedly: `--strict` runs on
-    # every CI build, and a fixed 5% threshold tested on every build is
-    # crossed by luck (experiment.analyze's docstring measures it). It also
-    # has to agree with `retrieve` and `experiment_status`, which already
-    # read the experiment this way (commontrace/evidence.py) -- a store
-    # whose CI gate says HURTS while its agents are told UNDERPOWERED is
-    # telling two stories about one lesson.
     effects = experiment.analyze(
         obs, min_arm=args.min_arm, alpha=args.alpha, detectable=args.detect,
         sequential=not args.fixed_horizon)
@@ -541,14 +446,6 @@ def run(args: argparse.Namespace) -> int:
     summary = experiment.ExperimentSummary(
         n_observations=len(obs),
         n_lessons=len({o.lesson_slug for o in obs}),
-        # NOT `rate` from `_load()` above -- that is an average over
-        # `all_rows`, every randomization ever logged, computed before
-        # scoping happened. `n_assignments`/`effects`/`report` are all
-        # correctly scoped to `rows` (the current salt only), so a rate
-        # blended across old and new randomizations would be exactly the
-        # "two quantities in one report, only one of them scoped" defect
-        # this file's own salt-scoping fix exists to prevent -- one field
-        # over. `rows` is non-empty here (guarded by `n_lines == 0` above).
         holdout_rate=sum(r.rate for r in rows) / len(rows),
         effects=effects,
     )
@@ -563,21 +460,10 @@ def run(args: argparse.Namespace) -> int:
             "integrity": dataclasses.asdict(report),
             "value": dataclasses.asdict(
                 value.compute(effects, report, value_per_occasion=args.value_per_occasion)),
-            # Which text each effect is about. An effect attached to a slug
-            # alone is attached to a mutable name, and silently stops
-            # describing the lesson the moment anyone edits it.
             "revisions_under_test": revisions,
-            # The same estimate over each lesson's strongest matches only.
-            # Empty when relevance was never recorded.
             "relevance_sensitivity": sensitivity,
         }, indent=2, default=str))
     else:
-        # Validity FIRST, effects second. A report that leads with a
-        # significant number and mentions the caveat underneath is exactly how
-        # a broken one gets quoted: the headline travels and the caveat does
-        # not. tests/test_integrity.py holds a fleet where the lesson does
-        # nothing and the estimate reads HURTS at p=0.003 -- if that page opens
-        # with "HURTS", someone retires a lesson that was fine.
         print(integrity.render(report))
         if other:
             print()
@@ -620,11 +506,6 @@ def run(args: argparse.Namespace) -> int:
             )
 
     if args.strict:
-        # A compromised experiment fails --strict too, and it has to: the flag
-        # means "stop the build if the memory is making things worse", and a
-        # biased comparison cannot answer that either way. Passing it silently
-        # is the worse error -- it converts "we could not tell" into "we
-        # checked and it was fine", which is the claim nobody should make.
         if not report.readable:
             print(
                 "\n[commontrace] --strict: the experiment's validity is COMPROMISED, so "

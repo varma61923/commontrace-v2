@@ -1,4 +1,3 @@
-"""commontrace/paths.py -- root resolution and the implicit-cwd-store warning."""
 from __future__ import annotations
 
 import os
@@ -7,11 +6,6 @@ from commontrace import paths
 
 
 class TestWarnIfImplicitCwdStoreMatchesResolveRootTruthiness:
-    """`resolve_root` treats an empty string the same as no `--dest` at all
-    (`if explicit:`), so the warning that fires on the fallback path must
-    agree -- a mismatch here silently suppresses the warning exactly when a
-    write is about to materialize a store somewhere unexpected."""
-
     def test_an_empty_explicit_falls_through_like_none(self, tmp_path, monkeypatch, capsys):
         monkeypatch.chdir(tmp_path)
         monkeypatch.delenv("COMMONTRACE_ROOT", raising=False)

@@ -1,19 +1,3 @@
-"""The taxonomy is open: any field is a first-class agent_type.
-
-protocol/PROTOCOL.md#7-taxonomy-open-not-closed defines the taxonomy as open,
-trace.schema.json/lesson.schema.json declare `agent_type` as a plain string
-with no enum, and the Hub stores it as free text. The CLI was the one surface
-that disagreed, in two places that compounded:
-
-1. `choices=paths.AGENT_TYPES` on init/lesson new/import made a robotics or
-   legal fleet impossible to declare at all.
-2. `paths.store_agent_type` then validated by MEMBERSHIP in that same list, so
-   a store whose INDEX.md said `robotics` read back as `code` -- silently --
-   and every trace it captured was stamped with the wrong fleet.
-
-Together those made "works for any agent type" untrue in the one place a
-customer would find out slowly: their data.
-"""
 import os
 
 import pytest
@@ -30,7 +14,6 @@ class TestAnyFieldCanBeDeclared:
         assert paths.store_agent_type(str(tmp_path)) == agent_type
 
     def test_the_declared_type_survives_the_round_trip_into_a_trace(self, tmp_path):
-        """The regression that mattered: a robotics store stamping `code`."""
         dest = str(tmp_path)
         assert main(["init", "--agent-type", "robotics", "--dest", dest]) == 0
         assert main([
@@ -50,14 +33,10 @@ class TestAnyFieldCanBeDeclared:
     def test_suggested_types_are_examples_not_a_gate(self):
         assert "robotics" not in paths.SUGGESTED_AGENT_TYPES
         assert paths.AGENT_TYPE_RE.match("robotics")
-        # The deprecated alias still resolves for one release.
         assert paths.AGENT_TYPES == paths.SUGGESTED_AGENT_TYPES
 
 
 class TestShapeIsStillValidated:
-    """Open does not mean anything goes: the value is written unquoted into
-    memory/INDEX.md's first line and into the Hub's String(64) column."""
-
     @pytest.mark.parametrize("bad", ["Robotics Fleet!", "../escape", "a b", "-leading", "", "x" * 65])
     def test_rejected_at_the_cli_boundary(self, bad):
         with pytest.raises(Exception):
@@ -67,23 +46,22 @@ class TestShapeIsStillValidated:
         assert _validators.agent_type("  Robotics  ") == "robotics"
 
     def test_an_unusable_declared_type_falls_back_loudly(self, tmp_path, capsys):
-        """Silence is what made the original bug invisible for so long."""
         mem = tmp_path / "memory"
         mem.mkdir()
         (mem / "INDEX.md").write_text(
             "# Memory Index — agent_type: not a valid slug!\n", encoding="utf-8"
         )
-        assert paths.store_agent_type(str(tmp_path)) == "code"
+        assert paths.store_agent_type(str(tmp_path)) == "general"
         assert "not a valid slug" in capsys.readouterr().err
 
 
 class TestEpisodesFollowTheProfileNotTheAgentType:
-    """`memory/episodes/` is written by the code-review profile's pipeline
-    (SKILL.md), not by the `code` agent type. Keying the store layout on the
-    agent type made `code` the only first-class fleet."""
-
-    def test_default_init_still_scaffolds_episodes(self, tmp_path):
+    def test_bare_init_is_general_and_scaffolds_no_episodes(self, tmp_path):
         assert main(["init", "--dest", str(tmp_path)]) == 0
+        assert not os.path.isdir(paths.episodes_dir(str(tmp_path)))
+
+    def test_explicit_code_agent_type_still_scaffolds_episodes(self, tmp_path):
+        assert main(["init", "--agent-type", "code", "--dest", str(tmp_path)]) == 0
         assert os.path.isdir(paths.episodes_dir(str(tmp_path)))
 
     def test_a_non_code_fleet_gets_no_episodes_by_default(self, tmp_path):
@@ -108,10 +86,6 @@ class TestEpisodesFollowTheProfileNotTheAgentType:
 
 
 class TestDistilledDomainsAreNotAllOther:
-    """`propose_domain` used to label every candidate from a fleet with no
-    STARTER_DOMAINS entry `other`, collapsing that field's whole taxonomy into
-    one bucket and making `commontrace taxonomy`'s coverage report useless."""
-
     def _cluster(self, tags, agent_type="robotics"):
         traces = [
             distill.TraceCandidate(

@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Does one agent's `query` get slower as its fleet learns more?
 
-`hub/SCALING.md` asks this of the Hub and answers it: no read path against a
+The scaling analysis asks this of the Hub and answers it: no read path against a
 customer's trace corpus grows linearly. That document measures the SERVER.
 This one measures the tier the product actually runs on -- the pip-installable
 client and the MCP server, which `protocol/PROTOCOL.md` §5 calls the local tier
 and which every agent without a Hub deployment uses exclusively.
 
-The question matters for the same reason link 3 in `STRATEGY.md` §13.2 matters:
+The question matters because
 a lesson store grows monotonically by design (that is the product working), so
 if retrieval cost grows with it, the product gets slower precisely as it starts
 delivering value.
@@ -45,10 +45,6 @@ SCHEMA_VERSION = 1
 DEFAULT_SIZES = (100, 400, 1600, 6400)
 RUNS_PER_POINT = 5
 
-# Drawn from six fields rather than one, for the same reason
-# commontrace/fixtures/fields/ exists: a corpus of near-identical synthetic
-# rows measures the generator, not the retriever (the mistake
-# hub/SCALING.md caught in its own first run and pinned a test against).
 _VOCAB = [
     "pagination", "cursor", "offset", "retry", "backoff", "timeout", "idempotent",
     "migration", "rollback", "schema", "index", "lock", "deadlock", "transaction",
@@ -62,10 +58,6 @@ _DOMAINS = ["coding", "hr", "sales", "marketing", "robotics", "legal"]
 
 
 def _lesson_markdown(i: int, rng: random.Random) -> str:
-    """A lesson file shaped like a real one -- including the fields that make
-    parsing expensive. `last_hit` is a bare YAML date on purpose: PyYAML
-    materializes it as a datetime.date, which is exactly the kind of value a
-    naive JSON cache would silently corrupt."""
     terms = rng.sample(_VOCAB, 10)
     domain = rng.choice(_DOMAINS)
     return f"""---
@@ -119,19 +111,7 @@ def _queries(rng: random.Random, k: int = 12) -> list[str]:
 
 def measure_point(n: int, runs: int = RUNS_PER_POINT, top_k: int = 3,
                   use_cache: bool = True) -> dict:
-    """Time the real client retrieval path at corpus size `n`.
-
-    Stages are timed separately because the split is the finding: if loading
-    dominates ranking by two orders of magnitude, making the ranker faster is
-    optimizing the wrong thing.
-
-    `use_cache=True` calls exactly what `commontrace query` and the MCP
-    server call (`lesson_cache.load_active_with_terms` feeding
-    `rank_lessons(term_cache=...)`) -- not a parallel path, the same one, so
-    this number cannot drift from what a real query pays.
-    `use_cache=False` reproduces the original uncached behaviour for
-    comparison: a fresh glob + YAML parse + tokenize on every call.
-    """
+    """Time the real client retrieval path at corpus size `n`."""
     from commontrace import lesson_cache
     from commontrace.commands.query_cmd import _iter_active_lessons
 
@@ -141,7 +121,6 @@ def measure_point(n: int, runs: int = RUNS_PER_POINT, top_k: int = 3,
         rng = random.Random(7)
         qs = _queries(rng)
 
-        # Warm the filesystem cache so this measures parsing, not cold I/O.
         _iter_active_lessons(root, None)
 
         load_ms, rank_ms, total_ms = [], [], []
@@ -176,8 +155,6 @@ def measure_point(n: int, runs: int = RUNS_PER_POINT, top_k: int = 3,
 
 
 def _uncached_iter(root: str) -> list[tuple[str, dict]]:
-    """The pre-cache behaviour, reproduced directly: glob + parse every file,
-    every call. Kept only so `--no-cache` can show the number this replaced."""
     import glob as _glob
 
     from commontrace import frontmatter as _fm
@@ -199,8 +176,6 @@ def _uncached_iter(root: str) -> list[tuple[str, dict]]:
 
 
 def fit_alpha(points: list[dict], key: str) -> float | None:
-    """OLS slope on log-log axes -- the same estimator hub/bench_scaling.py
-    uses, so the two documents' exponents mean the same thing."""
     pts = [(p["n_lessons"], p[key]) for p in points if p.get(key) and p["n_lessons"] > 0]
     if len(pts) < 2:
         return None

@@ -1,20 +1,4 @@
-"""OpenAI Agents SDK: a memory tool keyed on the caller's task id.
-
-    from commontrace.integrations.openai_agents import memory_tool
-
-    agent = Agent(..., tools=[memory_tool(memory)])
-    await Runner.run(agent, task, context={"occasion_id": task_id})
-    memory.record_outcome(task_id, succeeded=passed)
-
-The id is read from the run context (`context["occasion_id"]` or
-`context.occasion_id`), which every tool receives. The trace's `group_id`
-is only a fallback: with tracing disabled (OPENAI_AGENTS_DISABLE_TRACING)
-the trace is a no-op with no group_id, even when RunConfig sets one. With
-no id at all the tool returns nothing rather than invent an id no outcome
-could be joined to. Verified against openai-agents 0.22 with a scripted
-Model. No `from __future__ import annotations`: the SDK reads the
-RunContextWrapper annotation to know to pass the context.
-"""
+"""OpenAI Agents SDK: a memory tool keyed on the caller's task id."""
 from typing import Any
 
 from commontrace.measure import default_text
@@ -33,8 +17,6 @@ def occasion_id(ctx: Any) -> str:
 
 
 def memory_tool(memory: Any, *, name: str = "recall_memory"):
-    """A function tool the agent calls to retrieve memory, with the holdout
-    applied. `memory` is a CausalMemory or a memory_adapters.MeasuredMemory."""
     from agents import RunContextWrapper, function_tool
 
     def recall_memory(ctx: RunContextWrapper[Any], query: str) -> list[str]:

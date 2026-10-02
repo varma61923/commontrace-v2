@@ -1,9 +1,3 @@
-"""Tests for commontrace/hub_client.py's retry/backoff policy.
-
-These test the decision logic (`_is_retryable`) directly rather than
-standing up a failing Hub: the point being verified is *which* failures are
-retried, and that is a pure predicate.
-"""
 import pytest
 
 from commontrace import hub_client
@@ -32,20 +26,14 @@ class TestRetryPolicy:
         ],
     )
     def test_auth_failures_are_not_retried(self, exc):
-        """Retrying a rejected credential can never succeed, and hammering a
-        server that may be rate-limiting auth failures makes it worse."""
         assert hub_client._is_retryable(exc) is False
 
     def test_unknown_failures_are_not_retried(self):
-        # Default to not retrying: a bounded, fast, honest failure beats
-        # silently multiplying the delay on an error we don't understand.
         assert hub_client._is_retryable(ValueError("something we don't recognize")) is False
 
 
 class TestDefaults:
     def test_a_finite_timeout_is_configured(self):
-        """The bug this guards: with no timeout, a Hub that accepts the
-        connection then stalls hangs `commontrace sync` forever."""
         assert hub_client.DEFAULT_TIMEOUT_SECONDS > 0
         assert hub_client.DEFAULT_TIMEOUT_SECONDS < 300
 

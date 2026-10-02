@@ -1,39 +1,23 @@
-"""Shared pytest fixtures for commontrace-v2 tests."""
 import os
 import sys
 
 import pytest
 import yaml
 
-# The benchmark reference scripts are run as subprocesses in production, so they
-# are not importable as `commontrace.reference.*` (that directory deliberately has
-# no __init__.py -- it ships as package data). Tests import them directly, so put
-# their directory on the path.
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-# query.py and build_index.py live here too now -- they were moved out of
-# memory/attention/ so a pip install can reach semantic retrieval at all
-# (see memory/attention/README.md).
 sys.path.insert(0, os.path.join(REPO_ROOT, "commontrace", "reference"))
 
-# A store that never chose a reranker gets the fast one when the attention
-# extra is installed (retrieval_io.default_rerank). The suite runs with both
-# kinds of install, so it pins the default off and the tests of the default
-# set it themselves (tests/test_rerank.py). Subprocesses inherit it.
 os.environ.setdefault("COMMONTRACE_DEFAULT_RERANK", "none")
+os.environ.setdefault("COMMONTRACE_WARM", "0")
 
 
 def _write_frontmatter_file(path, fm, body):
-    # Use yaml.safe_dump -- same YAML-writing path production's frontmatter.write() uses --
-    # rather than interpolating raw values into a string template. A naive template lets
-    # adversarial content (a description containing ": " or a quote) produce invalid or
-    # silently-misparsed YAML that no longer matches what the fixture's caller intended.
     content = "---\n" + yaml.safe_dump(fm, sort_keys=False, allow_unicode=True) + "---\n\n" + body
     path.write_text(content, encoding="utf-8")
 
 
 @pytest.fixture
 def tmp_memory(tmp_path):
-    """Create a temporary memory directory with lessons and episodes subdirs."""
     mem = tmp_path / "memory"
     (mem / "lessons").mkdir(parents=True)
     (mem / "episodes").mkdir(parents=True)
@@ -58,12 +42,6 @@ def write_lesson(mem_dir, name, description="A test lesson", domain="testing",
         "do_not_apply_when": "When no test suite is present.",
         "uses": uses,
         "last_hit": last_hit,
-        # Both kept: source_traces is the current, schema-driven field name;
-        # source_episodes is the v1 alias several fixtures/tests still exercise
-        # on purpose (transfer-gap resolution, the code-review profile's
-        # episode files). Defaulting source_traces from source_episodes when
-        # only the latter is given keeps every existing call site's frontmatter
-        # schema-valid without having to touch each one.
         "source_traces": source_traces if source_traces is not None else (source_episodes or []),
         "source_episodes": source_episodes or [],
         "status": status,

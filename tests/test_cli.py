@@ -1,4 +1,3 @@
-"""Smoke + contract tests for the `commontrace` CLI (protocol/PROTOCOL.md client)."""
 import json
 import os
 import subprocess
@@ -22,7 +21,6 @@ def test_init_scaffolds_store_for_any_agent_type(store):
     assert main(["init", "--agent-type", "support", "--dest", str(store)]) == 0
     assert os.path.isdir(store / "memory" / "lessons")
     assert os.path.isdir(store / "memory" / "traces")
-    # code-review profile's episodes/ dir is code-specific, not created for other agent types
     assert not os.path.isdir(store / "memory" / "episodes")
     assert os.path.isfile(store / "memory" / "INDEX.md")
 
@@ -75,14 +73,14 @@ def test_lesson_validate_catches_schema_violations(store):
             "tags": [],
             "agent_type": "code",
             "domain": "testing",
-            "importance": 9,  # out of range [1,5]
+            "importance": 9,
             "importance_rationale": "x",
             "applies_when": "x",
             "do_not_apply_when": "x",
             "uses": 0,
             "last_hit": "NEVER",
             "source_traces": [],
-            "status": "nope",  # not in enum
+            "status": "nope",
         },
         "body",
     )
@@ -90,13 +88,6 @@ def test_lesson_validate_catches_schema_violations(store):
 
 
 def test_lesson_validate_accepts_a_v1_lesson_with_only_source_episodes(store):
-    """[BUG-PROT-01]: PROTOCOL.md's versioning section promises "a Trace/
-    Lesson written under v1.x remains valid under 2.0.0", but a v1 lesson
-    uses `source_episodes` (the pre-2.0 field name) and has no
-    `source_traces` key at all -- lesson.schema.json's `required` list used
-    to demand `source_traces` unconditionally, which failed every such
-    lesson with "'source_traces' is a required property" the moment
-    `lesson validate` (or the Hub-side equivalent) touched it."""
     main(["init", "--agent-type", "code", "--dest", str(store)])
     v1_path = store / "memory" / "lessons" / "lesson_v1_legacy.md"
     frontmatter.write(
@@ -113,7 +104,7 @@ def test_lesson_validate_accepts_a_v1_lesson_with_only_source_episodes(store):
             "do_not_apply_when": "x",
             "uses": 0,
             "last_hit": "NEVER",
-            "source_episodes": ["2025-01-01_example.md"],  # v1 field -- no source_traces at all
+            "source_episodes": ["2025-01-01_example.md"],
             "status": "active",
         },
         "body",
@@ -215,15 +206,11 @@ def test_lesson_new_rejects_path_traversal_slug(store):
         ]
     )
     assert rc == 1
-    # Nothing should have been written outside (or inside) the store. ldir="<store>/memory/lessons",
-    # so "../../evil.md" would land at "<store>/evil.md" if the traversal weren't blocked.
     assert not (store / "evil.md").exists()
     assert list((store / "memory" / "lessons").glob("*evil*")) == []
 
 
 def test_validate_catches_invalid_nested_outcome_fields(store):
-    """Regression: validate.py must recurse into Trace.outcome's own properties, not just
-    check that outcome is a dict."""
     main(["init", "--agent-type", "code", "--dest", str(store)])
     bad_path = store / "memory" / "traces" / "bad.md"
     frontmatter.write(
@@ -238,8 +225,6 @@ def test_validate_catches_invalid_nested_outcome_fields(store):
 
 
 def test_validate_rejects_bool_for_number_typed_field(store):
-    """Regression: _check_type must exclude bool from 'number', not just 'integer',
-    or minimum/maximum bounds checking is silently skipped for True/False."""
     schema = validate.load_schema("trace.schema.json")
     instance = {
         "id": "x", "title": "t", "context_text": "c", "solution_text": "s",
@@ -250,8 +235,6 @@ def test_validate_rejects_bool_for_number_typed_field(store):
 
 
 def test_install_claude_code_finds_skill_md_via_dest(store, monkeypatch):
-    """Regression: install --dest must be checked when looking for a real SKILL.md,
-    not just COMMONTRACE_ROOT/cwd."""
     monkeypatch.delenv("COMMONTRACE_ROOT", raising=False)
     (store / "SKILL.md").write_text("# Real skill content for the dest project\n" * 50)
     other_cwd = store.parent / "elsewhere"
@@ -264,12 +247,6 @@ def test_install_claude_code_finds_skill_md_via_dest(store, monkeypatch):
 
 
 def test_capture_can_record_a_definite_negative_for_every_outcome_flag(store):
-    """Regression: --escalated/--repeated-error/--frustration originally had no
-    --not-* counterpart (unlike --resolved/--not-resolved), so there was no way to
-    record "definitely not escalated" -- only "escalated" or "unknown". Since a rate's
-    denominator only counts traces where the field was actually set, this made
-    escalation_rate/repeated_error_rate/frustration_rate degenerate to N/A or 100%,
-    never a real number reflecting actual performance."""
     main(["init", "--agent-type", "support", "--dest", str(store)])
     rc = main(
         [
@@ -299,7 +276,6 @@ def test_install_generic_target_writes_pointer_doc(store):
 
 
 def test_install_claude_code_copies_real_skill_md_when_found(store, monkeypatch):
-    # Simulate running from within a checkout that has SKILL.md at its root.
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     monkeypatch.setenv("COMMONTRACE_ROOT", repo_root)
     assert main(["install", "--target", "claude-code", "--dest", str(store)]) == 0
@@ -318,10 +294,6 @@ def test_install_generic_mcp_warns_about_credentials_in_gitignore(store, capsys)
 
 
 def test_install_generic_mcp_writes_valid_json_with_correct_mcp_servers_shape(store):
-    """Regression: the generated commontrace.hub.mcp.json.example previously interpolated
-    a quoted tool list straight into a JSON string field via an f-string template, so the
-    unescaped quotes broke JSON parsing. It must be valid JSON with the real mcpServers
-    shape used by Claude Code / Cursor / Windsurf MCP client configs."""
     assert main(["install", "--target", "generic-mcp", "--dest", str(store)]) == 0
     example = store / "commontrace.hub.mcp.json.example"
     doc = json.loads(example.read_text())
@@ -329,10 +301,6 @@ def test_install_generic_mcp_writes_valid_json_with_correct_mcp_servers_shape(st
     assert "commontrace" in doc["mcpServers"]
 
     entry = doc["mcpServers"]["commontrace"]
-    # The Hub serves streamable-HTTP MCP (hub/main.py -> HUB_HOST:HUB_PORT/mcp).
-    # This template previously emitted the stdio shape (command/args/env), which
-    # has nowhere to put an endpoint or a bearer token -- so anyone who pasted
-    # it simply could not connect to the server this repo ships.
     assert entry["type"] == "http"
     assert entry["url"].endswith("/mcp")
     assert entry["headers"]["Authorization"].startswith("Bearer ")
@@ -354,7 +322,7 @@ def test_install_cursor_warns_about_credentials_in_gitignore(store, capsys):
 
 def test_install_warns_before_overwriting_existing_generated_file(store, capsys):
     assert main(["install", "--target", "generic", "--dest", str(store)]) == 0
-    capsys.readouterr()  # discard first-run output
+    capsys.readouterr()
     assert main(["install", "--target", "generic", "--dest", str(store)]) == 0
     out = capsys.readouterr().out
     assert "[WARN] overwriting existing file" in out
@@ -367,28 +335,6 @@ def test_doctor_runs_without_crashing(store):
 
 
 def test_a_missing_pyyaml_install_is_a_clean_error_not_a_traceback():
-    """[BUG-CLI-01]: every subcommand module is imported at the top of
-    cli.py, and several transitively import commontrace.frontmatter, which
-    does a hard `import yaml`. PyYAML is a required dependency
-    (pyproject.toml), so this only bites a broken/incomplete install -- but
-    when it does, the ModuleNotFoundError fires at module-import time,
-    before main()'s own try/except is ever reached, so `commontrace doctor`
-    (whose whole job is diagnosing exactly this) could never even run: it
-    crashed with a raw traceback instead of doctor's own clean
-    "[WARN] PyYAML importable" line.
-
-    Run out-of-process (rather than juggling sys.modules/meta_path in this
-    test's own interpreter) so the module-import-time failure is exercised
-    for real, and so it can never leak a fake `yaml` blocker into any other
-    test's import state.
-    """
-    # find_spec, not the legacy find_module/load_module finder protocol:
-    # the latter was deprecated since Python 3.4 and its import-system
-    # fallback support was removed in 3.12, so a find_module-based blocker
-    # is silently never consulted there -- `import yaml` then succeeds
-    # normally and this whole scenario never triggers, which is exactly
-    # what happened the first time this test shipped (green on 3.10/3.11,
-    # red on 3.12 in CI).
     script = (
         "import sys\n"
         "class _Blocker:\n"
@@ -415,15 +361,6 @@ def test_paths_env_var_override(tmp_path, monkeypatch):
 
 
 def test_subprocess_handoff_passes_the_resolved_root_not_the_inherited_env(tmp_path, monkeypatch):
-    """--dest must beat an exported COMMONTRACE_ROOT across the subprocess boundary.
-
-    resolve_root() already applies the documented precedence (paths.py: flag,
-    then env, then cwd) on the parent side, so `root` here is the winner. The
-    child previously inherited the *old* env value because run_script used
-    setdefault, which silently discarded an explicit --dest. The failure was
-    invisible -- `bench --pilot --dest B` rendered a normal report full of
-    store A's numbers -- so this asserts the handoff, not just resolve_root.
-    """
     captured = {}
 
     def fake_run(cmd, env=None):
@@ -442,14 +379,6 @@ def test_subprocess_handoff_passes_the_resolved_root_not_the_inherited_env(tmp_p
 
 
 def test_captured_subprocess_output_is_pinned_to_utf8(tmp_path, monkeypatch):
-    """text=True alone decodes the pipe using the host locale
-    (locale.getpreferredencoding(False)), which on Windows is commonly a
-    legacy codepage rather than UTF-8 -- and the child's own stdout
-    defaults to that same locale-dependent encoding when redirected to a
-    pipe. Every reference script here writes UTF-8 in practice (lesson/
-    trace content routinely contains non-ASCII text), so both ends of the
-    pipe must be pinned to UTF-8 explicitly rather than left to whatever
-    the host locale happens to be."""
     captured = {}
 
     def fake_run(cmd, env=None, stdout=None, text=None, encoding=None, errors=None):
@@ -479,11 +408,6 @@ def test_sync_without_hub_configured_prints_setup_instructions(store, capsys, mo
 
 
 def test_sync_warns_when_api_key_passed_on_the_command_line(store, capsys, monkeypatch):
-    """A CLI argument is readable by any local user via `ps`/
-    /proc/<pid>/cmdline and can land in shell history / auditd's
-    process-exec logs -- none of which apply to COMMONTRACE_HUB_API_KEY.
-    --help already recommends the env var; this is the same warning at
-    the moment someone actually uses the flag."""
     monkeypatch.delenv("COMMONTRACE_HUB_URL", raising=False)
     monkeypatch.delenv("COMMONTRACE_HUB_API_KEY", raising=False)
     assert main(["sync", "--dest", str(store), "--hub-api-key", "ct_live_test"]) == 0
@@ -509,10 +433,6 @@ def test_query_lexical_finds_matching_lesson(store, capsys):
             "--dest", str(store),
         ]
     )
-    # `lesson new` scaffolds at status=review (the Validator step activates a
-    # lesson, never the thing that proposed it), and lexical query only reads
-    # ACTIVE lessons -- so write the rule and approve it, which is the real
-    # path from a scaffolded lesson to a retrievable one.
     lesson_path = store / "memory" / "lessons" / "lesson_handle_price_objection.md"
     fm, _ = frontmatter.read(str(lesson_path))
     frontmatter.write(
@@ -533,16 +453,6 @@ def test_query_lexical_finds_matching_lesson(store, capsys):
 
 
 def test_query_lexical_reports_no_matches_cleanly(store, capsys):
-    """Exits 0 and SAYS something useful, rather than failing or going
-    silent.
-
-    This used to assert the literal string "no lexical matches", which was
-    the same sentence the CLI printed for four different situations --
-    including a freshly initialised store, where it was accompanied by
-    "try `commontrace lesson list`" and that list is empty. The store here
-    is exactly that case, so the assertion now checks what the message is
-    FOR: naming the state and a command that moves it forward.
-    """
     main(["init", "--agent-type", "code", "--dest", str(store)])
     capsys.readouterr()
     rc = main(["query", "something nobody has a lesson about", "--lexical", "--dest", str(store)])
@@ -553,10 +463,6 @@ def test_query_lexical_reports_no_matches_cleanly(store, capsys):
 
 
 def test_query_rejects_a_negative_top_k(store, capsys):
-    """`order[:top_k]` is a Python slice, not a bounds check --
-    `order[:-1]` means "all but the last", not "nothing" -- so
-    `--top-k -1` used to silently return nearly the whole ranked list
-    instead of failing. argparse now rejects it at parse time."""
     main(["init", "--agent-type", "code", "--dest", str(store)])
     capsys.readouterr()
     with pytest.raises(SystemExit) as exc:
@@ -587,29 +493,15 @@ def test_query_lexical_excludes_review_status_lessons(store, capsys):
     assert rc == 0
     out = capsys.readouterr().out
 
-    # The guarantee is that a review lesson is never SERVED -- not that its
-    # name never appears on screen. `query` now explains why a store with
-    # only review lessons returns nothing, and that explanation ends in
-    # `commontrace lesson approve lesson_pending_review`, because naming
-    # the real slug is the entire value of the message.
-    #
-    # So this asserts the guarantee directly rather than through a
-    # substring that the guidance also trips: a served lesson prints as a
-    # result line carrying its relevance score, and no such line may exist
-    # for a lesson still under review.
     result_lines = [ln for ln in out.splitlines() if "rel=" in ln]
     assert not any("lesson_pending_review" in ln for ln in result_lines), (
         f"an unapproved lesson was served as a result: {result_lines}"
     )
-    # ...and the explanation is still the one for this state, so a future
-    # change that stopped serving it for the WRONG reason would show up.
     assert "status=review" in out
     assert "commontrace lesson approve lesson_pending_review" in out
 
 
 def test_sync_partial_hub_config_still_prints_setup_instructions(store, capsys, monkeypatch):
-    # A URL with no key (or vice versa) is not enough to attempt a connection --
-    # sync must not try to talk to a Hub with half a credential.
     monkeypatch.setenv("COMMONTRACE_HUB_URL", "http://localhost:8420/mcp")
     monkeypatch.delenv("COMMONTRACE_HUB_API_KEY", raising=False)
     assert main(["sync", "--dest", str(store)]) == 0
@@ -618,14 +510,6 @@ def test_sync_partial_hub_config_still_prints_setup_instructions(store, capsys, 
 
 
 def test_packaged_schemas_are_identical_to_the_normative_ones():
-    """protocol/schemas/ is what implementers read; commontrace/schemas/ is what
-    the validator enforces. They are committed twice so a bare `pip install`
-    can validate without a repo checkout, and nothing else keeps them equal.
-
-    Without this test the next schema edit lands in one copy and the spec and
-    the tool disagree silently -- the validator would enforce a constraint the
-    published spec does not state, or vice versa.
-    """
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     for name in ("trace.schema.json", "lesson.schema.json"):
         normative = os.path.join(repo, "protocol", "schemas", name)
@@ -641,9 +525,6 @@ def test_packaged_schemas_are_identical_to_the_normative_ones():
 
 
 def test_skill_description_fits_the_claude_code_limit():
-    """A skill whose description exceeds 1024 characters does not load, which
-    would break `install --target claude-code` for every downstream user with
-    nothing in the diff to catch it at review time."""
     import yaml as _yaml
 
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -654,14 +535,6 @@ def test_skill_description_fits_the_claude_code_limit():
 
 
 def test_shipped_schemas_use_only_keywords_the_validator_enforces():
-    """commontrace/validate.py implements a deliberate subset of JSON Schema.
-
-    The risk is not today's schemas -- it is the next edit. Adding `pattern`
-    to constrain Trace.id to a UUID, or `maxLength` to description, are
-    natural things to want, and the validator would accept literally anything
-    for that field while still reporting the document valid. This makes that
-    a loud failure at the moment the schema widens.
-    """
     for name in ("trace.schema.json", "lesson.schema.json"):
         validate.assert_supported_schema(validate.load_schema(name))
 
@@ -674,17 +547,12 @@ def test_an_unenforced_keyword_is_rejected_rather_than_ignored():
 
 
 def test_a_permissive_additional_properties_is_accepted_as_a_genuine_no_op():
-    """`additionalProperties: true` means "anything else is fine", which is
-    exactly what ignoring it does -- so it is not a silent unenforced rule."""
     validate.assert_supported_schema({"type": "object", "additionalProperties": True})
     with pytest.raises(validate.UnsupportedSchemaError):
         validate.assert_supported_schema({"type": "object", "additionalProperties": False})
 
 
 class TestListingCommands:
-    """`lesson list` and `trace list` had no coverage at all, which is how a
-    crash on a present-but-empty YAML field reached the branch."""
-
     def _lesson(self, store, name, **overrides):
         fm = {
             "name": name, "description": "d", "tags": ["t"], "agent_type": "support",
@@ -708,11 +576,6 @@ class TestListingCommands:
         assert "lesson_alpha" in capsys.readouterr().out
 
     def test_a_present_but_empty_field_does_not_crash_the_listing(self, store, capsys):
-        """`status:` with no value is valid YAML and parses to None, which has
-        no __format__ for a width spec. A half-finished edit is exactly when
-        someone runs a listing to find the file that needs fixing, and
-        `lesson validate` already reports such a file cleanly -- the two
-        commands disagreeing was the defect."""
         main(["init", "--agent-type", "support", "--dest", str(store)])
         self._lesson(store, "lesson_broken", status=None, agent_type=None, description=None)
         capsys.readouterr()
@@ -720,8 +583,6 @@ class TestListingCommands:
         assert "lesson_broken" in capsys.readouterr().out
 
     def test_json_output_is_one_parseable_array(self, store, capsys):
-        """For scripts: no scraping the aligned table. An unquoted YAML date
-        and an empty field must not break the encoding."""
         import datetime
         import json
 
@@ -761,10 +622,6 @@ class TestListingCommands:
 
 
 class TestBadPathsAreReportedNotRaised:
-    """Every other error path in this CLI prints "[commontrace] ..." and exits
-    non-zero; a mistyped path reaching open() as a raw traceback was the odd
-    one out."""
-
     def test_missing_file(self, store, capsys):
         assert main(["lesson", "validate", "/nope/does-not-exist.md", "--dest", str(store)]) == 1
         assert "cannot read" in capsys.readouterr().err
@@ -778,9 +635,6 @@ class TestBadPathsAreReportedNotRaised:
 
 class TestCaptureRefusesInvalidTraces:
     def test_a_negative_cost_is_refused_at_write_time(self, store, capsys):
-        """Otherwise the invalid record lands on disk and pilot_metrics
-        averages it into a customer-facing cost figure before `trace validate`
-        ever runs."""
         main(["init", "--agent-type", "support", "--dest", str(store)])
         capsys.readouterr()
         rc = main(["capture", "--title", "t", "--context", "c", "--solution", "s",
@@ -800,8 +654,6 @@ class TestCaptureRefusesInvalidTraces:
 
 
 def test_every_subcommand_module_registers_exactly_its_own_name():
-    """main() imports only `commands/<name>_cmd.py` for `commontrace <name>`,
-    so a module whose command is named anything else would be unreachable."""
     import argparse
     import pathlib
 
@@ -817,8 +669,6 @@ def test_every_subcommand_module_registers_exactly_its_own_name():
 
 
 def test_a_command_imports_only_what_it_uses():
-    """Every command used to import every other command's dependencies --
-    numpy, asyncio, ssl -- about 140ms on each `capture` an agent runs."""
     script = (
         "import sys\n"
         "from commontrace import cli\n"
@@ -847,3 +697,28 @@ def test_no_command_at_all_prints_the_command_list(capsys):
     assert cli.main([]) == 2
     err = capsys.readouterr().err
     assert "usage:" in err and "capture" in err and "doctor" in err
+
+
+def test_bare_init_is_general_not_a_business_function(store):
+    assert main(["init", "--dest", str(store)]) == 0
+    assert (store / "memory" / "INDEX.md").read_text().startswith("# Memory Index — agent_type: general")
+    assert not os.path.isdir(store / "memory" / "episodes")
+    assert paths.store_agent_type(str(store)) == "general"
+
+
+def test_init_function_maps_to_agent_type(store):
+    assert main(["init", "--function", "coding", "--dest", str(store)]) == 0
+    assert paths.store_agent_type(str(store)) == "code"
+    assert os.path.isdir(store / "memory" / "episodes")
+
+
+def test_init_function_custom_takes_the_slug_from_agent_type(store):
+    assert main(["init", "--function", "custom", "--agent-type", "legal", "--dest", str(store)]) == 0
+    assert paths.store_agent_type(str(store)) == "legal"
+
+
+def test_init_function_conflicting_with_agent_type_is_refused(store, capsys):
+    assert main(["init", "--function", "support", "--agent-type", "sales", "--dest", str(store)]) == 2
+    assert "conflicts" in capsys.readouterr().err
+    assert not os.path.isdir(store / "memory")
+

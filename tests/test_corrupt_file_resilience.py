@@ -1,13 +1,3 @@
-"""One corrupt/unreadable lesson or trace file must not abort a listing or
-aggregation command that would otherwise report on every OTHER file in the
-store just fine. `lesson validate`/`trace validate` already treated this as
-a per-file failure; every other command that globs the same directories
-(lesson list, trace list, query, commons, overlap, experiment, reliability)
-read each file with no exception handling at all, so a single hand-edited
-file left mid-save (bad YAML, a stray control character) raised out of the
-loop and crashed the whole command with a traceback -- see
-commontrace/commands/_format.py:read_or_warn, the shared fix.
-"""
 from __future__ import annotations
 
 import pytest
@@ -23,10 +13,6 @@ def store(tmp_path, monkeypatch):
 
 
 def _corrupt(path):
-    # commontrace's own minimal frontmatter parser is forgiving of
-    # malformed YAML-ish text (it just parses what it can) -- what
-    # actually raises FrontmatterError is a file that can't be decoded at
-    # all, e.g. one truncated mid-write or corrupted at the byte level.
     with open(path, "wb") as fh:
         fh.write(b"---\nname: \xff\xfe not valid utf-8\n---\nbody\n")
 
@@ -92,5 +78,5 @@ class TestReliabilityReportSurvivesACorruptFile:
         capsys.readouterr()
 
         rc = main(["reliability", "--dest", str(store)])
-        assert rc in (0, 1)  # must complete, not crash
+        assert rc in (0, 1)
         assert "Traceback" not in capsys.readouterr().err

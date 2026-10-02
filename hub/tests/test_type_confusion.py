@@ -1,37 +1,3 @@
-"""A non-string (or non-numeric) value in a free-text/numeric field must
-get a clean 400, not a crash -- found by a systematic fuzz sweep of every
-major crud.py function with deliberately wrong-typed arguments (int, None,
-float, list, dict, bool, NaN) in place of every str/float parameter,
-after the tags-type-safety fix earlier in this session, to check whether
-the same class of bug existed anywhere else undiscovered.
-
-It did, in two distinct shapes:
-
-1. **A len() check running BEFORE its field's reject_unstorable_text
-   call**, at four call sites (contribute_trace's idempotency_key and
-   agent_id, amend_trace's idempotency_key, submit_kb_entry's rationale
-   and idempotency_key, vote_trace's feedback_text). `len(x)` itself
-   raises an uncaught TypeError for a non-string x -- not a ValueError --
-   so the isinstance check reject_unstorable_text added earlier in this
-   session (see test_tags_type_safety.py) never got a chance to run: the
-   crash happened one line earlier, before validation, not because
-   validation was missing. The fix reorders each site so
-   reject_unstorable_text always runs first.
-
-2. **commons_overlap's `threshold = float(threshold)`, with no
-   TypeError/ValueError guard at all.** `float(None)`, `float([1])`, and
-   `float({"a": 1})` all raise TypeError; the existing
-   `math.isfinite(threshold)` check immediately below it (added earlier
-   this session for the NaN/Infinity fix) only ever gets a chance to run
-   for a value that could already be coerced to a float in the first
-   place.
-
-Every case below is reproduced against a live Postgres before the fix,
-matching this session's established practice, via the same fuzz harness
-that found them (not reconstructed from the fix -- run against the
-UNFIXED code first, to confirm each is a real crash and not a
-hypothetical one).
-"""
 from __future__ import annotations
 
 import pytest
@@ -136,8 +102,6 @@ class TestCommonsOverlapThreshold:
                 await crud.commons_overlap(session, org, [], threshold=bad)
 
     async def test_a_normal_threshold_still_works(self, session_factory, org):
-        """False-positive guard: the fix must not reject ordinary numeric
-        input, whether given as a float or a numeric string."""
         async with session_scope(session_factory) as session:
             result = await crud.commons_overlap(session, org, [], threshold=0.5)
         assert result["threshold"] == 0.5

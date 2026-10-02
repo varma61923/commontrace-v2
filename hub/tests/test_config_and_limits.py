@@ -1,15 +1,3 @@
-"""Regression tests for the deployment-readiness pass, Hub side.
-
-Two groups, both reproduced before being fixed:
-
-  1. Config that accepted nonsense and failed later, somewhere else, in a way
-     that named neither the variable nor the reason.
-  2. The rate limiter: unbounded key growth reachable by an unauthenticated
-     request, and refusals that never said when to come back.
-
-Deliberately needs no database, so it runs in the fast CI job alongside
-test_image_contents.py rather than waiting on the Postgres-backed one.
-"""
 from __future__ import annotations
 
 import math
@@ -21,11 +9,6 @@ from hub.config import HubConfig, _env_int_in_range
 
 
 class TestConfigRefusesNonsenseAtStartup:
-    """Each of these previously started a process that then misbehaved:
-    HUB_PORT=99999 died in uvicorn's bind, HUB_DB_POOL_SIZE=-1 in SQLAlchemy
-    on first query, HUB_MAX_TITLE_CHARS=-5 rejected every contribute_trace
-    with nothing anywhere saying why."""
-
     @pytest.mark.parametrize("name,value", [
         ("HUB_PORT", "99999"),
         ("HUB_PORT", "0"),
@@ -56,8 +39,6 @@ class TestConfigRefusesNonsenseAtStartup:
         assert HubConfig.from_env().port == 8420
 
     def test_a_rate_limit_of_zero_is_still_allowed(self, monkeypatch):
-        """0 means "deny everything", which is a documented setting -- the
-        range check must not have collaterally banned it."""
         monkeypatch.setenv("HUB_DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
         monkeypatch.setenv("HUB_RATE_LIMIT_PER_MINUTE", "0")
         assert HubConfig.from_env().rate_limit_per_minute == 0
@@ -73,11 +54,6 @@ class TestConfigRefusesNonsenseAtStartup:
 
 
 class TestSignupAndBillingDefaultOff:
-    """Same posture as HUB_ADMIN_TOKEN/HUB_CONSOLE_SECRET: unset means the
-    corresponding routes are never registered (hub/server.py), so these
-    just pin that the config layer itself defaults to the off/empty state
-    rather than silently opting a fresh deployment in."""
-
     def test_signup_defaults_disabled(self, monkeypatch):
         monkeypatch.setenv("HUB_DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
         assert HubConfig.from_env().signup_enabled is False
@@ -88,8 +64,6 @@ class TestSignupAndBillingDefaultOff:
         assert HubConfig.from_env().signup_enabled is True
 
     def test_alert_scheduler_defaults_disabled(self, monkeypatch):
-        """Same posture: hub/scheduler.py's loop must not start for a
-        deployment that never set HUB_ALERT_SCHEDULER_ENABLED."""
         monkeypatch.setenv("HUB_DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
         cfg = HubConfig.from_env()
         assert cfg.alert_scheduler_enabled is False
@@ -110,8 +84,6 @@ class TestSignupAndBillingDefaultOff:
             HubConfig.from_env()
 
     def test_ip_allowlist_defaults_empty(self, monkeypatch):
-        """Same posture: hub/server.py:IpAllowlistMiddleware must not even
-        be mounted for a deployment that never set HUB_IP_ALLOWLIST."""
         monkeypatch.setenv("HUB_DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
         assert HubConfig.from_env().ip_allowlist == ()
 
@@ -122,9 +94,6 @@ class TestSignupAndBillingDefaultOff:
         assert cfg.ip_allowlist == ("10.0.0.0/8", "203.0.113.5/32")
 
     def test_ip_allowlist_rejects_an_invalid_entry_at_startup(self, monkeypatch):
-        """Not on the first request that happens to reach the middleware --
-        the same "fail loud, name the variable" policy every other
-        misconfiguration in this file gets."""
         monkeypatch.setenv("HUB_DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
         monkeypatch.setenv("HUB_IP_ALLOWLIST", "not-a-cidr")
         with pytest.raises(ValueError, match="HUB_IP_ALLOWLIST"):
@@ -158,15 +127,6 @@ class TestSignupAndBillingDefaultOff:
         assert config.cipher().enabled is False
 
     def test_encryption_key_is_read_from_env(self, monkeypatch):
-        """Regression test: HUB_ENCRYPTION_KEY was added to the HubConfig
-        dataclass and to __post_init__'s eager validation, but the first
-        version of this change never wired it into from_env()'s os.environ
-        reads -- so the env var was silently ignored in every real
-        deployment (HubConfig() was always built with the field's default,
-        "") while every unit test on EnvelopeCipher itself, which
-        constructs one directly, kept passing. Only a test going through
-        from_env() -- the path hub/manage.py and hub/main.py actually use
-        -- catches that class of bug."""
         from hub.encryption import generate_key
 
         key = generate_key()
@@ -199,12 +159,6 @@ class TestSignupAndBillingDefaultOff:
 
 
 class TestSecretsCanComeFromAFileInsteadOfAPlainEnvVar:
-    """from_env() routes every genuinely secret setting through
-    hub/secrets_provider.py's env_secret -- see that module's docstring
-    for why a `{NAME}_FILE` variable, not a vendor SDK, is what lets a
-    real secret store (Vault Agent, a cloud Secrets Store CSI driver,
-    Kubernetes Secret volumes, Docker secrets) supply these values."""
-
     def test_database_url_can_come_from_a_file(self, monkeypatch, tmp_path):
         secret_file = tmp_path / "database_url"
         secret_file.write_text("postgresql+asyncpg://u:p@localhost/db\n")
@@ -249,11 +203,6 @@ class TestSecretsCanComeFromAFileInsteadOfAPlainEnvVar:
     def test_stripe_price_ids_are_not_secrets_and_ignore_the_file_convention(
         self, monkeypatch, tmp_path
     ):
-        """Sanity check on the boundary hub/secrets_provider.py's docstring
-        draws: a reference id like a Stripe price id is read directly, so
-        setting its _FILE variant has no effect -- it would be silently
-        misleading if operational, non-secret settings honored this
-        convention inconsistently with the rest of hub/config.py."""
         monkeypatch.setenv("HUB_DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
         monkeypatch.setenv("HUB_STRIPE_PRICE_TEAM", "price_team_123")
         monkeypatch.setenv("HUB_STRIPE_PRICE_TEAM_FILE", str(tmp_path / "unused"))
@@ -269,10 +218,7 @@ class TestRateLimiterReportsWhenToComeBack:
 
     @pytest.mark.asyncio
     async def test_a_refused_call_says_how_long_until_a_token_exists(self):
-        """Without this a refused client can only guess -- and every client
-        guessing short against a limiter already saying no is what turns one
-        burst into a sustained stampede."""
-        limiter = RateLimiter(per_minute=60, burst=2)  # 1 token/sec
+        limiter = RateLimiter(per_minute=60, burst=2)
         for _ in range(2):
             assert (await limiter.check("k"))[0] is True
         allowed, retry_after = await limiter.check("k")
@@ -282,8 +228,6 @@ class TestRateLimiterReportsWhenToComeBack:
 
     @pytest.mark.asyncio
     async def test_a_deny_everything_limiter_does_not_promise_a_finite_wait(self):
-        """per_minute=0 never refills; advertising a short wait would invite
-        an endless retry loop."""
         allowed, retry_after = await RateLimiter(per_minute=0, burst=10).check("k")
         assert allowed is False
         assert retry_after >= 60
@@ -298,12 +242,6 @@ class TestRateLimiterReportsWhenToComeBack:
 class TestRateLimiterMemoryIsBounded:
     @pytest.mark.asyncio
     async def test_tracked_keys_are_capped(self, monkeypatch):
-        """The idle sweep alone evicts nothing until a bucket has been
-        untouched for an hour. A client-address-keyed limiter is keyed on
-        something the peer chooses (any address out of an IPv6 /64), so an
-        unauthenticated flood could hold unbounded distinct keys live inside
-        that window -- process memory growth caused by the very limiter
-        meant to prevent it."""
         monkeypatch.setattr(RateLimiter, "_MAX_TRACKED_KEYS", 50)
         limiter = RateLimiter(per_minute=600, burst=10)
         for i in range(500):
@@ -312,20 +250,14 @@ class TestRateLimiterMemoryIsBounded:
 
     @pytest.mark.asyncio
     async def test_eviction_never_lowers_another_clients_limit(self):
-        """A re-created bucket starts full, so the worst case is that a
-        flooding client resets its OWN limit."""
         limiter = RateLimiter(per_minute=60, burst=1)
         assert await limiter.allow("victim") is True
-        assert await limiter.allow("victim") is False   # victim is out of tokens
-        limiter._evict_if_over_capacity(0.0)      # a no-op below capacity
-        assert await limiter.allow("victim") is False   # still limited, not reset by others
+        assert await limiter.allow("victim") is False
+        limiter._evict_if_over_capacity(0.0)
+        assert await limiter.allow("victim") is False
 
 
 class TestMetricsEndpoint:
-    """Nothing in this Hub could answer "how many requests are we refusing,
-    and why" without grepping JSON logs after the fact. Rate limiting in
-    particular was invisible until a customer complained."""
-
     def _fresh(self):
         from hub.observability import Metrics
         return Metrics()
@@ -338,15 +270,10 @@ class TestMetricsEndpoint:
         out = m.render()
         assert 'commontrace_hub_requests_total{method="POST",path="/mcp",status="200"} 2' in out
         assert 'commontrace_hub_requests_total{method="POST",path="/mcp",status="429"} 1' in out
-        # A histogram now, not a plain summed counter -- see
-        # hub/tests/test_observability.py::TestDurationHistogram for the
-        # bucket/percentile behavior this replaced the old metric to get.
         assert 'commontrace_hub_request_duration_ms_sum{path="/mcp"} 21.00' in out
         assert 'commontrace_hub_request_duration_ms_count{path="/mcp"} 3' in out
 
     def test_an_arbitrary_path_cannot_inflate_label_cardinality(self):
-        """An unbounded label set is the classic way a metrics endpoint
-        becomes the outage it was installed to prevent."""
         m = self._fresh()
         for i in range(500):
             m.observe_request("GET", f"/does-not-exist-{i}", 404, 0.1)
@@ -356,9 +283,6 @@ class TestMetricsEndpoint:
         assert out.count("commontrace_hub_requests_total{") == 1
 
     def test_rate_limit_refusals_are_counted_per_limiter(self):
-        """The HTTP limiter and the per-org WRITE limiter refuse at different
-        layers -- a write refusal is returned inside a 200 MCP response, so a
-        status-code counter alone never sees it."""
         m = self._fresh()
         m.observe_rate_limited("http")
         m.observe_rate_limited("write")
@@ -368,9 +292,6 @@ class TestMetricsEndpoint:
         assert 'commontrace_hub_rate_limited_total{limiter="write"} 2' in out
 
     def test_no_tenant_identifier_ever_appears(self):
-        """A scrape endpoint is a different trust boundary from an
-        authenticated tool call: per-org labels would be both a cardinality
-        problem and a privacy one."""
         m = self._fresh()
         m.observe_request("POST", "/mcp", 200, 1.0)
         m.observe_rate_limited("write")
@@ -389,14 +310,6 @@ class TestMetricsEndpoint:
 
 
 class TestAuthLimiterChargesOnlyFailedCredentials:
-    """The auth-attempt limiter exists to bound the Argon2 CPU an
-    unauthenticated source can force. It was charging every request,
-    successful ones included, so it throttled the legitimate heavy client
-    hardest -- a bulk `sync --push-traces` is hundreds of SUCCESSFUL
-    authentications from one address against a 60/min budget, which made the
-    anti-brute-force limiter, not the per-org fair-use one, the binding
-    constraint on this product's own documented onboarding."""
-
     @pytest.mark.asyncio
     async def test_a_refund_returns_a_token(self):
         limiter = RateLimiter(per_minute=60, burst=2)
@@ -408,8 +321,6 @@ class TestAuthLimiterChargesOnlyFailedCredentials:
 
     @pytest.mark.asyncio
     async def test_a_refund_never_exceeds_capacity(self):
-        """Otherwise a long-lived valid client would accumulate an unbounded
-        credit and the limiter would stop meaning anything for that key."""
         limiter = RateLimiter(per_minute=60, burst=2)
         for _ in range(50):
             limiter.refund("1.2.3.4")
@@ -424,7 +335,6 @@ class TestAuthLimiterChargesOnlyFailedCredentials:
 
     @pytest.mark.asyncio
     async def test_a_source_that_always_succeeds_is_never_throttled(self):
-        """The valid-client path: spend then refund, indefinitely."""
         limiter = RateLimiter(per_minute=1, burst=1)
         for _ in range(200):
             assert await limiter.allow("1.2.3.4") is True
@@ -432,8 +342,6 @@ class TestAuthLimiterChargesOnlyFailedCredentials:
 
     @pytest.mark.asyncio
     async def test_a_source_that_always_fails_is_still_throttled(self):
-        """The brute-force path is unchanged: no refund, so the budget is
-        spent exactly as before."""
         limiter = RateLimiter(per_minute=60, burst=5)
         allowed = [await limiter.allow("9.9.9.9") for _ in range(20)]
         assert allowed[:5] == [True] * 5

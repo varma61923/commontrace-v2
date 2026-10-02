@@ -1,6 +1,6 @@
 """Does serving one customer get more expensive as their corpus grows?
 
-STRATEGY.md §13.2 calls this link 3 and marks it "unmeasured, and the
+The product strategy calls this link 3 and marks it "unmeasured, and the
 weakest link nobody has looked at", with a falsifier stated precisely:
 
     If serving cost grows with corpus size faster than value does, this is
@@ -72,33 +72,14 @@ from hub.models import Base, Organization
 
 DEFAULT_SIZES = (1_000, 4_000, 16_000, 64_000)
 
-# Repetitions per measurement. Enough that a single scheduling hiccup does
-# not become the reported number, few enough that the whole sweep stays
-# minutes rather than hours. The median is reported rather than the mean
-# for the same reason.
 REPS = 9
 
-# An exponent at or below this counts as "does not grow with the corpus"
-# for reporting purposes. Not a magic number: measurement noise on a loaded
-# developer machine is comfortably a few percent per point, and over a 64x
-# corpus range that noise alone can manufacture an apparent exponent of
-# roughly this size out of a genuinely flat curve.
 FLAT_EXPONENT = 0.15
 
-# Above this, cost is growing about as fast as the corpus does, which is
-# the shape §13.2 names as fatal.
 LINEAR_EXPONENT = 0.85
 
 
 def _fit_exponent(sizes: list[int], latencies: list[float]) -> float | None:
-    """Least-squares slope of log(latency) against log(size).
-
-    A power law is a straight line in log-log, and its slope IS the
-    exponent -- so this is an ordinary linear regression on transformed
-    axes, not a curve fit that could go wrong quietly. Returns None when
-    any latency is non-positive (a measurement too fast for the clock),
-    since log(0) would otherwise silently produce an infinite slope.
-    """
     points = [(math.log(s), math.log(v)) for s, v in zip(sizes, latencies) if v > 0]
     if len(points) < 2:
         return None
@@ -185,29 +166,6 @@ async def _seed(session, org_id: str, n: int, start: int) -> None:
 
 
 async def _seed_holdout(session, org_id: str, salt: str, n: int, start: int) -> None:
-    """Bulk-insert n HoldoutObservation rows under one org/salt -- the
-    growth dimension hub/crud.py:causal_effects (and value_delivered, which
-    calls it) actually scales with. It has nothing to do with an org's
-    trace count -- _seed above grows a different table entirely -- which is
-    exactly why causal_effects/value_delivered were absent from this file
-    before: the only sweep here grew traces, so a probe added to it would
-    have measured a flat line regardless of whether causal_effects itself
-    scaled, for having nothing to do with the axis being varied.
-
-    Raw INSERT ... SELECT over generate_series, matching _seed's own
-    reasoning: building n HoldoutObservation ORM objects in Python to
-    measure how fast Postgres (and the read path under test) handles them
-    would spend most of the runtime on the part that is not under test.
-    injected/succeeded are deterministic functions of i (i % 2, i % 3),
-    not real randomness, for the same reproducibility reason every other
-    modulo-based field in _seed's INSERT is.
-    """
-    # 40 distinct synthetic "lesson" ids sharing the observation pool,
-    # matching a real experiment's shape (many occasions per lesson, not
-    # one row per lesson) -- generated once per call, not per row, and
-    # passed as a bound array the same way _seed passes its title-fragment
-    # array, rather than derived from `i` in SQL (an id built by
-    # concatenating org_id with a suffix is not a valid uuid to cast).
     lesson_ids = [str(uuid.uuid4()) for _ in range(40)]
     await session.execute(
         text(
@@ -234,12 +192,6 @@ async def _seed_holdout(session, org_id: str, salt: str, n: int, start: int) -> 
 
 
 async def _time(fn, reps: int = REPS) -> float:
-    """Median wall-clock milliseconds over `reps` runs, after one warm-up.
-
-    The warm-up is discarded deliberately: the first call of a sweep pays
-    for cold shared buffers and a first-time query plan, which is a real
-    cost but not the one being compared across corpus sizes.
-    """
     await fn()
     samples = []
     for _ in range(reps):
@@ -266,36 +218,11 @@ async def run(sizes: list[int], as_json: bool) -> int:
         await session.flush()
         org_id = org.id
 
-    # Every path a customer's own traffic exercises. commons_overlap and
-    # commons_search are deliberately absent: they scan the OPERATOR's
-    # curated corpus, which does not grow when this customer succeeds, so
-    # they are not part of this question. They have their own explicit
-    # bound (commons.max_corpus_scan()).
     async def probes(session):
         return {
-            # Matches ~1/20 of the corpus: what an engineer looking up a
-            # specific failure actually issues.
             "search_traces (selective)": lambda: crud.search_traces(
                 session, org_id, query="hydration mismatch timestamps", limit=20
             ),
-            # The query shape the product exists to serve, and the one whose
-            # cost changed when hub/search.py replaced the conjunction with
-            # a disjunction. A ten-lexeme OR necessarily matches far more
-            # rows than the same ten ANDed, and every match must be scored
-            # by ts_rank before LIMIT can discard it -- so if relaxing the
-            # operator bought recall at the price of a cost curve that grows
-            # with the customer's corpus, it shows up HERE and nowhere else.
-            # Measuring the keyword query alone would have missed it
-            # entirely, which is why this row exists alongside that one
-            # rather than instead of it.
-            #
-            # The wording matters and is chosen against this corpus, not for
-            # it. Every content word here appears somewhere in the seeded
-            # rows, so the query does real work at every size -- several
-            # terms land on thousands of traces and one ('retry') is in all
-            # of them. A natural-language query whose words happened to miss
-            # the corpus would short-circuit in hub/search.py and this row would
-            # report a flat curve for a query that never ran.
             "search_traces (natural lang)": lambda: crud.search_traces(
                 session,
                 org_id,
@@ -305,10 +232,6 @@ async def run(sizes: list[int], as_json: bool) -> int:
                 ),
                 limit=20,
             ),
-            # Matches every row. Not a realistic query -- included because
-            # it bounds the worst case, and because reporting only the
-            # selective number would hide that ORDER BY ts_rank has to
-            # score every match and cannot be served by an index.
             "search_traces (matches all)": lambda: crud.search_traces(
                 session, org_id, query="production run", limit=20
             ),
@@ -319,12 +242,6 @@ async def run(sizes: list[int], as_json: bool) -> int:
             "entitlements": lambda: crud.entitlements(session, org_id),
             "agents_under_management": lambda: crud.agents_under_management(session, org_id),
             "fleet_outcomes": lambda: crud.fleet_outcomes(session, org_id),
-            # Grows with HoldoutObservation count, not trace count -- see
-            # _seed_holdout's docstring for why these were absent from this
-            # file before: a probe measured against the wrong growth axis
-            # reports a flat line regardless of how the read path actually
-            # scales. value_delivered calls causal_effects internally, so
-            # its curve is that same cost plus a constant.
             "causal_effects": lambda: crud.causal_effects(session, org_id),
             "value_delivered": lambda: crud.value_delivered(session, org_id),
         }
@@ -334,17 +251,8 @@ async def run(sizes: list[int], as_json: bool) -> int:
     for target in sizes:
         async with session_scope(session_factory) as session:
             await _seed(session, org_id, target - seeded, seeded + 1)
-            # Grown in lockstep with the trace corpus, under the same
-            # `target` sizes -- a separate table and a separate growth axis
-            # (see _seed_holdout's docstring), but reusing the same size
-            # sweep keeps one report answering both questions instead of
-            # requiring two separate runs.
             await _seed_holdout(session, org_id, holdout_salt, target - seeded, seeded + 1)
         seeded = target
-        # ANALYZE so the planner's row estimates match reality at this size.
-        # Without it the planner keeps stale statistics and may choose a
-        # plan appropriate to a much smaller table, which would make the
-        # measured curve an artifact of stale stats rather than of size.
         async with engine.begin() as conn:
             await conn.execute(text("ANALYZE traces"))
             await conn.execute(text("ANALYZE holdout_observations"))
@@ -390,13 +298,6 @@ async def run(sizes: list[int], as_json: bool) -> int:
     for row in report:
         cells = " ".join(f"{row['latency_ms'][str(s)]:>9.2f}" for s in sizes)
         alpha = f"{row['exponent']:>7.2f}" if row["exponent"] is not None else f"{'-':>7}"
-        # growth_factor is None whenever the smallest corpus measured 0ms
-        # (ys[0] > 0 guards its computation above) -- a fast read path on a
-        # small corpus, i.e. the ordinary case, not an exotic one. Formatting
-        # None with ":>6.1f" raises TypeError, so printing the table crashed
-        # after every measurement had already been taken and thrown away.
-        # `exponent` on the same row was already guarded this way; this one
-        # was not.
         growth = f"{row['growth_factor']:>6.1f}x" if row["growth_factor"] is not None else f"{'-':>7}"
         print(f"{row['path']:<26} {cells} {growth} {alpha}  {row['verdict']}")
     print()
@@ -405,7 +306,7 @@ async def run(sizes: list[int], as_json: bool) -> int:
     print(f"  <= {FLAT_EXPONENT}   flat        cost per call ignores how much history the customer has")
     print(f"  <  {LINEAR_EXPONENT}   sublinear   grows, but slower than the corpus")
     print(f"  >= {LINEAR_EXPONENT}   LINEAR      every doubling of their corpus doubles the cost of")
-    print( "                            serving them -- STRATEGY.md §13.2's failure mode")
+    print( "                            serving them -- the product strategy's failure mode")
     bad = [r["path"] for r in report if r["verdict"] == "LINEAR-OR-WORSE"]
     if bad:
         print(f"\nLinear-or-worse: {', '.join(bad)}")
