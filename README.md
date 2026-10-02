@@ -446,7 +446,11 @@ itself, in the caller's environment and directory. On a 1000-lesson store on
 a 4-core CPU, a query with the default fusion and reranking takes about
 0.55 s instead of 7-8.5 s; at 10,000 lessons about 0.47 s (p95 0.55 s)
 instead of about 1 s with the models alone kept loaded. Nearly all that
-remains is the models' own forward passes. The first query after a
+remains is the models' own forward passes: the accurate cross-encoder is
+about 230 ms of it. A store that chooses the fast one (`commontrace
+retrieval --rerank cross-encoder-fast`, a new treatment, measured in the
+reranker's own docstring) answers an agent over MCP in about 234 ms p50 /
+306 ms p95 at 10,000 lessons. The first query after a
 lesson changes refreshes the index through the same worker, re-reading only
 the lessons that changed: about 2 s instead of 16-18 s. The output is what the
 one-shot run would have printed, byte for byte (the same models, loaded the
