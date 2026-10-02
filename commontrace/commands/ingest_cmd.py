@@ -20,14 +20,14 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument("source", help="Path to file or directory to ingest.")
     p.add_argument(
         "--type", dest="source_type",
-        choices=["code", "markdown", "json-logs", "logs", "transcript"],
+        choices=["code", "markdown", "json-logs", "logs", "transcript", "multimodal"],
         default=None,
         help="Format of the source to ingest.",
     )
     # --format is an alias for --type (for compatibility with PROJECT.md spec)
     p.add_argument(
         "--format", dest="source_format",
-        choices=["code", "markdown", "json-logs", "logs", "transcript"],
+        choices=["code", "markdown", "json-logs", "logs", "transcript", "multimodal"],
         default=None,
         help="Format alias (same as --type).",
     )

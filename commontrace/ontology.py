@@ -76,14 +76,20 @@ DEFAULT_ENTITY_TYPES = [
 
 DEFAULT_EDGE_TYPES = [
     EdgeType("relates_to", "Generic relationship"),
-    EdgeType("located_at", "Entity exists at a location", sources=["user", "event", "organization"], targets=["location"]),
-    EdgeType("occurred_at", "Event happened at a time or location", sources=["event"], targets=["location"]),
+    EdgeType("located_at", "Entity exists at a location",
+               sources=["user", "event", "organization"], targets=["location"]),
+    EdgeType("occurred_at", "Event happened at a time or location",
+               sources=["event"], targets=["location"]),
     EdgeType("works_for", "Person employed by organization", sources=["user"], targets=["organization"]),
     EdgeType("authored", "Person created document", sources=["user"], targets=["document"]),
     EdgeType("prefers", "User preference for something", sources=["user", "preference"], targets=["topic", "object"]),
     EdgeType("uses", "Entity uses another entity", sources=["user", "system"], targets=["tool", "service", "database"]),
-    EdgeType("depends_on", "Entity depends on another", sources=["system", "service"], targets=["system", "service", "database"]),
-    EdgeType("part_of", "Entity is part of a larger entity", sources=["system", "service"], targets=["system", "organization"]),
+    EdgeType("depends_on", "Entity depends on another",
+               sources=["system", "service"],
+               targets=["system", "service", "database"]),
+    EdgeType("part_of", "Entity is part of a larger entity",
+               sources=["system", "service"],
+               targets=["system", "organization"]),
     EdgeType("connected_to", "Generic connection between entities"),
     EdgeType("mentions", "Document mentions entity", sources=["document"], targets=["user", "organization", "topic"]),
 ]
@@ -232,7 +238,7 @@ class RDFLibOntologyResolver:
             return
 
         try:
-            from rdflib import RDF, RDFS
+            from rdflib import RDF
         except ImportError:
             return
 

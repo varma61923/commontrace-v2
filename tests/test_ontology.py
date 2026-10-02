@@ -131,7 +131,7 @@ def test_triples_edge_types_enforcement(tmp_path):
 
 def test_entity_type_declarations():
     """Test EntityType dataclass and default declarations."""
-    from commontrace.ontology import EntityType, DEFAULT_ENTITY_TYPES
+    from commontrace.ontology import DEFAULT_ENTITY_TYPES, EntityType
 
     entity = EntityType("service", "A microservice", priority=1.0, parent="system")
     assert entity.name == "service"
@@ -147,7 +147,7 @@ def test_entity_type_declarations():
 
 def test_edge_type_declarations():
     """Test EdgeType dataclass and default declarations."""
-    from commontrace.ontology import EdgeType, DEFAULT_EDGE_TYPES
+    from commontrace.ontology import DEFAULT_EDGE_TYPES, EdgeType
 
     edge = EdgeType("depends_on", "Dependency relationship", sources=["service"], targets=["service"])
     assert edge.name == "depends_on"

@@ -101,17 +101,46 @@ def test_corrupt_bin_falls_back(tmp_path):
 
 
 def test_bin_load_faster_than_rebuild(tmp_path):
-    root = _make_corpus(tmp_path, n=1500)
+    # Needs enough documents that fixed load overhead is dwarfed by the
+    # O(corpus) rebuild (production win measured 4.8x at 10k lessons).
+    # Min-of-3 filters scheduling noise on shared boxes.
+    import commontrace.corpus_bin as _binmod
+
+    root = _make_corpus(tmp_path, n=4000)
     _fresh_state()
     lessons, terms = lesson_cache.load_active_with_terms(
         root, None, reader=lambda p: read_or_warn(frontmatter.read, p))
-    t0 = time.time()
-    retrieval.rank_lessons("payment refund failure", lessons,
-                           top_k=5, term_cache=terms)
-    build_s = time.time() - t0
-    retrieval._INDEX_CACHE.clear()
-    t0 = time.time()
-    retrieval.rank_lessons("payment refund failure", lessons,
-                           top_k=5, term_cache=terms)
-    load_s = time.time() - t0
-    assert load_s < build_s
+    hits: list[bool] = []
+    real_load = _binmod.load
+
+    def spy_load(*args, **kwargs):
+        hit = real_load(*args, **kwargs)
+        hits.append(hit is not None)
+        return hit
+
+    _binmod.load = spy_load
+    bin_file = corpus_bin.bin_path(
+        os.path.join(root, "memory", ".cache"), retrieval.SCORER_ADAPTIVE)
+    try:
+        builds, loads = [], []
+        for _ in range(3):
+            try:
+                os.unlink(bin_file)
+            except OSError:
+                pass
+            retrieval._INDEX_CACHE.clear()
+            t0 = time.time()
+            first = retrieval.rank_lessons("payment refund failure", lessons,
+                                           top_k=5, term_cache=terms)
+            builds.append(time.time() - t0)
+            retrieval._INDEX_CACHE.clear()
+            t0 = time.time()
+            second = retrieval.rank_lessons("payment refund failure", lessons,
+                                            top_k=5, term_cache=terms)
+            loads.append(time.time() - t0)
+            assert [(r.slug, r.relevance) for r in second] == [
+                (r.slug, r.relevance) for r in first]
+    finally:
+        _binmod.load = real_load
+    assert any(hits), "expected at least one persisted-index hit"
+    assert min(loads) < min(builds)

@@ -704,10 +704,85 @@ def preview_ingest(
             result.graph_nodes_written = 2 * len(triples)
             result.graph_edges_written = len(triples)
             result.facts_written = len(triples)
+        elif stype == "multimodal":
+            try:
+                from commontrace.ingest import multimodal as _mm
+            except ImportError as exc:
+                result.errors.append(f"multimodal support unavailable: {exc}")
+                return result
+            targets = [path]
+            if os.path.isdir(path):
+                targets = [
+                    os.path.join(dirpath, fname)
+                    for dirpath, _dirs, filenames in os.walk(path)
+                    for fname in sorted(filenames)
+                ]
+            for fpath in targets:
+                if os.path.isdir(fpath):
+                    continue
+                parsed = _mm.ingest_multimodal(fpath)
+                result.chunks_extracted += parsed.chunks_extracted
+                result.errors.extend(parsed.errors)
+                result.facts_written += len([
+                    c for c in (getattr(parsed, "chunks", []) or [])
+                    if len(f"{c.breadcrumb}: {c.content[:200]}".strip()) > 30
+                ])
         else:
             result.errors.append(f"unknown source_type: {source_type!r}")
     except Exception as exc:
         result.errors.append(f"preview error: {exc}")
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Multimodal Document Connector (stdlib PDF/DOCX/HTML/image extraction)
+# ---------------------------------------------------------------------------
+
+def ingest_multimodal_document(
+    root: str,
+    source: str,
+    scope: str = "",
+    max_files: int = 100,
+) -> IngestionResult:
+    """Ingest PDF/DOCX/HTML/image files: extract facts and draft lessons.
+
+    Single files and directories both accepted; unsupported extensions are
+    recorded in ``errors`` without failing the run.
+    """
+    from commontrace import hierarchical
+    from commontrace.ingest import multimodal
+
+    result = IngestionResult(source_path=source, source_type="multimodal")
+    targets = [source]
+    if os.path.isdir(source):
+        targets = []
+        seen = 0
+        for dirpath, _dirs, filenames in os.walk(source):
+            for fname in sorted(filenames):
+                if seen >= max_files:
+                    break
+                targets.append(os.path.join(dirpath, fname))
+                seen += 1
+
+    for fpath in targets:
+        if os.path.isdir(fpath):
+            continue
+        parsed = multimodal.ingest_multimodal(fpath)
+        result.chunks_extracted += parsed.chunks_extracted
+        result.errors.extend(parsed.errors)
+        for chunk in getattr(parsed, "chunks", []) or []:
+            statement = sanitize_contextualizer_text(
+                f"{chunk.breadcrumb}: {chunk.content[:200]}".strip()
+            )
+            if len(statement) > 30:
+                hierarchical.add_fact(
+                    root,
+                    statement=statement[:500],
+                    category="reference",
+                    scopes=[scope] if scope else None,
+                    confidence=0.6,
+                )
+                result.facts_written += 1
     return result
 
 
@@ -723,6 +798,7 @@ class IngestionPipeline:
     - 'markdown': Hierarchical documentation connector (Supermemory pattern)
     - 'json_logs': Structured log clustering connector
     - 'transcript': Agent execution failure transcript connector
+    - 'multimodal': PDF/DOCX/HTML/image document connector (stdlib only)
     """
 
     def ingest_source(
@@ -752,6 +828,8 @@ class IngestionPipeline:
             return ingest_failure_transcript(dest_root, path, scope=scope, **kwargs)
         elif stype == "fact_triples":
             return ingest_fact_triples(path, dest_root, scope=scope, **kwargs)
+        elif stype == "multimodal":
+            return ingest_multimodal_document(dest_root, path, scope=scope, **kwargs)
         else:
             result = IngestionResult(source_path=path, source_type=source_type)
             result.errors.append(f"unknown source_type: {source_type!r}")

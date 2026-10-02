@@ -134,7 +134,6 @@ class WebCrawlerConnector(Connector):
         if len(body) < 50:
             return []
         from commontrace.connectors.base import _fingerprint
-
         from commontrace.ingest import Chunk
 
         return [Chunk(

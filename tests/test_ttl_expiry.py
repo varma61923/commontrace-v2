@@ -9,7 +9,6 @@ import pytest
 from commontrace import frontmatter, hierarchical, lesson_cache, paths, ttl
 from commontrace.cli import main
 
-
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------

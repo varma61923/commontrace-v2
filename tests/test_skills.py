@@ -223,7 +223,6 @@ class TestEmissionTrigger:
         assert any(s.name == candidates[0].name for s in found)
 
     def test_contradicted_pair_does_not_emit(self, tmp_path):
-        from commontrace import reliability as rel
 
         lessons = [
             _lesson("always", "Always retry a failed webhook delivery",

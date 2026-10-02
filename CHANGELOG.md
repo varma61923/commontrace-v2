@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Best-of-breed audit ports (Cognee/EverOS/Mem0/Letta/Supermemory/Zep)**:
+  - **Ontology registry (`commontrace/ontology.py`)**: entity/edge registration with priority + edge_map persisted as `memory/ontology.json`; graph validation and triples allowlist enforcement (RDFLib resolver optional).
+  - **TTL expiry (`commontrace/ttl.py`)**: lesson `expires` hide-by-default with `--show-expired`; fact `expires_at`/`forgotten` with `fact forget --undo`.
+  - **Connector framework (`commontrace/connectors/`)**: state-token ABC with `local_dir` + `web_crawler` connectors reusing ingest chunking, redaction, and provenance; `sync --connector` CLI.
+  - **BM25 + CJK retrieval**: `bm25-v1` scorer (k1=1.2, b=0.75) over the persisted index; CJK bigram lane with byte-identical English path; corpus index v2.
+  - **Skills system (`commontrace/skills.py`)**: 3-source discovery, mtime watcher, consolidate-emitted drafts, agent-loop injection.
+  - **Transcript compaction (`commontrace/compaction.py`)**: sliding-window summarizer with LLM + extractive fallback and entity-index lookup hints.
+  - **Stdlib multimodal ingestion**: PDF/DOCX/HTML/image extractors, `ingest --type multimodal`.
+  - **Interactive graph viz (`commontrace viz`)**: offline self-contained force-directed HTML with edge vocabulary, version chains, and inspect panel.
 - **Cognitive Memory Architecture (Letta + EverOS + Mem0 + Zep + Cognee + Supermemory)**:
   - **Stateful Working Memory Blocks (`commontrace block`)**: Bounded, named scratchpads (`persona`, `human`, `project`, custom) with character quotas, atomic set/append/replace primitives, and cryptographic revision audit logs (`history.jsonl`).
   - **Hierarchical Memory & Atomic Fact Lifecycle (`commontrace fact`)**: Distills noisy agent traces into atomic declarative facts with full lifecycle transitions (`ADD`, `UPDATE`, `SUPERSEDE`, `DELETE`, `NOOP` reinforcement), confidence weighting, and bitemporal validity.

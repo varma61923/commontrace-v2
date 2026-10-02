@@ -30,7 +30,7 @@ from __future__ import annotations
 import glob
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 NAME_MAX_LEN = 64
