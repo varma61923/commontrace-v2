@@ -5,6 +5,7 @@ import dataclasses
 import datetime
 import hmac
 import json
+import logging
 import os
 import re
 import secrets
@@ -13,6 +14,7 @@ import threading
 import time
 from collections.abc import Callable, Mapping
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 from commontrace import (
@@ -38,6 +40,7 @@ MAX_ID_CHARS = 128
 MAX_SIGNALS = 16
 EVENTS_NAME = "gateway_events.jsonl"
 CONFIG_NAME = "gateway.json"
+logger = logging.getLogger("commontrace.gateway")
 TOKEN_NAME = "gateway.token"
 EVENT_LOG_ROTATE_BYTES = 10 * 1024 * 1024
 LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
@@ -119,8 +122,8 @@ def load_or_create_token(root: str) -> str:
             token = fh.read().strip()
         if len(token) >= 24:
             return token
-    except OSError:
-        pass
+    except OSError as exc:
+        logger.debug("No existing token found; creating a new one: %s", exc)
     token = secrets.token_urlsafe(32)
     os.makedirs(paths.memory_dir(root), exist_ok=True)
     fd = os.open(token_path(root), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -407,8 +410,8 @@ class Gateway:
                 if os.path.isfile(path) and os.path.getsize(path) > EVENT_LOG_ROTATE_BYTES:
                     os.replace(path, path + ".1")
                 holdout_io._append_lines(path, [json.dumps(event, separators=(",", ":"))], durable=False)
-        except OSError:
-            pass
+        except OSError as exc:
+            logger.warning("Failed to log gateway event to %s: %s", path, exc)
 
     def _read_events(self, limit: int = 5000) -> list[dict]:
         path = self._events_path()
@@ -610,8 +613,8 @@ class Gateway:
         if proof.load_state(self.root):
             try:
                 out["proof"] = self._memoized("proof", lambda: dataclasses.asdict(proof.status(self.root)))
-            except proof.ProofError:
-                pass
+            except proof.ProofError as exc:
+                logger.debug("Gateway proof status unavailable: %s", exc)
         return out
 
     def _memories(self, _body, _query) -> dict:
@@ -730,8 +733,8 @@ def make_http_server(gateway: Gateway, host: str, port: int, *, tls: tuple[str, 
         protocol_version = "HTTP/1.1"
         timeout = request_timeout
 
-        def log_message(self, *args, **kwargs):
-            pass
+        def log_message(self, format: str, *args: Any) -> None:
+            logger.debug("Gateway HTTP: %s", format % args)
 
         def handle(self):
             if isinstance(self.connection, ssl.SSLSocket):

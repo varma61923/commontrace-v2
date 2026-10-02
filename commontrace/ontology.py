@@ -114,7 +114,7 @@ class MatchingStrategy(ABC):
         Returns:
             The best matching candidate name, or None if no match found
         """
-        pass
+        raise NotImplementedError("Subclasses of MatchingStrategy must implement find_match")
 
 
 class StrictMatchingStrategy(MatchingStrategy):
@@ -233,24 +233,41 @@ class RDFLibOntologyResolver:
             self.graph = None
 
     def _build_lookup(self) -> None:
-        """Build lookup dictionary from RDF graph."""
+        """Build lookup dictionary from RDF graph distinguishing classes and individuals."""
         if not self.graph:
             return
 
         try:
-            from rdflib import RDF
+            from rdflib import OWL, RDF, RDFS
         except ImportError:
             return
 
         classes: dict[str, str] = {}
         individuals: dict[str, str] = {}
 
-        # Extract classes (OWL classes or RDFS classes)
-        for subj in self.graph.subjects():
-            # Simple heuristic: if it has a type, treat as class
-            for obj in self.graph.objects(subj, RDF.type):
-                key = self._uri_to_key(subj)
+        class_type_uris = {
+            str(OWL.Class),
+            str(RDFS.Class),
+            "http://www.w3.org/2002/07/owl#Class",
+            "http://www.w3.org/2000/01/rdf-schema#Class",
+        }
+
+        for subj, _, obj in self.graph.triples((None, RDF.type, None)):
+            obj_str = str(obj)
+            key = self._uri_to_key(subj)
+            if obj_str in class_type_uris:
                 classes[key] = str(subj)
+            else:
+                individuals[key] = str(subj)
+
+        # Fallback heuristic: if no explicit owl/rdfs class declarations exist,
+        # index objects of rdf:type as classes, and subjects as individuals
+        if not classes and not individuals:
+            for subj, _, obj in self.graph.triples((None, RDF.type, None)):
+                c_key = self._uri_to_key(obj)
+                classes[c_key] = str(obj)
+                i_key = self._uri_to_key(subj)
+                individuals[i_key] = str(subj)
 
         self.lookup = {"classes": classes, "individuals": individuals}
 
@@ -271,18 +288,26 @@ class RDFLibOntologyResolver:
             category: The category to search ("classes" or "individuals")
 
         Returns:
-            The canonical name from the ontology, or the original if no match
+            The canonical URI name from the ontology, or the original if no match
         """
-        if not self.lookup.get(category):
+        category_dict = self.lookup.get(category, {})
+        if not category_dict:
             return entity_name
 
-        candidates = list(self.lookup[category].keys())
+        candidates = list(category_dict.keys())
         normalized = normalize_entity_name(entity_name)
         match = self.matching_strategy.find_match(normalized, candidates)
 
         if match:
-            # Return the original URI form
-            return self.lookup[category][get_key_by_value(self.lookup[category], match)]
+            # If match exists directly in lookup keys, return mapped URI
+            if match in category_dict:
+                return category_dict[match]
+            # Match was returned by AnnotateMatchingStrategy or exact match
+            norm_match = normalize_entity_name(match)
+            if norm_match in category_dict:
+                return category_dict[norm_match]
+            return match
+
         return entity_name
 
     def find_closest_match(self, name: str, category: str = "classes") -> str | None:
@@ -498,7 +523,7 @@ def validate_relation(root: str, relation: Any) -> str:
     """Validate an edge type; return the canonical name or ``"relates_to"``.
 
     Accepts registered (normalized) edge types, rejects everything else to
-    the fallback. Pure function — emits no warnings; callers (e.g.
+    the fallback. Pure function -- emits no warnings; callers (e.g.
     :func:`commontrace.graph.add_edge`) warn on coercion.
     """
     norm = normalize_edge_name(relation)
@@ -565,10 +590,7 @@ def initialize_default_ontology(root: str) -> dict[str, Any]:
         The initialized ontology document
     """
     doc = load_ontology(root)
-
-    # Only add defaults if ontology is empty
-    if doc["entities"] and doc["edges"]:
-        return doc
+    modified = False
 
     # Add default entity types
     for entity_type in DEFAULT_ENTITY_TYPES:
@@ -580,6 +602,7 @@ def initialize_default_ontology(root: str) -> dict[str, Any]:
             }
             if entity_type.parent:
                 doc["entities"][name]["parent"] = normalize_entity_name(entity_type.parent)
+            modified = True
 
     # Add default edge types
     for edge_type in DEFAULT_EDGE_TYPES:
@@ -589,8 +612,10 @@ def initialize_default_ontology(root: str) -> dict[str, Any]:
             src_list = sorted({normalize_entity_name(s) for s in (edge_type.sources or []) if s})
             dst_list = sorted({normalize_entity_name(t) for t in (edge_type.targets or []) if t})
             doc["edge_map"][name] = {"sources": src_list, "targets": dst_list}
+            modified = True
 
-    save_ontology(root, doc)
+    if modified:
+        save_ontology(root, doc)
     return doc
 
 

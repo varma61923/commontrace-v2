@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import html
 import json
+import math
 from typing import Any
 
 from commontrace import graph as _graph_mod
@@ -200,7 +201,14 @@ def render_html(root: str, as_of: str | None = None) -> str:
     n_superseded = sum(1 for n in node_list if _node_is_superseded(n))
     n_deleted = sum(1 for n in node_list if _node_is_deleted(n))
 
-    # ---- build SVG elements ----
+    # ---- build SVG elements with initial geometric layout ----
+    W, H = 800, 600
+    pos: list[tuple[float, float]] = []
+    n_count = max(1, len(node_list))
+    for i in range(len(node_list)):
+        a = (2 * math.pi * i) / n_count
+        pos.append((W / 2 + 220 * math.cos(a), H / 2 + 220 * math.sin(a)))
+
     svg_nodes: list[str] = []
     for i, n in enumerate(node_list):
         nid = str(_node_field(n, "id", ""))
@@ -215,11 +223,12 @@ def render_html(root: str, as_of: str | None = None) -> str:
             classes.append("deleted")
             classes.append("dimmed")
         cls = " ".join(classes)
-        # deterministic initial position on a circle
+        nx, ny = pos[i]
         svg_nodes.append(
             f'<g class="{cls}" data-id="{_esc(nid)}" data-idx="{i}">'
-            f'<circle r="14" fill="{_esc(color)}" stroke="#222" stroke-width="1.5" data-id="{_esc(nid)}"></circle>'
-            f'<text class="node-label" dy="28" text-anchor="middle">{_esc(name)}</text>'
+            f'<circle cx="{nx:.1f}" cy="{ny:.1f}" r="14" fill="{_esc(color)}" '
+            f'stroke="#222" stroke-width="1.5" data-id="{_esc(nid)}"></circle>'
+            f'<text class="node-label" x="{nx:.1f}" y="{ny + 28:.1f}" text-anchor="middle">{_esc(name)}</text>'
             f"</g>"
         )
 
@@ -238,13 +247,19 @@ def render_html(root: str, as_of: str | None = None) -> str:
         cls = " ".join(classes)
         si = id_to_idx.get(src, -1)
         ti = id_to_idx.get(dst, -1)
-        # Always emit a text label; required vocab (updates/extends/
-        # derives/supersedes) must be visible in the markup.
+        if si >= 0 and ti >= 0:
+            x1, y1 = pos[si]
+            x2, y2 = pos[ti]
+            mx, my = (x1 + x2) / 2, (y1 + y2) / 2
+        else:
+            x1, y1, x2, y2, mx, my = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+
         svg_edges.append(
             f'<g class="{cls}" data-source="{_esc(src)}" data-target="{_esc(dst)}" '
             f'data-relation="{_esc(rel)}" data-active="{str(not inactive).lower()}">'
-            f'<line stroke="#999" stroke-width="1.5" data-si="{si}" data-ti="{ti}"></line>'
-            f'<text class="edge-label">{_esc(rel)}</text>'
+            f'<line x1="{x1:.1f}" y1="{y1:.1f}" x2="{x2:.1f}" y2="{y2:.1f}" '
+            f'stroke="#999" stroke-width="1.5" data-si="{si}" data-ti="{ti}"></line>'
+            f'<text class="edge-label" x="{mx:.1f}" y="{my:.1f}">{_esc(rel)}</text>'
             f"</g>"
         )
 

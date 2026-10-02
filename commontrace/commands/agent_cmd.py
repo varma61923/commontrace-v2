@@ -15,10 +15,11 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         "agent",
         help="Autonomous agent loop: run a multi-turn task with live working memory.",
     )
-    sub = p.add_subparsers(dest="agent_cmd")
+    sub = p.add_subparsers(dest="agent_cmd", required=True)
 
     run_p = sub.add_parser("run", help="Run an agent task.")
     run_p.add_argument("prompt", nargs="?", default="", help="Task prompt for the agent.")
+    run_p.add_argument("--prompt", dest="prompt_opt", default=None, help="Task prompt for the agent (as an option).")
     run_p.add_argument("--prompt-file", default=None, help="Read prompt from a file.")
     run_p.add_argument("--max-turns", type=int, default=20, help="Max agent turns.")
     run_p.add_argument("--dest", default=None, help="CommonTrace store root.")
@@ -27,6 +28,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     run_p.add_argument("--agent-type", default="agent", help="Agent type label for the trace.")
     run_p.add_argument("--json", dest="output_json", action="store_true",
                        help="Output result as JSON.")
+    run_p.set_defaults(func=run)
 
     p.set_defaults(func=run)
 
@@ -37,7 +39,7 @@ def run(args: argparse.Namespace) -> int:
 
     root = args.dest or paths.store_root()
 
-    prompt = args.prompt
+    prompt = (args.prompt_opt or args.prompt or "").strip()
     if args.prompt_file:
         try:
             with open(args.prompt_file, "r", encoding="utf-8") as pf:

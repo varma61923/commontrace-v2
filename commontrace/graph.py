@@ -7,6 +7,7 @@ graph-proximity retrieval boosting.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import warnings
@@ -256,8 +257,8 @@ def add_node(
                 run_id=str((provenance or {}).get("run_id", "")),
                 detail=(provenance or {}).get("detail", ""),
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logging.getLogger(__name__).debug("Failed to record provenance for node %s: %s", clean_id, exc)
     return node
 
 
@@ -272,6 +273,7 @@ def add_edge(
     expired_at: str | None = None,
     properties: dict[str, Any] | None = None,
     provenance: dict[str, Any] | None = None,
+    valid_from: str | None = None,
 ) -> GraphEdge:
     """Add a directed relationship between two nodes with bi-temporal support.
 
@@ -284,6 +286,7 @@ def add_edge(
     between the same nodes with the same relation, the one with the latest
     valid_at timestamp is considered the current truth.
     """
+    valid_at = valid_at or valid_from
     src = source.strip().lower()
     dst = target.strip().lower()
     if not src or not dst:
@@ -378,8 +381,8 @@ def add_edge(
                         run_id=str((provenance or {}).get("run_id", "")),
                         detail=(provenance or {}).get("detail", ""),
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logging.getLogger(__name__).debug("Failed to record provenance for updated edge: %s", exc)
             return latest_edge
     else:
         # No existing edge, create new one
@@ -409,8 +412,8 @@ def add_edge(
                 run_id=str((provenance or {}).get("run_id", "")),
                 detail=(provenance or {}).get("detail", ""),
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logging.getLogger(__name__).debug("Failed to record provenance for new edge: %s", exc)
     return new_edge
 
 
@@ -675,56 +678,52 @@ def query_edges_by_interval(
     """Temporal retriever with interval queries.
 
     Returns edges that were active at any point within the time interval
-    [starts_at, ends_at]. This is useful for historical analysis and fact
-    evolution tracking.
-
-    Args:
-        root: Graph store root directory
-        starts_at: Start of time interval (ISO format string or None for unbounded)
-        ends_at: End of time interval (ISO format string or None for unbounded)
-        source: Optional source node filter
-        target: Optional target node filter
-        relation: Optional relation filter
-
-    Returns:
-        List of GraphEdge objects that were active during the interval
+    [starts_at, ends_at]. Handles corrupted dates and bounds robustly.
     """
     edges = load_edges(root)
-    start_moment = lesson_cache.parse_moment(starts_at) if starts_at else None
-    end_moment = lesson_cache.parse_moment(ends_at) if ends_at else None
+    utc = timezone.utc
+
+    def _safe_moment(val: Any) -> datetime | None:
+        if not val:
+            return None
+        try:
+            return lesson_cache.parse_moment(val)
+        except (ValueError, TypeError):
+            return None
+
+    start_moment = _safe_moment(starts_at)
+    end_moment = _safe_moment(ends_at)
+
+    clean_source = source.strip().lower() if source else None
+    clean_target = target.strip().lower() if target else None
 
     results: list[GraphEdge] = []
 
     for edge in edges:
         # Apply node and relation filters
-        if source and edge.source != source.strip().lower():
+        if clean_source and edge.source.strip().lower() != clean_source:
             continue
-        if target and edge.target != target.strip().lower():
+        if clean_target and edge.target.strip().lower() != clean_target:
             continue
         if relation and edge.relation != relation:
             continue
 
-        # Check if edge was active during the interval
-        # Edge is active if it overlaps with [starts_at, ends_at]
-        edge_valid_at = lesson_cache.parse_moment(edge.valid_at) if edge.valid_at else None
-        edge_invalid_at = lesson_cache.parse_moment(edge.invalid_at) if edge.invalid_at else None
-        edge_expired_at = lesson_cache.parse_moment(edge.expired_at) if edge.expired_at else None
+        edge_valid_at = _safe_moment(edge.valid_at)
+        edge_invalid_at = _safe_moment(edge.invalid_at)
+        edge_expired_at = _safe_moment(edge.expired_at)
 
-        # Determine edge's active window
-        edge_start = edge_valid_at
-        edge_end = edge_invalid_at or edge_expired_at
+        # Active window start: default to -inf if unspecified
+        edge_start = edge_valid_at or datetime.min.replace(tzinfo=utc)
 
-        # If no start time, edge has always been valid (from beginning of time)
-        if edge_start is None:
-            edge_start = datetime.min.replace(tzinfo=timezone.utc)
+        # Active window end: earliest of invalid_at or expired_at
+        end_candidates = [m for m in (edge_invalid_at, edge_expired_at) if m is not None]
+        if end_candidates:
+            edge_end = min(end_candidates)
+        else:
+            edge_end = datetime.max.replace(tzinfo=utc)
 
-        # If no end time, edge is still valid (indefinite future)
-        if edge_end is None:
-            edge_end = datetime.max.replace(tzinfo=timezone.utc)
-
-        # Check for overlap with query interval
-        query_start = start_moment if start_moment else datetime.min.replace(tzinfo=timezone.utc)
-        query_end = end_moment if end_moment else datetime.max.replace(tzinfo=timezone.utc)
+        query_start = start_moment or datetime.min.replace(tzinfo=utc)
+        query_end = end_moment or datetime.max.replace(tzinfo=utc)
 
         # Intervals overlap if: edge_start <= query_end AND edge_end >= query_start
         if edge_start <= query_end and edge_end >= query_start:
@@ -855,8 +854,8 @@ def create_memory_version(
                 run_id=str((provenance or {}).get("run_id", "")),
                 detail=(provenance or {}).get("detail", ""),
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logging.getLogger(__name__).debug("Failed to record provenance for version node %s: %s", new_id, exc)
 
     return new_node
 
@@ -928,3 +927,137 @@ def add_memory_relationship(
         weight=1.0,
         provenance=provenance,
     )
+
+
+def resolve_contradictions(
+    edges: list[GraphEdge],
+    as_of: str | None = None,
+) -> list[GraphEdge]:
+    """Apply 'latest valid_at wins' policy for conflicting edges (Zep/Graphiti pattern).
+
+    Groups edges by (source, target, relation). For each conflicting group,
+    selects the edge with the latest valid_at timestamp active as of `as_of`.
+    If valid_at ties, the edge with the latest created_at wins.
+    """
+    utc = timezone.utc
+    moment: datetime | None = None
+    if as_of:
+        try:
+            moment = lesson_cache.parse_moment(as_of)
+        except (ValueError, TypeError):
+            moment = None
+
+    active = [e for e in edges if _is_active_edge(e, moment)]
+
+    grouped: dict[tuple[str, str, str], list[GraphEdge]] = {}
+    for edge in active:
+        key = (edge.source.strip().lower(), edge.target.strip().lower(), edge.relation)
+        grouped.setdefault(key, []).append(edge)
+
+    def _safe_sort_key(edge: GraphEdge) -> tuple[datetime, datetime]:
+        min_dt = datetime.min.replace(tzinfo=utc)
+        v_dt = min_dt
+        c_dt = min_dt
+        if edge.valid_at:
+            try:
+                v_dt = lesson_cache.parse_moment(edge.valid_at)
+            except Exception:
+                pass
+        if edge.created_at:
+            try:
+                c_dt = lesson_cache.parse_moment(edge.created_at)
+            except Exception:
+                pass
+        return (v_dt or c_dt, c_dt)
+
+    resolved: list[GraphEdge] = []
+    for _key, group in grouped.items():
+        if len(group) == 1:
+            resolved.append(group[0])
+        else:
+            winner = max(group, key=_safe_sort_key)
+            resolved.append(winner)
+
+    return resolved
+
+
+def forget_node(
+    root: str,
+    node_id: str,
+    reason: str = "superseded",
+    invalidate_edges: bool = True,
+    undo: bool = False,
+    provenance: dict[str, Any] | None = None,
+) -> GraphNode | None:
+    """Soft-delete/forget a memory node (Supermemory forgetting pattern).
+
+    Marks the node as forgotten (or restores if undo=True), sets forget reason,
+    optionally invalidates connected active edges, and invalidates graph cache.
+    """
+    nodes = load_nodes(root)
+    clean_id = node_id.strip().lower()
+    node = nodes.get(clean_id)
+    if not node:
+        return None
+
+    now_iso = _now()
+    node.is_forgotten = not undo
+    node.properties["is_forgotten"] = not undo
+    if not undo:
+        node.properties["forget_reason"] = reason
+        node.properties["forgotten_at"] = now_iso
+    else:
+        node.properties.pop("forget_reason", None)
+        node.properties.pop("forgotten_at", None)
+        node.properties["restored_at"] = now_iso
+
+    node.updated_at = now_iso
+    save_nodes(root, nodes)
+
+    if invalidate_edges and not undo:
+        edges = load_edges(root)
+        modified = False
+        for edge in edges:
+            if edge.source == clean_id or edge.target == clean_id:
+                if edge.invalid_at is None:
+                    edge.invalid_at = now_iso
+                    modified = True
+        if modified:
+            save_edges(root, edges)
+
+    _clear_graph_cache()
+
+    if provenance is not None:
+        try:
+            from commontrace import provenance as _prov
+            _prov.append_provenance(
+                root,
+                target_kind="node",
+                target_id=clean_id,
+                source_path=str((provenance or {}).get("source_path", "")),
+                run_id=str((provenance or {}).get("run_id", "")),
+                detail=f"node {'restored' if undo else 'forgotten'}: {reason}",
+            )
+        except Exception as exc:
+            logging.getLogger(__name__).debug("Failed to record provenance for forgotten node %s: %s", clean_id, exc)
+
+    return node
+
+
+def list_version_chains(root: str) -> dict[str, list[GraphNode]]:
+    """List all version chains in the graph, grouped by root_id.
+
+    Returns:
+        Dict mapping root_id to sorted list of GraphNodes in that chain.
+    """
+    nodes = load_nodes(root)
+    chains: dict[str, list[GraphNode]] = {}
+    for node in nodes.values():
+        root_key = node.root_id or node.id
+        chains.setdefault(root_key, []).append(node)
+
+    for root_key in chains:
+        chains[root_key].sort(key=lambda n: n.version)
+
+    return chains
+

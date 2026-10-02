@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Memory Platform Evolution (Zep, Cognee, EverOS, Letta, Mem0, Supermemory audit synthesis)**:
+  - **Modular Ingestion Pipeline (`commontrace/ingest/pipeline.py`)**: Three-stage `Loader → Transforms → Submitter` pattern with pre-flight `preview()`, `TextChunker` (paragraph boundaries with overlap), `LLMContextualizer` (prompt injection tag stripping and secret redaction), `AliasCanonicalizer` (safe entity normalization with risky-word guards), and `LimitGuard` (size cap enforcement).
+  - **Lazy Hashing Engine (`LazyHash`)**: Files under 256MB hashed eagerly; larger files hashed lazily upon demand or collision, providing sub-millisecond initialization and eliminating ingestion bottleneck on large repositories.
+  - **Full Bi-Temporal Graph Architecture (`commontrace/graph.py`)**: Added `valid_at`, `invalid_at`, and `expired_at` temporal dimensions to `GraphEdge`; implemented 'latest valid_at wins' contradiction resolution (`resolve_contradictions` at 1.6M edges/sec), interval queries (`query_edges_by_interval`), memory forgetting (`forget_node`), and version chain management (`list_version_chains`).
+  - **Git-Backed Memory Filesystem (MemFS) (`commontrace/memory_git.py`)**: Letta-style memory tree constraints validation (`validate_memory_tree`), automated pre-commit hook installation (`install_pre_commit_hook`), automatic conflict detection and repair, memory repair subagent invocation, and worker handoff tokens (`create_handoff_token`, `accept_handoff`).
+  - **Entity Extraction & Linking (`commontrace/hierarchical.py`)**: Sophisticated multi-type extraction (`PROPER`, `QUOTED`, `TOPIC`, `IDENTIFIER`) with zero-dependency regex fallback for environments without spaCy; global deduplication (`deduplicate_entities`); high-throughput batch ingestion (`add_entities_batch` at 247k entities/sec); entity-boosted retrieval.
+  - **Hybrid Retrieval with Reranking (`commontrace/retrieval.py`)**: BM25 + vector fusion via Reciprocal Rank Fusion (RRF), Maximal Marginal Relevance (MMR) diverse reranking, multi-channel retrieval, and truth subspace temporal consistency (`TruthSubspace`, `TruthEpoch`).
+  - **Context Budgeting (`commontrace/budgeting.py`, `commontrace/context.py`)**: Conservative character-based token estimation and structure-preserving truncation for XML/filesystem trees.
+  - **Comprehensive Observability (`commontrace/observability.py`, `commontrace/tracing.py`, `commontrace/metrics.py`)**: OpenTelemetry-native tracing, structured logging with context propagation (trace_id, operation_id, dataset_id, session_id), metrics counters/histograms, and secret redaction.
 - **Best-of-breed audit ports (Cognee/EverOS/Mem0/Letta/Supermemory/Zep)**:
   - **Ontology registry (`commontrace/ontology.py`)**: entity/edge registration with priority + edge_map persisted as `memory/ontology.json`; graph validation and triples allowlist enforcement (RDFLib resolver optional).
   - **TTL expiry (`commontrace/ttl.py`)**: lesson `expires` hide-by-default with `--show-expired`; fact `expires_at`/`forgotten` with `fact forget --undo`.

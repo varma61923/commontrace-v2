@@ -574,7 +574,7 @@ def ingest_fact_triples(
             result.graph_nodes_written += 1
             graph_mod.add_edge(
                 root, subj, obj, relation,
-                valid_from=valid_at or None,
+                valid_at=valid_at or None,
                 properties={"predicate": pred_raw},
                 provenance=prov,
             )
@@ -847,7 +847,63 @@ class IngestionPipeline:
             return ingest_fact_triples(path, dest_root, scope=scope, **kwargs)
         elif stype == "multimodal":
             return ingest_multimodal_document(dest_root, path, scope=scope, **kwargs)
+        elif stype in ("pipeline", "modular"):
+            from commontrace.ingest.pipeline import create_default_pipeline
+
+            pipe = create_default_pipeline(path, dest_root, scope=scope, **kwargs)
+            if preview:
+                report = pipe.preview()
+                res = IngestionResult(source_path=path, source_type="pipeline")
+                res.chunks_extracted = len(report.chunks)
+                res.errors.extend(report.warnings)
+                return res
+            return pipe.run()
         else:
             result = IngestionResult(source_path=path, source_type=source_type)
             result.errors.append(f"unknown source_type: {source_type!r}")
             return result
+
+
+# Export modular pipeline classes for direct consumption
+from commontrace.ingest.pipeline import (  # noqa: E402
+    AliasCanonicalizer,
+    FileLoader,
+    LazyHash,
+    LimitGuard,
+    LLMContextualizer,
+    Loader,
+    MemorySubmitter,
+    Pipeline,
+    PreviewReport,
+    Submitter,
+    TextChunker,
+    Transform,
+    create_default_pipeline,
+)
+
+__all__ = [
+    "Chunk",
+    "IngestionResult",
+    "IngestionPipeline",
+    "Pipeline",
+    "Loader",
+    "Transform",
+    "Submitter",
+    "FileLoader",
+    "MemorySubmitter",
+    "TextChunker",
+    "LLMContextualizer",
+    "AliasCanonicalizer",
+    "LimitGuard",
+    "PreviewReport",
+    "LazyHash",
+    "create_default_pipeline",
+    "ingest_code_repository",
+    "ingest_markdown_documentation",
+    "ingest_json_logs",
+    "ingest_failure_transcript",
+    "ingest_fact_triples",
+    "ingest_multimodal_document",
+    "preview_ingest",
+]
+

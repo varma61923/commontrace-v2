@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime
 import os
+import threading
 import uuid
 from typing import TYPE_CHECKING, Any
 
@@ -71,6 +72,8 @@ def record_occasion_from_row(root: str, row: dict[str, Any]) -> bool:
 
 
 class CommonTraceSpanExporter:
+    """OpenTelemetry span exporter that writes AI traces into CommonTrace store."""
+
     def __init__(self, *, agent_type: str, dest: str | None = None, profile: str = ""):
         try:
             import opentelemetry.sdk.trace.export  # noqa: F401
@@ -82,9 +85,15 @@ class CommonTraceSpanExporter:
         self._root = paths.resolve_root(dest)
         self._agent_type = agent_type
         self._profile = profile
+        self._stopped = False
+        self._lock = threading.Lock()
 
     def export(self, spans) -> "SpanExportResult":
         from opentelemetry.sdk.trace.export import SpanExportResult
+
+        with self._lock:
+            if self._stopped:
+                return SpanExportResult.FAILURE
 
         try:
             for span in spans:
@@ -98,7 +107,11 @@ class CommonTraceSpanExporter:
         return SpanExportResult.SUCCESS
 
     def shutdown(self) -> None:
-        pass
+        """Shut down the exporter and reject future exports."""
+        with self._lock:
+            self._stopped = True
 
     def force_flush(self, timeout_millis: int = 30000) -> bool:
-        return True
+        """Force flush pending spans if not stopped."""
+        with self._lock:
+            return not self._stopped

@@ -18,16 +18,21 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Ingest a source (code, markdown, json-logs, transcript) into governed memory.",
     )
     p.add_argument("source", help="Path to file or directory to ingest.")
+    choices = [
+        "code", "markdown", "json-logs", "logs", "transcript",
+        "fact-triples", "fact_triples", "triples", "multimodal",
+        "pipeline", "modular",
+    ]
     p.add_argument(
         "--type", dest="source_type",
-        choices=["code", "markdown", "json-logs", "logs", "transcript", "multimodal"],
+        choices=choices,
         default=None,
         help="Format of the source to ingest.",
     )
     # --format is an alias for --type (for compatibility with PROJECT.md spec)
     p.add_argument(
         "--format", dest="source_format",
-        choices=["code", "markdown", "json-logs", "logs", "transcript", "multimodal"],
+        choices=choices,
         default=None,
         help="Format alias (same as --type).",
     )
@@ -53,15 +58,15 @@ def run(args: argparse.Namespace) -> int:
     source_type = raw_type.replace("-", "_")  # json-logs → json_logs
     if source_type == "logs":
         source_type = "json_logs"  # alias: bare 'logs' means structured logs
+    elif source_type == "triples":
+        source_type = "fact_triples"
 
     pipeline = IngestionPipeline()
     kwargs: dict = {}
-    if source_type == "code":
+    if source_type in ("code", "markdown", "multimodal"):
         kwargs["max_files"] = args.max_files
     if source_type == "json_logs":
         kwargs["service_name"] = args.service
-    if source_type == "markdown":
-        kwargs["max_files"] = args.max_files
 
     print(
         f"[commontrace] ingest: {source_type} source={args.source!r} "

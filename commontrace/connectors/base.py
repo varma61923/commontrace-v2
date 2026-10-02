@@ -199,10 +199,9 @@ class Connector(ABC):
 
     name = "base"
 
-    @abstractmethod
     def authorize(self, credentials: dict[str, Any] | None = None) -> dict[str, Any]:
         """Validate access to the source. Returns at least ``{"ok": bool}``."""
-        raise NotImplementedError
+        return {"ok": True}
 
     @abstractmethod
     def sync(
@@ -216,12 +215,15 @@ class Connector(ABC):
         **kwargs: Any,
     ) -> SyncResult:
         """Sync new content since ``state_token`` into ``root``."""
-        raise NotImplementedError
+        ...
 
-    @abstractmethod
     def webhook_handler(self, root: str, payload: dict[str, Any]) -> dict[str, Any]:
         """Handle an inbound webhook/event payload. Never raise on bad input."""
-        raise NotImplementedError
+        return {
+            "ok": False,
+            "error": f"Connector '{self.name}' does not implement webhook handling",
+            "received": False,
+        }
 
     # -- shared state-token helpers --------------------------------------
     def state_key(self) -> str:

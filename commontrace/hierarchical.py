@@ -1058,10 +1058,60 @@ def _extract_entities_from_doc(doc) -> list[tuple[str, str]]:
     return _resolve_candidates(candidates)
 
 
-def extract_entities(text: str) -> list[tuple[str, str]]:
-    """Extract typed entity candidates from text using spaCy.
+def _extract_entities_fallback(text: str) -> list[tuple[str, str]]:
+    """Extract entity candidates using pure regex heuristics when spaCy is unavailable.
 
-    Returns empty list if spaCy is unavailable.
+    Extracts:
+    - QUOTED: single/double quoted strings
+    - IDENTIFIER: code identifiers (camelCase, PascalCase, snake_case, dotted paths)
+    - PROPER: capitalized multi-word phrases and common tech entities
+    """
+    candidates: list[_EntityCandidate] = []
+    _add_quoted_candidates(text, candidates)
+
+    # Technical identifiers (dotted paths, snake_case, camelCase)
+    for m in re.finditer(
+        r"\b([A-Za-z_][\w-]*(?:\.[A-Za-z_][\w-]+)+|[a-z0-9]+(?:_[a-z0-9]+)+|[a-z]+[A-Z][a-zA-Z0-9]*|[A-Z][a-z0-9]+[A-Z][a-zA-Z0-9]*)\b",
+        text,
+    ):
+        val = m.group(1).strip()
+        if len(val) > 2 and val.lower() not in _GENERIC_SINGLE_ENTITY_TERMS:
+            _add_candidate(candidates, "IDENTIFIER", val, "tech_id_regex", m.start(), m.end(), 0.8, 1)
+
+    # Capitalized multi-word phrases (proper nouns)
+    for m in re.finditer(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b", text):
+        val = m.group(1).strip()
+        words = val.split()
+        if len(words) <= 4 and all(w.lower() not in _GENERIC_HEADS for w in words):
+            _add_candidate(candidates, "PROPER", val, "proper_phrase_regex", m.start(), m.end(), 0.75, 2)
+
+    return _resolve_candidates(candidates)
+
+
+_SPACY_NLP = None
+_SPACY_INITIALIZED = False
+
+
+def _get_spacy_nlp():
+    """Lazily load spaCy model once with validation of pipeline components."""
+    global _SPACY_NLP, _SPACY_INITIALIZED
+    if _SPACY_INITIALIZED:
+        return _SPACY_NLP
+
+    try:
+        from spacy import load as spacy_load
+        nlp = spacy_load("en_core_web_sm")
+        if "ner" in getattr(nlp, "pipe_names", []):
+            _SPACY_NLP = nlp
+    except Exception:
+        _SPACY_NLP = None
+
+    _SPACY_INITIALIZED = True
+    return _SPACY_NLP
+
+
+def extract_entities(text: str) -> list[tuple[str, str]]:
+    """Extract typed entity candidates from text using spaCy (or regex fallback).
 
     Args:
         text: Input text to extract entities from.
@@ -1070,30 +1120,21 @@ def extract_entities(text: str) -> list[tuple[str, str]]:
         List of (entity_type, entity_text) tuples. Entity types are
         PROPER, QUOTED, TOPIC, or IDENTIFIER.
     """
-    try:
-        from spacy import load as spacy_load
-        from spacy.lang.en import English
-    except ImportError:
+    if not text or not text.strip():
         return []
 
-    try:
-        nlp = spacy_load("en_core_web_sm")
-    except Exception:
-        # Fallback to basic English model if full model not available
+    nlp = _get_spacy_nlp()
+    if nlp is not None:
         try:
-            nlp = English()
+            return _extract_entities_from_doc(nlp(text))
         except Exception:
-            return []
+            pass
 
-    if nlp is None:
-        return []
-    return _extract_entities_from_doc(nlp(text))
+    return _extract_entities_fallback(text)
 
 
 def extract_entities_batch(texts: list[str], batch_size: int = 32) -> list[list[tuple[str, str]]]:
-    """Extract typed entity candidates from multiple texts using spaCy pipe.
-
-    Returns empty list for each text if spaCy is unavailable.
+    """Extract typed entity candidates from multiple texts using spaCy pipe (or fallback).
 
     Args:
         texts: List of input texts to extract entities from.
@@ -1106,24 +1147,14 @@ def extract_entities_batch(texts: list[str], batch_size: int = 32) -> list[list[
     if not texts:
         return []
 
-    try:
-        from spacy import load as spacy_load
-        from spacy.lang.en import English
-    except ImportError:
-        return [[] for _ in texts]
-
-    try:
-        nlp = spacy_load("en_core_web_sm")
-    except Exception:
+    nlp = _get_spacy_nlp()
+    if nlp is not None:
         try:
-            nlp = English()
+            return [_extract_entities_from_doc(doc) for doc in nlp.pipe(texts, batch_size=batch_size)]
         except Exception:
-            return [[] for _ in texts]
+            pass
 
-    if nlp is None:
-        return [[] for _ in texts]
-
-    return [_extract_entities_from_doc(doc) for doc in nlp.pipe(texts, batch_size=batch_size)]
+    return [_extract_entities_fallback(t) for t in texts]
 
 
 # ---------------------------------------------------------------------------
@@ -1261,26 +1292,26 @@ def add_entities_batch(
     now_iso = _now()
     results: list[Entity] = []
 
+    # Build O(1) lookup table: (normalized_text, entity_type) -> Entity
+    lookup: dict[tuple[str, str], Entity] = {
+        (e.normalized_text, e.entity_type): e for e in loaded.values()
+    }
+
     for entity_type, text in entities:
         text = text.strip()
         if not text:
             continue
 
         normalized = _norm_text(text)
+        key = (normalized, entity_type)
 
-        # Check for existing match
-        found = False
-        for existing in loaded.values():
-            if existing.normalized_text == normalized and existing.entity_type == entity_type:
-                # Reinforce
-                if source_trace_id and source_trace_id not in existing.source_traces:
-                    existing.source_traces.append(source_trace_id)
-                existing.updated_at = now_iso
-                results.append(existing)
-                found = True
-                break
-
-        if not found:
+        existing = lookup.get(key)
+        if existing is not None:
+            if source_trace_id and source_trace_id not in existing.source_traces:
+                existing.source_traces.append(source_trace_id)
+            existing.updated_at = now_iso
+            results.append(existing)
+        else:
             eid = _entity_id(text, entity_type)
             entity = Entity(
                 id=eid,
@@ -1292,6 +1323,7 @@ def add_entities_batch(
                 updated_at=now_iso,
             )
             loaded[eid] = entity
+            lookup[key] = entity
             results.append(entity)
 
     save_entities(root, loaded)
@@ -1307,6 +1339,58 @@ def list_entities(
     if entity_type:
         return [e for e in entities.values() if e.entity_type == entity_type]
     return list(entities.values())
+
+
+def deduplicate_entities(root: str) -> dict[str, Any]:
+    """Perform global deduplication on stored entities.
+
+    Merges entities sharing identical (normalized_text, entity_type),
+    combining source traces and preserving earliest created_at and
+    latest updated_at.
+
+    Args:
+        root: Memory root directory.
+
+    Returns:
+        Summary dict with initial_count, final_count, and duplicates_removed.
+    """
+    entities = load_entities(root)
+    initial_count = len(entities)
+    if initial_count <= 1:
+        return {"initial_count": initial_count, "final_count": initial_count, "duplicates_removed": 0}
+
+    canonical_map: dict[tuple[str, str], Entity] = {}
+    for entity in entities.values():
+        key = (entity.normalized_text, entity.entity_type)
+        if key not in canonical_map:
+            canonical_map[key] = entity
+        else:
+            existing = canonical_map[key]
+            for st in entity.source_traces:
+                if st and st not in existing.source_traces:
+                    existing.source_traces.append(st)
+            try:
+                ex_created = lesson_cache.parse_moment(existing.created_at)
+                en_created = lesson_cache.parse_moment(entity.created_at)
+                if en_created < ex_created:
+                    existing.created_at = entity.created_at
+            except Exception:
+                pass
+            try:
+                ex_updated = lesson_cache.parse_moment(existing.updated_at)
+                en_updated = lesson_cache.parse_moment(entity.updated_at)
+                if en_updated > ex_updated:
+                    existing.updated_at = entity.updated_at
+            except Exception:
+                pass
+
+    final_entities = {e.id: e for e in canonical_map.values()}
+    save_entities(root, final_entities)
+    return {
+        "initial_count": initial_count,
+        "final_count": len(final_entities),
+        "duplicates_removed": initial_count - len(final_entities),
+    }
 
 
 def extract_and_store_entities(
@@ -1358,14 +1442,27 @@ def build_entity_index_from_store(
     index: dict[str, list[int]] = {}
     word_re = re.compile(r"\w+", re.UNICODE)
 
-    # For each lesson, check which entities are linked via source_traces
-    for lesson_idx, (path, fm) in enumerate(lessons):
-        lesson_id = os.path.basename(path) if isinstance(path, str) else str(path)
+    # Precompute all alias keys for each lesson
+    lesson_keys: list[set[str]] = []
+    for path, fm in lessons:
+        keys = set()
+        if isinstance(path, str):
+            keys.add(path)
+            base = os.path.basename(path)
+            keys.add(base)
+            slug = os.path.splitext(base)[0]
+            keys.add(slug)
+            keys.add(f"lesson:{slug}")
+        if isinstance(fm, dict):
+            name = fm.get("name") or fm.get("slug")
+            if name:
+                keys.add(str(name))
+                keys.add(f"lesson:{name}")
+        lesson_keys.append(keys)
 
-        # Find entities that reference this lesson
+    for lesson_idx, keys in enumerate(lesson_keys):
         for entity in entities.values():
-            if lesson_id in entity.source_traces or path in entity.source_traces:
-                # Tokenize the entity text for matching
+            if any(st in keys for st in entity.source_traces):
                 tokens = word_re.findall(entity.normalized_text)
                 for token in tokens:
                     if len(token) > 2:

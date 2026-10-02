@@ -39,7 +39,13 @@ def test_t2_graph_disconnected_subgraph(isolated_store: str):
 
 
 def test_t2_graph_duplicate_edge_deduplication(isolated_store: str):
-    """E2E-T2-KG-3: Adding the same edge updates weight rather than duplicating entries."""
+    """E2E-T2-KG-3: Adding the same edge updates weight with bi-temporal contradiction resolution.
+
+    With bi-temporal support, adding the same edge twice creates two entries:
+    - The first edge is invalidated (invalid_at set)
+    - The second edge is active (invalid_at is None)
+    This implements the 'latest valid_at wins' policy for fact evolution.
+    """
     graph.add_node(isolated_store, "service:src", entity_type="service")
     graph.add_node(isolated_store, "service:dst", entity_type="service")
 
@@ -48,8 +54,18 @@ def test_t2_graph_duplicate_edge_deduplication(isolated_store: str):
 
     edges = graph.load_edges(isolated_store)
     matching = [e for e in edges if e.source == "service:src" and e.target == "service:dst"]
-    assert len(matching) == 1, "Must deduplicate directed edge between same pair with same relation"
-    assert matching[0].weight == 0.9
+    # Bi-temporal: we keep both edges (one invalidated, one active)
+    assert len(matching) == 2, "Bi-temporal keeps both edges (invalidated + active)"
+
+    # The active edge should have the higher weight
+    active_edges = [e for e in matching if e.invalid_at is None]
+    assert len(active_edges) == 1, "Exactly one edge should be active"
+    assert active_edges[0].weight == 0.9, "Active edge should have the latest weight"
+
+    # The invalidated edge should have the lower weight
+    invalidated_edges = [e for e in matching if e.invalid_at is not None]
+    assert len(invalidated_edges) == 1, "Exactly one edge should be invalidated"
+    assert invalidated_edges[0].weight == 0.5, "Invalidated edge should have the original weight"
 
 
 def test_t2_graph_empty_entity_id_rejection(isolated_store: str):

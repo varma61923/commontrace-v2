@@ -52,12 +52,16 @@ class LettaAdapter:
 
 class LettaCoreBlockAdapter:
     name = "letta-core"
-    can_delete = False
 
-    def __init__(self, client: Any, *, agent_id: str) -> None:
+    def __init__(self, client: Any, *, agent_id: str, allow_delete: bool = False) -> None:
         self.client = client
         self.agent_id = agent_id
+        self.allow_delete = allow_delete
         self._labels: dict[str, str] = {}
+
+    @property
+    def can_delete(self) -> bool:
+        return self.allow_delete
 
     def search(self, query: str = "", **kwargs: Any) -> list[Item]:
         items = []
@@ -74,8 +78,35 @@ class LettaCoreBlockAdapter:
             self.search()
         return [bid for bid, label in self._labels.items() if label in labels]
 
-    def delete(self, item_id: str) -> None:
-        raise NotImplementedError("a core memory block is the agent owner's to remove")
+    def delete(self, item_id: str, *, force: bool = False) -> None:
+        """Detach or delete a core block from the agent.
+
+        By default, core memory blocks are protected. When allow_delete is True
+        or force=True, detaches the block via `client.agents.blocks.detach`,
+        or deletes it via `client.blocks.delete`.
+        """
+        if not self.allow_delete and not force:
+            raise NotImplementedError("a core memory block is the agent owner's to remove")
+
+        blocks_mgr = getattr(getattr(self.client, "agents", None), "blocks", None)
+        if blocks_mgr and hasattr(blocks_mgr, "detach"):
+            try:
+                blocks_mgr.detach(item_id, agent_id=self.agent_id)
+                self._labels.pop(item_id, None)
+                return
+            except TypeError:
+                blocks_mgr.detach(block_id=item_id, agent_id=self.agent_id)
+                self._labels.pop(item_id, None)
+                return
+
+        if hasattr(self.client, "blocks") and hasattr(self.client.blocks, "delete"):
+            self.client.blocks.delete(item_id)
+            self._labels.pop(item_id, None)
+            return
+
+        raise NotImplementedError(
+            f"Letta client does not support block detachment or deletion for agent {self.agent_id}"
+        )
 
     @staticmethod
     def render(items: Iterable[Item]) -> str:
@@ -102,7 +133,17 @@ class ZepAdapter:
 
     @property
     def can_delete(self) -> bool:
-        return self.scope == "edges"
+        if self.scope == "edges":
+            return True
+        if self.scope == "nodes":
+            graph_api = getattr(self.client, "graph", None)
+            node_api = getattr(graph_api, "node", getattr(graph_api, "nodes", None))
+            return bool(node_api and hasattr(node_api, "delete"))
+        if self.scope == "episodes":
+            graph_api = getattr(self.client, "graph", None)
+            ep_api = getattr(graph_api, "episode", getattr(graph_api, "episodes", None))
+            return bool(ep_api and hasattr(ep_api, "delete"))
+        return False
 
     def search(self, query: str, **kwargs: Any) -> list[Item]:
         response = self.client.graph.search(query=query, scope=self.scope, **self.target, **kwargs)
@@ -112,7 +153,14 @@ class ZepAdapter:
     def delete(self, item_id: str) -> None:
         if not self.can_delete:
             raise NotImplementedError(f"deleting {self.scope} is not supported here")
-        self.client.graph.edge.delete(item_id)
+        if self.scope == "edges":
+            self.client.graph.edge.delete(item_id)
+        elif self.scope == "nodes":
+            node_api = getattr(self.client.graph, "node", getattr(self.client.graph, "nodes", None))
+            node_api.delete(item_id)
+        elif self.scope == "episodes":
+            ep_api = getattr(self.client.graph, "episode", getattr(self.client.graph, "episodes", None))
+            ep_api.delete(item_id)
 
 
 class ClaudeMemoryStoreAdapter:

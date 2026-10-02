@@ -270,3 +270,207 @@ def test_atomic_fact_schema_compliance(store):
     bad_fact2 = f1.to_dict()
     bad_fact2["confidence"] = 1.5
     assert len(validate.validate(bad_fact2, schema)) >= 1
+
+
+def test_entity_extraction_basic(store):
+    """Test basic entity extraction from text."""
+    # Test with spaCy unavailable (graceful degradation)
+    entities = hierarchical.extract_entities("John visited New York last week.")
+    # Should return empty list if spaCy not available, or entities if available
+    assert isinstance(entities, list)
+
+
+def test_entity_extraction_batch(store):
+    """Test batch entity extraction."""
+    texts = [
+        "Alice works at Google.",
+        "Bob visited Paris.",
+        "The system uses PostgreSQL database.",
+    ]
+    results = hierarchical.extract_entities_batch(texts)
+    assert len(results) == len(texts)
+    for result in results:
+        assert isinstance(result, list)
+
+
+def test_entity_store_add_and_reinforce(store):
+    """Test adding entities to the store with deduplication."""
+    # Add first entity
+    e1 = hierarchical.add_entity(store, "PostgreSQL", "PROPER", source_trace_id="trace-1")
+    assert e1.text == "PostgreSQL"
+    assert e1.entity_type == "PROPER"
+    assert "trace-1" in e1.source_traces
+
+    # Add same entity (should reinforce, not duplicate)
+    e2 = hierarchical.add_entity(store, "PostgreSQL", "PROPER", source_trace_id="trace-2")
+    assert e2.id == e1.id  # Same entity
+    assert "trace-2" in e2.source_traces
+    assert "trace-1" in e2.source_traces  # Original trace preserved
+
+    # Add different entity
+    e3 = hierarchical.add_entity(store, "MySQL", "PROPER", source_trace_id="trace-1")
+    assert e3.id != e1.id
+
+
+def test_entity_store_batch(store):
+    """Test batch entity addition."""
+    entities = [
+        ("PROPER", "Redis"),
+        ("PROPER", "Kafka"),
+        ("TOPIC", "machine learning"),
+    ]
+    results = hierarchical.add_entities_batch(store, entities, source_trace_id="trace-batch")
+    assert len(results) == 3
+
+    # Verify deduplication in batch
+    entities2 = [
+        ("PROPER", "Redis"),  # Duplicate
+        ("PROPER", "Elasticsearch"),
+    ]
+    results2 = hierarchical.add_entities_batch(store, entities2, source_trace_id="trace-batch-2")
+    assert len(results2) == 2
+
+    # Redis should have both traces
+    redis = next((e for e in results2 if e.text == "Redis"), None)
+    assert redis is not None
+    assert "trace-batch" in redis.source_traces
+    assert "trace-batch-2" in redis.source_traces
+
+
+def test_entity_list_and_filter(store):
+    """Test listing entities with type filter."""
+    hierarchical.add_entity(store, "PostgreSQL", "PROPER")
+    hierarchical.add_entity(store, "Redis", "PROPER")
+    hierarchical.add_entity(store, "machine learning", "TOPIC")
+
+    all_entities = hierarchical.list_entities(store)
+    assert len(all_entities) >= 3
+
+    proper_entities = hierarchical.list_entities(store, entity_type="PROPER")
+    assert len(proper_entities) >= 2
+    for e in proper_entities:
+        assert e.entity_type == "PROPER"
+
+    topic_entities = hierarchical.list_entities(store, entity_type="TOPIC")
+    assert len(topic_entities) >= 1
+    for e in topic_entities:
+        assert e.entity_type == "TOPIC"
+
+
+def test_extract_and_store_entities(store):
+    """Test the convenience function for extraction and storage."""
+    text = "Alice works at Google on machine learning projects."
+    entities = hierarchical.extract_and_store_entities(store, text, source_trace_id="trace-123")
+
+    # Should return list of Entity objects
+    assert isinstance(entities, list)
+    # If spaCy is available, should have entities; if not, empty list is OK
+    if entities:
+        for e in entities:
+            assert isinstance(e, hierarchical.Entity)
+            assert "trace-123" in e.source_traces
+
+
+def test_entity_normalization(store):
+    """Test that entity text normalization works for deduplication."""
+    # Add with different casing/spacing
+    e1 = hierarchical.add_entity(store, "PostgreSQL", "PROPER")
+    e2 = hierarchical.add_entity(store, "postgresql", "PROPER")
+    e3 = hierarchical.add_entity(store, "  PostgreSQL  ", "PROPER")
+
+    # All should map to the same entity due to normalization
+    assert e1.id == e2.id == e3.id
+
+
+def test_entity_boost_weight_constant():
+    """Verify ENTITY_BOOST_WEIGHT constant is defined."""
+    assert hasattr(hierarchical, "ENTITY_BOOST_WEIGHT")
+    assert hierarchical.ENTITY_BOOST_WEIGHT == 0.5
+
+
+def test_build_entity_index_from_store(store):
+    """Test building entity index from store for retrieval integration."""
+    # Add some entities with source traces
+    hierarchical.add_entity(store, "PostgreSQL", "PROPER", source_trace_id="lesson-001.md")
+    hierarchical.add_entity(store, "Redis", "PROPER", source_trace_id="lesson-002.md")
+    hierarchical.add_entity(store, "Kafka", "PROPER", source_trace_id="lesson-001.md")
+
+    # Mock lessons list
+    lessons = [
+        ("lesson-001.md", {"name": "postgres-config"}),
+        ("lesson-002.md", {"name": "redis-cache"}),
+        ("lesson-003.md", {"name": "nginx-setup"}),
+    ]
+
+    # Build index
+    index = hierarchical.build_entity_index_from_store(store, lessons)
+
+    # Should have entity tokens mapped to lesson indices
+    assert isinstance(index, dict)
+
+    # PostgreSQL and Kafka should map to lesson-001 (index 0)
+    # Redis should map to lesson-002 (index 1)
+    # lesson-003 should have no entities
+
+    # Check that tokens exist
+    tokens = list(index.keys())
+    assert len(tokens) > 0
+
+    # Verify structure: each token maps to a list of indices
+    for token, doc_ids in index.items():
+        assert isinstance(token, str)
+        assert isinstance(doc_ids, list)
+        for doc_id in doc_ids:
+            assert isinstance(doc_id, int)
+            assert 0 <= doc_id < len(lessons)
+
+
+def test_deduplicate_entities_batch(store):
+    """Test global batch deduplication across entity store."""
+    hierarchical.add_entity(store, "PostgreSQL", "PROPER", source_trace_id="trace-1")
+    hierarchical.add_entity(store, "Redis", "PROPER", source_trace_id="trace-2")
+    # Manually inject duplicate with different ID but same normalized text
+    entities = hierarchical.load_entities(store)
+    dup = hierarchical.Entity(
+        id="entity-dup-999",
+        text="postgresql",
+        entity_type="PROPER",
+        normalized_text="postgresql",
+        source_traces=["trace-3"],
+        created_at="2024-01-01T00:00:00Z",
+        updated_at="2024-01-02T00:00:00Z",
+    )
+    entities[dup.id] = dup
+    hierarchical.save_entities(store, entities)
+    assert len(hierarchical.load_entities(store)) == 3
+
+    # Run deduplication
+    report = hierarchical.deduplicate_entities(store)
+    assert report["initial_count"] == 3
+    assert report["final_count"] == 2
+    assert report["duplicates_removed"] == 1
+
+    remaining = hierarchical.load_entities(store)
+    pg = next(e for e in remaining.values() if e.normalized_text == "postgresql")
+    assert "trace-1" in pg.source_traces
+    assert "trace-3" in pg.source_traces
+
+
+def test_entity_extraction_fallback_without_spacy():
+    """Test that entity extraction fallback extracts identifiers, quoted text, and proper nouns."""
+    text = (
+        'The "PaymentProcessor" uses api_key and auth.tokens.validate_session '
+        'to communicate with Stripe API.'
+    )
+    entities = hierarchical.extract_entities(text)
+    assert isinstance(entities, list)
+    assert len(entities) > 0
+
+    types = {t for t, _ in entities}
+    texts = {val for _, val in entities}
+
+    # Should detect quoted text
+    assert "PaymentProcessor" in texts or "QUOTED" in types
+    # Should detect technical identifiers
+    assert any("api_key" in t or "auth.tokens" in t for t in texts)
+
