@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A redesigned customer console.** One shell for every `/app` page: grouped sidebar navigation with the
+  organisation and plan, a command palette (Ctrl/⌘ K) and `g` + letter shortcuts, and a light, dark or system
+  theme remembered per browser. Overview gains a setup checklist, a weekly chart of success with memory against
+  without it (current experiment only, one count per occasion, weeks under 5 occasions in an arm left as gaps),
+  and traces captured per week (`crud.console_activity`, org-scoped and in the tenant-isolation suite). Proof
+  shows each memory's effect and 95% interval as a forest plot. Tables sort and filter, timestamps read as
+  relative times, and Proof prints cleanly. Every chart has a data table; every page passes axe-core in both
+  themes and has no horizontal scroll from 360 px up. No build step, no external requests: inline scripts allowed
+  by hash, and the shared Proof link still runs no script at all.
+
 - **The warm worker runs `commontrace query` whole.** It already held the models; the CLI process still imported
   the package, parsed the lesson cache and built the lexical index on every call. With the attention extra, `query`
   now runs in the worker (`commontrace.cli.main`, in the caller's environment and working directory), and every

@@ -1700,10 +1700,20 @@ organisation by its own API key:
 
 | Page | What it answers |
 | --- | --- |
-| **Overview** | How much memory this fleet has, how many agents it runs, and how often a search comes back with nothing |
-| **Proof** | Is the memory working — with **"can this be trusted?" rendered above the effect sizes**, not in a footnote under them |
+| **Overview** | How much memory this fleet has, how many agents it runs, how often a search comes back with nothing; a setup checklist until the first measured answer; weekly success with memory against without it, and traces captured per week |
+| **Proof** | Is the memory working — with **"can this be trusted?" rendered above the effect sizes**, not in a footnote under them; each memory's effect and 95% interval on one forest plot, with the figures as a table |
 | **Memory** | The corpus, searched the way the agents search it, showing which terms matched and which were too common to discriminate |
 | **Knowledge Base** | Proposals sent, consultations used, credit earned |
+| **Users, API Keys, Alerts, Webhooks, Audit log** | Administration for an admin-scoped session; every change goes through the same audited functions the CLI uses |
+
+The pages share one shell: grouped navigation, a command palette (Ctrl/⌘ K)
+and `g` + letter shortcuts, light, dark or system theme, sortable and
+filterable tables, and print-ready Proof. Every chart has a data table beside
+it, a week with fewer than 5 occasions in an arm is drawn as a gap rather than
+a 0% or 100%, and every page passes an axe-core audit in both themes. Nothing
+is built: the HTML is rendered on the server, and the only scripts are inline
+ones the CSP allows by hash. Without script, every page still reads and every
+form still submits.
 
 ```bash
 HUB_CONSOLE_SECRET=$(python -c "import secrets; print(secrets.token_urlsafe(48))")
@@ -1712,14 +1722,15 @@ HUB_CONSOLE_SECRET=$(python -c "import secrets; print(secrets.token_urlsafe(48))
 
 Four properties, each ruling something out:
 
-- **It writes no queries of its own.** Every number comes from a function
-  that already takes and filters on `org_id`. A cross-tenant leak is the
-  worst failure this product has available, so the isolation argument rests
-  on the one set of filters the tenant-isolation suite already exercises.
-- **It is read-only.** Everything you could change from a browser alters
-  either a measurement or a shared corpus, and both already have audited,
-  authenticated paths. That is also why there are no CSRF tokens: there is
-  no state-changing request for a forged one to trigger.
+- **It writes no queries of its own.** Every number comes from a `hub/crud.py`
+  function that takes and filters on `org_id`, the weekly chart series
+  included. A cross-tenant leak is the worst failure this product has
+  available, so the isolation argument rests on the one set of filters the
+  tenant-isolation suite exercises.
+- **Its changes are the CLI's changes.** Inviting a user, rotating a key or
+  stopping an experiment calls the same function the CLI does, audited under
+  the credential that signed in, and needs an admin-scoped key. Those requests
+  are same-origin POSTs on a `SameSite=Strict` cookie.
 - **Revoking a key ends the browser sessions it opened**, checked on every
   request. Revocation that leaves a session alive for another eight hours is
   a false belief about the state of a credential.

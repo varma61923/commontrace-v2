@@ -17,6 +17,8 @@ assert on the query layer without needing a running HTTP server.
 from __future__ import annotations
 
 import asyncio
+import uuid
+from datetime import datetime, timedelta, timezone
 
 import pytest
 import pytest_asyncio
@@ -24,7 +26,7 @@ import pytest_asyncio
 from hub import auth, crud
 from hub.abuse import make_rate_limiter
 from hub.db import session_scope
-from hub.models import Organization
+from hub.models import HoldoutObservation, Organization
 
 pytestmark = pytest.mark.asyncio
 
@@ -348,3 +350,45 @@ async def test_org_identity_is_per_request_not_per_session(session_factory, conf
     for label, seen in observed:
         expected = org_a_id if label == "a" else org_b_id
         assert seen == expected, f"caller {label} observed org {seen}, expected {expected}"
+
+
+async def test_console_activity_counts_only_the_calling_orgs_rows(
+    session_factory, config, two_orgs_with_overlapping_content,
+):
+    """The Overview charts are drawn from crud.console_activity: every
+    count in it is scoped to the caller's org and to the current experiment
+    (its salt), and an occasion counts once however many memories it saw."""
+    fixture = two_orgs_with_overlapping_content
+    now = datetime.now(timezone.utc)
+    async with session_scope(session_factory) as session:
+        org_a = await session.get(Organization, fixture["org_a_id"])
+        salt = org_a.holdout_salt
+
+        def obs(org_id, occasion, injected, ok, *, salt=salt, at=now):
+            return HoldoutObservation(
+                org_id=org_id, trace_id=str(uuid.uuid4()), occasion_id=occasion,
+                injected=injected, succeeded=ok, salt=salt, resolved_at=at,
+            )
+
+        session.add_all([
+            # One treated occasion that saw two memories: counts once.
+            obs(fixture["org_a_id"], "a-1", True, True),
+            obs(fixture["org_a_id"], "a-1", True, True),
+            obs(fixture["org_a_id"], "a-2", False, False),
+            # A previous experiment's salt, and an outcome older than the window.
+            obs(fixture["org_a_id"], "a-old-salt", True, True, salt="retired-salt"),
+            obs(fixture["org_a_id"], "a-ancient", True, True, at=now - timedelta(weeks=40)),
+            # Another org's occasions, under the same salt value.
+            *[obs(fixture["org_b_id"], f"b-{i}", bool(i % 2), True) for i in range(6)],
+        ])
+
+    async with session_scope(session_factory) as session:
+        activity = await crud.console_activity(session, fixture["org_a_id"], now=now)
+
+    assert len(activity["weeks"]) == crud.ACTIVITY_WEEKS
+    assert sum(activity["traces"]) == 1, "org_b's trace was counted for org_a"
+    assert activity["treated"][-1] == [1, 1]
+    assert activity["control"][-1] == [1, 0]
+    assert sum(n for n, _ in activity["treated"]) == 1
+    assert sum(n for n, _ in activity["control"]) == 1
+    _assert_no_org_b_leakage(activity, fixture["org_b_trace_id"], fixture["org_b_id"])

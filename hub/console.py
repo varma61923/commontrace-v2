@@ -77,6 +77,7 @@ invented for this.
 from __future__ import annotations
 
 import base64
+import contextvars
 import hashlib
 import hmac
 import json
@@ -90,10 +91,9 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
 
 from commontrace import raw_export
-from hub import alerts, audit, auth, commons, crud, events, manage, plans, rbac, scopes
+from hub import alerts, audit, auth, commons, crud, events, manage, plans, rbac, scopes, ui_kit
 from hub.abuse import RateLimited, TraceRejected, make_named_limiter, make_rate_limiter, rate_limit_key
 from hub.admin import (
-    _CSS,
     _FORM_GUARD_SCRIPT,
     _limit,
     _num,
@@ -253,69 +253,6 @@ def read_share_token(secret: str, token: str) -> dict | None:
 
 # --- Chrome -----------------------------------------------------------------
 
-_EXTRA_CSS = """
-.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
-  clip:rect(0,0,0,0);white-space:nowrap;border:0}
-fieldset{border:0;padding:0;margin:.5rem 0}
-fieldset legend{font-size:.8rem;color:var(--muted);text-transform:uppercase;
-  letter-spacing:.04em;padding:0;margin:0 0 .3rem}
-.verdict{border-radius:10px;padding:1rem 1.15rem;margin:0 0 1.25rem;
-  border:1px solid var(--rule);background:var(--surface)}
-.verdict.bad{border-color:var(--bad);background:color-mix(in srgb,var(--bad) 8%,var(--surface))}
-.verdict.warn{border-color:var(--warn);background:color-mix(in srgb,var(--warn) 8%,var(--surface))}
-.verdict.good{border-color:var(--ok);background:color-mix(in srgb,var(--ok) 8%,var(--surface))}
-.verdict h2{border:0;margin:0 0 .35rem;font-size:1.05rem}
-.verdict p{margin:.3rem 0;font-size:.93rem;max-width:78ch}
-.check{display:flex;gap:.6rem;align-items:flex-start;margin:.45rem 0;font-size:.9rem}
-.pill{font-size:.7rem;letter-spacing:.04em;padding:.12rem .45rem;border-radius:999px;
-  border:1px solid var(--rule);white-space:nowrap;margin-top:.1rem}
-.pill.ok{color:var(--ok);border-color:currentColor}
-.pill.warn{color:var(--warn);border-color:currentColor}
-.pill.bad{color:var(--bad);border-color:currentColor}
-.signin{max-width:34rem;margin:3rem auto}
-.signin input{width:100%;padding:.6rem .7rem;font:inherit;border:1px solid var(--rule);
-  border-radius:8px;margin:.5rem 0 .8rem}
-.signin button{padding:.55rem 1.1rem;font:inherit;border-radius:8px;border:1px solid var(--ink);
-  background:var(--ink);color:var(--paper);cursor:pointer}
-.err{color:var(--bad);font-size:.9rem;margin:.4rem 0}
-.muted{color:var(--muted)}
-.rev{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.82rem;color:var(--muted)}
-.shared-banner{background:var(--surface);border:1px solid var(--rule);border-radius:10px;
-  padding:.7rem 1rem;margin:0 0 1.25rem;font-size:.85rem;color:var(--muted)}
-.share-box{background:var(--surface);border:1px solid var(--rule);border-radius:10px;
-  padding:.9rem 1.1rem;margin:0 0 1.25rem}
-.share-box input{width:100%;padding:.5rem .6rem;font:inherit;font-size:.85rem;
-  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;border:1px solid var(--rule);
-  border-radius:8px;margin:.4rem 0;background:var(--paper)}
-.share-box button{padding:.4rem .9rem;font:inherit;font-size:.85rem;border-radius:8px;
-  border:1px solid var(--ink);background:var(--ink);color:var(--paper);cursor:pointer}
-form.act{display:flex;gap:.4rem;align-items:center;margin:.6rem 0 1rem}
-form.act input[type=text]{font:inherit;font-size:.9rem;padding:.4rem .55rem;
-  border:1px solid var(--rule);border-radius:8px;background:var(--paper);color:var(--ink);
-  min-width:14rem}
-form.act button{padding:.4rem .9rem;font:inherit;font-size:.9rem;border-radius:8px;
-  border:1px solid var(--ink);background:var(--ink);color:var(--paper);cursor:pointer}
-form.stack{display:flex;flex-direction:column;gap:.7rem;margin:.6rem 0 1rem;max-width:42rem}
-form.stack label{font-size:.78rem;text-transform:uppercase;letter-spacing:.06em;
-  color:var(--muted);display:block;margin-bottom:.2rem}
-form.stack input[type=text],form.stack textarea{font:inherit;font-size:.92rem;
-  padding:.45rem .6rem;border:1px solid var(--rule);border-radius:8px;
-  background:var(--paper);color:var(--ink);width:100%}
-form.stack textarea{min-height:5.5rem;resize:vertical;font-family:inherit}
-form.stack button{padding:.5rem 1rem;font:inherit;border-radius:8px;
-  border:1px solid var(--ink);background:var(--ink);color:var(--paper);cursor:pointer;align-self:start}
-form.vote{display:flex;gap:.25rem;align-items:center;margin:0}
-form.vote button.v{font:inherit;font-size:.8rem;line-height:1;padding:.25rem .45rem;
-  border:1px solid var(--rule);border-radius:6px;background:var(--paper);
-  color:var(--muted);cursor:pointer}
-form.vote button.v:hover{border-color:var(--ink);color:var(--ink)}
-form.vote button.v.voted{border-color:var(--ink);background:var(--ink);color:var(--paper)}
-button.busy{opacity:.6}
-form.vote select{font:inherit;font-size:.72rem;padding:.2rem;border:1px solid var(--rule);
-  border-radius:6px;background:var(--paper);color:var(--ink);max-width:9rem}
-"""
-
-
 # An inline data-URI icon rather than a static file or route: this
 # console has no static-asset serving infrastructure at all (deliberately
 # -- the Hub image ships no frontend build step), and every browser
@@ -337,57 +274,123 @@ _FAVICON_LINK = (
 # A column of row buttons still needs a header a screen reader can announce.
 _ACTIONS_TH = "<th><span class='sr-only'>Actions</span></th>"
 
-# (path, nav label, the _page title that page renders with) -- the title is
-# what marks the current page for screen readers and sighted users alike.
-_NAV = (
-    ("", "Overview", "Your fleet"),
-    ("/proof", "Proof", "Proof"),
-    ("/memory", "Memory", "Memory"),
-    ("/kb", "Knowledge Base", "Knowledge Base"),
-    ("/users", "Users", "Users & roles"),
-    ("/keys", "API Keys", "API keys"),
-    ("/alerts", "Alerts", "Alerts"),
-    ("/webhooks", "Webhooks", "Webhooks"),
-    ("/audit", "Audit log", "Audit log"),
+# (path, nav label, the _page title that page renders with, icon, shortcut)
+# -- the title is what marks the current page for screen readers and sighted
+# users alike. Grouped the way a buyer reads the product: what it is doing for
+# them, then how they govern it.
+_NAV_GROUPS = (
+    ("Insights", (
+        ("", "Overview", "Your fleet", "overview", "g o"),
+        ("/proof", "Proof", "Proof", "proof", "g p"),
+        ("/memory", "Memory", "Memory", "memory", "g m"),
+        ("/kb", "Knowledge Base", "Knowledge Base", "kb", "g k"),
+    )),
+    ("Administration", (
+        ("/users", "Users", "Users & roles", "users", "g u"),
+        ("/keys", "API Keys", "API keys", "keys", "g a"),
+        ("/alerts", "Alerts", "Alerts", "alerts", "g l"),
+        ("/webhooks", "Webhooks", "Webhooks", "webhooks", "g w"),
+        ("/audit", "Audit log", "Audit log", "audit", "g t"),
+    )),
 )
+_NAV = tuple((path, label, title) for _group, items in _NAV_GROUPS for path, label, title, *_rest in items)
+
+
+# Who is looking, for the shell to show: set by `_claims` on every request
+# (one value per request -- each runs in its own context), read by `_page`.
+# Display-only: no authorisation decision ever reads it.
+_VIEW: contextvars.ContextVar[dict] = contextvars.ContextVar("console_view", default={})
 
 
 # A form, not a link: a GET that signs you out is one any other site can
 # fire with an <img> tag.
 _SIGN_OUT_FORM = (
     f'<form method="post" action="{CONSOLE_PATH}/signout">'
-    '<button type="submit" class="linkish">Sign out</button></form>'
+    f'<button type="submit" class="linkish">{ui_kit.icon("logout")}Sign out</button></form>'
 )
+
+
+def _sidebar(title: str) -> str:
+    view = _VIEW.get()
+    org_name = str(view.get("org_name") or "Your organisation")
+    access = "admin access" if view.get("is_admin") else "read access"
+    key = str(view.get("key_prefix") or "")
+    groups = []
+    for group, items in _NAV_GROUPS:
+        links = "".join(
+            f'<a href="{CONSOLE_PATH}{path}" data-key="{key_hint}"'
+            f'{" aria-current=page" if title == page_title else ""}>'
+            f"{ui_kit.icon(icon_name)}<span>{label}</span><kbd aria-hidden=\"true\">{key_hint}</kbd></a>"
+            for path, label, page_title, icon_name, key_hint in items
+        )
+        groups.append(f'<div class="grp" aria-hidden="true">{group}</div>{links}')
+    plan = str(view.get("plan") or "")
+    plan_line = (
+        f'<div class="plan"><span>Plan</span><span class="badge">{h(plan)}</span></div>' if plan else ""
+    )
+    return (
+        '<aside class="side">'
+        f'<a class="brand" href="{CONSOLE_PATH}"><span class="mark">{ui_kit.icon("mark")}</span>CommonTrace</a>'
+        f'<div class="orgcard"><span class="avatar" aria-hidden="true">{h(ui_kit.initials(org_name))}</span>'
+        f'<div class="who"><b title="{h(org_name)}">{h(org_name)}</b>'
+        f'<span>{h(access)}{" · " + h(key) if key else ""}</span></div></div>'
+        f'<nav aria-label="Console">{"".join(groups)}</nav>'
+        f'<div class="side-foot">{plan_line}{_SIGN_OUT_FORM}</div>'
+        "</aside>"
+    )
+
+
+def _topbar(title: str, badge: str) -> str:
+    org_name = str(_VIEW.get().get("org_name") or "")
+    crumbs = (f'<span>{h(org_name)}</span><span class="sep" aria-hidden="true">/</span>' if org_name else "")
+    theme_icons = "".join(
+        f'<span data-theme-icon="{mode}">{ui_kit.icon(name)}</span>'
+        for mode, name in (("system", "system"), ("light", "sun"), ("dark", "moon"))
+    )
+    return (
+        '<header class="top">'
+        f'<div class="crumbs">{crumbs}<b>{h(title)}</b></div>'
+        f'<div class="top-actions">{badge}'
+        '<button type="button" class="search-btn" data-palette data-js hidden aria-label="Open the command palette">'
+        f'{ui_kit.icon("search")}<span>Search or jump to…</span><kbd data-mod-key>Ctrl K</kbd></button>'
+        '<button type="button" class="icon-btn" data-theme-toggle data-js hidden aria-label="Change colour theme">'
+        f"{theme_icons}</button>"
+        "</div></header>"
+    )
+
+
+def _document(
+    title: str, body: str, *scripts: str, referrer: str = "same-origin", theme_script: bool = True,
+) -> HTMLResponse:
+    # The shared report runs no script at all (its CSP is script-src 'none'),
+    # so it follows the viewer's system colour scheme instead of a stored choice.
+    head_script = ui_kit.THEME_SCRIPT if theme_script else ""
+    return HTMLResponse(
+        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        '<meta name="color-scheme" content="light dark">'
+        f"<title>{h(title)} · CommonTrace</title>{_FAVICON_LINK}{head_script}"
+        f"<style>{ui_kit.CSS}</style></head><body>{body}{''.join(scripts)}</body></html>",
+        # A customer console renders that org's own operational data. A cached
+        # copy in a shared or kiosk browser is one more place it sits at rest,
+        # and it outlives the session cookie that was supposed to gate it.
+        headers=html_headers(head_script, *scripts, referrer=referrer),
+    )
 
 
 def _page(
     title: str, body: str, *, signed_in: bool = True, auto_refresh_seconds: int = 0,
 ) -> HTMLResponse:
-    nav = (
-        '<nav aria-label="Console">' + "".join(
-            f'<a href="{CONSOLE_PATH}{path}"'
-            f'{" aria-current=page" if title == page_title else ""}>{label}</a>'
-            for path, label, page_title in _NAV
-        ) + _SIGN_OUT_FORM + "</nav>"
-        if signed_in else ""
-    )
+    if not signed_in:
+        return _document(title, f'<main id="main" class="auth">{body}</main>', _FORM_GUARD_SCRIPT)
     badge = live_badge(auto_refresh_seconds)
     refresh_script = auto_refresh_script(auto_refresh_seconds) if auto_refresh_seconds else ""
-    return HTMLResponse(
-        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
-        '<meta name="viewport" content="width=device-width,initial-scale=1">'
-        f"<title>{h(title)} · CommonTrace</title>{_FAVICON_LINK}"
-        f"<style>{_CSS}{_EXTRA_CSS}</style></head><body>"
+    shell = (
         '<a class="skip" href="#main">Skip to content</a>'
-        '<header class="bar"><div class="in"><b>CommonTrace</b>'
-        '<span class="ro">your fleet</span>'
-        f"{badge}"
-        f"{nav}</div></header><main id=\"main\">{body}</main>{refresh_script}{_FORM_GUARD_SCRIPT}</body></html>",
-        # A customer console renders that org's own operational data. A cached
-        # copy in a shared or kiosk browser is one more place it sits at rest,
-        # and it outlives the session cookie that was supposed to gate it.
-        headers=html_headers(refresh_script, _FORM_GUARD_SCRIPT),
+        f'<div class="shell">{_sidebar(title)}<div class="col">{_topbar(title, badge)}'
+        f'<main id="main" tabindex="-1">{body}</main></div></div>'
     )
+    return _document(title, shell, refresh_script, _FORM_GUARD_SCRIPT, ui_kit.APP_SCRIPT)
 
 
 def _shared_page(body: str, *, expires_at: int) -> HTMLResponse:
@@ -407,31 +410,30 @@ def _shared_page(body: str, *, expires_at: int) -> HTMLResponse:
     _expires_dt = datetime.fromtimestamp(expires_at, tz=timezone.utc)
     until = f"{_expires_dt:%B} {_expires_dt.day}, {_expires_dt:%Y}"
     banner = (
-        '<div class="shared-banner">Shared, read-only report — generated from live data by a '
-        f"CommonTrace customer. Link active until {h(until)}.</div>"
+        f'<div class="shared-banner">{ui_kit.icon("shield")}<span>Shared, read-only report — generated '
+        f"from live data by a CommonTrace customer. Link active until {h(until)}.</span></div>"
     )
-    return HTMLResponse(
-        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
-        '<meta name="viewport" content="width=device-width,initial-scale=1">'
-        f"<title>Proof · CommonTrace</title>{_FAVICON_LINK}"
-        f"<style>{_CSS}{_EXTRA_CSS}</style></head><body>"
-        '<header class="bar"><div class="in"><b>CommonTrace</b>'
-        '<span class="ro">shared report</span></div></header>'
-        f"<main>{banner}{body}</main></body></html>",
-        # Distinct from _page's headers in one deliberate way: no referrer at
-        # all, since the link itself is the credential. It is still that
-        # org's un-published business data, so it stays no-store, and it
-        # runs no script at all.
-        headers=html_headers(referrer="no-referrer"),
+    top = (
+        '<header class="shared-top">'
+        f'<span class="brand"><span class="mark">{ui_kit.icon("mark")}</span>CommonTrace</span>'
+        '<span class="badge">shared report</span></header>'
     )
+    # Distinct from _page's headers in one deliberate way: no referrer at
+    # all, since the link itself is the credential. It is still that org's
+    # un-published business data, so it stays no-store. Its only script is
+    # the theme one: no palette, no forms, nothing to act on.
+    return _document("Proof", f"{top}<main id=\"main\">{banner}{body}</main>", referrer="no-referrer",
+                     theme_script=False)
 
 
-def _tiles(items: list[tuple[str, str]]) -> str:
-    cells = "".join(
-        f'<div class="tile"><div class="k">{h(k)}</div><div class="v">{v}</div></div>'
-        for k, v in items
-    )
-    return f'<div class="tiles">{cells}</div>'
+def _tiles(items: list[tuple]) -> str:
+    """KPI tiles: (label, value markup[, extra markup under the value])."""
+    cells = []
+    for item in items:
+        k, v = item[0], item[1]
+        extra = item[2] if len(item) > 2 else ""
+        cells.append(f'<div class="tile"><div class="k">{h(k)}</div><div class="v">{v}</div>{extra}</div>')
+    return f'<div class="tiles">{"".join(cells)}</div>'
 
 
 _TONE = {"OK": "ok", "WEAKENS": "warn", "INVALIDATES": "bad"}
@@ -478,25 +480,28 @@ def _validity_block(report: dict) -> str:
     )
 
 
-def _projection_block(report: dict) -> str:
+def _projection_block(report: dict, titles: dict | None = None) -> str:
     pending = [p for p in report.get("projections", []) if p.get("still_needed")]
     if not pending:
         return ""
+    titles = titles or {}
     rows = "".join(
-        f"<tr><td>{h(p.get('trace_id'))}</td>"
-        f"<td>{_num(p.get('n_injected'))} / {_num(p.get('n_withheld'))}</td>"
+        # The memory's name where the page knows it: a bare trace id here was
+        # the only place on Proof a reader met a hash instead of a title.
+        f"<tr><td>{h(titles.get(str(p.get('trace_id'))) or p.get('trace_id'))}</td>"
+        f"<td class=\"n\">{_num(p.get('n_injected'))} / {_num(p.get('n_withheld'))}</td>"
         f"<td>{_num(p.get('still_needed'))} more in the {h(p.get('binding_arm'))} arm</td>"
         f"<td>{h(p.get('eta') or '—')}</td></tr>"
         for p in pending
     )
     advice = pending[0].get("advice") or ""
     return (
-        "<h2>When will this be answerable?</h2>"
-        '<p class="sub">Underpowered on the last day of a pilot is a spent pilot. '
-        "The same fact now is a holdout rate you can still change.</p>"
-        "<div class='scroll'><table><thead><tr><th>Memory</th><th>injected / withheld</th>"
+        _section("When will this be answerable?",
+                 "Underpowered on the last day of a pilot is a spent pilot. "
+                 "The same fact now is a holdout rate you can still change.")
+        + "<div class='scroll'><table><thead><tr><th>Memory</th><th>injected / withheld</th>"
         f"<th>Needs</th><th>At the current rate</th></tr></thead><tbody>{rows}</tbody></table></div>"
-        f'<p class="muted">{h(advice)}</p>'
+        + (f'<p class="muted">{h(advice)}</p>' if advice else "")
     )
 
 
@@ -522,15 +527,14 @@ def _render_billing_block(billing: dict | None) -> str:
     plan = str(billing.get("plan") or plans.DEFAULT_PLAN)
     if billing.get("has_subscription"):
         return (
-            '<div class="share-box"><b>Billing</b><br>'
+            '<div class="share-box"><b>Billing</b>'
             f'<span class="muted">Current plan: {h(plan)}. Manage your payment method, '
-            "invoices, or change plans in Stripe's billing portal.</span><br>"
+            "invoices, or change plans in Stripe's billing portal.</span>"
             f'<form method="post" action="{CONSOLE_PATH}/billing/portal">'
             '<button type="submit">Manage billing</button></form></div>'
         )
     upgrades = "".join(
-        f'<form method="post" action="{CONSOLE_PATH}/billing/checkout" '
-        'style="display:inline-block;margin:.3rem .6rem .3rem 0">'
+        f'<form method="post" action="{CONSOLE_PATH}/billing/checkout" class="inline">'
         f'<input type="hidden" name="plan" value="{name}">'
         f'<button type="submit">Upgrade to {h(name.capitalize())}</button></form>'
         for name in billing.get("available_plans") or []
@@ -538,81 +542,75 @@ def _render_billing_block(billing: dict | None) -> str:
     if not upgrades:
         return ""
     return (
-        '<div class="share-box"><b>Billing</b><br>'
+        '<div class="share-box"><b>Billing</b>'
         f'<span class="muted">Current plan: {h(plan)}. Upgrade for more storage, agents, and '
-        "Knowledge Base queries.</span><br>" + upgrades + "</div>"
+        "Knowledge Base queries.</span>"
+        f'<div class="form-actions">{upgrades}</div></div>'
     )
 
 
-def _render_overview(data: dict, causal: dict, billing: dict | None = None) -> str:
+def _render_overview(
+    data: dict, causal: dict, billing: dict | None = None,
+    activity: dict | None = None, setup: dict | None = None,
+) -> str:
     ent = data["entitlements"]
     traces = ent.get("traces") or {}
     agents = ent.get("agents") or {}
     search = data["search"] or {}
 
-    body = ["<h1>Your fleet</h1>",
-            '<p class="sub">Everything on this page is your organisation\'s own data. '
-            "Nothing here is shared with, or drawn from, another customer.</p>"]
+    body = [_head(
+        "Your fleet",
+        "Everything on this page is your organisation's own data. Nothing here is shared with, "
+        "or drawn from, another customer.",
+        actions=(f'<a class="btn secondary" href="{CONSOLE_PATH}/memory" data-command="Search your memory">'
+                 f'{ui_kit.icon("search")}Search memory</a>'
+                 f'<a class="btn" href="{CONSOLE_PATH}/proof">{ui_kit.icon("proof")}Proof report</a>'),
+    )]
     body.append(_tiles([
         ("Traces stored", f'{_num(traces.get("used", 0))} <span class="muted">of '
-                          f'{_limit(traces.get("limit"))}</span>'),
+                          f'{_limit(traces.get("limit"))}</span>',
+         ui_kit.meter(traces.get("used", 0), traces.get("limit"))),
         ("Agents under management", f'{_num(agents.get("active", 0))} <span class="muted">of '
-                                    f'{_limit(agents.get("limit"))}</span>'),
+                                    f'{_limit(agents.get("limit"))}</span>',
+         ui_kit.meter(agents.get("active", 0), agents.get("limit"))),
         ("Searches this month", _num(search.get("searches", 0))),
         # The number an operator would otherwise never see: how often an agent
         # asked this corpus something and got nothing back. It is the live
         # version of the retrieval benchmark, on this fleet's own queries, and
         # it is stored as a count -- no query text is retained anywhere.
         ("Searches that found nothing", _miss(search)),
-        ("Plan", h(ent.get("plan", "—"))),
-        ("Billing period", h(ent.get("period", "—"))),
+        ("Plan", h(ent.get("plan", "—")), f'<div class="foot">Billing period {h(ent.get("period", "—"))}</div>'),
     ]))
     body.append(_render_billing_block(billing))
+    body.append(_setup_steps(data, causal, setup))
+    body.append(_working_panel(causal, activity))
 
-    running = bool(causal.get("experiment_running"))
-    integrity = causal.get("integrity") or {}
-    if running and causal.get("n_observations"):
-        verdict = str(integrity.get("verdict", ""))
-        tone = _VERDICT_TONE.get(verdict, "")
+    if activity:
         body.append(
-            f'<div class="verdict {tone}"><h2>Is the memory working?</h2>'
-            f'<p>A randomized holdout is running: '
-            f'{_num(causal.get("n_observations", 0))} resolved observation(s) across '
-            f'{_num(causal.get("n_occasions", 0))} occasion(s). '
-            f'Validity: <b>{h(verdict)}</b>.</p>'
-            f'<p><a href="{CONSOLE_PATH}/proof">See the causal report →</a></p></div>'
-        )
-    elif running:
-        body.append(
-            '<div class="verdict warn"><h2>Is the memory working?</h2>'
-            "<p>An experiment is running, but no occasion has been reported yet. Your "
-            "agents need to call <code>holdout_assign</code> before injecting and "
-            "<code>record_occasion_outcome</code> afterwards — without the second, "
-            "nothing joins and nothing can be measured.</p></div>"
-        )
-    else:
-        body.append(
-            '<div class="verdict"><h2>Is the memory working?</h2>'
-            "<p>No randomized holdout is running, so nothing here is causal yet. Ask your "
-            "operator to start one — it is the only thing that separates this product's "
-            "effect from everything else that changed in the same window.</p>"
-            f'<p><a href="{CONSOLE_PATH}/proof">See the observed change →</a></p></div>'
+            '<section class="panel" aria-labelledby="activity-h"><div class="panel-head"><div>'
+            '<h2 id="activity-h">Captured experience</h2>'
+            f'<p class="muted">Traces your fleet captured each week, last {len(activity.get("weeks", []))} weeks.'
+            "</p></div></div>"
+            + ui_kit.bar_chart("captured", activity.get("weeks", []), activity.get("traces", []),
+                               title="Traces captured per week", unit="traces")
+            + "</section>"
         )
 
     rows = data["recent"].get("traces") or []
+    body.append(_section("Most recent", f'<a href="{CONSOLE_PATH}/memory">Everything in memory →</a>'))
     if rows:
         cells = "".join(
             f"<tr><td>{h(t.get('title'))}</td><td>{h(t.get('agent_type'))}</td>"
-            f"<td>{_num(t.get('retrievals', 0))}</td>"
-            f"<td>{h(str(t.get('created_at'))[:16])}</td></tr>"
+            f"<td class=\"n\">{_num(t.get('retrievals', 0))}</td>"
+            f"<td>{ui_kit.time_html(t.get('created_at'))}</td></tr>"
             for t in rows
         )
-        body.append("<h2>Most recent</h2><div class='scroll'><table><thead><tr><th>Trace</th><th>Agent type</th>"
+        body.append("<div class='scroll'><table><thead><tr><th>Trace</th><th>Agent type</th>"
                     f"<th>Retrieved</th><th>Captured</th></tr></thead><tbody>{cells}</tbody>"
                     "</table></div>")
     else:
-        body.append('<h2>Most recent</h2><p class="sub">No traces yet. Your agents capture '
-                    "them with <code>contribute_trace</code>.</p>")
+        body.append(_empty("inbox", "No traces yet",
+                           "Your agents capture them with <code>contribute_trace</code>."))
     return "".join(body)
 
 
@@ -729,11 +727,10 @@ def _render_share_revoke(is_admin: bool) -> str:
     if not is_admin:
         return ""
     return (
-        f'<form method="post" action="{CONSOLE_PATH}/proof/share/revoke" class="share-box" '
+        f'<form method="post" action="{CONSOLE_PATH}/proof/share/revoke" class="inline" '
         'data-confirm="Revoke every share link issued for this report? Anyone holding one '
         'will see Not found. This cannot be undone.">'
-        '<span class="muted">Sent a link somewhere it should not have gone?</span> '
-        '<button type="submit" class="btn">Revoke all share links</button></form>'
+        '<button type="submit" class="danger">Revoke all share links</button></form>'
     )
 
 
@@ -746,20 +743,27 @@ def _render_share_form(share_url: str | None, is_admin: bool = False) -> str:
     links for an org it isn't signed into."""
     days = SHARE_TOKEN_TTL_SECONDS // 86400
     revoke = _render_share_revoke(is_admin)
+    revoke_line = (
+        f'<div class="form-actions"><span class="muted">Sent a link somewhere it should not have gone?</span>'
+        f"{revoke}</div>" if revoke else ""
+    )
     if share_url:
         return (
-            '<div class="share-box"><b id="share-url-label">Shareable link generated.</b><br>'
-            f"Valid {days} days, always shows LIVE data (not a frozen snapshot), visible to "
-            "anyone who has the link -- treat it like the report data it is."
-            f'{secret_field(share_url, "share-url-label")}</div>'
-        ) + revoke
+            '<div class="share-box" data-command="Share this report">'
+            f'<b id="share-url-label">{ui_kit.icon("share")} Shareable link generated.</b>'
+            f'<span class="muted">Valid {days} days, always shows LIVE data (not a frozen snapshot), visible to '
+            "anyone who has the link -- treat it like the report data it is.</span>"
+            f'{secret_field(share_url, "share-url-label")}{revoke_line}</div>'
+        )
     return (
-        f'<form method="post" action="{CONSOLE_PATH}/proof/share" class="share-box">'
-        "<b>Share this report</b><br>"
+        '<div class="share-box" data-command="Share this report">'
+        "<b>Share this report</b>"
         '<span class="muted">A read-only link to this live page -- no sign-in required to view '
-        f"it, always shows current data, expires in {days} days.</span><br>"
-        '<button type="submit">Generate shareable link</button></form>'
-    ) + revoke
+        f"it, always shows current data, expires in {days} days.</span>"
+        f'<form method="post" action="{CONSOLE_PATH}/proof/share" class="inline">'
+        f'<button type="submit">{ui_kit.icon("share")}Generate shareable link</button></form>'
+        f"{revoke_line}</div>"
+    )
 
 
 def _render_experiment_controls(causal: dict, is_admin: bool, *, error: str = "") -> str:
@@ -773,37 +777,40 @@ def _render_experiment_controls(causal: dict, is_admin: bool, *, error: str = ""
     """
     if not is_admin:
         return ""
-    body = ['<div class="share-box">']
+    body = ['<div class="share-box" id="experiment" data-command="Experiment control">']
     if error:
         body.append(f'<p class="err" role="alert">{h(error)}</p>')
     if causal.get("experiment_running"):
         body.append(
-            "<b>Experiment control</b><br>"
+            "<b>Experiment control</b>"
             '<span class="muted">Stopping keeps every observation recorded so far -- it '
-            "only stops withholding memory on new occasions.</span><br>"
-            f'<form method="post" action="{CONSOLE_PATH}/proof/experiment/stop" '
+            "only stops withholding memory on new occasions.</span>"
+            f'<form method="post" action="{CONSOLE_PATH}/proof/experiment/stop" class="inline" '
             'data-confirm="Stop the running experiment?">'
-            '<button type="submit">Stop experiment</button></form>'
+            '<button type="submit" class="danger">Stop experiment</button></form>'
         )
     else:
         body.append(
-            "<b>Start a randomized holdout</b><br>"
+            "<b>Start a randomized holdout</b>"
             '<span class="muted">Starts a NEW experiment with a fresh randomization -- any '
             "prior observations stop being pooled with what comes next. Your agents must "
             "call <code>holdout_assign</code> before injecting and "
             "<code>record_occasion_outcome</code> afterwards, or nothing is measured."
-            "</span><br>"
-            f'<form method="post" action="{CONSOLE_PATH}/proof/experiment/start">'
-            '<label for="exp-rate">Holdout rate</label> '
+            "</span>"
+            f'<form method="post" action="{CONSOLE_PATH}/proof/experiment/start" class="stack" style="width:100%">'
+            '<div class="form-grid">'
+            '<div><label for="exp-rate">Holdout rate</label>'
             f'<input type="number" id="exp-rate" name="rate" step="0.01" min="0.01" '
-            f'max="0.99" value="{manage.DEFAULT_HOLDOUT_RATE}" required> '
-            '<span class="muted">fraction of eligible injections withheld</span><br>'
-            '<label for="exp-outcome">Primary outcome label</label> '
-            '<input type="text" id="exp-outcome" name="outcome" value="resolved" required> '
-            '<span class="muted">what <code>succeeded=true</code> means when your agents '
-            "call <code>record_occasion_outcome</code></span><br>"
-            '<label for="exp-notes">Notes</label> '
-            '<input type="text" id="exp-notes" name="notes" placeholder="optional"><br>'
+            f'max="0.99" value="{manage.DEFAULT_HOLDOUT_RATE}" required aria-describedby="exp-rate-help">'
+            '<span class="faint" id="exp-rate-help" style="font-size:.78rem">fraction of eligible injections '
+            "withheld</span></div>"
+            '<div><label for="exp-outcome">Primary outcome label</label>'
+            '<input type="text" id="exp-outcome" name="outcome" value="resolved" required '
+            'aria-describedby="exp-outcome-help">'
+            '<span class="faint" id="exp-outcome-help" style="font-size:.78rem">what <code>succeeded=true</code> '
+            "means when your agents call <code>record_occasion_outcome</code></span></div>"
+            '<div><label for="exp-notes">Notes</label>'
+            '<input type="text" id="exp-notes" name="notes" placeholder="optional"></div></div>'
             '<button type="submit">Start experiment</button></form>'
         )
     body.append("</div>")
@@ -812,22 +819,31 @@ def _render_experiment_controls(causal: dict, is_admin: bool, *, error: str = ""
 
 def _render_proof(
     outcomes: dict, causal: dict, worth: dict | None = None,
-    *, is_admin: bool = False, experiment_error: str = "",
+    *, is_admin: bool = False, experiment_error: str = "", controls: str = "", shared: bool = False,
 ) -> str:
-    body = ["<h1>Proof</h1>",
-            '<p class="sub">Two different questions, deliberately not merged: what changed '
-            "since your baseline, and what this memory <em>caused</em>.</p>"]
+    actions = "" if shared else (
+        f'<a class="btn secondary" href="{CONSOLE_PATH}/proof/assignments.csv" '
+        f'data-command="Download every arm decision as CSV">{ui_kit.icon("download")}Assignments CSV</a>'
+        f'<button type="button" class="secondary" data-print data-js hidden>{ui_kit.icon("print")}'
+        "Print or save as PDF</button>"
+    )
+    body = [_head("Proof",
+                  "Two different questions, deliberately not merged: what changed since your baseline, "
+                  "and what this memory <em>caused</em>.", actions)]
+    experiment_controls = "" if shared else _render_experiment_controls(causal, is_admin, error=experiment_error)
+    if controls or experiment_controls:
+        body.append(f'<div class="grid-2">{controls}{experiment_controls}</div>')
     body.append(_value_block(worth or {}))
 
     integrity = causal.get("integrity") or {}
-    body.append("<h2>Caused by the memory (randomized holdout)</h2>")
-    body.append(
-        f'<p class="muted"><a href="{CONSOLE_PATH}/proof/assignments.csv">Download every arm '
-        "decision as CSV</a> -- the signed artifact your own analyst re-runs the comparison "
-        "from, including the occasions the estimate above had to drop for never reporting an "
-        "outcome.</p>"
-    )
-    body.append(_render_experiment_controls(causal, is_admin, error=experiment_error))
+    body.append(_section("Caused by the memory (randomized holdout)"))
+    if not shared:
+        body.append(
+            f'<p class="muted"><a href="{CONSOLE_PATH}/proof/assignments.csv">Download every arm '
+            "decision as CSV</a> -- the signed artifact your own analyst re-runs the comparison "
+            "from, including the occasions the estimate above had to drop for never reporting an "
+            "outcome.</p>"
+        )
     if not causal.get("experiment_running"):
         body.append('<p class="sub">No experiment is running, so nothing in this section '
                     "is causal. The observed change below is real but confounded with "
@@ -842,20 +858,34 @@ def _render_proof(
                 f"<td><b>{h(e.get('verdict'))}</b></td>"
                 f"<td>{_pct(e.get('rate_injected'))} (n={_num(e.get('n_injected'))})</td>"
                 f"<td>{_pct(e.get('rate_withheld'))} (n={_num(e.get('n_withheld'))})</td>"
-                f"<td>{_signed(e.get('effect'))}</td>"
+                f"<td data-v=\"{e.get('effect') if isinstance(e.get('effect'), (int, float)) else ''}\">"
+                f"{_signed(e.get('effect'))}</td>"
                 f"<td>{_ci(e.get('ci_95'))}</td>"
                 f"<td>{_significance(e)}</td></tr>"
                 for e in effects
             )
-            body.append("<div class='scroll'><table><thead><tr><th>Memory</th><th>Verdict</th><th>With</th>"
-                        "<th>Without</th><th>Effect</th><th>95% CI</th><th>Significance</th></tr></thead>"
-                        f"<tbody>{rows}</tbody></table></div>")
+            body.append(
+                '<section class="panel" aria-labelledby="forest-h"><div class="panel-head"><div>'
+                '<h2 id="forest-h">Effect of each memory</h2>'
+                '<p class="muted">Change in success rate when the memory was injected, against occasions '
+                "it was withheld from. The bar is the 95% interval: one that crosses zero is not yet an "
+                "answer either way.</p></div></div>"
+                + ui_kit.forest_plot(effects)
+                + '<details><summary class="muted" style="font-size:.82rem;cursor:pointer">'
+                "Every figure as a table</summary><div class='scroll'><table><thead><tr><th>Memory</th>"
+                "<th>Verdict</th><th>With</th><th>Without</th><th>Effect</th><th>95% CI</th>"
+                f"<th>Significance</th></tr></thead><tbody>{rows}</tbody></table></div></details>"
+                "</section>"
+            )
             notes = [e for e in effects if e.get("note")]
             if notes:
-                body.append('<ul class="muted">' + "".join(
-                    f"<li><b>{h(e.get('title') or e.get('trace_id'))}</b> — "
-                    f"{h(e.get('note'))}</li>" for e in notes
-                ) + "</ul>")
+                body.append(
+                    f'<details class="more"><summary>Why {len(notes)} of these cannot answer yet</summary><ul>'
+                    + "".join(
+                        f"<li><b>{h(e.get('title') or e.get('trace_id'))}</b> — {h(e.get('note'))}</li>"
+                        for e in notes
+                    ) + "</ul></details>"
+                )
         elif effects:
             # Withheld rather than shown-with-a-caveat. On a page built to be
             # read in a renewal conversation, a number on screen gets quoted.
@@ -864,10 +894,13 @@ def _render_proof(
                         "causal effect, and showing them with a caveat is how the caveat "
                         "gets separated from the number.</p>")
         else:
-            body.append('<p class="sub">No memory has enough observations in both arms yet.</p>')
-        body.append(_projection_block(integrity))
+            body.append(_empty("proof", "No memory has enough observations in both arms yet",
+                               "Every resolved occasion adds to one of the two arms; the estimate appears "
+                               "once both have enough."))
+        titles = {str(e.get("trace_id")): e.get("title") for e in effects if e.get("title")}
+        body.append(_projection_block(integrity, titles))
 
-    body.append("<h2>Observed change since your baseline window</h2>")
+    body.append(_section("Observed change since your baseline window"))
     body.append(f'<p>{h(outcomes.get("headline", ""))}</p>')
     rows = outcomes.get("metrics") or []
     if rows:
@@ -885,9 +918,9 @@ def _render_proof(
         # gets read as "no effect".
         notes = [r for r in rows if r.get("note")]
         if notes:
-            body.append('<ul class="muted">' + "".join(
+            body.append('<details class="more"><summary>What each verdict is based on</summary><ul>' + "".join(
                 f"<li><b>{h(r.get('metric'))}</b> — {h(r.get('note'))}</li>" for r in notes
-            ) + "</ul>")
+            ) + "</ul></details>")
     body.append('<p class="muted"><em>This half is an OBSERVED change, not a causal '
                 "effect. `baseline` marks a time window, so a model upgrade or a shift in "
                 "your task mix sits inside it. That is why the holdout above exists.</em></p>")
@@ -934,19 +967,17 @@ def _ci(value: object) -> str:
 
 def _render_memory(result: dict, tags: list[str]) -> str:
     traces = result.get("traces") or []
-    body = ["<h1>Memory</h1>",
-            '<p class="sub">What your fleet has captured. Ranked by how recently it was '
-            "written; searchable the same way your agents search it.</p>"]
+    body = [_head("Memory",
+                  "What your fleet has captured. Ranked by how recently it was written; "
+                  "searchable the same way your agents search it.")]
     body.append(
-        f'<form method="get" action="{CONSOLE_PATH}/memory">'
+        f'<form method="get" action="{CONSOLE_PATH}/memory" class="act" role="search" '
+        'data-command="Search your memory">'
         '<label for="memory-q" class="sr-only">Search your memory</label>'
-        f'<input type="search" id="memory-q" name="q" '
+        f'<input type="search" id="memory-q" name="q" style="flex:1 1 24rem" '
         f'placeholder="Describe a task in your own words…" '
-        f'value="{h(result.get("query", ""))}" style="width:26rem;max-width:100%;padding:.5rem .6rem;'
-        'font:inherit;border:1px solid var(--rule);border-radius:8px">'
-        ' <button type="submit" style="padding:.5rem 1rem;font:inherit;border-radius:8px;'
-        'border:1px solid var(--ink);background:var(--ink);color:var(--paper);cursor:pointer">'
-        "Search</button></form>"
+        f'value="{h(result.get("query", ""))}">'
+        f'<button type="submit">{ui_kit.icon("search")}Search</button></form>'
     )
     terms = result.get("terms") or []
     ignored = result.get("terms_ignored") or []
@@ -956,12 +987,15 @@ def _render_memory(result: dict, tags: list[str]) -> str:
                     + "</p>")
     if traces:
         rows = "".join(
-            f"<tr><td>{h(t.get('title'))}</td><td>{h(', '.join(t.get('tags') or []))}</td>"
-            f"<td>{h(t.get('agent_type'))}</td><td>{_num(t.get('retrievals', 0))}</td>"
-            f"<td>{h(str(t.get('created_at'))[:16])}</td></tr>"
+            f"<tr><td><b>{h(t.get('title'))}</b>"
+            + ('<div class="concerns">' + "".join(
+                f'<span class="pill">{h(tag)}</span>' for tag in (t.get("tags") or [])[:6]
+            ) + "</div>" if t.get("tags") else "")
+            + f"</td><td>{h(t.get('agent_type'))}</td><td class=\"n\">{_num(t.get('retrievals', 0))}</td>"
+            f"<td>{ui_kit.time_html(t.get('created_at'))}</td></tr>"
             for t in traces
         )
-        body.append("<div class='scroll'><table><thead><tr><th>Trace</th><th>Tags</th><th>Agent type</th>"
+        body.append("<div class='scroll'><table><thead><tr><th>Trace</th><th>Agent type</th>"
                     f"<th>Retrieved</th><th>Captured</th></tr></thead><tbody>{rows}</tbody></table></div>")
         # search_traces caps at `limit` and signals whether more rows exist
         # via `has_more` (fetched as one extra row, not a second COUNT) --
@@ -971,27 +1005,19 @@ def _render_memory(result: dict, tags: list[str]) -> str:
         limit = int(result.get("limit") or len(traces) or 1)
         offset = int(result.get("offset") or 0)
         query_param = f'&q={_url_quote(result.get("query", ""))}' if result.get("query") else ""
-        nav = []
-        if offset > 0:
-            nav.append(
-                f'<a href="{CONSOLE_PATH}/memory?offset={max(0, offset - limit)}{query_param}">'
-                "&larr; Newer</a>"
-            )
-        if result.get("has_more"):
-            nav.append(
-                f'<a href="{CONSOLE_PATH}/memory?offset={offset + limit}{query_param}">Older &rarr;</a>'
-            )
-        if nav:
-            body.append(f'<p class="muted">{" · ".join(nav)}</p>')
+        body.append(_pager(f"{CONSOLE_PATH}/memory", offset, limit, bool(result.get("has_more")), query_param))
     elif result.get("query"):
-        body.append('<p class="sub">Nothing matched. That is an answer about this corpus, '
-                    "not an error — and the terms above say whether the query reduced to "
-                    "anything searchable.</p>")
+        body.append(_empty("search", "Nothing matched",
+                           "That is an answer about this corpus, not an error — and the terms above say "
+                           "whether the query reduced to anything searchable."))
     else:
-        body.append('<p class="sub">No traces yet.</p>')
+        body.append(_empty("inbox", "No traces yet",
+                           "Your agents capture them with <code>contribute_trace</code>."))
     if tags:
-        body.append("<h2>Tags in use</h2><p class=\"muted\">"
-                    + h(", ".join(tags[:60])) + "</p>")
+        body.append(_section("Tags in use"))
+        body.append('<div class="concerns">' + "".join(
+            f'<a class="pill" href="{CONSOLE_PATH}/memory?q={_url_quote(t)}">{h(t)}</a>' for t in tags[:60]
+        ) + "</div>")
     return "".join(body)
 
 
@@ -1157,13 +1183,15 @@ def _render_kb(
     error: str = "",
     flash: str = "",
 ) -> str:
-    body = ["<h1>Knowledge Base</h1>",
-            '<p class="sub">The one surface where anything crosses an organisation '
-            "boundary — and it crosses it through a person. You consult the Knowledge Base "
-            "by sending a <em>signature</em>, never your text; you propose an entry and an "
-            "operator decides. No other customer sees your traces, ever.</p>"]
+    actions = (f'<a class="btn" href="#propose" data-command="Propose a Knowledge Base entry">'
+               f'{ui_kit.icon("plus")}Propose an entry</a>' if can_submit else "")
+    body = [_head("Knowledge Base",
+                  "The one surface where anything crosses an organisation boundary — and it crosses it "
+                  "through a person. You consult the Knowledge Base by sending a <em>signature</em>, never "
+                  "your text; you propose an entry and an operator decides. No other customer sees your "
+                  "traces, ever.", actions)]
     if flash:
-        body.append(f'<div class="share-box">{h(flash)}</div>')
+        body.append(f'<div class="flash" role="status">{h(flash)}</div>')
     if error:
         body.append(f'<p class="err" role="alert">{h(error)}</p>')
     queries = ent.get("commons_queries") or {}
@@ -1177,7 +1205,7 @@ def _render_kb(
 
     # --- The open repository, as a catalogue ---------------------------
     if browse is not None:
-        body.append("<h2>Browse the open repository</h2>")
+        body.append(_section("Browse the open repository", anchor="browse", command="Browse the open repository"))
         body.append(
             '<p class="sub">Every entry here is operator-curated and public to all '
             "organisations — never another customer's private trace. Browsing costs no "
@@ -1236,17 +1264,16 @@ def _render_kb(
                     f'<a href="{CONSOLE_PATH}/kb?tag={h(tag)}&offset={nxt}">Older &rarr;</a>'
                 )
             body.append(
-                f'<p class="muted">Showing {_num(shown)} of {_num(total)} entries. '
-                + (" · ".join(nav) if nav else "")
-                + "</p>"
+                f'<div class="pager"><span>Showing {_num(shown)} of {_num(total)} entries</span>'
+                + "".join(nav) + "</div>"
             )
         elif tag:
-            body.append(f'<p class="sub">No entries tagged {h(tag)!r}.</p>')
+            body.append(_empty("kb", f"No entries tagged {h(tag)!r}", "Clear the filter to see everything."))
         else:
-            body.append('<p class="sub">The Knowledge Base has no published entries yet.</p>')
+            body.append(_empty("kb", "The Knowledge Base has no published entries yet"))
 
     # --- Contributing back ---------------------------------------------
-    body.append("<h2>Contribute back</h2>")
+    body.append(_section("Contribute back"))
     if can_submit:
         state = "on" if auto_contribute else "off"
         turning = "off" if auto_contribute else "on"
@@ -1268,7 +1295,7 @@ def _render_kb(
             "Changing it needs an admin-scoped key.</p>"
         )
 
-    body.append("<h2>Propose an entry</h2>")
+    body.append(_section("Propose an entry", anchor="propose"))
     if can_submit:
         body.append(
             '<p class="sub">An accepted proposal is published under the operator\'s name, '
@@ -1297,79 +1324,91 @@ def _render_kb(
     if submissions:
         rows = "".join(
             f"<tr><td>{h(s.get('title'))}</td><td>{h(s.get('status'))}</td>"
-            f"<td>{h(str(s.get('created_at'))[:16])}</td>"
+            f"<td>{ui_kit.time_html(s.get('created_at'))}</td>"
             f"<td>{h(s.get('rejection_reason') or '—')}</td></tr>"
             for s in submissions
         )
-        body.append("<h2>Your proposals</h2><div class='scroll'><table><thead><tr><th>Title</th><th>Status</th>"
+        body.append(_section("Your proposals") + "<div class='scroll'><table><thead><tr><th>Title</th><th>Status</th>"
                     f"<th>Sent</th><th>Note</th></tr></thead><tbody>{rows}</tbody></table></div>")
     else:
-        body.append('<h2>Your proposals</h2><p class="sub">None yet. An accepted proposal is '
-                    "published under the operator's name, not yours, and earns you bonus "
-                    "consultations.</p>")
+        body.append(_section("Your proposals") + _empty(
+            "inbox", "None yet",
+            "An accepted proposal is published under the operator's name, not yours, and earns you bonus "
+            "consultations."))
     return "".join(body)
 
 
+_ROLE_TONE = {"admin": "info", "owner": "info"}
+
+
 def _render_users(users: list[User], is_admin: bool, error: str = "") -> str:
-    body = ["<h1>Users &amp; roles</h1>",
-            '<p class="sub">A person, distinct from your org\'s shared API key — a named '
-            "role checked as a second, additive gate on every tool call. No SSO is linked "
-            "by creating a row here; that is always a separate, explicit step "
-            "(<code>hub.manage link-sso</code>).</p>"]
+    actions = (f'<a class="btn" href="#create-user" data-command="Create a user">{ui_kit.icon("plus")}'
+               "Create a user</a>" if is_admin else "")
+    body = [_head("Users &amp; roles",
+                  "A person, distinct from your org's shared API key — a named role checked as a second, "
+                  "additive gate on every tool call. No SSO is linked by creating a row here; that is always "
+                  "a separate, explicit step (<code>hub.manage link-sso</code>).", actions)]
     if error:
         body.append(f'<p class="err" role="alert">{h(error)}</p>')
     if users:
         rows = []
         for u in users:
-            state = "disabled" if u.disabled_at is not None else "active"
-            linked = "linked" if u.external_subject else "no SSO linked"
-            actions = ""
+            disabled = u.disabled_at is not None
+            state = ('<span class="pill warn">disabled</span>' if disabled
+                     else '<span class="pill ok">active</span>')
+            linked = ('<span class="pill info">linked</span>' if u.external_subject
+                      else '<span class="pill mute">no SSO linked</span>')
+            actions_html = ""
             if is_admin:
                 role_options = "".join(
                     f'<option value="{h(r)}"{" selected" if r == u.role else ""}>{h(r)}</option>'
                     for r in rbac.ROLES
                 )
-                actions = (
-                    f'<form method="post" action="{CONSOLE_PATH}/users/{h(u.id)}/role" '
-                    f'style="display:inline">'
+                actions_html = (
+                    f'<form method="post" action="{CONSOLE_PATH}/users/{h(u.id)}/role">'
                     f'<label for="role-{h(u.id)}" class="sr-only">Role for {h(u.email)}</label>'
-                    f'<select id="role-{h(u.id)}" name="role">{role_options}</select> '
-                    f'<button type="submit">Set role</button></form> '
+                    f'<select id="role-{h(u.id)}" name="role">{role_options}</select>'
+                    f'<button type="submit">Set role</button></form>'
                 )
-                if u.disabled_at is not None:
-                    actions += (
-                        f'<form method="post" action="{CONSOLE_PATH}/users/{h(u.id)}/enable" '
-                        f'style="display:inline"><button type="submit">Enable</button></form>'
+                if disabled:
+                    actions_html += (
+                        f'<form method="post" action="{CONSOLE_PATH}/users/{h(u.id)}/enable">'
+                        '<button type="submit">Enable</button></form>'
                     )
                 else:
-                    actions += (
+                    actions_html += (
                         f'<form method="post" action="{CONSOLE_PATH}/users/{h(u.id)}/disable" '
-                        f'style="display:inline"><button type="submit">Disable</button></form>'
+                        f'data-confirm="Disable {h(u.email)}? Their access ends on their next request.">'
+                        '<button type="submit" class="danger">Disable</button></form>'
                     )
+            name = getattr(u, "display_name", "") or ""
             rows.append(
-                f"<tr><td>{h(u.email)}</td><td>{h(u.role)}</td><td>{h(state)}</td>"
-                f"<td>{h(linked)}</td><td>{actions}</td></tr>"
+                f"<tr><td><b>{h(name or u.email)}</b>"
+                + (f'<div class="muted">{h(u.email)}</div>' if name else "")
+                + f'</td><td><span class="pill {_ROLE_TONE.get(u.role, "")}">{h(u.role)}</span></td>'
+                f"<td>{state}</td><td>{linked}</td><td>{actions_html}</td></tr>"
             )
         body.append(
-            "<div class='scroll'><table><thead><tr><th>Email</th><th>Role</th><th>State</th>"
+            "<div class='scroll'><table><thead><tr><th>Person</th><th>Role</th><th>State</th>"
             f"<th>SSO</th>{_ACTIONS_TH}</tr></thead><tbody>{''.join(rows)}</tbody></table></div>"
         )
     else:
-        body.append('<p class="sub">No users yet.</p>')
+        body.append(_empty("users", "No users yet",
+                           "Add the people who should see this console under their own name and role."))
     if is_admin:
         role_options = "".join(f'<option value="{h(r)}">{h(r)}</option>' for r in rbac.ROLES)
         body.append(
-            "<h2>Create a user</h2>"
-            f'<form method="post" action="{CONSOLE_PATH}/users/create">'
-            '<label for="new-user-email" class="sr-only">Email</label>'
-            '<input type="email" id="new-user-email" name="email" '
-            'placeholder="person@example.com" required> '
-            '<label for="new-user-name" class="sr-only">Display name</label>'
-            '<input type="text" id="new-user-name" name="display_name" '
-            'placeholder="Display name (optional)"> '
-            '<label for="new-user-role" class="sr-only">Role</label>'
-            f'<select id="new-user-role" name="role">{role_options}</select> '
-            '<button type="submit">Create</button></form>'
+            '<section class="panel" id="create-user" aria-labelledby="create-user-h">'
+            '<h2 id="create-user-h">Create a user</h2>'
+            f'<form method="post" action="{CONSOLE_PATH}/users/create" class="stack" style="max-width:none">'
+            '<div class="form-grid">'
+            '<div><label for="new-user-email">Email</label>'
+            '<input type="email" id="new-user-email" name="email" placeholder="person@example.com" required></div>'
+            '<div><label for="new-user-name">Display name</label>'
+            '<input type="text" id="new-user-name" name="display_name" placeholder="optional"></div>'
+            '<div><label for="new-user-role">Role</label>'
+            f'<select id="new-user-role" name="role">{role_options}</select></div>'
+            '<div><button type="submit">Create</button></div></div></form></section>'
         )
     else:
         body.append('<p class="muted">Sign in with an admin-scoped key to create or '
@@ -1378,10 +1417,11 @@ def _render_users(users: list[User], is_admin: bool, error: str = "") -> str:
 
 
 def _render_keys(keys: list[ApiKey], is_admin: bool, fresh: dict | None = None) -> str:
-    body = ["<h1>API keys</h1>",
-            '<p class="sub">Scopes do not imply each other: '
-            "<code>admin</code> alone cannot read a trace. A production agent wants "
-            "<code>read,write</code>; a dashboard wants <code>read</code>.</p>"]
+    actions = (f'<a class="btn" href="#issue-key" data-command="Issue a new API key">{ui_kit.icon("plus")}'
+               "Issue a key</a>" if is_admin else "")
+    body = [_head("API keys",
+                  "Scopes do not imply each other: <code>admin</code> alone cannot read a trace. A production "
+                  "agent wants <code>read,write</code>; a dashboard wants <code>read</code>.", actions)]
     if fresh:
         body.append(
             '<div class="verdict warn"><h2 id="new-key-label">New key — shown once</h2>'
@@ -1392,44 +1432,52 @@ def _render_keys(keys: list[ApiKey], is_admin: bool, fresh: dict | None = None) 
     if keys:
         rows = []
         for k in keys:
-            state = "revoked" if k.revoked_at is not None else "active"
-            key_scopes = ",".join(k.scopes) if k.scopes is not None else "(all — legacy key)"
-            expires = k.expires_at.isoformat()[:10] if k.expires_at else "never"
-            actions = ""
-            if is_admin and k.revoked_at is None:
-                actions = (
+            revoked = k.revoked_at is not None
+            state = ('<span class="pill mute">revoked</span>' if revoked
+                     else '<span class="pill ok">active</span>')
+            scope_pills = (
+                "".join(f'<span class="pill {"info" if sc == scopes.SCOPE_ADMIN else ""}">{h(sc)}</span> '
+                        for sc in k.scopes)
+                if k.scopes is not None else '<span class="pill warn">(all — legacy key)</span>'
+            )
+            expires = ui_kit.time_html(k.expires_at) if k.expires_at else '<span class="muted">never</span>'
+            created = ui_kit.time_html(getattr(k, "created_at", None))
+            actions_html = ""
+            if is_admin and not revoked:
+                actions_html = (
                     f'<form method="post" action="{CONSOLE_PATH}/keys/{h(k.id)}/rotate" '
                     f'data-confirm="Rotate key {h(k.key_prefix)}? It stops working now; agents using '
-                    f'it need the new key." '
-                    f'style="display:inline"><button type="submit">Rotate</button></form> '
+                    f'it need the new key.">'
+                    '<button type="submit">Rotate</button></form>'
                     f'<form method="post" action="{CONSOLE_PATH}/keys/{h(k.id)}/revoke" '
                     f'data-confirm="Revoke key {h(k.key_prefix)}? Agents using it stop working, and '
-                    f'this cannot be undone." '
-                    f'style="display:inline"><button type="submit">Revoke</button></form>'
+                    f'this cannot be undone.">'
+                    '<button type="submit" class="danger">Revoke</button></form>'
                 )
             rows.append(
-                f"<tr><td>{h(k.key_prefix)}</td><td>{h(key_scopes)}</td>"
-                f"<td>{h(expires)}</td><td>{h(state)}</td><td>{actions}</td></tr>"
+                f'<tr><td><code>{h(k.key_prefix)}</code></td><td>{scope_pills}</td>'
+                f"<td>{created}</td><td>{expires}</td><td>{state}</td><td>{actions_html}</td></tr>"
             )
         body.append(
-            "<div class='scroll'><table><thead><tr><th>Prefix</th><th>Scopes</th><th>Expires</th>"
+            "<div class='scroll'><table><thead><tr><th>Prefix</th><th>Scopes</th><th>Created</th><th>Expires</th>"
             f"<th>State</th>{_ACTIONS_TH}</tr></thead><tbody>{''.join(rows)}</tbody></table></div>"
         )
     else:
-        body.append('<p class="sub">No keys yet.</p>')
+        body.append(_empty("keys", "No keys yet", "A key is how an agent, a dashboard or this console signs in."))
     if is_admin:
         scope_boxes = "".join(
             f'<label><input type="checkbox" name="scopes" value="{h(s)}"> {h(s)}</label> '
             for s in scopes.ALL_SCOPES if s != scopes.SCOPE_SCIM
         )
         body.append(
-            "<h2>Issue a new key</h2>"
-            f'<form method="post" action="{CONSOLE_PATH}/keys/issue">'
+            '<section class="panel" id="issue-key" aria-labelledby="issue-key-h">'
+            '<h2 id="issue-key-h">Issue a new key</h2>'
+            f'<form method="post" action="{CONSOLE_PATH}/keys/issue" class="stack" style="max-width:none">'
             f'<fieldset><legend>Scopes</legend>{scope_boxes}</fieldset>'
-            '<label for="new-key-expires" class="sr-only">Expires in N days</label>'
+            '<div class="form-grid"><div><label for="new-key-expires">Expires in N days</label>'
             '<input type="number" id="new-key-expires" name="expires_days" '
-            'placeholder="Expires in N days (blank = never)" min="1"> '
-            '<button type="submit">Issue</button></form>'
+            'placeholder="blank = never" min="1"></div>'
+            '<div><button type="submit">Issue</button></div></div></form></section>'
         )
     else:
         body.append('<p class="muted">Sign in with an admin-scoped key to issue, '
@@ -1440,10 +1488,12 @@ def _render_keys(keys: list[ApiKey], is_admin: bool, fresh: dict | None = None) 
 def _render_alerts(
     rules: list[AlertRule], is_admin: bool, error: str = "", report: dict | None = None,
 ) -> str:
-    body = ["<h1>Alerts</h1>",
-            '<p class="sub">Fires <code>alert.triggered</code> through your existing '
-            "webhook endpoint(s) when a metric crosses a threshold you set — no polling "
-            "needed. A closed, named set of metrics, never a free-form query.</p>"]
+    actions = (f'<a class="btn" href="#create-alert" data-command="Create an alert rule">{ui_kit.icon("plus")}'
+               "Create a rule</a>" if is_admin else "")
+    body = [_head("Alerts",
+                  "Fires <code>alert.triggered</code> through your existing webhook endpoint(s) when a metric "
+                  "crosses a threshold you set — no polling needed. A closed, named set of metrics, never a "
+                  "free-form query.", actions)]
     if error:
         body.append(f'<p class="err" role="alert">{h(error)}</p>')
     if report:
@@ -1459,19 +1509,21 @@ def _render_alerts(
     if rules:
         rows = []
         for r in rules:
-            state = "enabled" if r.enabled else "disabled"
-            last = r.last_triggered_at.isoformat()[:16] if r.last_triggered_at else "never"
-            actions = ""
+            state = ('<span class="pill ok">enabled</span>' if r.enabled
+                     else '<span class="pill mute">disabled</span>')
+            last = ui_kit.time_html(r.last_triggered_at) if r.last_triggered_at else '<span class="muted">never</span>'
+            actions_html = ""
             if is_admin:
-                actions = (
+                actions_html = (
                     f'<form method="post" action="{CONSOLE_PATH}/alerts/{h(r.id)}/delete" '
-                    'data-confirm="Delete this alert rule?" '
-                    f'style="display:inline"><button type="submit">Delete</button></form>'
+                    'data-confirm="Delete this alert rule?">'
+                    '<button type="submit" class="danger">Delete</button></form>'
                 )
             rows.append(
-                f"<tr><td>{h(r.metric)}</td><td>{h(r.comparator)}</td><td>{h(r.threshold)}</td>"
-                f"<td>{h(r.cooldown_minutes)}m</td><td>{h(state)}</td><td>{h(last)}</td>"
-                f"<td>{actions}</td></tr>"
+                f"<tr><td><code>{h(r.metric)}</code></td><td>{h(r.comparator)}</td>"
+                f'<td class="n">{h(r.threshold)}</td>'
+                f'<td class="n">{h(r.cooldown_minutes)}m</td><td>{state}</td><td>{last}</td>'
+                f"<td>{actions_html}</td></tr>"
             )
         body.append(
             "<div class='scroll'><table><thead><tr><th>Metric</th><th>Comparator</th><th>Threshold</th>"
@@ -1479,35 +1531,38 @@ def _render_alerts(
             f"<tbody>{''.join(rows)}</tbody></table></div>"
         )
     else:
-        body.append('<p class="sub">No alert rules yet.</p>')
+        body.append(_empty("alerts", "No alert rules yet",
+                           "A rule watches one metric and tells your webhook endpoints when it crosses the line."))
     if is_admin:
         metric_options = "".join(f'<option value="{h(m)}">{h(m)}</option>' for m in alerts.METRICS)
         comparator_options = "".join(
             f'<option value="{h(c)}">{h(c)}</option>' for c in alerts.COMPARATORS
         )
         body.append(
-            "<h2>Create a rule</h2>"
-            f'<form method="post" action="{CONSOLE_PATH}/alerts/create">'
-            '<label for="new-alert-metric" class="sr-only">Metric</label>'
-            f'<select id="new-alert-metric" name="metric">{metric_options}</select> '
-            '<label for="new-alert-comparator" class="sr-only">Comparator</label>'
-            f'<select id="new-alert-comparator" name="comparator">{comparator_options}</select> '
-            '<label for="new-alert-threshold" class="sr-only">Threshold</label>'
+            '<div class="grid-2">'
+            '<section class="panel" id="create-alert" aria-labelledby="create-alert-h">'
+            '<h2 id="create-alert-h">Create a rule</h2>'
+            f'<form method="post" action="{CONSOLE_PATH}/alerts/create" class="stack" style="max-width:none">'
+            '<div class="form-grid">'
+            '<div><label for="new-alert-metric">Metric</label>'
+            f'<select id="new-alert-metric" name="metric">{metric_options}</select></div>'
+            '<div><label for="new-alert-comparator">Comparator</label>'
+            f'<select id="new-alert-comparator" name="comparator">{comparator_options}</select></div>'
+            '<div><label for="new-alert-threshold">Threshold</label>'
             '<input type="number" step="any" id="new-alert-threshold" name="threshold" '
-            'placeholder="Threshold" required> '
-            '<label for="new-alert-cooldown" class="sr-only">Cooldown minutes</label>'
+            'placeholder="Threshold" required></div>'
+            '<div><label for="new-alert-cooldown">Cooldown minutes</label>'
             '<input type="number" id="new-alert-cooldown" name="cooldown_minutes" '
-            f'placeholder="Cooldown minutes" value="{alerts.DEFAULT_COOLDOWN_MINUTES}" min="1"> '
-            '<button type="submit">Create</button></form>'
-        )
-        body.append(
-            "<h2>Usage report</h2>"
+            f'placeholder="Cooldown minutes" value="{alerts.DEFAULT_COOLDOWN_MINUTES}" min="1"></div>'
+            '</div><button type="submit">Create</button></form></section>'
+            '<section class="panel" aria-labelledby="report-h"><h2 id="report-h">Usage report</h2>'
             '<p class="sub">A one-off <code>report.generated</code> event, the same '
             "shape a scheduled cron run or an operator's own "
             "<code>generate-report</code> would emit — for a customer who wants one "
             "now rather than waiting for the next cycle.</p>"
-            f'<form method="post" action="{CONSOLE_PATH}/alerts/generate-report">'
-            '<button type="submit">Generate now</button></form>'
+            f'<form method="post" action="{CONSOLE_PATH}/alerts/generate-report" class="inline" '
+            'data-command="Generate a usage report now">'
+            '<button type="submit">Generate now</button></form></section></div>'
         )
     else:
         body.append('<p class="muted">Sign in with an admin-scoped key to create or '
@@ -1519,17 +1574,18 @@ def _render_webhooks(
     endpoints: list[dict], pending: int, failed: list[dict], is_admin: bool,
     *, error: str = "", fresh: dict | None = None,
 ) -> str:
-    body = ["<h1>Webhooks</h1>",
-            '<p class="sub">Tell your own systems what happened here — a trace quarantined, '
-            "an experiment reaching a verdict — without polling for it. Every payload carries "
-            "only ids, counts and verdicts; a webhook is egress to a third party, and this "
-            "product's memory content never is.</p>"]
+    actions = (f'<a class="btn" href="#add-endpoint" data-command="Add a webhook endpoint">{ui_kit.icon("plus")}'
+               "Add an endpoint</a>" if is_admin else "")
+    body = [_head("Webhooks",
+                  "Tell your own systems what happened here — a trace quarantined, an experiment reaching a "
+                  "verdict — without polling for it. Every payload carries only ids, counts and verdicts; a "
+                  "webhook is egress to a third party, and this product's memory content never is.", actions)]
     if error:
         body.append(f'<p class="err" role="alert">{h(error)}</p>')
     if fresh and fresh.get("secret"):
         body.append(
             '<div class="share-box"><b id="webhook-secret-label">Signing secret '
-            "(shown once)</b><br>"
+            "(shown once)</b>"
             '<span class="muted">Verify the delivery signature with this. It cannot be shown '
             "again — rotate the endpoint to get a new one.</span>"
             f'{secret_field(fresh["secret"], "webhook-secret-label")}</div>'
@@ -1537,45 +1593,48 @@ def _render_webhooks(
     body.append(_tiles([
         ("Endpoints", _num(len(endpoints))),
         ("Deliveries pending", _num(pending)),
+        ("Gave up on delivering", f'<span class="{"bad" if failed else ""}">{_num(len(failed))}</span>'),
     ]))
     if endpoints:
         rows = []
         for e in endpoints:
-            state = "enabled" if e["enabled"] else "DISABLED"
-            subscribed = ", ".join(e["events"]) or "(none)"
-            actions = ""
+            state = ('<span class="pill ok">enabled</span>' if e["enabled"]
+                     else '<span class="pill bad">DISABLED</span>')
+            subscribed = "".join(f'<span class="pill">{h(ev)}</span> ' for ev in e["events"]) or (
+                '<span class="muted">(none)</span>')
+            actions_html = ""
             if is_admin and e["enabled"]:
-                actions = (
+                actions_html = (
                     f'<form method="post" action="{CONSOLE_PATH}/webhooks/{h(e["id"])}/rotate" '
                     'data-confirm="Rotate the signing secret? Deliveries are signed with the new '
-                    'one immediately." '
-                    f'style="display:inline"><button type="submit">Rotate secret</button>'
-                    "</form> "
+                    'one immediately.">'
+                    '<button type="submit">Rotate secret</button></form>'
                     f'<form method="post" action="{CONSOLE_PATH}/webhooks/{h(e["id"])}/disable" '
-                    'data-confirm="Disable this endpoint? It stops receiving events." '
-                    f'style="display:inline"><button type="submit">Disable</button></form>'
+                    'data-confirm="Disable this endpoint? It stops receiving events.">'
+                    '<button type="submit" class="danger">Disable</button></form>'
                 )
             rows.append(
-                f"<tr><td>{h(e['url'])}</td><td>{h(state)}</td><td>{h(subscribed)}</td>"
-                f"<td>v{h(e['key_version'])}</td><td>{actions}</td></tr>"
+                f"<tr><td><code>{h(e['url'])}</code></td><td>{state}</td><td>{subscribed}</td>"
+                f"<td>v{h(e['key_version'])}</td><td>{actions_html}</td></tr>"
             )
         body.append(
             "<div class='scroll'><table><thead><tr><th>URL</th><th>State</th><th>Subscribed to</th>"
             f"<th>Key</th>{_ACTIONS_TH}</tr></thead><tbody>{''.join(rows)}</tbody></table></div>"
         )
     else:
-        body.append('<p class="sub">No webhook endpoints configured.</p>')
+        body.append(_empty("webhooks", "No webhook endpoints configured",
+                           "Add one to have verdicts, quarantines and alerts delivered to your own systems."))
     if failed:
         frows = "".join(
-            f"<tr><td>{h(str(d['created_at'])[:16])}</td><td>{h(d['event_type'])}</td>"
+            f"<tr><td>{ui_kit.time_html(d['created_at'])}</td><td><code>{h(d['event_type'])}</code></td>"
             f"<td>{h(d['last_error'] or '')}</td></tr>"
             for d in failed
         )
         body.append(
-            "<h2>Gave up on delivering</h2>"
-            '<p class="sub">Retried and failed enough times that this stopped retrying — a '
-            "misconfigured endpoint, not a transient blip.</p>"
-            "<div class='scroll'><table><thead><tr><th>When</th><th>Event</th><th>Last error</th></tr></thead>"
+            _section("Gave up on delivering",
+                     "Retried and failed enough times that this stopped retrying — a misconfigured endpoint, "
+                     "not a transient blip.")
+            + "<div class='scroll'><table><thead><tr><th>When</th><th>Event</th><th>Last error</th></tr></thead>"
             f"<tbody>{frows}</tbody></table></div>"
         )
     if is_admin:
@@ -1584,15 +1643,14 @@ def _render_webhooks(
             for name in events.EVENT_NAMES
         )
         body.append(
-            "<h2>Add an endpoint</h2>"
-            '<p class="sub">HTTPS only. Leave every box unchecked to subscribe to '
-            "everything.</p>"
-            f'<form method="post" action="{CONSOLE_PATH}/webhooks/create">'
-            '<label for="new-webhook-url" class="sr-only">URL</label>'
-            '<input type="url" id="new-webhook-url" name="url" '
-            'placeholder="https://…" required><br>'
+            '<section class="panel" id="add-endpoint" aria-labelledby="add-endpoint-h">'
+            '<h2 id="add-endpoint-h">Add an endpoint</h2>'
+            '<p class="sub">HTTPS only. Leave every box unchecked to subscribe to everything.</p>'
+            f'<form method="post" action="{CONSOLE_PATH}/webhooks/create" class="stack" style="max-width:none">'
+            '<div><label for="new-webhook-url">URL</label>'
+            '<input type="url" id="new-webhook-url" name="url" placeholder="https://…" required></div>'
             f'<fieldset><legend>Events</legend>{event_boxes}</fieldset>'
-            '<button type="submit">Add endpoint</button></form>'
+            '<button type="submit">Add endpoint</button></form></section>'
         )
     else:
         body.append('<p class="muted">Sign in with an admin-scoped key to add, rotate, or '
@@ -1601,15 +1659,17 @@ def _render_webhooks(
 
 
 def _render_audit_log(entries: list[AuditLogEntry], offset: int, limit: int, has_more: bool) -> str:
-    body = ["<h1>Audit log</h1>",
-            '<p class="sub">Consequential actions on your organisation — writes through the '
-            "MCP tools and every admin action, including the ones taken from this console "
-            "itself. Ordinary reads (searches, lookups) are not logged here.</p>"]
+    body = [_head("Audit log",
+                  "Consequential actions on your organisation — writes through the MCP tools and every admin "
+                  "action, including the ones taken from this console itself. Ordinary reads (searches, "
+                  "lookups) are not logged here.")]
     if not entries:
-        body.append('<p class="sub">No audit entries yet.</p>')
+        body.append(_empty("audit", "No audit entries yet",
+                           "Every write and every admin action will be recorded here, with who did it."))
         return "".join(body)
     rows = "".join(
-        f"<tr><td>{h(str(e.created_at)[:19])}</td><td>{h(e.actor)}</td><td>{h(e.action)}</td>"
+        f"<tr><td>{ui_kit.time_html(e.created_at)}</td><td><code>{h(e.actor)}</code></td>"
+        f'<td><span class="pill">{h(e.action)}</span></td>'
         f"<td>{h(f'{e.target_type}:{e.target_id}' if e.target_type else '—')}</td>"
         f"<td>{h(e.summary)}</td></tr>"
         for e in entries
@@ -1618,34 +1678,164 @@ def _render_audit_log(entries: list[AuditLogEntry], offset: int, limit: int, has
         "<div class='scroll'><table><thead><tr><th>When</th><th>Actor</th><th>Action</th><th>Target</th>"
         f"<th>Detail</th></tr></thead><tbody>{rows}</tbody></table></div>"
     )
-    nav = []
-    if offset > 0:
-        nav.append(f'<a href="{CONSOLE_PATH}/audit?offset={max(0, offset - limit)}">&larr; Newer</a>')
-    if has_more:
-        nav.append(f'<a href="{CONSOLE_PATH}/audit?offset={offset + limit}">Older &rarr;</a>')
-    if nav:
-        body.append(f'<p class="muted">{" · ".join(nav)}</p>')
+    body.append(_pager(f"{CONSOLE_PATH}/audit", offset, limit, has_more))
     return "".join(body)
 
 
-_SIGNIN = """
-<div class="signin">
-  <h1>Sign in</h1>
-  <p class="sub">Use an API key for your organisation — the same key your agents
-  authenticate with. It is verified once and never stored in your browser.</p>
-  <form method="post" action="{path}/signin">
-    <label for="api_key" class="sr-only">API key</label>
-    <input type="password" id="api_key" name="api_key" placeholder="ct_…" autocomplete="off"
-           autofocus required>
-    <button type="submit">Sign in</button>
-  </form>
-  {error}
-  <p class="muted" style="margin-top:1.5rem">Most of this console is read-only —
-  capturing a trace, running the experiment, proposing to the Knowledge Base still goes
-  through your agents or the CLI. An admin-scoped key can also manage users and API keys
-  here directly; every change is still authenticated and audited the same way.</p>
-</div>
-"""
+def _head(title: str, sub: str = "", actions: str = "") -> str:
+    """A page's title row: heading, one-line purpose, and its primary actions.
+    `title` and `sub` are trusted markup written in this module."""
+    acts = f'<div class="actions">{actions}</div>' if actions else ""
+    sub_html = f'<p class="sub">{sub}</p>' if sub else ""
+    return f'<div class="page-head"><div><h1>{title}</h1>{sub_html}</div>{acts}</div>'
+
+
+def _section(title: str, sub: str = "", anchor: str = "", command: str = "") -> str:
+    attrs = f' id="{anchor}"' if anchor else ""
+    if command:
+        attrs += f' data-command="{h(command)}"'
+    sub_html = f'<p class="sub">{sub}</p>' if sub else ""
+    return f'<div class="section-head"{attrs}><h2>{title}</h2>{sub_html}</div>'
+
+
+def _empty(icon_name: str, title: str, text: str = "") -> str:
+    """An empty state that says what would be here and how it gets here."""
+    return (
+        f'<div class="empty-state">{ui_kit.icon(icon_name)}<b>{title}</b>'
+        + (f"<p>{text}</p>" if text else "")
+        + "</div>"
+    )
+
+
+def _pager(base: str, offset: int, limit: int, has_more: bool, extra: str = "") -> str:
+    links = []
+    if offset > 0:
+        links.append(f'<a href="{base}?offset={max(0, offset - limit)}{extra}">&larr; Newer</a>')
+    if has_more:
+        links.append(f'<a href="{base}?offset={offset + limit}{extra}">Older &rarr;</a>')
+    return f'<nav class="pager" aria-label="Pages">{"".join(links)}</nav>' if links else ""
+
+
+def _setup_steps(data: dict, causal: dict, setup: dict | None) -> str:
+    """The five things between a new organisation and a measured answer, ticked
+    off from the organisation's own state. Hidden once every one is done."""
+    setup = setup or {}
+    traces = int(((data.get("entitlements") or {}).get("traces") or {}).get("used", 0) or 0)
+    searches = int((data.get("search") or {}).get("searches", 0) or 0)
+    steps = [
+        (traces > 0, "Capture a first trace",
+         "Your agents call <code>contribute_trace</code> after a task, or import one with "
+         "<code>commontrace sync</code>."),
+        (searches > 0, "Retrieve before a task",
+         "Agents call <code>search_traces</code> with the task in their own words."),
+        (bool(causal.get("experiment_running")), "Start a randomized holdout",
+         f'From <a href="{CONSOLE_PATH}/proof">Proof</a>: the only thing that separates this memory\'s '
+         "effect from everything else that changed."),
+        (bool(causal.get("n_observations")), "Report outcomes",
+         "Agents call <code>record_occasion_outcome</code> when a task ends — the experiment measures "
+         "nothing without it."),
+        (bool(setup.get("alerts") or setup.get("webhooks")), "Get told, not polled",
+         f'Add an <a href="{CONSOLE_PATH}/alerts">alert</a> or a <a href="{CONSOLE_PATH}/webhooks">'
+         "webhook</a> so a verdict reaches your own systems."),
+    ]
+    done = sum(1 for ok, *_ in steps if ok)
+    if done == len(steps):
+        return ""
+    items = "".join(
+        f'<li class="{"done" if ok else ""}"><span class="tick" aria-hidden="true">&#10003;</span>'
+        f'<span class="what"><b>{title}</b><span class="muted">{text}</span></span>'
+        f'<span class="sr-only">{"done" if ok else "not done yet"}</span></li>'
+        for ok, title, text in steps
+    )
+    return (
+        '<section class="panel" aria-labelledby="setup-h"><div class="panel-head">'
+        '<h2 id="setup-h">Get to a measured answer</h2>'
+        f'<span class="progress-label">{done} of {len(steps)} done</span></div>'
+        f'{ui_kit.meter(done, len(steps), quota=False)}<ul class="steps">{items}</ul></section>'
+    )
+
+
+def _working_panel(causal: dict, activity: dict | None) -> str:
+    running = bool(causal.get("experiment_running"))
+    integrity = causal.get("integrity") or {}
+    if running and causal.get("n_observations"):
+        verdict = str(integrity.get("verdict", ""))
+        tone = _VERDICT_TONE.get(verdict, "")
+        pill = {"good": "ok", "warn": "warn", "bad": "bad"}.get(tone, "mute")
+        hero = ""
+        chart = ""
+        if activity:
+            t_n = sum(p[0] for p in activity.get("treated", []))
+            t_ok = sum(p[1] for p in activity.get("treated", []))
+            c_n = sum(p[0] for p in activity.get("control", []))
+            c_ok = sum(p[1] for p in activity.get("control", []))
+            if t_n and c_n:
+                diff = t_ok / t_n - c_ok / c_n
+                hero = (
+                    '<div class="hero">'
+                    f'<div><div class="big s1t">{t_ok / t_n:.0%}</div><div class="lbl">succeeded with memory '
+                    f"({_num(t_n)} occasions)</div></div>"
+                    f'<div><div class="big s2t">{c_ok / c_n:.0%}</div><div class="lbl">succeeded without it '
+                    f"({_num(c_n)} held out)</div></div>"
+                    f'<div><div class="big">{diff * 100:+.0f} pts</div><div class="lbl">difference, before '
+                    "the validity checks on Proof</div></div></div>"
+                )
+            chart = ui_kit.rate_chart(
+                "rate", activity.get("weeks", []), activity.get("treated", []), activity.get("control", []),
+                title="Weekly success rate, with and without memory",
+            )
+        return (
+            '<section class="panel" aria-labelledby="working-h"><div class="panel-head"><div>'
+            '<h2 id="working-h">Is the memory working?</h2>'
+            f'<p class="muted">A randomized holdout is running: {_num(causal.get("n_observations", 0))} '
+            f'resolved observation(s) across {_num(causal.get("n_occasions", 0))} occasion(s). '
+            f'Validity: <span class="pill {pill}">{h(verdict)}</span></p></div>'
+            f'<a class="btn secondary" href="{CONSOLE_PATH}/proof">{ui_kit.icon("proof")}See the causal report</a>'
+            f"</div>{hero}{chart}"
+            '<p class="faint" style="font-size:.8rem">Each occasion counts once, in the week its outcome arrived. '
+            "Whether the difference is caused by the memory, and how sure that is, is on Proof — "
+            "under the validity verdict, not above it.</p></section>"
+        )
+    if running:
+        return (
+            '<div class="verdict warn"><h2>Is the memory working?</h2>'
+            "<p>An experiment is running, but no occasion has been reported yet. Your "
+            "agents need to call <code>holdout_assign</code> before injecting and "
+            "<code>record_occasion_outcome</code> afterwards — without the second, "
+            "nothing joins and nothing can be measured.</p></div>"
+        )
+    return (
+        '<div class="verdict"><h2>Is the memory working?</h2>'
+        "<p>No randomized holdout is running, so nothing here is causal yet. Start one from "
+        "Proof (admin) or ask your operator — it is the only thing that separates this product's "
+        "effect from everything else that changed in the same window.</p>"
+        f'<p><a href="{CONSOLE_PATH}/proof">See the observed change →</a></p></div>'
+    )
+
+
+_SIGNIN = (
+    '<div class="box">'
+    f'<span class="brand"><span class="mark">{ui_kit.icon("mark")}</span>CommonTrace</span>'
+    "<div><h1>Sign in to your console</h1>"
+    '<p class="sub">Use an API key for your organisation — the same key your agents '
+    "authenticate with. It is verified once and never stored in your browser.</p></div>"
+    '<form method="post" action="{path}/signin">'
+    '<label for="api_key">API key</label>'
+    '<input type="password" id="api_key" name="api_key" placeholder="ct_live_…" autocomplete="off" '
+    "autofocus required spellcheck=\"false\">"
+    '<button type="submit">Sign in</button>'
+    "</form>"
+    "{error}"
+    '<div class="trust">'
+    f'<span>{ui_kit.icon("shield")}The key is checked once; the session cookie never contains it</span>'
+    f'<span>{ui_kit.icon("lock")}Revoking the key ends every session it opened</span>'
+    f'<span>{ui_kit.icon("audit")}Every change made here is authenticated and audited</span>'
+    "</div>"
+    '<p class="fine">Most of this console is read-only — capturing a trace, running the '
+    "experiment, proposing to the Knowledge Base still goes through your agents or the CLI. "
+    "An admin-scoped key can also manage users and API keys here directly.</p>"
+    "</div>"
+)
 
 
 # What the Knowledge Base page says after each action redirects back to it.
@@ -1742,7 +1932,9 @@ def add_console_routes(
         async with session_scope(session_factory) as session:
             row = (
                 await session.execute(
-                    select(ApiKey.id, ApiKey.scopes).where(
+                    select(ApiKey.id, ApiKey.scopes, Organization.name, Organization.plan)
+                    .join(Organization, Organization.id == ApiKey.org_id)
+                    .where(
                         ApiKey.org_id == str(claims["org"]),
                         ApiKey.key_prefix == prefix,
                         ApiKey.revoked_at.is_(None),
@@ -1757,6 +1949,12 @@ def add_console_routes(
         # read-only must lose console-mutation access on its very next
         # request, not merely at the browser session's own TTL.
         claims["scopes"] = row[1]
+        # For the page shell to show who is signed in (display only; the
+        # same query, so no extra round trip).
+        _VIEW.set({
+            "org_name": row[2], "plan": row[3], "key_prefix": prefix,
+            "is_admin": scopes.satisfies(row[1], scopes.SCOPE_ADMIN),
+        })
         return claims
 
     def _is_admin(claims: dict) -> bool:
@@ -1842,6 +2040,11 @@ def add_console_routes(
             data = await _overview_data(session, org_id)
             causal = await crud.causal_effects(session, org_id)
             org = await session.get(Organization, org_id)
+            activity = await crud.console_activity(session, org_id)
+            setup = {
+                "alerts": len(await alerts.list_rules(session, org_id)),
+                "webhooks": len(await events.endpoints_for(session, org_id)),
+            }
         current_plan = str(data["entitlements"].get("plan") or plans.DEFAULT_PLAN)
         billing_state = {
             "enabled": stripe.checkout_configured,
@@ -1853,7 +2056,7 @@ def add_console_routes(
             ],
         }
         return _page(
-            "Your fleet", _render_overview(data, causal, billing_state),
+            "Your fleet", _render_overview(data, causal, billing_state, activity, setup),
             # Longer than the other auto-refreshing pages: causal_effects is
             # real statistical work (hub/SCALING.md measures it up to 1.4s on
             # a large org), and this is the page most likely left open in a
@@ -1961,8 +2164,9 @@ def add_console_routes(
         flash = _SHARE_FLASH.get(request.query_params.get("done", ""), "")
         if flash:
             share_box = f'<p class="flash" role="status">{h(flash)}</p>' + share_box
-        return _page("Proof", share_box + _render_proof(
+        return _page("Proof", _render_proof(
             outcomes, causal, worth, is_admin=is_admin, experiment_error=experiment_error,
+            controls=share_box,
         ))
 
     async def proof(request: Request) -> Response:
@@ -2048,7 +2252,7 @@ def add_console_routes(
             outcomes = await crud.fleet_outcomes(session, org_id)
             causal = await crud.causal_effects(session, org_id)
             worth = await crud.value_delivered(session, org_id)
-        return _shared_page(_render_proof(outcomes, causal, worth), expires_at=int(claims["exp"]))
+        return _shared_page(_render_proof(outcomes, causal, worth, shared=True), expires_at=int(claims["exp"]))
 
     async def assignments_csv(request: Request) -> Response:
         """Every arm decision for this org's current experiment, as CSV --

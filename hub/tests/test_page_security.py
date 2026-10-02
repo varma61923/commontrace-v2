@@ -87,14 +87,21 @@ def test_no_page_uses_an_inline_event_handler(path):
 
 def test_the_nav_marks_the_current_page():
     page = console._page("Users & roles", "").body.decode()
-    assert re.search(r'<a href="[^"]*/users" aria-current=page>Users</a>', page)
+    # The link's accessible name is its label alone: the shortcut hint beside
+    # it is hidden from assistive technology.
+    assert re.search(
+        r'<a href="[^"]*/users" data-key="[^"]*" aria-current=page>'
+        r'<svg[^>]*aria-hidden="true"[^>]*>.*?</svg><span>Users</span><kbd aria-hidden="true">',
+        page,
+    )
     assert page.count(" aria-current=page>") == 1
     assert " aria-current=page>" not in console._page("Something else", "").body.decode()
 
 
 def test_the_page_offers_a_skip_link_to_its_content():
     page = console._page("Proof", "<p>x</p>").body.decode()
-    assert '<a class="skip" href="#main">' in page and '<main id="main">' in page
+    # tabindex=-1 so following the link moves keyboard focus, not just the scroll.
+    assert '<a class="skip" href="#main">' in page and '<main id="main" tabindex="-1">' in page
 
 
 @pytest.mark.parametrize("render", [

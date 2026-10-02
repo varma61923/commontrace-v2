@@ -1217,6 +1217,78 @@ async def _record_search(session: AsyncSession, org_id: str, *, terms: list[str]
     await _meter(session, org_id, METRIC_SEARCHES_EMPTY if terms else METRIC_SEARCHES_NO_TERMS)
 
 
+#: Weeks of history the console's activity charts show.
+ACTIVITY_WEEKS = 12
+
+
+async def console_activity(
+    session: AsyncSession, org_id: str, *, weeks: int = ACTIVITY_WEEKS, now: datetime | None = None,
+) -> dict:
+    """Weekly series for the console's Overview charts, counts only.
+
+    `traces`: live traces captured per week. `treated`/`control`: resolved
+    occasions of the CURRENT experiment (its salt) per week, split by whether
+    the occasion received any memory, each as (occasions, succeeded). An
+    occasion counts once, in the week its outcome arrived -- the same unit
+    the policy-level comparison uses, so the chart and that figure agree.
+
+    Weeks start on Monday (Postgres `date_trunc('week')`), oldest first, with
+    empty weeks present as zeros: a chart with missing weeks draws a line
+    straight across a gap and reads as steady activity.
+    """
+    now = now or datetime.now(timezone.utc)
+    this_week = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+    starts = [this_week - timedelta(weeks=i) for i in range(weeks - 1, -1, -1)]
+    since = starts[0]
+
+    def _key(value) -> str:
+        return value.date().isoformat() if value is not None else ""
+
+    week = func.date_trunc("week", Trace.created_at)
+    trace_counts = {
+        _key(w): int(n) for w, n in (await session.execute(
+            select(week, func.count(Trace.id))
+            .where(Trace.org_id == org_id, Trace.quarantined.is_(False), Trace.created_at >= since)
+            .group_by(week)
+        )).all()
+    }
+
+    org = await session.get(Organization, org_id)
+    salt = org.holdout_salt if org is not None else ""
+    per_occasion = (
+        select(
+            func.max(HoldoutObservation.resolved_at).label("at"),
+            func.bool_or(HoldoutObservation.injected).label("treated"),
+            func.bool_or(HoldoutObservation.succeeded).label("ok"),
+        )
+        .where(
+            HoldoutObservation.org_id == org_id,
+            HoldoutObservation.salt == salt,
+            HoldoutObservation.succeeded.is_not(None),
+            HoldoutObservation.resolved_at >= since,
+        )
+        .group_by(HoldoutObservation.occasion_id)
+        .subquery()
+    )
+    occasion_week = func.date_trunc("week", per_occasion.c.at)
+    arms: dict[tuple[str, bool], tuple[int, int]] = {}
+    for w, treated, n, ok in (await session.execute(
+        select(occasion_week, per_occasion.c.treated, func.count(),
+               func.sum(case((per_occasion.c.ok.is_(True), 1), else_=0)))
+        .group_by(occasion_week, per_occasion.c.treated)
+    )).all():
+        arms[(_key(w), bool(treated))] = (int(n), int(ok or 0))
+
+    keys = [s.date().isoformat() for s in starts]
+    return {
+        "weeks": keys,
+        "traces": [trace_counts.get(k, 0) for k in keys],
+        "treated": [list(arms.get((k, True), (0, 0))) for k in keys],
+        "control": [list(arms.get((k, False), (0, 0))) for k in keys],
+        "experiment_running": bool(org and org.holdout_rate > 0),
+    }
+
+
 async def search_health(
     session: AsyncSession, org_id: str, period: str | None = None
 ) -> dict:
