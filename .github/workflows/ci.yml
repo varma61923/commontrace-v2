@@ -139,8 +139,8 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install Hub server dependencies
-        run: python -m pip install -r hub/requirements.txt pytest pytest-asyncio
+      - name: Install Hub server dependencies and the client package
+        run: python -m pip install -e . -r hub/requirements.txt pytest pytest-asyncio
 
       - name: Verify migrations apply from scratch
         env:
