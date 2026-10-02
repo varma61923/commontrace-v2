@@ -87,3 +87,186 @@ def test_fact_cli(store):
     res = cli("fact", "search", "postgres connections", "--dest", store)
     assert res.returncode == 0
     assert "Postgres" in res.stdout
+
+
+def test_fact_bitemporal_as_of_superseded(store):
+    """Verify that as_of queries reconstruct superseded facts at past points in time."""
+    # 1. Create Fact 1 valid from 2026-01-01
+    f1, _ = hierarchical.add_fact(
+        store,
+        "Use PostgreSQL 15 for microservices storage.",
+        category="architecture",
+        scopes=["db"],
+        valid_from="2026-01-01T00:00:00Z",
+    )
+
+    # 2. At 2026-06-01, supersede Fact 1 with Fact 2 (PostgreSQL 16)
+    old, new = hierarchical.supersede_fact(
+        store,
+        f1.id,
+        "Use PostgreSQL 16 for microservices storage.",
+        as_of="2026-06-01T00:00:00Z",
+    )
+    assert old.status == "superseded"
+    assert new.status == "active"
+
+    # Current listing (as_of=None) should return only the active new fact
+    curr = hierarchical.list_facts(store, status="active")
+    assert len(curr) == 1
+    assert curr[0].id == new.id
+
+    # Historical query at 2026-03-01 (when Fact 1 was valid) MUST return Fact 1,
+    # despite its current status being "superseded"!
+    past_facts = hierarchical.list_facts(store, as_of="2026-03-01T00:00:00Z")
+    assert len(past_facts) == 1
+    assert past_facts[0].id == old.id
+    assert past_facts[0].statement == "Use PostgreSQL 15 for microservices storage."
+
+    # Historical query prior to Fact 1's creation MUST return 0 facts
+    prior_facts = hierarchical.list_facts(store, as_of="2025-12-01T00:00:00Z")
+    assert len(prior_facts) == 0
+
+    # Historical query after supersession (e.g., 2026-09-01) MUST return only Fact 2
+    post_facts = hierarchical.list_facts(store, as_of="2026-09-01T00:00:00Z")
+    assert len(post_facts) == 1
+    assert post_facts[0].id == new.id
+    assert post_facts[0].statement == "Use PostgreSQL 16 for microservices storage."
+
+
+def test_fact_bitemporal_as_of_deleted(store):
+    """Verify that as_of queries reconstruct soft-deleted facts at past points in time."""
+    # Create fact valid from 2026-02-01
+    f1, _ = hierarchical.add_fact(
+        store,
+        "Temporary worker thread pool ceiling is 32.",
+        category="constraint",
+        valid_from="2026-02-01T00:00:00Z",
+    )
+
+    # Soft delete the fact
+    ok = hierarchical.delete_fact(store, f1.id)
+    assert ok is True
+
+    # Current listing has 0 active facts
+    assert len(hierarchical.list_facts(store, status="active")) == 0
+
+    # Historical query while fact was alive MUST return the fact
+    past = hierarchical.list_facts(store, as_of="2026-02-15T00:00:00Z")
+    assert len(past) == 1
+    assert past[0].id == f1.id
+    assert past[0].statement == "Temporary worker thread pool ceiling is 32."
+
+    # Historical query before creation returns 0
+    assert len(hierarchical.list_facts(store, as_of="2026-01-01T00:00:00Z")) == 0
+
+
+def test_fact_bitemporal_search_as_of(store):
+    """Verify search_facts accurately retrieves past fact versions using as_of."""
+    f1, _ = hierarchical.add_fact(
+        store,
+        "Redis cluster replica count is 3 nodes.",
+        category="architecture",
+        valid_from="2026-01-01T00:00:00Z",
+    )
+    old, new = hierarchical.supersede_fact(
+        store,
+        f1.id,
+        "Redis cluster replica count is 5 nodes.",
+    )
+
+    # Search in the past returns the old fact
+    past_search = hierarchical.search_facts(store, "redis replica count", as_of="2026-02-01T00:00:00Z")
+    assert len(past_search) == 1
+    assert past_search[0][0].id == old.id
+    assert "3 nodes" in past_search[0][0].statement
+
+    # Search currently returns the new fact
+    curr_search = hierarchical.search_facts(store, "redis replica count")
+    assert len(curr_search) == 1
+    assert curr_search[0][0].id == new.id
+    assert "5 nodes" in curr_search[0][0].statement
+
+
+def test_fact_bitemporal_exact_boundaries(store):
+    """Verify bitemporal interval semantics: valid_from <= as_of < valid_until."""
+    # Fact explicitly bounded
+    hierarchical.add_fact(
+        store,
+        "Staging cluster IP is 10.0.0.42",
+        category="environment",
+        valid_from="2026-04-01T12:00:00Z",
+        valid_until="2026-04-30T12:00:00Z",
+    )
+
+    # 1. Exact start instant: valid_from <= as_of (inclusive)
+    res_start = hierarchical.list_facts(store, as_of="2026-04-01T12:00:00Z")
+    assert len(res_start) == 1
+
+    # 2. One second before start instant: not valid
+    res_before = hierarchical.list_facts(store, as_of="2026-04-01T11:59:59Z")
+    assert len(res_before) == 0
+
+    # 3. Exact end instant: as_of < valid_until (exclusive)
+    res_end = hierarchical.list_facts(store, as_of="2026-04-30T12:00:00Z")
+    assert len(res_end) == 0
+
+    # 4. One second before end instant: valid
+    res_just_before = hierarchical.list_facts(store, as_of="2026-04-30T11:59:59Z")
+    assert len(res_just_before) == 1
+
+
+def test_fact_cli_as_of(store):
+    """Verify CLI fact list and fact search with --as-of flag."""
+    hierarchical.add_fact(
+        store,
+        "Nginx keepalive timeout is 65s",
+        category="constraint",
+        valid_from="2026-01-01T00:00:00Z",
+    )
+    facts = hierarchical.load_facts(store)
+    f_id = list(facts.keys())[0]
+
+    hierarchical.supersede_fact(store, f_id, "Nginx keepalive timeout is 120s")
+
+    # CLI fact list --as-of
+    res = cli("fact", "list", "--as-of", "2026-01-15T00:00:00Z", "--dest", store)
+    assert res.returncode == 0
+    assert "65s" in res.stdout
+
+    # CLI fact search --as-of
+    res_srch = cli("fact", "search", "keepalive", "--as-of", "2026-01-15T00:00:00Z", "--dest", store)
+    assert res_srch.returncode == 0
+    assert "65s" in res_srch.stdout
+
+
+def test_atomic_fact_schema_compliance(store):
+    """Verify that AtomicFact instances strictly validate against atomic_fact.schema.json."""
+    from commontrace import validate
+
+    schema = validate.load_schema("atomic_fact.schema.json")
+    validate.assert_supported_schema(schema)
+
+    # 1. Added fact
+    f1, _ = hierarchical.add_fact(store, "Kafka partition count is 12", category="architecture", scopes=["backend"])
+    errs = validate.validate(f1.to_dict(), schema)
+    assert errs == []
+
+    # 2. Superseded fact & new replacement fact
+    old, new = hierarchical.supersede_fact(store, f1.id, "Kafka partition count is 24")
+    assert validate.validate(old.to_dict(), schema) == []
+    assert validate.validate(new.to_dict(), schema) == []
+
+    # 3. Soft-deleted fact
+    hierarchical.delete_fact(store, new.id)
+    facts = hierarchical.load_facts(store)
+    deleted_fact = facts[new.id]
+    assert validate.validate(deleted_fact.to_dict(), schema) == []
+
+    # 4. Schema rejection on invalid data
+    bad_fact = f1.to_dict()
+    bad_fact["category"] = "unsupported_cat"
+    assert len(validate.validate(bad_fact, schema)) >= 1
+
+    bad_fact2 = f1.to_dict()
+    bad_fact2["confidence"] = 1.5
+    assert len(validate.validate(bad_fact2, schema)) >= 1

@@ -567,7 +567,7 @@ def build_server(root: str, *, allow_approval: bool = True):
                 recency_weight=retrieval_config.recency_weight,
                 adaptive_tail=not reranking,
                 graph_boost_lookup=graph_boosts,
-                graph_weight=1.0,
+                graph_weight=getattr(retrieval_config, "graph_weight", 1.0),
             )
         except Exception as exc:  # noqa: BLE001 - a malformed store is an answer, not a crash
             return _err(f"could not read the lesson store: {type(exc).__name__}: {exc}")
@@ -1372,6 +1372,22 @@ def build_server(root: str, *, allow_approval: bool = True):
         return _ok(blocks=[b.to_dict() for b in blocks], count=len(blocks))
 
     @mcp.tool()
+    async def memory_block_delete(name: str) -> dict:
+        """Delete an existing working memory block.
+
+        Removes the block's markdown content and metadata from the local store,
+        recording the deletion in the cryptographic revision audit log.
+        Returns ok=true if deleted, or ok=false with an error message if the block does not exist.
+        """
+        try:
+            deleted = memory_blocks.delete_block(root, name, actor="mcp", reason="mcp request")
+            if not deleted:
+                return _err(f"Memory block '{name}' does not exist")
+            return _ok(name=name, deleted=True)
+        except Exception as exc:
+            return _err(str(exc))
+
+    @mcp.tool()
     async def query_facts(
         query: str,
         scope: str = "",
@@ -1457,42 +1473,45 @@ def build_server(root: str, *, allow_approval: bool = True):
         except Exception as exc:  # noqa: BLE001
             return _err(f"could not retrieve neighbors: {type(exc).__name__}: {exc}")
 
-    @mcp.resource("commontrace://profile")
-    def active_space_profile() -> str:
-        """Synthesized active space profile combining working memory blocks, high-confidence facts, and fleet status."""
-        blocks = memory_blocks.list_blocks(root)
-        facts = hierarchical.list_facts(root, status="active")[:10]
-        status = store_state.inspect(root)
+    if hasattr(mcp, "resource"):
+        @mcp.resource("commontrace://profile")
+        def active_space_profile() -> str:
+            """Synthesized active space profile combining working memory blocks,
+            high-confidence facts, and fleet status.
+            """
+            blocks = memory_blocks.list_blocks(root)
+            facts = hierarchical.list_facts(root, status="active")[:10]
+            status = store_state.inspect(root)
 
-        lines = ["# CommonTrace Active Space Profile", ""]
-        lines.append("## Working Memory Blocks")
-        if blocks:
-            for b in blocks:
-                lines.append(f"### [{b.name}] ({b.char_count}/{b.max_chars} chars, rev: {b.revision})")
-                lines.append(b.content)
+            lines = ["# CommonTrace Active Space Profile", ""]
+            lines.append("## Working Memory Blocks")
+            if blocks:
+                for b in blocks:
+                    lines.append(f"### [{b.name}] ({b.char_count}/{b.max_chars} chars, rev: {b.revision})")
+                    lines.append(b.content)
+                    lines.append("")
+            else:
+                lines.append("_No working memory blocks configured._\n")
+
+            lines.append("## Active Atomic Facts")
+            if facts:
+                for f in facts:
+                    scope_str = f" [{','.join(f.scopes)}]" if f.scopes else ""
+                    lines.append(f"- **{f.statement}** (category: {f.category}, conf: {f.confidence:.2f}){scope_str}")
                 lines.append("")
-        else:
-            lines.append("_No working memory blocks configured._\n")
+            else:
+                lines.append("_No atomic facts recorded yet._\n")
 
-        lines.append("## Active Atomic Facts")
-        if facts:
-            for f in facts:
-                scope_str = f" [{','.join(f.scopes)}]" if f.scopes else ""
-                lines.append(f"- **{f.statement}** (category: {f.category}, conf: {f.confidence:.2f}){scope_str}")
-            lines.append("")
-        else:
-            lines.append("_No atomic facts recorded yet._\n")
+            lines.append("## Fleet Memory Status")
+            lines.append(f"- Active Lessons: {status.active}")
+            lines.append(f"- Lessons Under Review: {status.review}")
+            lines.append(f"- Raw Traces: {status.traces}")
+            return "\n".join(lines)
 
-        lines.append("## Fleet Memory Status")
-        lines.append(f"- Active Lessons: {status.active}")
-        lines.append(f"- Lessons Under Review: {status.review}")
-        lines.append(f"- Raw Traces: {status.traces}")
-        return "\n".join(lines)
-
-    @mcp.resource("commontrace://graph")
-    def active_knowledge_graph() -> str:
-        """Active knowledge graph rendered as Mermaid diagram and entity edges."""
-        return graph_mod.export_mermaid(root)
+        @mcp.resource("commontrace://graph")
+        def active_knowledge_graph() -> str:
+            """Active knowledge graph rendered as Mermaid diagram and entity edges."""
+            return graph_mod.export_mermaid(root)
 
     return mcp
 

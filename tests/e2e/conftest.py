@@ -32,6 +32,7 @@ def cli_runner() -> Callable[..., CLIResult]:
     ) -> CLIResult:
         merged_env = os.environ.copy()
         merged_env["PYTHONUTF8"] = "1"
+        merged_env.pop("COMMONTRACE_ROOT", None)
         repo_root = str(Path(__file__).resolve().parent.parent.parent)
         existing_pp = merged_env.get("PYTHONPATH", "")
         merged_env["PYTHONPATH"] = f"{repo_root}:{existing_pp}" if existing_pp else repo_root

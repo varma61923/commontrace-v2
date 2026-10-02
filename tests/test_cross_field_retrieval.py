@@ -13,8 +13,8 @@ import measure_retrieval  # noqa: E402
 
 from commontrace import retrieval  # noqa: E402
 
-MAX_POLLUTION = 1.1
-MAX_SPREAD = 1.1
+MAX_POLLUTION = 1.06
+MAX_SPREAD = 1.06
 
 
 @pytest.fixture(scope="module")

@@ -61,6 +61,19 @@ def test_mcp_memory_blocks(server):
     assert list_out["ok"]
     assert list_out["count"] == 1
 
+    # Delete block
+    del_out = call(server, "memory_block_delete", name="persona")
+    assert del_out["ok"] is True
+    assert del_out["deleted"] is True
+
+    # Read deleted block fails
+    read_deleted = call(server, "memory_block_read", name="persona")
+    assert read_deleted["ok"] is False
+
+    # Delete non-existent block fails
+    del_nonexistent = call(server, "memory_block_delete", name="nonexistent")
+    assert del_nonexistent["ok"] is False
+
 
 def test_mcp_facts(server):
     # Record fact

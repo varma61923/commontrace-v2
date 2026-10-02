@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -168,20 +169,45 @@ def set_block(
     if metadata:
         merged_metadata.update(metadata)
 
-    # Write content and metadata
-    with open(content_path, "w", encoding="utf-8") as f:
-        f.write(content)
+    # Write content and metadata atomically via temporary files and os.replace
+    content_tmp = f"{content_path}.tmp"
+    meta_tmp = f"{meta_path}.tmp"
+    backup_content = f"{content_path}.bak"
+    has_orig_content = os.path.exists(content_path)
+    try:
+        with open(content_tmp, "w", encoding="utf-8") as f:
+            f.write(content)
 
-    meta_dict = {
-        "name": clean,
-        "max_chars": max_chars,
-        "revision": revision,
-        "created_at": created_at,
-        "updated_at": updated_at,
-        "metadata": merged_metadata,
-    }
-    with open(meta_path, "w", encoding="utf-8") as f:
-        json.dump(meta_dict, f, indent=2)
+        meta_dict = {
+            "name": clean,
+            "max_chars": max_chars,
+            "revision": revision,
+            "created_at": created_at,
+            "updated_at": updated_at,
+            "metadata": merged_metadata,
+        }
+        with open(meta_tmp, "w", encoding="utf-8") as f:
+            json.dump(meta_dict, f, indent=2)
+
+        if has_orig_content:
+            shutil.copy2(content_path, backup_content)
+
+        os.replace(content_tmp, content_path)
+        os.replace(meta_tmp, meta_path)
+    except Exception:
+        if has_orig_content and os.path.exists(backup_content):
+            try:
+                os.replace(backup_content, content_path)
+            except OSError:
+                pass
+        raise
+    finally:
+        for tmp_file in (content_tmp, meta_tmp, backup_content):
+            if os.path.exists(tmp_file):
+                try:
+                    os.remove(tmp_file)
+                except OSError:
+                    pass
 
     # Append to audit history
     history_entry = {
@@ -275,7 +301,7 @@ def delete_block(
     actor: str = "agent",
     reason: str = "",
 ) -> bool:
-    """Delete a memory block."""
+    """Delete a memory block and record its deletion in revision history."""
     clean = _sanitize_name(name)
     meta_path = _meta_file(root, clean)
     content_path = _content_file(root, clean)
@@ -283,17 +309,38 @@ def delete_block(
     if not os.path.exists(meta_path) and not os.path.exists(content_path):
         return False
 
+    prev_revision = ""
     if os.path.exists(meta_path):
-        os.remove(meta_path)
+        try:
+            with open(meta_path, "r", encoding="utf-8") as f:
+                existing_meta = json.load(f)
+                prev_revision = existing_meta.get("revision", "")
+        except Exception:
+            pass
+
+    revision = _compute_revision(clean, "", prev_revision)
+    timestamp = _now()
+
+    if os.path.exists(meta_path):
+        try:
+            os.remove(meta_path)
+        except OSError:
+            pass
     if os.path.exists(content_path):
-        os.remove(content_path)
+        try:
+            os.remove(content_path)
+        except OSError:
+            pass
 
     history_entry = {
-        "timestamp": _now(),
+        "timestamp": timestamp,
         "block": clean,
         "action": "delete",
         "actor": actor,
         "reason": reason,
+        "revision": revision,
+        "prev_revision": prev_revision,
+        "char_count": 0,
     }
     with open(_history_file(root), "a", encoding="utf-8") as f:
         f.write(json.dumps(history_entry) + "\n")

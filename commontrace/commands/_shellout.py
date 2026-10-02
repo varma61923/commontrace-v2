@@ -84,6 +84,12 @@ def run_script(
     env["COMMONTRACE_ROOT"] = root
     env["PYTHONUTF8"] = "1"
     env["PYTHONSAFEPATH"] = "1"
+    if "PYTHONPATH" in env:
+        cleaned = [p for p in env["PYTHONPATH"].split(os.pathsep) if p and os.path.isabs(p)]
+        if cleaned:
+            env["PYTHONPATH"] = os.pathsep.join(cleaned)
+        else:
+            env.pop("PYTHONPATH", None)
     if extra_env:
         env.update(extra_env)
 

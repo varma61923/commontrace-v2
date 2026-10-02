@@ -90,3 +90,84 @@ def test_block_cli_commands(store):
     res = cli("block", "history", "human", "--dest", store)
     assert res.returncode == 0
     assert "human" in res.stdout
+
+
+def test_block_delete_lifecycle_and_history(store):
+    b = memory_blocks.set_block(store, "scratchpad", "Initial thoughts.")
+    orig_rev = b.revision
+    assert memory_blocks.delete_block(store, "scratchpad", actor="test-worker", reason="cleanup") is True
+    with pytest.raises(memory_blocks.BlockNotFoundError):
+        memory_blocks.get_block(store, "scratchpad")
+    assert not any(block.name == "scratchpad" for block in memory_blocks.list_blocks(store))
+    assert memory_blocks.delete_block(store, "scratchpad") is False
+
+    hist = memory_blocks.block_history(store, "scratchpad")
+    assert len(hist) == 2
+    assert hist[0]["action"] == "set"
+    assert hist[1]["action"] == "delete"
+    assert hist[1]["actor"] == "test-worker"
+    assert hist[1]["reason"] == "cleanup"
+    assert hist[1]["prev_revision"] == orig_rev
+    assert len(hist[1]["revision"]) == 16
+    assert hist[1]["char_count"] == 0
+
+
+def test_block_atomic_file_writes(store, monkeypatch):
+    memory_blocks.set_block(store, "atomic_test", "Safe content.")
+    blocks_dir = os.path.join(store, "memory", "blocks")
+    assert not any(f.endswith(".tmp") for f in os.listdir(blocks_dir))
+
+    # Test failure during update leaves original uncorrupted
+    original_replace = os.replace
+
+    def broken_replace(src, dst):
+        if "atomic_test.meta.json" in dst:
+            raise OSError("Simulated disk error during metadata rename")
+        return original_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", broken_replace)
+    with pytest.raises(OSError):
+        memory_blocks.set_block(store, "atomic_test", "New unsafe content.")
+
+    # Original content should still be intact
+    monkeypatch.setattr(os, "replace", original_replace)
+    block_restored = memory_blocks.get_block(store, "atomic_test")
+    assert block_restored.content == "Safe content."
+    assert not any(f.endswith(".tmp") for f in os.listdir(blocks_dir))
+
+
+def test_block_cli_delete(store):
+    res = cli("block", "set", "temporary", "To be removed", "--dest", store)
+    assert res.returncode == 0
+    assert "Saved block 'temporary'" in res.stdout
+
+    res = cli("block", "delete", "temporary", "--dest", store)
+    assert res.returncode == 0
+    assert "Deleted block 'temporary'" in res.stdout
+
+    res = cli("block", "get", "temporary", "--dest", store)
+    assert res.returncode == 1
+    assert "does not exist" in res.stderr
+
+    res = cli("block", "history", "temporary", "--dest", store)
+    assert res.returncode == 0
+    assert "delete" in res.stdout
+
+    res = cli("block", "delete", "temporary", "--dest", store)
+    assert res.returncode == 1
+    assert "Block 'temporary' not found" in res.stderr
+
+
+def test_memory_block_schema_validation(store):
+    from commontrace import validate
+
+    schema = validate.load_schema("memory_block.schema.json")
+    validate.assert_supported_schema(schema)
+
+    b = memory_blocks.set_block(store, "schemablock", "Valid markdown content.")
+    errs = validate.validate(b.to_dict(), schema)
+    assert errs == []
+
+    bad_dict = b.to_dict()
+    bad_dict["char_count"] = -1
+    assert len(validate.validate(bad_dict, schema)) > 0

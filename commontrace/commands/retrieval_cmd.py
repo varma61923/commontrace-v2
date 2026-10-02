@@ -79,6 +79,10 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
              "disables this. Same non-eligibility-changing scope as --reliability-weight.",
     )
     p.add_argument(
+        "--graph-weight", type=float, default=None,
+        help="How much proximity in the knowledge graph boosts a lesson's rank (0 disables it, default: 1.0).",
+    )
+    p.add_argument(
         "--on-harm", dest="harm_policy", default=None, choices=list(harm.POLICIES),
         help=f"{harm.POLICY_INFORM}: a lesson the experiment measured making outcomes "
              "WORSE is still injected, with its verdict attached (default). "
@@ -109,6 +113,7 @@ def run(args: argparse.Namespace) -> int:
     setting = (
         args.floor, args.scorer, args.fusion, args.max_lessons, args.max_chars,
         args.redundancy_threshold, args.reliability_weight, args.recency_weight,
+        args.graph_weight,
         args.harm_policy, args.rerank,
     )
     if all(value is None for value in setting):
@@ -135,6 +140,10 @@ def run(args: argparse.Namespace) -> int:
         print(
             "  recency weight    : "
             + ("off" if config.recency_weight <= 0 else f"{config.recency_weight:.2f}")
+        )
+        print(
+            "  graph weight      : "
+            + ("off" if config.graph_weight <= 0 else f"{config.graph_weight:.2f}")
         )
         print(
             "  on harm           : "
@@ -169,6 +178,7 @@ def run(args: argparse.Namespace) -> int:
             redundancy_threshold=args.redundancy_threshold,
             reliability_weight=args.reliability_weight,
             recency_weight=args.recency_weight,
+            graph_weight=args.graph_weight,
             harm_policy=args.harm_policy,
             rerank=args.rerank,
             note=args.note,

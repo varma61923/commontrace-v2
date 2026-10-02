@@ -225,6 +225,7 @@ def supersede_fact(
     new_fact_id_or_statement: str,
     scopes: list[str] | None = None,
     category: str | None = None,
+    as_of: str | None = None,
 ) -> tuple[AtomicFact, AtomicFact]:
     """Supersede an existing fact with a new fact statement or ID."""
     facts = load_facts(root)
@@ -232,11 +233,13 @@ def supersede_fact(
         raise KeyError(f"Old fact '{old_fact_id}' not found")
 
     old_fact = facts[old_fact_id]
-    now_iso = _now()
+    now_iso = as_of or _now()
 
     # Determine if new target is already an existing fact id or a new statement
     if new_fact_id_or_statement in facts:
         new_fact = facts[new_fact_id_or_statement]
+        if as_of and not new_fact.valid_from:
+            new_fact.valid_from = as_of
     else:
         new_fact, _ = add_fact(
             root=root,
@@ -252,7 +255,7 @@ def supersede_fact(
     old_fact.status = "superseded"
     old_fact.valid_until = now_iso
     old_fact.superseded_by = new_fact.id
-    old_fact.updated_at = now_iso
+    old_fact.updated_at = _now()
     old_fact.revision = _compute_revision(old_fact.to_dict())
     save_facts(root, facts)
 
@@ -282,13 +285,18 @@ def list_facts(
     category: str = "",
     as_of: str | None = None,
 ) -> list[AtomicFact]:
-    """List facts matching the given filters and temporal validity."""
+    """List facts matching the given filters and temporal validity.
+
+    When `as_of` is provided, facts valid at that timestamp
+    (valid_from <= as_of < valid_until) are included regardless of
+    whether their current status is 'superseded' or 'deleted'.
+    """
     facts = load_facts(root)
     results: list[AtomicFact] = []
     moment = lesson_cache.parse_moment(as_of) if as_of else None
 
     for fact in facts.values():
-        if status and fact.status != status:
+        if not moment and status and fact.status != status:
             continue
         if category and fact.category != category:
             continue
@@ -310,6 +318,8 @@ def list_facts(
                         continue
                 except Exception:
                     pass
+            elif fact.status in ("superseded", "deleted"):
+                continue
 
         results.append(fact)
 

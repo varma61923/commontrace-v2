@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://commontrace.dev/schemas/atomic_fact.schema.json",
+  "title": "CommonTrace Atomic Fact",
+  "description": "A distilled, declarative atomic proposition of truth with bitemporal validity and scoped routing (EverOS + Mem0 pattern).",
+  "type": "object",
+  "required": [
+    "id",
+    "statement",
+    "category",
+    "scopes",
+    "confidence",
+    "confirmations",
+    "valid_from",
+    "valid_until",
+    "source_traces",
+    "status",
+    "superseded_by",
+    "revision",
+    "created_at",
+    "updated_at"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Unique deterministic identifier, conventionally 'fact-<12 hex chars>'.",
+      "minLength": 1
+    },
+    "statement": {
+      "type": "string",
+      "description": "Atomic declarative proposition statement.",
+      "minLength": 1
+    },
+    "category": {
+      "type": "string",
+      "enum": [
+        "architecture",
+        "constraint",
+        "preference",
+        "bug_pattern",
+        "tool_rule",
+        "environment",
+        "general"
+      ],
+      "description": "Taxonomy category of the atomic fact."
+    },
+    "scopes": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Routing scopes for project, component, or team (empty list means globally applicable).",
+      "default": []
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 1.0,
+      "description": "Confidence score bounded between 0.0 and 1.0."
+    },
+    "confirmations": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Counter of confirmations or reinforcement occurrences."
+    },
+    "valid_from": {
+      "type": "string",
+      "description": "ISO 8601 or YYYY-MM-DD timestamp when the fact became valid.",
+      "minLength": 1
+    },
+    "valid_until": {
+      "type": ["string", "null"],
+      "description": "ISO 8601 timestamp when the fact expired or was superseded, or null if currently valid.",
+      "default": null
+    },
+    "source_traces": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Trace IDs that evidenced or confirmed this fact.",
+      "default": []
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "active",
+        "superseded",
+        "deleted"
+      ],
+      "description": "Lifecycle state of the atomic fact."
+    },
+    "superseded_by": {
+      "type": ["string", "null"],
+      "description": "Fact ID of the newer atomic fact that replaced this one, or null.",
+      "default": null
+    },
+    "revision": {
+      "type": "string",
+      "description": "16-character SHA-256 cryptographic revision hash of the fact fields.",
+      "minLength": 1
+    },
+    "created_at": {
+      "type": "string",
+      "description": "ISO 8601 creation timestamp.",
+      "minLength": 1
+    },
+    "updated_at": {
+      "type": "string",
+      "description": "ISO 8601 last modification timestamp.",
+      "minLength": 1
+    }
+  }
+}

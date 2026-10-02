@@ -92,6 +92,10 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
              "eligible, so lowering it admits weak matches into the causal estimate.",
     )
     p.add_argument(
+        "--graph-weight", type=float, default=None,
+        help="Override knowledge graph boost weight (default: store's configured graph_weight, or 1.0).",
+    )
+    p.add_argument(
         "--experiment", action="store_true",
         help="Randomized holdout mode: deliberately withhold a fraction of otherwise-"
         "matching lessons and log the assignment, so `commontrace experiment` can later "
@@ -467,6 +471,19 @@ def _run_lexical(args: argparse.Namespace, root: str) -> int:
     reliability_lookup, recency_lu = _ranking_adjustments(root, lessons, config)
     harmful = evidence.withdrawn(root, config.harm_policy)
     reranking, depth, rerank_skipped = _rerank_depth(config, args.top_k, candidates=len(lessons))
+    from commontrace import graph
+
+    graph_w = getattr(args, "graph_weight", None)
+    if graph_w is None:
+        graph_w = getattr(config, "graph_weight", 1.0)
+
+    candidate_slugs = [str(fm.get("name", "")) for _, fm in lessons]
+    as_of_val = getattr(args, "as_of", "") or None
+    graph_boosts = (
+        graph.graph_boost_for_lessons(root, args.task, candidate_slugs, as_of=as_of_val)
+        if graph_w > 0.0 else None
+    )
+
     ranked = retrieval.rank_lessons(
         args.task, lessons, top_k=depth + len(harmful), floor=floor,
         scorer=config.scorer,
@@ -474,6 +491,8 @@ def _run_lexical(args: argparse.Namespace, root: str) -> int:
         reliability_lookup=reliability_lookup, reliability_weight=config.reliability_weight,
         recency_lookup=recency_lu, recency_weight=config.recency_weight,
         adaptive_tail=not reranking,
+        graph_boost_lookup=graph_boosts,
+        graph_weight=graph_w,
     )
     ranked, withdrawn_ranked = harm.split(ranked, harmful, _core_slugs(lessons), depth)
     withdrawn = [r.slug for r in withdrawn_ranked]
@@ -627,6 +646,19 @@ def _run_hybrid(args: argparse.Namespace, root: str, missing_hint: str) -> int:
         )
         return _run_lexical(args, root)
     gated = config.fusion == retrieval_io.FUSION_GATED
+    from commontrace import graph
+
+    graph_w = getattr(args, "graph_weight", None)
+    if graph_w is None:
+        graph_w = getattr(config, "graph_weight", 1.0)
+
+    candidate_slugs = [str(fm.get("name", "")) for _, fm in lessons]
+    as_of_val = getattr(args, "as_of", "") or None
+    graph_boosts = (
+        graph.graph_boost_for_lessons(root, args.task, candidate_slugs, as_of=as_of_val)
+        if graph_w > 0.0 else None
+    )
+
     lexical = retrieval.rank_lessons(
         args.task, lessons, top_k=depth + len(harmful), floor=0.0 if gated else floor,
         scorer=config.scorer,
@@ -634,6 +666,8 @@ def _run_hybrid(args: argparse.Namespace, root: str, missing_hint: str) -> int:
         reliability_lookup=reliability_lookup, reliability_weight=config.reliability_weight,
         recency_lookup=recency_lu, recency_weight=config.recency_weight,
         adaptive_tail=not reranking,
+        graph_boost_lookup=graph_boosts,
+        graph_weight=graph_w,
     )
     lexical, withdrawn_lexical = harm.split(lexical, harmful, core, depth)
     floor_cleared = {r.slug for r in lexical + withdrawn_lexical if r.relevance >= floor}
