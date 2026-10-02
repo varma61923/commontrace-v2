@@ -1,4 +1,3 @@
-"""`commontrace dream`: a scheduled pass that drafts and reports, and activates nothing."""
 import os
 
 import pytest
@@ -51,7 +50,7 @@ def test_with_a_model_it_drafts_from_the_signal_and_everything_stays_in_review(s
     assert main(["dream", "--dest", str(store)]) == 0
     assert "1 new draft(s)" in capsys.readouterr().out
     statuses = _statuses(store)
-    assert len(statuses) == 1 and set(statuses.values()) == {"review"}      # nothing activated
+    assert len(statuses) == 1 and set(statuses.values()) == {"review"}
 
 
 def test_no_draft_flag_never_calls_a_model_even_when_one_is_configured(store, monkeypatch):
@@ -80,5 +79,5 @@ def test_each_recipe_names_the_command_and_installs_nothing(kind, capsys, tmp_pa
 def test_the_github_actions_recipe_is_valid_yaml_with_least_privilege():
     workflow = yaml.safe_load(dream_cmd.recipe("github-actions", "weekly", None).split("\n", 1)[1])
     assert workflow["permissions"] == {"contents": "read"}
-    assert workflow[True]["schedule"][0]["cron"] == "17 3 * * 1"          # YAML reads `on` as True
+    assert workflow[True]["schedule"][0]["cron"] == "17 3 * * 1"
     assert "pull_request" not in workflow[True]

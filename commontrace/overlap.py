@@ -1,47 +1,4 @@
-"""Fleet Overlap: how much would fleet B gain from fleet A's lessons?
-
-This is a deliberately bilateral, opt-in tool for two CONSENTING fleets who
-have already agreed to compare notes -- distinct from, and unrelated to,
-the CommonTrace Knowledge Base (hub/commons.py), which is a single
-operator-curated corpus with no fleet-to-fleet data flow at all. It
-measures *of the failures a fleet keeps hitting, what fraction has some
-other, specific fleet already solved?* -- and it does so **without either
-fleet sending the other any lesson or trace text.**
-
-Mechanism: each side reduces every lesson/failure to a fixed-length MinHash
-signature locally, and only signatures are exchanged. MinHash estimates the
-Jaccard similarity of two token sets from their signatures alone
-(Broder, 1997): for k independent hash permutations, the fraction of
-positions where two signatures agree is an unbiased estimator of Jaccard
-similarity, with standard error ~1/sqrt(k).
-
-WHAT ACTUALLY TRAVELS -- read this before quoting it to a customer
-------------------------------------------------------------------
-Precision matters here, because the loose version of this claim ("no
-content is shared") is false and a security reviewer will catch it.
-
-NOT transmitted: lesson bodies, `applies_when` text, trace `context_text`
-/ `solution_text`. Those are reduced to signatures, and the text cannot be
-reconstructed from a signature.
-
-DOES travel, by default:
-  * `label` -- the lesson slug or a truncated trace id. A slug a human
-    wrote, like `lesson_stripe_idempotency`, plainly describes the lesson.
-    Pass redact_labels=True (CLI: `--redact-labels`) to replace these with
-    salted hashes the owning fleet can map back locally.
-  * `tags` and `domain` -- e.g. `stripe`, `webhooks`, `cuda-gpu`. These are
-    an open, non-sensitive vocabulary by design (protocol/PROTOCOL.md §7)
-    and they are what makes a report legible instead of a wall of opaque
-    ids. They are still *information*: they reveal which technologies a
-    fleet works with.
-
-And even for the signed text, this is **not** a cryptographic guarantee.
-MinHash is vulnerable to a confirmation attack: someone who can guess a
-candidate string can hash it and check whether it is present. A production
-commons spanning mutually distrustful organizations needs private set
-intersection or a differential-privacy mechanism. Describe this module as
-"lesson and trace text are not transmitted" -- never as "private".
-"""
+"""Fleet Overlap: how much would fleet B gain from fleet A's lessons?"""
 
 from __future__ import annotations
 
@@ -51,47 +8,15 @@ import re
 from dataclasses import asdict, dataclass, field
 from functools import lru_cache
 
-# Signature length. Standard error of the Jaccard estimate is ~1/sqrt(k),
-# so 128 permutations gives ~8.8% -- fine for "is the overlap 5% or 40%?",
-# which is the decision this exists to inform. Raise it if you ever need to
-# separate 30% from 35%.
 DEFAULT_NUM_PERM = 128
 
-# A lesson counts as "already solves" a failure at or above this estimated
-# Jaccard similarity. Deliberately conservative: this number will be quoted
-# to customers, so it should under-claim rather than over-claim. Tune it
-# against labelled pairs before moving it, not by eye.
 DEFAULT_MATCH_THRESHOLD = 0.30
 
 _MERSENNE_61 = (1 << 61) - 1
 
-# Salt for label redaction. Fixed and public: the point is to stop a slug
-# from *describing itself* to the other fleet, not to defeat a determined
-# attacker who already has a candidate list. Anyone claiming stronger needs
-# a keyed HMAC with a per-fleet secret, which then has to be managed.
 _LABEL_SALT = b"commontrace-overlap-label-v1"
-# \w with re.UNICODE, not [a-z0-9]: the ASCII-only class silently strips any
-# non-Latin token before it ever reaches MinHash, so two fleets whose
-# recurring failures are written in Japanese/Chinese/Cyrillic/Arabic (or any
-# accented Latin text -- "connexion" survives, "connexión" does not) tokenize
-# to an empty or near-empty signature and compare as ~0.0 Jaccard similarity
-# to everything, including near-duplicates of themselves. Same fix already
-# applied in commontrace/retrieval.py for the same reason.
 _WORD_RE = re.compile(r"\w+", re.UNICODE)
 
-# Shared with commontrace/retrieval.py's ranker in spirit -- words that
-# carry no discriminating signal would otherwise inflate every pairwise
-# overlap and make unrelated fleets look similar -- but deliberately NOT the
-# same literal list, and NOT imported from commontrace/_lexical.py the way
-# retrieval.py/distill.py now share one copy between themselves. This exact
-# word list feeds the MinHash signature this module computes, and that
-# signature is what gets persisted (Trace.commons_signature, hub/crud.py)
-# and compared against every future query. Changing so much as one word
-# here silently reduces every already-stored signature's match quality
-# against freshly-computed ones from that point on, with no error and no
-# migration path -- so unlike the local, always-recomputed-on-the-fly
-# copies in retrieval.py/distill.py, this one must not be casually "kept in
-# sync" with them.
 _STOPWORDS = frozenset(
     """
     a an the of to in on for with and or but is are was were be been being
@@ -108,57 +33,20 @@ def _tokens(text: str) -> set[str]:
 
 
 def redact_label(label: str) -> str:
-    """Stable opaque id for a label. The owning fleet can recompute this
-    over its own slugs to map a report back to real lessons; the receiving
-    fleet learns nothing from the id itself."""
     return hashlib.blake2b(label.encode("utf-8"), salt=_LABEL_SALT[:16], digest_size=6).hexdigest()
 
 
 def _stable_hash(token: str) -> int:
-    """Deterministic across processes and Python runs.
-
-    Python's built-in hash() is randomized per process (PYTHONHASHSEED), so
-    two fleets hashing the same word would get different values and every
-    overlap would read as zero.
-    """
     return int.from_bytes(hashlib.blake2b(token.encode("utf-8"), digest_size=8).digest(), "big")
 
 
 @lru_cache(maxsize=8)
 def _permutations(num_perm: int) -> list[tuple[int, int]]:
-    """(a, b) coefficients for the universal hash family h_i(x) = a_i*x + b_i
-    mod prime. Seeded so every fleet derives the identical family -- signatures
-    are only comparable if both sides used the same permutations.
-
-    Pure function of `num_perm` (fixed seed), so cached: `minhash()` calls
-    this once per lesson/failure signed, and `find_contradictions` signs
-    every active lesson in one process -- redrawing the identical 128-pair
-    table from scratch each time was pure waste that scaled with fleet size.
-    maxsize=8 covers realistic distinct num_perm values in one run (the CLI
-    default plus the rare custom --num-perm) without unbounded growth.
-    """
     rng = random.Random(0xC0FFEE)
     return [(rng.randrange(1, _MERSENNE_61), rng.randrange(0, _MERSENNE_61)) for _ in range(num_perm)]
 
 
 def minhash(text: str, num_perm: int = DEFAULT_NUM_PERM) -> list[int]:
-    """MinHash signature of `text`'s token set. Empty/stopword-only text
-    yields a freshly-drawn random signature, which compares as similarity
-    ~0 against anything -- including another empty/stopword-only text.
-
-    An earlier version returned the same fixed all-max-value signature for
-    every empty input, so two DIFFERENT lessons/failures that both happened
-    to have blank or stopword-only activation text compared as Jaccard=1.0
-    -- exactly the "matches everything" failure the docstring warned
-    against, just triggered by another empty signature instead of by real
-    content. `reliability.py:find_contradictions` hashes every active
-    lesson in one process and compares them pairwise, so this reliably
-    produced false "high severity" contradiction candidates between
-    lessons that share nothing but an unset `applies_when`. A random draw
-    per call has the same near-zero collision probability against real
-    content that two genuinely unrelated real texts already rely on, and
-    additionally never coincides with another empty draw.
-    """
     toks = _tokens(text)
     perms = _permutations(num_perm)
     if not toks:
@@ -169,38 +57,18 @@ def minhash(text: str, num_perm: int = DEFAULT_NUM_PERM) -> list[int]:
 
 
 def estimate_jaccard(sig_a: list[int], sig_b: list[int]) -> float:
-    """Fraction of agreeing positions == unbiased Jaccard estimate.
-
-    Deliberately pure Python, not numpy (and numpy is not imported at all):
-    both callers (overlap.find_coverage, reliability.find_contradictions)
-    invoke this once per (item, item) PAIR inside an O(n^2) loop, and at this
-    module's fixed signature length (128 -- see _permutations' docstring)
-    the per-call cost of np.asarray() twice plus a ufunc dispatch measurably
-    exceeds the zip/sum loop it would replace (~4x slower, benchmarked at
-    128 elements) -- there is no signature size in real use where the
-    numpy path actually wins, only allocation overhead paid on every pair.
-    """
+    """Fraction of agreeing positions == unbiased Jaccard estimate."""
     if not sig_a or not sig_b or len(sig_a) != len(sig_b):
         raise ValueError("signatures must be non-empty and the same length")
     return sum(1 for x, y in zip(sig_a, sig_b) if x == y) / len(sig_a)
 
 
-# --- What gets signed, and exchanged ---------------------------------------
-
-
 @dataclass
 class SignedItem:
-    """One lesson or one recurring failure, reduced to a signature.
-
-    `label`, `domain` and `tags` are carried in the clear so a report can
-    point at something actionable. That IS a disclosure -- a slug like
-    `lesson_stripe_idempotency` describes its own content. See this
-    module's docstring for exactly what travels and `redact_label()` for
-    the opt-out.
-    """
+    """One lesson or one recurring failure, reduced to a signature."""
 
     label: str
-    kind: str  # "lesson" | "failure"
+    kind: str
     domain: str
     tags: list[str]
     signature: list[int]
@@ -218,9 +86,6 @@ class SignedItem:
 
 @dataclass
 class FleetSignature:
-    """Everything one fleet exchanges. No lesson or trace *text*; labels,
-    tags and domains do travel unless redacted -- see the module docstring."""
-
     fleet_label: str
     num_perm: int
     items: list[SignedItem] = field(default_factory=list)
@@ -247,9 +112,6 @@ class FleetSignature:
         return [i for i in self.items if i.kind == "failure"]
 
 
-# --- The report ------------------------------------------------------------
-
-
 @dataclass
 class Match:
     failure_label: str
@@ -260,10 +122,6 @@ class Match:
 
 @dataclass
 class OverlapReport:
-    """`covered_fraction` is the headline: of this fleet's recurring
-    failures, what fraction another fleet has already solved. That is the
-    number the product strategy says the commons thesis lives or dies on."""
-
     consumer_fleet: str
     provider_fleet: str
     n_failures: int
@@ -281,14 +139,6 @@ def build_report(
     provider: FleetSignature,
     threshold: float = DEFAULT_MATCH_THRESHOLD,
 ) -> OverlapReport:
-    """For each of `consumer`'s recurring failures, find `provider`'s most
-    similar lesson; count it covered if that similarity clears `threshold`.
-
-    Deliberately asymmetric. "What would B gain from A?" is the question a
-    prospective customer asks, and it is not the same as "how alike are these
-    two fleets" -- a large mature fleet can cover a small one almost
-    entirely while gaining little in return.
-    """
     if consumer.num_perm != provider.num_perm:
         raise ValueError(
             f"signature length mismatch ({consumer.num_perm} vs {provider.num_perm}); "

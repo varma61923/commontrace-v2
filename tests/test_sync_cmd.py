@@ -1,13 +1,3 @@
-"""Tests for `commontrace sync` -- the CLI wrapper around hub_client's
-push_active_lessons/pull_search_results. Every Hub call is monkeypatched
-here; the actual push/pull semantics are covered directly in
-tests/test_hub_client.py. This file is about the CLI's own
-responsibilities: which direction(s) run by default, how results are
-reported, and how the two client-side error types are turned into a clean
-exit code and message rather than a raw traceback -- none of which had any
-test coverage at all before this file (40% line coverage on sync_cmd.py,
-essentially the entire body of run() unexercised).
-"""
 from __future__ import annotations
 
 import argparse
@@ -80,9 +70,6 @@ class TestCliKeyWarning:
 
 
 class TestDirectionSelection:
-    """No flag defaults to both directions; either flag alone runs only
-    that direction; both together runs both explicitly."""
-
     def test_default_runs_both_push_and_pull(self, monkeypatch):
         calls = []
 
@@ -165,18 +152,10 @@ class TestPushReporting:
         assert "[ERROR] b: boom" in out.err
         assert "c -> already hub_trace_id=t3 (unchanged)" in out.out
         assert "d -> hub_trace_id=t4 (quarantined pending review)" in out.out
-        # A plain success (not skipped, not quarantined, no error) carries no
-        # extra suffix -- checked so the two conditional tags above are
-        # proven conditional, not just present.
         assert "a -> hub_trace_id=t1\n" in out.out
 
 
 class TestPushTraces:
-    """--push-traces is independent of --push/--pull and not run by
-    default -- a raw captured trace carries more specific, potentially
-    sensitive incident content than a curated lesson, so pushing it is
-    opt-in even though lessons already push by default."""
-
     def test_not_run_by_default(self, monkeypatch):
         async def fake_push(hub, key, root):
             return []
@@ -211,9 +190,6 @@ class TestPushTraces:
         monkeypatch.setattr(hub_client, "pull_search_results", fake_pull)
         monkeypatch.setattr(hub_client, "push_captured_traces", fake_push_traces)
         assert sync_cmd.run(_args(push_traces=True)) == 0
-        # Order matters for a human reading the output top to bottom, not
-        # for correctness -- but pinning it catches an accidental reorder
-        # that would otherwise pass unnoticed.
         assert calls == ["push", "push_traces", "pull"]
 
     def test_runs_with_push_only_no_pull(self, monkeypatch):
@@ -289,7 +265,7 @@ class TestPullReporting:
         sync_cmd.run(_args(pull=True))
         out = capsys.readouterr().out
         assert "Not searched on: the" in out
-        assert "Try a more specific word" not in out  # results WERE found
+        assert "Try a more specific word" not in out
 
     def test_ignored_terms_with_no_results_suggests_rephrasing(self, monkeypatch, capsys):
         result = hub_client.PullResult(written_paths=[], n_found=0, ignored_terms=["the"])
@@ -323,9 +299,6 @@ class TestPullReporting:
         assert captured["tags"] == ["a", "b", "c"]
 
     def test_empty_tags_string_is_an_empty_list_not_a_list_with_one_empty_string(self, monkeypatch):
-        """"".split(",") is [""], not [] -- a well-known Python gotcha.
-        Confirmed handled rather than assumed, since a stray "" tag would
-        silently change what search_traces filters on."""
         captured = {}
 
         async def fake_pull(hub, key, root, query, tags):
@@ -338,10 +311,6 @@ class TestPullReporting:
 
 
 class TestErrorHandling:
-    """HubClientUnavailable/HubConnectionError must produce a clean exit 1
-    and message, not a raw traceback -- the exact failure mode a CLI
-    someone put in a cron job or an agent's own tool loop should never hit."""
-
     def test_hub_client_unavailable_is_a_clean_exit_1_not_a_traceback(self, monkeypatch, capsys):
         async def fake_push(hub, key, root):
             raise hub_client.HubClientUnavailable("needs the mcp extra")
@@ -359,12 +328,6 @@ class TestErrorHandling:
         assert "sync failed" in capsys.readouterr().err
 
     def test_a_push_error_does_not_prevent_the_pull_from_still_running(self, monkeypatch):
-        """push and pull are independent legs of one `sync` call (the
-        default runs both) -- a HubConnectionError raised INSIDE
-        push_active_lessons's own per-lesson handling is caught there and
-        turned into a PushResult.error, so it must never abort the pull
-        leg that follows. Only a raise ESCAPING push_active_lessons itself
-        (not modeled here; see the two tests above for that case) would."""
         pull_calls = []
 
         async def fake_push(hub, key, root):

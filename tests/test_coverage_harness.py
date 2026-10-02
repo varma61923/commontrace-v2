@@ -1,5 +1,3 @@
-"""The coverage harness itself: its arithmetic and its CLI. The 200-seed evidence is
-a slow opt-in run, not a unit test."""
 from commons.eval import coverage_harness as ch
 
 
@@ -14,8 +12,8 @@ def test_summarise_scores_verdicts_and_interval_coverage_against_the_planted_tru
     runs.append(_run(("NO_MEASURABLE_EFFECT", 0.0, 0.2), ("HURTS", -0.2, -0.2), ("HELPS", 0.2, 0.0)))
     summary = ch.summarise("x", runs)
     assert summary["memories"][ch.GOOD]["verdict_correct"] == 0.9
-    assert summary["memories"][ch.GOOD]["ci_coverage"] == 0.9      # the miss's interval excludes +0.20
-    assert summary["memories"][ch.NEUTRAL]["verdict_correct"] == 0.9  # a false HELPS is wrong
+    assert summary["memories"][ch.GOOD]["ci_coverage"] == 0.9
+    assert summary["memories"][ch.NEUTRAL]["verdict_correct"] == 0.9
     assert summary["memories"][ch.BAD]["verdict_correct"] == 1.0
     assert summary["passed"] is True
     assert ch.summarise("x", runs[:5] + [runs[-1]] * 5)["passed"] is False
@@ -23,7 +21,7 @@ def test_summarise_scores_verdicts_and_interval_coverage_against_the_planted_tru
 
 def test_a_few_real_seeds_run_end_to_end_for_two_adapters(capsys):
     assert ch.main(["--scenario", "coverage", "--seeds", "2", "--adapters", "mem0,agentcore",
-                    "--jobs", "1", "--occasions", "150", "--json"]) in (0, 1)  # 2 seeds prove nothing
+                    "--jobs", "1", "--occasions", "150", "--json"]) in (0, 1)
     import json
     report = json.loads(capsys.readouterr().out)
     assert [c["adapter"] for c in report["coverage"]] == ["mem0", "agentcore"]
@@ -45,4 +43,4 @@ def test_a_mid_run_edit_is_flagged_compromised_and_random_attrition_is_not_blame
 
 def test_loss_that_follows_the_outcome_and_the_treatment_is_flagged_by_the_audit():
     runs = ch._run_variant("differential_attrition", 6, 1, 400)
-    assert sum(r["audit"] != "SOUND" for r in runs) >= 5   # flagged, not quietly quoted
+    assert sum(r["audit"] != "SOUND" for r in runs) >= 5

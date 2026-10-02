@@ -1,8 +1,3 @@
-"""commontrace/llm.py: strict-JSON LLM drafting, and the refusal paths that
-matter more than the happy path -- a draft this module accepts is one that
-skips straight past `distill`'s own "proposing the conclusion is not honest"
-scaffold, so what it refuses is the point.
-"""
 from __future__ import annotations
 
 import io
@@ -236,8 +231,6 @@ class TestHttpLayer:
 
 
 class TestCloudProviders:
-    """Bedrock and Vertex through their own SDKs, with fakes of the shapes those SDKs define."""
-
     REPLY = ('{"rule": "r", "applies_when": "a", "do_not_apply_when": "d", "evidence": ["e1"]}')
 
     def _env(self, monkeypatch, provider, **extra):
@@ -307,7 +300,7 @@ class TestCloudProviders:
 
     @pytest.mark.parametrize("provider,module", [("bedrock", "boto3"), ("vertex", "google")])
     def test_a_missing_sdk_degrades_with_the_extra_named(self, monkeypatch, provider, module):
-        monkeypatch.setitem(sys.modules, module, None)          # an import of it now raises ImportError
+        monkeypatch.setitem(sys.modules, module, None)
         cfg = llm.Config(provider=provider, model="m", api_key="", region="r", project="p")
         with pytest.raises(llm.LLMUnavailable, match=r"commontrace\[llm\]"):
             llm.draft("p", config=cfg)
@@ -328,9 +321,9 @@ class TestCost:
     def test_cost_comes_only_from_the_owners_price_table(self, tmp_path, monkeypatch):
         usage = {"input_tokens": 2000, "output_tokens": 500}
         assert llm.cost_usd(usage, "m", self.PRICES) == pytest.approx((2000 * 3 + 500 * 15) / 1e6)
-        assert llm.cost_usd(usage, "other-model", self.PRICES) is None       # no entry, no number
+        assert llm.cost_usd(usage, "other-model", self.PRICES) is None
         monkeypatch.delenv("COMMONTRACE_LLM_PRICES", raising=False)
-        assert llm.cost_usd(usage, "m") is None                              # no built-in prices
+        assert llm.cost_usd(usage, "m") is None
         path = tmp_path / "prices.json"
         path.write_text(json.dumps(self.PRICES))
         monkeypatch.setenv("COMMONTRACE_LLM_PRICES", str(path))

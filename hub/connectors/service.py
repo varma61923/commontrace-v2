@@ -1,22 +1,4 @@
-"""Receive a system of record's webhook and turn it into recorded outcomes.
-
-The order of operations is the security design, so it is stated once:
-
- 1. Look the connector up by the id in the URL, UNSCOPED (the org is exactly what
-    is not yet known). An unknown, disabled or unreadable connector answers the
-    same 401 as a bad signature, after the same amount of HMAC work, so the route
-    does not say which connector ids exist.
- 2. Verify the vendor's signature over the raw body, in constant time, and refuse a
-    stale signed timestamp. Nothing below runs for an unauthenticated request.
- 3. Only now scope the session to the connector's org (row-level security applies
-    to everything after this) and claim the delivery id with insert-or-ignore.
-    Two simultaneous copies of one delivery: exactly one proceeds.
- 4. Map the payload to signals and apply them -- or, in dry-run, only describe them.
-
-A signal is applied through `crud.record_occasion_outcome`, which only ever fills
-an UNRESOLVED observation, so an outcome already counted is never flipped by a
-late or repeated event.
-"""
+"""Receive a system of record's webhook and turn it into recorded outcomes."""
 from __future__ import annotations
 
 import hashlib
@@ -40,12 +22,7 @@ logger = logging.getLogger("commontrace.hub.connectors")
 
 _UUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 _NAME_MAX = 100
-#: A push can carry thousands of commits; each signal is a query. Bounded so one
-#: delivery cannot be made to do unbounded work.
 MAX_SIGNALS = 200
-#: How long the replay ledger is kept. Past this a replay of a vendor delivery with
-#: no signed timestamp (GitHub) is no longer recognised, which is harmless to the
-#: measurement: an outcome already counted is never flipped.
 LEDGER_RETENTION_DAYS = 90
 
 
@@ -59,13 +36,7 @@ class Result:
     body: dict = field(default_factory=dict)
 
 
-# --- Secrets ----------------------------------------------------------------------
-
-
 def seal_secret(cipher: EnvelopeCipher, org_id: str, secret: str) -> str:
-    """The vendor secret, encrypted and BOUND to its org: the org id is part of what
-    is encrypted, so a row copied between orgs fails to open instead of verifying
-    one tenant's deliveries with another's credential."""
     return cipher.encrypt(f"{org_id}:{secret}")
 
 
@@ -77,15 +48,10 @@ def open_secret(cipher: EnvelopeCipher, org_id: str, sealed: str) -> str:
     return secret
 
 
-# --- Management --------------------------------------------------------------------
-
-
 async def create_connector(
     session, org_id: str, provider: str, secret: str, *, cipher: EnvelopeCipher,
     name: str = "", config: dict | None = None, actor: str = audit.ACTOR_OPERATOR_CLI,
 ) -> Connector:
-    """Register a connector. It starts in DRY-RUN: it verifies and parses and says
-    what it would record, and records nothing, until `set_live`."""
     module = PROVIDERS.get(provider)
     if module is None:
         raise ConnectorError(f"unknown provider {provider!r}; known: {', '.join(sorted(PROVIDERS))}")
@@ -146,14 +112,10 @@ async def _get(session, connector_id: str) -> Connector:
     return connector
 
 
-# --- Ingest -----------------------------------------------------------------------
-
 _INVALID = Result(401, {"error": "invalid signature"})
 
 
 def _burn(secret: str, body: bytes) -> None:
-    """Spend the HMAC work a real verification would, so an unknown connector id
-    is not distinguishable from a bad signature by timing."""
     hmac.new(b"\0" + secret.encode(), body, hashlib.sha256).digest()
 
 
@@ -180,7 +142,6 @@ async def ingest(
     try:
         secret = open_secret(cipher, snapshot["org_id"], snapshot["secret"])
     except EncryptionError:
-        # An operator problem (key rotated away, cipher off), not the caller's.
         logger.error("connector %s: secret cannot be opened", snapshot["id"])
         _burn("unknown", body)
         return _INVALID
@@ -224,9 +185,6 @@ async def _handle(session, module, snapshot, headers, payload, delivery, now) ->
     try:
         signals = module.signals(headers, payload, snapshot["config"])
     except (ValueError, TypeError, AttributeError, KeyError) as exc:
-        # Authentic but not mappable: no usable ticket id, or a field of an
-        # unexpected type. Acknowledge: a retry of the same bytes cannot succeed,
-        # and an unhandled error here would make the vendor retry it for ever.
         note = f"unusable payload: {type(exc).__name__}: {exc}"[:500]
         logger.warning("connector %s: %s", snapshot["id"], note)
         await _finish(session, snapshot, claimed, note, now)
@@ -297,7 +255,6 @@ async def _apply(session, snapshot, sig: base.Signal, now: datetime, dry: bool) 
             info["resolved"] = await _record(session, org_id, sig.occasion_id, won, actor)
         return info
 
-    # REVERSAL: undo a pending candidate, found by occasion or by vendor reference.
     query = select(PendingOutcome).where(PendingOutcome.connector_id == cid)
     if sig.occasion_id:
         query = query.where(PendingOutcome.occasion_id == sig.occasion_id)
@@ -320,17 +277,8 @@ async def _apply(session, snapshot, sig: base.Signal, now: datetime, dry: bool) 
     return info
 
 
-# --- Maturing ---------------------------------------------------------------------
-
-
 async def finalize_matured(session_factory, *, now: datetime | None = None, limit: int = 500) -> int:
-    """Record success for every candidate whose window has passed with no reversal.
-
-    One transaction per row, scoped to that row's org, claimed with
-    FOR UPDATE SKIP LOCKED: two sweepers divide the work rather than double-record,
-    and one bad row cannot block the rest. Also trims the replay ledger past its
-    retention. Returns how many were finalized.
-    """
+    """Record success for every candidate whose window has passed with no reversal."""
     now = now or datetime.now(timezone.utc)
     async with session_scope(session_factory) as session:
         await session.execute(delete(ConnectorDelivery).where(

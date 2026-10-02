@@ -1,13 +1,4 @@
-"""Per-org harm policy for search
-
-Adds `organizations.harm_policy`: whether search keeps returning a trace
-the org's experiment measured making outcomes worse ("inform", the
-default and the behaviour before this column existed) or withdraws it
-("withdraw"). See commontrace/harm.py.
-
-Revision ID: d8b2e5f71a36
-Revises: c3e8a1f05b92
-"""
+"""Per-org harm policy for search"""
 from typing import Sequence, Union
 
 import sqlalchemy as sa

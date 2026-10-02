@@ -1,5 +1,3 @@
-"""Tests for hub/observability.py: JSON log formatting, request-id
-propagation, and the liveness/readiness split."""
 from __future__ import annotations
 
 import json
@@ -12,15 +10,6 @@ from hub import observability
 
 
 class TestMetricsCardinalityIsBounded:
-    """`Metrics._requests` is a plain, never-evicted, process-lifetime dict
-    keyed on (method, path, status) -- so any label an unauthenticated
-    caller controls has to be bucketed to a fixed set, or an attacker can
-    grow this dict without bound just by varying that label on cheap,
-    ungated requests (nothing rate-limits a 404 to a path this app doesn't
-    serve). `path` was already bucketed to `_KNOWN_PATHS`; `method` was not
-    -- an HTTP method is only constrained by RFC 7230's `token` grammar, so
-    arbitrary verb strings reached the dict as distinct keys forever."""
-
     def test_an_unknown_path_collapses_to_one_bucket(self):
         metrics = observability.Metrics()
         for i in range(50):
@@ -41,8 +30,6 @@ class TestMetricsCardinalityIsBounded:
         metrics = observability.Metrics()
         for i in range(500):
             metrics.observe_request(f"VERB{i}", f"/path{i}", 404, 1.0)
-        # Every one of those 500 calls must collapse to exactly one
-        # (method_bucket, path_bucket, status) key -- not 500 distinct ones.
         assert len(metrics._requests) == 1
 
     def test_a_known_method_and_path_are_labelled_precisely(self):
@@ -53,22 +40,10 @@ class TestMetricsCardinalityIsBounded:
 
 
 class TestDurationHistogram:
-    """Before this, /metrics exposed only a summed duration counter -- no
-    percentile was derivable from it at all, so an SLO like "p99 < 200ms"
-    could not even be STATED against this Hub's own metrics, let alone
-    monitored. These pin the Prometheus histogram contract PromQL's
-    `histogram_quantile()` actually depends on."""
-
     def test_bucket_counts_are_cumulative(self):
-        """Prometheus's `le` (less-or-equal) semantics: a 5ms observation
-        must be counted in the 5ms bucket AND every larger bucket, not just
-        the tightest one it fits -- histogram_quantile() assumes this."""
         metrics = observability.Metrics()
         metrics.observe_request("GET", "/mcp", 200, 5.0)
         rendered = metrics.render()
-        # 5.0 falls exactly on the le="5" bucket boundary (<=), so every
-        # bucket from 5 upward must show count 1, and everything smaller
-        # (le="1", le="2") must show 0 -- it never happened yet at those.
         assert 'duration_ms_bucket{path="/mcp",le="1"} 0' in rendered
         assert 'duration_ms_bucket{path="/mcp",le="2"} 0' in rendered
         assert 'duration_ms_bucket{path="/mcp",le="5"} 1' in rendered
@@ -83,15 +58,12 @@ class TestDurationHistogram:
         rendered = metrics.render()
         assert 'duration_ms_sum{path="/mcp"} 50.00' in rendered
         assert 'duration_ms_count{path="/mcp"} 3' in rendered
-        # A percentile IS derivable now: the median of these three falls in
-        # the (5, 10] bucket, so le="10" must already hold 2 of the 3 --
-        # exactly what histogram_quantile() would interpolate from.
         assert 'duration_ms_bucket{path="/mcp",le="10"} 2' in rendered
         assert 'duration_ms_bucket{path="/mcp",le="+Inf"} 3' in rendered
 
     def test_an_observation_past_the_largest_finite_bucket_only_counts_in_inf(self):
         metrics = observability.Metrics()
-        metrics.observe_request("GET", "/mcp", 200, 60_000.0)  # a genuine outlier
+        metrics.observe_request("GET", "/mcp", 200, 60_000.0)
         rendered = metrics.render()
         assert f'duration_ms_bucket{{path="/mcp",le="{observability.Metrics.BUCKETS_MS[-1]:g}"}} 0' in rendered
         assert 'duration_ms_bucket{path="/mcp",le="+Inf"} 1' in rendered
@@ -132,8 +104,6 @@ class TestJsonLogFormatter:
         assert out["duration_ms"] == 12.5
 
     def test_unserializable_extra_does_not_break_the_line(self):
-        """A log line must never raise: an un-JSON-able value is repr'd, not
-        allowed to take down the request that logged it."""
         out = json.loads(observability.JsonLogFormatter().format(self._record(weird=object())))
         assert "weird" in out and isinstance(out["weird"], str)
 
@@ -152,10 +122,6 @@ class TestJsonLogFormatter:
 
 
 class TestResolveRequestId:
-    """A client-supplied X-Request-ID is echoed verbatim into every log
-    line and the response header -- it must be bounded and validated
-    rather than accepted unconditionally."""
-
     def test_accepts_a_reasonable_client_supplied_id(self):
         assert observability._resolve_request_id("req-abc-123") == "req-abc-123"
 
@@ -191,8 +157,6 @@ class TestResolveRequestId:
 
 class TestConfigureLogging:
     def test_is_idempotent(self):
-        """Called twice (e.g. app reload) must not stack handlers and emit
-        every line twice."""
         observability.configure_logging("INFO")
         first = len(logging.getLogger().handlers)
         observability.configure_logging("INFO")
@@ -201,16 +165,6 @@ class TestConfigureLogging:
 
 @pytest.mark.asyncio
 class TestHealthAndReadiness:
-    """Drives the real route handlers directly.
-
-    Not via Starlette's TestClient: that spins up its own event loop, while
-    the asyncpg pool from the `session_factory` fixture is bound to the
-    loop the test is already running in. Calling the registered endpoint
-    coroutines keeps everything on one loop, and since add_health_routes()
-    *is* the unit under test, resolving the handler off the app's route
-    table still exercises the wiring rather than bypassing it.
-    """
-
     def _endpoint(self, session_factory, path: str):
         from starlette.applications import Starlette
 
@@ -235,10 +189,6 @@ class TestHealthAndReadiness:
         assert json.loads(response.body)["database"] == "ok"
 
     async def test_readyz_returns_503_when_database_is_unreachable(self):
-        """The actual bug this fixes: the old single /healthz returned 200
-        even with Postgres down, so a load balancer kept sending traffic to
-        an instance that could not serve one request."""
-
         def _broken():
             raise OSError("could not connect to server")
 
@@ -247,8 +197,6 @@ class TestHealthAndReadiness:
         assert json.loads(response.body)["database"] == "unreachable"
 
     async def test_liveness_and_readiness_are_separate_routes(self, session_factory):
-        """They must answer different questions -- wiring both probes to the
-        same endpoint is the misconfiguration this split exists to prevent."""
         from starlette.applications import Starlette
 
         app = Starlette()
@@ -257,12 +205,6 @@ class TestHealthAndReadiness:
         assert {"/healthz", "/readyz"} <= paths
 
     async def test_readyz_is_rate_limited_per_client(self, session_factory):
-        """/readyz is necessarily unauthenticated (an orchestrator's prober
-        carries no API key) and executes a real SELECT 1 against the
-        database pool on every call -- unlike /healthz, which touches
-        nothing. Without its own limiter, flooding it is a lever to exhaust
-        connections that ApiKeyAuthMiddleware's rate limiters never see,
-        since they only ever run on the authenticated /mcp path."""
         from dataclasses import dataclass
 
         from starlette.applications import Starlette
@@ -278,46 +220,23 @@ class TestHealthAndReadiness:
             client: _FakeClient
 
         app = Starlette()
-        # per_minute=60, not 0: a burst-of-1 bucket refilling at 1/sec still
-        # lets exactly one request through immediately, without leaning on
-        # per_minute=0's own "always deny from the first call" floor (see
-        # hub/tests/test_abuse.py's test_zero_per_minute_denies_every_key_
-        # from_the_first_call for that behavior specifically).
         observability.add_health_routes(
             app, session_factory, readyz_rate_limiter=RateLimiter(per_minute=60, burst=1)
         )
         readyz = next(r.endpoint for r in app.routes if getattr(r, "path", None) == "/readyz")
 
-        # Pays the FIRST connection's setup cost (pool creation, the
-        # driver's initial handshake) before the timed sequence below,
-        # outside the rate limiter entirely. Skipping this warm-up made the
-        # bucket's own "negligible refill within the test" assumption false
-        # on a slow first connection -- reproduced at over 2 SECONDS for a
-        # cold pool's first `SELECT 1` in one sandboxed environment, which
-        # is itself far more than the 1-second full-refill window a
-        # burst=1/per_minute=60 bucket allows, so the *second* call's
-        # rate-limit check ran long after the bucket had already refilled.
-        # That was connection latency the test never meant to measure, not
-        # the rate limiter failing to limit anything.
         async with session_factory() as _warmup_session:
             await _warmup_session.execute(text("SELECT 1"))
 
         request = _FakeRequest(client=_FakeClient(host="1.2.3.4"))
         first = await readyz(request)
         second = await readyz(request)
-        assert first.status_code == 200  # burst of 1 lets the first through
-        assert second.status_code == 429  # bucket drained, negligible refill within the test: rejected
+        assert first.status_code == 200
+        assert second.status_code == 429
 
 
 @pytest.mark.asyncio
 class TestSecurityResponseHeaders:
-    """This is a JSON API with no browser-rendered surface, but the
-    defense-in-depth headers still cost nothing: don't let a browser guess
-    the content type from the body, never render a response in a frame,
-    don't leak the request URL via Referer, and set HSTS (a no-op unless
-    the response is actually delivered over TLS, so harmless to always
-    set)."""
-
     async def test_every_response_carries_the_baseline_headers(self):
         import httpx
         from starlette.applications import Starlette
@@ -341,11 +260,6 @@ class TestSecurityResponseHeaders:
 
 
 class TestTransportSafety:
-    """The Hub speaks plain HTTP; API keys travel as a Bearer token on
-    every call. Binding a non-loopback interface without an explicit
-    acknowledgment is exactly the "forgot a reverse proxy" misconfiguration
-    that ships credentials in cleartext to whoever can reach the port."""
-
     def test_refuses_non_loopback_host_by_default(self):
         from hub.config import HubConfig
 
@@ -365,12 +279,10 @@ class TestTransportSafety:
         config = HubConfig(
             database_url="postgresql+asyncpg://x/y", host="0.0.0.0", allow_insecure_http=True,
         )
-        config.validate_transport_safety()  # must not raise
+        config.validate_transport_safety()
 
 
 class TestMetricsToken:
-    """HUB_METRICS_TOKEN: optional bearer auth for /metrics."""
-
     @staticmethod
     async def _get(token: str, headers: dict | None = None):
         import httpx
@@ -406,9 +318,6 @@ class TestMetricsToken:
 
 
 class TestNoSecretsInRequestLogs:
-    """A share link's token is the credential for a live report, and query
-    strings carry customer search text; neither belongs in a log line."""
-
     @pytest.mark.asyncio
     async def test_a_share_token_in_the_path_is_redacted(self, caplog):
         import httpx
@@ -431,8 +340,6 @@ class TestNoSecretsInRequestLogs:
         assert "SECRET-TOKEN" not in logged and "customer" not in logged
 
     def test_uvicorn_writes_no_access_log_of_its_own(self, monkeypatch):
-        """uvicorn's access line carries the query string, and propagates to
-        the same JSON handler; the middleware's line is the one kept."""
         import uvicorn
 
         from hub import main

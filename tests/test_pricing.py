@@ -1,4 +1,3 @@
-"""Billing on proven value (commontrace/pricing.py): what it refuses, and the arithmetic of what it does not."""
 import json
 import os
 import random
@@ -25,7 +24,6 @@ def _no_fsync(monkeypatch):
 
 
 def _grow(root, start, n, *, help_=0.2, harm=0.0, rates=None, seed=1):
-    """Occasions `start`..`start+n`: `helps` +help_, `hurts` +harm (negative to hurt), `null` nothing."""
     config = holdout_io.load_config(root)
     rng = random.Random(f"{seed}:{start}")
     truth = {"helps": help_, "hurts": harm, "null": 0.0}
@@ -50,9 +48,6 @@ def _package(root, tmp_path, name, key=KEY):
     return out
 
 
-# --- The schedule has no default prices ----------------------------------------------------------------------
-
-
 @pytest.mark.parametrize("drop", sorted(TERMS))
 def test_every_commercial_term_is_required(drop):
     terms = {k: v for k, v in TERMS.items() if k != drop}
@@ -75,9 +70,6 @@ def test_a_schedule_loads_from_the_owners_file(tmp_path):
     assert pricing.PriceSchedule.from_file(str(path)).value_share == 0.2
     with pytest.raises(pricing.PricingError, match="cannot read"):
         pricing.PriceSchedule.from_file(str(tmp_path / "missing.json"))
-
-
-# --- What is billed, and what is refused ---------------------------------------------------------------------
 
 
 def test_a_verified_signed_final_package_is_billed_a_share_of_proven_value(tmp_path):
@@ -126,7 +118,7 @@ def test_a_period_is_billed_once(tmp_path):
 
 def test_a_compromised_experiment_is_never_billed(tmp_path):
     root = _store(tmp_path)
-    _grow(root, 0, 900, rates={i: 0.1 for i in range(300, 900)})        # two rates under one salt
+    _grow(root, 0, 900, rates={i: 0.1 for i in range(300, 900)})
     pkg = _package(root, tmp_path, "p1")
     inv = pricing.invoice(pricing._blank_book(), SCHEDULE, org="a", period="p", agent_months=0, packages=[pkg], key=KEY)
     assert inv.total == 0 and "COMPROMISED" in inv.refused[0]["reason"]
@@ -183,9 +175,6 @@ def test_interim_runs_bill_only_when_the_schedule_says_so(tmp_path):
     assert not any("interim" in r["reason"] for r in inv.refused)
 
 
-# --- Cumulative billing, credits, cap and minimum --------------------------------------------------------------
-
-
 def _tweak(book, experiment, billed):
     book["experiments"][experiment]["billed_basis"] = billed
 
@@ -200,7 +189,6 @@ def test_a_later_package_bills_only_the_increase(tmp_path):
     second = _package(root, tmp_path, "p2")
     b = pricing.invoice(book, SCHEDULE, org="a", period="Q2", agent_months=0, packages=[second], key=KEY)
     basis2 = pricing.assess(second, SCHEDULE, KEY).basis
-    # what was charged in total is exactly the share of what is proven now, never more
     assert a.total + b.total == pytest.approx(round(basis2 * 0.2, 2), abs=0.02)
 
 
@@ -211,7 +199,7 @@ def test_a_fall_in_proven_value_becomes_a_credit_and_the_sum_never_exceeds_the_s
     book = pricing._blank_book()
     pricing.invoice(book, SCHEDULE, org="a", period="Q1", agent_months=0, packages=[pkg], key=KEY)
     experiment = next(iter(book["experiments"]))
-    _tweak(book, experiment, book["experiments"][experiment]["billed_basis"] * 2)   # as if twice as much was billed
+    _tweak(book, experiment, book["experiments"][experiment]["billed_basis"] * 2)
     book["experiments"][experiment]["ledger_roots"] = []
     again = pricing.invoice(book, SCHEDULE, org="a", period="Q2", agent_months=0, packages=[pkg], key=KEY)
     assert again.total == 0 and any(line.kind == "credit" for line in again.lines) and again.carried_credit > 0
@@ -240,13 +228,7 @@ def test_the_invoice_renders_with_how_to_check_each_value_line(tmp_path):
     assert "ledger root" in text and "commontrace proof verify" in text and "TOTAL" in text
 
 
-# --- A year, month by month ---------------------------------------------------------------------------------------
-
-
 def test_over_a_year_nothing_unproven_is_ever_billed_and_what_is_billed_equals_the_share_of_the_latest_proof(tmp_path):
-    """Four experiments run through twelve months: one healthy and growing, one that goes COMPROMISED in
-    month 5, one that never gathers enough data, one that is demo data. Quarterly invoices, then a check of the
-    invariants over the whole year."""
     book = pricing._blank_book()
     healthy = _store(tmp_path, "healthy")
     broken = _store(tmp_path, "broken")
@@ -265,28 +247,21 @@ def test_over_a_year_nothing_unproven_is_ever_billed_and_what_is_billed_equals_t
         bills[quarter] = pricing.invoice(book, SCHEDULE, org="acme", period=f"2026-M{month}", agent_months=3 * 5,
                                          packages=packages, key=KEY)
     refused = [r for inv in bills.values() for r in inv.refused]
-    # 1. nothing from the demo, the thin run, or the compromised one is ever a value line
     billed_labels = {line.evidence["label"] for inv in bills.values() for line in inv.lines if line.evidence}
     assert billed_labels <= {"acme-healthy", "acme-broken"}
     assert "acme-thin" not in billed_labels and "demo-easy" not in billed_labels
-    assert any("COMPROMISED" in r["reason"] for r in refused)           # the broken run, once compromised
+    assert any("COMPROMISED" in r["reason"] for r in refused)
     assert any("synthetic" in r["reason"] for r in refused)
-    # 2. the value charged for each experiment equals the share of the value basis last billed -- never more
     for experiment, state in book["experiments"].items():
         charged = sum(line.amount for inv in bills.values() for line in inv.lines
                       if line.evidence and line.evidence["experiment"] == experiment and line.kind in ("value",))
         credits = sum(line.amount for inv in bills.values() for line in inv.lines
                       if line.evidence and line.evidence["experiment"] == experiment and line.kind == "credit")
         assert charged + credits == pytest.approx(round(state["billed_basis"] * 0.2, 2), abs=0.05 * len(bills))
-    # 3. the platform fee was charged every quarter regardless
     assert all(inv.platform_subtotal == 1500 for inv in bills.values())
-    # 4. the book remembers four invoices and refuses to re-bill any of them
     assert len(book["invoices"]) == 4
     with pytest.raises(pricing.PricingError):
         pricing.invoice(book, SCHEDULE, org="acme", period="2026-M3", agent_months=1, packages=[], key=KEY)
-
-
-# --- The command ------------------------------------------------------------------------------------------------
 
 
 def test_the_template_has_every_term_empty_and_a_template_is_not_a_valid_schedule(tmp_path, capsys):
@@ -318,7 +293,7 @@ def test_invoice_previews_by_default_and_records_only_with_commit(tmp_path, caps
     assert "TOTAL" in out.out and "preview" in out.err and not os.path.exists(book / pricing.BOOK_NAME)
     assert main([*argv, "--commit"]) == 0
     assert os.path.isfile(book / pricing.BOOK_NAME) and os.path.isfile(book / "invoice-acme-2026-Q1.json")
-    assert main([*argv, "--commit"]) == 2                      # the period is already billed
+    assert main([*argv, "--commit"]) == 2
     assert "already has an invoice" in capsys.readouterr().err
 
 

@@ -1,20 +1,4 @@
-"""Reporting proven value to Stripe as metered usage.
-
-The arithmetic lives in `commontrace/pricing.py` (what is owed, from verified evidence, never from a
-compromised or unproven run). This module only carries a finished invoice's VALUE line to Stripe's Billing
-Meters API, so the amount reaches the customer's Stripe invoice as a metered charge that links to its proof.
-
-  * One meter event per value line, with an idempotency `identifier` derived from the line's own evidence, so
-    reporting the same line twice charges once.
-  * Only a plan that is billable (hub/plans.py) is reported; a free or operator org is refused.
-  * Test keys only unless the caller says the key is live on purpose. A live key sending a number nobody has
-    reviewed is the failure this refuses by default.
-  * Amounts are sent in minor currency units, as an integer, because that is what a meter counts; the meter's
-    price in Stripe must be one unit of currency (one cent) for the invoice to equal the line.
-
-Credits and the platform fee are not reported here: a credit is applied by not reporting usage, and the platform
-fee is the subscription itself.
-"""
+"""Reporting proven value to Stripe as metered usage."""
 from __future__ import annotations
 
 import hashlib

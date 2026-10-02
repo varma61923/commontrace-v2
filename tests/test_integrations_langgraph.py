@@ -1,9 +1,3 @@
-"""commontrace/integrations/langgraph.py, exercised against a REAL,
-installed `langgraph` StateGraph rather than a hand-rolled stand-in for
-one -- the property worth protecting is that this module reads the exact
-config shape LangGraph itself passes to a node, not a shape this test
-suite assumed.
-"""
 from __future__ import annotations
 
 import json
@@ -29,9 +23,6 @@ class _State(TypedDict, total=False):
 
 
 class FakeStore:
-    """Same shape tests/test_measure.py's FakeStore uses: a real memory
-    API's results ({id, memory} dicts), in rank order."""
-
     def __init__(self, memories):
         self.memories = memories
 
@@ -71,7 +62,7 @@ class TestThreadId:
 
 class TestWithLessons:
     def test_injected_items_reach_the_wrapped_node_via_a_real_graph(self, tmp_path):
-        _configure(tmp_path, 0.0)  # nothing withheld -- deterministic assertion
+        _configure(tmp_path, 0.0)
         store = FakeStore([{"id": "m1", "memory": "set an idempotency key"}])
         memory = CausalMemory(store.search, root=str(tmp_path))
 
@@ -87,9 +78,6 @@ class TestWithLessons:
         assert result["resolved"] is True
 
     def test_the_occasion_id_used_is_the_graphs_own_thread_id(self, tmp_path):
-        # Non-zero rate: rate=0.0 is a STOPPED experiment (CausalMemory logs
-        # nothing at all, see test_measure.py's own test for that), and this
-        # test needs a logged row to inspect.
         _configure(tmp_path, 0.5)
         store = FakeStore([{"id": "m1", "memory": "x"}])
         memory = CausalMemory(store.search, root=str(tmp_path))
@@ -115,7 +103,6 @@ class TestWithLessons:
             return {"resolved": True}
 
         compiled = _build_graph(ct_langgraph.with_lessons(node, memory))
-        # No config at all -- StateGraph.invoke still runs the node.
         compiled.invoke({"input": "q"})
         assert seen["lessons"] == []
 

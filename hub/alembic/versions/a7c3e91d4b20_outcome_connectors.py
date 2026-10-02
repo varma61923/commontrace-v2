@@ -1,17 +1,4 @@
-"""outcome connectors: links to systems of record, a replay ledger, pending outcomes
-
-Revision ID: a7c3e91d4b20
-Revises: d8b2e5f71a36
-Create Date: 2026-10-01 00:00:00.000000
-
-Three tables, all org-scoped under the row-level security d5c8b3a91e77 set up:
-
-  connectors                     one org's link to Zendesk/GitHub/...; the vendor's
-                                 signing secret, sealed; created in dry-run
-  connector_deliveries           the replay ledger, unique per (connector, delivery
-                                 id, dry_run)
-  connector_pending_outcomes     a candidate success waiting out its window
-"""
+"""outcome connectors: links to systems of record, a replay ledger, pending outcomes"""
 from __future__ import annotations
 
 from collections.abc import Sequence

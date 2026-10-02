@@ -1,21 +1,3 @@
-"""The Knowledge Base corpus cache: fast, and never wrong.
-
-hub/commons_cache.py keeps each process's copy of the matchable corpus in
-memory and reloads it only when `commons_corpus_state` moves. Two things
-have to be true for that to be safe, and each is tested directly rather
-than through the matching tools, because the matching tools re-check
-visibility on every matched row (hub/crud.py:_commons_rows) -- which would
-let a broken trigger hide behind that second check in any end-to-end test.
-
-  1. The version moves on every change that can alter what the matcher
-     sees, and on nothing else. Too few triggers is stale results; too
-     many is a reload on every vote and every query, which is the cost
-     this exists to remove.
-  2. The cached path returns exactly what the direct path returns, on
-     corpora with every complication at once: the caller's own entries,
-     retracted, quarantined, superseded and non-seed rows, agent_type
-     filtering, and a scan cap that truncates.
-"""
 from __future__ import annotations
 
 import importlib.util
@@ -86,9 +68,6 @@ async def _set(session_factory, trace_id, **values):
 
 class TestTheTriggersTheDatabaseRuns:
     async def test_the_migration_installs_exactly_what_the_models_do(self):
-        """Tests build the schema from the models; deployed databases get it
-        from the migration. Two copies of the same SQL is a drift waiting to
-        happen, so they are compared token for token."""
         path = (
             pathlib.Path(__file__).resolve().parents[1]
             / "alembic" / "versions" / "c3e8a1f05b92_commons_corpus_version.py"
@@ -151,16 +130,12 @@ class TestTheVersionMovesExactlyWhenTheCorpusDoes:
     async def test_not_on_the_counters_that_change_on_every_query_and_vote(
         self, session_factory, orgs, change
     ):
-        """These are never cached -- matched rows are read fresh -- so a
-        bump here would reload the whole corpus on every request for nothing."""
         tid = await _seed(session_factory, orgs["operator"], "redis lock deadlock")
         before = await _key(session_factory)
         await _set(session_factory, tid, **change)
         assert await _key(session_factory) == before
 
     async def test_not_on_ordinary_customer_traces(self, session_factory, orgs):
-        """The overwhelming majority of writes. Bumping one shared row on
-        each of them would serialize every customer's capture."""
         before = await _key(session_factory)
         async with session_scope(session_factory) as session:
             session.add(Trace(org_id=orgs["reader"], title="private", context_text="x", solution_text="y",
@@ -168,8 +143,6 @@ class TestTheVersionMovesExactlyWhenTheCorpusDoes:
         assert await _key(session_factory) == before
 
     async def test_a_no_op_update_does_not_count(self, session_factory, orgs):
-        """UPDATE OF fires when a column is merely named in SET; the WHEN
-        clause is what stops an unchanged value from reloading the corpus."""
         tid = await _seed(session_factory, orgs["operator"], "cors preflight blocked")
         before = await _key(session_factory)
         await _set(session_factory, tid, agent_type="code")
@@ -190,10 +163,6 @@ class TestTheSnapshot:
         assert rebuilt.size == first.size + 1
 
     async def test_an_entry_retracted_after_the_snapshot_is_not_served(self, session_factory, orgs):
-        """The window the version cannot close by itself: a snapshot taken a
-        moment before a retraction. Forced here by pinning the stale snapshot
-        as current, and required to be caught by the fresh re-read of each
-        matched row."""
         title, ctx = "stripe webhook delivered more than once", "handler ran twice after timeout"
         tid = await _seed(session_factory, orgs["operator"], title, context=ctx)
         async with session_scope(session_factory) as session:
@@ -213,8 +182,6 @@ class TestTheSnapshot:
 
 
 def _strip_volatile(result):
-    """Drop fields that legitimately differ between two calls made one after
-    the other: timestamps, and hit counts that the first call itself raised."""
     def scrub(obj):
         if isinstance(obj, dict):
             return {k: scrub(v) for k, v in obj.items() if k not in ("commons_hits", "hits")}
@@ -225,9 +192,6 @@ def _strip_volatile(result):
 
 
 class TestTheCachedPathMatchesTheDirectPathExactly:
-    """The claim the whole change rests on, checked on corpora built to hit
-    every rule at once, with the scan cap forced low enough to truncate."""
-
     @pytest.mark.parametrize("seed", [1, 2, 3])
     async def test_identical_results(self, session_factory, orgs, monkeypatch, seed):
         rng = random.Random(seed)
@@ -246,7 +210,7 @@ class TestTheCachedPathMatchesTheDirectPathExactly:
             tid = await _seed(session_factory, rng.choice(owners), text(), context=text(),
                               agent_type=rng.choice(["code", "code", "support"]), **extra)
             if rng.random() < 0.1:
-                await _set(session_factory, tid, commons_source="org")  # shared but not operator-curated
+                await _set(session_factory, tid, commons_source="org")
 
         failures = [{"label": f"f{i}", "signature": commons.signature_for(text(), "", [])} for i in range(12)]
         query = failures[0]["signature"]
@@ -268,8 +232,6 @@ class TestTheCachedPathMatchesTheDirectPathExactly:
         direct = await run(cached=False)
         cached = await run(cached=True)
         assert cached == direct
-        # And the comparison is not vacuous: the corpus was truncated, and
-        # both paths found real matches in it.
         assert direct[0]["corpus_truncated"] is True
         assert direct[0]["n_covered"] > 0
         assert direct[1]["n_candidates"] > 0

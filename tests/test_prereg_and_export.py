@@ -1,13 +1,3 @@
-"""Saying what the experiment would measure before it could see the answer,
-and handing over the rows it was measured from.
-
-Two halves of the same problem: every number this product bills on is
-computed by this product. The value ledger already makes the invoice
-tamper-evident and (with a key) authenticates who issued it -- but both of
-those establish only that the issuer's own arithmetic was not altered
-afterwards. Neither lets the customer disagree with the arithmetic, and
-neither stops the design being settled after the results were visible.
-"""
 from __future__ import annotations
 
 import datetime
@@ -43,8 +33,6 @@ def _assignments(rows):
 
 class TestRegistrationRefusesAnUnrunnableDesign:
     def test_an_unnamed_primary_outcome_is_refused(self):
-        """An experiment that has not named the thing it measures cannot be
-        said to have found it."""
         with pytest.raises(prereg.PreregError, match="primary outcome"):
             _registration(primary_outcome="   ")
 
@@ -87,8 +75,6 @@ class TestTheFingerprint:
 
 class TestCheckingTheRunAgainstThePromise:
     def test_an_unregistered_run_says_so_rather_than_passing(self):
-        """Silence would read as approval. The absence of a registration is
-        itself the finding."""
         result = prereg.check(None)
         assert not result.registered
         assert not result.clean
@@ -103,8 +89,6 @@ class TestCheckingTheRunAgainstThePromise:
         assert result.deviations == []
 
     def test_a_moved_endpoint_is_reported(self):
-        """Every number computed on the new outcome can be individually
-        correct and the conclusion still unsupported."""
         result = prereg.check(
             _registration(), actual_primary_outcome="escalated",
         )
@@ -136,8 +120,6 @@ class TestCheckingTheRunAgainstThePromise:
         assert "optional stop" in deviation.detail
 
     def test_a_sequential_design_may_stop_whenever_it_likes(self):
-        """That is what registering the sequential rule buys: the boundary
-        already accounts for looking, so an early stop is not a deviation."""
         result = prereg.check(
             _registration(stopping_rule=prereg.STOP_SEQUENTIAL),
             actual_occasions=900,
@@ -145,8 +127,6 @@ class TestCheckingTheRunAgainstThePromise:
         assert result.clean
 
     def test_registering_after_the_data_started_is_reported(self):
-        """The case worth catching even when nobody was dishonest: it usually
-        means the run started before anyone settled what it measured."""
         result = prereg.check(
             _registration(now=datetime.datetime(2026, 3, 1, tzinfo=datetime.timezone.utc)),
             first_observation_at=datetime.datetime(2026, 1, 15, tzinfo=datetime.timezone.utc),
@@ -162,19 +142,14 @@ class TestCheckingTheRunAgainstThePromise:
         assert result.clean
 
     def test_a_naive_timestamp_is_not_a_crash(self):
-        """Timestamps arrive from a database, a JSON file and a CLI; one of
-        them will be naive, and a validity check that raises on its own input
-        is worse than the thing it checks."""
         result = prereg.check(
             _registration(), first_observation_at=datetime.datetime(2026, 1, 15),
         )
         assert result.registered
 
     def test_unknown_facts_are_not_checked_rather_than_assumed_to_match(self):
-        """Callers know different subsets. Treating "not supplied" as
-        "matches" would make the check pass for a run nobody looked at."""
         result = prereg.check(_registration())
-        assert result.clean  # nothing contradicted, nothing invented
+        assert result.clean
 
 
 class TestTheRawExport:
@@ -182,13 +157,10 @@ class TestTheRawExport:
         ("a", "o1", True, True),
         ("a", "o2", False, False),
         ("b", "o1", True, True),
-        ("b", "o3", True, None),   # assigned, never reported
+        ("b", "o3", True, None),
     ]
 
     def test_every_arm_decision_is_exported_including_unresolved_ones(self):
-        """An occasion assigned an arm and never reported IS the attrition
-        question; exporting only resolved rows hands over a record with the
-        evidence already removed."""
         result = raw_export.export(_assignments(self.ROWS))
         assert result.n_rows == 4
         assert result.n_unresolved == 1
@@ -204,9 +176,6 @@ class TestTheRawExport:
         assert "injected" in result.csv_text and "withheld" in result.csv_text
 
     def test_the_digest_identifies_the_data_not_the_file_order(self):
-        """Rows come back from a database in whatever order the planner
-        chose. A digest over the bytes as written would differ between two
-        exports of identical data and would prove nothing."""
         forward = raw_export.digest_of(_assignments(self.ROWS))
         backward = raw_export.digest_of(_assignments(list(reversed(self.ROWS))))
         assert forward == backward
@@ -243,11 +212,6 @@ class TestTheRawExport:
 
 
 class TestAnchoringTheInvoiceToTheEvidence:
-    """The chain proves the printed lines were not edited. These bind the
-    invoice to the rows it was computed from and the design it was promised
-    under, so an issuer cannot hand over a valid signature alongside an
-    unrelated export."""
-
     @staticmethod
     def _ledger():
         from commontrace import experiment
@@ -295,8 +259,6 @@ class TestAnchoringTheInvoiceToTheEvidence:
         )
 
     def test_an_unanchored_signature_is_distinct_from_an_anchored_one(self):
-        """Empty strings are part of the signed payload, so "no evidence was
-        attached" cannot be passed off as "evidence was attached"."""
         ledger = self._ledger()
         bare = value.sign_ledger(ledger, self.KEY, org_id="org", issued_at="t")
         anchored = value.sign_ledger(

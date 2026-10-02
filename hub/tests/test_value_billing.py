@@ -1,5 +1,3 @@
-"""Reporting proven value to Stripe: only billable plans, only evidenced value lines, test keys by default,
-and one charge per line however often it is reported. No network: the Stripe call is replaced."""
 import pytest
 
 from hub import billing, plans, value_billing
@@ -31,7 +29,7 @@ async def test_a_value_line_is_sent_as_an_integer_in_minor_units_with_a_stable_i
     (path, _key, data), (_, _, again) = sent
     assert path == "billing/meter_events" and data["payload[value]"] == "12346"
     assert data["payload[stripe_customer_id]"] == "cus_1" and data["event_name"] == "proven_value"
-    assert data["identifier"] == again["identifier"]                 # Stripe dedupes on this: one charge
+    assert data["identifier"] == again["identifier"]
     other = value_billing.identifier_for({**LINE, "evidence": {**LINE["evidence"], "ledger_root": "x" * 64}}, "o1")
     assert other != data["identifier"] and value_billing.identifier_for(LINE, "o2") != data["identifier"]
 
@@ -39,7 +37,6 @@ async def test_a_value_line_is_sent_as_an_integer_in_minor_units_with_a_stable_i
 @pytest.mark.parametrize("plan,allowed", [("free", False), ("team", True), ("scale", True), ("operator", False),
                                           ("unknown", False)])
 async def test_each_plan_either_reports_value_or_is_refused(sent, plan, allowed):
-    """The contract per plan: the same line, reported under each plan an org can be on."""
     call = value_billing.report_value_line(TEST, org_id="o", plan=plan, customer_id="cus_1", line=LINE,
                                            event_name="e")
     if allowed:

@@ -1,28 +1,4 @@
-"""Many robots, one experiment.
-
-A fleet of robots (or edge agents) each keep a local store, often offline, and the
-proof is only as strong as the pooled sample. Pooling is only valid if every robot
-ran the SAME randomization: assignment is a hash of (memory, occasion, salt) against a
-rate, so two stores with different salts or rates are two experiments, and adding
-their logs together is the corruption `integrity.check_assignment_drift` exists to
-catch. So:
-
-    adopt   copy one store's experiment settings (salt, rate, detectable effect) and
-            gateway policy (environment, protected prefixes) into a robot's store, so
-            every robot randomizes identically
-    check   say whether a set of stores can be merged, and what would not
-    merge   write one store holding every robot's assignments and outcomes
-
-`merge` refuses what cannot be pooled instead of choosing for you:
-  * different salts or rates                  -> not one randomization
-  * different environments (sim vs real)     -> never pooled
-  * the same (memory, occasion) in two arms   -> a conflict, with both sources named
-  * the same occasion with opposite outcomes  -> a conflict, with both sources named
-Identical records appearing in more than one store (a robot synced twice) collapse to
-one. The sources are never modified. Give each robot's occasion ids a prefix
-(`robot-7/ep-193`): two robots reusing `ep-1` for different episodes would otherwise
-be reported as a conflict, correctly.
-"""
+"""Many robots, one experiment."""
 from __future__ import annotations
 
 import json
@@ -65,7 +41,6 @@ class CheckReport:
 
 
 def _read_jsonl(path: str) -> tuple[list[dict], int]:
-    """Parsed object lines, and how many lines were unreadable. Never raises."""
     rows, corrupt = [], 0
     try:
         with open(path, encoding="utf-8") as fh:
@@ -164,9 +139,6 @@ def check(sources: list[str]) -> CheckReport:
 
 
 def adopt(source: str, dest: str) -> dict:
-    """Give `dest` the experiment and gateway policy `source` runs, so it randomizes
-    identically. Refuses a store that already holds assignments: changing the salt under
-    existing data is how two experiments get pooled."""
     config = holdout_io.load_config(source)
     if not config.started_at:
         raise FleetError(f"{source} has no experiment started; start one first "
@@ -207,7 +179,7 @@ def merge(sources: list[str], dest: str, *, report: CheckReport | None = None) -
                 if canon not in seen:
                     seen.add(canon)
                     merged.append(row)
-        merged.sort(key=_time_key)  # stable: ties keep source order
+        merged.sort(key=_time_key)
         with open(path_of(dest), "w", encoding="utf-8", newline="\n") as fh:
             for row in merged:
                 fh.write(json.dumps(row) + "\n")
@@ -230,7 +202,7 @@ def merge(sources: list[str], dest: str, *, report: CheckReport | None = None) -
 
     shutil.copyfile(holdout_io.config_path(sources[0]), holdout_io.config_path(dest))
     gateway.save_config(dest, gateway.load_config(sources[0]))
-    for src in sources:  # the design the proof registered travels with the data
+    for src in sources:
         proof_state = os.path.join(paths.memory_dir(src), "proof.json")
         if os.path.isfile(proof_state) and not os.path.isfile(os.path.join(paths.memory_dir(dest), "proof.json")):
             shutil.copyfile(proof_state, os.path.join(paths.memory_dir(dest), "proof.json"))

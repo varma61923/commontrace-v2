@@ -32,7 +32,6 @@ TARGET = 0.8
 TRACES_PER_MODE = 12
 NOISE_TRACES = 14
 
-#: mode -> (context templates, solution templates). `{x}` slots are filled from SLOTS.
 MODES: dict[str, tuple[list[str], list[str]]] = {
     "refund-timeline": (
         ["customer asked why the refund for order {n} has not arrived after {d} days; policy says 5 to 10 days",
@@ -116,7 +115,6 @@ MODES: dict[str, tuple[list[str], list[str]]] = {
          "trace the redirect chain and look for the first response that does not set the session"]),
 }
 
-#: Sentences that appear across modes. Real traces share this kind of boilerplate.
 BOILERPLATE = [
     "the customer was frustrated and asked for a manager",
     "the agent checked the knowledge base and found nothing relevant",
@@ -126,7 +124,6 @@ BOILERPLATE = [
     "the first answer did not resolve it and the user wrote back",
 ]
 
-#: One-off failures that belong to no mode (each is its own label).
 NOISE = [
     "the printer driver for the warehouse label printer crashed after the firmware update on unit {n}",
     "a translation string for the settings page was missing in the portuguese build {n}",
@@ -162,8 +159,6 @@ def _fill(template: str, rng: random.Random) -> str:
 
 
 def generate(seed: int) -> list[dict]:
-    """The labelled traces for `seed`: {id, label, title, context, solution}. Label -1 per noise trace
-    is replaced by a unique negative label so each is its own cluster."""
     rng = random.Random(f"signal-ari:{seed}")
     rows = []
     for mode, (contexts, solutions) in MODES.items():

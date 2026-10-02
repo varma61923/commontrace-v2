@@ -1,12 +1,3 @@
-"""Tests for lesson_io.content_as_of and `commontrace lesson history --as-of`
--- point-in-time reconstruction of what a lesson actually said.
-
-Before this, the revision journal recorded a before/after HASH on every
-change, enough to detect that a lesson changed mid-experiment but not to
-answer what it actually said on a given date, because the prior text was
-never kept (see commontrace/environments.py's own docstring, which named
-this as separate, larger work before this closed it).
-"""
 from __future__ import annotations
 
 import os
@@ -62,7 +53,6 @@ class TestContentAsOf:
         assert got_fm["applies_when"] == "original condition"
         assert "Original" in got_body
 
-        # And the current content is still the latest version.
         current_fm, current_body = lesson_io.content_as_of(root, "lesson_x", _now_iso())
         assert current_fm["applies_when"] == "tightened condition"
 
@@ -104,9 +94,6 @@ class TestContentAsOf:
             lesson_io.content_as_of(root, "lesson_missing", "2026-01-01")
 
     def test_a_date_before_the_lessons_creation_raises_rather_than_guessing(self, root, path):
-        """The lesson did not exist yet at this point -- returning the
-        current (or any) content would be fabricating a fact, exactly what
-        `plan_rollback` already refuses to do for the hash-pinned case."""
         lesson_io.write_lesson(path, _lesson_fm(), "## Rule\nOriginal.\n", root=root)
         with pytest.raises(lesson_io.ContentAsOfError):
             lesson_io.content_as_of(root, "lesson_x", "2000-01-01")
@@ -114,9 +101,6 @@ class TestContentAsOf:
     def test_a_write_that_changes_nothing_does_not_create_a_reconstructable_boundary(
         self, root, path
     ):
-        """Bookkeeping-only writes (status, uses) are not journaled at all
-        (see commontrace/lesson_io.py's own docstring) -- content_as_of
-        must not be tripped up by their absence."""
         fm = _lesson_fm()
         lesson_io.write_lesson(path, fm, "## Rule\nOriginal.\n", root=root)
         fm["status"] = "active"

@@ -1,42 +1,3 @@
-"""The Agent Learning Proof: from "will this answer in time?" to a package a
-third party can check without trusting whoever produced it.
-
-    start    forecast (refuse a run that cannot answer), start the randomized
-             holdout, and register what is being measured BEFORE any data exists
-    status   how far along, whether the run can be trusted, what each memory shows
-    report   a package: a readable report, a machine-readable record, the raw
-             assignment rows, and -- with a key -- an issuer signature over all three
-    verify   recompute everything from the raw rows and say what does not match
-
-Nothing here is a new statistic. It composes what already exists -- the
-preregistration (commontrace/prereg.py), the validity audit
-(commontrace/integrity.py), the estimator (commontrace/experiment.py), the value
-ledger and its signature (commontrace/value.py), the raw export
-(commontrace/raw_export.py) -- so the package cannot say anything the
-`commontrace experiment` report would not.
-
-WHAT MAKES IT A PROOF AND NOT A PRESENTATION
---------------------------------------------
-* The design is fixed first. `start` writes the outcome, the smallest effect that
-  matters, the holdout rate and the stopping rule, with the salt that names the
-  randomization, and the fingerprint of that goes under the signature.
-* A compromised experiment states no figure; an unfinished one says so in its
-  headline; a harmful memory is reported with the benefit, not instead of it.
-* `verify` does not read the report's numbers and compare them to themselves. It
-  re-runs the audit, the estimates and the value arithmetic from
-  `assignments.csv` alone, so an auditor needs the CSV and a key, not trust.
-  The data digest, the ledger chain, the preregistration fingerprint and the
-  signature are checked as well.
-
-WHAT IT CANNOT SHOW (and says so in every report)
--------------------------------------------------
-That the agent honoured a withheld memory (that leaves no trace and biases the
-result toward zero), that outcomes were reported honestly, or that the
-registration predates the data beyond what the assignment log's own timestamps
-say. A signature authenticates who issued the package, not that the issuer was
-honest about what it ran. Synthetic demo data is marked as such everywhere it
-appears.
-"""
 from __future__ import annotations
 
 import csv
@@ -62,8 +23,6 @@ from commontrace import (
 SCHEMA = 1
 STATE_NAME = "proof.json"
 MARKDOWN_NAME, RECORD_NAME, DATA_NAME, PAGE_NAME = "report.md", "proof.json", "assignments.csv", "index.html"
-#: A run that cannot give a verdict within this many days at the stated volume is
-#: refused at `start` unless forced: the failure it prevents is a spent pilot.
 MAX_DAYS = 120
 MIN_KEY_BYTES = 16
 
@@ -98,9 +57,6 @@ def _save_state(root: str, state: dict) -> None:
 
 def _now(now: datetime.datetime | None) -> datetime.datetime:
     return now or datetime.datetime.now(datetime.timezone.utc)
-
-
-# --- Start --------------------------------------------------------------------------
 
 
 def _design(kit: functions.FunctionKit, daily: float, baseline, effect, rate):
@@ -167,13 +123,7 @@ def start_demo(
     root: str, kit: functions.FunctionKit, *, value_per_occasion: float | None = None,
     seed: int = 0, now: datetime.datetime | None = None,
 ) -> dict:
-    """A proof on synthetic data, so the report can be shown before there is any.
-
-    The design is registered BEFORE the data is written (the salt is
-    deterministic, so it is known in advance), exactly as a real run must be, so
-    the demo exercises the pre-registration check honestly. Everything it
-    produces carries `synthetic: true` and a banner.
-    """
+    """A proof on synthetic data, so the report can be shown before there is any."""
     moment = _now(now)
     fc = functions.forecast(kit, max(1.0, functions.DEMO_OCCASIONS / 30))
     registration = prereg.register(
@@ -189,21 +139,12 @@ def start_demo(
 
 
 SIM_MEMORIES = (("sim-helpful-memory", +1), ("sim-harmful-memory", -1), ("sim-neutral-memory", 0))
-#: Each simulated memory is eligible on one occasion in three, so a rehearsal runs this many
-#: times the planned occasions: enough for the sequential interval to rule an effect out.
 SIM_PLAN_MULTIPLE = 5
 
 
 def simulate_fleet(root: str, kit: functions.FunctionKit, *, seed: int = 0,
                    occasions: int | None = None, planted: float | None = None) -> dict:
-    """Drive a simulated fleet through the real path of a proof that was just started.
-
-    The same calls a customer's agent makes (`CausalMemory.recall`, `record_outcome`) against
-    the store `start` configured, with outcomes drawn HERE from planted truth: one memory
-    that raises the success rate, one that lowers it, one that does nothing, each eligible on
-    a third of occasions. Used to show the whole wizard end to end, and by the test that a
-    simulated fleet reaches the right verdicts. Refuses a store that already has assignments.
-    """
+    """Drive a simulated fleet through the real path of a proof that was just started."""
     import random
 
     from commontrace.measure import CausalMemory
@@ -221,7 +162,6 @@ def simulate_fleet(root: str, kit: functions.FunctionKit, *, seed: int = 0,
     state = load_state(root)
     baseline = state["baseline"]
     occasions = occasions or int(state["planned_occasions"]) * SIM_PLAN_MULTIPLE
-    # Larger than the design's smallest worthwhile effect, so the rehearsal is powered to decide.
     planted = planted if planted is not None else max(0.15, 1.5 * float(state["effect"]))
     for i in range(occasions):
         current["slug"] = SIM_MEMORIES[i % len(SIM_MEMORIES)][0]
@@ -232,17 +172,11 @@ def simulate_fleet(root: str, kit: functions.FunctionKit, *, seed: int = 0,
 
 
 def verdict_matches(planted: float, verdict: str | None) -> bool:
-    """Whether `verdict` is a correct reading of a planted effect. A memory that does nothing is
-    read correctly unless it is CLAIMED to help or hurt: whether the interval is already narrow
-    enough to rule an effect out is a matter of sample size, not correctness."""
     if planted > 0:
         return verdict == experiment.VERDICT_HELPS
     if planted < 0:
         return verdict == experiment.VERDICT_HURTS
     return verdict not in (None, experiment.VERDICT_HELPS, experiment.VERDICT_HURTS)
-
-
-# --- Analysis (one place, used by status, report and verify) --------------------------
 
 
 @dataclass
@@ -260,9 +194,7 @@ def _mode(state: dict) -> str:
 
 
 def analyse_rows(rows: list, mode: str, audited_at: str, vpo: float | None) -> Analysis:
-    """Audit, estimate and price `rows`. Pure in (rows, mode, audited_at, vpo), which
-    is what lets `verify` reproduce it exactly from the exported CSV."""
-    from commontrace.commands import experiment_cmd  # a command module; imported lazily
+    from commontrace.commands import experiment_cmd
 
     at = datetime.datetime.fromisoformat(audited_at)
     report = integrity.audit(rows, now=at)
@@ -282,9 +214,6 @@ def _current_rows(root: str) -> list:
     return rows
 
 
-# --- Status ---------------------------------------------------------------------------
-
-
 @dataclass
 class Status:
     label: str
@@ -297,7 +226,7 @@ class Status:
     resolved_occasions: int
     progress: float
     projected_days_remaining: float | None
-    state: str                      # no-data | collecting | ready | compromised
+    state: str
     integrity: str
     findings: list = field(default_factory=list)
     memories: list = field(default_factory=list)
@@ -383,8 +312,6 @@ def render_status(s: Status) -> str:
     return "\n".join(lines)
 
 
-# --- The package ----------------------------------------------------------------------
-
 _NOT_SHOWN = (
     "This report does not show that the agent honoured a memory it was told to withhold "
     "(that leaves no trace and biases the effect toward zero), that outcomes were reported "
@@ -418,22 +345,13 @@ def _memory_rows(a: Analysis) -> list[dict]:
 
 
 def harm_recovery(a: Analysis, vpo: float | None) -> dict | None:
-    """What withdrawing the harmful memories would give back over the measured window.
-
-    The measured loss of each memory whose verdict is HURTS, sign-flipped, with its
-    interval. A per-memory figure, so it stands even where the memories overlap and
-    cannot be summed into a total (value.py rule 4); here it is only ever summed
-    over memories that were counted, and only when the run is readable. It looks
-    backward at what was measured; it is not a forecast and is never billed.
-    None when there is nothing to recover or nothing can be stated.
-    """
+    """What withdrawing the harmful memories would give back over the measured window."""
     if a.value is None or not a.value.readable:
         return None
     lost = [m for m in a.value.memories if m.verdict == experiment.VERDICT_HURTS and m.counted]
     if not lost:
         return None
     occasions = -sum(m.occasions_improved for m in lost)
-    # In quadrature, the same convention value.compute uses for its aggregate.
     spread_low = sum((m.occasions_improved - m.ci_low) ** 2 for m in lost) ** 0.5
     spread_high = sum((m.ci_high - m.occasions_improved) ** 2 for m in lost) ** 0.5
     rate = a.value.rate if vpo else None
@@ -606,9 +524,6 @@ def build(root: str, out_dir: str, *, key: bytes | None = None, org_id: str = ""
     return record
 
 
-# --- Verify ---------------------------------------------------------------------------
-
-
 @dataclass(frozen=True)
 class Check:
     name: str
@@ -617,8 +532,6 @@ class Check:
 
 
 def rows_from_csv(csv_text: str) -> list[integrity.Assignment]:
-    """The assignment rows an export describes. Raises ProofError on a file that
-    is not one."""
     reader = csv.reader(io.StringIO(csv_text))
     header = next(reader, None)
     if tuple(header or ()) != raw_export.COLUMNS:

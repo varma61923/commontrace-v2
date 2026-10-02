@@ -1,9 +1,4 @@
-"""The built-in function kits, as data. See commontrace/functions.py.
-
-Baselines and effects are PLANNING ASSUMPTIONS used only to forecast how long a
-verdict takes. They are not measurements and are shown as assumptions wherever
-they appear. A function that needs different ones passes its own at the call.
-"""
+"""The built-in function kits, as data. See commontrace/functions.py."""
 from __future__ import annotations
 
 SPECS: tuple[dict, ...] = (

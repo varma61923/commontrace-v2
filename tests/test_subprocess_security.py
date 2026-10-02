@@ -1,4 +1,3 @@
-"""Tests for subprocess execution security, PYTHONSAFEPATH hardening, and shadow module immunity."""
 import os
 import subprocess
 import sys
@@ -15,7 +14,6 @@ from commontrace.commands._shellout import (
 
 class TestSubprocessHardening:
     def test_run_script_sets_pythonsafepath_and_utf8(self, tmp_path, monkeypatch):
-        """Verify run_script injects PYTHONSAFEPATH=1, PYTHONUTF8=1, and COMMONTRACE_ROOT."""
         recorded_calls = []
 
         def mock_subprocess_run(cmd, **kwargs):
@@ -48,7 +46,6 @@ class TestSubprocessHardening:
         assert env["PYTHONSAFEPATH"] == "1"
         assert env["CUSTOM_KEY"] == "CUSTOM_VAL"
 
-        # Check -P flag for Python 3.11+
         if sys.version_info >= (3, 11):
             assert "-P" in cmd
             assert cmd[1] == "-P"
@@ -69,11 +66,9 @@ class TestSubprocessHardening:
 
 class TestShadowModuleImmunity:
     def test_shadow_stdlib_module_ignored_under_run_script(self, tmp_path):
-        """Ensure standard library shadowing (e.g. malicious json.py in CWD) is blocked."""
         if sys.version_info < (3, 11):
             pytest.skip("PYTHONSAFEPATH and -P require Python 3.11+")
 
-        # Create a malicious json.py in an isolated directory
         malicious_dir = tmp_path / "untrusted_workspace"
         malicious_dir.mkdir()
         evil_json = malicious_dir / "json.py"
@@ -82,7 +77,6 @@ class TestShadowModuleImmunity:
         evil_argparse = malicious_dir / "argparse.py"
         evil_argparse.write_text("raise RuntimeError('SHADOW_ARGPARSE_HIJACKED')\n", encoding="utf-8")
 
-        # Create a test script in the workspace that imports json and argparse
         target_script = malicious_dir / "test_import.py"
         target_script.write_text(
             "import json\n"
@@ -95,19 +89,15 @@ class TestShadowModuleImmunity:
         try:
             os.chdir(str(malicious_dir))
 
-            # Control experiment: without PYTHONSAFEPATH and without -P, python imports CWD json.py
             control_res = subprocess.run(
                 [sys.executable, str(target_script)],
                 capture_output=True,
                 text=True,
                 cwd=str(malicious_dir),
             )
-            # Control should fail due to hijacking
             assert control_res.returncode != 0
             assert "SHADOW_JSON_HIJACKED" in control_res.stderr or "SHADOW_ARGPARSE_HIJACKED" in control_res.stderr
 
-            # Now test with run_script:
-            # We enable store scripts so it runs our target_script from malicious_dir
             os.environ["COMMONTRACE_ALLOW_STORE_SCRIPTS"] = "1"
             rc, out = run_script(
                 str(malicious_dir),
@@ -140,12 +130,10 @@ class TestStoreScriptsSecurityPolicy:
     def test_find_reference_script_default_ignores_store_script(self, tmp_path, monkeypatch):
         monkeypatch.delenv("COMMONTRACE_ALLOW_STORE_SCRIPTS", raising=False)
 
-        # Create a store-root script
         store_script = tmp_path / "measure_performance.py"
         store_script.write_text("# store copy", encoding="utf-8")
 
         found = find_reference_script(str(tmp_path), "measure_performance.py")
-        # Must return the packaged copy, NOT the store script
         assert found is not None
         assert os.path.dirname(found) == packaged_reference_dir()
         assert found != str(store_script)
@@ -173,7 +161,5 @@ class TestStoreScriptsSecurityPolicy:
         store_dir = tmp_path / "store"
         store_dir.mkdir()
 
-        # Relative path attempting traversal outside store_dir
         found = find_reference_script(str(store_dir), "../outside/evil.py")
-        # Must not return the traversed path
         assert found != str(evil_script)

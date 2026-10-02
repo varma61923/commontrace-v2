@@ -1,4 +1,3 @@
-"""The Agent Learning Proof: plan, run, report, and -- the point -- verify from raw data."""
 import csv
 import json
 import os
@@ -14,15 +13,12 @@ KEY = b"0123456789abcdef-test-signing-key"
 
 @pytest.fixture(autouse=True)
 def _no_fsync(monkeypatch):
-    """Thousands of log lines per test; durability is covered in tests/test_holdout_io*.py."""
     monkeypatch.setattr(os, "fsync", lambda fd: None)
 
 SUPPORT = functions.builtin_kits()["support"]
 
 
 def _run_fleet(root, n, *, harm=-0.25, help_=+0.2, seed=1, rates=None):
-    """A fleet whose memories are eligible on different occasions (so their effects can be
-    added): `help` +20pp, `harm` -25pp, `null` nothing. Outcomes are drawn here."""
     config = holdout_io.load_config(root)
     rng = random.Random(seed)
     truth = {"helps": help_, "hurts": harm, "null": 0.0}
@@ -38,8 +34,6 @@ def _run_fleet(root, n, *, harm=-0.25, help_=+0.2, seed=1, rates=None):
 
 @pytest.fixture
 def started(tmp_path, monkeypatch):
-    # A pinned salt: the fleets below draw outcomes from a seeded rng, and a fresh salt per run would re-deal the
-    # arms, so the null memory would show a chance effect in about one run in twenty.
     real = holdout_io.configure
     monkeypatch.setattr(holdout_io, "configure", lambda *a, **kw: real(*a, **{**kw, "salt": kw.get("salt") or "pinned"}))
     root = str(tmp_path / "store")
@@ -55,9 +49,6 @@ def _package(root, tmp_path, key=KEY):
 
 def _verify(out, key=KEY):
     return {c.name: c for c in proof.verify(out, key=key)}
-
-
-# --- Start ------------------------------------------------------------------------
 
 
 def test_start_registers_the_design_before_any_data_and_starts_the_holdout(started):
@@ -102,9 +93,6 @@ def test_bad_inputs_are_refused_and_start_nothing(tmp_path, kwargs, message):
     assert proof.load_state(root) is None
 
 
-# --- Status -----------------------------------------------------------------------
-
-
 def test_status_walks_from_no_data_to_collecting_to_ready(started):
     root, _ = started
     assert proof.status(root).state == "no-data"
@@ -132,13 +120,10 @@ def _fleet_to(root, n):
 
 def test_status_of_a_compromised_run_says_so_and_states_no_effect_to_trust(started):
     root, _ = started
-    _run_fleet(root, 600, rates={i: 0.1 for i in range(200, 600)})  # two rates under one salt
+    _run_fleet(root, 600, rates={i: 0.1 for i in range(200, 600)})
     s = proof.status(root)
     assert s.state == "compromised" and s.integrity == "COMPROMISED"
     assert "cannot be trusted" in s.next_step
-
-
-# --- Report and verify -------------------------------------------------------------
 
 
 def _finished(root, n=2700):
@@ -219,9 +204,6 @@ def test_a_withdrawing_store_reports_the_harm_as_handled(started, tmp_path):
     assert "no longer delivered" in open(os.path.join(out, "report.md"), encoding="utf-8").read()
 
 
-# --- Tampering: every one of these must be caught ----------------------------------
-
-
 def _edit_json(out, fn):
     path = os.path.join(out, "proof.json")
     data = json.load(open(path, encoding="utf-8"))
@@ -294,7 +276,7 @@ def test_replacing_the_whole_ledger_with_a_consistent_forgery_is_caught_by_the_s
         d["ledger"], d["ledger_root"] = entries, previous
     _edit_json(out, forge)
     failed = _failed(out)
-    assert "ledger chain" not in failed          # internally consistent, as a forger would make it
+    assert "ledger chain" not in failed
     assert {"issuer signature", "recomputed value ledger"} <= failed
 
 
@@ -329,9 +311,6 @@ def test_a_signature_for_one_org_does_not_verify_as_another(package):
     assert "issuer signature" in _failed(out)
 
 
-# --- Demo ---------------------------------------------------------------------------
-
-
 def test_a_demo_proof_is_labelled_synthetic_everywhere_and_still_verifies(tmp_path):
     root = str(tmp_path / "demo")
     state = proof.start_demo(root, SUPPORT, value_per_occasion=12.0)
@@ -352,9 +331,6 @@ def test_a_demo_never_goes_into_a_store_with_real_data(started):
     _run_fleet(root, 30)
     with pytest.raises(functions.KitError, match="real holdout data"):
         proof.start_demo(root, SUPPORT)
-
-
-# --- Inputs and the CLI ----------------------------------------------------------------
 
 
 def test_keys_must_be_long_enough_and_readable(tmp_path):
@@ -425,9 +401,6 @@ def test_the_planned_effect_is_what_the_forecast_says():
     assert experiment.plan(effect=0.05, baseline=0.70, rate=0.5).occasions_needed == 2638
 
 
-# --- What withdrawing the harmful memory would give back --------------------------------
-
-
 def test_the_report_says_what_stopping_the_harmful_memory_gives_back(started, tmp_path):
     root, _ = started
     _finished(root)
@@ -447,6 +420,6 @@ def test_inflating_the_recoverable_figure_is_caught(package):
 
 def test_no_recovery_is_stated_when_nothing_hurts_or_the_run_is_unreadable(started, tmp_path):
     root, _ = started
-    _run_fleet(root, 900, rates={i: 0.1 for i in range(300, 900)})  # compromised: no figure at all
+    _run_fleet(root, 900, rates={i: 0.1 for i in range(300, 900)})
     _, record = _package(root, tmp_path)
     assert record["harmful"]["recoverable"] is None

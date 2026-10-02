@@ -1,10 +1,3 @@
-"""The semantic-only arm honours the store's injection budget, as every other path does.
-
-Its script appends every active lesson at or above the importance floor to its
-top-k (the safety override). Without the budget, a store with many such lessons
-handed an agent all of them: 3,928 lessons for one query on a 10,000-lesson
-store, each read and screened first.
-"""
 import json
 import os
 
@@ -51,13 +44,13 @@ def _listed(out):
 def test_the_override_is_cut_to_the_budget_and_the_rest_is_named(store, capsys):
     assert main(["query", "refund", "--dest", store]) == 0
     out = capsys.readouterr().out
-    assert _listed(out) == [f"l{i:02d}" for i in range(10)]   # default max_lessons, in the arm's order
+    assert _listed(out) == [f"l{i:02d}" for i in range(10)]
     assert "[commontrace] not injected:" in out and "count budget reached" in out
     assert "[commontrace] budget: 10/10 lessons" in out and f"{N - 10} not injected" in out
 
 
 def test_lessons_past_a_full_budget_are_not_read(store, monkeypatch, capsys):
-    main(["query", "refund", "--dest", store])  # fills the lesson cache (commontrace/lesson_cache.py)
+    main(["query", "refund", "--dest", store])
     capsys.readouterr()
     reads = []
     real = frontmatter.read
@@ -90,14 +83,6 @@ def test_a_wider_budget_admits_more(store, capsys):
     assert len(_listed(capsys.readouterr().out)) == 25
 
 
-# --- A store mid-experiment on this path keeps the treatment it started with --
-#
-# An experiment whose log already records the unbudgeted treatment ("semantic")
-# keeps it until it is reset, as a store keeps its logged scorer; the budgeted
-# one is recorded as "semantic-dosed", so the audit never pools the two
-# (integrity.check_scorer_drift compares the labels).
-
-
 def _labels(root):
     return [json.loads(line).get("scorer") for line in open(holdout_log_path(root), encoding="utf-8")]
 
@@ -113,7 +98,7 @@ def test_an_experiment_already_on_the_unbudgeted_treatment_keeps_it(store, capsy
     assert retrieval_io.semantic_only_undosed_pinned(store)
     assert main(["query", "refund", "--experiment", "--occasion-id", "o2", "--dest", store]) == 0
     out = capsys.readouterr().out
-    assert len(_listed(out)) == N                       # everything the arm returned, as before
+    assert len(_listed(out)) == N
     assert set(_labels(store)) == {retrieval_io.SEMANTIC_ONLY}
     assert main(["query", "refund", "--dest", store]) == 0
     assert len(_listed(capsys.readouterr().out)) == N
@@ -135,8 +120,6 @@ def test_the_new_label_reads_as_semantic_only():
 
 
 def test_a_semantic_only_log_pins_the_store_to_what_it_ran(tmp_path):
-    """Semantic-only rows carry no floor. Read as pre-upgrade rows, they pinned
-    the store to the historical count-v1 scorer and lost its embedding model."""
     root = str(tmp_path / "pinned")
     main(["init", "--agent-type", "code", "--dest", root])
     holdout_io.assign_and_log(root, ["a"], occasion_id="o", rate=0.5, salt="s",

@@ -37,9 +37,6 @@ def run(args: argparse.Namespace) -> int:
     if not evidence:
         uncaptured = evidence_io.uncaptured_retrieval_counts(root)
         if uncaptured:
-            # There IS retrieval evidence -- the holdout log has it -- just
-            # no captured OUTCOME for any of it, which is a different,
-            # more actionable fact than "nothing was ever retrieved".
             print(
                 "[commontrace] no lesson can be scored yet: retrieval evidence exists "
                 f"({sum(uncaptured.values())} occasion(s), holdout log), but no `capture` "

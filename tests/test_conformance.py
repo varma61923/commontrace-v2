@@ -1,5 +1,3 @@
-"""The conformance suite: the committed vectors are the reference's, the runner catches a wrong implementation, the
-store and gateway checks pass on ours and fail on broken ones."""
 import json
 import os
 import shutil
@@ -41,7 +39,6 @@ def test_the_reference_passes_over_stdio():
 
 
 def test_a_program_that_orders_the_hash_input_differently_is_caught(tmp_path):
-    """The mistake an implementer reading only the code makes: lesson, occasion, salt instead of salt, lesson, occasion."""
     script = tmp_path / "wrong.py"
     script.write_text(
         "import sys, json, hashlib\n"

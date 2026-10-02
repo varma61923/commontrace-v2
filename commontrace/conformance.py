@@ -1,37 +1,4 @@
-"""The CommonTrace conformance suite: what it takes to call an implementation "CommonTrace-compatible".
-
-Three layers, so an implementation in any language can be checked at the level it implements.
-
-1. VECTORS: the four deterministic functions every implementation must agree on bit for bit. The
-   reference answers are in `protocol/conformance/vectors.json` (so nothing here needs to be installed to read
-   them), and `commontrace conformance exec "<your command>"` runs YOUR program against them over stdio, one JSON
-   object per line:
-
-       in:  {"op": "assign", "lesson": "...", "occasion": "...", "salt": "...", "rate": 0.5}
-       out: {"held_out": true}
-       in:  {"op": "ledger", "rows": [{"slug", "verdict", "occasions_improved", "rate"}, ...]}
-       out: {"hashes": [...]}
-       in:  {"op": "digest", "rows": [[cell, ...], ...]}
-       out: {"digest": "..."}
-       in:  {"op": "revision", "frontmatter": {...}, "body": "..."}
-       out: {"revision": "..."}
-
-   `assign` is the randomization: the arm of (memory, occasion) is a function of those two, the experiment's salt
-   and the rate, and nothing else, which is what lets an auditor recompute it. `ledger` is the value ledger's hash
-   chain, `digest` the raw-assignments digest, `revision` a lesson's content identity.
-
-2. STORE: `commontrace conformance store DIR` checks a local store's files: traces and lessons parse and satisfy the
-   JSON Schemas, and every recorded assignment is the one the randomization function gives (a store whose
-   assignments do not follow the function is not randomizing, whatever it says).
-
-3. GATEWAY: `commontrace conformance gateway URL --token T` drives the HTTP API of a running gateway and checks the
-   behaviour the protocol requires of it: authentication, a recall that partitions its candidates, the same
-   partition for the same occasion, protected memories always delivered, an outcome that is idempotent and
-   refuses a conflicting answer, and a validation error for a malformed request.
-
-A report lists each check as pass or fail with the reason. Passing the suite is evidence of the behaviours it
-lists, not of everything an implementation does; what the suite does not test is said at the end of the report.
-"""
+"""The CommonTrace conformance suite: what it takes to call an implementation "CommonTrace-compatible"."""
 from __future__ import annotations
 
 import dataclasses
@@ -50,7 +17,6 @@ from dataclasses import dataclass
 from commontrace import experiment, frontmatter, paths, raw_export, revision, validate, value
 
 SUITE_VERSION = "1"
-#: The packaged copy (so `pip install` carries it) and the one beside the spec for readers; a test holds them equal.
 VECTORS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "conformance_vectors.json")
 SPEC_VECTORS_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "protocol",
                                  "conformance", "vectors.json")
@@ -63,9 +29,6 @@ class Result:
     name: str
     ok: bool
     detail: str = ""
-
-
-# --- the four reference functions, in the wire shapes the suite uses ---------------------------------------------
 
 
 def ref_assign(lesson: str, occasion: str, salt: str, rate: float) -> bool:
@@ -105,9 +68,6 @@ def answer(request: dict) -> dict:
     if op == "revision":
         return {"revision": ref_revision(request["frontmatter"], request["body"])}
     return {"error": f"unknown op {op!r}"}
-
-
-# --- vectors ----------------------------------------------------------------------------------------------------------
 
 
 def build_vectors() -> dict:
@@ -171,8 +131,6 @@ def run_exec(command: str, vectors: dict, timeout: float = 30.0, only: tuple[str
         requests.append({"op": "revision", "frontmatter": v["frontmatter"], "body": v["body"]})
         expected.append(("revision", {"revision": v["revision"]}))
     try:
-        # No shell: the command is split into an argument vector, so a vector or a crafted argument can never be
-        # interpreted by a shell. Quote a path with spaces as you would on a command line.
         argv = shlex.split(command)
         if not argv:
             return [Result("exec", False, "no command given")]
@@ -211,9 +169,6 @@ def check_vectors_against_reference(vectors: dict) -> list[Result]:
             for k in ("assign", "ledger", "digest", "revision")]
 
 
-# --- store -------------------------------------------------------------------------------------------
-
-
 def check_store(root: str) -> list[Result]:
     out: list[Result] = []
     for kind, directory, schema_name in (("trace", paths.traces_dir(root), "trace.schema.json"),
@@ -245,9 +200,6 @@ def check_store(root: str) -> list[Result]:
                       f"{len(rows)} recomputed" + (f"; first miss: {wrong[0].lesson} on {wrong[0].occasion_id}"
                                                    if wrong else "")))
     return out
-
-
-# --- gateway -----------------------------------------------------------------------------------------
 
 
 def _call(base: str, method: str, path: str, token: str | None, body: dict | None = None) -> tuple[int, dict]:

@@ -1,13 +1,3 @@
-"""Tests for commontrace/experiment.py -- the randomized-holdout causal layer.
-
-The property under test is not "the arithmetic is right" but that the
-module answers a question observation cannot: whether injecting a lesson
-*causes* better outcomes. The central test here
-(TestCorrelationVsCausation) constructs a world with a known ground truth
-where correlational scoring gives the exactly-backwards answer, and asserts
-the holdout recovers the truth. If that test ever passes vacuously, the
-module has no reason to exist.
-"""
 import json
 import math
 import os
@@ -21,8 +11,6 @@ from commontrace.cli import main
 
 class TestHoldoutAssignment:
     def test_is_deterministic(self):
-        """A disputed result must be reproducible months later, and a retried
-        occasion must not silently change arms mid-experiment."""
         first = [ex.is_held_out("lesson_a", f"occ{i}") for i in range(200)]
         second = [ex.is_held_out("lesson_a", f"occ{i}") for i in range(200)]
         assert first == second
@@ -37,13 +25,6 @@ class TestHoldoutAssignment:
         assert not ex.is_held_out("l", "o", rate=-0.5)
 
     def test_nan_rate_is_rejected_not_silently_always_false(self):
-        """NaN compares False against everything -- `nan <= 0`, `nan >= 1`,
-        and `x < nan` are all False -- so an unvalidated NaN rate fell
-        through every branch to `_uniform_from(...) < rate` (itself always
-        False) and this function silently returned False for EVERY call,
-        forever. That is a silent, undetectable measurement failure: the
-        holdout experiment believes it configured whatever --holdout-rate
-        was passed while actually withholding 0% of assignments."""
         with pytest.raises(ValueError):
             ex.is_held_out("l", "o", rate=float("nan"))
 
@@ -56,21 +37,10 @@ class TestHoldoutAssignment:
     def test_observed_rate_matches_the_requested_rate(self, rate):
         n = 20_000
         held = sum(ex.is_held_out("lesson_a", f"occ{i}", rate=rate) for i in range(n))
-        # 4 standard errors of a binomial proportion -- wide enough never to
-        # flake, tight enough to catch a genuinely skewed hash.
         se = math.sqrt(rate * (1 - rate) / n)
         assert abs(held / n - rate) < 4 * se
 
     def test_assignment_is_independent_across_lessons(self):
-        """The property that makes always-co-firing lessons separable.
-
-        Two lessons retrieved together on every occasion share every outcome,
-        so no observational method can attribute the outcome to one of them.
-        Independent holdout draws break the tie by construction: some
-        occasions get A without B, and vice versa. If the draws were
-        correlated -- e.g. if the hash ignored the slug -- that would collapse
-        and the whole approach would fail silently.
-        """
         n = 20_000
         both = sum(
             ex.is_held_out("lesson_a", f"occ{i}", rate=0.5)
@@ -92,8 +62,6 @@ class TestTwoProportionTest:
         assert p == pytest.approx(1.0)
 
     def test_matches_the_closed_form_on_a_known_case(self):
-        """Guards against a silent change of standard-error form. Computed by
-        hand for 80/100 vs 60/100: p_pool=0.70, se=sqrt(.7*.3*(1/100+1/100))."""
         z, p = ex.two_proportion_test(80, 100, 60, 100)
         se = math.sqrt(0.7 * 0.3 * 0.02)
         assert z == pytest.approx(0.20 / se)
@@ -104,9 +72,6 @@ class TestTwoProportionTest:
         assert p < 0.001
 
     def test_same_difference_with_tiny_n_is_not_significant(self):
-        """The reason raw rate differences are never reported alone: 90% vs
-        50% is the same headline number at n=10 and at n=100, and only one of
-        them is evidence."""
         _, p = ex.two_proportion_test(9, 10, 5, 10)
         assert p > 0.05
 
@@ -118,19 +83,6 @@ class TestTwoProportionTest:
         assert ex.two_proportion_test(0, 10, 0, 10) == (0.0, 1.0)
 
     def test_a_success_count_over_its_total_raises_a_clear_error(self):
-        """[BUG-CLI-04]: s1 > n1 (or a negative count) makes p_pool fall
-        outside [0, 1], which can make p_pool*(1-p_pool) negative --
-        math.sqrt on that used to crash with a raw, uninformative
-        `ValueError: math domain error` instead of a message naming which
-        arm's counts don't make sense. Every real caller counts s/n from a
-        COUNT(*)-style aggregate (0 <= s <= n always holds), so this is a
-        guard against a future caller or a hand-built test value, not a
-        path production traffic reaches -- but the failure mode when it IS
-        reached must still be a clear error, not an opaque math crash."""
-        # p_pool must land strictly outside [0, 1] (not exactly 0.0 or 1.0,
-        # which the existing "no variance" short-circuit above already
-        # catches without ever reaching the sqrt) to actually reproduce the
-        # math-domain-error this guards against.
         with pytest.raises(ValueError, match="arm 1"):
             ex.two_proportion_test(25, 10, 0, 10)
 
@@ -150,9 +102,6 @@ class TestConfidenceInterval:
         assert (large[1] - large[0]) < (small[1] - small[0])
 
     def test_a_significant_effect_has_an_interval_excluding_zero(self):
-        """The interval and the p-value must tell the same story; they use
-        different standard errors and can be made to disagree by mixing the
-        pooled and unpooled forms up."""
         _, p = ex.two_proportion_test(90, 100, 50, 100)
         lo, hi = ex.diff_confidence_interval(90, 100, 50, 100)
         assert p < 0.05 and lo > 0
@@ -176,34 +125,19 @@ class TestBenjaminiHochberg:
         assert ex.benjamini_hochberg([0.4, 0.6, 0.9]) == [False, False, False]
 
     def test_a_lone_borderline_value_is_rejected_among_many_nulls(self):
-        """The multiple-comparison problem itself. At alpha=0.05 across 100
-        lessons, ~5 will look significant by chance -- and those are exactly
-        the ones a report would quote."""
         p_values = [0.04] + [0.5] * 99
         assert not any(ex.benjamini_hochberg(p_values))
 
     def test_is_less_conservative_than_bonferroni(self):
-        """Why BH and not Bonferroni: on a corpus of this shape Bonferroni
-        would discard real effects."""
         p_values = [0.001, 0.002, 0.003, 0.004] + [0.5] * 16
         kept = ex.benjamini_hochberg(p_values)
         bonferroni = [p <= 0.05 / len(p_values) for p in p_values]
         assert sum(kept) > sum(bonferroni)
 
     def test_result_order_matches_input_order(self):
-        """Values arrive sorted by lesson, not by p. Returning the mask in
-        rank order instead would mislabel every lesson."""
         assert ex.benjamini_hochberg([0.9, 0.0001, 0.9]) == [False, True, False]
 
     def test_step_up_keeps_a_p_that_fails_its_own_threshold(self):
-        """BH is a step-*up* procedure: once the largest surviving rank is
-        found, every smaller-p hypothesis is kept too, even one that fails
-        its own threshold. Testing each p against its own rank independently
-        is the classic misimplementation, and it is strictly less powerful.
-        """
-        # m=3, alpha=0.05 -> thresholds 0.0167, 0.0333, 0.05.
-        # 0.034 exceeds its own rank-2 threshold, but rank 3 survives, so BH
-        # steps up and keeps everything at or below it.
         p_values = [0.001, 0.034, 0.045]
         assert ex.benjamini_hochberg(p_values) == [True, True, True]
 
@@ -213,8 +147,6 @@ class TestMinimumDetectableEffect:
         assert ex.minimum_detectable_effect(1000, 0.5) < ex.minimum_detectable_effect(10, 0.5)
 
     def test_tiny_samples_can_only_detect_enormous_effects(self):
-        """Quoted alongside every 'no effect' verdict so it reads as 'cannot
-        answer yet' rather than 'proven ineffective'."""
         assert ex.minimum_detectable_effect(10, 0.5) > 0.40
 
     def test_degenerate_inputs_return_none_rather_than_a_number(self):
@@ -224,7 +156,6 @@ class TestMinimumDetectableEffect:
 
 
 def _obs(slug, n, injected, success_rate, offset=0):
-    """n occasions for `slug` in one arm, `success_rate` of them successful."""
     n_success = round(n * success_rate)
     return [
         ex.HoldoutObservation(
@@ -246,20 +177,12 @@ class TestAnalyze:
         assert effect.significant and effect.ci_low > 0
 
     def test_a_lesson_that_clearly_hurts_is_reported_as_hurts(self):
-        """The verdict correlational scoring structurally cannot produce."""
         obs = _obs("l", 100, True, 0.40) + _obs("l", 100, False, 0.85)
         (effect,) = ex.analyze(obs)
         assert effect.verdict == ex.VERDICT_HURTS
         assert effect.effect < 0 and effect.ci_high < 0
 
     def test_no_real_difference_is_no_measurable_effect_ONLY_when_powered(self):
-        """These two assertions used to be one, and the first was wrong.
-
-        100 per arm against a 60% baseline has a minimum detectable effect of
-        ~19 points, so a null there cannot mean "no effect worth acting on" --
-        it means the design could not have seen one. NO_MEASURABLE_EFFECT is
-        reserved for a sample that could actually have detected the target.
-        """
         thin = _obs("l", 100, True, 0.60) + _obs("l", 100, False, 0.60)
         (effect,) = ex.analyze(thin)
         assert effect.verdict == ex.VERDICT_UNDERPOWERED
@@ -271,8 +194,6 @@ class TestAnalyze:
         assert effect.min_detectable_effect <= ex.DEFAULT_PRACTICAL_EFFECT
 
     def test_a_real_null_says_it_is_evidence_of_absence(self):
-        """The distinction the whole verdict turns on, stated in the note so
-        a reader does not have to know it."""
         (effect,) = ex.analyze(_obs("l", 600, True, 0.60) + _obs("l", 600, False, 0.60))
         assert "evidence of absence rather than absence of evidence" in effect.note
 
@@ -284,24 +205,17 @@ class TestAnalyze:
         assert "not 'no effect'" in effect.note
 
     def test_a_significant_result_survives_a_small_sample(self):
-        """The asymmetry that makes the power gate correct rather than merely
-        cautious: an underpowered design that DOES find something has found
-        it. Power governs how to read a null, not a detection."""
         obs = _obs("l", 40, True, 0.95) + _obs("l", 40, False, 0.20)
         (effect,) = ex.analyze(obs)
         assert effect.verdict == ex.VERDICT_HELPS
         assert effect.min_detectable_effect > ex.DEFAULT_PRACTICAL_EFFECT
 
     def test_the_target_effect_is_configurable(self):
-        """10 points is a product judgement, not a statistical constant, so a
-        fleet that only cares about large effects can say so."""
         obs = _obs("l", 100, True, 0.60) + _obs("l", 100, False, 0.60)
         assert ex.analyze(obs)[0].verdict == ex.VERDICT_UNDERPOWERED
         assert ex.analyze(obs, detectable=0.30)[0].verdict == ex.VERDICT_NO_EFFECT
 
     def test_a_thin_arm_is_underpowered_not_no_effect(self):
-        """A 5-vs-5 comparison is not evidence of anything. Reporting it as
-        'no effect' would let a real regression sit unflagged."""
         obs = _obs("l", 50, True, 0.90) + _obs("l", 5, False, 0.20)
         (effect,) = ex.analyze(obs)
         assert effect.verdict == ex.VERDICT_UNDERPOWERED
@@ -309,14 +223,10 @@ class TestAnalyze:
         assert "not 'no effect'" in effect.note
 
     def test_a_lesson_never_withheld_is_underpowered_not_helpful(self):
-        """Without a withheld arm there is no comparison at all -- the exact
-        situation the whole module exists to escape."""
         (effect,) = ex.analyze(_obs("l", 200, True, 0.95))
         assert effect.verdict == ex.VERDICT_UNDERPOWERED
 
     def test_underpowered_lessons_do_not_enter_the_fdr_correction(self):
-        """Including them would inflate m and weaken every genuine result:
-        a real effect could be erased by lessons that were never tested."""
         real = _obs("real", 100, True, 0.85) + _obs("real", 100, False, 0.50)
         thin = []
         for i in range(40):
@@ -344,23 +254,8 @@ class TestAnalyze:
 
 
 class TestCorrelationVsCausation:
-    """The claim the module is built on, stated as an executable test.
-
-    A lesson fires *because* the situation matched it, so the occasions where
-    it fired differ systematically from those where it did not. Below, that
-    selection effect is strong enough to invert the answer -- and the bias
-    does not shrink with n, so no amount of extra observation would rescue
-    the correlational read.
-    """
-
     @staticmethod
     def _world(n, true_effect, fires_on_hard_tasks):
-        """A fleet where task difficulty drives both retrieval and outcome.
-
-        `fires_on_hard_tasks` is the confound: the lesson is retrieved on the
-        gnarly occasions, which fail more often for reasons that have nothing
-        to do with the lesson.
-        """
         base_easy, base_hard = 0.80, 0.30
         rows, fired, not_fired = [], [], []
         for i in range(n):
@@ -369,8 +264,6 @@ class TestCorrelationVsCausation:
             eligible = hard if fires_on_hard_tasks else not hard
             baseline = base_hard if hard else base_easy
             if not eligible:
-                # Occasions the lesson never matched. A correlational read
-                # uses these as its comparison group; a causal one must not.
                 not_fired.append(ex._uniform_from("outcome", occ) < baseline)
                 continue
             withheld = ex.is_held_out("l", occ, rate=0.5)
@@ -410,14 +303,11 @@ class TestRender:
         assert "Causal Effect Report" in out
 
     def test_states_how_the_measurement_was_made(self):
-        """A number that drives a purchasing decision must carry its method."""
         out = ex.render(ex.ExperimentSummary(0, 0, 0.10, []))
         assert "withholding" in out and "confounded" in out
         assert "deterministic hash" in out
 
     def test_a_tiny_p_value_is_never_printed_as_exactly_zero(self):
-        """`p = 0.000` claims something impossible and is the first thing a
-        technical reviewer notices."""
         obs = _obs("l", 200, True, 0.95) + _obs("l", 200, False, 0.30)
         effects = ex.analyze(obs)
         out = ex.render(ex.ExperimentSummary(len(obs), 1, 0.10, effects))
@@ -501,9 +391,6 @@ class TestExperimentCLI:
         assert "none have a matching" in capsys.readouterr().err
 
     def test_full_round_trip_from_retrieval_to_causal_verdict(self, store, capsys):
-        """query --experiment writes the arms; episodes supply the outcomes;
-        experiment joins them. A break anywhere in that chain silently yields
-        'no data', so the join is asserted end to end."""
         _write_lesson(store, "webhook", "retry failed webhook delivery", ["webhooks"])
 
         n = 120
@@ -514,7 +401,6 @@ class TestExperimentCLI:
                 "--occasion-id", occ, "--holdout-rate", "0.5", "--dest", str(store),
             ])
             withheld = ex.is_held_out("webhook", occ, rate=0.5)
-            # Ground truth: injecting the lesson genuinely helps.
             succeeded = ex._uniform_from("outcome", occ) < (0.40 if withheld else 0.90)
             _write_episode(store, occ, "CONFORM" if succeeded else "ABANDON", (i % 28) + 1)
 
@@ -563,10 +449,6 @@ class TestExperimentCLI:
 
 
 class TestMinimumDetectableEffectPower:
-    """`power` was accepted and ignored -- both branches of a ternary were the
-    80% constant -- so asking for 95% power silently returned the 80% answer
-    and understated the sample size a real experiment needs."""
-
     def test_higher_power_demands_a_larger_effect_to_detect(self):
         at80 = ex.minimum_detectable_effect(100, 0.5, power=0.80)
         at90 = ex.minimum_detectable_effect(100, 0.5, power=0.90)
@@ -591,10 +473,6 @@ class TestMinimumDetectableEffectPower:
 
 
 class TestHoldoutLogDeduplication:
-    """The holdout log is append-only, so a retried task writes the same
-    (lesson, occasion) pair again. Counting it twice inflates the arm and
-    deflates the p-value -- a retry storm would manufacture significance."""
-
     def test_a_retried_occasion_is_counted_once(self, store, capsys):
         from commontrace.commands.experiment_cmd import holdout_log_path
 
@@ -605,7 +483,6 @@ class TestHoldoutLogDeduplication:
         for i in range(40):
             occ = f"task{i}"
             withheld = ex.is_held_out("l", occ, rate=0.5)
-            # three identical rows per occasion, as three retries would write
             for _ in range(3):
                 rows.append(json.dumps({"occasion_id": occ, "lesson": "l",
                                         "injected": not withheld, "rate": 0.5, "salt": "default"}))
@@ -617,7 +494,6 @@ class TestHoldoutLogDeduplication:
         capsys.readouterr()
         assert main(["experiment", "--dest", str(store), "--json"]) == 0
         data = json.loads(capsys.readouterr().out)
-        # 40 occasions, not 120 rows
         assert data["n_observations"] == 40
         total_arms = sum(e["n_injected"] + e["n_withheld"] for e in data["effects"])
         assert total_arms == 40
@@ -638,16 +514,6 @@ class TestHoldoutLogDeduplication:
 
 
 class TestSemanticPathRunsTheExperiment:
-    """The holdout must apply on BOTH retrieval paths.
-
-    Only the lexical branch honoured `--experiment`; the semantic branch
-    forwarded just the query and --top-k to the reference script. So a fleet
-    with the `attention` extra installed -- the recommended production setup --
-    could run `query --experiment` on every task forever and `commontrace
-    experiment` would keep reporting "no holdout assignments recorded yet".
-    The causal feature silently did nothing exactly where it was meant to run.
-    """
-
     SEMANTIC_STDOUT = (
         "# Top-10 retrieval (+ importance>=4 override)\n"
         "# Index: 3 lessons, model=all-MiniLM-L6-v2\n"
@@ -661,14 +527,7 @@ class TestSemanticPathRunsTheExperiment:
     def semantic(self, monkeypatch):
         from commontrace.commands import query_cmd
         monkeypatch.setattr(query_cmd, "has_attention_deps", lambda: True)
-        # A usable index as well as the deps. `query` falls back to lexical
-        # when the semantic index is missing or stale -- which is what a bare
-        # install has, since `init` can only write index.npz when numpy is
-        # present -- and without this these tests would exercise the fallback
-        # rather than the semantic path they exist to pin.
         monkeypatch.setattr(query_cmd, "_index_is_unusable", lambda root: "")
-        # The stubbed script ranks lessons this store never wrote to disk; an
-        # empty store would (rightly) skip the semantic arm altogether.
         monkeypatch.setattr(query_cmd, "_has_candidates", lambda args, root: True)
         monkeypatch.setattr(
             query_cmd, "run_script",
@@ -701,7 +560,6 @@ class TestSemanticPathRunsTheExperiment:
         assert main(["query", "refund delayed", "--experiment", "--occasion-id", "t",
                      "--holdout-rate", "1.0", "--dest", str(store)]) == 0
         out = capsys.readouterr().out
-        # rate 1.0 withholds everything
         assert out.count("[WITHHELD - holdout]") == 3
         assert "cosine=" not in out.replace("# ", "")
 
@@ -726,8 +584,6 @@ class TestSemanticPathRunsTheExperiment:
 
     def test_without_experiment_the_output_is_screened_and_otherwise_unchanged(self, store, semantic, capsys,
                                                                                  monkeypatch):
-        """Captured so the injection screen can run on it (the semantic script never reads lesson text), and
-        printed as the script wrote it when nothing is quarantined or withdrawn."""
         calls = []
         from commontrace.commands import query_cmd
         monkeypatch.setattr(
@@ -759,16 +615,6 @@ class TestSemanticPathRunsTheExperiment:
         assert logged == {"lesson_beta", "lesson_gamma"}
 
     def test_the_agent_type_filter_reaches_the_semantic_script(self, store, monkeypatch):
-        """One organisation can run several fleets out of one store -- its
-        coding agents, its HR agents, its legal agents -- and must be able to
-        scope retrieval to the fleet asking.
-
-        This flag used to be dropped with a "not supported by the semantic
-        retriever" warning, because the index carried no agent_type. The index
-        now has an agent_types column (commontrace/reference/build_index.py),
-        so the filter is forwarded rather than announced as missing: the
-        lexical and semantic retrievers answer the same question again.
-        """
         from commontrace.commands import query_cmd
 
         seen: dict = {}
@@ -789,21 +635,8 @@ class TestSemanticPathRunsTheExperiment:
         assert seen["args"][seen["args"].index("--agent-type") + 1] == "support"
 
 
-
 class TestDesigningTheExperimentBeforeRunningIt:
-    """`plan` exists because the failure it prevents is expensive and silent:
-    a fleet runs a 30-day pilot at the default holdout rate and the report on
-    the last day says "not enough data yet". The occasions are spent, the
-    window is gone, and the only fix had to be applied on day one.
-
-    Measured on a real 240-occasion run with a +25pp effect seeded in: two of
-    three lessons never reached the floor, and the third was reported as
-    NO_MEASURABLE_EFFECT.
-    """
-
     def test_required_n_is_the_exact_inverse_of_the_detectable_effect(self):
-        """Two functions describing one design must not be able to disagree
-        about it."""
         for effect in (0.05, 0.10, 0.20, 0.35):
             for baseline in (0.2, 0.5, 0.8):
                 n = ex.required_n_per_arm(effect, baseline)
@@ -813,12 +646,9 @@ class TestDesigningTheExperimentBeforeRunningIt:
     def test_a_smaller_effect_needs_a_bigger_sample(self):
         big = ex.required_n_per_arm(0.20, 0.5)
         small = ex.required_n_per_arm(0.05, 0.5)
-        assert small > big * 4  # quadratic in 1/effect
+        assert small > big * 4
 
     def test_the_control_arm_is_what_makes_a_low_rate_slow(self):
-        """The arithmetic nobody does in their head, and the reason a 10%
-        holdout answers roughly ten times slower than its occasion count
-        suggests."""
         at_ten = ex.plan(effect=0.10, baseline=0.6, rate=0.10)
         at_half = ex.plan(effect=0.10, baseline=0.6, rate=0.50)
         assert at_ten.n_per_arm == at_half.n_per_arm
@@ -831,8 +661,6 @@ class TestDesigningTheExperimentBeforeRunningIt:
         assert "Set the holdout rate to" in ex.render_plan(design)
 
     def test_a_budget_that_no_rate_can_answer_says_so(self):
-        """The most useful answer this gives, and the one a customer most
-        needs before spending the window rather than after."""
         design = ex.plan(effect=0.05, baseline=0.6, rate=0.10, occasions_budget=100)
         assert design.verdict == "infeasible"
         assert design.rate_for_budget is None
@@ -846,8 +674,6 @@ class TestDesigningTheExperimentBeforeRunningIt:
         assert "is enough at" in ex.render_plan(design)
 
     def test_the_rendered_plan_states_the_cost_of_a_wider_holdout(self):
-        """A wider holdout means more work running without its memory. A tool
-        that recommends one without saying so is selling the upside only."""
         rendered = ex.render_plan(
             ex.plan(effect=0.15, baseline=0.6, rate=0.10, occasions_budget=400))
         assert "runs without its memory" in rendered

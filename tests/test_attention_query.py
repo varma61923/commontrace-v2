@@ -1,11 +1,3 @@
-"""Tests for memory/attention/query.py's handling of a tampered index.npz.
-
-index.npz is a local build artifact, but nothing stops one arriving on a machine
-via git clone/fork/sync rather than a local `build_index.py` run. Its `model_name`
-field must not be trusted blindly -- see the comment in query.py for the CVE
-context (a malicious model_name could point SentenceTransformer at an arbitrary,
-code-executing Hugging Face Hub repo).
-"""
 import json
 import os
 import sys
@@ -33,12 +25,6 @@ def _write_index(path, model_name, n=2):
 
 
 def _write_active_lesson_files(lessons_dir, n):
-    """Write real, active lesson_<i>.md files backing the fake index slugs
-    _write_index() produces (lesson_0..lesson_{n-1}) -- load_importances()
-    reads these from disk directly, and query.py's active-lessons filter
-    (see the [BUG-MEM-02] fix) now excludes any index slug that is not
-    backed by one of these, so a test asserting on which/how many index
-    slugs make it into the retrieved set needs both, not the index alone."""
     for i in range(n):
         (lessons_dir / f"lesson_{i}.md").write_text(
             f"---\nname: lesson_{i}\nimportance: 3\nstatus: active\n---\nbody\n", encoding="utf-8"
@@ -61,7 +47,7 @@ class TestTamperedModelName:
 
         rc = attn_query.main()
         assert rc == 1
-        assert called == []  # SentenceTransformer must never be constructed
+        assert called == []
         err = capsys.readouterr().err
         assert "attacker/malicious-repo" in err
 
@@ -87,12 +73,6 @@ class TestTamperedModelName:
         assert called == [attn_query._TRUSTED_MODEL_NAME]
 
     def test_a_network_load_failure_is_a_clean_error_not_a_traceback(self, tmp_path, monkeypatch, capsys):
-        """SentenceTransformer downloads the model from Hugging Face Hub on
-        first use if it isn't already cached locally -- an air-gapped host,
-        or a cache the operator didn't realize was never populated, raises
-        a raw OSError from deep inside huggingface_hub. Must surface as the
-        same clean [ERR]/return 1 pattern every other failure path here
-        uses, not an uncaught traceback."""
         index_path = tmp_path / "index.npz"
         _write_index(str(index_path), attn_query._TRUSTED_MODEL_NAME)
         monkeypatch.setattr(attn_query, "INDEX_PATH", str(index_path))
@@ -113,10 +93,6 @@ class TestTamperedModelName:
 
 
 class TestAlphaTelemetry:
-    """Tests for the Phase 3 (P5) operational-cost instrumentation: query.py must append
-    one JSON line per invocation to memory/alpha_telemetry.jsonl, creating it if absent and
-    never truncating prior history."""
-
     def _run(self, tmp_path, monkeypatch, query="some task"):
         index_path = tmp_path / "index.npz"
         _write_index(str(index_path), attn_query._TRUSTED_MODEL_NAME, n=3)
@@ -147,18 +123,17 @@ class TestAlphaTelemetry:
             "n_candidates_surfaced", "estimated_tokens",
         }
         assert isinstance(rec["latency_ms"], (int, float)) and rec["latency_ms"] >= 0
-        assert rec["n_candidates_surfaced"] == 3  # all 3 lessons in the tiny fake index
+        assert rec["n_candidates_surfaced"] == 3
         assert rec["estimated_tokens"] > 0
 
     def test_telemetry_appends_without_truncating(self, tmp_path, monkeypatch):
         telemetry_path = self._run(tmp_path, monkeypatch, query="first task")
-        # Second invocation reuses the same tmp_path/index, must append not overwrite.
         telemetry_path2 = self._run(tmp_path, monkeypatch, query="second task")
         assert telemetry_path == telemetry_path2
         lines = telemetry_path.read_text(encoding="utf-8").strip().splitlines()
         assert len(lines) == 2
         for line in lines:
-            json.loads(line)  # each line independently valid JSON
+            json.loads(line)
 
     def test_telemetry_creates_parent_dir_if_absent(self, tmp_path, monkeypatch):
         nested = tmp_path / "nested" / "dir"
@@ -178,10 +153,6 @@ class TestAlphaTelemetry:
         assert (nested / "alpha_telemetry.jsonl").exists()
 
     def test_telemetry_rotates_once_it_crosses_the_size_threshold(self, tmp_path, monkeypatch):
-        """One record gets appended per query invocation with no retention
-        limit, so a long-lived store's telemetry file grew without bound.
-        Rotated to a single .1 backup once it crosses the size threshold
-        instead."""
         path = tmp_path / "alpha_telemetry.jsonl"
         monkeypatch.setattr(attn_query, "_TELEMETRY_MAX_BYTES", 100)
         path.write_text("x" * 200, encoding="utf-8")
@@ -214,25 +185,18 @@ class TestLoadImportancesParsedCount:
         (tmp_path / "lesson_template.md").write_text(
             "---\nname: lesson_template\n---\nbody\n", encoding="utf-8"
         )
-        # load_importances reads the module-level LESSONS_DIR global directly, so patch it.
         old_dir = attn_query.LESSONS_DIR
         attn_query.LESSONS_DIR = str(tmp_path)
         try:
             importances, n_parsed = attn_query.load_importances()
         finally:
             attn_query.LESSONS_DIR = old_dir
-        assert n_parsed == 2  # template excluded, active + archived both counted as "parsed"
-        assert importances == {"lesson_a": 3}  # only the active one is retrieval-eligible
+        assert n_parsed == 2
+        assert importances == {"lesson_a": 3}
 
 
 class TestLoadImportancesSurvivesUnreadableFile:
     def test_an_unreadable_lesson_is_skipped_not_a_crash(self, tmp_path, monkeypatch):
-        """A file matched by glob() can still fail to open() -- permissions,
-        deleted out from under us by a concurrent command, a broken symlink.
-        Mocked here (rather than chmod 0o000) so the test is deterministic
-        regardless of the user running it -- root bypasses permission bits
-        entirely, which would make a chmod-based test silently pass for the
-        wrong reason."""
         (tmp_path / "lesson_a.md").write_text(
             "---\nname: lesson_a\nimportance: 4\nstatus: active\n---\nbody\n", encoding="utf-8"
         )
@@ -261,13 +225,6 @@ class TestLoadImportancesSurvivesUnreadableFile:
 
 
 class TestArchivedLessonsExcludedFromTopK:
-    """[BUG-MEM-02]: index.npz keeps one row per lesson as of the last
-    build_index.py run. A lesson archived (or deleted from disk) since then
-    still has a row and a cosine score -- query.py used to rank purely off
-    `scores`, so that stale row could still win a top-K slot from an
-    actually-active lesson, surfacing in the brief as
-    `lesson_x | cosine=0.9xx | importance=0`."""
-
     def test_an_archived_lesson_in_the_index_never_appears_in_the_brief(
         self, tmp_path, monkeypatch
     ):
@@ -284,10 +241,6 @@ class TestArchivedLessonsExcludedFromTopK:
         (tmp_path / "lesson_active_one.md").write_text(
             "---\nname: active_one\nimportance: 3\nstatus: active\n---\nbody\n", encoding="utf-8"
         )
-        # archived_one has NO corresponding active lesson file on disk --
-        # exactly the leaked-index state the fix targets. (Whether it's
-        # archived, deleted, or simply never re-indexed makes no difference
-        # to query.py: load_importances() only ever sees active lessons.)
         monkeypatch.setattr(attn_query, "INDEX_PATH", str(index_path))
         monkeypatch.setattr(attn_query, "LESSONS_DIR", str(tmp_path))
         monkeypatch.setattr(attn_query, "TELEMETRY_PATH", str(tmp_path / "alpha_telemetry.jsonl"))
@@ -307,10 +260,6 @@ class TestArchivedLessonsExcludedFromTopK:
             rc = attn_query.main()
         out = buf.getvalue()
         assert rc == 0
-        # archived_one must never be ranked as a result -- but it IS correctly named in
-        # the staleness warning (an embedded slug this index has that is no longer
-        # active on disk is exactly the condition check_staleness() exists to surface),
-        # so check the result lines specifically rather than the whole output.
         result_lines = [
             line for line in out.splitlines() if line and not line.startswith("#")
         ]
@@ -319,13 +268,6 @@ class TestArchivedLessonsExcludedFromTopK:
 
 
 class TestImportanceFloorZeroDisablesOverride:
-    """[BUG-MEM-05]: importance is schema-bounded to [1, 5], so
-    `--include-importance-floor 0` made `importances.get(slug, 0) >= floor`
-    trivially true for every lesson, dumping the entire store into the
-    brief instead of respecting --top-k. There was also no other way to
-    disable the safety override at all, so floor<=0 is now treated as
-    that missing "disabled" sentinel instead."""
-
     def test_floor_zero_does_not_dump_the_whole_store(self, tmp_path, monkeypatch):
         n = 5
         index_path = tmp_path / "index.npz"
@@ -358,10 +300,6 @@ class TestImportanceFloorZeroDisablesOverride:
 
 
 class TestCheckStaleness:
-    """Unit tests for check_staleness() -- query.py's own detection that index.npz no
-    longer matches the current lesson store, independent of build_index.py's freshness
-    check (which only protects the *next* build, not queries run against a stale one)."""
-
     def test_matching_slugs_and_older_lessons_is_not_stale(self, tmp_path):
         index_path = tmp_path / "index.npz"
         index_path.write_bytes(b"x")
@@ -372,7 +310,7 @@ class TestCheckStaleness:
         lesson.write_text(
             "---\nname: lesson_a\nstatus: active\n---\nbody\n", encoding="utf-8"
         )
-        os.utime(lesson, (1_000_000_000, 1_000_000_000))  # older than the index
+        os.utime(lesson, (1_000_000_000, 1_000_000_000))
         reasons = attn_query.check_staleness(
             str(index_path), str(lessons_dir), {"lesson_a"}, {"lesson_a"}
         )
@@ -399,8 +337,6 @@ class TestCheckStaleness:
         assert any("lesson_b" in r for r in reasons)
 
     def test_edited_lesson_same_slug_detected_via_mtime(self, tmp_path):
-        """A reworded lesson (same slug, so the slug-set signal alone stays silent) must
-        still be caught -- this is the gap the mtime signal exists to close."""
         index_path = tmp_path / "index.npz"
         index_path.write_bytes(b"x")
         os.utime(index_path, (1_000_000_000, 1_000_000_000))
@@ -410,17 +346,13 @@ class TestCheckStaleness:
         lesson.write_text(
             "---\nname: lesson_a\nstatus: active\n---\nbody\n", encoding="utf-8"
         )
-        os.utime(lesson, (2_000_000_000, 2_000_000_000))  # newer than the index
+        os.utime(lesson, (2_000_000_000, 2_000_000_000))
         reasons = attn_query.check_staleness(
             str(index_path), str(lessons_dir), {"lesson_a"}, {"lesson_a"}
         )
         assert any("modified after" in r for r in reasons)
 
     def test_archived_lesson_edit_does_not_count_towards_mtime_signal(self, tmp_path):
-        """A touched archived lesson, newer than the index but never embedded, must not
-        trigger the mtime signal -- this is the false-positive it must avoid. (The
-        slug-set signal is a separate concern and doesn't apply here: an archived lesson
-        is correctly absent from both `indexed_slugs` and `active_slugs`.)"""
         index_path = tmp_path / "index.npz"
         index_path.write_bytes(b"x")
         os.utime(index_path, (1_000_000_000, 1_000_000_000))
@@ -430,7 +362,7 @@ class TestCheckStaleness:
         archived.write_text(
             "---\nname: lesson_archived\nstatus: archived\n---\nbody\n", encoding="utf-8"
         )
-        os.utime(archived, (2_000_000_000, 2_000_000_000))  # newer than the index
+        os.utime(archived, (2_000_000_000, 2_000_000_000))
         reasons = attn_query.check_staleness(
             str(index_path), str(lessons_dir), {"lesson_a"}, {"lesson_a"}
         )
@@ -442,19 +374,16 @@ class TestCheckStaleness:
         reasons = attn_query.check_staleness(
             str(index_path), str(tmp_path / "does_not_exist"), {"lesson_a"}, {"lesson_a"}
         )
-        assert reasons == []  # slug sets match; mtime scan of a missing dir just finds nothing
+        assert reasons == []
 
     def test_missing_index_file_is_best_effort_not_a_crash(self, tmp_path):
         reasons = attn_query.check_staleness(
             str(tmp_path / "does_not_exist.npz"), str(tmp_path), {"lesson_a"}, {"lesson_a"}
         )
-        assert reasons == []  # slug sets match; mtime check just skips silently
+        assert reasons == []
 
 
 class TestQueryMainSurfacesStaleness:
-    """End-to-end (through main()) check that a stale index produces a visible
-    [WARN]/stdout signal instead of silently returning results."""
-
     def _setup(self, tmp_path, monkeypatch, lesson_slugs=("lesson_0", "lesson_1", "lesson_2")):
         index_path = tmp_path / "index.npz"
         _write_index(str(index_path), attn_query._TRUSTED_MODEL_NAME, n=len(lesson_slugs))
@@ -477,7 +406,7 @@ class TestQueryMainSurfacesStaleness:
             (tmp_path / f"{slug}.md").write_text(
                 f"---\nname: {slug}\nimportance: 1\nstatus: active\n---\nbody\n", encoding="utf-8"
             )
-            os.utime(tmp_path / f"{slug}.md", (1_000_000_000, 1_000_000_000))  # older than index
+            os.utime(tmp_path / f"{slug}.md", (1_000_000_000, 1_000_000_000))
 
         rc = attn_query.main()
         assert rc == 0
@@ -487,9 +416,6 @@ class TestQueryMainSurfacesStaleness:
 
     def test_lesson_added_since_build_triggers_stale_warning(self, tmp_path, monkeypatch, capsys):
         self._setup(tmp_path, monkeypatch, lesson_slugs=("lesson_0", "lesson_1", "lesson_2"))
-        # A brand new, low-importance lesson: absent from the index and below the
-        # importance floor, so only the new staleness check (not the existing
-        # missing_from_index override) can surface it.
         (tmp_path / "lesson_new.md").write_text(
             "---\nname: lesson_new\nimportance: 1\nstatus: active\n---\nbody\n", encoding="utf-8"
         )
@@ -513,17 +439,6 @@ class TestQueryMainSurfacesStaleness:
         assert rec["index_stale"] is True
 
 class TestStrictBoolLoaderParity:
-    """query.py used plain yaml.safe_load while build_index.py used
-    commontrace.frontmatter._StrictBoolLoader -- YAML 1.1's implicit bool
-    conversion means a lesson `name: on` (unquoted, exactly what a
-    hand-edited lesson file looks like) parses to the string "on" under the
-    strict loader but the boolean True under plain safe_load. build_index.py
-    keys its index under the strict-loader slug ("on"); this module's
-    importance-floor safety override then looked the lesson up under
-    `importances[True]` -- a key that can never match the string keys the
-    rest of the retrieval pipeline uses -- and silently lost the override
-    for exactly the lessons whose names look like a YAML 1.1 bool token."""
-
     def test_a_yaml_1_1_bool_like_lesson_name_stays_a_string(self, tmp_path):
         (tmp_path / "lesson_on.md").write_text(
             "---\nname: on\nimportance: 5\nstatus: active\n---\nbody\n", encoding="utf-8"

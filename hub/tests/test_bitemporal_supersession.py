@@ -1,27 +1,3 @@
-"""A superseded trace says so, on its own row -- and search stops offering it.
-
-amend_trace's own docstring has always correctly described the chain as
-"supersedes, does not mutate": it creates a NEW Trace and leaves the one
-it amends untouched. What "untouched" meant in practice, before this file
-existed, was that search_traces had NOTHING on the original row it could
-filter on -- `supersedes_trace_id` only ever points backward, from an
-amendment to what it replaced, never forward. A search could therefore
-return the STALE original, sometimes in place of its correction, whenever
-the old wording happened to rank higher on text relevance than the new
-one. Reproduced against a live Hub before hub/models.py:Trace.superseded_at
-existed: amend a trace, search for wording that exists only in the old
-version, get the old version back.
-
-The fix is the idea, not the code, adapted from Zep/Graphiti's bi-temporal
-fact model: a superseded fact is invalidated -- a timestamped, queryable
-event on the fact itself -- never deleted. `TestSearchStopsOfferingStaleTraces`
-is the direct regression test for the reproduced bug; the rest of this
-file pins the surrounding contract (atomicity with the amending INSERT,
-"invalidated not deleted" via get_trace, the wire shape, idempotent
-replay, and the same fix applied to the cross-org Knowledge Base surface,
-where the same staleness would otherwise mislead every OTHER org instead
-of just the one that wrote it).
-"""
 from __future__ import annotations
 
 import pytest
@@ -87,8 +63,6 @@ class TestTheOriginalRecordsItsOwnSupersession:
     async def test_the_new_head_carries_no_supersession_of_its_own(
         self, session_factory, config, org
     ):
-        """The amendment is the current head of the chain -- nothing
-        supersedes IT yet -- until some later amendment does."""
         original = await _contribute(session_factory, config, org)
         amended = await _amend(session_factory, config, org, original["id"], title="v2")
 
@@ -98,11 +72,6 @@ class TestTheOriginalRecordsItsOwnSupersession:
         assert row.superseded_by_trace_id is None
 
     async def test_the_two_writes_are_atomic(self, session_factory, config, org):
-        """A reader can never observe a new head with no superseded
-        original, or a superseded original with no new head -- both land
-        in the same flush as the same INSERT. Checked here by reading both
-        rows back together after the call returns, rather than trusting
-        that no interleaving is possible."""
         original = await _contribute(session_factory, config, org)
         amended = await _amend(session_factory, config, org, original["id"], title="v2")
 
@@ -124,22 +93,14 @@ class TestTheOriginalRecordsItsOwnSupersession:
             r2 = await session.get(Trace, v2["id"])
             r3 = await session.get(Trace, v3["id"])
         assert r1.superseded_by_trace_id == v2["id"]
-        assert r2.superseded_by_trace_id == v3["id"]  # v2 is superseded too, not just v1
-        assert r3.superseded_by_trace_id is None  # v3 is the current head
+        assert r2.superseded_by_trace_id == v3["id"]
+        assert r3.superseded_by_trace_id is None
 
 
 class TestSearchStopsOfferingStaleTraces:
-    """The direct regression test for the reproduced bug."""
-
     async def test_searching_old_wording_no_longer_returns_the_stale_original(
         self, session_factory, config, org
     ):
-        """The exact reproduction: title/context text unique to the OLD
-        version, amended to different wording, then searched for the old
-        phrase. Before Trace.superseded_at existed this returned the stale
-        original -- the only row that still textually matched -- which is
-        precisely the case an agent must never be handed: confidently
-        wrong, in its own words, from its own history."""
         original = await _contribute(
             session_factory, config, org,
             title="zzqrx sentinel marker phrase alpha",
@@ -176,9 +137,6 @@ class TestSearchStopsOfferingStaleTraces:
         assert original["id"] not in ids
 
     async def test_an_unamended_trace_is_unaffected(self, session_factory, config, org):
-        """The common case -- most traces are never amended -- must not
-        regress: superseded_at is NULL by default, so the new predicate
-        excludes nothing for a trace that was never touched."""
         trace = await _contribute(
             session_factory, config, org, title="wwvut never amended marker"
         )
@@ -188,11 +146,6 @@ class TestSearchStopsOfferingStaleTraces:
 
 
 class TestGetTraceStillReturnsSupersededTraces:
-    """Zep's "invalidated, never deleted": a superseded trace is excluded
-    from search RESULTS, not erased. A caller who already has the id --
-    from an old page, an old citation, an audit trail -- can still fetch
-    it and see, from the wire fields, what replaced it."""
-
     async def test_fetching_a_superseded_trace_by_id_still_works(
         self, session_factory, config, org
     ):
@@ -204,13 +157,11 @@ class TestGetTraceStillReturnsSupersededTraces:
 
         assert fetched is not None
         assert fetched["superseded_by_trace_id"] == amended["id"]
-        assert fetched["superseded_at"]  # non-empty ISO timestamp string
+        assert fetched["superseded_at"]
 
     async def test_the_wire_shape_is_empty_string_for_a_never_amended_trace(
         self, session_factory, config, org
     ):
-        """Matching supersedes_trace_id's own established convention
-        (empty string, not null/absent) for "there is no such trace"."""
         trace = await _contribute(session_factory, config, org)
         async with session_scope(session_factory) as session:
             fetched = await crud.get_trace(session, org, trace["id"])
@@ -234,22 +185,14 @@ class TestIdempotentReplayDoesNotDoubleSupersede:
                 session, org, original["id"], config, rate_limiter,
                 title="v2", actor="test", idempotency_key="k1",
             )
-        assert replay["id"] == first["id"]  # same amendment returned, not a new one
+        assert replay["id"] == first["id"]
 
         async with session_scope(session_factory) as session:
             row = await session.get(Trace, original["id"])
-        assert row.superseded_by_trace_id == first["id"]  # unchanged by the replay
+        assert row.superseded_by_trace_id == first["id"]
 
 
 class TestTheKnowledgeBaseSurfaceGetsTheSameFix:
-    """The cross-org version of the same bug: a shared trace an org later
-    amends does not automatically re-share the correction (amend_trace
-    does not carry shared_with_commons onto the new row -- that is a
-    separate, explicit decision this fix does not make). Left unfiltered,
-    the stale original would keep being served to every OTHER org from
-    the Knowledge Base indefinitely -- worse than the per-org case, since
-    there it only misleads the org that wrote it."""
-
     async def test_a_superseded_shared_trace_is_no_longer_commons_visible(
         self, session_factory, config, org
     ):
@@ -268,21 +211,6 @@ class TestTheKnowledgeBaseSurfaceGetsTheSameFix:
 
 
 class TestForkedAmendmentsAllStayLive:
-    """amend_trace's own docstring (and test_manage.py's
-    test_amendment_chain_includes_a_fork_off_an_ancestor) documents that the
-    supersession graph is allowed to fork: two independent amend_trace calls
-    against the same still-unmutated trace_id -- a retry with no
-    idempotency_key, or two agents correcting the same trace concurrently --
-    are both accepted, producing two children of one parent rather than one
-    call being rejected as stale. superseded_by_trace_id is a single scalar
-    column, so it can only name ONE of a forked parent's children -- whichever
-    amend_trace call ran last -- but that is a known, accepted limitation of
-    that convenience field, not a search-correctness bug: both forks
-    correctly end up with superseded_at IS NULL and both must stay live and
-    searchable, which is what this test pins. (crud.amendment_chain, not this
-    column, is the authoritative source for a fork's full set of children.)
-    """
-
     async def test_both_forks_of_the_same_parent_are_independently_live(
         self, session_factory, config, org
     ):

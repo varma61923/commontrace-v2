@@ -1,26 +1,4 @@
-"""Function kits: what makes CommonTrace work for any business function.
-
-`agent_type` is free text (protocol/PROTOCOL.md#7), so any fleet can be stored.
-What a function additionally needs, before an experiment can say anything, is
-four decisions made once:
-
-* the OCCASION -- the unit the holdout randomizes on (a ticket, a deal, a
-  candidate, a PR, a robot episode);
-* the OUTCOME MODEL -- what "went well" means, which detectors in
-  `outcome_detect` express it, how they combine, and how long you must wait
-  (a ticket is not resolved until it stays resolved for 7 days);
-* PLANNING DEFAULTS -- an assumed baseline and the smallest effect worth
-  detecting, used only to forecast how long a verdict takes;
-* DEMO DATA, so a Proof Report can be shown before a customer has any.
-
-A kit is a plain, validated spec. The nine below are data, not code paths: a
-tenth function is a JSON file (`commontrace function check kit.json`), and
-nothing in the product branches on which function it is.
-
-The planning baselines are ASSUMPTIONS, not measurements, and every forecast
-says so. The demo dataset is synthetic and is labelled so in the experiment
-note and in every occasion id. Nothing here is a customer measurement.
-"""
+"""Function kits: what makes CommonTrace work for any business function."""
 from __future__ import annotations
 
 import json
@@ -31,7 +9,6 @@ from dataclasses import dataclass
 
 from commontrace import experiment, holdout_io, outcome_detect, paths
 
-#: The recorded experiment note that marks a store as holding synthetic data.
 DEMO_NOTE = "SYNTHETIC DEMO DATA"
 
 COMBINE_RULES = ("single", "all", "any")
@@ -72,11 +49,7 @@ class FunctionKit:
     outcome: Outcome
     planning: Planning
     domains: tuple[str, ...] = ()
-    #: `kb install` packs that fit. Empty is a real state: a pack must cite
-    #: sources, and none ships for a function until one does.
     packs: tuple[str, ...] = ()
-    #: Outcomes are a human reviewer's acceptance, not the decision's
-    #: correctness; the CLI says so wherever it shows the outcome model.
     regulated: bool = False
 
     def to_dict(self) -> dict:
@@ -244,9 +217,6 @@ def resolve(name_or_path: str) -> FunctionKit:
                    "For anything else pass a kit file (see `commontrace function check`).")
 
 
-# --- A store carries its kit --------------------------------------------------
-
-
 def kit_path(root: str) -> str:
     return os.path.join(paths.memory_dir(root), "kit.json")
 
@@ -259,15 +229,10 @@ def save_to_store(root: str, kit: FunctionKit) -> None:
 
 
 def store_kit(root: str) -> FunctionKit | None:
-    """The kit this store was initialised with, or None (a `general` store, or
-    one whose kit file is unreadable -- never a reason to stop working)."""
     try:
         return load_file(kit_path(root))
     except KitError:
         return None
-
-
-# --- Forecast -------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -281,8 +246,6 @@ class Forecast:
     days_to_collect: int
     days_to_verdict: int
     assumed_baseline: bool
-    #: Daily volume needed to deliver a verdict within the requested horizon,
-    #: or None when no volume can (the outcome window alone exceeds it).
     daily_needed: int | None = None
     within_days: int | None = None
 
@@ -291,13 +254,7 @@ def forecast(
     kit: FunctionKit, daily_occasions: float, *, baseline: float | None = None,
     effect: float | None = None, rate: float | None = None, within_days: int | None = None,
 ) -> Forecast:
-    """How long until this function's holdout can answer, at this volume.
-
-    Collection time plus the outcome window: an occasion's outcome is not known
-    until `window_days` after it happened, so the last one needed lands that
-    long after the volume has been reached. A support forecast is never
-    n / volume alone.
-    """
+    """How long until this function's holdout can answer, at this volume."""
     if not isinstance(daily_occasions, (int, float)) or not daily_occasions > 0 \
             or not math.isfinite(daily_occasions):
         raise ValueError("daily_occasions must be a positive number")
@@ -374,11 +331,6 @@ def render_kit(kit: FunctionKit) -> str:
     return "\n".join(lines)
 
 
-# --- Demo data ------------------------------------------------------------------
-
-#: (slug, true effect on the success rate). One helps, one hurts and one does
-#: nothing, so the demo shows all three outcomes the product is for: keep,
-#: withdraw, and "no effect detected".
 DEMO_LESSONS = (
     ("demo-helpful-memory", +0.12),
     ("demo-harmful-memory", -0.12),
@@ -393,17 +345,7 @@ def is_demo_store(root: str) -> bool:
 
 def seed_demo(root: str, kit: FunctionKit, *, seed: int = 0,
               occasions: int = DEMO_OCCASIONS) -> list[str]:
-    """Fill `root` with synthetic, labelled holdout data in this kit's terms.
-
-    Written through `holdout_io.assign_and_log` and `record_outcome`, the same
-    path a real fleet writes, so `experiment`, `prove` and `release` read it
-    unchanged. The ground truth is decided here, not read back from anything
-    CommonTrace computed. The salt is pinned so a given (kit, seed) always
-    yields the same data, and so the same verdicts.
-
-    Refuses a store that already holds a real experiment: synthetic and real
-    assignments must never share a log.
-    """
+    """Fill `root` with synthetic, labelled holdout data in this kit's terms."""
     existing = holdout_io.holdout_log_path(root)
     if os.path.isfile(existing) and os.path.getsize(existing) > 0 and not is_demo_store(root):
         raise KitError(f"{root} already holds real holdout data; demo data goes in an empty store")
@@ -415,14 +357,8 @@ def seed_demo(root: str, kit: FunctionKit, *, seed: int = 0,
     rng = random.Random(f"{kit.key}:{seed}")
     slugs = [s for s, _ in DEMO_LESSONS]
     effects = dict(DEMO_LESSONS)
-    # A real fleet records which text each assignment used; without it the
-    # integrity check can say only that it cannot tell whether the memory held still.
     revisions = {slug: f"demo-{slug}-r1" for slug in slugs}
     for i in range(occasions):
-        # Each occasion matches ONE memory, as real memories match different
-        # situations. Memories injected on the same occasions cannot be added
-        # into one total (commontrace/value.py), so overlapping demo memories
-        # would show a refusal where the value ledger should be.
         slug = slugs[i % len(slugs)]
         withheld = holdout_io.assign_and_log(
             root, [slug], occasion_id=f"DEMO-{kit.key}-{i:05d}", rate=kit.planning.holdout_rate,

@@ -1,4 +1,3 @@
-"""Many robots, one experiment: the same randomization, then a pooled, honest merge."""
 import json
 import os
 import random
@@ -59,7 +58,7 @@ def test_adopt_refuses_a_lead_with_no_experiment_and_a_robot_that_already_has_da
     holdout_io.configure(other, rate=0.3, salt="different")
     with pytest.raises(fleet.FleetError, match="already holds assignments"):
         fleet.adopt(other, robot)
-    assert holdout_io.load_config(robot).salt == "fleet-salt"          # untouched
+    assert holdout_io.load_config(robot).salt == "fleet-salt"
 
 
 def test_merging_robots_gives_the_pooled_sample_and_leaves_the_sources_alone(tmp_path):
@@ -82,7 +81,7 @@ def test_a_pooled_sample_decides_what_no_single_robot_could(tmp_path):
     lead = _lead(tmp_path)
     robots = [_robot(tmp_path, f"r{n}", lead, 60, effect=0.25) for n in range(8)]
     singles = [_effects(r)[1]["grip-tuning"].verdict for r in robots]
-    assert singles.count(experiment.VERDICT_HELPS) < len(robots)       # 60 episodes each is not enough alone
+    assert singles.count(experiment.VERDICT_HELPS) < len(robots)
     dest = str(tmp_path / "all")
     fleet.merge(robots, dest)
     assert _effects(dest)[1]["grip-tuning"].verdict == experiment.VERDICT_HELPS
@@ -128,11 +127,10 @@ def test_a_robot_synced_twice_collapses_to_one_but_a_real_conflict_is_named(tmp_
         with open(fn(a), "rb") as src, open(fn(copy), "wb") as dst:
             dst.write(src.read())
     report = fleet.check([a, copy])
-    assert report.mergeable and report.duplicates == 100               # 50 assignments + 50 outcomes
+    assert report.mergeable and report.duplicates == 100
     dest = str(tmp_path / "m")
     assert fleet.merge([a, copy], dest)["assignments"] == 50
 
-    # the same occasion id reused by another robot for a different episode
     clash = _robot(tmp_path, "clash", lead, 50, prefix="a", seed=99, effect=-0.3)
     report = fleet.check([a, clash])
     assert report.conflicts and not report.mergeable
@@ -142,7 +140,7 @@ def test_a_robot_synced_twice_collapses_to_one_but_a_real_conflict_is_named(tmp_
 def test_namespaced_occasion_ids_never_collide_across_robots(tmp_path):
     lead = _lead(tmp_path)
     a = _robot(tmp_path, "a", lead, 80)
-    b = _robot(tmp_path, "b", lead, 80)                                # robot-prefixed by default
+    b = _robot(tmp_path, "b", lead, 80)
     assert fleet.check([a, b]).mergeable
 
 

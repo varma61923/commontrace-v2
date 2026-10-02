@@ -1,7 +1,3 @@
-"""Provider-level tests: signatures computed exactly as each vendor documents
-them, and parsers driven by the vendors' own example payloads (hub/tests/
-fixtures/connectors/). Where a fixture is DERIVED from a vendor example it says
-so: only the documented fields the scenario needs are changed."""
 from __future__ import annotations
 
 import base64
@@ -18,7 +14,6 @@ from hub.connectors import PROVIDERS, base, github, zendesk
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures", "connectors")
 NOW = datetime(2025, 1, 10, 17, 30, tzinfo=timezone.utc)
-# Zendesk's documented static secret for testing a webhook before it exists.
 ZD_SECRET = "dGhpc19zZWNyZXRfaXNfZm9yX3Rlc3Rpbmdfb25seQ=="
 GH_SECRET = "It's a Secret to Everybody"
 
@@ -29,7 +24,6 @@ def _fixture(name):
 
 
 def _zd_headers(body: bytes, secret=ZD_SECRET, stamp="2025-01-10T17:29:00Z"):
-    # base64(HMACSHA256(TIMESTAMP + BODY)), the secret used as the literal string.
     sig = base64.b64encode(hmac.new(secret.encode(), stamp.encode() + body, hashlib.sha256).digest()).decode()
     return {"X-Zendesk-Webhook-Signature": sig, "X-Zendesk-Webhook-Signature-Timestamp": stamp}
 
@@ -46,8 +40,6 @@ def _zd_status(current, previous):
     payload["event"]["current"], payload["event"]["previous"] = current, previous
     return payload
 
-
-# --- Zendesk -------------------------------------------------------------------
 
 class TestZendeskSignature:
     BODY = json.dumps(_fixture("zendesk_ticket_status_changed.json")).encode()
@@ -82,10 +74,10 @@ class TestZendeskSignature:
             zendesk.verify(headers, self.BODY, ZD_SECRET, now=NOW)
 
     @pytest.mark.parametrize("stamp, ok", [
-        ("2025-01-10T17:29:00Z", True),                      # 60s old
-        ("2025-01-10T17:25:01Z", True),                      # just inside 300s
-        ("2025-01-10T17:24:59Z", False),                     # just outside
-        ("2025-01-10T17:36:00Z", False),                     # from the future
+        ("2025-01-10T17:29:00Z", True),
+        ("2025-01-10T17:25:01Z", True),
+        ("2025-01-10T17:24:59Z", False),
+        ("2025-01-10T17:36:00Z", False),
     ])
     def test_a_validly_signed_but_stale_delivery_is_a_replay(self, stamp, ok):
         headers = _zd_headers(self.BODY, stamp=stamp)
@@ -110,8 +102,8 @@ class TestZendeskSignature:
 
 
 @pytest.mark.parametrize("text, expected", [
-    ("2025-01-10T17:27:48.105316520+00:00", "2025-01-10T17:27:48.105316+00:00"),   # Zendesk: nanoseconds
-    ("2025-01-10T17:27:48.999999999-05:00", "2025-01-10T17:27:48.999999-05:00"),   # cut, never rounded up
+    ("2025-01-10T17:27:48.105316520+00:00", "2025-01-10T17:27:48.105316+00:00"),
+    ("2025-01-10T17:27:48.999999999-05:00", "2025-01-10T17:27:48.999999-05:00"),
     ("2025-01-10T17:27:48.1Z", "2025-01-10T17:27:48.100000+00:00"),
     ("2025-01-10T17:27:48Z", "2025-01-10T17:27:48+00:00"),
     ("2025-01-10T17:27:48", "2025-01-10T17:27:48+00:00"),
@@ -167,10 +159,7 @@ class TestZendeskSignals:
             zendesk.signals({}, payload, self.CFG)
 
 
-# --- GitHub --------------------------------------------------------------------
-
 def _gh_merged():
-    """DERIVED from the vendor's closed example: merged/merged_at set."""
     payload = _fixture("github_pull_request_closed.json")
     payload["pull_request"]["merged"] = True
     payload["pull_request"]["merged_at"] = payload["pull_request"]["closed_at"]
@@ -184,7 +173,6 @@ class TestGithubSignature:
         github.verify(_gh_headers(self.BODY, "pull_request"), self.BODY, GH_SECRET, now=NOW)
 
     def test_it_matches_githubs_published_test_vector(self):
-        # The test vector in GitHub's "Validating webhook deliveries" page.
         body = b"Hello, World!"
         headers = {"X-Hub-Signature-256":
                    "sha256=757107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e17"}
@@ -223,8 +211,6 @@ class TestGithubSignals:
         assert sig.ref == "c4295bd74fb0f4fda03689c3df3f2803b658fd85"
 
     def test_a_push_with_gits_revert_message_is_a_reversal_by_sha(self):
-        """DERIVED from the vendor's push example: one commit message replaced by git's
-        documented revert text."""
         payload = _fixture("github_push_master.json")
         payload["commits"][0]["message"] = (
             'Revert "Update the README"\n\nThis reverts commit '
@@ -253,8 +239,6 @@ class TestGithubSignals:
         cfg = github.validate_config({"repository": "Codertocat/Hello-World"})
         assert len(github.signals(_gh_headers(b"", "pull_request"), _gh_merged(), cfg)) == 1
 
-
-# --- Config --------------------------------------------------------------------
 
 @pytest.mark.parametrize("provider, config", [
     ("zendesk", {"surprise": 1}), ("zendesk", {"window_days": -1}), ("zendesk", {"window_days": True}),
@@ -299,8 +283,6 @@ def test_github_payload_of_the_wrong_shape_is_handled():
     push["commits"] = [None, 3, {"message": None}]
     assert github.signals(_gh_headers(b"", "push"), push, cfg) == []
 
-
-# --- Greenhouse ------------------------------------------------------------------
 
 from hub.connectors import greenhouse  # noqa: E402
 
@@ -383,12 +365,10 @@ class TestGreenhouse:
             greenhouse.validate_config(bad)
 
 
-# --- Intercom --------------------------------------------------------------------
-
 from hub.connectors import intercom  # noqa: E402
 
 IC_SECRET = "intercom-client-secret"
-IC_NOW = datetime.fromtimestamp(1392731400, tz=timezone.utc)  # just after the vendor example's created_at
+IC_NOW = datetime.fromtimestamp(1392731400, tz=timezone.utc)
 
 
 def _ic_headers(body: bytes, secret=IC_SECRET):
@@ -396,7 +376,6 @@ def _ic_headers(body: bytes, secret=IC_SECRET):
 
 
 def _ic(topic, conversation="1295", created_at=1392731331):
-    """DERIVED from the vendor's notification envelope example: topic and item replaced."""
     payload = _fixture("intercom_notification_company_created.json")
     payload["topic"], payload["created_at"] = topic, created_at
     payload["data"]["item"] = {"type": "conversation", "id": conversation, "state": "closed"}
@@ -422,9 +401,9 @@ class TestIntercom:
             intercom.verify(_ic_headers(body, secret="x"), body, IC_SECRET, now=IC_NOW)
 
     @pytest.mark.parametrize("age, ok", [
-        (60, True), (2 * 3600, True),            # a throttled retry is legitimately two hours late
-        (3 * 3600 + 5, False),                    # beyond anything Intercom would send
-        (-60, True), (-3600, False),              # a little skew is fine, the future is not
+        (60, True), (2 * 3600, True),
+        (3 * 3600 + 5, False),
+        (-60, True), (-3600, False),
     ])
     def test_freshness_is_bounded_by_the_signed_created_at(self, age, ok):
         created = 1392731331

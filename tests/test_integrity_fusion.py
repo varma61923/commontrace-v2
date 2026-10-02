@@ -1,17 +1,6 @@
-"""The marginal-eligibility check judges only rows a relevance floor decided.
-
-A fused ranking logs its rank-fusion score (never above 2/61) beside the
-lexical arm's floor (0.04 by default). Compared against that floor, every
-fused assignment looked like a lesson that barely matched, so every store
-that opted into fusion had its experiment declared invalid: no causal
-numbers, and no harm withdrawal, whatever the data said.
-"""
 from __future__ import annotations
 
 from commontrace import integrity, retrieval
-
-# The end-to-end case -- a store retrieving through MCP with fusion on -- is
-# tests/test_mcp_fusion.py::test_a_fused_experiment_is_not_called_marginal.
 
 
 def _row(i, lesson, relevance, scorer, floor=0.04):

@@ -1,11 +1,3 @@
-"""`POST /connectors/{connector_id}/events`: where a system of record's signed
-webhooks arrive. Mounted only when `HUB_CONNECTORS_ENABLED` is set.
-
-Not behind an API key: the vendor cannot send one, and its signature over the
-raw body is the credential (hub/connectors/service.py). Everything before that
-check is cheap and constant: a per-client rate limit, the global body-size
-limit, and an unknown connector answering exactly like a bad signature.
-"""
 from __future__ import annotations
 
 import logging
@@ -23,9 +15,6 @@ CONNECTOR_EVENTS_PATH = "/connectors/{connector_id}/events"
 
 
 def add_connector_routes(app, session_factory, *, config: HubConfig, trusted_proxy_hops: int = 0) -> None:
-    # The auth limiter, not the write limiter: this endpoint is reachable by
-    # anyone who knows its URL, and what it spends before a signature check is
-    # an HMAC and a primary-key lookup.
     limiter = make_named_limiter(
         config, config.auth_attempts_per_minute, config.auth_attempts_burst, "connector_auth"
     )

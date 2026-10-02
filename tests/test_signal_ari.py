@@ -1,5 +1,3 @@
-"""Failure signals recover labelled failure modes (commons/eval/signal_ari.py), and the clustering
-behind them is average-linkage, sparse and fast enough for a real store."""
 import time
 
 import pytest
@@ -29,7 +27,7 @@ def test_the_dataset_is_deterministic_labelled_and_has_one_offs():
 
 
 def test_held_out_seeds_reach_the_target_ari():
-    scores = [sa.score_seed(s)["ari"] for s in range(5)]       # 100-104 chose the default; these did not
+    scores = [sa.score_seed(s)["ari"] for s in range(5)]
     assert sum(scores) / len(scores) >= sa.TARGET and min(scores) >= sa.TARGET - 0.1
 
 

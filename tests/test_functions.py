@@ -1,4 +1,3 @@
-"""Function kits: any function is a validated spec, and nothing branches on which."""
 import json
 import os
 
@@ -116,7 +115,7 @@ def test_forecast_arithmetic_matches_the_planner():
 
 
 def test_forecast_says_when_no_volume_can_meet_the_horizon():
-    f = functions.forecast(KITS["finance"], 1000, within_days=30)  # the outcome window IS 30 days
+    f = functions.forecast(KITS["finance"], 1000, within_days=30)
     assert f.daily_needed is None
     assert "No volume delivers" in functions.render_forecast(f)
     assert functions.forecast(KITS["support"], 40, within_days=30).daily_needed == 115

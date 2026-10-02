@@ -1,20 +1,3 @@
-"""Tests for hub/admin.py -- the read-only operator console.
-
-Two properties carry almost all the risk here, and both are asserted below
-against a real request rather than by reading the code:
-
-1. **Escaping.** The console renders content from EVERY tenant into one
-   operator's browser. A trace title is customer-supplied, so interpolating
-   it unescaped is stored XSS that crosses a tenant boundary into the single
-   session with cross-tenant visibility.
-
-2. **Absent unless configured.** With no operator token set, the routes must
-   not exist at all -- a 404 from the router, not a 401 from a handler. A
-   deployment that has not opted in should have no console to probe.
-
-The auth and escaping tests need no database. The rendering tests do, and
-use the same fixtures as the rest of hub/tests/.
-"""
 from __future__ import annotations
 
 import base64
@@ -43,7 +26,6 @@ def _app(token: str = "s3cret", session_factory=_explode, config: HubConfig | No
     app = Starlette()
     admin.add_admin_routes(
         app, session_factory, admin_token=token,
-        # High limits: these tests assert auth and rendering, not throttling.
         rate_limiter=RateLimiter(per_minute=10_000, burst=10_000),
         config=config,
     )
@@ -54,22 +36,14 @@ def _client(app: Starlette) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
 
 
-# --- Absent unless configured ----------------------------------------------
-
-
 class TestConsoleIsAbsentUnlessConfigured:
     async def test_no_routes_are_registered_without_a_token(self):
-        """404 from the router, not 401 from a handler: a deployment that has
-        not opted in has no console to find, which is a stronger property
-        than one that merely refuses."""
-        app = Starlette()  # add_admin_routes deliberately not called
+        app = Starlette()
         async with _client(app) as c:
             for path in ("/admin", "/admin/kb", "/admin/org/whatever"):
                 assert (await c.get(path)).status_code == 404, path
 
     async def test_registering_with_an_empty_token_is_refused(self):
-        """Guards against a deployment that sets HUB_ADMIN_TOKEN="" and gets
-        a console anyone can read."""
         with pytest.raises(ValueError, match="non-empty admin token"):
             admin.add_admin_routes(Starlette(), _explode, admin_token="")
 
@@ -77,9 +51,6 @@ class TestConsoleIsAbsentUnlessConfigured:
         monkeypatch.delenv("HUB_ADMIN_TOKEN", raising=False)
         monkeypatch.setenv("HUB_DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
         assert HubConfig.from_env().admin_token == ""
-
-
-# --- Authentication ---------------------------------------------------------
 
 
 class TestConsoleAuthentication:
@@ -111,13 +82,9 @@ class TestConsoleAuthentication:
         assert r.status_code == 401
 
     async def test_the_username_is_ignored(self):
-        """The token is a shared operator secret, not a per-user login."""
         assert admin._authorized(_FakeRequest(_basic("anyone-at-all", "s3cret")), "s3cret")
 
     async def test_an_unauthenticated_request_never_touches_the_database(self):
-        """_explode as the session factory: the assertion is that it is never
-        called. Auth runs before any query, so a flood of unauthenticated
-        probes cannot be turned into database load."""
         async with _client(_app(session_factory=_explode)) as c:
             assert (await c.get("/admin")).status_code == 401
 
@@ -138,13 +105,7 @@ class _FakeRequest:
         self.headers = {k.lower(): v for k, v in headers.items()}
 
 
-# --- Escaping ---------------------------------------------------------------
-
-
 class TestEscaping:
-    """The security-critical property of this module. See its docstring: the
-    reader is the one browser session with visibility over every tenant."""
-
     @pytest.mark.parametrize("payload,must_not_appear", [
         ("<script>alert(1)</script>", "<script>alert(1)</script>"),
         ('"><img src=x onerror=alert(1)>', "<img src=x"),
@@ -163,9 +124,6 @@ class TestEscaping:
 
     async def test_none_renders_as_empty_not_the_word_none(self):
         assert admin.h(None) == ""
-
-
-# --- Rendering (needs a database) -------------------------------------------
 
 
 class TestRendering:
@@ -198,8 +156,6 @@ class TestRendering:
         assert org_id in r.text
 
     async def test_a_customer_supplied_title_cannot_inject_script(self, session_factory):
-        """The whole reason h() exists. A tenant that titles a trace with a
-        script tag must not get code execution in the operator's browser."""
         org_id, _ = await self._seed(session_factory, title="<script>alert('pwn')</script>")
         async with _client(_app(session_factory=session_factory)) as c:
             r = await c.get(f"/admin/org/{org_id}", headers=_basic("op", "s3cret"))
@@ -219,15 +175,6 @@ class TestRendering:
     async def test_overview_totals_cover_every_org_not_just_the_rendered_page(
         self, session_factory, monkeypatch
     ):
-        """`traces_by_org`/`quarantined_by_org`/`keys_by_org` are already
-        unrestricted, fleet-wide GROUP BY queries -- but the top-line
-        `total_traces`/`total_quarantined`/`total_keys` tiles used to be
-        summed from `rows`, which is truncated to the first `_MAX_ROWS`
-        organizations by name. Once a deployment had more orgs than that,
-        the three summary tiles silently undercounted, with no truncation
-        notice anywhere near them (the one that exists sits below the
-        per-org table). Monkeypatching `_MAX_ROWS` down to 1 makes this
-        reproducible with two orgs instead of two hundred and one."""
         from hub import auth as hub_auth
         from hub.db import session_scope
         from hub.models import Organization, Trace
@@ -250,10 +197,8 @@ class TestRendering:
         async with session_scope(session_factory) as session:
             overview = await admin._overview(session)
 
-        # Only one org's row is actually rendered ...
         assert len(overview["orgs"]) == 1
         assert overview["truncated"] is True
-        # ... but both orgs' traces/quarantines/keys must still count.
         assert overview["total_traces"] == 2
         assert overview["total_quarantined"] == 2
         assert overview["total_keys"] == 2
@@ -266,17 +211,12 @@ class TestRendering:
         assert "No such organization" in r.text
 
     async def test_a_malformed_org_id_is_a_page_not_a_500(self, session_factory):
-        """org_id lands in a UUID column, so a mistyped URL raises at the
-        driver rather than returning None -- that must be a 404 page, not a
-        stack trace in the operator's face."""
         async with _client(_app(session_factory=session_factory)) as c:
             r = await c.get("/admin/org/not-a-uuid", headers=_basic("op", "s3cret"))
         assert r.status_code == 200
         assert "No such organization" in r.text
 
     async def test_pages_are_not_cached(self, session_factory):
-        """Live operational state, and a cached copy in a shared browser is
-        one more place tenant data sits at rest."""
         async with _client(_app(session_factory=session_factory)) as c:
             r = await c.get("/admin", headers=_basic("op", "s3cret"))
         assert "no-store" in r.headers["cache-control"].split(", ")
@@ -285,9 +225,6 @@ class TestRendering:
     async def test_the_console_states_which_actions_it_will_and_will_not_take(
         self, session_factory
     ):
-        """An operator must not be left wondering whether a click here
-        changed something -- and the claim has to stay true as the console
-        grows. The rule is reversibility, and the page says so."""
         async with _client(_app(session_factory=session_factory)) as c:
             r = await c.get("/admin", headers=_basic("op", "s3cret"))
         assert "reversibility" in r.text
@@ -296,11 +233,6 @@ class TestRendering:
     async def test_the_overview_page_offers_org_creation_and_key_generation(
         self, session_factory
     ):
-        """Both are additive/stateless -- creating an org has nothing yet
-        to lose, and generating a key writes nothing until an operator
-        sets it as HUB_ENCRYPTION_KEY themselves -- so both are safe as
-        the only two buttons that need no existing organization to act
-        on. Nothing here can bypass the form flow."""
         async with _client(_app(session_factory=session_factory)) as c:
             r = await c.get("/admin", headers=_basic("op", "s3cret"))
         assert r.status_code == 200
@@ -313,20 +245,11 @@ class TestRendering:
     async def test_the_org_page_offers_its_full_reversible_and_confirmed_action_set(
         self, session_factory
     ):
-        """Every mutating action on this page is either reversible outright
-        (a role, a hold, a policy, a plan, releasing a quarantine) or
-        irreversible but gated behind retyping the exact id/name being
-        destroyed on top of the same CSRF token every action here needs
-        (purge-trace/purge-org/purge-subject-traces/retention-apply) --
-        never a bare, single-click destructive action."""
         from hub import retention as retention_module
         from hub.db import session_scope
         from hub.models import User
 
         org_id, _ = await self._seed(session_factory)
-        # Placed/created directly rather than through the console under
-        # test, so a release/clear/per-user form has an existing row to
-        # target -- these only render for a row that exists.
         async with session_scope(session_factory) as session:
             await retention_module.place_hold(
                 session, org_id, reason="litigation", placed_by="test-setup")
@@ -347,17 +270,12 @@ class TestRendering:
             "purge-trace", "purge", "purge-subject-traces",
         ):
             assert f'action="/admin/org/{org_id}/{allowed_action}"'.lower() in lowered
-        # Every retype-to-confirm field is present -- a bare button alone
-        # would let one click destroy data.
         for confirm_field in ("confirm_trace_id", "confirm_name", "confirm_subject_id"):
             assert f'name="{confirm_field}"' in lowered
         for forbidden in ("fetch(", "xmlhttprequest"):
             assert forbidden not in lowered, f"{forbidden} reachable from the org page"
 
     async def test_no_destructive_action_is_reachable_from_any_page(self, session_factory):
-        """The irreversible commands must never become a POST target. If one
-        of these ever appears in a form action, this test is the thing that
-        says so."""
         org_id, _ = await self._seed(session_factory)
         async with _client(_app(session_factory=session_factory)) as c:
             pages = [
@@ -370,9 +288,6 @@ class TestRendering:
                 assert f'action="{path}' not in r.text
 
     async def test_no_credential_material_ever_reaches_the_page(self, session_factory):
-        """Only non-secret key metadata is rendered. `key_hash` is the argon2
-        digest of a live credential and must never appear in a page an
-        operator might screenshot or a browser might cache."""
         from sqlalchemy import select
 
         from hub.db import session_scope
@@ -399,9 +314,6 @@ class TestRendering:
         assert r.status_code == 405
 
 
-# --- Knowledge Base moderation ----------------------------------------------
-
-
 def _kb_app(session_factory, *, operator_org_id: str = "", token: str = "s3cret") -> Starlette:
     app = Starlette()
     admin.add_admin_routes(
@@ -413,12 +325,6 @@ def _kb_app(session_factory, *, operator_org_id: str = "", token: str = "s3cret"
 
 
 class TestKnowledgeBaseIsTheOnlyExchange:
-    """Orgs never exchange anything with each other -- a fleet's traces stay
-    private to that fleet. The Knowledge Base is the single surface where
-    content crosses an org boundary, and it does so by passing through an
-    operator: a customer PROPOSES, an operator PUBLISHES, and what gets
-    published is owned by the operator's org rather than the submitter's."""
-
     async def _submit(self, session_factory, *, title="Stripe webhooks need idempotency keys"):
         from hub.db import session_scope
         from hub.models import KnowledgeBaseSubmission, Organization
@@ -441,8 +347,6 @@ class TestKnowledgeBaseIsTheOnlyExchange:
             return sub.id, submitter.id, operator.id
 
     async def test_the_page_states_the_boundary(self, session_factory):
-        """An operator should be able to see, without opening the source,
-        that orgs do not share with each other."""
         async with _client(_kb_app(session_factory)) as c:
             r = await c.get("/admin/kb", headers=_basic("op", "s3cret"))
         assert r.status_code == 200
@@ -450,9 +354,6 @@ class TestKnowledgeBaseIsTheOnlyExchange:
         assert "operator" in r.text.lower()
 
     async def test_a_pending_proposal_is_shown_with_who_proposed_it(self, session_factory):
-        """Accepting credits that org's allowance, so the reviewer has to see
-        which org it was -- a field the customer-facing projection rightly
-        omits."""
         sub_id, submitter_id, _ = await self._submit(session_factory)
         async with _client(_kb_app(session_factory)) as c:
             r = await c.get("/admin/kb", headers=_basic("op", "s3cret"))
@@ -463,7 +364,6 @@ class TestKnowledgeBaseIsTheOnlyExchange:
     async def test_accepting_publishes_under_the_operator_org_never_the_submitter(
         self, session_factory
     ):
-        """The ownership rule that makes this not org-to-org sharing."""
         from sqlalchemy import select
 
         from hub.db import session_scope
@@ -487,9 +387,6 @@ class TestKnowledgeBaseIsTheOnlyExchange:
         assert published[0].org_id != submitter_id
 
     async def test_accepting_fails_closed_without_an_operator_org(self, session_factory):
-        """Publishing under the wrong org would put a customer's id on
-        Knowledge Base content -- the one mistake this boundary exists to
-        prevent, and not one a UI should be able to make."""
         sub_id, _, _ = await self._submit(session_factory)
         async with _client(_kb_app(session_factory, operator_org_id="")) as c:
             r = await c.post("/admin/kb/review", headers=_basic("op", "s3cret"), data={
@@ -500,7 +397,6 @@ class TestKnowledgeBaseIsTheOnlyExchange:
         assert "HUB_OPERATOR_ORG_ID" in r.text
 
     async def test_declining_publishes_nothing_and_awards_nothing(self, session_factory):
-        """That silence is the adverse-selection defence."""
         from sqlalchemy import func, select
 
         from hub.db import session_scope
@@ -522,10 +418,6 @@ class TestKnowledgeBaseIsTheOnlyExchange:
 
 
 class TestModerationIsCsrfProtected:
-    """Auth here is HTTP Basic, and a browser re-sends those credentials on a
-    cross-site form POST -- so a mutating endpoint without a token is
-    forgeable by any page the operator visits while authenticated."""
-
     async def _pending(self, session_factory):
         from hub.db import session_scope
         from hub.models import KnowledgeBaseSubmission, Organization
@@ -550,8 +442,6 @@ class TestModerationIsCsrfProtected:
         assert r.status_code == 403
 
     async def test_a_token_for_one_action_cannot_be_replayed_as_another(self, session_factory):
-        """The token binds the action to its target: a 'decline' token must
-        not approve anything."""
         sub_id = await self._pending(session_factory)
         async with _client(_kb_app(session_factory, operator_org_id="x")) as c:
             r = await c.post("/admin/kb/review", headers=_basic("op", "s3cret"), data={
@@ -597,9 +487,6 @@ class TestModerationIsCsrfProtected:
 
 
 class TestRetractionIsReversible:
-    """Retract and restore are the pair that makes moderation safe to do from
-    a browser at all: the worst outcome of a wrong click is undoing it."""
-
     async def _published(self, session_factory):
         from hub.db import session_scope
         from hub.models import Organization, Trace
@@ -652,8 +539,6 @@ class TestRetractionIsReversible:
         async with _client(_kb_app(session_factory, operator_org_id="x")) as c:
             shown = await c.get(r.headers["location"], headers=_basic("op", "s3cret"))
             assert '<div class="flash">Withdrawn.' in shown.text
-            # The same message without this console's signature, or with a
-            # forged one, is not shown: a link cannot put words in its mouth.
             forged = await c.get("/admin/kb", params={"done": "Call +1-555-0100 now", "sig": "0" * 32},
                                  headers=_basic("op", "s3cret"))
             assert "555-0100" not in forged.text
@@ -661,8 +546,6 @@ class TestRetractionIsReversible:
             assert '<div class="flash">' not in unsigned.text
 
     async def test_every_console_decision_is_audited_as_such(self, session_factory):
-        """"Who published this entry" must be answerable after the fact, and a
-        console decision distinguishable from a terminal one."""
         from sqlalchemy import select
 
         from hub.db import session_scope
@@ -680,13 +563,6 @@ class TestRetractionIsReversible:
 
 
 class TestOrgScopedMutationsAreReversible:
-    """Legal holds, retention policy, and quarantine release: the org page's
-    own set of reversible actions (hub/admin.py's module docstring). Every
-    one of these can be undone by a second click, which is what makes it
-    safe to expose here at all -- unlike purge-org or retention-apply,
-    which stay in the CLI.
-    """
-
     async def _seed(self, session_factory):
         from hub.db import session_scope
         from hub.models import Organization, Trace
@@ -1183,10 +1059,6 @@ class TestUserAndSubjectRightsManagement:
 
 
 class TestKeyIssuanceFromTheConsole:
-    """The onboarding gap this closes: a brand-new organization has no key
-    yet, so it cannot sign into ITS OWN console (hub/console.py) to issue
-    one -- something has to be able to mint the first one."""
-
     async def _seed(self, session_factory):
         from hub.db import session_scope
         from hub.models import Organization
@@ -1299,13 +1171,6 @@ class TestKeyIssuanceFromTheConsole:
 
 
 class TestAmendingATraceFromTheConsole:
-    """The operator counterpart to the `amend_trace` MCP tool
-    (hub/manage.py:amend_trace) -- for a support-ticket-driven correction
-    on an org's behalf. Reversible in the sense that matters: it INSERTs a
-    new trace onto the amendment chain rather than mutating the original,
-    so a wrong trace id or a bad edit costs nothing more than a second
-    amendment."""
-
     async def _seed(self, session_factory) -> tuple[str, str]:
         from hub.db import session_scope
         from hub.models import Organization, Trace
@@ -1353,8 +1218,6 @@ class TestAmendingATraceFromTheConsole:
         assert original.superseded_at is not None
         assert original.superseded_by_trace_id == amended.id
         assert amended.title == "Corrected title"
-        # Blank fields carry the original forward unchanged rather than
-        # being overwritten with empty strings.
         assert amended.context_text == "original context"
         assert amended.solution_text == "original solution"
         assert entry is not None
@@ -1374,9 +1237,6 @@ class TestAmendingATraceFromTheConsole:
         assert "No+such+trace" in r.headers["location"] or "No%20such%20trace" in r.headers["location"]
 
     async def test_a_fat_fingered_non_uuid_trace_id_is_a_clean_no_op_not_a_500(self, session_factory, config):
-        """This form is where an operator types a trace id directly, unlike
-        a CLI arg that is usually copy-pasted -- a malformed id must not
-        reach asyncpg's UUID column check as a raw, unhandled DBAPIError."""
         org_id, _trace_id = await self._seed(session_factory)
         async with _client(_app(session_factory=session_factory, config=config)) as c:
             r = await c.post(
@@ -1420,11 +1280,6 @@ class TestGeneratingAnEncryptionKey:
 
 
 class TestTheDangerZoneRequiresRetypedConfirmation:
-    """Every irreversible action here needs the exact id/name typed a
-    second time, on top of the same CSRF token every other mutation
-    needs -- a stronger bar than hub.manage's own `_confirm_destructive`,
-    which only asks for the literal word 'yes'."""
-
     async def _seed(self, session_factory):
         from hub.db import session_scope
         from hub.models import Organization, Trace
@@ -1600,8 +1455,6 @@ class TestRetentionApplyFromTheConsole:
             org = Organization(name="Acme", plan="team")
             session.add(org)
             await session.flush()
-            # Older than the "trace" kind's 30-day floor (hub/retention.py),
-            # so a policy can actually doom it -- a fresh trace never can.
             old = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=400)
             trace = Trace(
                 org_id=org.id, title="Stale", context_text="c", solution_text="s",
@@ -1667,9 +1520,6 @@ class TestRetentionApplyFromTheConsole:
         assert row is not None
 
     async def test_a_stale_plan_is_refused(self, session_factory):
-        """The store moved (a new trace arrived) between preview and
-        apply -- retention.apply's own digest check refuses rather than
-        deleting a set the operator never actually reviewed."""
         from hub import retention as retention_module
         from hub.db import session_scope
         from hub.models import Trace
@@ -1702,12 +1552,6 @@ class TestRetentionApplyFromTheConsole:
 
 
 class TestAutoRefresh:
-    """The "this console is for noticing things" pages reload themselves,
-    so an operator watching a queue or a quarantine count does not have
-    to remember to hit reload -- but never on a page currently showing a
-    just-issued, shown-once secret, since a reload before it's copied
-    loses it for good."""
-
     async def _seed(self, session_factory):
         from hub.db import session_scope
         from hub.models import Organization

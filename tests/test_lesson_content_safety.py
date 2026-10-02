@@ -1,12 +1,3 @@
-"""`commontrace lesson approve`'s content-safety gate (OWASP ASI06).
-
-Mirrors tests/test_mcp_server.py's equivalent coverage of the MCP
-`approve_lesson` tool: this is a *separate* implementation
-(`commontrace/commands/lesson_cmd.py:run_approve`), not shared code, so
-the same refusal has to be verified here independently -- a fix applied to
-one path and not the other would leave the CLI (or the MCP tool) silently
-uncovered.
-"""
 from __future__ import annotations
 
 import argparse
@@ -52,11 +43,6 @@ def test_approve_refuses_a_lesson_carrying_a_prompt_injection_payload(tmp_path):
 
 
 def test_force_overrides_the_content_safety_refusal(tmp_path):
-    """A human operating the CLI directly can deliberately override a false
-    positive (e.g. a lesson that legitimately documents an example
-    credential pattern for an incident-response runbook) -- unlike the MCP
-    `approve_lesson` tool, which has no equivalent override because an
-    agent approving its own draft has no interactive human to confirm one."""
     path = _write_lesson(
         tmp_path, "documented",
         body="## Rule\nr\n## Why\nAKIAIOSFODNN7EXAMPLE is the classic AWS test key format.\n"

@@ -1,19 +1,3 @@
-"""Route-driven cross-tenant fuzz of the customer console.
-
-Hand-written isolation tests cover the routes someone remembered. This one
-ENUMERATES every console route that takes a resource id in its path, drives
-each as org A against org B's real ids and against hostile id strings, and
-fails when:
-
-* a route with a path parameter has no resource mapping here (so a new route
-  cannot ship without being fuzzed);
-* any request returns a 5xx;
-* anything of org B's changes, or org B's identifying text appears in a
-  response to org A.
-
-SCIM's tenant boundary is the bearer token, not a session, and is covered in
-test_scim.py; the admin console is cross-tenant by design.
-"""
 from __future__ import annotations
 
 import urllib.parse
@@ -151,8 +135,6 @@ async def test_org_a_cannot_touch_org_b_through_any_id_route(session_factory, co
 
 
 async def test_no_admin_route_returns_5xx_for_a_malformed_id(session_factory, config):
-    """The operator console is cross-tenant by design, so the property here is
-    narrower: a value that cannot be an id is a 404, never a driver error."""
     import base64
 
     from hub import admin
@@ -177,8 +159,6 @@ async def test_no_admin_route_returns_5xx_for_a_malformed_id(session_factory, co
 
 
 async def test_rotating_a_revoked_key_from_the_console_changes_nothing(session_factory, config, tenants):
-    """The rotate route answers an already-revoked key like an unknown one
-    (no new key is shown, none is minted) rather than a 500."""
     from sqlalchemy import func, select
 
     async with session_scope(session_factory) as session:
@@ -198,8 +178,6 @@ async def test_rotating_a_revoked_key_from_the_console_changes_nothing(session_f
 
 
 async def test_no_scim_route_returns_5xx_for_a_malformed_id(session_factory, config, tenants):
-    """SCIM's tenant boundary is its own bearer scope (test_scim.py); here, only
-    that a value that cannot be an id answers 4xx, on every verb of every id route."""
     from hub import scim
     from hub.abuse import RateLimiter
 

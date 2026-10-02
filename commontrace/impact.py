@@ -1,34 +1,3 @@
-"""`commontrace impact` — the Impact Dashboard: "Monitor errors avoided,
-lessons reused, and value generated or saved" (the pilot design step 3: "Measure
-what changed").
-
-Three numbers, each defined precisely rather than asserted, because a
-number a prospect is shown has to survive being asked "how was that
-computed":
-
-* **Lessons reused** — how many times an already-curated lesson proved
-  useful again on a fresh occasion. Counted directly from retrieval
-  evidence (the same `extensions.lessons_retrieved`/`lessons_hit` and
-  episode `lessons_retrieved_by_alpha`/`lessons_hit` fields
-  `commontrace reliability` reads), not modeled.
-
-* **Errors avoided** — among occasions where a lesson was hit, how many
-  reached a successful outcome (resolved, or explicitly not a repeated
-  error). This is **correlational**, exactly like `reliability`'s `lift`
-  and `bench --pilot`'s deltas: a lesson fires *because* the situation
-  matched its activation condition, so occasions where one fired differ
-  systematically from occasions where none did. It is not a causal claim.
-  For a causal number, run `commontrace query --experiment` +
-  `commontrace experiment` and read that instead.
-
-* **Value generated or saved** — an *estimate*, and only ever computed from
-  rates the caller supplies explicitly (`--cost-per-1k-tokens`,
-  `--value-per-error-avoided`). Matching `hub/plans.py`'s "no currency
-  appears anywhere in this repository, and that is deliberate": nothing
-  here hardcodes a dollar figure. Omit both flags and this dashboard
-  reports the underlying counts with no dollar total at all, rather than
-  inventing a rate to fill one in.
-"""
 from __future__ import annotations
 
 import dataclasses
@@ -79,19 +48,6 @@ def compute_impact(
     errors_avoided = 0
     errors_avoided_basis = 0
     for e in evidence:
-        # set(e.hit) & set(e.retrieved), not a bare `e.hit` truthiness
-        # check, for both lessons_reused and errors_avoided/basis below --
-        # the same rule reliability.py:score_lessons already documents and
-        # enforces ("a hit only counts as evidence if the lesson was
-        # actually retrieved on that occasion; otherwise a lesson credited
-        # by a retro pass would get precision > 1"). Without the
-        # intersection, an occasion whose `lessons_hit` was populated by
-        # something other than this occasion's own retrieval call (a
-        # retro/backfill pass, hand-edited evidence) inflated both figures
-        # with a success this product's own retrieval cannot actually take
-        # credit for -- exactly the number a prospect would ask "how was
-        # that computed?" about. Computed once per occasion and shared by
-        # both rather than recomputed a second time for errors_avoided.
         hit_and_retrieved = set(e.hit) & set(e.retrieved)
         lessons_reused += len(hit_and_retrieved)
         if not hit_and_retrieved or e.succeeded is None:

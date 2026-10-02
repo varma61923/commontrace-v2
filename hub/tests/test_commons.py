@@ -1,27 +1,3 @@
-"""Tests for the CommonTrace Knowledge Base.
-
-Two things are being pinned here, and the second matters more than the first:
-
-1. That the Knowledge Base works -- `commons_overlap` answers the coverage
-   question correctly against operator-curated content, and gets sane
-   numbers back.
-
-2. That it does NOT create a cross-tenant leak. `commons_overlap` and
-   `commons_search` are the only paths in hub/crud.py by which a query
-   reaches content outside the caller's own org, and the only content they
-   can ever reach is `commons_source == "seed"` -- rows written exclusively
-   by the operator-run `hub/manage.py:commons_seed`, never by a customer.
-   There is no customer-facing tool that sets `shared_with_commons` on a
-   customer's own trace (see hub/plans.py "why there is no org-to-org
-   sharing here"). Every way this boundary could fail is tested explicitly:
-   an ordinary (non-seeded) trace, a quarantined seeded entry, and -- the
-   defense-in-depth case -- a hypothetical row that is `shared_with_commons`
-   but NOT `commons_source == "seed"` must never appear in a result.
-
-hub/tests/test_tenant_isolation.py continues to pass unchanged, which is
-the complementary half of the same claim: the ordinary read paths did not
-loosen.
-"""
 from __future__ import annotations
 
 import json
@@ -42,8 +18,6 @@ pytestmark = pytest.mark.asyncio
 
 @pytest_asyncio.fixture
 async def orgs(session_factory):
-    """One operator org (the only one ever allowed to own Knowledge Base
-    entries) and two ordinary customer orgs."""
     async with session_scope(session_factory) as session:
         made = {}
         for name in ("operator", "customer-a", "customer-b"):
@@ -67,13 +41,6 @@ async def _contribute(session_factory, config, org_id, title, context, solution,
 async def _seed(
     session_factory, operator_org_id, title, context, solution, tags=None, agent_type="code",
 ):
-    """Put one entry directly into the Knowledge Base, the only way that
-    ever happens in production: `hub/manage.py:commons_seed` constructing a
-    row with `commons_source="seed"` under an operator org. Exercised here
-    at the row level rather than via `manage.commons_seed` so each test can
-    build exactly the fixture it needs without a JSONL file on disk --
-    `TestShippedSeedCorpus` below exercises the real loader end to end.
-    """
     tags = tags or []
     async with session_scope(session_factory) as session:
         trace = Trace(
@@ -95,7 +62,6 @@ async def _seed(
 
 
 def _sign(title, context, tags=None):
-    """Sign a failure exactly as a client would, via the shared module."""
     return commons.signature_for(title, context, tags or [])
 
 
@@ -103,23 +69,9 @@ def _failure(label, title, context, tags=None):
     return {"label": label, "signature": _sign(title, context, tags)}
 
 
-# --- 1. The algorithm must be identical on both sides -------------------
-
-
 @pytest.mark.filterwarnings("ignore::pytest.PytestWarning")
 class TestSignatureCompatibility:
-    """Pure-function tests -- no DB, no event loop. The module-level
-    `pytestmark` applies asyncio to every test in the file; these opt out of
-    the resulting "marked asyncio but not async" warning rather than
-    dropping the module-level mark that the other tests need."""
-
     def test_hub_and_client_produce_identical_signatures(self):
-        """The whole Knowledge Base is meaningless if the Hub and the client
-        draw different MinHash permutations -- estimate_jaccard would
-        compare mismatched positions and return a confident, wrong number
-        rather than failing. hub/commons.py imports the client's module
-        precisely so this cannot drift; this test fails loudly if someone
-        ever reimplements it locally."""
         from commontrace import overlap
 
         text = commons.matchable_text("Stripe webhook", "duplicate delivery", ["stripe"])
@@ -136,15 +88,8 @@ class TestSignatureCompatibility:
         assert commons.estimate(a, b) < commons.DEFAULT_COMMONS_THRESHOLD
 
 
-# --- 2. The Knowledge Base boundary must not leak ------------------------
-
-
 class TestCommonsDoesNotLeak:
     async def test_an_ordinary_customer_trace_never_appears(self, session_factory, config, orgs):
-        """A trace nobody ever ran commons_seed on -- the entire population
-        of customer traces -- must never surface in a Knowledge Base query,
-        because there is no customer-facing path that could have put it
-        there."""
         await _contribute(
             session_factory, config, orgs["customer-a"],
             "Stripe webhook retries", "duplicate delivery on 500", "SECRET-SOLUTION",
@@ -159,8 +104,6 @@ class TestCommonsDoesNotLeak:
         assert report["matches"] == []
 
     async def test_a_quarantined_seed_entry_is_excluded(self, session_factory, orgs):
-        """Belt and braces: even operator-curated content must be excluded
-        once quarantined."""
         tid = await _seed(
             session_factory, orgs["operator"],
             "Stripe webhook retries", "duplicate delivery on 500", "use an idempotency key",
@@ -180,13 +123,6 @@ class TestCommonsDoesNotLeak:
     async def test_a_shared_row_that_is_not_seed_sourced_is_still_invisible(
         self, session_factory, orgs
     ):
-        """THE defense-in-depth property. There is no customer-facing tool
-        that can set `shared_with_commons` on a customer's own trace today
-        -- but if one ever did (a bug, a future regression), the
-        `commons_source == "seed"` filter must still keep it out of every
-        other customer's results. This is what makes "no org-to-org
-        sharing" a guarantee rather than a policy that merely holds because
-        nothing currently violates it."""
         async with session_scope(session_factory) as session:
             rogue = Trace(
                 org_id=orgs["customer-a"],
@@ -195,11 +131,11 @@ class TestCommonsDoesNotLeak:
                 solution_text="internal solution",
                 tags=[],
                 agent_type="code",
-                shared_with_commons=True,  # hypothetically set by a bug
+                shared_with_commons=True,
                 commons_signature=commons.signature_for(
                     "Customer A's proprietary escalation policy", "internal pricing logic", []
                 ),
-                commons_source="org",  # NOT "seed"
+                commons_source="org",
             )
             session.add(rogue)
             await session.flush()
@@ -220,16 +156,10 @@ class TestCommonsDoesNotLeak:
         assert search_result["n_candidates"] == 0
 
 
-# --- 3. The number itself -----------------------------------------------
-
-
 class TestCoverageNumber:
     async def test_matching_failure_is_covered_and_returns_the_solution(
         self, session_factory, orgs
     ):
-        """The payoff: a match hands back the Knowledge Base entry's
-        substrate content -- title/context/solution/tags/agent_type/trust,
-        the narrow projection (see TestCommonsCrossOrgProjection below)."""
         await _seed(
             session_factory, orgs["operator"],
             "Stripe webhook retries", "duplicate delivery on 500 response",
@@ -304,8 +234,6 @@ class TestCoverageNumber:
     async def test_include_matches_false_returns_the_number_without_content(
         self, session_factory, orgs
     ):
-        """A prospect evaluating whether to engage can get the headline
-        number without pulling any content."""
         await _seed(
             session_factory, orgs["operator"],
             "Stripe webhook retries", "duplicate delivery on 500", "idempotency key",
@@ -322,8 +250,6 @@ class TestCoverageNumber:
     async def test_empty_knowledge_base_says_so_rather_than_reporting_zero_percent(
         self, session_factory, orgs
     ):
-        """0% against an empty corpus is not a finding, and this number is
-        exactly the kind that gets quoted once and repeated forever."""
         async with session_scope(session_factory) as session:
             report = await crud.commons_overlap(
                 session, orgs["customer-a"], [_failure("f1", "anything", "at all")],
@@ -333,13 +259,6 @@ class TestCoverageNumber:
 
 
 class TestScanDoesNotBlockTheEventLoop:
-    """commons.best_matches is a CPU-bound MinHash comparison loop -- up to
-    MAX_SUBMITTED_FAILURES (500) signatures against up to max_corpus_scan()
-    (20,000) corpus rows. Run inline on the request coroutine, that stalls
-    the single-threaded asyncio event loop for its full duration, starving
-    every other request the process is concurrently serving. crud.commons_overlap
-    must run it via asyncio.to_thread instead of calling it directly."""
-
     async def test_best_matches_runs_off_the_event_loop_thread(
         self, session_factory, orgs, monkeypatch
     ):
@@ -372,16 +291,6 @@ class TestScanDoesNotBlockTheEventLoop:
 
 
 class TestCommonsCrossOrgProjection:
-    """A Knowledge Base entry's title/context/solution/tags is what a
-    lookup needs -- that is not the same as exposing every column on the
-    row. commons_overlap's matches used to hand back crud._to_wire(hit)
-    in full, which included `contributor` (routinely an email/name),
-    `extensions`/`outcome` (freeform JSON that can carry internal project
-    ids or cost data), `watch_condition`, and `review_after` -- operational
-    bookkeeping fields with no meaning on curated content and no business
-    being on the wire to any caller. The projection must carry the
-    substrate content a requester actually needs and nothing else."""
-
     async def test_private_fields_are_excluded_from_a_commons_match(
         self, session_factory, orgs
     ):
@@ -413,7 +322,6 @@ class TestCommonsCrossOrgProjection:
             "shared_with_commons",
         ):
             assert private_field not in match_trace, f"{private_field!r} leaked to a caller"
-        # What a requester actually needs to judge and use the match:
         assert match_trace["title"] == "Stripe webhook retries"
         assert match_trace["solution_text"] == "Use an idempotency key"
         assert match_trace["tags"] == ["stripe"]
@@ -421,16 +329,8 @@ class TestCommonsCrossOrgProjection:
         assert "created_at" in match_trace
 
 
-# --- 4. Scaling: the fast path must not diverge from the reference ------
-
-
 @pytest.mark.filterwarnings("ignore::pytest.PytestWarning")
 class TestMatcherPaths:
-    """commons.best_matches has a numpy fast path and a pure-Python
-    fallback. They must return identical results -- a fast path that
-    quietly disagreed would produce wrong coverage numbers only on hosts
-    that happen to have numpy installed, which is close to undebuggable."""
-
     def _random_sigs(self, n, seed):
         import random
 
@@ -457,8 +357,6 @@ class TestMatcherPaths:
         assert commons.best_matches(submitted, corpus) == self._pure_python(submitted, corpus)
 
     def test_both_paths_agree_when_a_real_match_exists(self):
-        """The case that actually matters: a planted near-duplicate must be
-        found at the same index with the same similarity by both paths."""
         corpus = self._random_sigs(30, seed=3)
         planted = corpus[7][:]
         submitted = [("hit", planted)]
@@ -476,8 +374,6 @@ class TestBoundedCorpusScan:
     async def test_a_truncated_scan_is_reported_as_a_lower_bound(
         self, session_factory, orgs, monkeypatch
     ):
-        """Silently truncating would under-report the coverage figure. It
-        must be flagged and framed as a lower bound instead."""
         monkeypatch.setattr(commons, "max_corpus_scan", lambda: 1)
         for i in range(3):
             await _seed(session_factory, orgs["operator"], f"Shared substrate {i}", f"context {i}", "fix")
@@ -504,8 +400,6 @@ class TestBoundedCorpusScan:
 
 class TestAgentTypePrefilter:
     async def test_narrowing_by_agent_type_excludes_other_fleets(self, session_factory, orgs):
-        """Not an approximation -- a support fleet's failures genuinely
-        should not be scored against another agent type's substrate."""
         await _seed(
             session_factory, orgs["operator"],
             "Stripe webhook retries", "duplicate delivery on 500", "idempotency key",
@@ -526,24 +420,7 @@ class TestAgentTypePrefilter:
         assert other["n_covered"] == 0
 
 
-# --- 5. Operator view: is the Knowledge Base content actually good? -----
-
-
 class TestKbStats:
-    """There is no network-effect question to ask here (see hub/plans.py
-    "why there is no org-to-org sharing here") -- the operator's question
-    is a content-quality one: is the corpus actually answering real
-    questions, and who is using it."""
-
-    # Every test in this class is about how hits are COUNTED, not about who
-    # is allowed to move the counter. hub/crud.py:commons_overlap only
-    # credits `commons_hits` for an established org -- the same
-    # autoconfirmed bar the vote path uses, applied to the other shared
-    # number (see hub/tests/test_commons_hit_integrity.py for why, and for
-    # the tests that own the rule itself). A freshly inserted
-    # Organization() clears neither threshold, so without this every
-    # assertion below would be reading 0 and silently measuring the
-    # anti-sockpuppet rule instead of the arithmetic it names.
     @pytest_asyncio.fixture(autouse=True)
     async def _established_queriers(self, orgs, establish_orgs):
         await establish_orgs(orgs["customer-a"], orgs["customer-b"])
@@ -586,18 +463,14 @@ class TestKbStats:
 
         await _seed(session_factory, orgs["operator"], "Stripe webhook retries", "ctx", "fix")
         probe = [_failure("f", "Stripe webhook retries", "ctx")]
-        for org in ("customer-a", "customer-b", "customer-a"):  # a repeats
+        for org in ("customer-a", "customer-b", "customer-a"):
             async with session_scope(session_factory) as session:
                 await crud.commons_overlap(session, orgs[org], probe)
 
         await manage.kb_stats(session_factory=session_factory)
-        # Two DISTINCT orgs queried, even though customer-a queried twice --
-        # this is an adoption count, not a query-volume count.
         assert "queried by:              2 of 3 org(s)" in capsys.readouterr().out
 
     async def test_an_empty_submission_does_not_count_as_a_query(self, session_factory, orgs, capsys):
-        """An empty submission compares nothing and is never metered (see
-        commons_overlap) -- it must not register as adoption either."""
         from hub import manage
 
         await _seed(session_factory, orgs["operator"], "t", "c", "s")
@@ -625,10 +498,6 @@ class TestKbStats:
 
 
 class TestKbStatsSubmissionFunnel:
-    """Authorship has its own number now (community submissions), reported
-    alongside kb_stats' existing content-quality numbers, not instead of
-    them."""
-
     async def test_no_submissions_prints_no_funnel_section(self, session_factory, orgs, capsys):
         from hub import manage
 
@@ -668,19 +537,6 @@ class TestKbStatsSubmissionFunnel:
 
 
 class TestValueLedger:
-    """Trace.commons_hits is the operator's quality signal for its own
-    curated content -- "this entry actually covered a real recurring
-    failure" -- so it has to be counted correctly."""
-
-    # Every test in this class is about how hits are COUNTED, not about who
-    # is allowed to move the counter. hub/crud.py:commons_overlap only
-    # credits `commons_hits` for an established org -- the same
-    # autoconfirmed bar the vote path uses, applied to the other shared
-    # number (see hub/tests/test_commons_hit_integrity.py for why, and for
-    # the tests that own the rule itself). A freshly inserted
-    # Organization() clears neither threshold, so without this every
-    # assertion below would be reading 0 and silently measuring the
-    # anti-sockpuppet rule instead of the arithmetic it names.
     @pytest_asyncio.fixture(autouse=True)
     async def _established_queriers(self, orgs, establish_orgs):
         await establish_orgs(orgs["customer-a"], orgs["customer-b"])
@@ -735,17 +591,6 @@ class TestValueLedger:
     async def test_two_failures_in_one_query_hitting_the_same_entry_both_count(
         self, session_factory, orgs
     ):
-        """The batch case `test_hits_accumulate_across_separate_customers`
-        doesn't cover: TWO submitted failures in the SAME commons_overlap
-        call both best-matching the SAME entry -- a fleet hitting one
-        substrate failure across several tasks and submitting them
-        together, exactly the batch workflow this API exists to support.
-
-        A naive `UPDATE ... WHERE id IN (hit_ids)` credits the row once per
-        UPDATE STATEMENT regardless of how many times its id repeats in the
-        IN-list -- Postgres does not re-apply the SET clause per duplicate.
-        That silently under-counts this case, and two distinct failures
-        genuinely covered is two hits, not one."""
         tid = await _seed(
             session_factory, orgs["operator"],
             "Stripe webhook retries", "duplicate delivery on 500", "idempotency key",
@@ -765,14 +610,6 @@ class TestValueLedger:
         )
 
     async def test_duplicate_signature_farming_is_capped_per_query(self, session_factory, orgs):
-        """Nothing on the wire stops a caller from submitting the identical
-        signature many times in one request (up to
-        commons.MAX_SUBMITTED_FAILURES). Without a cap, one repeated
-        signature could inflate one entry's quality signal into looking far
-        more useful than it actually is. commons.MAX_HITS_PER_TRACE_PER_QUERY
-        bounds how much a single call can credit one entry, while leaving
-        small genuine multi-task batches (like the 2-failure case above)
-        fully credited."""
         tid = await _seed(
             session_factory, orgs["operator"],
             "Stripe webhook retries", "duplicate delivery on 500", "idempotency key",
@@ -783,8 +620,6 @@ class TestValueLedger:
         ]
         async with session_scope(session_factory) as session:
             report = await crud.commons_overlap(session, orgs["customer-a"], probe)
-        # The caller's own coverage report is unaffected by the cap -- every
-        # submitted failure it asked about really was covered.
         assert report["n_covered"] == len(probe)
 
         async with session_scope(session_factory) as session:
@@ -794,9 +629,6 @@ class TestValueLedger:
         )
 
     async def test_counting_survives_concurrent_queries(self, session_factory, orgs):
-        """The increment is an atomic in-database UPDATE, not a
-        read-modify-write: this is the operator's only quality signal for
-        its own content, so lost counts under concurrency would corrupt it."""
         import asyncio
 
         tid = await _seed(
@@ -816,13 +648,8 @@ class TestValueLedger:
         assert row.commons_hits == 12, "concurrent queries must not lose hit credit"
 
 
-# --- 6. Untrusted input --------------------------------------------------
-
-
 class TestSubmittedInputIsValidated:
     async def test_rejects_a_wrong_width_signature(self, session_factory, orgs):
-        """A mismatched width is not salvageable -- comparing it would
-        return a confident, meaningless number."""
         with pytest.raises(commons.CommonsInputError):
             async with session_scope(session_factory) as session:
                 await crud.commons_overlap(
@@ -858,10 +685,6 @@ class TestSubmittedInputIsValidated:
         assert report["covered_fraction"] == 0.0
 
     async def test_rejects_negative_signature_values(self, session_factory, orgs):
-        """A negative value passes isinstance(v, int) but is outside the
-        uint64 domain MinHash signatures live in -- on numpy hosts,
-        converting it (`np.array(..., dtype=uint64)`) raises OverflowError,
-        surfacing as an unhandled 500 instead of a clean 400."""
         with pytest.raises(commons.CommonsInputError):
             async with session_scope(session_factory) as session:
                 await crud.commons_overlap(
@@ -878,10 +701,6 @@ class TestSubmittedInputIsValidated:
                 )
 
     async def test_rejects_non_finite_threshold(self, session_factory, orgs):
-        """max(0.0, min(nan, 1.0)) silently clamps NaN to 0.0 rather than
-        rejecting it -- permissive, not a crash, but a threshold of 0.0
-        matches everything, which is not what a caller who passed NaN
-        intended."""
         probe = [_failure("f", "Stripe webhook retries", "duplicate delivery on 500")]
         with pytest.raises(commons.CommonsInputError):
             async with session_scope(session_factory) as session:
@@ -890,10 +709,6 @@ class TestSubmittedInputIsValidated:
     async def test_rejects_a_non_numeric_threshold_with_a_clean_error_not_a_crash(
         self, session_factory, orgs
     ):
-        """float(threshold) alone raises an uncaught TypeError for None/
-        list/dict -- not a CommonsInputError -- so this must be caught
-        before the isfinite check the NaN test above exercises ever gets a
-        chance to run."""
         probe = [_failure("f", "Stripe webhook retries", "duplicate delivery on 500")]
         with pytest.raises(commons.CommonsInputError):
             async with session_scope(session_factory) as session:
@@ -901,13 +716,6 @@ class TestSubmittedInputIsValidated:
 
 
 class TestCommonsAccessEntitlement:
-    """commons_overlap/commons_search both read the operator-maintained
-    Knowledge Base rather than the caller's own data, and are gated on
-    plan.commons_access -- every one of the four built-in plans
-    (hub/plans.py) happens to set this True, so this constructs a plan
-    that does not, the only way to exercise the EntitlementExceeded branch
-    at all."""
-
     @pytest_asyncio.fixture
     async def no_commons_org(self, session_factory, monkeypatch):
         no_commons_plan = plans.Plan(
@@ -924,11 +732,6 @@ class TestCommonsAccessEntitlement:
     async def test_commons_overlap_refuses_a_plan_without_commons_access(
         self, session_factory, no_commons_org
     ):
-        # A non-empty submission: an empty one is deliberately not metered
-        # or entitlement-checked at all (commons_overlap's own docstring --
-        # "it compares nothing, so billing it would be charging for a
-        # no-op"), so [] would skip the very branch this test exists to
-        # exercise.
         probe = [_failure("f", "Stripe webhook retries", "duplicate delivery on 500")]
         with pytest.raises(plans.EntitlementExceeded, match="commons_access"):
             async with session_scope(session_factory) as session:
@@ -943,35 +746,18 @@ class TestCommonsAccessEntitlement:
                 await crud.commons_search(session, no_commons_org, signature)
 
 
-# --- 7. The shipped seed corpus -------------------------------------------
-
-
 SEED_CORPUS = Path(__file__).resolve().parents[2] / "commons" / "seed" / "substrate-v1.jsonl"
 
 
 @pytest.mark.filterwarnings("ignore::pytest.PytestWarning")
 class TestShippedSeedCorpus:
-    """`commons-seed` is a mechanism; commons/seed/substrate-v1.jsonl is the
-    corpus that actually ships with it. A mechanism with no corpus leaves
-    every first customer looking at a 0% coverage report, so the corpus is
-    part of the product and is tested like it.
-
-    What is pinned here is the corpus being *loadable and honest*, not the
-    coverage number it produces -- that is measured separately and on
-    held-out data (commons/eval/), because a coverage figure computed
-    against the same file that produced the corpus would be meaningless.
-    """
-
     def test_every_line_is_loadable_by_commons_seed(self):
-        """`commons_seed` silently skips lines it cannot use. A corpus that
-        ships with skipped lines is a corpus nobody checked, so assert the
-        preconditions the loader enforces, line by line."""
         assert SEED_CORPUS.exists(), f"the shipped corpus is missing: {SEED_CORPUS}"
         titles = set()
         for i, raw in enumerate(SEED_CORPUS.read_text(encoding="utf-8").splitlines(), 1):
             if not raw.strip():
                 continue
-            rec = json.loads(raw)  # a parse failure here is the test failing
+            rec = json.loads(raw)
             assert rec.get("title"), f"line {i}: commons_seed requires a title"
             assert rec.get("solution_text"), f"line {i}: commons_seed requires solution_text"
             assert isinstance(rec.get("tags"), list) and rec["tags"], f"line {i}: needs tags"
@@ -981,9 +767,6 @@ class TestShippedSeedCorpus:
         assert len(titles) >= 40, "a corpus this small will not move anyone's coverage number"
 
     def test_every_record_cites_where_it_came_from(self):
-        """Curated knowledge is stored as `shared_rationale`, which is the
-        only provenance a customer ever sees. A row without a citation is
-        indistinguishable from something we made up."""
         for i, raw in enumerate(SEED_CORPUS.read_text(encoding="utf-8").splitlines(), 1):
             if not raw.strip():
                 continue
@@ -991,8 +774,6 @@ class TestShippedSeedCorpus:
             assert rec.get("source"), f"line {i}: no provenance for {rec.get('title')!r}"
 
     async def test_loads_into_a_hub_and_answers_a_query(self, session_factory, orgs):
-        """End to end: the shipped file goes in, and a customer org gets a
-        real answer out of it."""
         from hub import manage
 
         await manage.commons_seed(
@@ -1014,8 +795,6 @@ class TestShippedSeedCorpus:
         assert report["n_covered"] == 1
 
     async def test_loading_it_reports_the_right_entry_count(self, session_factory, orgs, capsys):
-        """The corpus loads as Knowledge Base content, checkable via
-        kb-stats -- the operator's own view of what it curated."""
         from hub import manage
 
         await manage.commons_seed(
@@ -1028,23 +807,8 @@ class TestShippedSeedCorpus:
         assert f"knowledge base entries:  {n}" in out
 
 
-# --- 8. The held-out coverage evaluation -------------------------------
-
-
 @pytest.mark.filterwarnings("ignore::pytest.PytestWarning")
 class TestHeldOutEvaluation:
-    """The Knowledge Base ships a coverage percentage, and a coverage
-    percentage nobody validated is worse than none -- it gets quoted.
-    commons/eval/ measures it against probes the corpus was not built from;
-    these tests keep that measurement runnable and keep its conclusions
-    from silently drifting.
-
-    Deliberately NOT asserted: an exact recall figure. The measured value
-    is recorded in the evaluation, and pinning it here would make
-    any corpus improvement look like a test failure. What is asserted is
-    the property that must not regress -- the matcher does not report
-    coverage it does not have."""
-
     def _evaluate(self):
         import importlib.util
 
@@ -1061,12 +825,6 @@ class TestHeldOutEvaluation:
         assert r["threshold"] == commons.DEFAULT_COMMONS_THRESHOLD
 
     def test_no_absent_failure_is_reported_as_covered(self):
-        """The negative controls are the half of this evaluation that
-        author bias cannot flatter, and they are what makes the shipped
-        number safe to quote. If the corpus or the matcher ever starts
-        claiming one of the 22 deliberately-absent failures -- including
-        the near misses -- the coverage report has begun over-claiming and
-        that is worse than low recall."""
         r = self._evaluate().evaluate()
         assert r["false_positive_rate"] == 0.0, (
             "the Knowledge Base is now reporting coverage it does not have: "
@@ -1077,17 +835,10 @@ class TestHeldOutEvaluation:
         )
 
     def test_matches_point_at_the_right_record(self):
-        """A match that lands on the wrong record is a customer opening a
-        trace that does not solve their problem -- worse than no match,
-        because it spends their trust."""
         r = self._evaluate().evaluate()
         assert r["right_row_rate"] == 1.0
 
     async def test_the_returned_note_says_the_number_is_a_floor(self, session_factory, orgs):
-        """The evaluation's finding has to reach the person reading the
-        number, not just the repository. A coverage figure that a customer
-        reads as an estimate, when measured recall says it is a floor, is
-        the number that gets quoted and then falls apart."""
         await _seed(session_factory, orgs["operator"], "Some failure", "ctx", "fix")
         async with session_scope(session_factory) as session:
             report = await crud.commons_overlap(
@@ -1097,8 +848,6 @@ class TestHeldOutEvaluation:
         assert "misses are not evidence of absence" in report["note"]
 
     async def test_a_measurement_that_measured_nothing_is_not_qualified(self, session_factory, orgs):
-        """An empty Knowledge Base has no number to qualify -- appending the
-        recall caveat there would imply a real comparison happened."""
         async with session_scope(session_factory) as session:
             report = await crud.commons_overlap(
                 session, orgs["customer-a"], [_failure("f", "anything", "ctx")],
@@ -1107,20 +856,8 @@ class TestHeldOutEvaluation:
         assert "FLOOR" not in report["note"]
 
 
-# --- 9. The two retrieval tiers make opposite trades --------------------
-
-
 @pytest.mark.filterwarnings("ignore::pytest.PytestWarning")
 class TestRetrievalTiersDiffer:
-    """The product strategy claimed per-org retrieval shared the Knowledge
-    Base matcher's recall defect because it shares a tokenizer. Measurement
-    (commons/eval/retrieval_tiers.py) showed the opposite, and §12.7 records
-    the correction. These pin the property that correction rests on, so the
-    strategy document cannot quietly drift away from its own evidence.
-
-    What is asserted is the SHAPE of each tier's trade, not exact figures --
-    pinning 84.8% would make any corpus improvement look like a failure."""
-
     def _evaluate(self):
         import importlib.util
 
@@ -1132,17 +869,10 @@ class TestRetrievalTiersDiffer:
         return module.evaluate()
 
     def test_per_org_retrieval_has_high_recall(self):
-        """It ranks instead of thresholding, so a paraphrase still surfaces.
-        If this drops toward the Knowledge Base's coverage figure, the
-        per-org product's core loop is broken and §12.7's conclusion no
-        longer holds."""
         r = self._evaluate()
         assert r["recall"][5] > 0.7, f"per-org recall@5 collapsed to {r['recall'][5]:.1%}"
 
     def test_per_org_retrieval_pays_for_that_with_no_precision(self):
-        """The other half of the trade, asserted so it is never mistaken for
-        a coverage signal: with no threshold, failures the corpus cannot
-        answer still come back with a result."""
         r = self._evaluate()
         assert r["neg_returns_something"][1] > 0.5, (
             "negative controls stopped returning results -- if a threshold was "
@@ -1150,9 +880,6 @@ class TestRetrievalTiersDiffer:
         )
 
     def test_the_two_tiers_are_not_interchangeable(self):
-        """The finding in one line: same tokenizer, opposite outcomes. A
-        change that made these converge would invalidate the reasoning in
-        both the evaluation and the product strategy."""
         r = self._evaluate()
         assert r["recall"][1] > 0.5, "per-org tier should rank, not threshold"
         assert r["recall_anywhere"] > 0.9, (

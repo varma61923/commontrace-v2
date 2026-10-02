@@ -1,27 +1,3 @@
-"""Reading four other systems' exports without a transform script.
-
-What these tests defend, in rough order of how badly getting it wrong would
-hurt a customer:
-
-1. **Nothing is invented.** A row missing its solution text must be SKIPPED
-   with a reason, never imported with a plausible placeholder. A bulk import
-   is someone else's data arriving in bulk, and one fabricated field
-   repeated ten thousand times becomes a corpus this product then measures
-   and bills against.
-2. **Silence is not success.** OTel's UNSET status, a LangSmith run with no
-   `error` key, a Langfuse trace with no recognised score -- none of these
-   may read as "resolved". Scoring an uninstrumented fleet as 100% resolved
-   is the single most expensive wrong answer available here, because it
-   feeds the causal machinery.
-3. **Both export shapes work.** OTLP-JSON's attribute LIST and the flat
-   attribute dict are both real, and supporting one of them means reading
-   zero rows from a file that obviously looks fine to a human.
-4. **A misspelled --source is an error**, not a silent pass-through that
-   imports ten thousand empty traces.
-5. **The whole path, not just the mapper**: these go through
-   `commontrace import` for the same reason the MCP tests go through
-   `call_tool` -- an adapter nothing calls is not shipped.
-"""
 from __future__ import annotations
 
 import json
@@ -39,8 +15,6 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 def norm(row: dict, source: str) -> dict:
     return adapters.normalize(row, source)
 
-
-# --- LangSmith ---------------------------------------------------------------
 
 class TestLangSmith:
     RUN = {
@@ -60,9 +34,6 @@ class TestLangSmith:
         assert "re-sent" in flat["solution"]
 
     def test_the_title_is_specific_not_the_chain_name(self):
-        """Every row from one pipeline exports as "AgentExecutor"; importing
-        ten thousand gives a store whose traces are indistinguishable in
-        every listing a curator reads."""
         flat = norm(self.RUN, "langsmith")
         assert flat["title"].startswith("AgentExecutor: ")
         assert "cannot reset their password" in flat["title"]
@@ -71,14 +42,11 @@ class TestLangSmith:
         assert norm(self.RUN, "langsmith")["resolved"] is True
 
     def test_an_error_is_a_failure_and_its_text_survives(self):
-        """LangSmith already knows which runs failed, and that label is
-        exactly what distillation is looking for."""
         flat = norm({**self.RUN, "error": "ToolException: approval API 500"}, "langsmith")
         assert flat["resolved"] is False
         assert "approval API 500" in flat["context"]
 
     def test_a_run_with_no_error_field_gets_no_outcome(self):
-        """An unreported occasion is missing data, not a win."""
         run = {k: v for k, v in self.RUN.items() if k != "error"}
         assert "resolved" not in norm(run, "langsmith")
 
@@ -92,8 +60,6 @@ class TestLangSmith:
         run["extra"] = {"metadata": {"total_tokens": 99}}
         assert norm(run, "langsmith")["tokens_used"] == 99
 
-
-# --- Langfuse ----------------------------------------------------------------
 
 class TestLangfuse:
     TRACE = {
@@ -121,9 +87,6 @@ class TestLangfuse:
         assert flat["resolved"] is False
 
     def test_an_unrecognised_score_name_is_not_guessed_at(self):
-        """A fleet with a scorer called `toxicity` would have every safe
-        answer read as a failure by anything that took the first numeric
-        score it found."""
         flat = norm(
             {**self.TRACE, "scores": [{"name": "toxicity", "value": 0}]}, "langfuse")
         assert "resolved" not in flat
@@ -141,8 +104,6 @@ class TestLangfuse:
         assert norm(self.TRACE, "langfuse")["tokens_used"] == 800
 
 
-# --- Braintrust --------------------------------------------------------------
-
 class TestBraintrust:
     SPAN = {
         "id": "sp-1",
@@ -155,8 +116,6 @@ class TestBraintrust:
     }
 
     def test_expected_is_carried_when_it_disagrees_with_output(self):
-        """A row where output and expected disagree is a labelled failure,
-        and labelled failures are what this product distils lessons from."""
         flat = norm(self.SPAN, "braintrust")
         assert "billing" in flat["solution"]
         assert "account-access" in flat["solution"]
@@ -169,8 +128,6 @@ class TestBraintrust:
         assert norm(self.SPAN, "braintrust")["resolved"] is False
 
     def test_a_partial_score_is_not_a_pass(self):
-        """Braintrust scores are 0..1; a >0 test would read 0.05 as
-        success."""
         flat = norm({**self.SPAN, "scores": {"correctness": 0.05}}, "braintrust")
         assert flat["resolved"] is False
 
@@ -181,8 +138,6 @@ class TestBraintrust:
     def test_token_metrics_are_summed_when_there_is_no_total(self):
         assert norm(self.SPAN, "braintrust")["tokens_used"] == 120
 
-
-# --- OpenTelemetry -----------------------------------------------------------
 
 _OTLP_SPAN = {
     "name": "chat gpt-4",
@@ -220,8 +175,6 @@ class TestOtel:
         assert "a partial summary" in flat["solution"]
 
     def test_flat_attribute_dicts_work_too(self):
-        """Supporting one shape means reading zero rows from a file that
-        obviously looks fine to a human."""
         flat = norm(_FLAT_SPAN, "otel")
         assert "summarise the ticket" in flat["context"]
         assert "a full summary" in flat["solution"]
@@ -235,9 +188,6 @@ class TestOtel:
         assert norm(_FLAT_SPAN, "otel")["resolved"] is True
 
     def test_an_unset_status_is_not_a_success(self):
-        """UNSET is the default every span carries whether or not anything
-        checked it. Treating it as a pass would score an entire
-        uninstrumented fleet as 100% resolved."""
         span = {**_OTLP_SPAN, "status": {"code": "STATUS_CODE_UNSET"}}
         assert "resolved" not in norm(span, "otel")
 
@@ -275,13 +225,8 @@ class TestOtel:
         }
 
 
-# --- the registry and the shared path ----------------------------------------
-
 class TestRegistry:
     def test_a_misspelled_source_is_an_error(self):
-        """Importing ten thousand rows as `generic` because a flag was
-        misspelled produces a store full of traces with no text in them and
-        no indication why."""
         with pytest.raises(ValueError, match="unknown import source"):
             adapters.normalize({"a": 1}, "langsmth")
 
@@ -300,8 +245,6 @@ class TestRegistry:
             assert adapter.describe, name
 
     def test_every_adapter_survives_an_empty_row(self):
-        """An export with a blank or unexpected line must skip that row, not
-        crash the whole import."""
         for name in adapters.SOURCES:
             assert isinstance(adapters.normalize({}, name), dict)
 
@@ -310,9 +253,6 @@ class TestRegistry:
 
 
 class TestSharedImportPath:
-    """The adapter runs inside `import_data`, so it inherits the streaming,
-    the skip reasons and the schema validation rather than bringing its own."""
-
     def test_a_row_missing_its_solution_is_skipped_with_a_reason(self):
         mapping = import_data.FieldMapping(source="langsmith")
         lines = iter([json.dumps({"id": "r", "name": "n", "inputs": {"i": "x"}})])
@@ -332,8 +272,6 @@ class TestSharedImportPath:
     def test_the_default_source_is_unchanged_behaviour(self):
         assert import_data.FieldMapping().source == adapters.GENERIC
 
-
-# --- through the CLI ---------------------------------------------------------
 
 def cli(*argv: str) -> subprocess.CompletedProcess:
     return subprocess.run(
@@ -359,8 +297,6 @@ def _write(tmp_path, name: str, rows: list[dict]) -> str:
 
 class TestThroughTheCLI:
     def test_a_langsmith_export_imports_with_no_field_flags(self, tmp_path, store):
-        """The whole point: a customer with two years of history should not
-        have to write a transform script first."""
         export = _write(tmp_path, "runs.jsonl", [
             TestLangSmith.RUN,
             {**TestLangSmith.RUN, "id": "run-2", "error": "boom",
@@ -414,8 +350,6 @@ class TestThroughTheCLI:
             assert name in help_text
 
     def test_the_help_says_no_network_call_is_made(self, store):
-        """A security reviewer reading `--help` is the first person who asks
-        whether this opens a socket."""
         assert "nothing leaves your machine" in cli("import", "--help").stdout
 
 
@@ -438,4 +372,4 @@ class TestOtelOccasionAttributes:
         assert norm(**{"commontrace.occasion.succeeded": False})["occasion_succeeded"] is False
         assert norm(**{"commontrace.occasion.succeeded": True})["occasion_succeeded"] is True
         assert "occasion_succeeded" not in norm(**{"commontrace.occasion.succeeded": "yes"})
-        assert "occasion_succeeded" not in norm()  # an OK status is not a success
+        assert "occasion_succeeded" not in norm()

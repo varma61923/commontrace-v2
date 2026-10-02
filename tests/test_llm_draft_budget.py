@@ -1,4 +1,3 @@
-"""What a draft costs: evidence cannot grow a prompt, or the reviewer's file, without bound."""
 from __future__ import annotations
 
 from commontrace.commands import _llm_draft, lesson_cmd
@@ -24,6 +23,6 @@ def test_revision_evidence_lists_the_most_recent_occasions_per_section_and_only_
     misses = [_Ev(f"m{i}") for i in range(3)]
     text = "\n".join(lesson_cmd._evidence_sections(hits, misses, {}))
     assert "`h0`" not in text and f"`h{n + 24}`" in text and f"({n + 25} occasions" in text
-    assert all(f"`m{i}`" in text for i in range(3))              # the other arm is never crowded out
+    assert all(f"`m{i}`" in text for i in range(3))
     allowed = lesson_cmd._listed_ids(hits, misses)
     assert "h0" not in allowed and f"h{n + 24}" in allowed and len(allowed) == n + 3

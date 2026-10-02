@@ -1,21 +1,9 @@
-"""Tests for commontrace/reference/measure_performance.py."""
 import importlib.util
 import os
 
-# Import the benchmark module under test
 import measure_performance as bm
 import pytest
 
-# Fixtures and helpers from conftest.py -- loaded by explicit file path via
-# importlib rather than `from conftest import ...`. hub/tests/ also has its
-# own conftest.py; a bare `import conftest` resolves against whichever
-# same-named module is first on sys.path, which pytest's default "prepend"
-# import mode populates in COLLECTION order -- running `pytest tests/
-# hub/tests/` together, `hub/tests/conftest.py` could collect first and
-# silently shadow this one, breaking this import with a confusing
-# "cannot import name 'write_episode' from 'conftest'" (naming the wrong
-# file). Loading this exact file by path is unambiguous regardless of what
-# else is being collected alongside it.
 _conftest_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "conftest.py")
 _conftest_spec = importlib.util.spec_from_file_location("commontrace_tests_conftest", _conftest_path)
 _conftest = importlib.util.module_from_spec(_conftest_spec)
@@ -23,9 +11,6 @@ _conftest_spec.loader.exec_module(_conftest)
 write_episode = _conftest.write_episode
 write_lesson = _conftest.write_lesson
 
-# ---------------------------------------------------------------------------
-# YAML / frontmatter parsing
-# ---------------------------------------------------------------------------
 
 class TestParseFrontmatter:
     def test_basic_parse(self):
@@ -52,10 +37,6 @@ class TestParseFrontmatter:
         result = bm.parse_yaml_minimal('name: "quoted"\n')
         assert result["name"] == "quoted"
 
-
-# ---------------------------------------------------------------------------
-# lesson_quality metric
-# ---------------------------------------------------------------------------
 
 class TestLessonQuality:
     def test_full_validation(self):
@@ -86,11 +67,10 @@ class TestLessonQuality:
             {"lessons_proposed_by_omega": ["b", "c"], "lessons_validated_by_lambda": []},
         ]
         val, n = bm.compute_lesson_quality(episodes)
-        assert val == pytest.approx(0.5)  # mean(1.0, 0.0)
+        assert val == pytest.approx(0.5)
         assert n == 2
 
     def test_legacy_field_fallback(self):
-        """lessons_validated_by_user (v2.1 field) should be read as fallback."""
         episodes = [
             {"lessons_proposed_by_omega": ["x"], "lessons_validated_by_user": ["x"]},
         ]
@@ -98,17 +78,12 @@ class TestLessonQuality:
         assert val == pytest.approx(1.0)
 
     def test_quality_above_100_percent(self):
-        """Retro-validation artefact: validated can include slugs from other episodes."""
         episodes = [
             {"lessons_proposed_by_omega": ["a"], "lessons_validated_by_lambda": ["a", "b"]},
         ]
         val, n = bm.compute_lesson_quality(episodes)
-        assert val == pytest.approx(2.0)  # 2 validated / 1 proposed
+        assert val == pytest.approx(2.0)
 
-
-# ---------------------------------------------------------------------------
-# implicit_retrieval metric
-# ---------------------------------------------------------------------------
 
 class TestImplicitRetrieval:
     def test_perfect_retrieval(self):
@@ -129,7 +104,6 @@ class TestImplicitRetrieval:
         assert permissive == pytest.approx(0.5)
 
     def test_permissive_exceeds_100(self):
-        """hit can include lessons not in retrieved — permissive > 1 is expected."""
         episodes = [
             {"lessons_retrieved_by_alpha": ["x"], "lessons_hit": ["x", "y", "z"]},
         ]
@@ -152,13 +126,8 @@ class TestImplicitRetrieval:
         assert permissive == pytest.approx(0.0)
 
 
-# ---------------------------------------------------------------------------
-# transfer_gap metric
-# ---------------------------------------------------------------------------
-
 class TestTransferGap:
     def test_single_project_no_transfer(self, tmp_memory):
-        """All episodes on the same project → transfer_gap = 0."""
         write_lesson(tmp_memory, "lesson_foo", source_episodes=["ep_1"], uses=1)
         episodes = [
             {
@@ -187,7 +156,6 @@ class TestTransferGap:
         assert total == 1
 
     def test_cross_project_transfer(self, tmp_memory):
-        """Lesson seeded on proj-a hits on proj-b → transfer_gap = 1."""
         write_lesson(tmp_memory, "lesson_bar", source_episodes=["ep_a"], uses=1)
         write_episode(tmp_memory, "ep_a", project="proj-a")
 
@@ -214,12 +182,6 @@ class TestTransferGap:
         assert total == 1
 
     def test_a_md_suffixed_source_episode_entry_still_resolves(self, tmp_memory):
-        """[BUG-BENCH-03]: source_episodes has historically been written
-        both as a bare slug and as the ".md"-suffixed filename.
-        resolve_project() used to always append ".md" unconditionally, so
-        an already-suffixed entry produced "ep_a.md.md" -- a path that
-        never exists -- and a well-sourced lesson misresolved as
-        untraceable purely because of how its source was spelled."""
         write_lesson(tmp_memory, "lesson_bar", source_episodes=["ep_a.md"], uses=1)
         write_episode(tmp_memory, "ep_a", project="proj-a")
 
@@ -240,10 +202,9 @@ class TestTransferGap:
             bm.BASE_DIR = old_base
         assert untraceable == 0
         assert total == 1
-        assert val == pytest.approx(0.0)  # same project (proj-a) -- not cross-project
+        assert val == pytest.approx(0.0)
 
     def test_untraceable_hit(self):
-        """Lesson with no source_episodes → hit is untraceable."""
         episodes = [{"name": "ep_x", "project": "p", "lessons_hit": ["lesson_baz"]}]
         lessons = {"lesson_baz": {"source_episodes": []}}
         val, total, untraceable = bm.compute_transfer_gap(episodes, lessons)
@@ -251,11 +212,9 @@ class TestTransferGap:
         assert untraceable == 1
 
     def test_episode_with_no_project_field_is_untraceable_not_cross_project(self, tmp_memory):
-        """Regression: current episode's own project=None must not be auto-counted as
-        'cross-project' (None was never a real project value to compare against)."""
         write_episode(tmp_memory, "ep_src", project="proj-a")
         episodes = [
-            {"name": "ep_no_project", "lessons_hit": ["lesson_x"]},  # no "project" key at all
+            {"name": "ep_no_project", "lessons_hit": ["lesson_x"]},
         ]
         lessons = {"lesson_x": {"source_episodes": ["ep_src"]}}
         old_base = bm.BASE_DIR
@@ -267,10 +226,6 @@ class TestTransferGap:
         assert total == 0
         assert untraceable == 1
 
-
-# ---------------------------------------------------------------------------
-# Alert thresholds
-# ---------------------------------------------------------------------------
 
 class TestAlerts:
     def _make_report(self, lq_val=1.0, ir_strict=1.0, never_hit=None, n_lessons=2):
@@ -323,10 +278,6 @@ class TestAlerts:
         assert alerts == []
 
 
-# ---------------------------------------------------------------------------
-# HTML rendering
-# ---------------------------------------------------------------------------
-
 class TestHtmlRendering:
     def test_headers_converted(self):
         md = "# Title\n## Section"
@@ -356,8 +307,6 @@ class TestHtmlRendering:
         assert "<li>item one</li>" in html
 
     def test_table_cell_content_is_html_escaped(self):
-        """Regression: raw frontmatter content (project names, titles, ...) containing
-        <, >, or & must not be able to inject markup into the rendered report."""
         md = "| Project |\n|---|\n| proj<b>bold</b>&evil |"
         html = bm._md_to_html_fragment(md)
         assert "<b>bold</b>" not in html
@@ -369,7 +318,6 @@ class TestHtmlRendering:
         assert "&lt;script&gt;" in html
 
     def test_bold_still_renders_after_escaping(self):
-        """Escaping must happen before, not instead of, markdown-to-HTML substitution."""
         html = bm._md_to_html_fragment("**bold** and <raw>")
         assert "<strong>bold</strong>" in html
         assert "&lt;raw&gt;" in html
@@ -386,10 +334,6 @@ class TestHtmlRendering:
         assert "metric_x below threshold" in html
 
 
-# ---------------------------------------------------------------------------
-# Importance sort key (render_markdown's importance-distribution section)
-# ---------------------------------------------------------------------------
-
 class TestImportanceSortKey:
     def test_sorts_ints_numerically(self):
         assert sorted([3, 1, 2], key=bm._importance_sort_key) == [1, 2, 3]
@@ -398,15 +342,9 @@ class TestImportanceSortKey:
         assert sorted([3, None, 1], key=bm._importance_sort_key) == [None, 1, 3]
 
     def test_mixed_int_and_string_does_not_crash(self):
-        """Regression: sorted([3, 'high'], key=lambda x: (x is None, x)) raises TypeError
-        because int and str are never comparable."""
         result = sorted([3, "high", 1], key=bm._importance_sort_key)
         assert result == [1, 3, "high"]
 
-
-# ---------------------------------------------------------------------------
-# JSON schema version
-# ---------------------------------------------------------------------------
 
 class TestSchemaVersion:
     def test_schema_version_present(self):
@@ -416,15 +354,8 @@ class TestSchemaVersion:
         assert all(p.isdigit() for p in parts)
 
 
-# ---------------------------------------------------------------------------
-# Integration: load real example fixtures from the repo
-# ---------------------------------------------------------------------------
-
 class TestIntegrationExamples:
-    """Run against the illustrative example memory included in the repo."""
-
     def setup_method(self):
-        # Point benchmark at the repo's own memory directory
         self._old_base = bm.BASE_DIR
         bm.BASE_DIR = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -442,7 +373,6 @@ class TestIntegrationExamples:
         assert "verdict" in ep
 
     def test_example_episode_verdict_conform(self):
-        """Example episode should have CONFORM verdict (not French CONFORME)."""
         episodes, _skipped = bm.load_episodes()
         for ep in episodes:
             assert ep.get("verdict") in ("CONFORM", "ARBITRATION", "ABANDON", None), (
@@ -467,21 +397,16 @@ class TestIntegrationExamples:
         lq, lq_n = bm.compute_lesson_quality(episodes)
         ir_s, ir_p, ir_n = bm.compute_implicit_retrieval(episodes)
         tg, tg_n, tg_u = bm.compute_transfer_gap(episodes, lessons)
-        bm.compute_extras(episodes, lessons)  # just verify it doesn't raise
-        assert lq is None or (0.0 <= lq)  # lesson_quality can exceed 1.0 (retro-validation)
+        bm.compute_extras(episodes, lessons)
+        assert lq is None or (0.0 <= lq)
 
 
 class TestComputeExtrasNeverHitHandlesNullUses:
-    """`lessons.get("uses", 0) == 0` only applies the default when the KEY
-    is absent -- a hand-edited `uses: null` (key present, value None) made
-    `.get` return None, and `None == 0` is False, so that lesson silently
-    vanished from the never-hit report instead of correctly appearing in it."""
-
     def test_a_lesson_with_uses_null_appears_in_never_hit(self):
         lessons = {
             "lesson_a": {"uses": None},
             "lesson_b": {"uses": 3},
-            "lesson_c": {},  # key absent entirely -- must also count as 0
+            "lesson_c": {},
         }
         extras = bm.compute_extras([], lessons)
         assert extras["never_hit"] == ["lesson_a", "lesson_c"]

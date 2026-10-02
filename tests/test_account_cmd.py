@@ -1,10 +1,3 @@
-"""Tests for `commontrace account` -- the client half of self-service
-deletion. Every Hub call is monkeypatched here; the actual deletion
-semantics (org-scoping, the grace period, token matching) are covered
-against a real Postgres instance in hub/tests/test_self_service_deletion.py.
-This file is about the CLI's own responsibilities: the confirmation gate
-on irreversible actions, and reporting the Hub's response accurately.
-"""
 from __future__ import annotations
 
 import argparse

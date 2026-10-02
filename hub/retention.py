@@ -1,60 +1,4 @@
-"""Age-based deletion, the things that outrank it, and a plan you read first.
-
-WHY THIS EXISTS
----------------
-The Hub deleted data in exactly two shapes: one trace, or one whole
-organization. Both are manual, immediate and irreversible, which leaves the
-question a data-protection reviewer actually asks -- "what happens to a
-trace nobody touches for three years?" -- with the answer "nothing, forever".
-Indefinite retention is not a policy; it is the absence of one, and it is
-the shape that turns an ordinary breach into a breach of everything the
-product has ever seen.
-
-So: per-org policies that delete by OBJECT TYPE and STATUS after an age, a
-plan you can read before anything happens, and two classes of thing that
-outrank the policy.
-
-WHY A PLAN IS A FIRST-CLASS OBJECT
-----------------------------------
-A purge is the one operation whose result cannot be inspected afterwards --
-the evidence that it did the wrong thing is what it deleted. So the plan is
-computed, rendered and digested first, and `apply` takes that digest back.
-If the store moved in between (a trace was amended, an experiment started, a
-hold was placed), the digest no longer matches and the apply is REFUSED
-rather than silently deleting a set the operator never saw. Same discipline
-as release.py's stale-base rejection, for the same reason: an operator who
-approved one set of consequences must not get a different one.
-
-`apply` is never the default and never implicit. There is no flag that
-plans and deletes in one step.
-
-WHAT OUTRANKS A RETENTION POLICY
---------------------------------
-**A legal hold.** Litigation, an investigation or a regulator's notice
-freezes data regardless of age, and a hold that merely *skipped* the rows
-would be worse than none: the operator would read "purge complete" and
-believe data was gone that is not. Held rows are counted and named in the
-plan, so the output distinguishes "deleted" from "would have been, but is
-frozen".
-
-**A running experiment.** This one is specific to what this product is.
-Holdout observations are the arms of a randomized trial. Deleting some of
-them mid-run is not data hygiene -- it is differential attrition, and it
-biases the causal estimate in whichever direction the deletion happened to
-correlate with. Worse, it does so invisibly: the analysis sees a smaller,
-apparently clean dataset. So while an org's holdout is running, its
-observations are not purgeable at all, by any policy, and the plan says why.
-
-A FLOOR NOBODY CAN CONFIGURE BELOW
-----------------------------------
-Each object type carries a minimum. The audit log's exists because the audit
-log is what proves the purges happened -- a policy that deletes it a week
-later would let an operator erase data and the record of having erased it,
-in two steps that each look legitimate. The floor is a product decision, not
-a customer setting, and configuring below it is refused at write time rather
-than silently clamped: an operator who asked for 7 days and got 365 should
-be told, not left believing the store honoured a number it did not.
-"""
+"""Age-based deletion, the things that outrank it, and a plan you read first."""
 
 from __future__ import annotations
 
@@ -80,10 +24,6 @@ from hub.models import (
 _DIGEST_DOMAIN = "commontrace-retention-plan-v1"
 _FIELD_SEP = "\x1f"
 
-#: Deleting every row of a type regardless of state. Not a magic empty
-#: string: a policy row whose status silently meant "everything" is the kind
-#: of default that deletes a quarantined trace an operator was still
-#: reviewing.
 STATUS_ANY = "any"
 
 BLOCKED_EXPERIMENT_RUNNING = (
@@ -97,11 +37,7 @@ class RetentionError(Exception):
 
 
 class StalePlanError(RetentionError):
-    """The store moved between planning and applying.
-
-    Carries both digests so the caller can say what changed rather than
-    only that something did.
-    """
+    """The store moved between planning and applying."""
 
     def __init__(self, planned: str, current: str) -> None:
         super().__init__(
@@ -119,15 +55,10 @@ class ObjectKind:
 
     name: str
     model: type
-    #: The column that dates a row for retention purposes.
     timestamp: str
-    #: Status name -> a SQLAlchemy condition selecting rows in that status.
-    #: STATUS_ANY is added automatically and must not appear here.
     statuses: dict
-    #: The shortest retention this type may be configured with, in days.
     floor_days: int
     floor_reason: str
-    #: Said in the plan whenever rows of this type are up for deletion.
     warning: str = ""
 
     @property
@@ -135,11 +66,6 @@ class ObjectKind:
         return (STATUS_ANY, *sorted(self.statuses))
 
 
-# `Trace.quarantined` is abuse-control state and `commons_retracted_at` is a
-# withdrawn Knowledge Base entry: both are rows a human decided something
-# about, and both are the rows an operator is most likely to want kept
-# LONGER than ordinary content rather than shorter. They are separate
-# statuses so a policy can say so.
 _TRACE_STATUSES = {
     "active": lambda: (
         (Trace.quarantined.is_(False)) & (Trace.commons_retracted_at.is_(None))
@@ -148,11 +74,6 @@ _TRACE_STATUSES = {
     "retracted": lambda: Trace.commons_retracted_at.isnot(None),
 }
 
-# An observation with no outcome is not "old data" in the same sense as one
-# with an outcome: it is the attrition question itself (hub/crud.py's export
-# includes these rows deliberately). Separating the statuses lets an operator
-# keep the answered ones and drop the abandoned ones, which is the usual
-# intent, without having to express it as one age for both.
 _OBSERVATION_STATUSES = {
     "reported": lambda: HoldoutObservation.succeeded.isnot(None),
     "unreported": lambda: HoldoutObservation.succeeded.is_(None),
@@ -216,7 +137,6 @@ KINDS: dict[str, ObjectKind] = {
             model=AuditLogEntry,
             timestamp="created_at",
             statuses={},
-            # The longest floor here, and the one that is least negotiable.
             floor_days=365,
             floor_reason=(
                 "the audit log is what proves a purge happened; a policy that "
@@ -252,8 +172,6 @@ def _now() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
 
 
-# --- policies ---------------------------------------------------------------
-
 async def set_policy(
     session,
     org_id: str,
@@ -263,12 +181,7 @@ async def set_policy(
     status: str = STATUS_ANY,
     note: str = "",
 ) -> RetentionPolicy:
-    """Create or update one org's policy for one (object type, status).
-
-    A request below the type's floor is REFUSED, not clamped. Silently
-    storing 365 when the operator asked for 7 leaves them believing the
-    store honours a number it does not, and they find out from an auditor.
-    """
+    """Create or update one org's policy for one (object type, status)."""
     kind = kind_or_error(object_type)
     check_status(kind, status)
     if max_age_days <= 0:
@@ -330,8 +243,6 @@ async def policies_for(session, org_id: str) -> list[RetentionPolicy]:
     return list(rows.scalars())
 
 
-# --- legal holds ------------------------------------------------------------
-
 async def place_hold(
     session,
     org_id: str,
@@ -341,14 +252,7 @@ async def place_hold(
     object_type: str = "",
     target_id: str = "",
 ) -> LegalHold:
-    """Freeze rows against every retention policy.
-
-    `object_type=""` holds everything the org has; a type with no
-    `target_id` holds all rows of that type. A reason is required and is
-    not cosmetic -- a hold nobody can explain later is one nobody dares
-    release, and holds that are never released quietly become the
-    indefinite retention this module exists to end.
-    """
+    """Freeze rows against every retention policy."""
     if not reason.strip():
         raise RetentionError(
             "a legal hold needs a reason: it overrides the org's retention "
@@ -368,9 +272,6 @@ async def place_hold(
     )
     session.add(hold)
     await session.flush()
-    # The reason is NOT sent: it is free text about a legal matter, and the
-    # event's job is to say a freeze exists, not to describe why to a third
-    # party's ticket system.
     with contextlib.suppress(events.EventError):
         await events.emit(session, org_id, "legal_hold.placed", {
             "hold_id": hold.id, "object_type": object_type,
@@ -408,7 +309,6 @@ async def active_holds(session, org_id: str) -> list[LegalHold]:
 
 
 def _holds_for_kind(holds, kind: ObjectKind) -> tuple[list, list]:
-    """(blanket holds, per-object holds) that apply to this type."""
     blanket, targeted = [], []
     for hold in holds:
         if hold.object_type and hold.object_type != kind.name:
@@ -416,8 +316,6 @@ def _holds_for_kind(holds, kind: ObjectKind) -> tuple[list, list]:
         (targeted if hold.target_id else blanket).append(hold)
     return blanket, targeted
 
-
-# --- the plan ---------------------------------------------------------------
 
 @dataclass(frozen=True)
 class Bucket:
@@ -427,15 +325,9 @@ class Bucket:
     status: str
     max_age_days: int
     cutoff: str
-    #: Rows older than the cutoff, before holds and blocks are applied.
     n_matched: int = 0
-    #: Of those, the ones a legal hold freezes.
     n_held: int = 0
-    #: Ids that would actually be deleted, sorted. The plan's digest is over
-    #: these, so an apply cannot delete a row the operator did not see
-    #: counted.
     doomed: tuple[str, ...] = field(default_factory=tuple)
-    #: Set when the whole bucket is refused for a reason that is not a hold.
     blocked: str = ""
     warning: str = ""
 
@@ -453,12 +345,7 @@ class PurgePlan:
 
     @property
     def digest(self) -> str:
-        """Identifies exactly what this plan would delete.
-
-        Over the doomed ids, not over counts: two different sets of rows can
-        have the same count, and a digest that could not tell them apart
-        would let an apply delete a set the operator never read.
-        """
+        """Identifies exactly what this plan would delete."""
         rows = _FIELD_SEP.join(
             f"{b.object_type}/{b.status}:" + ",".join(b.doomed)
             for b in sorted(self.buckets, key=lambda b: (b.object_type, b.status))
@@ -542,9 +429,6 @@ async def plan(session, org_id: str, *, now: datetime.datetime | None = None) ->
     for policy in policies:
         kind = KINDS.get(policy.object_type)
         if kind is None:
-            # A policy for a type this build no longer knows about. Reported
-            # rather than ignored: a policy the operator believes is running
-            # and that silently matches nothing is the worst of both.
             buckets.append(Bucket(
                 object_type=policy.object_type, status=policy.status,
                 max_age_days=policy.max_age_days, cutoff="",
@@ -614,14 +498,7 @@ async def apply(
     actor: str = audit.ACTOR_OPERATOR_CLI,
     now: datetime.datetime | None = None,
 ) -> PurgePlan:
-    """Delete exactly what a plan with this digest described.
-
-    The plan is RECOMPUTED here rather than trusted from the caller: a plan
-    object that travelled through a CLI, a queue or an operator's terminal
-    is a claim about the past, and the only safe thing to do with it is to
-    check that the present still agrees. If it does not, nothing is deleted
-    and the caller is told both digests.
-    """
+    """Delete exactly what a plan with this digest described."""
     fresh = await plan(session, org_id, now=now)
     if fresh.digest != expect_digest:
         raise StalePlanError(expect_digest, fresh.digest)
@@ -638,9 +515,6 @@ async def apply(
             deleted.get(bucket.object_type, 0) + (result.rowcount or 0)
         )
 
-    # Announced to whoever asked to be told (hub/events.py). Only counts and
-    # the plan digest cross the wire -- what was deleted is exactly the
-    # information a webhook must not carry.
     with contextlib.suppress(events.EventError):
         await events.emit(session, org_id, "retention.purged", {
             "plan": fresh.digest,
@@ -648,9 +522,6 @@ async def apply(
             "n_held": fresh.n_held,
         })
 
-    # Logged even when nothing matched. "The purge ran and deleted nothing"
-    # and "the purge never ran" are different facts, and only one of them
-    # means the schedule is broken.
     await audit.record(
         session,
         actor=actor,
@@ -668,11 +539,7 @@ async def apply(
 
 
 async def counts(session, org_id: str) -> dict[str, int]:
-    """How many rows of each purgeable type the org holds right now.
-
-    For the export bundle and for telling an operator what a first policy
-    would be up against.
-    """
+    """How many rows of each purgeable type the org holds right now."""
     out: dict[str, int] = {}
     for name, kind in KINDS.items():
         total = await session.scalar(

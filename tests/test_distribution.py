@@ -1,6 +1,3 @@
-"""The distribution assets (a Claude plugin marketplace and an MCP registry entry). They are
-validated against the published schemas when they are built; these pin the rules that would make a
-listing be refused, offline. Nothing here publishes anything."""
 import json
 import os
 import re
@@ -22,7 +19,7 @@ def test_the_marketplace_entry_matches_the_plugin_it_points_at():
     manifest = _json(PLUGIN, ".claude-plugin", "plugin.json")
     assert market["owner"]["name"] and market["name"]
     (entry,) = market["plugins"]
-    assert entry["name"] == manifest["name"]                 # a mismatch is the usual failed install
+    assert entry["name"] == manifest["name"]
     assert entry["source"] == "./plugins/commontrace" and os.path.isdir(os.path.join(MARKET, entry["source"]))
 
 

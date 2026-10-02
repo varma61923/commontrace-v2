@@ -344,17 +344,6 @@ def _default_stripe_settings() -> StripeSettings:
 async def create_org(name: str, session_factory=None) -> None:
     session_factory = session_factory or _default_session_factory()
     async with session_scope(session_factory) as session:
-        # Organization.name carries no uniqueness constraint (and adding one
-        # via migration is not safe to do blindly -- it would fail outright
-        # against any existing deployment that already has two orgs sharing
-        # a name). The realistic risk isn't a lookup bug: every hub/manage.py
-        # operation takes org_id, never name, so nothing programmatic can
-        # resolve the wrong org this way. It's an operator scanning a
-        # listing (`usage`, `list-quarantined`, ...) by eye and picking the
-        # wrong row when two orgs look identical. Warn at the one point a
-        # duplicate is actually introduced, rather than block it outright --
-        # a shared display name across regional entities under one brand
-        # may be entirely intentional.
         existing = (
             await session.execute(select(Organization.id).where(Organization.name == name))
         ).scalars().all()
@@ -378,22 +367,7 @@ async def issue_key(
     org_id: str, expires_days: str | None = None, scope_list: str | None = None,
     session_factory=None,
 ) -> None:
-    """`issue-key <org_id> [days] [scopes]`.
-
-    `scopes` is a comma-separated subset of read,write,admin,scim
-    (hub/scopes.py). Omitted, the key gets read+write+admin -- what a key
-    could do before scopes existed, so the documented onboarding one-liner
-    is unchanged. A production agent wants `read,write`; a dashboard wants
-    `read`; only an operator's own key needs `admin`, which is what gates
-    deleting a trace and deleting the organization. `scim` is never
-    included by default even with no `scopes` argument at all -- it grants
-    nothing over trace data and everything over this org's `User` rows
-    (hub/scim.py), so an IdP integration always asks for it explicitly:
-    `issue-key <org_id> [days] scim`.
-
-    Scopes do NOT imply each other: `admin` alone cannot read. That is what
-    makes "this key cannot escalate" answerable by reading one row.
-    """
+    """`issue-key <org_id> [days] [scopes]`."""
     days = int(expires_days) if expires_days is not None else None
     session_factory = session_factory or _default_session_factory()
     async with session_scope(session_factory) as session:
@@ -440,15 +414,6 @@ async def revoke_key(key_id: str, session_factory=None) -> bool:
     async with session_scope(session_factory) as session:
         key = await session.get(ApiKey, key_id)
         if key is None:
-            # Without this guard, a mistyped or already-revoked key_id still
-            # printed "revoked: <id>" -- a false success telling an operator
-            # a credential was cut off when nothing happened -- and wrote an
-            # audit row with org_id=None for a key that was never resolved,
-            # unlike every other operator command (release_quarantine,
-            # purge_trace, purge_org) which all refuse on a missing row.
-            # Returning False (not just printing to stderr) is what makes
-            # `main()` exit non-zero for this -- an operator/incident script
-            # checking $? for a failed revoke must not see a false "0 = ok".
             print(f"error: no such API key: {key_id}", file=sys.stderr)
             return False
         await auth.revoke_api_key(session, key_id)
@@ -464,11 +429,6 @@ async def list_orgs(session_factory=None) -> None:
     session_factory = session_factory or _default_session_factory()
     async with session_scope(session_factory) as session:
         orgs = (await session.execute(select(Organization))).scalars().all()
-        # One grouped query for every org's active-key count, not one query
-        # per org in the loop below -- the same fix hub/admin.py:_overview
-        # already applies to its own per-org tiles, for the identical
-        # reason: an operator with hundreds of tenants should not pay
-        # hundreds of round trips to load a report they run routinely.
         keys_by_org = dict(
             (
                 await session.execute(
@@ -487,13 +447,7 @@ async def create_user(
     org_id: str, email: str, role: str, display_name: str = "",
     session_factory=None, actor: str = audit.ACTOR_OPERATOR_CLI,
 ) -> bool:
-    """`create-user <org_id> <email> <role> [display_name]`.
-
-    A PERSON, distinct from the org's shared workload API key
-    (hub/models.py:User). No SSO is linked by this alone -- the row
-    authenticates no one until `link-sso` attaches an OIDC identity to it,
-    or it stays purely a record you assign no login to.
-    """
+    """`create-user <org_id> <email> <role> [display_name]`."""
     try:
         rbac.check_role(role)
     except rbac.RoleError as exc:
@@ -513,10 +467,6 @@ async def create_user(
         try:
             await session.flush()
         except IntegrityError:
-            # Roll back BEFORE returning: session_scope commits on a normal
-            # exit, and committing a session whose flush already failed
-            # raises a second, uglier error that would escape this function
-            # entirely instead of the clean `return False` below.
             await session.rollback()
             print(
                 f"error: {org_id} already has a user with email {email!r}",
@@ -568,9 +518,6 @@ async def list_users(org_id: str, session_factory=None) -> bool:
 async def set_user_role(
     user_id: str, role: str, session_factory=None, actor: str = audit.ACTOR_OPERATOR_CLI,
 ) -> bool:
-    """Change what a person may do. Takes effect on their NEXT request --
-    there is no session to invalidate, since every call re-reads the role
-    from this row (hub/auth.py:verify_user_token)."""
     try:
         rbac.check_role(role)
     except rbac.RoleError as exc:
@@ -600,10 +547,6 @@ async def set_user_role(
 async def disable_user(
     user_id: str, session_factory=None, actor: str = audit.ACTOR_OPERATOR_CLI,
 ) -> bool:
-    """Deprovision. Blocks access on this user's VERY NEXT authenticated
-    call, not merely at their token's next natural expiry
-    (hub/auth.py:verify_user_token checks `disabled_at` on every call) --
-    this is the literal exit criterion an audit of this Hub asked for."""
     session_factory = session_factory or _default_session_factory()
     async with session_scope(session_factory) as session:
         user = await session.get(User, user_id)
@@ -652,14 +595,7 @@ async def enable_user(
 async def link_sso(
     user_id: str, issuer: str, external_subject: str, session_factory=None,
 ) -> bool:
-    """Link a `User` row to one OIDC identity.
-
-    ALWAYS explicit, never automatic. A subject a trusted IdP will happily
-    verify is proof the IdP vouches for that person, not proof they should
-    have an account here -- see hub/sso.py's module docstring for the
-    reasoning this command exists to enforce. There is no just-in-time
-    provisioning path that bypasses it.
-    """
+    """Link a `User` row to one OIDC identity."""
     session_factory = session_factory or _default_session_factory()
     async with session_scope(session_factory) as session:
         user = await session.get(User, user_id)
@@ -690,8 +626,6 @@ async def link_sso(
 
 
 async def unlink_sso(user_id: str, session_factory=None) -> bool:
-    """Reverse of `link-sso`. The row and its role are kept -- only the
-    ability to sign in with that identity is removed."""
     session_factory = session_factory or _default_session_factory()
     async with session_scope(session_factory) as session:
         user = await session.get(User, user_id)
@@ -714,12 +648,6 @@ async def unlink_sso(user_id: str, session_factory=None) -> bool:
 
 
 async def stats(session_factory=None) -> None:
-    """Aggregate counts, computed in the database rather than by loading
-    every organization/api_key/trace/vote row as a full ORM object into
-    Python just to len() or fmean() them -- a deployment with any real
-    volume of traces previously materialized its ENTIRE traces table in
-    memory (and paid the network transfer for all of it) every time an
-    operator ran this."""
     session_factory = session_factory or _default_session_factory()
     async with session_scope(session_factory) as session:
         n_orgs = await session.scalar(select(func.count()).select_from(Organization)) or 0
@@ -742,16 +670,6 @@ async def stats(session_factory=None) -> None:
 
 
 def _parse_review_after(raw: object) -> datetime | None:
-    """A seed file's `review_after` as a tz-aware datetime, or None if it is
-    not an ISO 8601 date or timestamp.
-
-    `datetime.fromisoformat` only learned to accept a trailing "Z" in 3.11,
-    and this package supports 3.10 -- so the most natural way to write a UTC
-    timestamp would be rejected on exactly the older interpreter where the
-    failure is least expected. Normalized rather than documented around.
-    A value with no timezone is read as UTC, matching every other timestamp
-    in this schema.
-    """
     if not isinstance(raw, str):
         return None
     text = raw.strip()
@@ -765,16 +683,10 @@ def _parse_review_after(raw: object) -> datetime | None:
 
 
 def _corpus_record_to_wire(rec: dict) -> dict:
-    """Shape one curated JSONL record like the dict `crud.validate_trace`
-    already validates for `contribute_trace`, so both paths are judged
-    against the same protocol schema rather than two hand-kept notions of
-    a well-formed trace."""
     title = str(rec.get("title") or "")
     context_text = str(rec.get("context_text") or "")
     tags = [str(t) for t in (rec.get("tags") or []) if t is not None]
     return {
-        # validate_trace wants an id; the real one is minted at insert, and
-        # nothing about schema conformance depends on its value.
         "id": "00000000-0000-0000-0000-000000000000",
         "title": title,
         "context_text": context_text,
@@ -786,26 +698,6 @@ def _corpus_record_to_wire(rec: dict) -> dict:
 
 
 def _corpus_schema_problem(rec: dict, config: HubConfig | None = None) -> str:
-    """The reason this curated record does not conform, or "" if it does.
-
-    WHY THE CURATED CORPUS IS VALIDATED AT ALL
-    ------------------------------------------
-    Every customer trace passes `validate_trace` (the protocol schema in
-    protocol/schemas/trace.schema.json) and `validate_size` before it is
-    stored. The operator's own curated corpus passed neither: this loader
-    checked that `title` and `solution_text` were non-empty and stopped
-    there. So the content this product SERVES TO EVERY ORG was held to a
-    weaker standard than the content any single org contributes -- and it
-    is the corpus, not any one tenant's traces, that is read cross-tenant
-    and quoted back as substrate knowledge.
-
-    Same schema, same size limits, one definition of a well-formed trace.
-    """
-    # Type-checked BEFORE shaping, because the shaping coerces with
-    # `str()` -- which would turn a hand-edited `{"title": {"a": 1}}` into
-    # the perfectly valid-looking title `{'a': 1}` and publish that to
-    # every organisation. For curated content a wrong type is a mistake to
-    # report, never one to quietly stringify.
     for field in ("title", "context_text", "solution_text", "agent_type", "profile", "source"):
         value = rec.get(field)
         if value is not None and not isinstance(value, str):
@@ -829,23 +721,8 @@ def _corpus_schema_problem(rec: dict, config: HubConfig | None = None) -> str:
 
 
 async def validate_corpus(path: str) -> bool:
-    """Check a curated JSONL corpus against the trace schema WITHOUT
-    loading it -- the pre-flight for `commons-seed`.
-
-    Worth having as its own command because the loader's own reaction to a
-    malformed line is to skip it: a corpus can seed "successfully" while
-    quietly dropping the three entries someone most wanted to add. This
-    reports every problem at once and exits non-zero if there is any, so a
-    corpus file can be gated in CI the way code is.
-    """
     import json as _json
 
-    # Schema conformance is a property of the FILE, so this must be
-    # runnable with no database configured at all -- the whole point is to
-    # gate a corpus in CI, where there is no Hub. The size limits are the
-    # only part that needs a config (they are deployment policy, not
-    # protocol), so a missing one degrades to schema-only checking and
-    # says which check it skipped, rather than refusing to run.
     try:
         config = HubConfig.from_env()
     except RuntimeError:
@@ -890,56 +767,9 @@ async def validate_corpus(path: str) -> bool:
 async def commons_seed(
     path: str, org_id: str, session_factory=None, config: HubConfig | None = None,
 ) -> bool:
-    """Load or update the CommonTrace Knowledge Base from a JSONL file of
-    curated substrate knowledge.
-
-    This is the bulk-load path -- for individual community submissions, see
-    `approve-submission`, which writes the same `commons_source='seed'`
-    column through a different operator-run path (crud.review_kb_submission)
-    after a customer proposes one via `submit_kb_entry`. Both are
-    operator-run and both are the only two ways this column is ever set:
-    there is no customer-facing tool that can write it directly, or that
-    can publish a submission without an operator's own review-submission
-    action deciding to. See hub/plans.py "why there is no org-to-org
-    sharing here" for why that is a deliberate absence, not a gap: a
-    customer's own trace should never become visible to another customer
-    without a human at the operator judging it substrate knowledge first.
-
-    Re-runnable: run it again after editing the source file to add new
-    entries (existing ones are not deduplicated against by content, so
-    editing in place and re-running will create fresh rows for unchanged
-    lines too -- track what has already been loaded in the source file
-    itself, or purge and reload for now).
-
-    Each JSONL line: {"title", "context_text", "solution_text", "tags"?,
-    "agent_type"?, "source"?, "review_after"?}. `source` should cite where
-    the knowledge came from (a public postmortem, a vendor changelog) and
-    is stored as the trace's shared_rationale so provenance survives.
-
-    `review_after` is an ISO 8601 date or timestamp ("2027-06-01") after
-    which the entry needs re-confirming, and it is how version-pinned
-    substrate knowledge declares its own expiry at authoring time --
-    "React 19 hydrates Date differently than 18" is true until it is not,
-    and the moment to decide how long that is likely to hold is while
-    writing it. Omit it for knowledge that does not expire, which is most
-    of it. Past the date the entry shows up in `kb-review`; nothing is
-    hidden or unpublished automatically. An unparseable value is a skipped
-    line, not a silently ignored field -- a horizon that was meant to be
-    set and quietly was not is worse than no horizon at all, because the
-    operator believes the entry is being watched.
-
-    Seeded traces are owned by `org_id` -- give this a dedicated operator
-    org, not a customer's, so nothing here is ever attributed to a customer
-    who did not write it.
-    """
     import json as _json
 
     session_factory = session_factory or _default_session_factory()
-    # Schema conformance is checked always; the SIZE limits are deployment
-    # policy and need a config, so a caller without one (a test harness
-    # that injects its own session_factory and never sets HUB_DATABASE_URL)
-    # still gets the schema gate rather than a refusal to load at all.
-    # Same degradation, and the same reasoning, as `validate_corpus`.
     if config is None:
         try:
             config = HubConfig.from_env()
@@ -1015,10 +845,6 @@ async def commons_seed(
             session.add(trace)
             added += 1
         await session.flush()
-        # One batched adjustment for the whole file, not one call per row:
-        # this loop can add hundreds of traces in a single seed, and the
-        # counter only needs to be correct once the transaction commits,
-        # not after every individual insert within it.
         await crud._adjust_trace_count(session, org_id, added)
         await audit.record(
             session, actor=audit.ACTOR_OPERATOR_CLI, action="commons_seed",
@@ -1034,23 +860,7 @@ async def commons_seed(
 
 
 async def kb_stats(session_factory=None) -> None:
-    """Is the CommonTrace Knowledge Base actually earning its query traffic?
-
-    This is a CONTENT QUALITY report, not a network-effect metric: how big
-    is the corpus, how often does it actually cover a real recurring
-    failure (Trace.commons_hits, incremented only by the conservative
-    commons_overlap threshold), which entries are pulling weight, and which
-    have never once matched anything and are candidates to revise or prune.
-    Distinct customer orgs that have ever queried it is one adoption number
-    worth watching -- readership, not authorship.
-
-    Authorship has its own number now: the community-submission funnel
-    (pending / approved / rejected -- see hub/models.py:
-    KnowledgeBaseSubmission). Every accepted submission became an entry
-    counted above; this section is what tells an operator whether the
-    review queue itself needs attention, separately from whether its
-    output is any good.
-    """
+    """Is the CommonTrace Knowledge Base actually earning its query traffic?"""
     session_factory = session_factory or _default_session_factory()
     async with session_scope(session_factory) as session:
         entries = (
@@ -1092,15 +902,6 @@ async def kb_stats(session_factory=None) -> None:
                 select(func.count(func.distinct(KnowledgeBaseSubmission.org_id)))
             )
         ).scalar_one()
-        # The true count behind ALL FOUR of kb-review's buckets (urgent,
-        # disputed, stale, never_hit) -- not just the two (disputed/stale)
-        # `standing_of()` alone can report. Recomputing "needs review" from
-        # standings the way this used to would silently omit security-
-        # flagged entries and never-hit ones, exactly the "capped/partial
-        # result read as a total" defect hub/admin.py's overview/KB tiles
-        # had before their own fix (crud.count_kb_review_queue exists
-        # specifically so a summary number like this one can't disagree
-        # with what `kb-review` actually lists).
         queue_total = await crud.count_kb_review_queue(session)
 
     if submission_counts:
@@ -1134,8 +935,6 @@ async def kb_stats(session_factory=None) -> None:
     print(f"queried by:              {n_queriers} of {n_orgs_total} org(s) (ever, any period)")
     print(f"never matched anything:  {len(zero_hit)} of {len(entries)} entries")
 
-    # The maintenance half of the same question. Corpus size says how much
-    # was written; this says how much of it the field still stands behind.
     print("\nstanding (hub/commons.py:entry_standing):")
     for name in commons.VALID_STANDINGS:
         print(f"  {name + ':':<14} {standings.get(name, 0)}")
@@ -1171,18 +970,6 @@ DEFAULT_HOLDOUT_RATE = 0.2
 
 
 async def _observed_volume_and_baseline(session, org_id: str) -> tuple[int, float | None]:
-    """This org's own monthly retrieval volume and success rate.
-
-    Both read from org-scoped functions that already exist, because the whole
-    point of planning ON THE HUB rather than on paper is that the Hub knows
-    the numbers. A local `--plan` has to be told how many occasions to expect;
-    here the fleet's own search volume is the estimate.
-
-    Returns (searches this period, resolution rate or None). The rate is None
-    when the org has recorded too few outcomes to read one, and the caller
-    falls back to 0.5 -- where the variance peaks, so a plan built on no data
-    cannot understate the sample.
-    """
     health = await crud.search_health(session, org_id)
     searches = int(health.get("searches") or 0)
 
@@ -1200,17 +987,7 @@ async def _observed_volume_and_baseline(session, org_id: str) -> tuple[int, floa
 async def plan_experiment(
     org_id: str, detect: str = "0.10", occasions: str = "", session_factory=None
 ) -> bool:
-    """What holdout rate can this org's volume actually answer with?
-
-    Run BEFORE `start-experiment`. The failure it prevents is the expensive,
-    silent one: an operator picks a rate, the fleet runs for a month, and the
-    report says "not enough data yet". The occasions are spent, the window is
-    gone, and the only fix had to be applied at the start.
-
-    The arithmetic nobody does in their head: at a 10% holdout only one
-    occasion in ten lands in the control arm, so a run reaches an answer about
-    TEN TIMES slower than its occasion count suggests.
-    """
+    """What holdout rate can this org's volume actually answer with?"""
     session_factory = session_factory or _default_session_factory()
     try:
         effect = float(detect)
@@ -1265,28 +1042,6 @@ async def start_experiment(
     outcome: str = "resolved", notes: str = "",
     session_factory=None, actor: str = audit.ACTOR_OPERATOR_CLI,
 ) -> bool:
-    """Begin a randomized holdout for one org: withhold `rate` of eligible
-    memory injections so the fleet generates its own control arm.
-
-    This is the falsifier the product strategy calls "the cheapest in the
-    document" and says to run first, and until now it could only be run
-    against a local file store -- not against the Hub, which is the
-    surface paying customers are actually on.
-
-    A fresh salt is generated per experiment and never edited afterwards.
-    Changing a salt mid-flight reshuffles every assignment, which silently
-    mixes two randomizations into one comparison and produces a result
-    that looks like ordinary noise rather than like a broken experiment --
-    so restarting deliberately starts a NEW experiment rather than
-    extending the old one, and `experiment` reports only the current salt's
-    observations.
-
-    Rate is a real trade and worth stating: withholding memory from a
-    fraction of occasions means those occasions get a worse product on
-    purpose. That is the price of knowing whether the product works at
-    all, it is bounded by this number, and it should be a decision someone
-    makes rather than a default nobody chose.
-    """
     session_factory = session_factory or _default_session_factory()
     try:
         value = float(rate)
@@ -1310,12 +1065,6 @@ async def start_experiment(
         org.holdout_rate = value
         org.holdout_salt = uuid.uuid4().hex[:16]
 
-        # Registered HERE, at the start, because that is the only moment a
-        # registration means anything: written afterwards it records what
-        # the results turned out to be, not what the run set out to find.
-        # Tied to the new salt, since a new salt is a new experiment and
-        # must not inherit the last one's credibility
-        # (commontrace/prereg.py).
         searches_now, baseline_now = await _observed_volume_and_baseline(session, org_id)
         planned = experiment.plan(
             effect=experiment.DEFAULT_PRACTICAL_EFFECT,
@@ -1365,10 +1114,6 @@ async def start_experiment(
             baseline=observed if observed is not None else 0.5,
             rate=value, occasions_budget=searches,
         )
-        # Said HERE, at the only moment the rate can still be changed for
-        # free. An operator who learns this from the report a month later has
-        # spent the window, and the fix was always a one-line decision taken
-        # now.
         if design.verdict == "infeasible":
             print(f"  WARNING: at this org's observed {searches:,} search(es) per period, NO")
             print(f"           rate answers a {experiment.DEFAULT_PRACTICAL_EFFECT:.0%} effect"
@@ -1388,22 +1133,7 @@ async def start_experiment(
 async def export_assignments(
     org_id: str, path: str | None = None, session_factory=None
 ) -> bool:
-    """Every arm decision for this org's current experiment, as CSV.
-
-    The artifact a customer's own analyst re-runs the comparison from. Every
-    number this product bills on is computed by this product; the signed
-    ledger proves the issuer's arithmetic was not altered afterwards, and
-    this is the only thing that lets anyone disagree with the arithmetic
-    itself.
-
-    Includes the rows the estimate DROPS -- occasions assigned an arm and
-    never reported. Those are the attrition question, and an export without
-    them hands over a record with the evidence already removed.
-
-    Prints the digest (`commontrace/raw_export.py`), which is what the value
-    ledger's signature commits to: it is how a customer checks that the
-    export they are holding is the one the invoice was computed from.
-    """
+    """Every arm decision for this org's current experiment, as CSV."""
     session_factory = session_factory or _default_session_factory()
     async with session_scope(session_factory) as session:
         org = await session.get(Organization, org_id)
@@ -1434,11 +1164,7 @@ async def export_assignments(
 async def stop_experiment(
     org_id: str, session_factory=None, actor: str = audit.ACTOR_OPERATOR_CLI,
 ) -> bool:
-    """End the holdout. Observations are kept; nothing further is withheld.
-
-    Deliberately does not clear the salt: `experiment` still needs it to
-    scope the analysis to the observations that experiment produced.
-    """
+    """End the holdout. Observations are kept; nothing further is withheld."""
     session_factory = session_factory or _default_session_factory()
     async with session_scope(session_factory) as session:
         org = await session.get(Organization, org_id)
@@ -1466,11 +1192,6 @@ async def stop_experiment(
 async def harm_policy(
     org_id: str, policy: str = "", session_factory=None, actor: str = audit.ACTOR_OPERATOR_CLI,
 ) -> bool:
-    """Show or set what search does with a trace measured to hurt outcomes
-    (commontrace/harm.py). Setting it does not start a new randomization:
-    it acts before arms are assigned and on the anytime-valid verdict, so
-    the experiment that produced the verdict is not biased by acting on it.
-    """
     if policy and policy not in harm.POLICIES:
         print(f"error: policy must be one of {', '.join(harm.POLICIES)}, got {policy!r}",
               file=sys.stderr)
@@ -1508,12 +1229,7 @@ _EFFECT_MARK = {
 
 
 async def experiment_results(org_id: str, session_factory=None) -> bool:
-    """What the randomized holdout has established, per trace.
-
-    The only causal report in this system. `outcomes` compares a fleet
-    against its own past and cannot rule out anything else that changed;
-    this compares two arms of the same fleet in the same window.
-    """
+    """What the randomized holdout has established, per trace."""
     session_factory = session_factory or _default_session_factory()
     async with session_scope(session_factory) as session:
         org = await session.get(Organization, org_id)
@@ -1555,23 +1271,6 @@ _REVIEW_BUCKET_HEADINGS = {
 
 
 async def kb_review(limit: str = "50", session_factory=None) -> bool:
-    """The Knowledge Base maintenance queue: which entries need a human,
-    worst first (crud.kb_review_queue).
-
-    This is the command that makes operator curation scale. The obvious
-    objection to a corpus one party maintains is that reviewing it costs
-    O(entries), so the model dies somewhere past a few thousand. It only
-    dies if finding the bad entries is the expensive part -- and it is not,
-    because every query and every vote already localizes them. What this
-    prints is that exhaust, sorted by how much traffic each problem is
-    actually affecting, so review cost tracks the error rate instead of the
-    corpus size.
-
-    Nothing here is automatic. Every line is a suggestion to a human who
-    then runs `kb-retract`, edits the source file and re-seeds, or decides
-    the entry is fine after all -- see hub/commons.py's "votes inform, the
-    operator decides".
-    """
     session_factory = session_factory or _default_session_factory()
     try:
         n = int(limit)
@@ -1601,14 +1300,7 @@ async def kb_review(limit: str = "50", session_factory=None) -> bool:
 
 
 async def kb_retract(trace_id: str, reason: str = "", session_factory=None) -> bool:
-    """Withdraw one entry from the Knowledge Base.
-
-    No confirmation prompt, unlike `purge-trace`/`purge-org`. That is not
-    an inconsistency: those destroy data irreversibly, this one sets a
-    timestamp and is undone by `kb-restore`. Putting a prompt in front of a
-    reversible action trains operators to type y without reading, which is
-    what makes the prompt in front of the irreversible one worthless.
-    """
+    """Withdraw one entry from the Knowledge Base."""
     session_factory = session_factory or _default_session_factory()
     async with session_scope(session_factory) as session:
         entry = await crud.retract_kb_entry(session, trace_id, reason=reason)
@@ -1646,19 +1338,6 @@ async def kb_restore(trace_id: str, session_factory=None) -> bool:
 
 
 async def list_submissions(status: str | None = None, session_factory=None) -> bool | None:
-    """The community-submission review queue, or full history if no status
-    is given. `status`, when passed, must be 'pending', 'approved', or
-    'rejected' (crud.review_kb_submission's own vocabulary).
-
-    Returns False (not just prints an error) on an unrecognized status --
-    main()'s `if result is False: return 2` is what turns that into a
-    nonzero exit code for `list-submissions <bad-status>`; the previous
-    `-> None` annotation didn't just under-describe this, it actively
-    misdescribed the function's real, load-bearing contract to anyone
-    reading the signature -- a future edit that "fixed" the return
-    statement to match the stated `-> None` would have silently turned a
-    real operator-facing error back into a reported exit code of 0.
-    """
     session_factory = session_factory or _default_session_factory()
     if status is not None and status not in ("pending", "approved", "rejected"):
         print(f"error: status must be one of pending/approved/rejected, got {status!r}", file=sys.stderr)
@@ -1687,11 +1366,6 @@ async def list_submissions(status: str | None = None, session_factory=None) -> b
 async def approve_submission(
     submission_id: str, operator_org_id: str, credit: str | None = None, session_factory=None
 ) -> bool:
-    """Accept a pending submission: publishes it as a new Knowledge Base
-    entry owned by `operator_org_id` (never the submitting org -- same
-    ownership rule as commons_seed) and permanently raises the submitting
-    org's Knowledge Base query allowance. See
-    hub/crud.py:review_kb_submission for the full contract."""
     session_factory = session_factory or _default_session_factory()
     credit_int = plans.SUBMISSION_ACCEPTANCE_CREDIT if credit is None else int(credit)
     async with session_scope(session_factory) as session:
@@ -1707,19 +1381,11 @@ async def approve_submission(
         print(f"error: no PENDING submission with id: {submission_id}", file=sys.stderr)
         return False
     print(f"approved {submission_id} -> new Knowledge Base entry {result['resulting_trace_id']}")
-    # `result['credit_awarded']`, not the local `credit_int`: review_kb_submission
-    # clamps the credit to [0, 2**63-1] before writing it, so a negative or
-    # absurdly large --credit is silently bounded in the database while this
-    # local variable still holds the raw, unclamped value the operator typed
-    # -- printing that back would misdescribe what the write actually did.
     print(f"  credited {result['credit_awarded']} bonus Knowledge Base queries to the submitting org")
     return True
 
 
 async def reject_submission(submission_id: str, reason: str = "", session_factory=None) -> bool:
-    """Decline a pending submission. No entry is created and no credit is
-    awarded -- exactly the outcome hub/plans.py "why bonus_commons_queries
-    is not the same mistake twice" describes as the whole point."""
     session_factory = session_factory or _default_session_factory()
     async with session_scope(session_factory) as session:
         result = await crud.review_kb_submission(
@@ -1773,30 +1439,7 @@ def _print_outcome_report(report: dict, indent: str = "") -> None:
 
 
 async def fleet_outcomes(org_id: str | None = None, session_factory=None) -> bool:
-    """Is the product actually working, per customer?
-
-    With an org_id, the full before/after report for that fleet. Without
-    one, a roll-up across every org -- which is the closest thing this
-    system has to a churn dashboard, and a materially better one than
-    `usage`/`revenue`. Those report consumption, which is a lagging
-    indicator that looks healthy right up to the renewal a customer
-    declines; this reports whether the thing they are paying for is moving
-    their numbers, which is the leading one.
-
-    Three things this deliberately does NOT do, because each would make the
-    report more flattering and less true:
-
-    * It does not describe any of this as caused by CommonTrace. See
-      hub/outcomes.py's OBSERVATIONAL_CAVEAT, printed with every run.
-    * It does not hide fleets that got worse, or sort them below the ones
-      that improved. A `WORSENED` line is the most valuable line here.
-    * It does not correct for multiple comparisons ACROSS orgs, and says
-      so below rather than papering over it. Each org's report is
-      internally corrected across its own four metrics; scanning fifty
-      customers and quoting whichever three came back significant is a
-      further multiple-comparisons problem that no correction inside a
-      single report can fix for you.
-    """
+    """Is the product actually working, per customer?"""
     session_factory = session_factory or _default_session_factory()
     async with session_scope(session_factory) as session:
         if org_id:
@@ -1877,11 +1520,6 @@ async def release_quarantine(trace_id: str, session_factory=None) -> bool:
         if trace is None:
             print(f"error: no such trace: {trace_id}", file=sys.stderr)
             return False
-        # Read the reason BEFORE the UPDATE. SQLAlchemy synchronizes the
-        # in-session object with the values it just wrote, so reading
-        # trace.quarantine_reason afterwards yields the new "" -- every audit
-        # row recorded `was=`, losing precisely the fact the row exists to
-        # preserve: why this trace was quarantined in the first place.
         previous_reason = trace.quarantine_reason
         org_id = trace.org_id
         await session.execute(
@@ -1906,33 +1544,6 @@ async def amend_trace(
     config: HubConfig | None = None,
     actor: str = audit.ACTOR_OPERATOR_CLI,
 ) -> dict | bool:
-    """Operator counterpart to the `amend_trace` MCP tool (hub/server.py),
-    for a support-ticket-driven correction where the org itself cannot or
-    has not amended its own trace -- a typo cleaned up on their behalf, a
-    title fixed after a misconfigured client mis-titled it.
-
-    Every field here is a plain CLI string rather than the MCP tool's
-    Optional[str]: an empty string means "leave this field unchanged", the
-    same as omitting it entirely. There is no way to explicitly set a
-    field TO the empty string from this command -- an acceptable gap for
-    an operator escape hatch that exists for support corrections, not for
-    an org's own routine self-service amendments (which use the MCP tool
-    directly and keep the real None-vs-"" distinction).
-
-    Calls the SAME `crud.amend_trace` the MCP tool does -- same validation,
-    same rate limit, same plan storage cap -- so this cannot do anything
-    the org's own key could not already do to its own trace. Reversible in
-    the sense that matters here: `amend_trace` INSERTs a new trace onto
-    the amendment chain rather than mutating the original in place, so
-    nothing is destroyed even by a mistaken call (see crud.amend_trace's
-    own docstring).
-    """
-    # Checked before touching the database: a malformed (non-UUID) id bound
-    # against Trace.id's UUID column raises asyncpg.DataError, not a clean
-    # "not found" -- crud._is_uuid exists for exactly this (see its own
-    # docstring), and this function's session.get below is one more
-    # caller-supplied id reaching that column before crud.amend_trace's own
-    # internal check would ever run.
     if not crud._is_uuid(trace_id):
         print(f"error: no such trace: {trace_id}", file=sys.stderr)
         return False
@@ -1969,11 +1580,6 @@ async def amend_trace(
 async def search_content(
     org_id: str, pattern: str, mode: str = "literal", session_factory=None,
 ) -> bool:
-    """Operator-assisted counterpart to the `search_trace_content` MCP
-    tool -- for a support-ticket-driven erasure request where the
-    requester is not the org's own signed-in team. See
-    `crud.search_trace_content`'s docstring for what this can and cannot
-    prove."""
     if mode not in ("literal", "regex"):
         print(f"error: mode must be 'literal' or 'regex', got {mode!r}", file=sys.stderr)
         return False
@@ -2006,13 +1612,7 @@ async def search_content(
 async def tag_trace_subjects(
     org_id: str, trace_id: str, subject_ids_csv: str = "", session_factory=None,
 ) -> bool:
-    """`tag-trace-subjects <org_id> <trace_id> [subject_ids_csv]`.
-
-    Operator-assisted counterpart to the `tag_trace_subjects` MCP tool --
-    for tagging a trace on behalf of an org whose own team is not doing
-    it themselves. REPLACES any previous tags; omit `subject_ids_csv` (or
-    pass an empty string) to clear a mistaken tag entirely.
-    """
+    """`tag-trace-subjects <org_id> <trace_id> [subject_ids_csv]`."""
     subject_ids = [s.strip() for s in subject_ids_csv.split(",") if s.strip()]
     session_factory = session_factory or _default_session_factory()
     async with session_scope(session_factory) as session:
@@ -2031,12 +1631,7 @@ async def tag_trace_subjects(
 
 
 async def find_subject_traces(org_id: str, subject_id: str, session_factory=None) -> bool:
-    """`find-subject-traces <org_id> <subject_id>`.
-
-    Operator-assisted counterpart to the `find_traces_by_subject` MCP
-    tool -- an EXACT match against traces this org explicitly tagged
-    (`tag-trace-subjects`), not a scan. For untagged content, use
-    `search-content` instead."""
+    """`find-subject-traces <org_id> <subject_id>`."""
     session_factory = session_factory or _default_session_factory()
     async with session_scope(session_factory) as session:
         results = await crud.find_traces_by_subject(session, org_id, subject_id)
@@ -2053,12 +1648,7 @@ async def find_subject_traces(org_id: str, subject_id: str, session_factory=None
 
 
 async def purge_subject_traces(org_id: str, subject_id: str, session_factory=None) -> bool:
-    """`purge-subject-traces <org_id> <subject_id>`.
-
-    Permanently deletes every trace in `org_id` tagged with `subject_id`
-    (`crud.purge_traces_by_subject` -- each deletion includes its full
-    amendment chain, same as `purge-trace`). Irreversible. A subject_id
-    nothing was tagged with is not an error -- it purges zero traces."""
+    """`purge-subject-traces <org_id> <subject_id>`."""
     session_factory = session_factory or _default_session_factory()
     async with session_scope(session_factory) as session:
         result = await crud.purge_traces_by_subject(
@@ -2071,15 +1661,6 @@ async def purge_subject_traces(org_id: str, subject_id: str, session_factory=Non
 async def purge_trace(
     trace_id: str, session_factory=None, actor: str = audit.ACTOR_OPERATOR_CLI,
 ) -> bool:
-    """Permanently deletes one trace AND every trace in its amendment chain
-    (see crud.amendment_chain -- shared with the self-service delete_trace
-    MCP tool, which walks the identical lineage at a lower trust level).
-    Votes and trace_relations rows keyed by trace_id cascade automatically
-    (FK ondelete=CASCADE, hub/models.py); a relation row where a chain
-    member is the *target* (related_trace_id) is not covered by that FK --
-    related_trace_id is a plain column, not a foreign key, so it survives
-    the source trace being deleted elsewhere. Clean it up explicitly here
-    rather than leave a dangling reference behind."""
     session_factory = session_factory or _default_session_factory()
     async with session_scope(session_factory) as session:
         trace = await session.get(Trace, trace_id)
@@ -2090,10 +1671,6 @@ async def purge_trace(
         await session.execute(delete(TraceRelation).where(TraceRelation.related_trace_id.in_(chain_ids)))
         org_id = trace.org_id
         await session.execute(delete(Trace).where(Trace.id.in_(chain_ids)))
-        # amend_trace can never produce a chain spanning two orgs (see
-        # crud.delete_trace's identical reasoning), so every id in
-        # chain_ids belongs to org_id -- one adjustment covers the whole
-        # chain, not one call per row.
         await crud._adjust_trace_count(session, org_id, -len(chain_ids))
         await audit.record(
             session, actor=actor, action="purge_trace",
@@ -2110,25 +1687,6 @@ async def purge_org(
     org_id: str, session_factory=None, stripe: StripeSettings | None = None,
     actor: str = audit.ACTOR_OPERATOR_CLI,
 ) -> bool:
-    """Permanently deletes an org and everything scoped to it (api_keys,
-    traces, and traces' votes/trace_relations all cascade via FK
-    ondelete=CASCADE). Irreversible.
-
-    If this org has a live Stripe subscription, it is cancelled FIRST --
-    see hub.billing.cancel_subscription's docstring for why an org row
-    deleted out from under an active subscription is worse than a
-    deletion that has to be retried: the customer's card keeps being
-    charged every billing cycle with no CommonTrace account left to ever
-    notice. On a cancellation failure, nothing is deleted and this prints
-    an error and returns False, the same as an org id that doesn't exist.
-    `stripe` defaults to this deployment's real HUB_STRIPE_* settings,
-    read lazily via HubConfig.from_env() -- and ONLY if this org actually
-    has a subscription to cancel, so a test that seeds an org with no
-    subscription never needs to pass one. A test that DOES seed a
-    subscription must pass its own `stripe=` (even an unconfigured one is
-    fine) to reach that code at all in a process with no
-    HUB_DATABASE_URL/HUB_STRIPE_* set.
-    """
     session_factory = session_factory or _default_session_factory()
     async with session_scope(session_factory) as session:
         org = await session.get(Organization, org_id)
@@ -2148,16 +1706,11 @@ async def purge_org(
                 return False
         trace_ids = (await session.execute(select(Trace.id).where(Trace.org_id == org_id))).scalars().all()
         if trace_ids:
-            # Same dangling-reference cleanup as purge_trace, batched for every
-            # trace this org owns, before the cascade deletes them.
             await session.execute(delete(TraceRelation).where(TraceRelation.related_trace_id.in_(trace_ids)))
         org_name = org.name
         had_subscription = bool(org.stripe_subscription_id)
         await session.delete(org)
         await auth.announce_auth_change(session)
-        # Recorded AFTER the delete and deliberately NOT cascaded away with
-        # it -- see AuditLogEntry's docstring: the purge is exactly the event
-        # the trail must retain.
         await audit.record(
             session, actor=actor, action="purge_org",
             org_id=org_id, target_type="org", target_id=org_id,
@@ -2215,14 +1768,7 @@ async def export_audit(
 
 
 async def set_plan(org_id: str, plan_name: str, session_factory=None) -> bool:
-    """Move an org between plans (hub/plans.py).
-
-    Refuses an unknown name rather than falling back to the default. The
-    runtime resolver fails *closed* to the smallest plan, which is the
-    right behaviour for a stale row nobody can fix at 3am -- but an
-    operator typing `python -m hub.manage set-plan <id> tema` deserves an
-    error, not a customer silently downgraded to free.
-    """
+    """Move an org between plans (hub/plans.py)."""
     session_factory = session_factory or _default_session_factory()
     key = (plan_name or "").strip().lower()
     if key not in plans.PLANS:
@@ -2250,9 +1796,6 @@ async def set_plan(org_id: str, plan_name: str, session_factory=None) -> bool:
 
 
 async def set_region(org_id: str, region: str, session_factory=None) -> bool:
-    """Pin an org to a data region (or `none` to unpin). A Hub that declares a different HUB_DATA_REGION then
-    stops authenticating that org's keys, so its data cannot be written to the wrong region by a misrouted
-    client (hub/auth.py). Letters, digits and hyphens, up to 32."""
     import re
 
     value = (region or "").strip().lower()
@@ -2269,7 +1812,6 @@ async def set_region(org_id: str, region: str, session_factory=None) -> bool:
             print(f"error: no such organization: {org_id}", file=sys.stderr)
             return False
         was, org.data_region = org.data_region, (value or None)
-        # A region pin decides whether this org's keys authenticate here.
         await auth.announce_auth_change(session)
         await audit.record(
             session, actor=audit.ACTOR_OPERATOR_CLI, action="set_region", org_id=org_id, target_type="org",
@@ -2279,13 +1821,7 @@ async def set_region(org_id: str, region: str, session_factory=None) -> bool:
 
 
 async def usage(org_id: str | None = None, session_factory=None) -> bool:
-    """Entitlements and consumption for the current period.
-
-    A flat allowance per plan, with no earning mechanic: there is no
-    customer contribution in this model to earn credit for (hub/plans.py
-    "why there is no org-to-org sharing here"), so what an org has is
-    simply what its plan grants.
-    """
+    """Entitlements and consumption for the current period."""
     session_factory = session_factory or _default_session_factory()
     async with session_scope(session_factory) as session:
         q = select(Organization).order_by(Organization.created_at)
@@ -2293,9 +1829,6 @@ async def usage(org_id: str | None = None, session_factory=None) -> bool:
             q = q.where(Organization.id == org_id)
         orgs = (await session.execute(q)).scalars().all()
         if not orgs:
-            # An empty fleet-wide listing is not an error (there is simply
-            # nothing to show yet); a specific org_id that doesn't resolve
-            # is -- that's the only branch that should fail the command.
             print("no organizations." if not org_id else f"error: no such organization: {org_id}",
                   file=sys.stderr if org_id else sys.stdout)
             return not org_id
@@ -2314,8 +1847,6 @@ async def usage(org_id: str | None = None, session_factory=None) -> bool:
         a = r["agents"]
         any_floor = any_floor or a["is_floor"]
         total_agents += a["active"]
-        # A trailing '+' marks a floor: this org has traces from clients
-        # that sent no agent_id, so its real agent count is at least this.
         agents = f"{a['active']:,}{'+' if a['is_floor'] else ''}/{plans.describe(a['limit'])}"
         traces = f"{r['traces']['used']:,}/{plans.describe(r['traces']['limit'])}"
         used = f"{q['used']:,}/{plans.describe(q['allowance'])}"
@@ -2333,28 +1864,7 @@ async def usage(org_id: str | None = None, session_factory=None) -> bool:
 
 
 async def retrieval(org_id: str | None = None, session_factory=None) -> bool:
-    """How often each org's searches come back with nothing, this period.
-
-    The live version of `hub/bench_retrieval.py`. The benchmark answers
-    "does retrieval work" on a 46-record synthetic corpus with probes the
-    same author wrote; this answers it on the fleet's own corpus with the
-    fleet's own queries, which is the only version that settles the product strategy
-    §13.2's link 2 for a real customer.
-
-    This exists because the defect `hub/search.py` documents -- every
-    natural-language query returning nothing at all -- was invisible from
-    the operator's side for the entire life of a deployment that had it. A
-    search matching nothing returns HTTP 200 with an empty list, and
-    `Trace.retrievals` counts rows RETURNED, so it incremented nothing and
-    left no record of having been asked. A broken retrieval tier and a
-    customer who has not stored much yet produced identical telemetry.
-
-    Read it as a leading indicator, not a verdict. A high miss rate in an
-    org's first week is what an almost-empty corpus looks like and is fine;
-    a high miss rate that does not fall as `traces` grows is the shape that
-    means the customer is asking questions this product cannot answer --
-    which is the churn about to happen, visible while there is still time.
-    """
+    """How often each org's searches come back with nothing, this period."""
     session_factory = session_factory or _default_session_factory()
     async with session_scope(session_factory) as session:
         q = select(Organization).order_by(Organization.created_at)
@@ -2391,19 +1901,7 @@ async def retrieval(org_id: str | None = None, session_factory=None) -> bool:
 
 
 async def revenue(session_factory=None) -> None:
-    """Who is on a billable plan, and how much of each resource they used.
-
-    Deliberately prints no currency. This repository implements the
-    entitlement, not the invoice -- there is no payment processing here,
-    and printing a dollar figure computed from a hardcoded rate would read
-    as revenue reporting while being arithmetic on a number nobody agreed
-    to. What it does show is the thing a price should be argued from: real
-    consumption of the two metered resources, storage and Knowledge Base
-    queries. There is no "delivered" side to net against -- customers do
-    not contribute to what they consume in this model (hub/plans.py "why
-    there is no org-to-org sharing here"), so consumption is the whole
-    number, not one side of a ledger.
-    """
+    """Who is on a billable plan, and how much of each resource they used."""
     session_factory = session_factory or _default_session_factory()
     async with session_scope(session_factory) as session:
         orgs = (await session.execute(
@@ -2439,23 +1937,6 @@ async def revenue(session_factory=None) -> None:
 
 
 async def value(org_id: str, value_per_occasion: str | None = None, session_factory=None) -> bool:
-    """What one org's memory was worth, causally -- crud.value_delivered,
-    from the operator CLI.
-
-    Fills a real gap: value_delivered was reachable from a customer's own
-    browser session (hub/console.py's Proof page) and from an
-    authenticated agent (hub/server.py's `value_delivered` MCP tool), but
-    an operator investigating one account -- ahead of a renewal
-    conversation, before deciding whether a plan change is justified --
-    had no CLI path to the same numbers at all, and no reason to have a
-    customer's own API key to get them.
-
-    `value_per_occasion` is optional and, exactly like the console's own
-    `?per_occasion=` query parameter and crud.value_delivered's own
-    docstring, is taken fresh from THIS invocation and never stored --
-    the same discipline `revenue` above prints no currency to preserve.
-    Omit it to see the occasion count on its own.
-    """
     session_factory = session_factory or _default_session_factory()
     rate = None
     if value_per_occasion is not None:
@@ -2483,8 +1964,6 @@ async def value(org_id: str, value_per_occasion: str | None = None, session_fact
     print(f"memories counted: {report['n_counted']}  excluded: {report['n_excluded']}")
     evidence = report.get("evidence")
     if evidence and evidence["n_stale"]:
-        # An action, not a footnote: a figure that silently shrank is a
-        # support ticket, and the fix is always the same one command.
         print(
             f"evidence: {evidence['n_stale']} memory/memories are past the "
             f"{evidence['horizon_days']}-day horizon, "
@@ -2508,8 +1987,6 @@ async def value(org_id: str, value_per_occasion: str | None = None, session_fact
             print(f"  - {m['title'] or m['trace_id']}: excluded ({m['why_not']})")
     return True
 
-
-# --- retention, legal holds and scheduled purge ------------------------------
 
 async def set_retention(
     org_id: str, object_type: str, days: str, status: str = retention.STATUS_ANY,
@@ -2589,13 +2066,7 @@ async def retention_plan(org_id: str, session_factory=None) -> bool:
 
 
 async def retention_apply(org_id: str, digest: str, session_factory=None) -> bool:
-    """Delete exactly what the plan with this digest described.
-
-    The digest is required and is not a formality: it is what makes this an
-    approval of one specific set of rows rather than of the phrase "apply
-    retention". If anything moved since the plan was printed, this refuses
-    and prints the new digest.
-    """
+    """Delete exactly what the plan with this digest described."""
     session_factory = session_factory or _default_session_factory()
     async with session_scope(session_factory) as session:
         org = await session.get(Organization, org_id)
@@ -2603,9 +2074,6 @@ async def retention_apply(org_id: str, digest: str, session_factory=None) -> boo
             print(f"error: no such organization: {org_id}", file=sys.stderr)
             return False
         fresh = await retention.plan(session, org_id)
-        # The operator pastes the short form the plan printed; compare on
-        # whatever prefix they gave rather than making them copy 64 hex
-        # characters accurately under time pressure.
         if not fresh.digest.startswith(digest):
             print(
                 f"error: the store changed since that plan was computed, so "
@@ -2705,9 +2173,6 @@ async def list_legal_holds(org_id: str, session_factory=None) -> bool:
     return True
 
 
-
-# --- webhook event export ----------------------------------------------------
-
 def _config_signing_key() -> str:
     return HubConfig.from_env().ledger_signing_key
 
@@ -2717,8 +2182,6 @@ def _config_cipher():
 
 
 async def wrap_encryption_key(key_id: str, region: str = "") -> bool:
-    """Print a NEW encryption key wrapped by the customer's KMS key (HUB_ENCRYPTION_KEY_KMS_WRAPPED). Only the
-    wrapped form is printed: the plaintext key never leaves this call (hub/kms.py)."""
     from hub.kms import generate_wrapped
 
     print(generate_wrapped(key_id, region=region or None))
@@ -2731,8 +2194,6 @@ async def wrap_encryption_key(key_id: str, region: str = "") -> bool:
 
 
 async def generate_encryption_key() -> bool:
-    """Print a fresh HUB_ENCRYPTION_KEY. Not read from or written to
-    anywhere -- copy it into this deployment's secret store yourself."""
     from hub.encryption import generate_key
 
     print(generate_key())
@@ -2770,7 +2231,6 @@ async def webhook_add(
         await audit.record(
             session, actor=audit.ACTOR_OPERATOR_CLI, action="webhook.add",
             org_id=org_id, target_type="webhook_endpoint", target_id=endpoint_id,
-            # The URL, not the secret. Never the secret.
             summary=f"{url} ({len(subscribed_to)} event types)",
         )
     print(f"endpoint {endpoint_id} -> {url}")
@@ -2799,8 +2259,6 @@ async def webhook_list(org_id: str, session_factory=None) -> bool:
     print()
     print(f"{pending} delivery/deliveries pending.")
     if failed:
-        # The dead-letter view: a queue that gives up silently is a queue
-        # that lies about delivery.
         print(f"{len(failed)} gave up (most recent first):")
         for d in failed:
             print(f"  {d.created_at:%Y-%m-%d %H:%M}  {d.event_type}  {d.last_error}")
@@ -2925,8 +2383,6 @@ async def delete_alert_rule(rule_id: str, session_factory=None) -> bool:
 
 
 async def check_alerts(org_id: str | None = None, session_factory=None) -> bool:
-    """Evaluate rules and fire due alerts. Safe to run on a schedule --
-    each rule's own cooldown prevents re-firing on every tick."""
     session_factory = session_factory or _default_session_factory()
     async with session_scope(session_factory) as session:
         fired = await alerts.check_rules(session, org_id)
@@ -3137,8 +2593,6 @@ _COMMANDS = {
     "tag-trace-subjects": (tag_trace_subjects, 2, 3),
     "find-subject-traces": (find_subject_traces, 2, 2),
     "purge-subject-traces": (purge_subject_traces, 2, 2),
-    # +1 on max_args: the optional trailing --yes flag, stripped in main()
-    # before the underlying function ever sees it.
     "connector-add": (connector_add, 2, 3),
     "connector-list": (connector_list, 1, 1),
     "connector-live": (connector_live, 1, 1),
@@ -3170,21 +2624,6 @@ _COMMANDS = {
     "purge-org": (purge_org, 1, 2),
 }
 
-# Deletion here is permanent (no soft-delete, no undo -- see purge_trace/
-# purge_org's own docstrings and the retention policy). Every other _COMMANDS
-# entry either only reads, or is itself reversible (revoke-key has
-# rotate-key, release-quarantine has nothing to reverse but also nothing to
-# lose). Gated on an interactive prompt so a mistyped id or a fat-fingered
-# extra Enter in a terminal session doesn't silently delete a customer's
-# data; --yes bypasses it for scripted/automated use, which must ask for
-# this explicitly rather than get it by default.
-#
-# `retention-apply` is deliberately NOT here despite deleting rows. Its
-# confirmation is the plan digest, which is strictly stronger than a y/n
-# prompt: it names the exact set of rows the operator read, and refuses if
-# anything moved since. An interactive prompt on top of that would add no
-# safety and would make the scheduled purge -- the whole point of having a
-# retention policy rather than a delete button -- impossible to automate.
 _DESTRUCTIVE_COMMANDS: dict[str, str] = {
     "purge-trace": "permanently delete this trace and its full amendment chain",
     "purge-org": "permanently delete this organization and everything scoped to it "
@@ -3203,14 +2642,6 @@ def _confirm_destructive(action: str) -> bool:
     try:
         reply = input(f"This will {action.upper()}. This cannot be undone. Type 'yes' to continue: ")
     except EOFError:
-        # Ctrl-D at the prompt -- an entirely ordinary way to bail out of an
-        # interactive confirmation, not an error condition. Left uncaught,
-        # `input()` raising here reached the caller as a raw traceback
-        # (reproduced: stdin hitting EOF at an interactive tty prompt raises
-        # EOFError), which is exactly the "a traceback here reads as 'the
-        # tool is broken'" failure this module's own confirmation prompts
-        # exist to avoid -- and nothing destructive has happened yet at this
-        # point, so treating it as "no" is safe.
         return False
     return reply.strip().lower() == "yes"
 
@@ -3242,32 +2673,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         result = asyncio.run(fn(*args))
     except (ValueError, LookupError) as exc:
-        # Operator mistakes -- a bad day count, an org id that doesn't exist.
-        # A traceback here reads as "the tool is broken" rather than "you typed
-        # something wrong", and this CLI is what an operator runs in production.
         print(f"error: {exc}", file=sys.stderr)
         return 2
     except SQLAlchemyError as exc:
-        # Same operator-mistake category, one layer down: a malformed id
-        # (`revoke-key not-a-uuid`) is rejected by the UUID column type
-        # itself rather than by `session.get` returning None, and asyncpg
-        # raises that as a driver-level error (typically
-        # sqlalchemy.exc.DBAPIError wrapping an asyncpg DataError, not a
-        # plain ValueError/LookupError) -- so it fell through the catch
-        # above and dumped a raw traceback for the same kind of typo the
-        # branch above already handles cleanly.
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    # Several commands (revoke-key, release-quarantine, purge-trace,
-    # purge-org, commons-seed, set-plan, usage) print "error: ..." to
-    # stderr on a failed lookup and return False instead of raising --
-    # there is nothing exceptional about "that id doesn't exist", so it
-    # isn't one of the exception branches above. Without checking the
-    # return value here, every one of those failures still exited 0: an
-    # automated incident script checking $? after `purge-org` (say, to
-    # confirm a GDPR deletion actually happened) would see success on a
-    # no-op. Commands with no failure path return None, which is not
-    # `False`, so they are unaffected.
     if result is False:
         return 2
     return 0

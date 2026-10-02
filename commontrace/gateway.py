@@ -1,42 +1,4 @@
-"""A language-neutral door into the causal loop, for any agent, including robots.
-
-An LLM agent can use `commontrace serve` (MCP). A robot's perception stack, a
-C++ planner, a Rust controller, a shell script or a ROS node cannot, and should
-not have to embed Python to get the one thing this product is for: *did the
-memory I gave this episode change how it went?* The gateway is that door: plain
-JSON over HTTP (`commontrace gateway`) or one JSON object per line over stdio
-(`commontrace gateway --stdio`), with one dispatcher behind both.
-
-    POST /v1/recall    {occasion_id, items:[{id,text,protected?}]}   -> deliver / withheld / withdrawn
-    POST /v1/outcome   {occasion_id, succeeded} | {occasion_id, signals:[...]}
-    GET  /v1/status    /v1/memories   /v1/occasions   /v1/agents   /v1/openapi.json
-
-MEMORY-AGNOSTIC. The caller brings its candidate memories (`items`) from whatever
-store it uses and the gateway only randomizes, withdraws what is measured to hurt
-and records outcomes, exactly as `CausalMemory` does for a Python caller. Without
-`items` it ranks this store's own active lessons.
-
-WHAT A PHYSICAL SYSTEM NEEDS THAT A CHATBOT DOES NOT
-  * A memory that is a SAFETY CONSTRAINT must never be withheld as a control. An
-    item with `protected: true`, or whose id starts with a protected prefix
-    (stored with the store, so every client obeys it), is always delivered, never
-    randomized, never withdrawn and never counted.
-  * Simulation must not be pooled with reality. A store measures ONE environment
-    (`--env sim|real|...`); a request naming another is refused.
-  * A control loop cannot wait on an `fsync`. `--relaxed-durability` skips it: a
-    power loss can drop the last few log lines (a missing observation, never a
-    wrong one).
-  * Outcomes arrive as measurements, not booleans. `signals` evaluates the same
-    detectors `commontrace.outcome_detect` has, three-valued: an undecided signal
-    records nothing.
-
-SECURITY. Every `/v1` call but health and the schema needs `Authorization: Bearer`.
-The Host header must be a loopback name or one the operator allowed (DNS
-rebinding), bodies are capped, the HTTP server times out slow clients, and every
-memory text is screened for injection before it can be delivered
-(commontrace/injection_guard.py). Not TLS: bind to loopback or terminate TLS in
-front of it (or pass --tls-cert/--tls-key).
-"""
+"""A language-neutral door into the causal loop, for any agent, including robots."""
 from __future__ import annotations
 
 import dataclasses
@@ -67,10 +29,7 @@ from commontrace import (
 from commontrace.measure import CausalMemory, HarmWatch
 
 API_VERSION = "1"
-#: How stale the console's reports (memories, proof status) may be while the logs are changing, in seconds.
 REPORT_MIN_INTERVAL = 5.0
-#: How old a report may get while nothing it is keyed on changes: it also reads the time, and episode and trace
-#: files edited in place (which leave their directory's mtime alone).
 REPORT_MAX_AGE = 60.0
 MAX_BODY_BYTES = 1 << 20
 MAX_ITEMS = 200
@@ -97,14 +56,9 @@ def _bad(message: str, code: str = "bad_request") -> ApiError:
     return ApiError(400, code, message)
 
 
-# --- Store-held policy ----------------------------------------------------------------
-
-
 @dataclasses.dataclass(frozen=True)
 class GatewayConfig:
-    #: The one environment this store measures ("sim", "real", ...), or None.
     env: str | None = None
-    #: Item ids starting with any of these are safety-protected, for every client.
     protected_prefixes: tuple[str, ...] = ()
 
 
@@ -139,9 +93,6 @@ def save_config(root: str, config: GatewayConfig) -> None:
 
 
 def merge_config(root: str, *, env: str | None, protect: list[str]) -> GatewayConfig:
-    """Fold command-line choices into the store's policy. An environment, once set, is
-    not changed here: a store that measured simulation must not start measuring
-    hardware under the same salt."""
     current = load_config(root)
     if env is not None:
         if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,31}", env):
@@ -176,9 +127,6 @@ def load_or_create_token(root: str) -> str:
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write(token + "\n")
     return token
-
-
-# --- Request validation ----------------------------------------------------------------
 
 
 def _text(value, label: str, *, limit: int, required: bool = True) -> str:
@@ -253,12 +201,7 @@ _LIST_TO_SET = {"resolved_statuses", "reopened_statuses"}
 
 
 def evaluate_signals(signals, combine: str | None) -> bool | None:
-    """Run detector calls through `outcome_detect` and combine them. None = undecided.
-
-    Detectors are looked up by name from the module's own `from_*` functions, so a
-    new detector is available here the moment it exists, and an unknown name is a
-    400 -- never an attribute lookup on whatever string a client sends.
-    """
+    """Run detector calls through `outcome_detect` and combine them. None = undecided."""
     if not isinstance(signals, list) or not signals:
         raise _bad("signals must be a non-empty list")
     if len(signals) > MAX_SIGNALS:
@@ -299,9 +242,6 @@ def evaluate_signals(signals, combine: str | None) -> bool | None:
     raise _bad("combine must be 'all' or 'any'")
 
 
-# --- The gateway -------------------------------------------------------------------------
-
-
 @dataclasses.dataclass
 class Response:
     status: int
@@ -333,7 +273,6 @@ class Gateway:
         self.routes: dict[tuple[str, str], tuple[Callable, dict]] = {}
         self._register()
 
-    # -- routing -------------------------------------------------------------------------
 
     def _route(self, method: str, path: str, handler: Callable, *, summary: str, auth: bool = True,
                request: dict | None = None, response: str = "object") -> None:
@@ -376,8 +315,6 @@ class Gateway:
         self, method: str, target: str, headers: Mapping[str, str] | None = None,
         body: bytes | None = None, *, trusted: bool = False,
     ) -> Response:
-        """One request, from any transport. `trusted` skips the token (stdio: the caller
-        already owns the process) but never the validation."""
         headers = headers or {}
         try:
             split = urlsplit(target)
@@ -407,11 +344,9 @@ class Gateway:
             return _json(500, {"error": {"code": "internal", "message": f"{type(exc).__name__}"}})
 
     def _host_ok(self, headers: Mapping[str, str]) -> bool:
-        """DNS-rebinding defence: a page on evil.example resolving to 127.0.0.1 still
-        sends `Host: evil.example`, which is not a name this gateway answers to."""
         host = next((v for k, v in headers.items() if k.lower() == "host"), "")
         if not host:
-            return True  # HTTP/1.0 without Host: nothing to rebind
+            return True
         try:
             name = urlsplit("//" + host).hostname or ""
         except ValueError:
@@ -459,7 +394,6 @@ class Gateway:
             "Referrer-Policy": "no-referrer", "X-Frame-Options": "DENY",
         })
 
-    # -- events (the console's view; never part of the measurement) ----------------------
 
     def _events_path(self) -> str:
         return os.path.join(paths.memory_dir(self.root), EVENTS_NAME)
@@ -474,7 +408,7 @@ class Gateway:
                     os.replace(path, path + ".1")
                 holdout_io._append_lines(path, [json.dumps(event, separators=(",", ":"))], durable=False)
         except OSError:
-            pass  # a log the console reads must never break a control loop
+            pass
 
     def _read_events(self, limit: int = 5000) -> list[dict]:
         path = self._events_path()
@@ -487,7 +421,7 @@ class Gateway:
             return []
         lines = chunk.splitlines()
         if size > 1_500_000 and lines:
-            lines = lines[1:]  # the first line is probably cut
+            lines = lines[1:]
         out = []
         for line in lines[-limit:]:
             try:
@@ -498,7 +432,6 @@ class Gateway:
                 out.append(row)
         return out
 
-    # -- handlers ----------------------------------------------------------------------------
 
     def _health(self, _body, _query) -> dict:
         return {"ok": True, "api": API_VERSION, "version": __version__}
@@ -532,8 +465,6 @@ class Gateway:
 
         from commontrace import lesson_cache
 
-        # With the term cache, as `commontrace query` and the MCP server rank: it carries each lesson's stamp, so
-        # the corpus index is reused across recalls instead of rebuilt per call (255 ms at 6,400 lessons).
         active, term_cache = lesson_cache.load_active_with_terms(self.root, None, reader=read)
         ranked = retrieval.rank_lessons(query, active, top_k=top_k, term_cache=term_cache)
         projected = dict(active)
@@ -563,10 +494,6 @@ class Gateway:
         by_id = {i["id"]: i for i in clean}
 
         config = holdout_io.load_config(self.root)
-        # Nothing is withheld until an experiment has been STARTED on purpose. A store
-        # with no experiment config defaults to a 10% holdout for the chatbot case, but
-        # withholding a memory from hardware nobody chose to measure is a decision, not
-        # a default.
         started = bool(config.started_at) and config.running
         if started:
             memory = CausalMemory(
@@ -628,9 +555,6 @@ class Gateway:
                 **({} if written else {"note": "the same answer was already on record"})}
 
     def _data_key(self) -> tuple:
-        """What every report here is a function of: the assignment and outcome logs, the experiment, the proof's
-        registered design and the store's retrieval settings, each by (inode, size, mtime), and the episode and
-        trace directories, which also carry outcomes (an added or removed file changes the directory's mtime)."""
         key = []
         for path in (holdout_io.holdout_log_path(self.root), holdout_io.outcomes_log_path(self.root),
                      holdout_io.config_path(self.root), proof.state_path(self.root),
@@ -644,11 +568,6 @@ class Gateway:
         return tuple(key)
 
     def _memoized(self, name: str, compute):
-        """`compute()`, reused while the data it reads is unchanged, and recomputed at most once per
-        REPORT_MIN_INTERVAL seconds while it is changing. An open console polls these reports every few seconds,
-        and recomputing the audit and every estimate per poll cost about a second per call at 60,000 assignments:
-        a dashboard left open on a busy store was a steady CPU tax on the same process serving recalls. Never used
-        on the recall or outcome path, which read and write the logs directly."""
         key, now = self._data_key(), time.monotonic()
         with self._memo_lock:
             hit = self._memo.get(name)
@@ -708,7 +627,6 @@ class Gateway:
             "occasions": len({r.occasion_id for r in rows}),
         }
 
-    # -- the lesson workbench (commontrace/workbench.py) ------------------------------------
 
     def _workbench(self, call):
         from commontrace import workbench
@@ -806,21 +724,16 @@ class Gateway:
         }
 
 
-# --- Transports --------------------------------------------------------------------------
-
-
 def make_http_server(gateway: Gateway, host: str, port: int, *, tls: tuple[str, str] | None = None,
                      request_timeout: float = 10.0) -> ThreadingHTTPServer:
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
-        timeout = request_timeout  # a slow client cannot hold a thread for ever
+        timeout = request_timeout
 
-        def log_message(self, *args, **kwargs):  # silence the default stderr access log
+        def log_message(self, *args, **kwargs):
             pass
 
         def handle(self):
-            # TLS handshakes run here, on this connection's thread and under its timeout. In accept() they ran on
-            # the one serving thread with none, so a client that connected and never spoke stalled every other.
             if isinstance(self.connection, ssl.SSLSocket):
                 try:
                     self.connection.do_handshake()
@@ -883,13 +796,7 @@ def make_http_server(gateway: Gateway, host: str, port: int, *, tls: tuple[str, 
 
 
 def serve_stdio(gateway: Gateway, stdin, stdout) -> int:
-    """One JSON object per line in, one per line out, until EOF.
-
-    Request: {"id": any, "method": "POST", "path": "/v1/recall", "body": {...}} or the
-    shorthand {"id": any, "op": "recall", ...fields}. Response:
-    {"id": same, "status": 200, "body": {...}}. The process that spawned this is
-    trusted, so no token is needed; validation is unchanged.
-    """
+    """One JSON object per line in, one per line out, until EOF."""
     shorthand = {"recall": ("POST", "/v1/recall"), "outcome": ("POST", "/v1/outcome"),
                  "status": ("GET", "/v1/status"), "memories": ("GET", "/v1/memories"),
                  "occasions": ("GET", "/v1/occasions"), "agents": ("GET", "/v1/agents"),

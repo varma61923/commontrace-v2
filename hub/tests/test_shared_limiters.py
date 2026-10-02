@@ -1,16 +1,3 @@
-"""Every Hub rate limiter follows HUB_RATE_LIMIT_BACKEND, including the
-brute-force guards on unauthenticated routes.
-
-The per-org write/read/auth limiters went through a backend-aware factory,
-but console sign-in, signup, share-link views, the operator console,
-connector and OTLP auth, REST auth and /readyz each built a process-local
-`RateLimiter` directly. Under HUB_RATE_LIMIT_BACKEND=postgres -- the
-documented multi-replica setting -- those stayed per-process, so a sign-in
-budget of 5 attempts per source became 5 x replicas. These tests pin all
-three parts of the fix: no route constructs one directly, build_app puts
-every named limiter on the configured backend, and two replicas sharing a
-name really share one budget.
-"""
 from __future__ import annotations
 
 import dataclasses
@@ -26,7 +13,6 @@ from hub.tests.test_abuse import PG_TEST_DATABASE_URL, _skip_if_no_pg
 
 HUB_DIR = pathlib.Path(__file__).resolve().parents[1]
 
-# Only the factory itself and the stand-alone benchmark may build one.
 _ALLOWED = {"abuse.py", "bench_concurrency.py"}
 _DIRECT = re.compile(r"(?<![A-Za-z_])RateLimiter\(")
 
@@ -88,8 +74,6 @@ async def test_build_app_puts_every_named_limiter_on_the_configured_backend(
 
 @pytest.mark.asyncio
 async def test_two_replicas_with_one_name_share_one_sign_in_budget():
-    """The scenario that motivated this: two processes, one client address,
-    a burst of 5. Per-process limiters would admit 10."""
     _skip_if_no_pg()
     cfg = dataclasses.replace(
         _pg_config(), rate_limit_backend="postgres"
@@ -113,13 +97,8 @@ def _pg_config():
     return HubConfig(database_url=PG_TEST_DATABASE_URL)
 
 
-# --- The single-statement decision (hub/abuse.py:_RATE_LIMIT_TAKE_SQL) ------
-
-
 @pytest.mark.asyncio
 async def test_concurrent_callers_never_take_more_than_the_bucket_holds():
-    """One statement now refills, decrements and decides. Under a burst of
-    concurrent callers on one key, exactly `burst` may be allowed."""
     import asyncio
 
     _skip_if_no_pg()
@@ -137,13 +116,11 @@ async def test_a_refusal_reports_how_long_until_the_next_token():
     assert (await limiter.check("k"))[0] is True
     allowed, retry_after = await limiter.check("k")
     assert allowed is False
-    assert 0.0 < retry_after <= 1.0  # one token per second
+    assert 0.0 < retry_after <= 1.0
 
 
 @pytest.mark.asyncio
 async def test_refusals_never_mint_tokens():
-    """A refusal stamps last_refill one microsecond ahead; that may only
-    ever delay the next refill, never add to it."""
     _skip_if_no_pg()
     cfg = dataclasses.replace(_pg_config(), rate_limit_backend="postgres")
     limiter = make_named_limiter(cfg, 1, 1, f"mint-{uuid.uuid4().hex[:8]}")

@@ -1,10 +1,3 @@
-"""Lambda's per-proposal verdicts, persisted in each episode (roadmap P1,
-The benchmark methodology) and reported by `commontrace bench`.
-
-`lesson_quality` sees only what was applied, so it could not tell a
-proposal Lambda rejected from one it sent back for refinement -- two
-different failures of Omega with two different fixes.
-"""
 from __future__ import annotations
 
 import os
@@ -43,7 +36,6 @@ def test_an_unrecognised_verdict_is_visible_not_dropped():
 
 
 def test_the_field_survives_the_fallback_parser():
-    """Stores without PyYAML parse frontmatter with parse_yaml_minimal."""
     text = "lambda_decisions: {lesson_a: ACCEPTED, lesson_b: NEEDS_REFINEMENT}\n"
     assert bm.parse_yaml_minimal(text)["lambda_decisions"] == {
         "lesson_a": "ACCEPTED", "lesson_b": "NEEDS_REFINEMENT"}

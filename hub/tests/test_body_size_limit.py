@@ -1,11 +1,3 @@
-"""Every route refuses an oversized request body, not only /mcp.
-
-The MCP transport enforced HUB_MAX_REQUEST_BODY_BYTES for itself; the
-signup and sign-in forms, the REST API, SCIM and the Stripe webhook read
-their bodies through Starlette, which buffers without limit -- several of
-them before any authentication.
-"""
-
 from __future__ import annotations
 
 import httpx

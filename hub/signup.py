@@ -1,34 +1,3 @@
-"""Self-serve organization signup: the public on-ramp hub/plans.py's own
-free-tier docstring already argues for --
-
-    "Evaluate on real memory, with Knowledge Base access included -- an
-    on-ramp nobody can try requires nothing to demonstrate its value."
-
--- but that argument had no route behind it until this module. Every
-account before this feature existed was sales- or support-assisted by
-construction: the only way to get an org_id and a first API key was
-`python -m hub.manage create-org`, run by an operator, on request. Nothing
-about the free plan itself required that; the CLI command was simply the
-only door.
-
-WHAT THIS DOES NOT DO
------------------------
-No email verification. This Hub has no outbound email integration to build
-one on (see hub/DEPLOYMENT.md) -- adding a fake "check your inbox" step
-with nothing behind it would be worse than not claiming it. Treat this as
-v1: the blast radius of an uncontactable or fraudulent signup is already
-bounded by the free plan's own limits (hub/plans.py: 1,000 traces, 5
-agents, 20 Knowledge Base queries/month) -- the same ceiling every
-evaluator gets, verified or not.
-
-What IS enforced: a tight per-address rate limit (an unauthenticated route
-that mints a usable credential is the closest thing this Hub has to an
-open account-creation oracle -- see `_SIGNUP_RATE_LIMIT` below for the
-actual numbers and why they're deliberately conservative without a
-CAPTCHA behind them) and a honeypot field, the standard mitigation for a
-public form with no CAPTCHA in front of it.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -111,16 +80,6 @@ def _page(title: str, body: str) -> HTMLResponse:
 def add_signup_routes(
     app, session_factory, *, trusted_proxy_hops: int = 0, console_path: str = "/app", config=None
 ) -> None:
-    """Mount the public signup routes. Call only when self-serve signup is
-    enabled (HUB_SIGNUP_ENABLED) -- omitted entirely otherwise, the same
-    absent-unless-configured posture `/admin` and `/app` already follow."""
-
-    # Deliberately tight, and deliberately not CAPTCHA-strength: this Hub
-    # has no CAPTCHA integration, so the rate limit is the only thing
-    # standing between this route and a scripted flood of free-plan orgs.
-    # burst=2 caps a legitimate retry (typo the org name, resubmit) without
-    # a wait; per_minute=1 means a sustained attacker gets one more org per
-    # minute per source address after that, not an unbounded rate.
     signup_limiter = make_named_limiter(config, 1, 2, "signup")
 
     async def signup_page(request: Request) -> Response:
@@ -137,11 +96,6 @@ def add_signup_routes(
             ))
         form = await request.form()
         if str(form.get("website") or "").strip():
-            # Honeypot tripped: a human never fills a field that is both
-            # visually hidden and explicitly labeled "leave this blank".
-            # Rejected the same way a validation failure is, so a bot's
-            # response looks identical to a real one and gives it nothing
-            # to distinguish "flagged as automated" from "made a mistake".
             logger.info("signup rejected: honeypot field filled")
             return _page("Create account", _FORM.format(
                 path=SIGNUP_PATH,

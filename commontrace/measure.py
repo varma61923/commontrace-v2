@@ -1,67 +1,4 @@
-"""Measure whether memory from ANY store causes better outcomes.
-
-Every agent memory system retrieves something and injects it; none of the
-widely used ones can say whether what it injected helped. This module lets
-an application keep the memory store it already has and add that answer:
-wrap the store's retrieval call, report whether each task succeeded, and
-`commontrace experiment` reports the causal effect of each memory -- with
-the same randomization, the same validity audit and the same statistics it
-applies to this store's own lessons.
-
-    from commontrace.measure import CausalMemory
-
-    memory = CausalMemory(my_store.search)          # any callable
-    items = memory.recall("stripe webhook retried twice", occasion_id=task.id)
-    ...                                             # run the task with `items`
-    memory.record_outcome(task.id, succeeded=task.passed)
-
-Then `commontrace experiment` in the same store.
-
-WHAT IT DOES AND DOES NOT CHANGE
---------------------------------
-It never alters what the wrapped store returns except to withhold a small,
-random, per-memory fraction of eligible items on each occasion (the store's
-configured holdout rate, `commontrace experiment --configure`). It writes
-nothing to the wrapped store and reads nothing else from it.
-
-All assignment and logging goes through commontrace/holdout_io.py, not a
-second implementation of it. That is the point: an assignment written here
-is indistinguishable from one written by `commontrace query` or the MCP
-server, so the integrity checks, the salt scoping and the analysis all
-apply without knowing where the memory came from.
-
-AUTOMATIC WITHDRAWAL
---------------------
-When the store's harm policy is `withdraw` (`commontrace retrieval --on-harm
-withdraw`, or `on_harm="withdraw"` here), a memory whose measured verdict is
-HURTS is no longer delivered, exactly as a local lesson is not
-(commontrace/harm.py). The decision is made BEFORE arms are assigned, so a
-withdrawn memory is never logged as treated or withheld on an occasion it was
-absent from, and every other memory's comparison is untouched. The verdict is
-the anytime-valid one, so acting on it as soon as it appears is sound. The
-withdrawal follows the evidence rather than being written down: a new
-randomization starts every memory from no verdict, which is how a rewritten
-memory gets a second trial. `recall_detailed` says what was withdrawn and why.
-
-WHY IDENTITY IS NOT GUESSED
----------------------------
-Each item needs a stable id -- the arm is a hash of (id, occasion, salt).
-If an item has no `id`/`key` attribute or key, this raises rather than
-falling back to `str(item)`. For most objects that string contains a memory
-address, which changes every process, so the same memory would be assigned
-to a fresh random arm each run while appearing to be many different
-memories. That failure produces no error and a meaningless result, so it is
-refused up front. Pass `key=` to say how your store identifies an item.
-
-WHY CONTENT IS HASHED
----------------------
-Stores that update a memory in place keep its id while changing its text.
-The id alone would then pool occasions treated with different content into
-one arm and report an effect for a treatment that no longer exists. So each
-item's text is hashed into the assignment's `revision`, which the existing
-revision check reads. If no text can be found, the revision is recorded as
-unknown -- reported as unchecked, never guessed.
-"""
+"""Measure whether memory from ANY store causes better outcomes."""
 
 from __future__ import annotations
 
@@ -73,7 +10,6 @@ from typing import Any
 
 from commontrace import evidence, harm, holdout_io, paths, retrieval_io
 
-#: How many recalls pass between reads of the harm evidence. See `_withdrawn`.
 DEFAULT_CHECK_EVERY = 25
 
 _ID_FIELDS = ("id", "key")
@@ -115,17 +51,6 @@ def content_revision(text: str | None) -> str | None:
 
 
 class HarmWatch:
-    """The memories this store's harm policy withdraws, re-read every `check_every`
-    calls and safe to share across threads.
-
-    Reading the evidence re-analyses the whole log, and a new outcome invalidates
-    it, so doing that on every recall would make a busy fleet's recall cost grow
-    with its history. A withdrawal does not need to be that prompt: the verdict is
-    anytime-valid, so acting on it a few dozen occasions late costs a few
-    deliveries, never a wrong conclusion. One watch can serve many
-    `CausalMemory` instances (a gateway builds one per request).
-    """
-
     def __init__(self, root: str, on_harm: str | None = None,
                  check_every: int = DEFAULT_CHECK_EVERY) -> None:
         if on_harm is not None and on_harm not in harm.POLICIES:
@@ -143,38 +68,19 @@ class HarmWatch:
             self._calls += 1
             if due:
                 policy = self._on_harm or retrieval_io.read_harm_policy(self._root)
-                # Empty unless the policy withdraws AND the evidence is readable;
-                # never raises, because failing to read it must leave retrieval as it was.
                 self._harmful = evidence.withdrawn(self._root, policy)
             return self._harmful
 
 
 @dataclass(frozen=True)
 class Recall:
-    """What one `recall_detailed` call did: what the task should receive, and
-    what was kept from it and why."""
-
     items: list
-    #: id -> the evidence (verdict, effect, interval) that got it withdrawn.
     withdrawn: dict = field(default_factory=dict)
-    #: id -> why the injection screen kept it out (pattern names, never text).
     quarantined: dict = field(default_factory=dict)
 
 
 class CausalMemory:
-    """Wrap any retrieval callable so its memories can be measured causally.
-
-    `retrieve` is called as `retrieve(query, **kwargs)` and must return an
-    iterable of items in rank order. `key(item)` gives each item a stable
-    id; `text(item)` gives the content hashed into its revision. `pinned`
-    names ids that are always delivered and never randomized -- memories
-    already known to help, for which withholding would cost outcomes and
-    add no information -- and no assignment is recorded for them at all.
-
-    `on_harm` is "inform" (a HURTS memory is still delivered), "withdraw" (it
-    is not), or None to follow the store's own policy (`commontrace retrieval
-    --on-harm`), which is what an operator expects to govern every retriever.
-    """
+    """Wrap any retrieval callable so its memories can be measured causally."""
 
     def __init__(
         self,
@@ -201,8 +107,6 @@ class CausalMemory:
         self._text = text
         self._pinned = frozenset(str(p) for p in pinned)
         self._scorer = scorer
-        # Off by default here, because a bare CausalMemory may wrap a store
-        # whose items carry no text to screen; MeasuredMemory turns it on.
         self._screen = screen
 
     @property
@@ -210,8 +114,6 @@ class CausalMemory:
         return self._root
 
     def recall(self, query: Any, *, occasion_id: str, **kwargs: Any) -> list[Any]:
-        """Retrieve for `query` on `occasion_id`, withholding the randomized
-        fraction, and return what the task should actually receive."""
         return self.recall_detailed(query, occasion_id=occasion_id, **kwargs).items
 
     def _withdrawn(self) -> dict[str, dict]:
@@ -223,8 +125,6 @@ class CausalMemory:
             raise ValueError("occasion_id must be a non-empty string")
         items = list(self._retrieve(query, **kwargs))
 
-        # Withdrawn BEFORE arms are assigned (see the module docstring). Pinned
-        # memories are never randomized, so they never earn a verdict to act on.
         harmful = self._withdrawn()
         removed: dict[str, dict] = {}
         if harmful:
@@ -237,11 +137,6 @@ class CausalMemory:
                     kept.append(item)
             items = kept
 
-        # Screened BEFORE assignment, like harm withdrawal and like lessons
-        # (commontrace/injection_guard.py): a memory left out of what the agent
-        # sees must not be logged as treated or withheld on this occasion, or
-        # the estimate is biased toward zero. Pinned memories are screened
-        # too -- being always delivered is a reason to check, not to skip.
         quarantined: dict[str, str] = {}
         if self._screen:
             from commontrace import injection_guard
@@ -255,11 +150,6 @@ class CausalMemory:
                     kept.append(item)
             items = kept
 
-        # One row per memory per occasion. A store can return the same memory
-        # twice (two chunks of one record, or a duplicate index entry);
-        # logging both would count one treatment decision as two
-        # observations. Assignment is a hash of the id, so both copies are
-        # in the same arm anyway -- the second is simply not logged again.
         ids: list[str] = []
         revisions: dict[str, str | None] = {}
         keyed: list[tuple[str, Any]] = []
@@ -290,7 +180,4 @@ class CausalMemory:
         )
 
     def record_outcome(self, occasion_id: str, *, succeeded: bool) -> bool:
-        """Report whether the task on `occasion_id` succeeded. Idempotent for
-        a repeated identical report; raises holdout_io.ConflictingOutcome if
-        a different answer is already on record."""
         return holdout_io.record_outcome(self._root, occasion_id, succeeded, self._durable)

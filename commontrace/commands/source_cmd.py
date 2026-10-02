@@ -1,10 +1,3 @@
-"""`commontrace source`: measure memory that lives in a plain file this
-product does not own -- CLAUDE.md, AGENTS.md, .cursor/rules, a Devin
-Knowledge export -- through the same holdout machinery as any lesson in
-this store. See commontrace/memory_sources.py for what this actually does
-and why a query/retrieval-shaped adapter (commontrace/measure.py) does not
-fit a file that is read whole, unconditionally, on every session.
-"""
 from __future__ import annotations
 
 import argparse

@@ -1,8 +1,4 @@
-"""`commontrace serve` -- the local store, over MCP stdio.
-
-The command exists so an agent can be pointed at its own memory with a config
-entry rather than a shell. See commontrace/mcp_server.py for why that matters.
-"""
+"""`commontrace serve` -- the local store, over MCP stdio."""
 from __future__ import annotations
 
 import argparse
@@ -36,7 +32,6 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
 
 def run(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
-    # stderr, never stdout: stdout is the MCP wire (mcp_server.py).
     print(f"[commontrace] serving {root} over MCP stdio"
           + ("" if args.allow_approval else " (approval tools disabled)"),
           file=sys.stderr)

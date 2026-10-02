@@ -71,8 +71,6 @@ def run_list(args: argparse.Namespace) -> int:
         instance, _ = result
         if args.agent_type and instance.get("agent_type") != args.agent_type:
             continue
-        # See lesson_cmd._cell: a present-but-empty YAML key parses to None,
-        # which cannot be formatted with a width spec.
         print(
             f"{cell(instance.get('id')):36s} "
             f"[{cell(instance.get('agent_type')):9s}] "

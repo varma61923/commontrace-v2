@@ -19,8 +19,6 @@ target_metadata = Base.metadata
 
 
 def _database_url() -> str:
-    # Same env var the running server reads (hub/config.py) -- one source
-    # of truth for "which database", whether you're migrating or serving.
     return HubConfig.from_env().database_url
 
 

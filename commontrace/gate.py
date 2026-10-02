@@ -1,37 +1,4 @@
-"""Can this store's memory be shipped? A yes/no a CI job can enforce.
-
-Everything below already existed as a report a person had to read: the
-experiment's integrity audit, each lesson's anytime-valid verdict, the
-approval gates, contradiction detection. None of it could stop a deploy.
-A release pipeline that promotes a lesson set measured to make outcomes
-worse, or one holding an injection payload written into an active lesson
-after it was approved, did so with every check passing. This module runs
-those same checks and turns them into a result a build can fail on.
-
-What fails, by default:
-
-* ``experiment``  -- the experiment is COMPROMISED: its effects cannot be
-  quoted, so nothing downstream of them (harm withdrawal, the value ledger,
-  a proof package) should be trusted either.
-* ``harm``        -- an active, non-core lesson has a HURTS verdict on the
-  anytime-valid boundary. A store whose harm policy already withdraws such
-  lessons reports this as a warning instead: the lesson is not injected,
-  but it is still in the corpus and someone should rewrite or archive it.
-* ``safety``      -- an active lesson holds a high-confidence secret or an
-  injection payload (the approval gate's own scan, run on what is active
-  now, not on what was approved then).
-* ``scaffolding`` -- an active lesson still carries unedited ``TODO:`` text.
-
-What warns, and fails under ``strict``:
-
-* ``contradiction`` -- two active lessons fire in the same situations and
-  pull in opposite directions.
-* ``underpowered``  -- no lesson has reached a verdict yet; the gate can
-  say nothing about harm it has not had the data to see.
-
-Every check names its subject and reason, never lesson text: the output of a
-gate lands in CI logs, which are read by more people than the store is.
-"""
+"""Can this store's memory be shipped? A yes/no a CI job can enforce."""
 from __future__ import annotations
 
 import json
@@ -85,8 +52,6 @@ def _active_lessons(root: str) -> list[tuple[str, dict, str]]:
 
 
 def _guard_fields(fm: dict, body: str) -> dict:
-    # Same field set the approval gate scans (commands/lesson_cmd.py), kept
-    # local so a CI gate does not import a command module's argparse wiring.
     return {
         "description": fm.get("description", ""),
         "applies_when": fm.get("applies_when", ""),
@@ -98,7 +63,7 @@ def _guard_fields(fm: dict, body: str) -> dict:
 
 def run(root: str, *, strict: bool = False) -> GateResult:
     """Every check, against the store at `root`."""
-    from commontrace import evidence, retrieval_io  # evidence imports a command module lazily
+    from commontrace import evidence, retrieval_io
 
     result = GateResult(strict=strict)
     lessons = _active_lessons(root)
@@ -176,9 +141,6 @@ def run(root: str, *, strict: bool = False) -> GateResult:
     return result
 
 
-# --- Output formats ---------------------------------------------------------
-
-
 def render_text(result: GateResult) -> str:
     mark = {PASS: "ok  ", WARN: "warn", FAIL: "FAIL"}
     lines = []
@@ -199,8 +161,6 @@ def render_json(result: GateResult) -> str:
 
 
 def render_junit(result: GateResult) -> str:
-    """One <testcase> per check, so any CI that reads JUnit shows each
-    reason as its own row."""
     failures = sum(1 for c in result.checks if c in result.failed)
     rows = []
     for c in result.checks:
@@ -221,8 +181,6 @@ def render_junit(result: GateResult) -> str:
 
 
 def render_github(result: GateResult) -> str:
-    """GitHub Actions workflow commands: each failure and warning becomes an
-    annotation on the run."""
     def esc(s: str) -> str:
         return s.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
 

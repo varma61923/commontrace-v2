@@ -74,14 +74,7 @@ def load_fixture_lessons(fixtures_dir):
 
 
 def load_seed_entries(seed_path):
-    """(label, comparable text) for every commons seed entry.
-
-    A seed entry is a Trace-shaped row, not a Lesson, so its fields are
-    mapped onto the ones `comparable_text` reads: the title is the
-    description, the context is when it applies, the solution is the rule.
-    That mapping is what `commontrace import` does for the same rows, so
-    this measures the corpus as the product would actually store it.
-    """
+    """(label, comparable text) for every commons seed entry."""
     items = []
     if not os.path.isfile(seed_path):
         return items
@@ -104,18 +97,6 @@ def load_seed_entries(seed_path):
 
 
 def _restate(text, rng):
-    """A synthetic restatement: the same rule, written differently.
-
-    Three perturbations, each of which a second author re-deriving the same
-    lesson from a different trace cluster plausibly produces:
-      - drop one sentence (they left out a caveat)
-      - reorder the remaining sentences (they led with the condition)
-      - drop a fifth of the words (they were terser)
-
-    This is deliberately crude. It bounds recall against restatements that
-    share vocabulary, which is the only kind a lexical measure can claim
-    to catch -- see redundancy.py's module docstring on what it misses.
-    """
     sentences = [s.strip() for s in text.replace("\n", ". ").split(".") if s.strip()]
     if len(sentences) > 2:
         sentences.pop(rng.randrange(len(sentences)))
@@ -126,16 +107,7 @@ def _restate(text, rng):
 
 
 def distribution(items):
-    """Similarity of every pair in a corpus with no intentional duplicates.
-
-    This is the calibration instrument. `max` is the number the default
-    threshold has to clear: it is the loudest a genuinely distinct pair
-    gets, so a threshold below it flags real, non-redundant lessons as
-    restatements of each other. p99 and mean are reported to show how far
-    out in the tail that maximum sits -- a max close to the mean would
-    mean the corpus has no discriminating power and the measurement is
-    worthless.
-    """
+    """Similarity of every pair in a corpus with no intentional duplicates."""
     tokens = [(label, redundancy.token_set(text)) for label, text in items]
     scores = []
     loudest = []
@@ -160,13 +132,7 @@ def distribution(items):
 
 
 def by_field(items):
-    """Per-field distributions -- the adversarial case for a lexical measure.
-
-    Lessons in one domain share that domain's vocabulary, so if
-    `redundancy.COMPARED_FIELDS` were letting grouping metadata in, the
-    same-field maximum would sit well above the cross-field one. Reported
-    so that claim is checked rather than asserted.
-    """
+    """Per-field distributions -- the adversarial case for a lexical measure."""
     grouped = {}
     for label, text in items:
         grouped.setdefault(label.split("/", 1)[0], []).append((label, text))
@@ -193,14 +159,7 @@ def measure(items, thresholds):
 
 
 def measure_recall(items, thresholds, *, seed=0xC0FFEE):
-    """Detection rate against synthetic restatements of the same corpus.
-
-    Each lesson is paired with one perturbed copy of itself and nothing
-    else, so at every threshold the question is simply "was the copy
-    recognised". Reported alongside the false-positive sweep because the
-    two move in opposite directions and a default chosen from one alone is
-    chosen from half the evidence.
-    """
+    """Detection rate against synthetic restatements of the same corpus."""
     rng = random.Random(seed)
     restated = [(f"{label}~restated", _restate(text, rng)) for label, text in items]
     out = {}

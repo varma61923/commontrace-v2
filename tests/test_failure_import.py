@@ -1,18 +1,3 @@
-"""Reading a fleet's failures out of data it already has.
-
-This is the module that decides whether the commons thesis is testable
-before adoption or only after it. Everything here is about a prospect's
-real export -- messy columns, duplicate alerts, whatever their tool emits
--- turning into the same signatures a `memory/traces/` store would produce.
-
-Two properties matter more than the parsing:
-
-1. A signature from an import must equal a signature from the equivalent
-   trace. If they diverge, every coverage number stays plausible and
-   becomes meaningless, which is worse than an error.
-2. What was measured must be stated. A 400-row collapse or a 500-row cap
-   changes what the coverage fraction describes.
-"""
 from __future__ import annotations
 
 import json
@@ -32,9 +17,6 @@ def _write(tmp_path, name, text):
 
 
 class TestFormats:
-    """A prospect should not have to reshape their export before they can
-    get a number. Every format here is one somebody actually exports."""
-
     def test_plain_lines(self, tmp_path):
         p = _write(tmp_path, "alerts.txt",
                    "Connection pool exhausted\nWebhook delivered twice\n\nPod killed mid-request\n")
@@ -45,7 +27,6 @@ class TestFormats:
         ]
 
     def test_markdown_bullets_are_lines(self, tmp_path):
-        """A postmortem index pasted straight out of a wiki."""
         p = _write(tmp_path, "index.md", "- Pool exhausted under load\n* Duplicate charge\n")
         failures, _ = failure_import.read_failures(p)
         assert [f["label"] for f in failures] == ["Pool exhausted under load", "Duplicate charge"]
@@ -68,8 +49,6 @@ class TestFormats:
         assert failures[0]["label"] == "Pool exhausted"
 
     def test_json_envelope(self, tmp_path):
-        """Issue trackers wrap the array; refusing that would send someone
-        to jq before they can evaluate the product."""
         p = _write(tmp_path, "export.json",
                    json.dumps({"total": 2, "issues": [{"summary": "A thing broke"}]}))
         failures, _ = failure_import.read_failures(p)
@@ -85,12 +64,6 @@ class TestFormats:
         assert failures[0]["tags"] == ["db", "load"]
 
     def test_csv_with_a_ragged_extra_column_does_not_crash(self, tmp_path):
-        """Regression test for a real bug: csv.DictReader's default
-        restkey=None stashes a ragged row's overflow columns as a list under
-        record[None] -- a non-string key. _first()/_tags_of() iterated every
-        key in the row calling .lower() on it, so a single row with more
-        commas than the header raised AttributeError on None and took down
-        the whole import, not just that row."""
         p = _write(tmp_path, "ragged.csv",
                    "Summary,Description,Components\n"
                    "Pool exhausted,spike drained it,\"db,load\",unexpected,extra,columns\n"
@@ -106,8 +79,6 @@ class TestFormats:
         assert failures[0]["label"] == "Pool exhausted"
 
     def test_a_description_only_row_is_still_usable(self, tmp_path):
-        """The title is only a human-facing label in the report; a row with
-        just a body still carries the signal being matched."""
         p = _write(tmp_path, "x.jsonl", '{"description": "the pool ran dry during a spike"}\n')
         failures, _ = failure_import.read_failures(p)
         assert failures[0]["text"] == "the pool ran dry during a spike"
@@ -115,9 +86,6 @@ class TestFormats:
 
 class TestWhatWasMeasuredIsStated:
     def test_exact_duplicates_are_collapsed_and_counted(self, tmp_path):
-        """400 copies of one alert is what 'recurring' looks like in raw
-        data. Left in, the coverage fraction describes that alert rather
-        than the fleet."""
         p = _write(tmp_path, "a.txt", "Pool exhausted\n" * 10 + "Clock drift\n")
         failures, stats = failure_import.read_failures(p)
         assert stats["rows"] == 11
@@ -137,26 +105,18 @@ class TestWhatWasMeasuredIsStated:
         assert stats["truncated"] == 600 - failure_import.MAX_FAILURES
 
     def test_the_size_cap_counts_bytes_not_characters(self, tmp_path, monkeypatch):
-        """The fallback size check used to open in text mode and cap
-        len(raw) -- decoded CHARACTERS, not bytes -- so when the primary
-        os.path.getsize() guard failed, multi-byte UTF-8 content could be up
-        to ~4x over the real byte cap and still slip through undetected."""
         monkeypatch.setattr(failure_import, "MAX_IMPORT_BYTES", 100)
 
         def _boom(path):
             raise OSError("simulated getsize failure")
 
         monkeypatch.setattr(os.path, "getsize", _boom)
-        # 40 characters, but "€" (EUR SIGN) is 3 bytes in UTF-8: 120
-        # bytes total, over the 100-byte cap even though the char count isn't.
         p = _write(tmp_path, "a.txt", "€" * 40)
         with pytest.raises(failure_import.FailureImportError, match="larger than"):
             failure_import.read_failures(p)
 
 
 class TestRefusalsAreActionable:
-    """'Invalid input' sends someone to Slack instead of to a number."""
-
     def test_missing_file(self, tmp_path):
         with pytest.raises(failure_import.FailureImportError, match="cannot read"):
             failure_import.read_failures(os.path.join(str(tmp_path), "nope.txt"))
@@ -177,16 +137,6 @@ class TestRefusalsAreActionable:
         assert "title" in str(exc.value) and "owner" in str(exc.value)
 
     def test_a_field_over_the_csv_size_limit_is_a_clean_error_not_a_raw_csv_error(self, tmp_path):
-        """[BUG-CLI-02]: csv.Error is not a ValueError subclass, so it was
-        not caught by read_failures' own except tuple, nor by
-        commontrace/cli.py's top-level (OSError, ValueError, KeyError) --
-        a real incident postmortem or a large embedded stack trace in one
-        CSV field crashed with a raw traceback instead of a clean refusal.
-        The module-level fix raises the field limit far past what a real
-        export needs (so this in practice almost never fires), but the
-        exception handling itself must still be correct on the day it does
-        -- reproduced here by lowering the limit back down within the test,
-        independent of the module-level default."""
         import csv
 
         old_limit = csv.field_size_limit()
@@ -206,13 +156,6 @@ class TestRefusalsAreActionable:
 
 
 class TestBracketPrefixedLogFallsBackToLines:
-    """A `.log`/`.txt` (or extension-less) file of log lines that happen to
-    start with '[' -- "[2026-08-23 12:00:00] ERROR: connection refused" --
-    sniffs as JSON on that leading bracket (_sniff has no way to tell a log
-    timestamp from a JSON array) and then fails to parse as JSON at all.
-    That is a wrong GUESS about an unlabeled file, not evidence the file is
-    bad, so it falls back to the lines parser instead of refusing outright."""
-
     def test_bracket_prefixed_log_lines_are_read_as_one_failure_per_line(self, tmp_path):
         p = _write(
             tmp_path, "incidents.log",
@@ -225,9 +168,6 @@ class TestBracketPrefixedLogFallsBackToLines:
         assert "connection refused" in failures[0]["text"]
 
     def test_an_explicit_json_extension_still_hard_fails(self, tmp_path):
-        """The fallback is only for a GUESSED format. A file explicitly
-        named .json declares what it is; its real parse error stays more
-        useful than silently reinterpreting it as one-failure-per-line."""
         p = _write(tmp_path, "bad.json", "[not valid json\n")
         with pytest.raises(failure_import.FailureImportError):
             failure_import.read_failures(p)
@@ -251,9 +191,6 @@ class TestBracketPrefixedLogFallsBackToLines:
 
 class TestSignaturesAreComparable:
     def test_an_imported_failure_signs_identically_to_the_same_trace(self, tmp_path):
-        """The property the whole feature rests on. If an imported
-        signature and a store signature are computed differently, every
-        number stays plausible and means nothing."""
         title, text, tags = "Pool exhausted", "spike drained it", ["db", "load"]
         p = _write(tmp_path, "a.jsonl", json.dumps(
             {"title": title, "description": text, "tags": tags}) + "\n")
@@ -264,9 +201,6 @@ class TestSignaturesAreComparable:
         assert signed[0]["signature"] == reference
 
     def test_it_matches_the_hub_side_signature(self, tmp_path):
-        """The Hub signs title+context+tags via hub/commons.py. An imported
-        failure must land in the same space or commons_overlap compares
-        mismatched positions and returns a confident wrong number."""
         hub_commons = pytest.importorskip("hub.commons")
         title, text, tags = "Pool exhausted", "spike drained it", ["db", "load"]
         p = _write(tmp_path, "a.jsonl", json.dumps(
@@ -275,8 +209,6 @@ class TestSignaturesAreComparable:
         assert signed[0]["signature"] == hub_commons.signature_for(title, text, tags)
 
     def test_no_failure_text_is_in_the_signed_output(self, tmp_path):
-        """Labels travel by design; bodies must not. This is the claim made
-        to a prospect at the moment they decide whether to send the file."""
         p = _write(tmp_path, "a.jsonl", json.dumps(
             {"title": "Pool exhausted", "description": "SECRETCUSTOMERNAME went down"}) + "\n")
         signed, _ = commons_cmd.signatures_from_file(p)

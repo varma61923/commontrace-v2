@@ -1,57 +1,3 @@
-"""Telling a customer's own systems what happened here, without telling them
-anything that was in a trace.
-
-WHY THIS EXISTS
----------------
-Everything this Hub knows was readable only by polling it. A fleet that
-wanted to open a ticket when a memory was quarantined, or gate a deploy on
-an experiment reaching a verdict, had to run a cron job against
-`hub/manage.py` and diff the output against last time. That is the shape
-that makes a product a silo: the interesting moments are known here and
-nowhere else, at the moment they happen and never again.
-
-So: a small, versioned set of events, queued durably and delivered to an
-HTTP endpoint the org configures, signed so the receiver can tell a real one
-from anything else.
-
-WHAT AN EVENT MAY CARRY, AND WHY IT IS A WHITELIST
---------------------------------------------------
-A webhook is EGRESS to a third party. This product's entire trust story is
-that a fleet's experience stays on the fleet's own infrastructure, so an
-event bus that shipped `context_text` to whatever URL was last configured
-would quietly undo it -- and would do so in the one place nobody looks,
-since a webhook is set up once and then forgotten.
-
-Every event type therefore declares its exact fields, and `emit` REFUSES a
-payload with any other key. Not a denylist of dangerous names -- those fail
-the moment someone adds a field nobody thought to ban -- and not a
-convention, because a convention is what an urgent Friday patch is exempt
-from. Events carry ids, counts, verdicts and timestamps. To find out what a
-trace SAYS, a receiver has to come back and ask, authenticated, over the
-tenant-scoped API.
-
-THE SIGNING SECRET IS NOT STORED
---------------------------------
-Unlike an API key, which the Hub only ever VERIFIES (and so can keep as an
-argon2 hash), a webhook secret has to be used to compute an HMAC on every
-delivery -- it must be recoverable, which normally means a secret sitting in
-a column waiting for a database dump to find it.
-
-It is instead DERIVED, per endpoint, from the deployment's own signing key
-(`HUB_LEDGER_SIGNING_KEY`) plus the endpoint id and its key version. So the
-database holds a version integer and nothing else; an attacker with a full
-dump of `webhook_endpoints` learns which URLs an org uses and gains no
-ability to forge a single event. Rotation bumps the version, which changes
-the derived secret without touching a stored value.
-
-DELIVERY IS AT-LEAST-ONCE, AND SAYS SO
---------------------------------------
-Deliveries are queued rows, retried with backoff, and given up on loudly
-rather than silently. A receiver must therefore be idempotent on `event_id`
--- which is why every payload carries one, and why the docs say this rather
-than implying exactly-once and being wrong at the worst moment.
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -72,22 +18,14 @@ from hub.models import WebhookDelivery, WebhookEndpoint
 _SECRET_DOMAIN = "commontrace-webhook-secret-v1"
 _SIGNATURE_VERSION = "v1"
 
-#: How far a delivery's timestamp may be from the receiver's clock before it
-#: should be rejected as a replay. Published here because the receiver is
-#: the one enforcing it and needs a number to enforce.
 REPLAY_TOLERANCE_SECONDS = 300
 
 STATUS_PENDING = "pending"
 STATUS_DELIVERED = "delivered"
 STATUS_FAILED = "failed"
 
-#: After this many attempts a delivery is given up on and marked failed.
-#: Bounded rather than infinite: an endpoint that has been wrong for a week
-#: is a configuration problem, and a queue that retries it forever hides
-#: that behind a number nobody reads.
 MAX_ATTEMPTS = 8
 
-#: Backoff in seconds per attempt, then the last value repeats.
 _BACKOFF = (30, 60, 300, 900, 3600, 7200, 21600)
 
 
@@ -100,31 +38,6 @@ async def _default_resolve(hostname: str) -> list:
 
 
 async def _reject_private_target(url: str, *, resolve=None) -> None:
-    """Refuse a webhook URL whose hostname resolves anywhere this Hub's own
-    process could reach but a customer's public endpoint never should --
-    loopback, link-local (cloud metadata services live at
-    169.254.169.254), RFC 1918 private ranges, and other reserved/
-    multicast space. `add_endpoint` is operator-CLI-only today, but the
-    operator is trusting whatever URL a customer asked them to configure,
-    not vetting it themselves -- an SSRF-shaped mistake here is exactly as
-    real as if a customer typed it into a public form.
-
-    Checked again in `http_transport.send`, immediately before every
-    delivery, not only at registration: a hostname's DNS record can change
-    at any point after `add_endpoint` accepted it, and re-checking right
-    before the request is what actually closes that window rather than
-    only validating a fact that was true once. This narrows, but does not
-    eliminate, a TOCTOU race against DNS rebinding between this check and
-    httpx's own connection a moment later -- a deployment that needs to
-    close that fully should put an egress proxy in front of deliveries
-    (see http_transport's own docstring for why this module leaves room
-    for exactly that, rather than trying to be the only layer that does).
-
-    `resolve`, like `http_transport`'s own transport parameter, is
-    injectable so tests never need a real DNS lookup -- defaulting to
-    `None` runs actual resolution, same shape as the rest of this module's
-    test-vs-production seams.
-    """
     hostname = urlsplit(url).hostname
     if not hostname:
         raise EventError(f"a webhook endpoint must have a resolvable host, got {url!r}")
@@ -136,9 +49,6 @@ async def _reject_private_target(url: str, *, resolve=None) -> None:
     for family, _type, _proto, _canonname, sockaddr in addrinfo:
         raw_ip = sockaddr[0]
         ip = ipaddress.ip_address(raw_ip)
-        # `not is_global` also catches what is neither private nor public:
-        # 100.64.0.0/10 (carrier-grade NAT), where Alibaba Cloud serves its
-        # instance metadata (100.100.100.200).
         if (
             ip.is_private or ip.is_loopback or ip.is_link_local
             or ip.is_reserved or ip.is_multicast or ip.is_unspecified
@@ -156,9 +66,6 @@ async def _reject_private_target(url: str, *, resolve=None) -> None:
 class EventType:
     name: str
     describe: str
-    #: The ONLY keys a payload of this type may carry. See the module
-    #: docstring: this is a whitelist because a denylist fails the moment
-    #: somebody adds a field nobody thought to ban.
     fields: tuple[str, ...] = field(default_factory=tuple)
 
 
@@ -221,11 +128,6 @@ EVENT_TYPES: dict[str, EventType] = {
             ("period", "plan", "traces_total", "commons_queries_used",
              "commons_queries_allowance"),
         ),
-        # Fires identically for routine onboarding and for a break-glass
-        # recovery (hub/DEPLOYMENT.md Sec9a) -- there is no technical way to
-        # tell those apart, since both go through the same audited
-        # hub.manage path. An org that wants an eyes-on signal the moment
-        # anyone starts holding its most sensitive role gets one either way.
         EventType(
             "user.privileged_role_granted",
             "A person now holds Security Admin or Owner",
@@ -236,12 +138,8 @@ EVENT_TYPES: dict[str, EventType] = {
 
 EVENT_NAMES = tuple(EVENT_TYPES)
 
-#: Values an event field may hold. Deliberately scalars only: a nested
-#: object is where free text gets in without anyone deciding to put it
-#: there.
 _ALLOWED_VALUE_TYPES = (str, int, float, bool, type(None))
 
-#: An id or a verdict is short. A field long enough to be prose is prose.
 _MAX_FIELD_CHARS = 200
 
 
@@ -250,12 +148,7 @@ def _now() -> datetime.datetime:
 
 
 def check_payload(event_type: str, payload: dict) -> dict:
-    """Validate one payload against its type's declared fields.
-
-    Raises rather than dropping the offending key: an event silently
-    stripped of the field a receiver was built around fails at the
-    receiver, hours later, as a mystery.
-    """
+    """Validate one payload against its type's declared fields."""
     try:
         spec = EVENT_TYPES[event_type]
     except KeyError:
@@ -288,16 +181,8 @@ def check_payload(event_type: str, payload: dict) -> dict:
     return dict(payload)
 
 
-# --- endpoints and secrets ---------------------------------------------------
-
 def derive_secret(signing_key: str, endpoint_id: str, key_version: int) -> str:
-    """The endpoint's signing secret, recomputed rather than stored.
-
-    See the module docstring: an API key is only ever verified and so can
-    live as a hash, but a webhook secret must be USED on every delivery.
-    Deriving it means a full dump of `webhook_endpoints` yields no ability
-    to forge an event.
-    """
+    """The endpoint's signing secret, recomputed rather than stored."""
     if not signing_key:
         raise EventError(
             "this deployment has no HUB_LEDGER_SIGNING_KEY, so webhook "
@@ -313,13 +198,7 @@ def derive_secret(signing_key: str, endpoint_id: str, key_version: int) -> str:
 
 
 def signature_header(secret: str, timestamp: int, body: str) -> str:
-    """The `X-CommonTrace-Signature` value for one delivery.
-
-    `t=<unix>,v1=<hex>`, with the timestamp INSIDE the signed material.
-    Signing the body alone would let anyone who captured one delivery
-    replay it forever, and the timestamp is only protection if altering it
-    breaks the signature.
-    """
+    """The `X-CommonTrace-Signature` value for one delivery."""
     signed = f"{timestamp}.{body}".encode("utf-8")
     digest = hmac.new(secret.encode("utf-8"), signed, hashlib.sha256).hexdigest()
     return f"t={timestamp},{_SIGNATURE_VERSION}={digest}"
@@ -329,13 +208,7 @@ def verify_signature(
     secret: str, header: str, body: str, *,
     now: int | None = None, tolerance: int = REPLAY_TOLERANCE_SECONDS,
 ) -> bool:
-    """Whether a delivery is genuine and recent.
-
-    Lives here, in the product, rather than only in the docs: a receiver
-    implementing this from prose gets the timestamp-in-the-signed-material
-    detail wrong roughly half the time, and this function is what the tests
-    and the customer-facing example both use.
-    """
+    """Whether a delivery is genuine and recent."""
     parts = dict(
         piece.split("=", 1) for piece in header.split(",") if "=" in piece
     )
@@ -348,8 +221,6 @@ def verify_signature(
     if abs(moment - timestamp) > tolerance:
         return False
     expected = signature_header(secret, timestamp, body).split(f"{_SIGNATURE_VERSION}=")[1]
-    # compare_digest, not ==: a plain comparison leaks the position of the
-    # first differing byte through timing, which is enough to forge one.
     return hmac.compare_digest(sent, expected)
 
 
@@ -357,16 +228,7 @@ async def add_endpoint(
     session, org_id: str, url: str, *, events: list[str] | None = None,
     signing_key: str = "", cipher: EnvelopeCipher = NULL_CIPHER,
 ) -> tuple[WebhookEndpoint, str]:
-    """Register a URL. Returns the endpoint and its secret, shown once.
-
-    `url` is validated (https-only, not a private/internal target) BEFORE
-    encryption, so a caller-supplied cipher never hides a rejected target
-    from those checks. The returned `endpoint.url` is whatever `cipher`
-    produced -- ciphertext when a cipher is configured, the same string
-    back when it isn't (see hub/encryption.py) -- so a caller that needs
-    the plaintext back should keep its own `url` argument rather than read
-    it off the returned row.
-    """
+    """Register a URL. Returns the endpoint and its secret, shown once."""
     if not url.startswith("https://"):
         raise EventError(
             f"a webhook endpoint must be https, got {url!r}. Events carry no "
@@ -406,23 +268,11 @@ async def endpoints_for(session, org_id: str) -> list[WebhookEndpoint]:
     return list(rows.scalars())
 
 
-# --- emitting ----------------------------------------------------------------
-
 async def emit(
     session, org_id: str, event_type: str, payload: dict | None = None,
     *, now: datetime.datetime | None = None,
 ) -> list[WebhookDelivery]:
-    """Queue one delivery per subscribed, enabled endpoint.
-
-    Adds to the caller's session without committing, like `audit.record` and
-    for the same reason: an event announcing something that then rolled back
-    is worse than no event, because the receiver acts on it.
-
-    An org with no endpoints is the overwhelmingly common case and costs one
-    indexed query returning nothing -- callers do not have to check first,
-    which is what keeps emit calls from being conditionally skipped and
-    quietly forgotten.
-    """
+    """Queue one delivery per subscribed, enabled endpoint."""
     body = check_payload(event_type, payload or {})
     rows = await session.execute(
         select(WebhookEndpoint).where(
@@ -445,25 +295,12 @@ async def emit(
 
 
 def envelope(delivery: WebhookDelivery) -> dict:
-    """The JSON body a receiver sees.
-
-    `event_id` is the idempotency key and is stable across retries --
-    delivery is at-least-once, and a receiver that treats each POST as a
-    new fact will double-count the first time a timeout is followed by a
-    successful retry.
-
-    Call this AFTER incrementing `attempts`, which is what `deliver_pending`
-    does: `attempt` is meant to number the delivery being made, so a first
-    delivery that announced itself as attempt 2 would read to a receiver as
-    "you already missed one".
-    """
+    """The JSON body a receiver sees."""
     return {
         "event_id": delivery.id,
         "type": delivery.event_type,
         "org_id": delivery.org_id,
         "created_at": delivery.created_at.isoformat(),
-        # `attempts` is incremented BEFORE the send (see deliver_pending), so
-        # this is the number of THIS attempt: the first delivery says 1.
         "attempt": delivery.attempts,
         "data": delivery.payload or {},
     }
@@ -486,17 +323,7 @@ async def deliver_pending(
     now: datetime.datetime | None = None, limit: int = 100,
     cipher: EnvelopeCipher = NULL_CIPHER,
 ) -> DeliveryResult:
-    """Attempt the deliveries that are due.
-
-    `transport(url, body, headers) -> None` raising on failure. Injected
-    rather than imported so this is testable without a network, and so a
-    deployment can put its own egress proxy, allowlist or mTLS in front of
-    it without this module growing an opinion about any of them. `cipher`
-    must match whatever encrypted `endpoint.url` at registration time
-    (hub/manage.py builds one `HubConfig` and uses it for both) -- the same
-    disabled-by-default `NULL_CIPHER` if this deployment never set
-    HUB_ENCRYPTION_KEY.
-    """
+    """Attempt the deliveries that are due."""
     moment = now or _now()
     rows = await session.execute(
         select(WebhookDelivery)
@@ -511,10 +338,6 @@ async def deliver_pending(
     for delivery in rows.scalars():
         endpoint = await session.get(WebhookEndpoint, delivery.endpoint_id)
         if endpoint is None or not endpoint.enabled:
-            # The endpoint went away or was disabled after this was queued.
-            # Marked failed with a reason rather than retried forever or
-            # deleted: "we stopped trying, here is why" is the fact an
-            # operator needs.
             delivery.status = STATUS_FAILED
             delivery.last_error = "endpoint removed or disabled before delivery"
             gave_up += 1
@@ -568,8 +391,6 @@ async def pending_count(session, org_id: str | None = None) -> int:
 async def failed_deliveries(
     session, org_id: str | None = None, limit: int = 50
 ) -> list[WebhookDelivery]:
-    """What never landed. The dead-letter view an operator actually needs:
-    a queue that gives up silently is a queue that lies about delivery."""
     query = select(WebhookDelivery).where(WebhookDelivery.status == STATUS_FAILED)
     if org_id:
         query = query.where(WebhookDelivery.org_id == org_id)
@@ -580,28 +401,13 @@ async def failed_deliveries(
 
 
 def http_transport(timeout: float = 10.0):
-    """The default transport: an HTTPS POST that raises on a bad status.
-
-    A separate factory rather than a module-level client so a deployment
-    can put its own egress proxy, allowlist or mTLS in front of deliveries
-    without this module growing an opinion about any of them -- and so the
-    tests never need a network.
-    """
+    """The default transport: an HTTPS POST that raises on a bad status."""
     import httpx
 
     async def send(url: str, body: str, headers: dict) -> None:
-        # Re-checked here, not only at add_endpoint time -- see
-        # _reject_private_target's own docstring for why a hostname that
-        # resolved to a public address at registration is not guaranteed
-        # to still do so at delivery time.
         await _reject_private_target(url)
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(url, content=body, headers=headers)
-            # A 2xx is the only success. A receiver answering 200 to
-            # everything is its own problem; a receiver answering 500 is
-            # ours to retry, and treating "it returned bytes" as delivery
-            # is how a queue comes to report 100% success while the other
-            # end has been broken for a week.
             response.raise_for_status()
 
     return send

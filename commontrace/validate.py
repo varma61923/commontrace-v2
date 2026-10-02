@@ -1,11 +1,4 @@
-"""Minimal JSON Schema (draft 2020-12 subset) validator.
-
-Deliberately small: covers exactly what protocol/schemas/*.json use
-(type, required, enum, minLength/maxLength, minimum/maximum, items) so `commontrace`
-doesn't pull in a full `jsonschema` dependency just to validate two schemas.
-Not a general-purpose validator — do not extend the schemas beyond this
-subset without extending this file too.
-"""
+"""Minimal JSON Schema (draft 2020-12 subset) validator."""
 from __future__ import annotations
 
 import json
@@ -27,11 +20,6 @@ def load_schema(name: str) -> dict:
     """Load a bundled schema by file name, e.g. 'trace.schema.json'."""
     from commontrace.paths import schemas_dir
 
-    # os.path.basename only treats "/" as a separator on POSIX, so a name
-    # containing "\" or ":" (Windows separators/drive letters) would pass
-    # `basename(name) == name` unchanged here even though it is not a bare
-    # filename. Rejecting those characters explicitly keeps this check
-    # platform-independent rather than relying on the host OS's path rules.
     if (
         not isinstance(name, str)
         or os.path.basename(name) != name
@@ -55,8 +43,6 @@ def _check_type(value: Any, expected: str | list) -> bool:
         py_type = _TYPE_MAP.get(et)
         if py_type is None:
             continue
-        # bool is an int subclass in Python; neither JSON Schema "integer" nor
-        # "number" should accept a boolean, or minimum/maximum silently never run.
         if et in ("integer", "number") and isinstance(value, bool):
             continue
         if isinstance(value, py_type):
@@ -64,34 +50,17 @@ def _check_type(value: Any, expected: str | list) -> bool:
     return False
 
 
-# Every keyword `_validate_value` and `validate` actually act on, plus the
-# purely descriptive ones that carry no constraint. Anything outside this set
-# is silently ignored by this validator -- so a schema edit adding `pattern`,
-# `format`, or `maxLength` would report OK while enforcing nothing.
-# `assert_supported_schema` turns that silent no-op into a loud failure at
-# exactly the moment someone widens a schema.
 _SUPPORTED_KEYWORDS = frozenset({
-    # structural
     "type", "properties", "required", "items",
-    # constraints this file implements
     "enum", "minLength", "maxLength", "minimum", "maximum",
-    # descriptive only -- no runtime effect, safe to ignore
     "$schema", "$id", "title", "description", "default", "examples",
 })
 
-# Keywords whose only permissive value is a no-op. `additionalProperties: true`
-# means "anything else is fine", which is exactly what ignoring it does; any
-# other value would be a real constraint this validator cannot enforce.
 _PERMISSIVE_ONLY = {"additionalProperties": (True,)}
 
 
 class UnsupportedSchemaError(ValueError):
-    """A schema uses a keyword this minimal validator does not implement.
-
-    Raised rather than ignored because the failure mode is invisible: the
-    validator would accept any value at all for the constrained field while
-    reporting the document valid.
-    """
+    """A schema uses a keyword this minimal validator does not implement."""
 
 
 def assert_supported_schema(schema: dict, path: str = "<root>") -> None:
@@ -116,13 +85,6 @@ def assert_supported_schema(schema: dict, path: str = "<root>") -> None:
             assert_supported_schema(sub, f"{path}.{name}")
     if "items" in schema:
         items = schema["items"]
-        # Draft 2020-12 allows `items` to be an ARRAY of subschemas (tuple
-        # validation). This validator only implements the single-subschema
-        # form, and _validate_value would call schema.get() on the list and
-        # die with `AttributeError: 'list' object has no attribute 'get'` --
-        # an unhandled crash rather than the clean "unsupported" this class
-        # exists to raise. assert_supported_schema is the gate that is
-        # supposed to catch exactly this before validate() ever runs.
         if not isinstance(items, dict):
             raise UnsupportedSchemaError(
                 f"{path}[]: 'items' must be a single subschema object; tuple-form "
@@ -159,7 +121,6 @@ def _validate_value(label: str, value: Any, schema: dict) -> list[str]:
     if value is None and schema.get("type") not in (None, "null") and "null" not in (
         schema.get("type") if isinstance(schema.get("type"), list) else [schema.get("type")]
     ):
-        # Allow None only if the field's type explicitly includes "null"
         if schema.get("type") is not None:
             errors.append(f"'{label}': null not allowed")
         return errors
@@ -167,7 +128,7 @@ def _validate_value(label: str, value: Any, schema: dict) -> list[str]:
     expected_type = schema.get("type")
     if expected_type and not _check_type(value, expected_type):
         errors.append(f"'{label}': expected type {expected_type}, got {type(value).__name__}")
-        return errors  # further checks assume the right type
+        return errors
 
     if "enum" in schema and value not in schema["enum"]:
         errors.append(f"'{label}': {value!r} not in enum {schema['enum']}")
@@ -175,12 +136,6 @@ def _validate_value(label: str, value: Any, schema: dict) -> list[str]:
     if isinstance(value, str):
         if "minLength" in schema and len(value) < schema["minLength"]:
             errors.append(f"'{label}': string shorter than minLength={schema['minLength']}")
-        # Enforced locally so an over-long value fails at `capture`/`trace
-        # validate` time rather than surviving on disk and being rejected by
-        # the Hub at `sync` time, which is both later and further from the
-        # person who can fix it. The Hub enforces the same bound server-side
-        # (hub/crud.py:contribute_trace) because a local check is a courtesy,
-        # never a guarantee about what an arbitrary client sends.
         if "maxLength" in schema and len(value) > schema["maxLength"]:
             errors.append(f"'{label}': string longer than maxLength={schema['maxLength']}")
 

@@ -1,5 +1,3 @@
-"""The deployment assets: the SLO alert maths always, and helm/terraform when they are installed
-(CI installs both, pinned; a developer machine may not)."""
 import os
 import shutil
 import subprocess
@@ -20,16 +18,14 @@ def _rules():
 
 def test_the_burn_rate_alerts_use_the_objectives_they_name():
     rules = _rules()
-    # 99.9% availability -> a 0.001 budget; fast burn 14.4x (2% of 30 days in 1h), slow burn 6x
     assert "14.4 * 0.001" in rules["HubAvailabilityFastBurn"]["expr"]
     assert "6 * 0.001" in rules["HubAvailabilitySlowBurn"]["expr"]
     assert rules["HubAvailabilityFastBurn"]["labels"]["slo"] == "availability-99.9"
-    # 95% under 250 ms -> a 0.05 budget; the 250 ms bucket must be one the Hub actually exports
-    pytest.importorskip("hub.observability")  # hub/ needs its own requirements; the core-install job has none
+    pytest.importorskip("hub.observability")
     from hub.observability import Metrics
     assert 250 in Metrics.BUCKETS_MS
     assert "6 * 0.05" in rules["HubLatencyBurn"]["expr"]
-    for alert in rules.values():  # each burn alert needs a long AND a short window
+    for alert in rules.values():
         if "Burn" in alert["alert"]:
             assert alert["expr"].count(" and ") == 1
 
@@ -82,7 +78,7 @@ class TestChart:
         assert spec["securityContext"]["runAsNonRoot"] is True
         container = spec["containers"][0]
         assert container["securityContext"]["readOnlyRootFilesystem"] is True
-        assert container["livenessProbe"]["httpGet"]["path"] == "/healthz"      # never the database
+        assert container["livenessProbe"]["httpGet"]["path"] == "/healthz"
         assert container["readinessProbe"]["httpGet"]["path"] == "/readyz"
 
 

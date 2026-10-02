@@ -1,12 +1,4 @@
-"""`commontrace dream`: the scheduled consolidation pass, and the recipe to schedule it.
-
-Between runs of a fleet, three things are worth doing and none of them should wait for someone to
-remember: draft a lesson from each repeated failure, propose fusions and archives among the active
-lessons, and say what is waiting for a person. `dream` does exactly those and never more: everything it
-writes lands at `status: review`, so nothing becomes active, nothing is injected and nothing is withheld
-because it ran. It is off until you schedule it: `--recipe` prints the entry for cron, systemd or GitHub
-Actions and installs nothing.
-"""
+"""`commontrace dream`: the scheduled consolidation pass, and the recipe to schedule it."""
 from __future__ import annotations
 
 import argparse

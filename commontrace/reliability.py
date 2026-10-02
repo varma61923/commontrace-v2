@@ -1,55 +1,4 @@
-"""Does this lesson actually work? — credit assignment and coherence.
-
-THE PROBLEM THIS EXISTS FOR
----------------------------
-CommonTrace's core claim is that raw memory remembers, while CommonTrace
-generalizes. The first half is delivered: a `Lesson` is a generalized rule with an
-explicit activation condition, not a stored episode. The second half has a
-hole in it — **nothing ever checks whether the generalization was correct.**
-
-Concretely, before this module the system had no way to represent, let alone
-detect, any of:
-
-  * a lesson that is simply **wrong**
-  * a lesson whose `applies_when` is too **broad**, so it fires in
-    situations it does not actually help
-  * two `active` lessons that **contradict each other** and will be injected
-    into the same decision
-
-A `Lesson.status` is set by a human and never revisited. `Trace.trust` on
-the Hub is an up/down vote count. That makes the corpus a *retrieval*
-system: it returns what was written, and its quality is fixed at authoring
-time and can only decay.
-
-The distinction that matters: a retrieval system answers "what did we
-write down about this?"; a learning system also answers "and was it
-right?". Everything needed for the second question — which lessons were
-injected (`lessons_retrieved_by_alpha`), which proved useful
-(`lessons_hit`), and how the task turned out (`verdict`,
-`Trace.outcome.resolved`, `Trace.outcome.repeated_error`) — is already
-being recorded and was, until now, joined by nothing.
-
-WHY IT MATTERS COMMERCIALLY
----------------------------------------------
-Human review does not scale past a few hundred lessons, and a single
-fleet's own lesson corpus can accumulate contradictions just as easily as
-a pooled one would: two decision points recorded months apart can encode
-opposite rules that were each correct in their own unstated context.
-Injecting contradictory guidance into a live decision is worse than
-injecting none -- and the same risk applies to the CommonTrace Knowledge
-Base, which the operator authors and curates but does not exempt from
-needing to be internally consistent. Self-auditing is therefore a
-precondition for a lesson corpus staying trustworthy at scale, not a
-nicety.
-
-WHAT THIS DOES NOT DO
----------------------
-It never modifies a lesson. It produces evidence and recommendations; the
-Validator gate (`commontrace lesson approve|reject`) stays human, exactly
-as it is for `commontrace distill`. An automated system that silently
-demoted lessons based on noisy small-sample statistics would be worse than
-the problem it solves.
-"""
+"""Does this lesson actually work? — credit assignment and coherence."""
 
 from __future__ import annotations
 
@@ -59,26 +8,14 @@ from dataclasses import dataclass, field
 
 from commontrace.overlap import estimate_jaccard, minhash
 
-# Below this many retrievals, no claim is made about a lesson at all. Small
-# samples produce confident-looking nonsense, and these verdicts are meant
-# to drive real decisions about what agents get told.
 DEFAULT_MIN_EVIDENCE = 5
 
-# A lesson is called reliable only if the *lower bound* of its precision
-# interval clears this -- not the point estimate. See wilson_lower_bound.
 DEFAULT_PRECISION_FLOOR = 0.50
 
-# Activation-condition similarity above which two lessons are considered to
-# fire in overlapping situations, and therefore capable of contradicting
-# each other in a way an agent would actually experience.
 DEFAULT_ACTIVATION_OVERLAP = 0.25
 
 _Z_95 = 1.959963984540054
 
-# Rule-text polarity markers. This is a heuristic and is labelled as one
-# everywhere it surfaces: it catches "always X" vs "never X", and it will
-# miss contradictions phrased without these words. It is a cheap first
-# filter for human review, not a semantic entailment checker.
 _PROHIBITIVE = re.compile(
     r"\b(never|don't|do not|avoid|must not|mustn't|should not|shouldn't|"
     r"cannot|can't|refuse|forbid|prohibit|no longer|stop)\b",
@@ -91,18 +28,7 @@ _IMPERATIVE = re.compile(
 
 
 def wilson_lower_bound(successes: int, trials: int, z: float = _Z_95) -> float:
-    """Lower bound of the Wilson score interval for a binomial proportion.
-
-    Used instead of the raw ratio because the raw ratio is actively
-    misleading at the sample sizes this system will actually see: a lesson
-    that hit 1/1 has a point estimate of 100%, which would rank it above one
-    that hit 45/50. Wilson gives the first ~0.05 and the second ~0.79,
-    which is the correct ordering of *confidence that the lesson works*.
-
-    Chosen over the normal approximation because that one is degenerate at
-    the extremes (it returns an interval of zero width for 0/n and n/n,
-    which are exactly the cases a young corpus is full of).
-    """
+    """Lower bound of the Wilson score interval for a binomial proportion."""
     if trials <= 0:
         return 0.0
     p_hat = successes / trials
@@ -112,24 +38,12 @@ def wilson_lower_bound(successes: int, trials: int, z: float = _Z_95) -> float:
     return max(0.0, center - margin)
 
 
-# --- Evidence ---------------------------------------------------------------
-
-
 @dataclass
 class Evidence:
-    """One occasion on which a set of lessons was injected into a decision,
-    and how that decision turned out.
-
-    Deliberately agent-agnostic (protocol/PROTOCOL.md §6): an "occasion" is
-    a code-review episode, a support ticket, a sales call. `hit` is the
-    subset the producer judged actually useful; `succeeded` is the outcome
-    of the underlying task.
-    """
-
     occasion_id: str
     retrieved: list[str]
     hit: list[str]
-    succeeded: bool | None  # None = outcome unknown; excluded from lift
+    succeeded: bool | None
 
 
 @dataclass
@@ -137,36 +51,19 @@ class LessonReliability:
     slug: str
     n_retrieved: int
     n_hit: int
-    precision: float           # raw hit rate -- shown, never ranked on
-    precision_lower: float     # Wilson lower bound -- what verdicts use
-    success_rate: float | None  # P(task succeeded | this lesson injected)
-    lift: float | None         # that, minus the corpus-wide baseline
+    precision: float
+    precision_lower: float
+    success_rate: float | None
+    lift: float | None
     verdict: str
     rationale: str
 
 
-# Verdicts. Deliberately four, not "good/bad": the distinction between a
-# rule that is wrong and a rule that merely fires too often has completely
-# different remedies, and collapsing them would send people to rewrite
-# correct rules.
-VERDICT_RELIABLE = "RELIABLE"          # earns its place
-VERDICT_UNPROVEN = "UNPROVEN"          # not enough evidence to say anything
-VERDICT_MISCALIBRATED = "MISCALIBRATED"  # fires often, rarely useful -> tighten applies_when
-VERDICT_HARMFUL = "HARMFUL"            # tasks go *worse* when it is injected -> rule may be wrong
+VERDICT_RELIABLE = "RELIABLE"
+VERDICT_UNPROVEN = "UNPROVEN"
+VERDICT_MISCALIBRATED = "MISCALIBRATED"
+VERDICT_HARMFUL = "HARMFUL"
 
-# Verdict -> ranking adjustment, for commontrace/retrieval.py's optional
-# `reliability_lookup` (see RetrievalConfig.reliability_weight). This is the
-# one place a verdict becomes a number retrieval can use -- everywhere else
-# in this module a verdict stays a verdict, on purpose (see `score_lessons`'s
-# docstring on why four, not a score).
-#
-# MISCALIBRATED gets a real but SMALLER penalty than HARMFUL: a lesson that
-# fires too often is an activation-condition problem (see its own rationale
-# string above) and still helps on the occasions it is actually right, while
-# a HARMFUL verdict means the rule itself may be wrong. Collapsing the two to
-# the same penalty would rank a lesson that helps 20% of the time behind one
-# that measurably makes tasks worse, by the same amount -- which is not what
-# either verdict is trying to say.
 _VERDICT_ADJUSTMENT: dict[str, float] = {
     VERDICT_HARMFUL: -1.0,
     VERDICT_MISCALIBRATED: -0.5,
@@ -176,20 +73,6 @@ _VERDICT_ADJUSTMENT: dict[str, float] = {
 
 
 def ranking_adjustments(scores: list["LessonReliability"]) -> dict[str, float]:
-    """slug -> adjustment in [-1, 1], for `retrieval.rank_lessons`'s optional
-    `reliability_lookup`.
-
-    A pure function of `verdict` alone, not the underlying counts: the
-    MAGNITUDE of the adjustment lives in exactly one place
-    (`_VERDICT_ADJUSTMENT` above), and how much that magnitude is allowed to
-    move a ranking lives in exactly one other place (`retrieval.py`'s
-    `reliability_weight`, which the caller supplies and this function knows
-    nothing about). A lesson with no verdict at all (not present in `scores`
-    -- typically because it has never been retrieved with a recorded
-    outcome) is absent from the returned dict; `rank_lessons` treats a
-    missing slug as 0.0, the same as UNPROVEN, which is the correct reading:
-    no evidence is not evidence of harm.
-    """
     return {s.slug: _VERDICT_ADJUSTMENT.get(s.verdict, 0.0) for s in scores}
 
 
@@ -208,9 +91,6 @@ def score_lessons(
             retrieved_counts[slug] = retrieved_counts.get(slug, 0) + 1
             if ev.succeeded is not None:
                 succ_when_retrieved.setdefault(slug, []).append(ev.succeeded)
-        # A hit only counts as evidence if the lesson was actually retrieved
-        # on that occasion; otherwise a lesson credited by a retro pass would
-        # get precision > 1.
         for slug in set(ev.hit) & set(ev.retrieved):
             hit_counts[slug] = hit_counts.get(slug, 0) + 1
 
@@ -269,23 +149,13 @@ def score_lessons(
             )
         )
 
-    # Worst first: this list exists to be acted on.
     order = {VERDICT_HARMFUL: 0, VERDICT_MISCALIBRATED: 1, VERDICT_UNPROVEN: 2, VERDICT_RELIABLE: 3}
     out.sort(key=lambda r: (order[r.verdict], -r.n_retrieved))
     return out
 
 
-# --- Coherence --------------------------------------------------------------
-
-
 def polarity(text: str) -> float:
-    """+1 = purely prescriptive, -1 = purely prohibitive, 0 = neither/mixed.
-
-    A deliberately shallow lexical signal. It catches "always retry" vs
-    "never retry" and will miss a contradiction expressed without these
-    markers. It exists to narrow a quadratic pair-space down to something a
-    human can review, and it is never the sole basis for flagging a pair.
-    """
+    """+1 = purely prescriptive, -1 = purely prohibitive, 0 = neither/mixed."""
     pro = len(_PROHIBITIVE.findall(text or ""))
     imp = len(_IMPERATIVE.findall(text or ""))
     if pro + imp == 0:
@@ -311,21 +181,6 @@ def find_contradictions(
     reliability: list[LessonReliability] | None = None,
     activation_overlap: float = DEFAULT_ACTIVATION_OVERLAP,
 ) -> list[Contradiction]:
-    """Find `active` lesson pairs that fire in the same situations but pull
-    in opposite directions.
-
-    Two independent signals, because each alone is too weak:
-
-    * **lexical polarity** — one says "always", the other "never". Cheap,
-      catches the obvious case, blind to paraphrase.
-    * **empirical divergence** — one has positive lift, the other negative,
-      in overlapping activation conditions. Says nothing about the words and
-      cannot be fooled by them, but needs outcome data to exist.
-
-    Both are gated on activation overlap: two lessons that never fire in the
-    same situation cannot contradict each other in practice, however
-    opposed their text.
-    """
     by_slug = {str(fm.get("name", "")): fm for fm in lessons if fm.get("status") == "active"}
     lift_by_slug = {r.slug: r.lift for r in (reliability or [])}
 
@@ -363,7 +218,6 @@ def find_contradictions(
                     polarity_a=round(pa, 3), polarity_b=round(pb, 3),
                     lift_a=la, lift_b=lb,
                     signals=signals,
-                    # Empirical evidence outranks a word-matching heuristic.
                     severity="high" if len(signals) > 1 or "effect" in " ".join(signals) else "review",
                 )
             )
@@ -397,12 +251,6 @@ def render(
         "",
     ]
 
-    # A coverage note, not a verdict input: `evidence_io.uncaptured_retrieval_counts`
-    # counts occasions a `--experiment` retrieval logged that no episode or
-    # trace ever recorded an outcome for. Folding it into the scores above
-    # would read an unknown outcome as a confirmed miss and drag precision
-    # down for no reason but under-reporting -- this says "capture more",
-    # not "this lesson is worse than measured".
     if uncaptured:
         lines += [
             "## Under-reported",

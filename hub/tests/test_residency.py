@@ -1,5 +1,3 @@
-"""Data residency enforced at authentication: a deployment that declares a region does not serve an org pinned to
-another one, and nothing changes for an org with no region or a deployment with none declared."""
 import pytest
 
 from hub import auth, manage
@@ -12,7 +10,7 @@ pytestmark = pytest.mark.asyncio
 @pytest.fixture(autouse=True)
 def _restore_region():
     yield
-    auth.configure_region("")                       # module-level setting: never leak into another test
+    auth.configure_region("")
 
 
 async def _org_with_key(session_factory, region=None, name="Acme"):
@@ -43,11 +41,10 @@ async def test_a_refusal_looks_like_a_wrong_key_and_nothing_about_regions_leaks_
     auth.configure_region("us")
     refused = await _verify(session_factory, key)
     stranger = await _verify(session_factory, "ct_live_made-up")
-    assert refused is None and stranger is None             # the same answer
+    assert refused is None and stranger is None
 
 
 async def test_the_legacy_scan_path_is_enforced_too(session_factory, config):
-    """A key with no key_hmac yet goes through the Argon2 path; the region check must apply there as well."""
     from sqlalchemy import update
 
     from hub.models import ApiKey

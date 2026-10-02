@@ -97,7 +97,6 @@ class Dense:
 
 
 def _ranked(names: list[str], scores: list[float], matched_only: bool = False) -> list[str]:
-    """Best first. `matched_only` drops documents sharing no term with the query, as the shipped ranker does."""
     order = sorted(range(len(names)), key=lambda i: -scores[i])
     return [names[i] for i in order if not matched_only or scores[i] > 0]
 

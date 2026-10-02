@@ -1,7 +1,3 @@
-"""Tests for commontrace/distill.py (the clustering logic) and the
-`commontrace distill` / `lesson approve` / `lesson reject` CLI commands --
-the generic Curator/Validator pipeline for any agent_type, not just the
-code-review profile's Omega/Lambda subagents."""
 import json
 import os
 
@@ -43,14 +39,10 @@ class TestFindClusters:
             _trace("t1", "Refund confusion A", "customer confused about refund timeline contradictory docs"),
             _trace("t2", "Refund confusion B", "customer confused about refund timeline contradictory docs"),
         ]
-        # both already referenced by an existing lesson's source_traces
         clusters = distill.find_clusters(traces, existing_lessons_source_traces=[["t1", "t2"]])
         assert clusters == []
 
     def test_tag_overlap_lowers_effective_threshold(self):
-        # weak-but-nonzero textual overlap (shares "widget"/"failed" out of otherwise
-        # disjoint vocabulary) that alone falls short of 0.3, but clears 0.3*0.6=0.18
-        # -- shared tags should let that lowered bar cluster them.
         traces = [
             _trace("t1", "Case one", "the widget assembly failed during calibration alpha", tags=["shared-tag"]),
             _trace("t2", "Case two", "widget failed unexpectedly on the second bravo run", tags=["shared-tag"]),
@@ -59,9 +51,6 @@ class TestFindClusters:
         assert len(clusters) == 1
 
     def test_tag_overlap_alone_with_zero_text_overlap_does_not_cluster(self):
-        # tags can lower the bar, but must not substitute for it entirely --
-        # two traces about genuinely unrelated content shouldn't cluster just
-        # because someone tagged them the same.
         traces = [
             _trace("t1", "Case one", "alpha beta gamma delta", tags=["shared-tag"]),
             _trace("t2", "Case two", "epsilon zeta eta theta", tags=["shared-tag"]),
@@ -84,8 +73,6 @@ class TestFindClusters:
 
 
     def test_disjoint_vocabulary_traces_never_cluster(self):
-        # Exercises the inverted-index pre-filter path directly: traces
-        # that share zero tokens must still correctly not cluster.
         traces = [
             _trace("t1", "alpha", "alpha beta gamma delta"),
             _trace("t2", "epsilon", "epsilon zeta eta theta"),
@@ -111,24 +98,10 @@ class TestProposalHelpers:
         assert distill.propose_domain(cluster, "support") == "refunds"
 
     def test_propose_domain_falls_back_to_the_clusters_own_tag(self):
-        """No starter domain matched, so the cluster's own vocabulary wins.
-
-        This used to return `starter[-1]` -- for `support`, the literal
-        string "known-issues", chosen for no reason beyond being last in the
-        list. A cluster tagged `nonstandard-tag` is not about known issues,
-        and labelling it that way puts it in a domain bucket it does not
-        belong to.
-        """
         cluster = distill.Cluster(traces=[_trace("t1", "x", "y", tags=["nonstandard-tag"])])
         assert distill.propose_domain(cluster, "support") == "nonstandard-tag"
 
     def test_propose_domain_uses_cluster_tags_for_a_field_with_no_starter_list(self):
-        """The open-taxonomy case: `robotics` has no STARTER_DOMAINS entry.
-
-        Every candidate such a fleet produced used to be labelled `other`,
-        collapsing its entire taxonomy into one bucket and making
-        `commontrace taxonomy`'s coverage report useless for it.
-        """
         cluster = distill.Cluster(
             traces=[
                 _trace("t1", "x", "y", tags=["calibration", "thermal-drift"]),
@@ -173,13 +146,6 @@ class TestDistillCommand:
         assert "nothing to distill" in capsys.readouterr().out
 
     def test_a_degenerate_similarity_threshold_is_rejected_not_run(self, store, capsys):
-        """similarity<=0 makes find_clusters merge the whole store into one
-        cluster (a deliberate library behavior other tests exercise
-        directly) and then makes the O(k^2) medoid search after it run over
-        that single giant cluster. Rejected at the CLI argument-parsing
-        boundary -- the same value passed to the MCP `propose_lessons` tool
-        is rejected for the identical reason, since both route through this
-        parser."""
         main(["init", "--agent-type", "support", "--dest", str(store)])
         capsys.readouterr()
         with pytest.raises(SystemExit) as exc:
@@ -246,12 +212,6 @@ class TestDistillCommand:
         assert "no repeated pattern found" in capsys.readouterr().out
 
     def test_a_corrupt_trace_file_is_skipped_with_a_warning_not_a_crash(self, store, capsys):
-        """Regression test for a real bug: trace files are explicitly meant
-        to be readable/hand-editable, but _load_traces called
-        trace_io.read() with nothing catching the FrontmatterError it can
-        raise on malformed YAML -- one bad file crashed `distill` for the
-        whole store instead of being skipped like measure_performance
-        already does for the same kind of malformed input."""
         main(["init", "--agent-type", "support", "--dest", str(store)])
         for i in range(3):
             _capture(
@@ -271,13 +231,6 @@ class TestDistillCommand:
         assert "zzz_corrupt.md" in err
 
     def test_a_hand_edited_scalar_tags_field_does_not_split_into_characters(self, store, capsys):
-        """Regression test: `_load_traces` used
-        `tags=list(instance.get("tags") or [])`. A hand-edited trace with
-        `tags: auth,billing` (no YAML list brackets) parses as the plain
-        string "auth,billing", and `list("auth,billing")` iterates it
-        character by character -- ['a', 'u', 't', 'h', ',', ...] -- instead
-        of raising or producing the two intended tags. Same malformed-input
-        class overlap_cmd.py's _safe_tags already guards against."""
         main(["init", "--agent-type", "support", "--dest", str(store)])
         _capture(
             store, "Refund confusion 0",
@@ -287,17 +240,15 @@ class TestDistillCommand:
         traces_dir = store / "memory" / "traces"
         trace_path = next(p for p in traces_dir.glob("*.md") if p.name != "README.md")
         fm, body = frontmatter.read(str(trace_path))
-        fm["tags"] = "auth,billing"  # scalar, not a YAML list -- the malformed shape
+        fm["tags"] = "auth,billing"
         frontmatter.write(str(trace_path), fm, body)
 
         traces = distill_cmd._load_traces(str(store), None)
         assert len(traces) == 1
-        assert traces[0].tags == []  # coerced to empty, not split into single characters
+        assert traces[0].tags == []
         assert "a" not in traces[0].tags
 
     def test_a_corrupt_lesson_file_is_skipped_with_a_warning_not_a_crash(self, store, capsys):
-        """Same bug, other call site: _existing_source_traces read every
-        existing lesson's frontmatter unguarded too."""
         main(["init", "--agent-type", "support", "--dest", str(store)])
         for i in range(3):
             _capture(
@@ -330,12 +281,6 @@ class TestLessonApproveReject:
         path = store / "memory" / "lessons" / "lesson_candidate_test.md"
         fm, body = frontmatter.read(str(path))
         fm["status"] = "review"
-        # A real, written lesson -- `lesson new` scaffolds every one of these
-        # fields with a placeholder, and `lesson approve` now refuses to
-        # activate a lesson still carrying them (an active lesson is injected
-        # into agents verbatim). These tests are about the status transition
-        # and slug resolution, so they approve the thing an operator would
-        # actually be approving.
         fm["applies_when"] = "A refund retry returns HTTP 409 from the gateway"
         fm["do_not_apply_when"] = "The original charge was never authorized"
         body = (
@@ -393,17 +338,6 @@ class TestLessonApproveReject:
 
 
 class TestACandidateCarriesItsEvidence:
-    """The throughput limit on this whole product is how expensive a lesson is
-    to write, and a proposal used to make it as expensive as possible: one
-    line per trace, context only, with a UUID on each -- so a 12-trace cluster
-    printed the same paragraph twelve times and the SOLUTION TEXT, the one
-    thing anyone needs in order to write the Rule, appeared nowhere.
-
-    Coverage stays low because curating is expensive; retrieval returns
-    nothing because coverage is low; the experiment stays underpowered
-    because there is nothing to measure. This is the top of that chain.
-    """
-
     @staticmethod
     def _cluster(n=6, context="A large CSV export returned a zero-byte file with no error.",
                  solutions=None):
@@ -429,8 +363,6 @@ class TestACandidateCarriesItsEvidence:
         return "\n".join(_candidate_body(cluster))
 
     def test_what_worked_is_in_the_candidate(self):
-        """Writing a lesson used to mean opening every source trace to find
-        what had actually resolved it."""
         body = self._body(self._cluster())
         assert "**What worked**" in body
         assert "Re-ran with date chunking" in body
@@ -441,9 +373,6 @@ class TestACandidateCarriesItsEvidence:
         assert "(12 of 12)" in body
 
     def test_divergent_solutions_are_all_shown_and_flagged(self):
-        """The signal that matters most: one symptom with several different
-        resolutions is more than one problem, and writing it up as a single
-        rule produces a lesson that fires on cases it cannot help."""
         body = self._body(self._cluster(n=9, solutions=[
             "Their IdP clock had drifted; synced NTP.",
             "The ACS URL pointed at our old domain; updated it.",
@@ -458,10 +387,6 @@ class TestACandidateCarriesItsEvidence:
         assert "different resolutions" not in self._body(self._cluster())
 
     def test_the_judgement_fields_stay_as_scaffolding(self):
-        """Proposing better evidence is honest; proposing the conclusion is
-        not. Filling `applies_when` or the Rule from a term-frequency count
-        would push fabricated text past the guard that exists to stop exactly
-        that."""
         from commontrace import templates
 
         body = self._body(self._cluster())
@@ -475,12 +400,6 @@ class TestACandidateCarriesItsEvidence:
 
 
 class TestTheProposedDescriptionIsReadable:
-    """`description` is both what a curator reads in `lesson list` and a
-    ranked retrieval field. It used to be the cluster's shared TERMS -- so a
-    store with a dozen candidates was a dozen indistinguishable word lists,
-    and the candidate matched queries on tokens like "anywhere" and "byte".
-    """
-
     @staticmethod
     def _cluster(titles):
         from commontrace import distill
@@ -518,16 +437,12 @@ class TestTheProposedDescriptionIsReadable:
         assert distill.propose_description(self._cluster(["Only one"])) == "Only one"
 
     def test_it_is_deterministic(self):
-        """A proposal that changes text between two identical runs is one
-        nobody can review."""
         from commontrace import distill
 
         cluster = self._cluster(["Alpha problem", "Beta problem", "Gamma problem"])
         assert len({distill.propose_description(cluster) for _ in range(10)}) == 1
 
     def test_it_picks_the_most_typical_trace_not_the_first(self):
-        """The medoid, so an outlier that happens to sort first does not get
-        to name the whole cluster."""
         from commontrace import distill
 
         cluster = self._cluster([
@@ -546,12 +461,6 @@ class TestTheProposedDescriptionIsReadable:
 
 
 class TestDistillWithLLM:
-    """`--draft` never changes what governs activation -- `lesson approve`'s
-    scaffolding/content-safety/redundancy gate is untouched. It only changes
-    whether the candidate STARTS as a real attempt or a 'TODO: ...'
-    placeholder, and falls back to exactly the pre-`--draft` behavior
-    whenever no usable draft comes back."""
-
     _GOOD = {
         "rule": "Point the customer to the canonical refund policy page.",
         "applies_when": "a customer is confused about the refund timeline",
@@ -632,10 +541,6 @@ class TestDistillWithLLM:
 
     def test_an_llm_drafted_candidate_carries_the_models_judgements_into_every_section(
             self, store, monkeypatch, capsys):
-        """The model's applies_when and do_not_apply_when also fill '## How to apply' and
-        '## Counter-examples'. Leaving a TODO beside them made `lesson approve` refuse every
-        drafted lesson as unedited scaffolding, so a draft could never pass the gate it was
-        written for. It still lands at status=review: approval stays an explicit, separate act."""
         from commontrace import frontmatter, llm
 
         self._repeated_pattern(store)

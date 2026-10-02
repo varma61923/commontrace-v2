@@ -1,22 +1,3 @@
-"""hub/scheduler.py: the opt-in in-process alternative to the external-cron
-sweep hub/alerts.py's `check_rules` is otherwise meant for.
-
-What these tests defend, in order of how badly getting it wrong would hurt:
-
-1. **A sweep that raises does not end the loop.** A transient DB error or a
-   bad rule must cost one tick, not silence every org's alerts until the
-   process restarts.
-2. **Shutdown is prompt.** `run` is meant to wake on `stop_event`, not sleep
-   through it -- a long interval must not delay a graceful shutdown.
-3. **The loop actually reaches `hub/alerts.py`'s `check_rules` against a
-   real session**, not just a mocked stand-in: one sweep against a real due
-   rule moves `last_triggered_at`, the same effect `hub.manage check-alerts`
-   already produces via its own cron.
-
-Wiring this into `build_app`'s lifespan (on/off, boot-and-shutdown-cleanly)
-is covered by `hub/tests/test_build_app_startup.py`, which already exists
-to drive that lifespan for exactly this kind of opt-in feature.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -69,14 +50,12 @@ class TestRunLoop:
     async def test_it_stops_promptly_instead_of_sleeping_out_the_interval(
         self, session_factory, monkeypatch
     ):
-        """A one-hour interval must not delay shutdown by even a second:
-        the wait is on the stop event, not a plain `asyncio.sleep`."""
         async def fake_check_rules(session, *args, **kwargs):
             return []
 
         monkeypatch.setattr(alerts, "check_rules", fake_check_rules)
         stop_event = asyncio.Event()
-        stop_event.set()  # already stopped before the loop's first check
+        stop_event.set()
         await asyncio.wait_for(
             scheduler.run(session_factory, interval_seconds=3600, stop_event=stop_event),
             timeout=2,
@@ -104,10 +83,6 @@ class TestRunLoop:
 
 class TestSweepReachesRealAlertRules:
     async def test_a_due_rule_fires_through_a_real_sweep(self, session_factory, org):
-        """No mock of hub/alerts.py here: create a rule and a trace that
-        crosses its threshold, run the loop for one tick, and confirm the
-        rule's cooldown was actually recorded -- proof `_sweep_once` reaches
-        `check_rules` against a real database, not just that it is called."""
         async with session_scope(session_factory) as session:
             await alerts.create_rule(
                 session, org, alerts.METRIC_QUARANTINE_RATE, alerts.COMPARATOR_GT, 0,
@@ -136,9 +111,6 @@ class TestSweepReachesRealAlertRules:
 
 
 class TestWebhookDeliveryRunLoop:
-    """The webhook-delivery counterpart to TestRunLoop above -- same
-    three properties, against `run_webhook_delivery` instead."""
-
     async def test_it_sweeps_repeatedly_until_stopped(self, session_factory, monkeypatch):
         calls: list[int] = []
 
@@ -203,11 +175,6 @@ class TestWebhookSweepReachesRealDeliveries:
     async def test_a_pending_delivery_is_actually_attempted(
         self, session_factory, org, monkeypatch
     ):
-        """No mock of hub/events.py's deliver_pending here: register a real
-        endpoint, queue a real delivery, run the loop for one tick against
-        a fake (non-network) transport, and confirm the row actually moved
-        out of 'pending' -- proof the sweep reaches a real session, not
-        just that it is called."""
         from hub.models import WebhookDelivery
 
         async def fake_resolve(hostname):

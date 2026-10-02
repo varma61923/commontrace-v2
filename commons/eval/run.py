@@ -48,11 +48,6 @@ from hub import commons  # noqa: E402
 
 CORPUS = ROOT / "commons" / "seed" / "substrate-v1.jsonl"
 EVAL_DIR = Path(__file__).resolve().parent
-# v1 is the dev set this file's docstring caveats about (same author wrote
-# corpus and probes, so read its recall as an optimistic bound). v2 is a
-# held-out set written after the corpus was frozen, with no further changes
-# made to the corpus on the strength of it -- the whole point of a held-out
-# set is that it stays unseen by the thing it's evaluating.
 PROBE_SETS = {
     "v1": EVAL_DIR / "probes-v1.jsonl",
     "v2": EVAL_DIR / "probes-v2.jsonl",
@@ -65,14 +60,6 @@ def _load(path: Path) -> list[dict]:
 
 
 def evaluate(threshold: float | None = None, probes_path: Path | None = None) -> dict:
-    """Return the measured result at `threshold` (default: the shipped one)
-    against `probes_path` (default: probes-v1.jsonl, the dev set).
-
-    Signing on both sides goes through `commons.signature_for`, the same
-    call the Hub makes when seeding and the same one the client makes when
-    a fleet asks -- an evaluation that signed differently from production
-    would measure something nobody ever runs.
-    """
     threshold = commons.DEFAULT_COMMONS_THRESHOLD if threshold is None else threshold
     probes_path = PROBES if probes_path is None else probes_path
     corpus = _load(CORPUS)

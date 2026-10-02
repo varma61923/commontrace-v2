@@ -1,11 +1,3 @@
-"""commontrace/_stem.py is the Porter (1980) stemmer, exactly.
-
-The expected stems are the vocabulary of Porter's paper plus the words
-retrieval most needs to conflate, each cross-checked against NLTK's
-PorterStemmer in ORIGINAL_ALGORITHM mode (the whole LoCoMo, field-fixture
-and commons vocabulary -- 12,281 words -- agreed with it when this was
-written). NLTK is not a dependency; these values are pinned instead.
-"""
 from __future__ import annotations
 
 import pytest
@@ -48,6 +40,4 @@ def test_porter(word, expected):
 
 @pytest.mark.parametrize("token", ["http2", "e2e", "0x80070005", "ab", "k8s", "ünïcode", "日本語"])
 def test_tokens_that_are_not_plain_english_words_are_left_exact(token):
-    """Identifiers, error codes and non-ASCII words are matched exactly:
-    stemming them could only merge things that differ."""
     assert stem(token) == token

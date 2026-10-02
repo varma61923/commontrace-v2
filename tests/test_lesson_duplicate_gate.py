@@ -1,26 +1,3 @@
-"""Activating a lesson that restates one already active is refused.
-
-Before this, nothing checked whether a lesson being approved already
-existed in the corpus. An agent curating unattended re-derives the same
-rule from a second trace cluster and has no reason to notice -- the corpus
-grows two lessons saying one thing, and they compete for the same
-retrieval slot forever with neither winning reliably (the `contradiction`/
-`reliability.py` machinery catches lessons that DISAGREE; nothing caught
-two that agree on the same words).
-
-The check runs at APPROVAL, not at creation (`lesson new` / `propose_lessons`):
-a freshly scaffolded lesson's body is template placeholder text
-("## Rule\\n[1 actionable sentence]"), identical across every fresh lesson
-and worthless to compare -- by approval time the content is real. Same gate
-family as the existing scaffolding and content-safety checks
-(`commontrace/commands/lesson_cmd.py:run_approve`,
-`commontrace/mcp_server.py`'s `approve_lesson`): refuse by default, name
-what was found, and (CLI only) an explicit `--force` for a human who has
-looked and judged it a false positive. The MCP tool has no such override,
-for the same reason its content-safety refusal has none: an agent
-approving its own draft has no interactive human to confirm a deliberate
-override.
-"""
 from __future__ import annotations
 
 import argparse
@@ -47,9 +24,6 @@ SAME_RULE = (
 def _draft(root: str, slug: str, description: str, applies_when: str,
            do_not_apply_when: str = "counterexample",
            body: str = f"## Rule\n{SAME_RULE}\n") -> str:
-    """Write a lesson at status=review with REAL content (not template
-    scaffolding), directly through the journaling path -- the shape both
-    `run_approve` and `approve_lesson` expect to activate."""
     path = os.path.join(paths.lessons_dir(root), f"lesson_{slug}.md")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     fm = {
@@ -92,7 +66,7 @@ class TestCliApproveRefusesARestatement:
 
         rc = _approve(root, "second", force=True)
         assert rc == 0
-        capsys.readouterr()  # drain the refusal-avoided path's own output
+        capsys.readouterr()
         from commontrace import frontmatter
         fm, _ = frontmatter.read(lesson_cmd._resolve_lesson_path(root, "second"))
         assert fm["status"] == "active"
@@ -113,27 +87,18 @@ class TestCliApproveRefusesARestatement:
     def test_a_review_candidate_is_not_compared_against_other_review_candidates(
         self, tmp_path
     ):
-        """Only ACTIVE lessons compete for a retrieval slot. Two unrelated
-        drafts sitting in review, one of which happens to restate the
-        other, are not yet a problem -- approving the first is."""
         root = str(tmp_path)
         _draft(root, "first", "Payment webhook delivered more than once.",
                "A webhook is retried after a timeout.")
         _draft(root, "second", "Duplicate charge from a retried payment webhook.",
                "A webhook is retried after a timeout.")
-        # Neither is active yet, so approving either must not be blocked by
-        # the other one merely existing at status=review.
         assert _approve(root, "first") == 0
 
     def test_re_approving_the_same_lesson_does_not_match_itself(self, tmp_path):
-        """A lesson approved twice (e.g. a retried operator command) must
-        not be reported as a restatement of its own prior activation."""
         root = str(tmp_path)
         _draft(root, "first", "Payment webhook delivered more than once.",
                "A webhook is retried after a timeout.")
         assert _approve(root, "first") == 0
-        # Force it back to review and re-approve -- still must not
-        # self-match at similarity 1.0.
         from commontrace import frontmatter
         path = lesson_cmd._resolve_lesson_path(root, "first")
         fm, body = frontmatter.read(path)
@@ -143,8 +108,6 @@ class TestCliApproveRefusesARestatement:
 
 
 class TestMcpApproveLessonRefusesARestatement:
-    """Same gate, over the tool surface an agent with no terminal uses."""
-
     @pytest.fixture
     def store(self, tmp_path):
         root = str(tmp_path / "fleet")
@@ -158,13 +121,6 @@ class TestMcpApproveLessonRefusesARestatement:
 
     @pytest.fixture
     def server(self, store):
-        # The SDK is an optional extra (`pip install commontrace[serve]`) --
-        # the base client installs with PyYAML alone -- so this skips rather
-        # than fails on an install that deliberately does not have it,
-        # matching tests/test_mcp_server.py's own module-level guard and
-        # tests/test_hybrid_retrieval.py's per-test one. In a fixture rather
-        # than repeated in every test method: every test in this class needs
-        # the server, so one guard here covers all of them.
         pytest.importorskip("mcp", reason="`commontrace serve` needs the MCP SDK: "
                                             "pip install 'commontrace[serve]'")
         return mcp_server.build_server(store)
@@ -204,9 +160,6 @@ class TestMcpApproveLessonRefusesARestatement:
         assert out["ok"], out
 
     def test_editing_the_draft_to_differ_clears_the_refusal(self, store, server):
-        """The intended remedy: an agent that reads the refusal can
-        genuinely differentiate the draft with `draft_lesson`, then
-        succeed, without any override flag."""
         _draft(store, "first", "Payment webhook delivered more than once.",
                "A webhook is retried after a timeout or non-2xx response.")
         assert self._call(server, "approve_lesson", slug="first")["ok"]

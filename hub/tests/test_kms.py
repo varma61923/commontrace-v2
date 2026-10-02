@@ -1,5 +1,3 @@
-"""Bring-your-own-key: the at-rest key is unwrapped by the customer's KMS at start-up, refused cleanly when the KMS
-refuses, and never run without. A fake KMS stands in for boto3's client (the request shapes are the SDK's own)."""
 import base64
 import os
 
@@ -12,9 +10,6 @@ pytestmark = pytest.mark.asyncio
 
 
 class FakeKMS:
-    """What `kms.decrypt` / `kms.generate_data_key` look like. A "wrapped" blob is the key XORed with a
-    per-key pad, which only this fake can undo, bound to the encryption context it was made with."""
-
     def __init__(self, allowed=True):
         self.allowed, self.calls = allowed, []
 
@@ -51,7 +46,7 @@ async def test_the_unwrapped_key_works_as_the_hub_encryption_key():
 async def test_only_the_wrapped_form_is_ever_returned():
     fake = FakeKMS()
     out = kms.generate_wrapped("arn:key/1", client=fake)
-    assert isinstance(out, str) and base64.b64decode(out)           # a blob, not a 32-byte key to print
+    assert isinstance(out, str) and base64.b64decode(out)
 
 
 async def test_a_blob_for_another_key_or_a_revoked_grant_stops_start_up_with_a_clear_message():

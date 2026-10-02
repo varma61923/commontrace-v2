@@ -1,10 +1,3 @@
-"""The console's chart and formatting helpers (hub/ui_kit.py).
-
-Pure functions, no database: these pin the properties a reader relies on --
-counts never get fractional gridlines, a thin week is a gap rather than a
-dramatic 0% or 100%, every chart has a table view, and nothing a caller
-passes in reaches the page unescaped.
-"""
 from __future__ import annotations
 
 import re
@@ -34,7 +27,7 @@ class TestBarChart:
         out = ui_kit.bar_chart("t", WEEKS, [0, 3, 1, 2], title="Traces", unit="trace")
         assert out.count('class="viz-bar-g"') == len(WEEKS)
         assert "Show the data as a table" in out
-        assert out.count("<tr>") == len(WEEKS) + 1  # header + one row per week
+        assert out.count("<tr>") == len(WEEKS) + 1
         assert 'role="img"' in out and "<title" in out
 
     def test_title_is_escaped(self):
@@ -45,14 +38,13 @@ class TestBarChart:
 
 class TestRateChart:
     def test_a_thin_week_is_a_gap_not_a_point(self):
-        treated = [[20, 10], [2, 2], [20, 15], [20, 16]]  # week 2: 2 occasions -> no point
+        treated = [[20, 10], [2, 2], [20, 15], [20, 16]]
         control = [[0, 0], [0, 0], [0, 0], [0, 0]]
         out = ui_kit.rate_chart("r", WEEKS, treated, control, title="Rates")
         path = re.search(r'<path class="viz-line viz-l1" d="([^"]+)"', out)
         assert path is not None
         moves = path.group(1).count("M")
         assert moves == 2, f"expected the line to break at the thin week, got {path.group(1)!r}"
-        # 100% from a 2/2 week must not be drawn as a direct label or a dot.
         assert "With 100%" not in out
 
     def test_both_series_are_labelled_and_legended(self):
@@ -72,8 +64,6 @@ class TestForestPlot:
             {"trace_id": "b", "title": "<b>Beta</b>", "effect": -0.1, "ci_95": [-0.3, 0.1],
              "verdict": "UNDERPOWERED", "significant": False},
         ])
-        # Every cell sits inside a row (an ARIA table with bare cells is
-        # announced as garbage by screen readers).
         assert out.count('role="row"') == 3
         assert out.count('role="cell"') == 6
         assert "<b>Beta</b>" not in out and "&lt;b&gt;Beta&lt;/b&gt;" in out

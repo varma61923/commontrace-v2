@@ -1,10 +1,3 @@
-"""`commontrace gate`: a build fails on memory that should not ship, and only on that.
-
-The experiment's state is faked at the one seam the gate reads it through
-(`evidence.analyse`), because producing a real COMPROMISED audit or a real
-HURTS verdict takes hundreds of logged occasions; the checks on lesson text
-run against real files.
-"""
 import json
 import os
 from types import SimpleNamespace as NS
@@ -99,7 +92,7 @@ def test_an_injection_payload_written_into_an_active_lesson_fails(root):
     assert not result.passed
     [check] = _by(result, "safety")
     assert check.subject == "poisoned"
-    assert "system prompt" not in check.message  # names the pattern, never the text
+    assert "system prompt" not in check.message
 
 
 def test_unedited_scaffolding_in_an_active_lesson_fails(root):

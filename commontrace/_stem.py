@@ -1,20 +1,3 @@
-"""The Porter stemmer (M.F. Porter, "An algorithm for suffix stripping",
-Program 14(3), 1980), stdlib only.
-
-Used by the `idf-v3` lexical scorer (commontrace/retrieval.py) so that
-"reset", "resets", "resetting" and "reset's" are one term. Without it a
-lesson written as "retry the failed upload" and a task described as
-"uploads keep failing, retrying" share nothing but stopwords.
-
-The original algorithm, implemented from the paper, rather than a library:
-this package is stdlib-first and must not grow a dependency for one
-function. tests/test_stem.py pins the behaviour against the paper's own
-worked examples and the published reference vocabulary.
-
-`stem` is memoized: a store's vocabulary is small and the same words recur
-on every retrieval.
-"""
-
 from __future__ import annotations
 
 from functools import lru_cache
@@ -32,7 +15,6 @@ def _is_consonant(word: str, i: int) -> bool:
 
 
 def _measure(stem: str) -> int:
-    """m in [C](VC)^m[V]: the number of vowel-consonant sequences."""
     m = 0
     i, n = 0, len(stem)
     while i < n and _is_consonant(stem, i):
@@ -59,7 +41,6 @@ def _ends_double_consonant(word: str) -> bool:
 
 
 def _cvc(word: str) -> bool:
-    """*o: ends consonant-vowel-consonant, the last not w, x or y."""
     if len(word) < 3:
         return False
     if not (_is_consonant(word, len(word) - 3) and not _is_consonant(word, len(word) - 2)
@@ -69,9 +50,6 @@ def _cvc(word: str) -> bool:
 
 
 def _replace(word: str, suffix: str, replacement: str, min_measure: int) -> str | None:
-    """`word` with `suffix` swapped for `replacement` if the stem's measure
-    exceeds `min_measure`; None if the suffix does not match at all (so the
-    caller stops looking), `word` unchanged if it matched but failed m."""
     if not word.endswith(suffix):
         return None
     stem = word[: len(word) - len(suffix)]
@@ -137,8 +115,6 @@ _STEP4 = (
 
 
 def _step_table(w: str, table) -> str:
-    # The paper's rule: only the LONGEST matching suffix is considered, and
-    # if its condition fails the word is left alone.
     for suffix, replacement in sorted(table, key=lambda p: -len(p[0])):
         out = _replace(w, suffix, replacement, 0)
         if out is not None:
@@ -170,10 +146,6 @@ def _step5(w: str) -> str:
 
 @lru_cache(maxsize=65536)
 def stem(word: str) -> str:
-    """Porter-stem one lower-case word. Words of two letters or fewer, and
-    anything that is not purely alphabetic (identifiers, numbers, error
-    codes), are returned unchanged: `http2`, `e2e` and `0x80070005` are
-    exact tokens, and stemming them could only merge things that differ."""
     if len(word) <= 2 or not word.isalpha() or not word.isascii():
         return word
     w = _step1a(word)

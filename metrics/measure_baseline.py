@@ -108,8 +108,6 @@ def activation(seed: int = 0) -> dict:
         injected = LESSON in done.stdout
         first_injected = time.perf_counter() - t0
 
-        # 15pp at 400 per arm is ~99% powered; 10pp is ~80%, so one run in five would
-        # report no measurable effect (the salt is random) and the baseline would flap.
         rate, per_arm, true_effect, baseline = 0.5, 400, 0.15, 0.60
         must("experiment", "--configure", "--rate", str(rate), "--dest", root)
         config = holdout_io.load_config(root)
@@ -155,7 +153,7 @@ def query_latency(n_lessons: int = 1000, runs: int = 40) -> dict:
         must("init", "--agent-type", "general", "--dest", root)
         build_store(root, n_lessons)
         queries = _queries(random.Random(1), runs + 3)
-        for q in queries[:3]:  # warm the lesson cache and the disk
+        for q in queries[:3]:
             cli("query", q, "--dest", root)
         times = sorted(cli("query", q, "--dest", root)[0] * 1000 for q in queries[3:])
         return {
@@ -177,7 +175,6 @@ def hub_floor() -> dict:
     )
     if done.returncode != 0:
         return {"skipped": f"bench_concurrency exited {done.returncode}", "stderr_tail": done.stderr[-300:]}
-    # The benchmark may log before its JSON; the document starts at the first brace.
     start = done.stdout.find("{")
     try:
         raw = json.loads(done.stdout[start:]) if start >= 0 else {}

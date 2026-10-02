@@ -1,14 +1,4 @@
-"""self-service account deletion: request/confirm token on organizations
-
-Adds the two-call confirmation flow hub/crud.py:request_org_deletion /
-confirm_org_deletion needs: a hashed token plus a request/expiry window,
-so a single compromised API key cannot execute an irreversible whole-org
-purge in one call. See hub/models.py:Organization's own comment on these
-columns for the full reasoning.
-
-Revision ID: 3c3adaa53a71
-Revises: 79001d0e5699
-"""
+"""self-service account deletion: request/confirm token on organizations"""
 from typing import Sequence, Union
 
 import sqlalchemy as sa

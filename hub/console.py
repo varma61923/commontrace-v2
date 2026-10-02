@@ -1,78 +1,4 @@
-"""The customer's console -- the fleet's own view of its own memory.
-
-WHY THIS EXISTS
----------------
-`hub/admin.py` is the OPERATOR console: one vendor employee, cross-tenant
-visibility, moderating a shared Knowledge Base. Until this module, that was
-the only HTML the Hub served. A paying customer had an MCP tool surface and
-a CLI, and nothing else.
-
-That is a real gap and not a cosmetic one. The product's central claim
- is that it can prove causally, on the customer's own
-data, that the memory changed outcomes -- and three commits of work went
-into making that number trustworthy: a validity audit, an attrition check,
-a treatment pinned to a content revision. All of it renders in a terminal,
-to whoever runs `commontrace prove outcomes`. The person who decides whether
-to renew does not run that command, and a claim nobody in the buying
-organisation can see is not doing the job it was built for.
-
-So this console has one organising idea: **answer "is this working, and can
-I trust the answer" in a browser, in that order, without hiding either
-half.** The validity verdict is rendered above the effect sizes on the page
-for the same reason the CLI prints it first -- a report that leads with a
-significant number and caveats it underneath is how a broken one gets
-quoted.
-
-TENANT ISOLATION
-----------------
-Every figure on every page comes from a function in `hub/crud.py` that
-already takes `org_id` and filters on it. This module writes NO queries of
-its own, and that is a deliberate constraint rather than a convenience: a
-cross-tenant leak here is the worst failure this product has available, and
-the isolation argument should rest on the one set of filters that
-`hub/tests/test_tenant_isolation.py` already exercises rather than on a
-second set that a new file introduced.
-
-MOSTLY READ-ONLY, ON PURPOSE, WITH NAMED EXCEPTIONS
---------------------------------------------------------
-Overview/Memory/Knowledge Base change nothing. Not because mutation is
-hard, but because of what those mutations WOULD be: altering an outcome
-or a shared corpus (a Knowledge Base submission). Both already have
-audited, authenticated paths through MCP and the CLI that record who did
-what, and adding a second way in through a browser session widens that
-surface for a convenience nobody has asked for.
-
-Users & Roles, API Keys, Alerts, Webhooks, and starting/stopping the
-randomized holdout on the Proof page (below) are the deliberate
-exceptions -- this Hub's own identity/credential/alerting/egress/
-experiment management (audit 1.2, 8.3), previously CLI-only, gated
-behind the SAME check every one of those CLI commands already enforces
-(`scopes.SCOPE_ADMIN` on the signed-in session's own key) plus an
-explicit org-ownership check on every id-addressed mutation, since
-`auth.revoke_api_key`/`rotate_api_key`, `alerts.delete_rule`, and
-`events.rotate_secret` take no org_id argument at all -- they trust an
-operator's own direct DB access to be scoped correctly already, which a
-customer's browser session is not. Every mutation here calls the SAME
-`hub/manage.py`/`hub/auth.py`/`hub/alerts.py`/`hub/events.py` functions
-the CLI does (no second implementation) and is audited with the ACTUAL
-originating credential (`audit.actor_for_api_key`), not a borrowed
-`operator-cli` label -- `start_experiment`/`stop_experiment` take an
-`actor` parameter for exactly this reason, the same pattern
-`create_user`/`set_user_role` already used. A merely `read`- or
-`write`-scoped session sees these pages exist but cannot act on them --
-the same `satisfies()` check `hub/rbac.py` uses everywhere else in this
-Hub. The Audit log page, and the assignments CSV export on Proof, are
-read-only for every signed-in user, admin or not: an org's own record of
-what happened, or of its own experiment's raw arm decisions, is not a
-credential.
-
-Read-only pages need no CSRF token: `hub/admin.py` needed one precisely
-because it moderates; a route with no state-changing request has no
-forged request to defend against. The admin-scoped mutations above are
-POST, same-origin, `SameSite=Strict` cookie -- the same protection
-`billing_checkout`/`proof_share` already rely on, not a new defence
-invented for this.
-"""
+"""The customer's console -- the fleet's own view of its own memory."""
 
 from __future__ import annotations
 
@@ -115,10 +41,6 @@ logger = logging.getLogger("commontrace.hub.console")
 CONSOLE_PATH = "/app"
 SESSION_COOKIE = "ct_console"
 
-# How long a browser session lasts before the key must be presented again.
-# Short, because the credential behind it is an API key with full org scope
-# and a console session is a bearer of that scope in a browser -- the place
-# it is least likely to be noticed if it leaks.
 SESSION_TTL_SECONDS = 8 * 60 * 60
 
 
@@ -129,23 +51,8 @@ def _sign(secret: str, payload: bytes) -> str:
 
 
 def issue_session(secret: str, org_id: str, key_prefix: str = "") -> str:
-    """A signed, self-contained session token.
-
-    Self-contained rather than a server-side session table because the Hub
-    runs as more than one process behind a load balancer, and an in-memory
-    session store silently logs people out on every deploy and every
-    scale-out. Signed with HMAC so the org_id inside it cannot be edited by
-    the holder -- which is the whole tenant boundary for this surface.
-
-    The API KEY ITSELF IS NOT IN THE TOKEN. It is verified once at sign-in
-    and then discarded: a cookie is a long-lived, widely-copied artifact,
-    and putting a full-scope credential in one turns every browser
-    misconfiguration into a key disclosure.
-    """
+    """A signed, self-contained session token."""
     payload = json.dumps(
-        # `key_prefix`, not the key: the first few characters, which is what
-        # the audit log already records. Enough to answer "which key opened
-        # this session" and not enough to be one.
         {"org": org_id, "key": key_prefix, "exp": int(time.time()) + SESSION_TTL_SECONDS},
         separators=(",", ":"), sort_keys=True,
     ).encode("utf-8")
@@ -162,8 +69,6 @@ def read_session(secret: str, token: str) -> dict | None:
         payload = base64.urlsafe_b64decode(body + "=" * (-len(body) % 4))
     except Exception:  # noqa: BLE001 - a malformed cookie is simply not a session
         return None
-    # compare_digest, not ==: signature comparison is the one place in this
-    # module where a timing difference is an oracle for forging a session.
     if not hmac.compare_digest(_sign(secret, payload), signature):
         return None
     try:
@@ -174,51 +79,17 @@ def read_session(secret: str, token: str) -> dict | None:
         return None
     if int(claims.get("exp", 0)) < time.time():
         return None
-    # A share token (below) is signed with the same secret and would
-    # otherwise pass every check above -- explicitly reject it here so it
-    # can never be replayed as a full, mutating-scope session, only ever
-    # through read_share_token's narrower surface.
     if claims.get("kind") == "share_proof":
         return None
     return claims
 
 
-# --- Shareable, read-only Proof links ---------------------------------------
-#
-# WHY THIS EXISTS. hub/plans.py's whole pricing model is "share of measured
-# value", and the Proof page below is the only place that
-# value is actually shown -- with the SOUND/WEAKENED/COMPROMISED verdict
-# rendered ABOVE the number it qualifies, not as a footnote (see
-# _validity_block's docstring: "a page that shows the number first ... is
-# how the number travels without the caveat"). Until now that page only
-# ever rendered behind a signed-in session, so the one artifact that proves
-# this product's central claim could never leave the browser it was viewed
-# in -- not into a renewal conversation, a procurement deck, or a
-# forwarded email, which is exactly where a number like this needs to
-# travel to do its job.
-#
-# WHAT THIS IS NOT. Not a snapshot: a share link re-runs the same live
-# crud.causal_effects/value_delivered queries the authenticated page does,
-# so it can never go stale into something misleading -- a viewer six weeks
-# from now sees the CURRENT verdict, including a COMPROMISED one the
-# customer generated the link before they knew about. Not permanent: it
-# expires (SHARE_TOKEN_TTL_SECONDS) and there is no revocation list, so an
-# org that wants a link truly dead has to wait it out -- a deliberate v1
-# simplification, not an oversight; a customer who needs a shorter-lived
-# link can generate one closer to when they intend to use it. Not
-# customer-identifying beyond org_id: no viewer name, no recipient email,
-# nothing that would make this a tracking pixel.
 SHARE_TOKEN_TTL_SECONDS = 14 * 24 * 60 * 60
 
 
 def issue_share_token(
     secret: str, org_id: str, ttl_seconds: int = SHARE_TOKEN_TTL_SECONDS, generation: int = 0
 ) -> str:
-    """A signed, read-only, org-scoped link to that org's OWN live Proof
-    page -- mintable only by someone already holding a real session for
-    that org (see the `proof_share` route below), never guessable, and
-    incapable of being upgraded into a session (read_session's explicit
-    `kind` check above)."""
     payload = json.dumps(
         {"kind": "share_proof", "org": org_id, "exp": int(time.time()) + ttl_seconds, "gen": int(generation)},
         separators=(",", ":"), sort_keys=True,
@@ -228,9 +99,6 @@ def issue_share_token(
 
 
 def read_share_token(secret: str, token: str) -> dict | None:
-    """The claims in a share token, or None if it is unsigned, forged,
-    expired, or -- the other direction of read_session's guard -- actually
-    a full session token presented here instead."""
     if not token or "." not in token:
         return None
     body, _, signature = token.partition(".")
@@ -251,17 +119,6 @@ def read_share_token(secret: str, token: str) -> dict | None:
     return claims
 
 
-# --- Chrome -----------------------------------------------------------------
-
-# An inline data-URI icon rather than a static file or route: this
-# console has no static-asset serving infrastructure at all (deliberately
-# -- the Hub image ships no frontend build step), and every browser
-# requests `/favicon.ico` once per origin unprompted. Without this,
-# every real browser session against the console logged a 404 on that
-# request from the moment the page loaded, on every page -- harmless to
-# the response actually served, but a real console.error a customer's own
-# browser devtools would show them looking at nothing else. A monogram,
-# not a logo: this product has no shipped brand mark to embed instead.
 _FAVICON_LINK = (
     '<link rel="icon" href="data:image/svg+xml,'
     "%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E"
@@ -271,13 +128,8 @@ _FAVICON_LINK = (
 )
 
 
-# A column of row buttons still needs a header a screen reader can announce.
 _ACTIONS_TH = "<th><span class='sr-only'>Actions</span></th>"
 
-# (path, nav label, the _page title that page renders with, icon, shortcut)
-# -- the title is what marks the current page for screen readers and sighted
-# users alike. Grouped the way a buyer reads the product: what it is doing for
-# them, then how they govern it.
 _NAV_GROUPS = (
     ("Insights", (
         ("", "Overview", "Your fleet", "overview", "g o"),
@@ -296,14 +148,9 @@ _NAV_GROUPS = (
 _NAV = tuple((path, label, title) for _group, items in _NAV_GROUPS for path, label, title, *_rest in items)
 
 
-# Who is looking, for the shell to show: set by `_claims` on every request
-# (one value per request -- each runs in its own context), read by `_page`.
-# Display-only: no authorisation decision ever reads it.
 _VIEW: contextvars.ContextVar[dict] = contextvars.ContextVar("console_view", default={})
 
 
-# A form, not a link: a GET that signs you out is one any other site can
-# fire with an <img> tag.
 _SIGN_OUT_FORM = (
     f'<form method="post" action="{CONSOLE_PATH}/signout">'
     f'<button type="submit" class="linkish">{ui_kit.icon("logout")}Sign out</button></form>'
@@ -362,8 +209,6 @@ def _topbar(title: str, badge: str) -> str:
 def _document(
     title: str, body: str, *scripts: str, referrer: str = "same-origin", theme_script: bool = True,
 ) -> HTMLResponse:
-    # The shared report runs no script at all (its CSP is script-src 'none'),
-    # so it follows the viewer's system colour scheme instead of a stored choice.
     head_script = ui_kit.THEME_SCRIPT if theme_script else ""
     return HTMLResponse(
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
@@ -371,9 +216,6 @@ def _document(
         '<meta name="color-scheme" content="light dark">'
         f"<title>{h(title)} · CommonTrace</title>{_FAVICON_LINK}{head_script}"
         f"<style>{ui_kit.CSS}</style></head><body>{body}{''.join(scripts)}</body></html>",
-        # A customer console renders that org's own operational data. A cached
-        # copy in a shared or kiosk browser is one more place it sits at rest,
-        # and it outlives the session cookie that was supposed to gate it.
         headers=html_headers(head_script, *scripts, referrer=referrer),
     )
 
@@ -394,19 +236,6 @@ def _page(
 
 
 def _shared_page(body: str, *, expires_at: int) -> HTMLResponse:
-    """A read-only Proof view for someone with no session at all -- no nav
-    (there is nothing else this link grants access to), a banner naming
-    what it is and when it stops working, and no outbound link: this
-    product has no established public URL in its own codebase to send a
-    viewer to, so the banner names CommonTrace rather than pointing
-    somewhere invented.
-    """
-    # No `%-d` (day-of-month without a leading zero): that is a glibc/macOS
-    # strftime extension, not a standard one, and CPython raises
-    # `ValueError: Invalid format string` for it on Windows' C runtime --
-    # reproduced running hub/tests on Windows, where every test touching
-    # this function failed on import of a date, not on anything about the
-    # page itself. Built from portable pieces instead, same output.
     _expires_dt = datetime.fromtimestamp(expires_at, tz=timezone.utc)
     until = f"{_expires_dt:%B} {_expires_dt.day}, {_expires_dt:%Y}"
     banner = (
@@ -418,16 +247,11 @@ def _shared_page(body: str, *, expires_at: int) -> HTMLResponse:
         f'<span class="brand"><span class="mark">{ui_kit.icon("mark")}</span>CommonTrace</span>'
         '<span class="badge">shared report</span></header>'
     )
-    # Distinct from _page's headers in one deliberate way: no referrer at
-    # all, since the link itself is the credential. It is still that org's
-    # un-published business data, so it stays no-store. Its only script is
-    # the theme one: no palette, no forms, nothing to act on.
     return _document("Proof", f"{top}<main id=\"main\">{banner}{body}</main>", referrer="no-referrer",
                      theme_script=False)
 
 
 def _tiles(items: list[tuple]) -> str:
-    """KPI tiles: (label, value markup[, extra markup under the value])."""
     cells = []
     for item in items:
         k, v = item[0], item[1]
@@ -441,13 +265,6 @@ _VERDICT_TONE = {"SOUND": "good", "WEAKENED": "warn", "COMPROMISED": "bad"}
 
 
 def _validity_block(report: dict) -> str:
-    """The trust verdict, rendered ABOVE whatever it is a verdict about.
-
-    Placement is the whole point. This console exists so a renewal
-    conversation can look at the causal number, and a page that shows the
-    number first and its caveat lower down is how the number travels without
-    the caveat.
-    """
     if not report:
         return ""
     verdict = str(report.get("verdict", ""))
@@ -486,8 +303,6 @@ def _projection_block(report: dict, titles: dict | None = None) -> str:
         return ""
     titles = titles or {}
     rows = "".join(
-        # The memory's name where the page knows it: a bare trace id here was
-        # the only place on Proof a reader met a hash instead of a title.
         f"<tr><td>{h(titles.get(str(p.get('trace_id'))) or p.get('trace_id'))}</td>"
         f"<td class=\"n\">{_num(p.get('n_injected'))} / {_num(p.get('n_withheld'))}</td>"
         f"<td>{_num(p.get('still_needed'))} more in the {h(p.get('binding_arm'))} arm</td>"
@@ -505,9 +320,6 @@ def _projection_block(report: dict, titles: dict | None = None) -> str:
     )
 
 
-# --- Pages ------------------------------------------------------------------
-
-
 async def _overview_data(session, org_id: str) -> dict:
     return {
         "entitlements": await crud.entitlements(session, org_id),
@@ -517,11 +329,6 @@ async def _overview_data(session, org_id: str) -> dict:
 
 
 def _render_billing_block(billing: dict | None) -> str:
-    """Rendered on the Overview page, right after the entitlement tiles --
-    the same place "Plan" and "Billing period" already sit. Absent entirely
-    (not just disabled) when this deployment has no Stripe prices
-    configured, matching the rest of this console's "nothing to see if you
-    haven't opted in" posture."""
     if not billing or not billing.get("enabled"):
         return ""
     plan = str(billing.get("plan") or plans.DEFAULT_PLAN)
@@ -574,10 +381,6 @@ def _render_overview(
                                     f'{_limit(agents.get("limit"))}</span>',
          ui_kit.meter(agents.get("active", 0), agents.get("limit"))),
         ("Searches this month", _num(search.get("searches", 0))),
-        # The number an operator would otherwise never see: how often an agent
-        # asked this corpus something and got nothing back. It is the live
-        # version of the retrieval benchmark, on this fleet's own queries, and
-        # it is stored as a count -- no query text is retained anywhere.
         ("Searches that found nothing", _miss(search)),
         ("Plan", h(ent.get("plan", "—")), f'<div class="foot">Billing period {h(ent.get("period", "—"))}</div>'),
     ]))
@@ -615,23 +418,13 @@ def _render_overview(
 
 
 def _miss(search: dict) -> str:
-    """How often a search came back empty.
-
-    `None` means no search has run yet, which is not the same as 0% and must
-    not render as one -- a fleet that has never searched would otherwise read
-    as a fleet whose every search succeeds.
-    """
     rate = search.get("miss_rate")
     if rate is None:
         return '<span class="muted">no searches yet</span>'
     return f'{rate:.0%} <span class="muted">of {_num(search.get("searches_with_terms", 0))}</span>'
 
 
-
 def _policy_block(policy: dict) -> str:
-    """The aggregate that stays valid when the per-trace sum does not:
-    occasions that received any memory against occasions that received none,
-    counting each occasion exactly once."""
     if not policy or not policy.get("readable"):
         reason = (policy or {}).get("reason", "")
         return (
@@ -653,15 +446,6 @@ def _policy_block(policy: dict) -> str:
 
 
 def _value_block(worth: dict) -> str:
-    """What the memory was worth, in occasions -- and a refusal when it cannot
-    be said.
-
-    This is the number a renewal conversation is actually about, which is
-    exactly why it is the one most worth being strict with. A COMPROMISED
-    experiment shows the refusal, not a hedged figure; underpowered memories
-    contribute nothing; memories measured as HURTING are subtracted rather
-    than dropped. See commontrace/value.py.
-    """
     if not worth:
         return ""
     if not worth.get("readable"):
@@ -673,12 +457,6 @@ def _value_block(worth: dict) -> str:
             "figure to separate.</p></div>"
         )
 
-    # The per-trace contributions may not always be added: on this Hub one
-    # occasion routinely receives several traces (holdout_assign takes a
-    # list), and summing them would attribute one improved occasion more
-    # than once -- then price it more than once. When that is the case there
-    # is no total to render, and the policy-level comparison over unique
-    # occasions is what this page shows instead (commontrace/value.py).
     if not worth.get("aggregate_readable", True):
         return (
             '<div class="verdict"><h2>What has this been worth?</h2>'
@@ -738,9 +516,6 @@ _SHARE_FLASH = {"revoked": "Every share link issued before now has been revoked.
 
 
 def _render_share_form(share_url: str | None, is_admin: bool = False) -> str:
-    """Prepended to the AUTHENTICATED Proof page only -- never to the shared
-    view itself, which has no session and must not be able to mint more
-    links for an org it isn't signed into."""
     days = SHARE_TOKEN_TTL_SECONDS // 86400
     revoke = _render_share_revoke(is_admin)
     revoke_line = (
@@ -767,14 +542,6 @@ def _render_share_form(share_url: str | None, is_admin: bool = False) -> str:
 
 
 def _render_experiment_controls(causal: dict, is_admin: bool, *, error: str = "") -> str:
-    """Self-service start/stop for the randomized holdout -- the same
-    mutation `hub.manage start-experiment`/`stop-experiment` performs,
-    admin-scope-gated like every other mutating page in this console.
-    Absent entirely for a non-admin viewer, same as this file's other
-    admin-only forms: showing a disabled form still tells a non-admin
-    viewer these actions exist and invites a permission-escalation
-    attempt for no reader benefit.
-    """
     if not is_admin:
         return ""
     body = ['<div class="share-box" id="experiment" data-command="Experiment control">']
@@ -887,8 +654,6 @@ def _render_proof(
                     ) + "</ul></details>"
                 )
         elif effects:
-            # Withheld rather than shown-with-a-caveat. On a page built to be
-            # read in a renewal conversation, a number on screen gets quoted.
             body.append('<p class="sub">Effect sizes are withheld while the validity '
                         "verdict above is COMPROMISED. They would not be estimates of the "
                         "causal effect, and showing them with a caveat is how the caveat "
@@ -913,9 +678,6 @@ def _render_proof(
         )
         body.append("<div class='scroll'><table><thead><tr><th>Metric</th><th>Baseline</th><th>Now</th>"
                     f"<th>Change</th><th>Verdict</th></tr></thead><tbody>{cells}</tbody></table></div>")
-        # Every inconclusive row carries WHY, including the minimum effect the
-        # sample could have detected. Dropping that is how "we could not tell"
-        # gets read as "no effect".
         notes = [r for r in rows if r.get("note")]
         if notes:
             body.append('<details class="more"><summary>What each verdict is based on</summary><ul>' + "".join(
@@ -932,12 +694,6 @@ def _pct(value: object) -> str:
 
 
 def _rate(window: object) -> str:
-    """One `{rate, n}` window from fleet_outcomes.
-
-    `n` is rendered beside the rate rather than hidden: 100% of two
-    observations and 100% of two thousand are the same number on a slide and
-    entirely different facts.
-    """
     if not isinstance(window, dict):
         return "—"
     rate = window.get("rate")
@@ -997,11 +753,6 @@ def _render_memory(result: dict, tags: list[str]) -> str:
         )
         body.append("<div class='scroll'><table><thead><tr><th>Trace</th><th>Agent type</th>"
                     f"<th>Retrieved</th><th>Captured</th></tr></thead><tbody>{rows}</tbody></table></div>")
-        # search_traces caps at `limit` and signals whether more rows exist
-        # via `has_more` (fetched as one extra row, not a second COUNT) --
-        # this used to be dropped on the floor here, so a corpus with more
-        # than 50 matches showed exactly 50 with no indication, and no way
-        # to reach the rest from this page at all.
         limit = int(result.get("limit") or len(traces) or 1)
         offset = int(result.get("offset") or 0)
         query_param = f'&q={_url_quote(result.get("query", ""))}' if result.get("query") else ""
@@ -1021,11 +772,6 @@ def _render_memory(result: dict, tags: list[str]) -> str:
     return "".join(body)
 
 
-#: How the field's verdict on an entry renders. The label is
-#: hub/commons.py's (`entry_standing`); the tone is this page's, and
-#: `disputed` deliberately gets the same red a failure gets elsewhere in
-#: this console -- an entry the fleets who tried it say did not work is a
-#: warning, not a neutral attribute.
 _STANDING_TONE = {
     "established": "ok",
     "stale": "warn",
@@ -1041,9 +787,6 @@ _STANDING_MEANING = {
 }
 
 
-# What each closed-vocabulary feedback tag means to a READER, as opposed to
-# what it means to the operator's review queue. Phrased as the thing the
-# reader has to decide: whether to apply this fix.
 _CONCERN_LABEL = {
     "security_concern": "security concern",
     "outdated": "outdated",
@@ -1051,8 +794,6 @@ _CONCERN_LABEL = {
     "spam": "spam",
 }
 
-# `security_concern` is the one tag that is never merely informational, and
-# it is rendered as a warning at ANY standing -- see _render_kb_concerns.
 _CONCERN_TONE = {
     "security_concern": "bad",
     "wrong": "bad",
@@ -1062,31 +803,9 @@ _CONCERN_TONE = {
 
 
 def _render_kb_concerns(entry: dict) -> str:
-    """The evidence behind an entry's standing, as pills.
-
-    A verdict with no reason attached is something a reader must take on
-    faith, and "disputed" flattens three very different situations --
-    stale, wrong, or dangerous -- into one word. Each is a different
-    decision for someone about to apply the fix.
-
-    The safety case this exists for: an entry two orgs flagged
-    `security_concern` but which has fewer votes than
-    MIN_VOTES_FOR_STANDING still reads as `unproven`, because standing is
-    deliberately conservative about calling the field's verdict. A reader
-    would see "not enough votes yet to say either way" and apply a fix
-    somebody had explicitly flagged as dangerous. So a security concern is
-    surfaced at ANY standing and at any count, including one -- the
-    thresholds that govern *standing* are about not letting a single voice
-    condemn an entry, which is the right rule for a verdict and the wrong
-    one for a warning.
-
-    Counts are aggregates from established voters only, and name no
-    organisation -- see crud._concerns_for for why both.
-    """
     concerns = entry.get("concerns") or {}
     if not concerns:
         return ""
-    # Most-reported first, with security always leading regardless of count.
     ordered = sorted(
         concerns.items(),
         key=lambda kv: (kv[0] != "security_concern", -kv[1], kv[0]),
@@ -1101,25 +820,12 @@ def _render_kb_concerns(entry: dict) -> str:
 
 
 def _render_kb_vote(entry: dict, can_vote: bool) -> str:
-    """The governance control: this org's verdict on one entry.
-
-    A catalogue that shows standing but offers no way to change it is a
-    read-only encyclopedia -- the standing every row displays is computed
-    from exactly these votes, and until now they could only be cast by an
-    agent through the MCP tool. The org's current vote is rendered as the
-    pressed state so the button reads as "change my mind", not "vote
-    again"; `vote_trace` upserts on (trace, org), so a second click
-    replaces rather than double-counts.
-    """
     if not can_vote:
         return '<span class="muted">—</span>'
     trace_id = h(entry.get("id"))
     mine = str(entry.get("my_vote") or "")
     up_state = " voted" if mine == "up" else ""
     down_state = " voted" if mine == "down" else ""
-    # A downvote carries WHY, because hub/manage.py's review queue sorts on
-    # it: a `security_concern` tag is what promotes an entry to the
-    # operator's urgent bucket, and a bare downvote cannot say that.
     tags = "".join(
         f'<option value="{h(t)}">{h(t or "reason (optional)")}</option>'
         for t in ("", "outdated", "wrong", "security_concern", "spam")
@@ -1138,15 +844,8 @@ def _render_kb_vote(entry: dict, can_vote: bool) -> str:
 
 
 def _render_kb_entry(entry: dict, can_vote: bool = False) -> str:
-    """One catalogue row: what it is, what the field thinks of it, how
-    much it is actually used, and this org's own say in that."""
     standing = str(entry.get("standing") or "")
     tone = _STANDING_TONE.get(standing, "")
-    # "Revised" is not decoration. Amending an entry resets its votes (the
-    # old ones judged text that is gone), so a corrected entry and a
-    # never-tried one both read `unproven` with zero votes. Saying which is
-    # which is what keeps that reset honest, and it is the same affordance
-    # a wiki's "last edited on" provides.
     revisions = int(entry.get("revisions") or 0)
     revised = (
         f'<br><span class="pill mute" title="Corrected {_num(revisions)} time(s). '
@@ -1203,7 +902,6 @@ def _render_kb(
         ("Proposals sent", str(len(submissions))),
     ]))
 
-    # --- The open repository, as a catalogue ---------------------------
     if browse is not None:
         body.append(_section("Browse the open repository", anchor="browse", command="Browse the open repository"))
         body.append(
@@ -1234,11 +932,6 @@ def _render_kb(
                 "signal the operator's review queue sorts on. Voting is per organisation, "
                 "and voting again changes your vote rather than adding one.</p>"
             )
-            # Said here, before the vote rather than only after it, because
-            # an organisation that votes and watches nothing move has every
-            # reason to conclude the feature is broken. The rule is in
-            # hub/commons.py and stating it costs an attacker nothing they
-            # could not read there.
             if can_vote and not vote_counts:
                 body.append(
                     '<p class="sub">Your votes are <b>recorded but not yet counted</b> '
@@ -1272,7 +965,6 @@ def _render_kb(
         else:
             body.append(_empty("kb", "The Knowledge Base has no published entries yet"))
 
-    # --- Contributing back ---------------------------------------------
     body.append(_section("Contribute back"))
     if can_submit:
         state = "on" if auto_contribute else "off"
@@ -1683,8 +1375,6 @@ def _render_audit_log(entries: list[AuditLogEntry], offset: int, limit: int, has
 
 
 def _head(title: str, sub: str = "", actions: str = "") -> str:
-    """A page's title row: heading, one-line purpose, and its primary actions.
-    `title` and `sub` are trusted markup written in this module."""
     acts = f'<div class="actions">{actions}</div>' if actions else ""
     sub_html = f'<p class="sub">{sub}</p>' if sub else ""
     return f'<div class="page-head"><div><h1>{title}</h1>{sub_html}</div>{acts}</div>'
@@ -1699,7 +1389,6 @@ def _section(title: str, sub: str = "", anchor: str = "", command: str = "") -> 
 
 
 def _empty(icon_name: str, title: str, text: str = "") -> str:
-    """An empty state that says what would be here and how it gets here."""
     return (
         f'<div class="empty-state">{ui_kit.icon(icon_name)}<b>{title}</b>'
         + (f"<p>{text}</p>" if text else "")
@@ -1717,8 +1406,6 @@ def _pager(base: str, offset: int, limit: int, has_more: bool, extra: str = "") 
 
 
 def _setup_steps(data: dict, causal: dict, setup: dict | None) -> str:
-    """The five things between a new organisation and a measured answer, ticked
-    off from the organisation's own state. Hidden once every one is done."""
     setup = setup or {}
     traces = int(((data.get("entitlements") or {}).get("traces") or {}).get("used", 0) or 0)
     searches = int((data.get("search") or {}).get("searches", 0) or 0)
@@ -1838,7 +1525,6 @@ _SIGNIN = (
 )
 
 
-# What the Knowledge Base page says after each action redirects back to it.
 _KB_FLASH = {
     "proposed": "Proposal sent for operator review.",
     "auto_on": "Automatic contribution is on. New traces will also be proposed.",
@@ -1864,23 +1550,7 @@ def add_console_routes(
     config: HubConfig | None = None,
     rate_limiter=None,
 ) -> None:
-    """Mount the customer console. Registered only when a secret is set.
-
-    `config` and `rate_limiter` are needed by exactly one handler --
-    proposing a Knowledge Base entry, which validates and stores
-    caller-supplied content through `crud.submit_kb_entry` and so needs the
-    same size limits and write budget every other write path gets.
-    `build_app` passes both; everything else may omit them.
-
-    When omitted they are resolved LAZILY, on first use, rather than here.
-    Mounting is not the moment to need a database URL: most of this console
-    never touches either value, and every test that builds the app without
-    them would otherwise fail at import-time on `HubConfig.from_env()`'s
-    deliberate refusal to guess a connection string. Deferring means an
-    unconfigured deployment fails on the one request that genuinely needs
-    the config, with a message about that request, instead of refusing to
-    mount a console whose other twenty routes were fine.
-    """
+    """Mount the customer console. Registered only when a secret is set."""
     stripe = stripe or StripeSettings()
     _resolved: dict = {"config": config, "rate_limiter": rate_limiter}
 
@@ -1891,37 +1561,14 @@ def add_console_routes(
             _resolved["rate_limiter"] = make_rate_limiter(_resolved["config"])
         return _resolved["config"], _resolved["rate_limiter"]
 
-    # Sign-in is a credential-checking endpoint, so it is rate limited on the
-    # client key exactly as the MCP auth path is: without it this is an
-    # unauthenticated, unthrottled oracle for testing API keys, reachable from
-    # a browser, which is a strictly easier target than the MCP transport.
     signin_limiter = make_named_limiter(config, 10, 5, "console_signin")
 
-    # Guards hub/console.py's shared, unauthenticated Proof view (below):
-    # each real causal_effects() call is genuine statistical work, not a
-    # cheap read (the scaling analysis measures it up to 1.4s on a large org), and
-    # this route has no session to charge a per-org read limiter against.
-    # Generous on purpose -- a link embedded in a live deck or forwarded
-    # thread can get a real burst of legitimate views -- but not unbounded.
     share_view_limiter = make_named_limiter(config, 60, 20, "console_share_view")
 
     def _secret() -> str:
         return console_secret
 
     async def _claims(request: Request) -> dict | None:
-        """The session behind this request, or None.
-
-        Two gates, not one. The signature proves the cookie was issued here
-        and has not been edited. The database check proves the key that
-        opened it is STILL live -- because otherwise revoking a key would not
-        end the browser sessions it opened, and an operator revoking a
-        compromised key would be told the problem was handled while the
-        console kept serving that org's data for the rest of the session TTL.
-        Revocation that does not revoke is worse than no revocation: it is a
-        false belief about the state of a credential.
-
-        One indexed lookup on `key_prefix` per page, which is the right price.
-        """
         claims = read_session(_secret(), request.cookies.get(SESSION_COOKIE, ""))
         if claims is None:
             return None
@@ -1944,13 +1591,7 @@ def add_console_routes(
             ).first()
         if row is None:
             return None
-        # Refetched live on every page load, same as the liveness check
-        # above and for the same reason: a key narrowed from admin to
-        # read-only must lose console-mutation access on its very next
-        # request, not merely at the browser session's own TTL.
         claims["scopes"] = row[1]
-        # For the page shell to show who is signed in (display only; the
-        # same query, so no extra round trip).
         _VIEW.set({
             "org_name": row[2], "plan": row[3], "key_prefix": prefix,
             "is_admin": scopes.satisfies(row[1], scopes.SCOPE_ADMIN),
@@ -1986,9 +1627,6 @@ def add_console_routes(
         async with session_scope(session_factory) as session:
             authenticated = await auth.verify_api_key(session, raw_key)
         if authenticated is None:
-            # One message for every failure mode -- unknown key, revoked key,
-            # expired key. Distinguishing them tells an attacker which of
-            # those a guessed key was.
             logger.info("console sign-in rejected")
             return _page(
                 "Sign in",
@@ -1998,28 +1636,21 @@ def add_console_routes(
                 ),
                 signed_in=False,
             )
-        # The auth limiter charges failures only, so a legitimate sign-in does
-        # not consume the budget a brute-force attempt is meant to exhaust.
         signin_limiter.refund(rate_limit_key(request, trusted_proxy_hops))
         response = RedirectResponse(CONSOLE_PATH, status_code=303)
         response.set_cookie(
             SESSION_COOKIE,
             issue_session(_secret(), authenticated.org_id, authenticated.key_prefix),
             max_age=SESSION_TTL_SECONDS,
-            httponly=True,      # not readable by script, so XSS cannot lift the session
-            samesite="strict",  # not sent cross-site, which is why no CSRF token is needed
-            # Behind a TLS-terminating proxy the Hub itself sees plain http
-            # unless uvicorn trusts the proxy's X-Forwarded-Proto -- which it
-            # does only for a proxy on 127.0.0.1, not one in the next
-            # container or an ingress. A declared proxy means TLS ends there.
+            httponly=True,
+            samesite="strict",
             secure=request.url.scheme == "https" or trusted_proxy_hops > 0,
-            path=CONSOLE_PATH,  # never sent to /mcp, /admin or /metrics
+            path=CONSOLE_PATH,
         )
         return response
 
     async def signout(request: Request) -> Response:
         if request.method != "POST":
-            # An old bookmark or link: ask, rather than act on a GET.
             if await _claims(request) is None:
                 return _redirect_to_signin()
             return _page("Sign out", (
@@ -2057,19 +1688,10 @@ def add_console_routes(
         }
         return _page(
             "Your fleet", _render_overview(data, causal, billing_state, activity, setup),
-            # Longer than the other auto-refreshing pages: causal_effects is
-            # real statistical work (the scaling analysis measures it up to 1.4s on
-            # a large org), and this is the page most likely left open in a
-            # background tab.
             auto_refresh_seconds=45,
         )
 
     async def billing_checkout(request: Request) -> Response:
-        """Mints a fresh Checkout Session for a plan the signed-in org does
-        not yet subscribe to, and redirects the browser to Stripe's own
-        hosted page. POST, not GET: like proof_share, this creates real
-        state (an org gains a pending checkout / Stripe customer) and must
-        not be triggerable by a prefetch or a crawled link."""
         claims = await _claims(request)
         if claims is None:
             return _redirect_to_signin()
@@ -2085,15 +1707,6 @@ def add_console_routes(
         if org is None:
             return _redirect_to_signin()
         if org.stripe_subscription_id:
-            # The Overview page never shows this button to an already-
-            # subscribed org (billing.get("has_subscription") swaps it for
-            # "Manage billing"), but that is a UI nicety, not enforcement --
-            # a stale page, a browser back-button resubmit, or a direct POST
-            # would otherwise reach here anyway. Checkout always mints a NEW
-            # subscription (billing.py's own module docstring); minting a
-            # second one on a customer who already has one is not a smaller
-            # version of this feature, it is silent double billing. Refused
-            # here, not just hidden in the UI.
             return RedirectResponse(CONSOLE_PATH, status_code=303)
         base_url = str(request.url.replace(path=CONSOLE_PATH, query=""))
         try:
@@ -2107,19 +1720,6 @@ def add_console_routes(
         return RedirectResponse(checkout_url, status_code=303)
 
     async def billing_portal(request: Request) -> Response:
-        """Redirects an already-subscribed org to Stripe's Billing Portal,
-        where Stripe itself (not this code) handles plan changes,
-        cancellation, payment method updates and invoice history.
-
-        Requires `stripe.webhook_secret`, not just `secret_key`, for the
-        same reason billing_checkout does: every change a customer makes
-        in the Portal (cancel, switch plan, a payment failure) reaches
-        this Hub ONLY through /billing/webhook. An org that reaches the
-        Portal with that route unregistered can cancel and keep its paid
-        entitlement forever, or change plans in a way this Hub never
-        applies -- silently stale state is the failure mode here, not a
-        500, so it is refused before ever redirecting to Stripe.
-        """
         claims = await _claims(request)
         if claims is None:
             return _redirect_to_signin()
@@ -2142,10 +1742,6 @@ def add_console_routes(
         request: Request, org_id: str, is_admin: bool, *, experiment_error: str = "",
         share_url: str | None = None,
     ) -> Response:
-        # An optional rate the reader supplies in the URL. Never stored: this
-        # product ships the quantity and takes the price from whoever is
-        # reading, which is what keeps a number nobody agreed to out of the
-        # one place people treat as authoritative.
         try:
             rate = float(request.query_params.get("per_occasion") or 0) or None
         except ValueError:
@@ -2154,12 +1750,6 @@ def add_console_routes(
             outcomes = await crud.fleet_outcomes(session, org_id)
             causal = await crud.causal_effects(session, org_id)
             worth = await crud.value_delivered(session, org_id, value_per_occasion=rate)
-        # Only ever the link proof_share just minted, passed in directly --
-        # never read from the URL. It used to arrive as ?share_url=, which put
-        # the link (a live credential for this org's data) into browser
-        # history and let anyone send a signed-in user a /proof?share_url=
-        # link to a page of their own that the console then presented as
-        # "Shareable link generated".
         share_box = _render_share_form(share_url, is_admin)
         flash = _SHARE_FLASH.get(request.query_params.get("done", ""), "")
         if flash:
@@ -2176,11 +1766,6 @@ def add_console_routes(
         return await _proof_view(request, str(claims["org"]), _is_admin(claims))
 
     async def proof_share(request: Request) -> Response:
-        """Mints a new share link for the signed-in org and shows the Proof
-        page with it, in this response. POST, not GET: this creates a new
-        capability (a live, un-guessable link to the org's own data) and
-        must not be triggerable by a prefetch, a browser extension
-        crawling links, or a `<img>` tag someone points at it."""
         claims = await _claims(request)
         if claims is None:
             return _redirect_to_signin()
@@ -2193,9 +1778,6 @@ def add_console_routes(
         return await _proof_view(request, org_id, _is_admin(claims), share_url=url)
 
     async def proof_share_revoke(request: Request) -> Response:
-        """End every share link minted so far, in one step. Admin only: a
-        link is a capability another admin may have handed to a customer on
-        purpose, and ending it is not a read-only member's call."""
         claims = await _claims(request)
         if claims is None:
             return _redirect_to_signin()
@@ -2215,27 +1797,11 @@ def add_console_routes(
         return RedirectResponse(f"{CONSOLE_PATH}/proof?done=revoked", status_code=303)
 
     async def proof_shared(request: Request) -> Response:
-        """The public, unauthenticated view a share link resolves to. No
-        _claims call anywhere in this handler -- that is the point of this
-        route existing separately from `proof` above, not an oversight."""
         token = request.path_params.get("token", "")
         claims = read_share_token(_secret(), token)
         if claims is None:
-            # 404, not 401/403: a share link is meant to be handed to
-            # someone with no other relationship to this Hub, and "invalid"
-            # vs. "expired" vs. "never existed" is not a distinction they
-            # can act on -- it would only tell a prober which token shapes
-            # are worth continuing to guess.
             return HTMLResponse("Not found.", status_code=404)
         org_id = str(claims["org"])
-        # Public and unauthenticated, so unlike every other console route
-        # this one is reachable by anyone who has ever seen the link -- and
-        # crud.causal_effects is real statistical work (the scaling analysis
-        # measures it at up to 1.4s on a large org), not a cheap read. Keyed
-        # by org_id (from the verified token), not client address: the
-        # threat here is one link being hit hard by whoever holds it, from
-        # however many addresses, not a fleet of distinct guessers -- an
-        # address-keyed limiter would not bound that at all.
         allowed, retry_after = await share_view_limiter.check(f"share:{org_id}")
         if not allowed:
             return HTMLResponse(
@@ -2243,9 +1809,6 @@ def add_console_routes(
                 status_code=429, headers={"Retry-After": str(int(retry_after) + 1)},
             )
         async with session_scope(session_factory) as session:
-            # A revoked generation, or an org that no longer exists, reads
-            # exactly like a forged link: same 404, same reasoning as above.
-            # After the limiter, so a burst against a dead link costs no reads.
             org = await session.get(Organization, org_id)
             if org is None or int(claims.get("gen", 0)) != int(org.share_generation):
                 return HTMLResponse("Not found.", status_code=404)
@@ -2255,11 +1818,6 @@ def add_console_routes(
         return _shared_page(_render_proof(outcomes, causal, worth, shared=True), expires_at=int(claims["exp"]))
 
     async def assignments_csv(request: Request) -> Response:
-        """Every arm decision for this org's current experiment, as CSV --
-        the browser counterpart to `hub.manage export-assignments`. Not
-        admin-gated: read-only, and this org's own record of its own
-        experiment is not a credential, same reasoning as Overview/Proof/
-        Memory/Knowledge Base above."""
         claims = await _claims(request)
         if claims is None:
             return _redirect_to_signin()
@@ -2276,11 +1834,6 @@ def add_console_routes(
         )
 
     async def experiment_start(request: Request) -> Response:
-        """Calls hub/manage.py's start_experiment directly -- the same
-        function `hub.manage start-experiment` calls -- audited with the
-        console session's own credential via the `actor` parameter that
-        function accepts for exactly this reason, same as create_user/
-        set_user_role above."""
         claims = await _claims(request)
         if claims is None:
             return _redirect_to_signin()
@@ -2347,12 +1900,6 @@ def add_console_routes(
         org_id: str, claims: dict, *, tag: str = "", offset: int = 0,
         error: str = "", flash: str = "",
     ) -> Response:
-        """The Knowledge Base page, rendered from scratch.
-
-        Shared by the GET route and by the submit handler's re-render, so a
-        validation failure comes back to a fully populated page rather than
-        a stub missing the catalogue the visitor was just looking at.
-        """
         async with session_scope(session_factory) as session:
             submissions = await crud.list_my_kb_submissions(session, org_id)
             ent = await crud.entitlements(session, org_id)
@@ -2367,21 +1914,12 @@ def add_console_routes(
             try:
                 browse = await crud.browse_commons(session, org_id, tag=tag, offset=offset)
             except plans.EntitlementExceeded:
-                # A plan without Knowledge Base access still gets the page
-                # (its own proposals, its allowance) -- just not the
-                # catalogue. Failing the whole page would hide information
-                # the org is entitled to over one section it is not.
                 browse = None
         return _page(
             "Knowledge Base",
             _render_kb(
                 submissions, ent, browse, tag=tag,
                 can_submit=_is_admin(claims),
-                # Voting needs only `write`, not `admin`: reporting that an
-                # entry did or did not work is ordinary use of the
-                # repository, not administration of the org -- and gating
-                # it behind an admin key is how a governance signal ends up
-                # coming from the one person who least often runs the fix.
                 can_vote=scopes.satisfies(claims.get("scopes"), scopes.SCOPE_WRITE),
                 vote_counts=vote_counts,
                 auto_contribute=auto_contribute,
@@ -2406,22 +1944,11 @@ def add_console_routes(
             org_id, claims,
             tag=request.query_params.get("tag", "")[:64],
             offset=max(0, offset),
-            # A code, not text: a message read from the URL would let any
-            # link make the console say whatever its author wanted.
             flash=_KB_FLASH.get(request.query_params.get("done", ""), ""),
         )
 
     async def kb_submit(request: Request) -> Response:
-        """Propose an entry from the browser.
-
-        Until now this was reachable only as an MCP tool, which meant the
-        person who actually knows whether a fix generalises -- rather than
-        the agent that happened to apply it -- had no way to propose one at
-        all. Calls the SAME `crud.submit_kb_entry` the tool does, so the
-        operator-review gate, the rate limit and the credit on acceptance
-        are identical; this is a second door to that function, never a
-        second path to publication.
-        """
+        """Propose an entry from the browser."""
         claims = await _claims(request)
         if claims is None:
             return _redirect_to_signin()
@@ -2467,16 +1994,7 @@ def add_console_routes(
         )
 
     async def kb_auto_contribute(request: Request) -> Response:
-        """Turn this org's automatic contribution on or off.
-
-        Admin-scoped, and audited, because it is the one setting that
-        changes whether this organisation's own incident text leaves its
-        tenant at all. Everything downstream of the flag is unchanged: an
-        auto-proposed entry goes into the same operator-review queue a
-        hand-written one does (see `Organization.commons_auto_contribute`),
-        so this grants no new visibility to anyone -- it only stops a
-        participating org having to remember to propose each trace.
-        """
+        """Turn this org's automatic contribution on or off."""
         claims = await _claims(request)
         if claims is None:
             return _redirect_to_signin()
@@ -2506,20 +2024,7 @@ def add_console_routes(
         return RedirectResponse(f"{CONSOLE_PATH}/kb?done={done}", status_code=303)
 
     async def kb_vote(request: Request) -> Response:
-        """Cast this org's verdict on one Knowledge Base entry.
-
-        Calls the SAME `crud.vote_trace` the MCP tool does, which already
-        permits voting on any `commons_visible()` entry and upserts on
-        (trace, org) -- so voting twice changes a vote rather than stuffing
-        the ballot, and an org still cannot vote on content it cannot see.
-
-        Gated on `write`, not `admin`: reporting that a published fix did
-        or did not work is ordinary use of the repository. Requiring an
-        admin key would mean the governance signal comes from whoever holds
-        the most privileged credential rather than whoever actually ran the
-        fix, which is the opposite of what makes the standing worth
-        anything.
-        """
+        """Cast this org's verdict on one Knowledge Base entry."""
         claims = await _claims(request)
         if claims is None:
             return _redirect_to_signin()
@@ -2541,16 +2046,12 @@ def add_console_routes(
                     actor=audit.actor_for_api_key(str(claims.get("key") or "")),
                 )
         except ValueError as exc:
-            # A bad vote_type or feedback_tag -- a tampered form, since the
-            # rendered one only ever offers valid values.
             return await _kb_view(org_id, claims, error=str(exc))
         if voted is None:
             return await _kb_view(
                 org_id, claims,
                 error="That entry is no longer in the Knowledge Base.",
             )
-        # Two different true things, and saying only the first one to an
-        # org whose vote did not count would be a quiet lie by omission.
         done = "voted" if voted.get("vote_counted", True) else "voted_uncounted"
         return RedirectResponse(f"{CONSOLE_PATH}/kb?done={done}", status_code=303)
 
@@ -2571,10 +2072,6 @@ def add_console_routes(
         return _page("Users & roles", _render_users(users, _is_admin(claims)))
 
     async def users_create(request: Request) -> Response:
-        """Admin-scope-gated: creates a User row through the SAME
-        hub/manage.py function `hub.manage create-user` calls, audited
-        with the actual console session's own credential (not a borrowed
-        `operator-cli` label) via `actor=`."""
         claims = await _claims(request)
         if claims is None:
             return _redirect_to_signin()
@@ -2597,13 +2094,6 @@ def add_console_routes(
     async def _mutate_own_org_user(
         request: Request, user_id: str, action,
     ) -> Response:
-        """Shared body for the three per-user mutating routes below: admin
-        gate, then an explicit org-ownership check before calling into
-        hub/manage.py -- `set_user_role`/`disable_user`/`enable_user` take
-        only a bare user_id (correct for a trusted, cross-tenant operator
-        CLI caller) and do not themselves verify which org a user belongs
-        to, so a customer's own browser session must check that here
-        before ever reaching them."""
         claims = await _claims(request)
         if claims is None:
             return _redirect_to_signin()
@@ -2660,11 +2150,6 @@ def add_console_routes(
         return _page("API keys", _render_keys(keys, _is_admin(claims)))
 
     async def keys_issue(request: Request) -> Response:
-        """Calls hub/auth.py directly rather than hub/manage.py's own
-        `issue_key` -- that CLI wrapper only prints the result, and this
-        route needs the raw key back as data to render it once, not on
-        stdout. Audited the same way manage.py's issue_key audits it,
-        with the console session's own credential as actor."""
         claims = await _claims(request)
         if claims is None:
             return _redirect_to_signin()
@@ -2707,12 +2192,6 @@ def add_console_routes(
         key_id = request.path_params["key_id"]
         async with session_scope(session_factory) as session:
             key = await session.get(ApiKey, key_id)
-        # Explicit org-ownership check -- auth.rotate_api_key takes only a
-        # bare key_id and, like revoke below, trusts a cross-tenant
-        # operator caller to have already scoped it; a customer's own
-        # session must not be able to rotate (or even discover the
-        # existence of) another org's key by guessing its id.
-        # An already-revoked key is shown the same way: it cannot be rotated.
         if key is None or key.org_id != org_id or key.revoked_at is not None:
             keys = await _list_keys(org_id)
             return _page("API keys", _render_keys(keys, True))
@@ -2761,11 +2240,6 @@ def add_console_routes(
         return _page("Alerts", _render_alerts(rules, _is_admin(claims)))
 
     async def alerts_create(request: Request) -> Response:
-        """Calls hub/alerts.py directly, same as manage.py's own
-        create-alert-rule CLI command -- create_rule already takes a
-        `created_by` actor and is inherently org-scoped (it writes
-        org_id straight onto the new row), so no separate ownership
-        check is needed here the way key/user mutations require."""
         claims = await _claims(request)
         if claims is None:
             return _redirect_to_signin()
@@ -2777,12 +2251,6 @@ def add_console_routes(
         metric = str(form.get("metric") or "")
         comparator = str(form.get("comparator") or "")
         try:
-            # str(...) first, like expires_days below: form.get() can return
-            # an UploadFile (a form field submitted as a file part rather
-            # than plain text), and float()/int() raise TypeError -- not
-            # ValueError -- on that, which this except would not catch,
-            # turning a malformed request into an unhandled 500 instead of
-            # the clean validation error this branch exists to return.
             threshold = float(str(form.get("threshold") or ""))
         except ValueError:
             rules = await _list_alert_rules(org_id)
@@ -2814,21 +2282,12 @@ def add_console_routes(
         rule_id = request.path_params["rule_id"]
         async with session_scope(session_factory) as session:
             rule = await session.get(AlertRule, rule_id)
-            # Explicit org-ownership check -- alerts.delete_rule takes only
-            # a bare rule_id and, like the API-key routes above, trusts a
-            # cross-tenant operator caller to have already scoped it.
             if rule is None or rule.org_id != org_id:
                 return RedirectResponse(f"{CONSOLE_PATH}/alerts", status_code=303)
             await alerts.delete_rule(session, rule_id)
         return RedirectResponse(f"{CONSOLE_PATH}/alerts", status_code=303)
 
     async def alerts_generate_report(request: Request) -> Response:
-        """Audit §8.3's `generate-report` CLI command, reachable from the
-        browser too. Not a GET: this queues a real `report.generated`
-        webhook delivery (`alerts.generate_report` calls `events.emit`),
-        so loading a page must never trigger it -- only a deliberate POST,
-        the same reasoning `proof_share`/`billing_checkout` already rely
-        on for their own state-creating actions."""
         claims = await _claims(request)
         if claims is None:
             return _redirect_to_signin()
@@ -2875,10 +2334,6 @@ def add_console_routes(
         return await _webhooks_view(org_id, _is_admin(claims))
 
     async def webhooks_create(request: Request) -> Response:
-        """Calls hub/events.py's add_endpoint directly -- the same function
-        `hub.manage webhook-add` calls -- audited with the console
-        session's own credential rather than a borrowed operator-cli
-        label, same discipline as keys_issue/users_create above."""
         claims = await _claims(request)
         if claims is None:
             return _redirect_to_signin()
@@ -2900,7 +2355,6 @@ def add_console_routes(
             await audit.record(
                 session, actor=actor, action="webhook.add",
                 org_id=org_id, target_type="webhook_endpoint", target_id=endpoint.id,
-                # The URL, not the secret. Never the secret.
                 summary=f"{url} ({len(endpoint.events)} event types)",
             )
         return await _webhooks_view(org_id, True, fresh={"secret": secret})
@@ -2915,9 +2369,6 @@ def add_console_routes(
         endpoint_id = request.path_params["endpoint_id"]
         async with session_scope(session_factory) as session:
             endpoint = await session.get(WebhookEndpoint, endpoint_id)
-        # Explicit org-ownership check -- events.rotate_secret takes only a
-        # bare endpoint_id and, like the API-key routes above, trusts a
-        # cross-tenant operator caller to have already scoped it.
         if endpoint is None or endpoint.org_id != org_id:
             return await _webhooks_view(org_id, True)
         actor = audit.actor_for_api_key(str(claims.get("key") or ""))
@@ -2953,10 +2404,6 @@ def add_console_routes(
         return RedirectResponse(f"{CONSOLE_PATH}/webhooks", status_code=303)
 
     async def audit_page(request: Request) -> Response:
-        """Read-only for every signed-in user, like Proof/Memory/Knowledge
-        Base -- an org's own audit trail is not a credential and gating it
-        behind admin scope would hide from a non-admin viewer the very
-        actions an admin took on their behalf."""
         claims = await _claims(request)
         if claims is None:
             return _redirect_to_signin()

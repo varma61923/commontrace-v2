@@ -1,5 +1,3 @@
-"""metrics/baseline.json is what later phases report against; pin its shape so
-a regenerated file cannot silently lose a measurement."""
 import json
 import os
 

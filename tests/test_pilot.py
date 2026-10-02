@@ -1,13 +1,3 @@
-"""Tests for commontrace/pilot.py's yes/no gate (`determine_result`) and the
-`commontrace pilot` CLI command that bundles taxonomy + impact + the
-baseline/current resolution rate into one report.
-
-The property that matters most: a randomized-holdout (causal) result always
-outranks a correlational one, and the gate never reports "yes" from
-correlational data alone -- matching README.md's "Prove the lessons cause
-the improvement" and the product strategy's insistence that every other number in
-this repo is correlational.
-"""
 from __future__ import annotations
 
 import json
@@ -55,13 +45,11 @@ class TestDetermineResultCausalOutranksCorrelational:
         v = pilot.determine_result(
             harmful_lesson_slugs=[],
             causal_effects=[_effect("NO_MEASURABLE_EFFECT"), _effect("UNDERPOWERED")],
-            resolution_delta=0.9, has_baseline=True,  # even a great correlational delta...
+            resolution_delta=0.9, has_baseline=True,
         )
-        assert v.level == pilot.RESULT_UNKNOWN  # ...cannot be promoted to YES
+        assert v.level == pilot.RESULT_UNKNOWN
 
     def test_empty_causal_effects_list_is_treated_as_holdout_data_with_no_signal_yet(self):
-        """[] (data exists, nothing analyzable) is distinct from None (no
-        holdout log at all) -- both land here, not in the correlational branch."""
         v = pilot.determine_result(
             harmful_lesson_slugs=["some_harmful_lesson"], causal_effects=[],
             resolution_delta=None, has_baseline=False,
@@ -79,17 +67,12 @@ class TestDetermineResultCorrelationalFallback:
         assert "lesson_bad" in v.explanation
 
     def test_improved_resolution_rate_with_no_harmful_lesson_is_likely_not_yes(self):
-        """Correlational improvement never earns an outright YES -- only causal does."""
         v = pilot.determine_result(
             harmful_lesson_slugs=[], causal_effects=None,
             resolution_delta=0.10, has_baseline=True,
         )
         assert v.level == pilot.RESULT_UNKNOWN
         assert "LIKELY" in v.label
-        # resolution_delta is a RELATIVE change, not a percentage-point
-        # difference -- the label must say so explicitly rather than
-        # showing the bare number, which reads as an absolute rate/point
-        # change out of context (see determine_result's own comment).
         assert "relative" in v.label.lower()
         assert "causal" in v.explanation.lower()
 

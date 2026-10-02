@@ -1,14 +1,3 @@
-"""Tests for hub/otlp.py -- `POST /v1/traces`, the OTLP/HTTP ingest path.
-
-The property that matters most: every span is normalized through
-commontrace/adapters.py's `normalize(span, source="otel")`, the SAME
-function `commontrace import --source otel` and
-commontrace/otel_exporter.py both already call -- so this file does not
-re-test that parsing (tests/test_adapters.py and
-tests/test_otel_exporter.py already do), it tests that THIS path wires it
-to `crud.contribute_trace` correctly: auth, scopes, tenant isolation,
-idempotent replay, and the explicit protobuf refusal.
-"""
 from __future__ import annotations
 
 import httpx
@@ -52,7 +41,6 @@ def _key(raw_key: str) -> dict[str, str]:
 
 def _span(span_id: str, *, prompt: str = "handle the refund", completion: str = "issued a refund",
           status_code: str = "OK") -> dict:
-    """One OTLP-JSON span, GenAI semantic conventions, current draft."""
     return {
         "traceId": "t" * 32,
         "spanId": span_id,
@@ -217,8 +205,6 @@ class TestBodyValidation:
 
 
 class TestOccasionJoin:
-    """A span that names its occasion and says how it went closes the holdout observation."""
-
     @staticmethod
     def _outcome_span(span_id, occasion, succeeded, key="commontrace.occasion_id"):
         return {"traceId": "t" * 32, "spanId": span_id, "name": "task finished", "status": {"code": "UNSET"},

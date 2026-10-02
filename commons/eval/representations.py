@@ -1,42 +1,4 @@
-"""Would a different token representation fix the commons' recall problem?
-
-WHY THIS IS AN EXPERIMENT AND NOT A PATCH. The evaluation measured
-the shipped matcher at 10.9% recall with a 0% false-positive rate: when a
-fleet describes a failure in its own words, the commons finds knowledge it
-provably holds about one time in nine. That is the single defect blocking
-the product's core proposition, and it is a *representation* problem --
-Jaccard over content words is lexical, and two engineers describing the
-same failure share almost no words.
-
-The obvious move is to change how text is tokenized. This file measures
-what that would buy, and changes nothing that ships. commontrace/overlap.py
-is imported, never modified; every candidate below reuses that module's
-permutations, its hash, and its `estimate_jaccard` unaltered, and every
-candidate is scored at the shipped 0.30 threshold. The only thing that
-varies between rows of the output is which token set goes into the MinHash.
-
-WHY THE DECISION IS NOT MINE TO MAKE. A better representation raises the
-coverage number every customer sees, which is exactly the shape of change
-that must not be made to make numbers look better. So the honest question
-is not "did recall go up" but "did it go up because the matcher found real
-matches, or because the bar dropped". There is a falsifiable test for that
-and it is already built: the negative controls. Recall rising while false
-positives stay at zero means the product genuinely got better. Recall
-rising alongside false positives means the bar dropped, and the gain is
-fake. Both numbers are printed side by side for every candidate, and the
-right-record rate with them -- a match that lands on the wrong trace is
-worse than no match, because it spends the customer's trust.
-
-TWO SETS, AND WHY. probes-v1 is now a DEV set: its per-probe misses were
-read while thinking about this problem, so any candidate that looks good on
-it may simply be fitted to it. probes-v2 was written before any candidate
-here existed -- 46 second phrasings of the same corpus records in a terse,
-log-line voice, plus 19 fresh absent failures -- and is the number to
-believe. Both are printed, because a candidate that wins on dev and loses
-on held-out is the most important result this file can produce.
-
-Run:  python commons/eval/representations.py
-"""
+"""Would a different token representation fix the commons' recall problem?"""
 from __future__ import annotations
 
 import json
@@ -65,17 +27,7 @@ THRESHOLD = commons.DEFAULT_COMMONS_THRESHOLD
 _WORD = re.compile(r"\w+", re.UNICODE)
 
 
-# --- Candidate token representations ------------------------------------
-#
-# Each takes the SAME text that production signs (commons.matchable_text on
-# the corpus side, label + text + tags on the probe side) and returns a
-# token set. Nothing else differs between candidates.
-
-
 def words(text: str) -> set[str]:
-    """The shipped representation: lowercase word tokens, stopwords out,
-    single characters out. Reproduced here rather than imported so the
-    comparison is visibly like-for-like."""
     return {w for w in _WORD.findall((text or "").lower()) if w not in _STOPWORDS and len(w) > 1}
 
 
@@ -89,9 +41,6 @@ def _char_ngrams(text: str, n: int) -> set[str]:
 
 
 def char4(text: str) -> set[str]:
-    """Character 4-grams. The motivation is morphological: 'exhausted' and
-    'exhaustion', 'retry' and 'retries', 'timing out' and 'timeout' share no
-    word token at all but share most of their character runs."""
     return _char_ngrams(text, 4)
 
 
@@ -110,15 +59,10 @@ def _stem(w: str) -> str:
 
 
 def stems(text: str) -> set[str]:
-    """Crude suffix stripping -- the cheap half of what char n-grams buy,
-    without the vocabulary blow-up."""
     return {_stem(w) for w in words(text)}
 
 
 def words_and_char4(text: str) -> set[str]:
-    """Union. Word tokens keep the precise signal; n-grams add the fuzzy
-    one. The risk is that the n-grams swamp the words in the union and the
-    precision of the word half stops mattering."""
     return words(text) | {"#" + g for g in char4(text)}
 
 
@@ -131,17 +75,8 @@ CANDIDATES = {
 }
 
 
-# --- Scoring -------------------------------------------------------------
-
-
 def signature(tokens: set[str]) -> list[int]:
-    """MinHash over an arbitrary token set, using production's own
-    permutations and hash so the similarity being estimated is the same
-    quantity the Hub estimates."""
     if not tokens:
-        # Production draws randomly here so two empty texts never compare as
-        # identical. A fixed sentinel is fine in an evaluation and keeps runs
-        # reproducible; no corpus record or probe is empty in practice.
         return [0] * NUM_PERM
     hashes = [_stable_hash(t) for t in tokens]
     return [min((a * h + b) % _MERSENNE_61 for h in hashes) for a, b in _permutations(NUM_PERM)]
@@ -159,8 +94,8 @@ def score(tokenize, probes: list[dict], corpus: list[dict], threshold: float = T
     ]
 
     hits = right = false_pos = 0
-    rank1 = 0          # right record ranked first, THRESHOLD IGNORED
-    sims_of_truth = []  # similarity to the correct record, for every positive
+    rank1 = 0
+    sims_of_truth = []
     n_pos = n_neg = 0
     for p in probes:
         text = " ".join([p["label"], p.get("text", ""), " ".join(p.get("tags") or [])])
@@ -173,11 +108,6 @@ def score(tokenize, probes: list[dict], corpus: list[dict], threshold: float = T
         matched = best_sim >= threshold and best_i >= 0
         if p["expect"] == "covered":
             n_pos += 1
-            # Ranking quality, measured independently of the threshold. If
-            # the right record is already ranked first and merely sits below
-            # 0.30, the knowledge IS findable and the binary verdict is what
-            # hides it -- a different problem, with a different fix, than a
-            # matcher that cannot rank at all.
             if best_i >= 0 and titles[best_i] == p.get("target"):
                 rank1 += 1
             tgt = p.get("target")
@@ -194,10 +124,6 @@ def score(tokenize, probes: list[dict], corpus: list[dict], threshold: float = T
 
     return {
         "rank1": rank1 / n_pos if n_pos else 0.0,
-        # statistics.median averages the two middle values on an even-length
-        # list; sims_of_truth[len // 2] instead always picked the
-        # upper-middle element outright, silently skewing the reported
-        # median toward higher similarities whenever the probe count was even.
         "median_true_sim": statistics.median(sims_of_truth) if sims_of_truth else 0.0,
         "recall": hits / n_pos if n_pos else 0.0,
         "right_of_hits": right / hits if hits else 0.0,

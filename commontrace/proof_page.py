@@ -1,15 +1,4 @@
-"""One self-contained HTML page for a proof package: the thing you send to a buyer.
-
-Built from `proof.json` alone (the record `proof.build` writes), so it can be regenerated
-by anyone holding the package and carries nothing the record does not. No script, no
-external request, every value escaped: it opens from a file, an email attachment or a static
-host, and a lesson slug from an agent is text, never markup.
-
-The page states what the record states, in the same words: a compromised run shows no
-figure, an interim run says so on its face, a demo is bannered as synthetic, and the
-signature line says what a signature does and does not establish. The forest plot has the
-table beside it and is described in text for a screen reader.
-"""
+"""One self-contained HTML page for a proof package: the thing you send to a buyer."""
 from __future__ import annotations
 
 import html

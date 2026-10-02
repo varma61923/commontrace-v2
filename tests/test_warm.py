@@ -1,11 +1,3 @@
-"""The warm query worker (commontrace/warm.py): faster, and otherwise invisible.
-
-Every test here runs a stand-in for reference/query.py with the same shape
-(module-level paths from COMMONTRACE_ROOT, load_model/load_index, a `main()`
-that parses argv and prints), so the worker's contract can be checked without
-the attention extra: what reaches the caller must be exactly what the
-subprocess would have produced, and any failure must land on the subprocess.
-"""
 import os
 import shutil
 import signal
@@ -88,8 +80,6 @@ FAKE_SCRIPT = textwrap.dedent('''\
 
 @pytest.fixture
 def env(monkeypatch):
-    # A short runtime dir: AF_UNIX paths are capped near 100 bytes, and
-    # pytest's own tmp paths are long enough to push past it.
     run = tempfile.mkdtemp(prefix="ctw")
     os.chmod(run, 0o700)
     monkeypatch.setenv("XDG_RUNTIME_DIR", run)
@@ -184,7 +174,6 @@ def _store(tmp_path, name, index_text="v1"):
 
 
 def _both(root, argv, capfd, monkeypatch):
-    """(rc, stdout, stderr) through the subprocess, then through the worker."""
     results = []
     for setting in ("0", "1"):
         monkeypatch.setenv("COMMONTRACE_WARM", setting)
@@ -198,7 +187,7 @@ class TestTheWorkerAnswersExactlyAsTheSubprocessWould:
         ["--top-k", "4", "--", "retry the payment"],
         ["--", "non-ASCII: café — 日本語"],
         ["--fail", "--", "q"],
-        ["--top-k", "zero", "--", "q"],  # argparse's own error and exit status 2
+        ["--top-k", "zero", "--", "q"],
         ["--", "--top-k"],
     ])
     def test_same_rc_stdout_and_stderr(self, tmp_path, env, script, capfd, monkeypatch, argv):
@@ -223,7 +212,6 @@ class TestTheWorkerAnswersExactlyAsTheSubprocessWould:
         _, out_b = _shellout.run_script(b, QUERY, ["--", "second"], "hint", capture=True)
         assert "index=index-a" in out_a and os.path.join(a, "memory", "lessons") in out_a
         assert "index=index-b" in out_b and os.path.join(b, "memory", "lessons") in out_b
-        # Telemetry lands in each store, as the subprocess would have written it.
         assert open(os.path.join(a, "memory", "alpha_telemetry.jsonl")).read() == "first\n"
         assert open(os.path.join(b, "memory", "alpha_telemetry.jsonl")).read() == "second\n"
 
@@ -246,9 +234,9 @@ class TestTheIndexBuilderIsServedToo:
     def test_it_reuses_the_model_the_query_path_loaded(self, tmp_path, script):
         root = _store(tmp_path, "store")
         loaded = warm._Script(script)
-        loaded.answer(["--", "q"], root)          # loads "m" through the query script
+        loaded.answer(["--", "q"], root)
         assert loaded.build([], root)["rc"] == 0
-        assert loaded.builder().LOADS == []        # not loaded a second time
+        assert loaded.builder().LOADS == []
         assert loaded.build([], root)["rc"] == 0
         assert loaded.builder().LOADS == []
 
@@ -273,10 +261,8 @@ class TestTheIndexBuilderIsServedToo:
 
 
 def test_a_long_first_build_is_waited_for_not_run_twice():
-    """A first build of a large store outlasts a query's reply timeout; timing
-    out would start the same build again in a subprocess."""
     assert warm._reply_timeout({"op": "build"}) > 3600
-    assert warm._reply_timeout({"op": "cli"}) > 3600   # a query can refresh a stale index first
+    assert warm._reply_timeout({"op": "cli"}) > 3600
     assert warm._reply_timeout({"op": "rerank"}) == warm._reply_timeout({}) == warm._REPLY_TIMEOUT_SECONDS
 
 
@@ -326,7 +312,6 @@ class TestOnlyThisUserCanReachIt:
         os.mkdir(directory, 0o700)
         os.chmod(directory, 0o755)
         assert warm.runtime_dir() is None
-        # ...and the call still succeeds, through the subprocess.
         rc, out = _shellout.run_script(_store(tmp_path, "store"), QUERY, ["--", "q"], "hint", capture=True)
         assert rc == 0 and "# q" in out
         assert os.listdir(directory) == []
@@ -364,7 +349,7 @@ class TestFailureMeansTheSubprocessNotAnError:
         sock = warm.socket_path(script)
         dead = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         dead.bind(sock)
-        dead.close()  # the file remains; nothing listens on it
+        dead.close()
         rc, out = _shellout.run_script(_store(tmp_path, "store"), QUERY, ["--", "q"], "hint", capture=True)
         assert rc == 0 and "# q" in out
         assert _ask_pid(sock)
@@ -375,7 +360,7 @@ class TestFailureMeansTheSubprocessNotAnError:
         monkeypatch.setattr(_shellout, "find_reference_script", lambda root, relative: str(broken))
         rc, _ = _shellout.run_script(_store(tmp_path, "store"), QUERY, ["--", "q"], "hint", capture=True)
         assert rc == 1
-        assert "no torch here" in capfd.readouterr().err  # the subprocess's own traceback
+        assert "no torch here" in capfd.readouterr().err
 
 
 class TestItGoesAway:
@@ -426,9 +411,6 @@ class TestDoctorReportsIt:
         assert not healthy and "0700" in detail
 
 
-# --- the reranker's scores, from the worker (commontrace/rerank_arm.py) ------
-
-
 class _FakeCrossEncoder:
     def predict(self, pairs, batch_size=64, show_progress_bar=False):
         return [len(task) * 0.5 - len(text) * 0.25 for task, text in pairs]
@@ -455,7 +437,7 @@ class TestTheWorkerScoresExactlyAsTheRerankerWould:
             {"op": "rerank", "mode": 3, "pairs": []},
         ):
             assert warm._ask(sock, dict(request, protocol=warm.PROTOCOL), connect_deadline=0.0) is None
-        assert _ask_pid(sock)  # still serving
+        assert _ask_pid(sock)
 
     def test_a_worker_that_cannot_rerank_says_so_and_no_second_worker_starts(
         self, tmp_path, env, script, capfd, monkeypatch
@@ -501,7 +483,6 @@ def _real_models_cached():
 
 @pytest.mark.skipif(not _real_models_cached(), reason="needs the attention extra and a cached cross-encoder")
 def test_the_real_model_scores_identically_through_the_worker(env, monkeypatch):
-    """The real script and the real (fast) cross-encoder, in a real worker."""
     from commontrace import rerank_arm
 
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
@@ -512,9 +493,6 @@ def test_the_real_model_scores_identically_through_the_worker(env, monkeypatch):
     local = [float(x) for x in rerank_arm._load("cross-encoder-fast").predict(
         pairs, batch_size=64, show_progress_bar=False)]
     assert remote == local
-
-
-# --- whole commands, run by the worker (commontrace/cli.py, warm.run_cli) ----
 
 
 def _lexical_store(tmp_path, name="cli-store"):
@@ -552,7 +530,7 @@ class TestAWorkerRunsTheQueryCommand:
         before_env, before_cwd = dict(os.environ), os.getcwd()
         env = dict(os.environ, COMMONTRACE_ROOT=root, CT_WARM_PROBE="1")
         reply = warm._Script(script).cli(["query", "payment retry", "--lexical"], str(elsewhere), env)
-        assert reply["rc"] == 0 and "idem" in reply["stdout"]   # found through the caller's COMMONTRACE_ROOT
+        assert reply["rc"] == 0 and "idem" in reply["stdout"]
         assert dict(os.environ) == before_env and os.getcwd() == before_cwd
 
     def test_argparse_errors_and_exit_status_come_back(self, tmp_path, script):
@@ -569,7 +547,7 @@ class TestAWorkerRunsTheQueryCommand:
         assert warm.run_cli(["query", "x"]) is None
         root = _store(tmp_path, "store")
         rc, out, _err = warm.run(script, ["--", "q"], root, dict(os.environ))
-        assert rc == 0 and "# q" in out                         # answered from the script it holds
+        assert rc == 0 and "# q" in out
         assert warm.run(str(tmp_path / "other.py"), ["--", "q"], root, {}) is None
 
     def test_only_listed_commands_and_well_formed_requests_are_run(self, tmp_path, env, script, capfd):
@@ -600,7 +578,6 @@ class TestAWorkerRunsTheQueryCommand:
 
 @pytest.mark.skipif(not _real_models_cached(), reason="needs the attention extra and cached models")
 def test_the_real_query_command_prints_the_same_through_the_worker(tmp_path, env):
-    """The real script, the real models, a real worker, against the one-shot command."""
     import subprocess
     import sys
 
@@ -618,8 +595,6 @@ def test_the_real_query_command_prints_the_same_through_the_worker(tmp_path, env
 
 
 def test_an_edit_anywhere_in_the_package_reaches_a_new_worker(tmp_path, monkeypatch, env, script):
-    """The worker runs whole commands with the package it imported; editing
-    query_cmd.py (say) must not leave it serving the old code."""
     pkg = tmp_path / "pkg"
     (pkg / "commands").mkdir(parents=True)
     (pkg / "warm.py").write_text("# stand-in\n")

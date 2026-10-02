@@ -47,20 +47,12 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p.set_defaults(func=run)
 
 
-# The profiles whose pipelines write memory/episodes/ rather than
-# memory/traces/. Episodes are a property of the PROFILE, not of the fleet:
-# SKILL.md's double-review loop emits them, and any fleet could in principle
-# run that loop. Keying the store layout on `agent_type == "code"` instead
-# made "code" the only first-class agent type in a product whose taxonomy is
-# explicitly open (protocol/PROTOCOL.md#7).
 EPISODE_PROFILES = frozenset({"code-review"})
 
 
 def _profile_for(args: argparse.Namespace) -> str:
     if args.profile is not None:
         return args.profile.strip()
-    # The code-review profile is what writes episodes/, so it follows the
-    # coding agent type and nothing else.
     return "code-review" if args.agent_type == "code" else ""
 
 
@@ -98,7 +90,6 @@ def run(args: argparse.Namespace) -> int:
         return 2
     root = os.path.abspath(args.dest)
     if kit is not None:
-        # The kit's starter domains, unless this type already has its own.
         paths.STARTER_DOMAINS.setdefault(kit.agent_type, list(kit.domains) or ["other"])
     profile = _profile_for(args)
     mem = paths.memory_dir(root)
@@ -131,8 +122,6 @@ def run(args: argparse.Namespace) -> int:
                     index_file,
                     slugs=np.array([], dtype=str),
                     embeddings=np.zeros((0, 768), dtype=np.float32),
-                    # An empty index pins no model: the first build uses
-                    # the default (build_index.index_model).
                     model_name="Snowflake/snowflake-arctic-embed-m-v1.5",
                     encoded_field="description+domain+tags+applies_when+do_not_apply_when+rule",
                     timestamp="",
@@ -186,9 +175,6 @@ def run(args: argparse.Namespace) -> int:
                   "says how long a verdict takes at your volume.")
 
     if has_attention_deps():
-        # Recommended, not switched on: whether a store fuses must be its
-        # recorded decision, not a side effect of what happens to be
-        # installed on the machine that ran `init`.
         print(
             "[commontrace] The attention extra is installed, so retrieval searches by "
             "keyword and meaning and a cross-encoder decides what reaches the page "

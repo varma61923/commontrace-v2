@@ -1,12 +1,3 @@
-"""protocol/schemas/*.json and commontrace/schemas/*.json must stay identical.
-
-The schemas are duplicated across two trees so `commontrace/` can be
-pip-installed standalone without a checkout of `protocol/`. Nothing enforced
-that the copies stay in sync, so a schema edit applied to one and not the
-other would drift silently: the protocol spec would say one thing and the
-runtime CLI validator (which loads from commontrace/schemas/, see
-commontrace/validate.py) would enforce another.
-"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -36,7 +27,5 @@ def test_packaged_schema_matches_protocol_schema(name):
 
 
 def test_no_extra_schemas_in_package_copy():
-    """The reverse direction: a schema added to commontrace/schemas/ but not
-    protocol/ would mean the CLI enforces something the spec doesn't define."""
     package_names = sorted(p.name for p in PACKAGE_SCHEMAS.glob("*.json"))
     assert package_names == _schema_names()

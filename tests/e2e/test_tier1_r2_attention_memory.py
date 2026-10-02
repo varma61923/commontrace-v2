@@ -1,11 +1,3 @@
-"""Tier 1: Feature Coverage for Attention & Memory Performance (Milestone 2).
-
-Covers Features:
-- R2-F1: Bounded-Memory Semantic Deduplication
-- R2-F2: Incremental Embedding Indexing
-- R2-F3: Fast Query Metadata Co-location
-- R2-F4: Inverted-Index Lexical Deduplication
-"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -17,28 +9,21 @@ np = pytest.importorskip("numpy", reason="numpy is required for attention memory
 
 from tests.e2e.conftest import CLIResult  # noqa: E402
 
-# ============================================================================
-# R2-F1: Bounded-Memory Semantic Deduplication (>=5 tests)
-# ============================================================================
 
 def test_r2_f1_compute_semantic_duplicates_chunked_interface() -> None:
-    """Validate compute_semantic_duplicates with chunked float32 processing."""
     from commontrace.reference.measure_performance import compute_semantic_duplicates
 
     n = 20
     dim = 64
-    # Create normalized synthetic embeddings
     rng = np.random.default_rng(42)
     embs = rng.standard_normal((n, dim), dtype=np.float32)
     embs /= np.linalg.norm(embs, axis=1, keepdims=True)
 
-    # Make pair (0, 1) almost identical (cosine ~ 0.99)
     embs[1] = embs[0] + 0.01 * rng.standard_normal(dim, dtype=np.float32)
     embs[1] /= np.linalg.norm(embs[1])
 
     slugs = [f"lesson_{i:02d}" for i in range(n)]
 
-    # Run with small chunk size to verify block-wise computation
     count, pairs = compute_semantic_duplicates(embs, slugs, threshold=0.85, chunk_size=5)
 
     assert count >= 1 or len(pairs) >= 1
@@ -46,7 +31,6 @@ def test_r2_f1_compute_semantic_duplicates_chunked_interface() -> None:
 
 
 def test_r2_f1_empty_embeddings_graceful() -> None:
-    """Validate that compute_semantic_duplicates handles 0 lessons without error."""
     from commontrace.reference.measure_performance import compute_semantic_duplicates
 
     embs = np.zeros((0, 64), dtype=np.float32)
@@ -56,7 +40,6 @@ def test_r2_f1_empty_embeddings_graceful() -> None:
 
 
 def test_r2_f1_single_lesson_graceful() -> None:
-    """Validate that compute_semantic_duplicates handles 1 lesson without error."""
     from commontrace.reference.measure_performance import compute_semantic_duplicates
 
     embs = np.ones((1, 64), dtype=np.float32)
@@ -67,10 +50,8 @@ def test_r2_f1_single_lesson_graceful() -> None:
 
 
 def test_r2_f1_detects_identical_and_rejects_orthogonal_pairs() -> None:
-    """Validate that exact duplicates are found and orthogonal pairs are excluded."""
     from commontrace.reference.measure_performance import compute_semantic_duplicates
 
-    # 3 vectors: v0 and v1 identical [1, 0, 0], v2 orthogonal [0, 1, 0]
     embs = np.array([
         [1.0, 0.0, 0.0],
         [1.0, 0.0, 0.0],
@@ -86,14 +67,13 @@ def test_r2_f1_detects_identical_and_rejects_orthogonal_pairs() -> None:
 
 
 def test_r2_f1_pairs_sorted_descending_by_score() -> None:
-    """Validate that duplicate pairs are sorted in descending order of similarity."""
     from commontrace.reference.measure_performance import compute_semantic_duplicates
 
     embs = np.array([
         [1.0, 0.0],
         [1.0, 0.0],
-        [0.9, 0.43588989],  # cosine ~ 0.9
-        [0.86, 0.5102939],  # cosine ~ 0.86
+        [0.9, 0.43588989],
+        [0.86, 0.5102939],
     ], dtype=np.float32)
     slugs = ["l0", "l1", "l2", "l3"]
 
@@ -103,7 +83,6 @@ def test_r2_f1_pairs_sorted_descending_by_score() -> None:
 
 
 def test_r2_f1_bounded_memory_float32_preservation() -> None:
-    """Validate that compute_semantic_duplicates works when input is float64, converting to float32."""
     from commontrace.reference.measure_performance import compute_semantic_duplicates
 
     embs64 = np.array([[1.0, 0.0], [0.99, 0.01]], dtype=np.float64)
@@ -113,14 +92,7 @@ def test_r2_f1_bounded_memory_float32_preservation() -> None:
     assert len(pairs) == 1
 
 
-
-
-# ============================================================================
-# R2-F2: Incremental Embedding Indexing (>=5 tests)
-# ============================================================================
-
 class DummyEmbeddingModel:
-    """Mock SentenceTransformer for deterministic vector generation without external downloads."""
     def __init__(self, model_name: str = "test-model"):
         self.model_name = model_name
 
@@ -134,7 +106,6 @@ class DummyEmbeddingModel:
         dim = 768
         out = np.zeros((len(texts), dim), dtype=np.float32)
         for i, text in enumerate(texts):
-            # Seed based on text hash for determinism
             val = float(sum(ord(c) for c in text) % 1000) / 1000.0
             out[i, 0] = val
             out[i, 1] = 1.0 - val
@@ -149,7 +120,6 @@ def test_r2_f2_build_index_computes_sha256_hashes(
     monkeypatch: pytest.MonkeyPatch,
     lesson_factory: Callable[..., Path],
 ) -> None:
-    """Validate that build_or_update_index calculates SHA-256 hashes for lessons and writes to npz."""
     from commontrace.reference import build_index
 
     monkeypatch.setattr(build_index, "SentenceTransformer", DummyEmbeddingModel)
@@ -179,7 +149,6 @@ def test_r2_f2_unchanged_lessons_cached_in_index(
     monkeypatch: pytest.MonkeyPatch,
     lesson_factory: Callable[..., Path],
 ) -> None:
-    """Validate that subsequent index build reuses cached vectors for unchanged lessons."""
     from commontrace.reference import build_index
 
     monkeypatch.setattr(build_index, "SentenceTransformer", DummyEmbeddingModel)
@@ -192,11 +161,9 @@ def test_r2_f2_unchanged_lessons_cached_in_index(
     lesson_factory(store, slug="lesson_c1", body="## Rule\nRule C1\n")
     lesson_factory(store, slug="lesson_c2", body="## Rule\nRule C2\n")
 
-    # Initial build
     res1 = build_index.build_or_update_index(str(lessons_dir), str(output_npz))
     assert res1["encoded_count"] == 2
 
-    # Second build with unchanged lessons: all should be reused
     res2 = build_index.build_or_update_index(str(lessons_dir), str(output_npz))
     assert res2["n_lessons"] == 2
     assert res2["encoded_count"] == 0
@@ -208,7 +175,6 @@ def test_r2_f2_modified_lesson_triggers_selective_reencoding(
     monkeypatch: pytest.MonkeyPatch,
     lesson_factory: Callable[..., Path],
 ) -> None:
-    """Validate that modifying one lesson only re-encodes that specific lesson."""
     from commontrace.reference import build_index
 
     monkeypatch.setattr(build_index, "SentenceTransformer", DummyEmbeddingModel)
@@ -223,7 +189,6 @@ def test_r2_f2_modified_lesson_triggers_selective_reencoding(
 
     build_index.build_or_update_index(str(lessons_dir), str(output_npz))
 
-    # Modify one lesson
     lesson_factory(store, slug="lesson_mod", body="## Rule\nRule updated and modified\n")
 
     res = build_index.build_or_update_index(str(lessons_dir), str(output_npz))
@@ -237,7 +202,6 @@ def test_r2_f2_new_lesson_added_incrementally(
     monkeypatch: pytest.MonkeyPatch,
     lesson_factory: Callable[..., Path],
 ) -> None:
-    """Validate that adding a new lesson preserves cached embeddings for existing ones."""
     from commontrace.reference import build_index
 
     monkeypatch.setattr(build_index, "SentenceTransformer", DummyEmbeddingModel)
@@ -252,7 +216,6 @@ def test_r2_f2_new_lesson_added_incrementally(
 
     build_index.build_or_update_index(str(lessons_dir), str(output_npz))
 
-    # Add 3rd lesson
     lesson_factory(store, slug="lesson_new3", body="## Rule\nBrand new rule 3\n")
 
     res = build_index.build_or_update_index(str(lessons_dir), str(output_npz))
@@ -266,7 +229,6 @@ def test_r2_f2_force_rebuild_bypasses_cache(
     monkeypatch: pytest.MonkeyPatch,
     lesson_factory: Callable[..., Path],
 ) -> None:
-    """Validate that force_rebuild=True forces re-encoding of all lessons."""
     from commontrace.reference import build_index
 
     monkeypatch.setattr(build_index, "SentenceTransformer", DummyEmbeddingModel)
@@ -281,7 +243,6 @@ def test_r2_f2_force_rebuild_bypasses_cache(
 
     build_index.build_or_update_index(str(lessons_dir), str(output_npz))
 
-    # Force rebuild
     res = build_index.build_or_update_index(str(lessons_dir), str(output_npz), force_rebuild=True)
     assert res["n_lessons"] == 2
     assert res["encoded_count"] == 2
@@ -289,7 +250,6 @@ def test_r2_f2_force_rebuild_bypasses_cache(
 
 
 def test_r2_f2_empty_lessons_build_index(tmp_path: Path) -> None:
-    """Validate that build_or_update_index with 0 lessons writes a clean 0-row index."""
     from commontrace.reference import build_index
 
     store = tmp_path / "store"
@@ -305,16 +265,11 @@ def test_r2_f2_empty_lessons_build_index(tmp_path: Path) -> None:
         assert data["embeddings"].shape == (0, 768)
 
 
-# ============================================================================
-# R2-F3: Fast Query Metadata Co-location (>=5 tests)
-# ============================================================================
-
 def test_r2_f3_npz_stores_importances_and_statuses(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     lesson_factory: Callable[..., Path],
 ) -> None:
-    """Validate that index.npz contains importances and statuses metadata arrays."""
     from commontrace.reference import build_index
 
     monkeypatch.setattr(build_index, "SentenceTransformer", DummyEmbeddingModel)
@@ -341,7 +296,6 @@ def test_r2_f3_query_filters_active_status_using_metadata(
     isolated_store: Path,
     lesson_factory: Callable[..., Path],
 ) -> None:
-    """Validate that query does not retrieve lessons with review or archived status."""
     lesson_factory(
         isolated_store,
         slug="lesson_active_standard",
@@ -366,7 +320,6 @@ def test_r2_f3_query_importance_floor_filtering(
     isolated_store: Path,
     lesson_factory: Callable[..., Path],
 ) -> None:
-    """Validate load_importances_from_index extracts co-located importances without disk read."""
     from commontrace.reference import query as query_module
 
     npz_path = isolated_store / "memory" / "attention" / "index.npz"
@@ -397,13 +350,10 @@ def test_r2_f3_query_importance_floor_filtering(
         assert imp_dict["lesson_imp2"] == 2
 
 
-
-
 def test_r2_f3_fast_metadata_loading_in_query(
     isolated_store: Path,
     lesson_factory: Callable[..., Path],
 ) -> None:
-    """Validate that query.py's load_index or metadata helpers access importances without disk YAML parsing."""
     from commontrace.reference import query as query_module
 
     npz_path = isolated_store / "memory" / "attention" / "index.npz"
@@ -435,13 +385,11 @@ def test_r2_f3_query_fallback_when_metadata_absent(
     isolated_store: Path,
     lesson_factory: Callable[..., Path],
 ) -> None:
-    """Validate that query gracefully falls back if index.npz lacks importances/statuses."""
     npz_path = isolated_store / "memory" / "attention" / "index.npz"
     npz_path.parent.mkdir(parents=True, exist_ok=True)
 
     slugs = ["lesson_legacy"]
     embs = np.ones((1, 768), dtype=np.float32)
-    # Save without importances or statuses
     np.savez(
         str(npz_path),
         slugs=slugs,
@@ -454,12 +402,7 @@ def test_r2_f3_query_fallback_when_metadata_absent(
         assert "importances" not in data.files
 
 
-# ============================================================================
-# R2-F4: Inverted-Index Lexical Deduplication (>=5 tests)
-# ============================================================================
-
 def test_r2_f4_compute_lexical_duplicates_basic() -> None:
-    """Validate compute_lexical_duplicates identifies overlap between near-duplicate lessons."""
     from commontrace.reference.measure_performance import compute_lexical_duplicates
 
     lessons = {
@@ -486,7 +429,6 @@ def test_r2_f4_compute_lexical_duplicates_basic() -> None:
 
 
 def test_r2_f4_inverted_index_prunes_disjoint_candidates() -> None:
-    """Validate that completely disjoint lessons produce 0 candidate duplicate pairs."""
     from commontrace.reference.measure_performance import compute_lexical_duplicates
 
     lessons = {
@@ -500,10 +442,8 @@ def test_r2_f4_inverted_index_prunes_disjoint_candidates() -> None:
 
 
 def test_r2_f4_stopword_filtering_prevents_false_matches() -> None:
-    """Validate that common stopwords do not trigger false duplicate detection."""
     from commontrace.reference.measure_performance import compute_lexical_duplicates
 
-    # Two lessons that only share generic English stop words ("the", "is", "when", "to")
     lessons = {
         "lesson_x": {"description": "the apple is on the table", "applies_when": "when to eat"},
         "lesson_y": {"description": "the boat is in the harbor", "applies_when": "when to sail"},
@@ -514,7 +454,6 @@ def test_r2_f4_stopword_filtering_prevents_false_matches() -> None:
 
 
 def test_r2_f4_unicode_and_accent_normalization() -> None:
-    """Validate that lexical deduplication correctly handles unicode / accented tokens."""
     from commontrace.reference.measure_performance import compute_lexical_duplicates
 
     lessons = {
@@ -527,7 +466,6 @@ def test_r2_f4_unicode_and_accent_normalization() -> None:
 
 
 def test_r2_f4_empty_corpus_handling() -> None:
-    """Validate that empty or 1-lesson dictionary returns empty result structure."""
     from commontrace.reference.measure_performance import compute_lexical_duplicates
 
     res_empty = compute_lexical_duplicates({}, threshold=0.5)
@@ -540,7 +478,6 @@ def test_r2_f4_empty_corpus_handling() -> None:
 
 
 def test_r2_f4_prunes_large_candidate_space() -> None:
-    """Validate performance on synthetic corpus with multiple clusters."""
     from commontrace.reference.measure_performance import compute_lexical_duplicates
 
     lessons = {}

@@ -1,22 +1,3 @@
-"""Tests for hub/rest.py -- the `/api/v1/*` surface the CommonTrace Claude
-Code plugin speaks.
-
-The wire format here is not this codebase's to choose: it is dictated by a
-client that already exists and already ships (`commontrace/skill`'s hooks).
-So the property that matters most, and the one these tests are built
-around, is FIDELITY TO THAT CLIENT -- the exact paths, the `X-API-Key`
-header, `q` rather than `query`, `contributor_name` rather than
-`contributor`, a `{"results": [...]}` envelope, and a 403 (not a 401 or a
-500) on the one status the plugin branches on specifically. A change here
-that still passes hub/tests/test_crud-level checks but renames a field
-breaks every installed plugin silently, which is exactly what
-`TestThePluginsOwnRequestShapes` exists to catch.
-
-Everything else is the same posture the rest of this Hub's routes are held
-to: absent unless configured, no tenant boundary crossable, a malformed
-body is a 400 rather than a 500, and nothing reaches Postgres before the
-credential does.
-"""
 from __future__ import annotations
 
 import httpx
@@ -50,9 +31,6 @@ def _client(app: Starlette) -> httpx.AsyncClient:
 
 
 async def _org_with_key(session_factory, name="Acme", scopes=None):
-    """A real org and a real raw key, issued the way every other caller
-    gets one -- so a test that authenticates here proves the same path a
-    deployed plugin walks, not a fixture-shaped approximation of it."""
     async with session_scope(session_factory) as session:
         org = Organization(name=name)
         session.add(org)
@@ -67,8 +45,6 @@ def _key(raw_key: str) -> dict[str, str]:
 
 class TestAbsentUnlessEnabled:
     async def test_no_routes_when_not_mounted(self, session_factory, config):
-        """The same property /admin, /app and /signup each hold: a
-        deployment that has not opted in has nothing here to probe."""
         async with _client(_app(session_factory, config, enabled=False)) as client:
             for path in ("/api/v1/traces", "/api/v1/traces/search", "/api/v1/keys"):
                 assert (await client.post(path, json={})).status_code == 404, path
@@ -76,13 +52,9 @@ class TestAbsentUnlessEnabled:
     async def test_key_provisioning_is_absent_when_signup_is_disabled(
         self, session_factory, config
     ):
-        """`/api/v1/keys` mints a credential with no caller identity at all --
-        the same capability /signup's form offers, so it must not become a
-        second door that opens when that one is shut."""
         app = _app(session_factory, config, signup_enabled=False)
         async with _client(app) as client:
             provision = await client.post("/api/v1/keys", json={"display_name": "x"})
-            # The authenticated routes are still mounted; only this one is gone.
             search = await client.post("/api/v1/traces/search", json={"q": "x"})
         assert provision.status_code == 404
         assert search.status_code == 401
@@ -92,9 +64,6 @@ class TestKeyProvisioning:
     async def test_it_creates_an_org_and_returns_a_key_that_actually_works(
         self, session_factory, config
     ):
-        """The round trip, not just the 201: a key that comes back from
-        this endpoint but cannot then authenticate against the Hub is the
-        failure mode worth a test, and it is invisible to a status check."""
         async with _client(_app(session_factory, config)) as client:
             provision = await client.post(
                 "/api/v1/keys",
@@ -106,7 +75,6 @@ class TestKeyProvisioning:
             assert body["api_key"]
             assert body["org_id"]
 
-            # The key is immediately usable on an authenticated route.
             search = await client.post(
                 "/api/v1/traces/search", json={"q": "anything"}, headers=_key(body["api_key"]),
             )
@@ -126,8 +94,6 @@ class TestKeyProvisioning:
     async def test_the_org_is_named_from_the_email_when_no_display_name_is_sent(
         self, session_factory, config
     ):
-        """An operator reading `list-orgs` should see something meaningful
-        rather than a wall of UUIDs."""
         async with _client(_app(session_factory, config)) as client:
             response = await client.post(
                 "/api/v1/keys", json={"email": "agent-99ff@commontrace.auto"}
@@ -143,8 +109,6 @@ class TestKeyProvisioning:
         assert response.json()["error"] == "bad_request"
 
     async def test_the_raw_key_is_never_cached(self, session_factory, config):
-        """It is shown exactly once and this Hub stores only its hash --
-        a cached copy in a proxy would outlive the only chance to read it."""
         async with _client(_app(session_factory, config)) as client:
             response = await client.post("/api/v1/keys", json={"display_name": "x"})
         assert response.headers["cache-control"] == "no-store"
@@ -166,8 +130,6 @@ class TestAuthentication:
     async def test_the_refusal_does_not_say_which_failure_mode_it_was(
         self, session_factory, config
     ):
-        """Unknown, revoked and expired all get one message -- telling them
-        apart tells an attacker which of those a guessed key was."""
         org_id, raw_key = await _org_with_key(session_factory)
         async with session_scope(session_factory) as session:
             key_row = (
@@ -186,10 +148,6 @@ class TestAuthentication:
 
 class TestScopes:
     async def test_a_read_only_key_cannot_contribute(self, session_factory, config):
-        """403, not 401: the key is real, the capability is not there. The
-        plugin branches on exactly this status ("publishing restricted for
-        this account") and prints the body, so it must not be conflated
-        with an authentication failure."""
         _org_id, raw_key = await _org_with_key(session_factory, scopes=["read"])
         async with _client(_app(session_factory, config)) as client:
             response = await client.post(
@@ -237,9 +195,6 @@ class TestContributing:
         assert trace.org_id == org_id
         assert trace.title == "Flaky asyncpg pool under load"
         assert sorted(trace.tags) == ["asyncpg", "pool"]
-        # Named rather than left empty so fleet reporting can group traces,
-        # and "general" rather than "code": a support fleet's unlabelled
-        # traces must not be counted as coding traces.
         assert trace.agent_type == "general"
         assert entry is not None
         assert entry.actor == rest.ACTOR_REST_API
@@ -247,10 +202,6 @@ class TestContributing:
     async def test_tags_are_accepted_as_a_comma_separated_string_too(
         self, session_factory, config
     ):
-        """The plugin's directive tells an LLM to send "tags"; composing
-        that body by hand produces a CSV string about as often as a list,
-        and losing the tags of an otherwise-good trace is a worse outcome
-        than accepting both shapes."""
         _org_id, raw_key = await _org_with_key(session_factory)
         async with _client(_app(session_factory, config)) as client:
             response = await client.post(
@@ -273,9 +224,6 @@ class TestContributing:
         assert "context_text" in detail and "solution_text" in detail
 
     async def test_a_wrong_typed_field_is_a_400_not_a_500(self, session_factory, config):
-        """`{"title": 123}` must land on the same clean rejection a missing
-        title gets -- never a TypeError deep inside validation, which would
-        surface as a server fault for what is a client mistake."""
         _org_id, raw_key = await _org_with_key(session_factory)
         async with _client(_app(session_factory, config)) as client:
             response = await client.post(
@@ -296,8 +244,6 @@ class TestContributing:
         assert response.status_code == 400
 
     async def test_a_json_array_body_is_a_400_not_a_500(self, session_factory, config):
-        """Valid JSON, wrong shape -- `payload.get` on a list is an
-        AttributeError, so this is a distinct path from malformed bytes."""
         _org_id, raw_key = await _org_with_key(session_factory)
         async with _client(_app(session_factory, config)) as client:
             response = await client.post(
@@ -305,9 +251,6 @@ class TestContributing:
         assert response.status_code == 400
 
     async def test_metadata_json_is_accepted_and_ignored(self, session_factory, config):
-        """The plugin has always sent it and nothing here stores it.
-        Rejecting the field would break a shipped client over a value this
-        Hub has no column for."""
         _org_id, raw_key = await _org_with_key(session_factory)
         async with _client(_app(session_factory, config)) as client:
             response = await client.post(
@@ -341,9 +284,6 @@ class TestSearching:
         assert results[0]["title"] == "Postgres deadlock on upsert"
 
     async def test_it_never_returns_another_orgs_trace(self, session_factory, config):
-        """The boundary this whole Hub is built around. A new surface is
-        exactly where it would be lost, so it is asserted here directly
-        rather than assumed from crud.search_traces' own tests."""
         owner_id, _owner_key = await _org_with_key(session_factory, name="Owner")
         _other_id, other_key = await _org_with_key(session_factory, name="Other")
         await self._seed(session_factory, config, owner_id)
@@ -363,8 +303,6 @@ class TestSearching:
     async def test_an_absurd_limit_is_clamped_rather_than_rejected(
         self, session_factory, config
     ):
-        """Matching crud.search_traces' own tolerant handling: a bad limit
-        is a client slip, not a reason to return nothing."""
         org_id, raw_key = await _org_with_key(session_factory)
         await self._seed(session_factory, config, org_id)
         async with _client(_app(session_factory, config)) as client:
@@ -379,17 +317,9 @@ class TestSearching:
 
 
 class TestThePluginsOwnRequestShapes:
-    """The fidelity tests. Each one mirrors a call the shipped plugin
-    actually makes, byte-for-byte in the fields that matter -- so renaming
-    a key here fails CI instead of silently breaking every install."""
-
     async def test_search_returns_the_four_fields_format_results_reads(
         self, session_factory, config
     ):
-        """`retrieval.py:format_results` reads id, title, solution_text and
-        contributor_name off each result. `contributor_name` is this Hub's
-        `contributor` under the client's name for it -- the one field that
-        exists purely to match the wire format."""
         org_id, raw_key = await _org_with_key(session_factory)
         await TestSearching()._seed(session_factory, config, org_id)
         async with _client(_app(session_factory, config)) as client:
@@ -405,9 +335,6 @@ class TestThePluginsOwnRequestShapes:
     async def test_search_accepts_the_context_object_the_plugin_sends(
         self, session_factory, config
     ):
-        """`retrieval.py` adds `context` to the body when it has one. This
-        Hub has nowhere to apply it, but a 400 over an extra key would
-        disable retrieval for every plugin session that sends one."""
         org_id, raw_key = await _org_with_key(session_factory)
         await TestSearching()._seed(session_factory, config, org_id)
         async with _client(_app(session_factory, config)) as client:
@@ -423,9 +350,6 @@ class TestThePluginsOwnRequestShapes:
     async def test_provisioning_returns_the_api_key_field_the_plugin_stores(
         self, session_factory, config
     ):
-        """`session_start.provision_api_key` reads `data["api_key"]` and
-        writes it to ~/.commontrace/config.json. Any other name and every
-        install silently never provisions."""
         async with _client(_app(session_factory, config)) as client:
             response = await client.post(
                 "/api/v1/keys",
@@ -437,8 +361,6 @@ class TestThePluginsOwnRequestShapes:
     async def test_contribute_returns_an_id_the_receipt_can_print(
         self, session_factory, config
     ):
-        """The plugin's contribution directive ends "take the returned id"
-        and prints it in the receipt banner."""
         _org_id, raw_key = await _org_with_key(session_factory)
         async with _client(_app(session_factory, config)) as client:
             response = await client.post(
@@ -452,9 +374,6 @@ class TestThePluginsOwnRequestShapes:
 
 class TestTelemetry:
     async def test_the_beacons_accept_and_drop(self, session_factory, config):
-        """A documented no-op, not an accident: the plugin only checks for
-        a 2xx, and answering 404 would make every session log a swallowed
-        error for a beacon nothing here reads."""
         _org_id, raw_key = await _org_with_key(session_factory)
         async with _client(_app(session_factory, config)) as client:
             for beacon, payload in (
@@ -468,8 +387,6 @@ class TestTelemetry:
                 assert response.status_code == 204, beacon
 
     async def test_they_still_require_a_valid_key(self, session_factory, config):
-        """Unauthenticated beacons would be an open write-shaped endpoint
-        for anyone who finds the path."""
         async with _client(_app(session_factory, config)) as client:
             response = await client.post("/api/v1/telemetry/ping", json={})
         assert response.status_code == 401

@@ -69,7 +69,7 @@ def _guard(fn):
     def wrapped(args: argparse.Namespace) -> int:
         try:
             return fn(args)
-        except ValueError as exc:  # KitError, bad forecast inputs
+        except ValueError as exc:
             print(f"[commontrace] error: {exc}", file=sys.stderr)
             return 2
     return wrapped
@@ -119,7 +119,6 @@ def run_check(args: argparse.Namespace) -> int:
           f"occasion {kit.occasion_label}, wait {kit.outcome.window_days:g}d, "
           f"detectors {', '.join(kit.outcome.signals)} ({kit.outcome.combine})")
     return 0
-
 
 
 def run_precision(args: argparse.Namespace) -> int:

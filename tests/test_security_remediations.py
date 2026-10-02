@@ -1,11 +1,3 @@
-"""Regression tests for Security Remediations across M1:
-- SEC-01: Path traversal protection in hub_client.py:pull_search_results
-- SEC-02: Path traversal & schema loading security in validate.py:load_schema
-- SEC-03: Subprocess search path isolation in _shellout.find_reference_script
-- SEC-06: Tag type confusion handling in retrieval.py and reliability.py
-- SEC-07: Root dict type guards in validate.py:validate
-- SEC-08: API key handling and guidance in sync_cmd.py
-"""
 import argparse
 import asyncio
 import os
@@ -17,12 +9,7 @@ from commontrace import frontmatter, hub_client, paths, reliability, retrieval, 
 from commontrace.commands import _shellout, sync_cmd
 
 
-# ==============================================================================
-# SEC-01: Path Traversal in hub_client.py:pull_search_results
-# ==============================================================================
 class TestHubClientPathTraversalProtection:
-    """SEC-01: Ensure pull_search_results neutralizes path traversal payloads."""
-
     @pytest.mark.parametrize(
         "malicious_id",
         [
@@ -67,19 +54,16 @@ class TestHubClientPathTraversalProtection:
         written = result.written_paths[0]
         written_abs = os.path.abspath(written)
 
-        # Strict containment check: must be strictly inside tdir_abs
         assert written_abs.startswith(tdir_abs + os.sep), (
             f"File {written_abs} escaped directory {tdir_abs}"
         )
         assert os.path.exists(written_abs)
 
-        # Metadata check: original raw id preserved in frontmatter hub_trace_id
         fm, body = frontmatter.read(written_abs)
         assert fm["hub_trace_id"] == malicious_id
         assert "## Context" in body
 
     def test_pull_search_results_handles_missing_and_none_fields(self, tmp_path):
-        """SEC-01 & Defensiveness: trace with None / null / missing fields does not crash."""
         traces_dir = paths.traces_dir(str(tmp_path))
         os.makedirs(traces_dir, exist_ok=True)
         tdir_abs = os.path.abspath(traces_dir)
@@ -97,7 +81,6 @@ class TestHubClientPathTraversalProtection:
                     "solution_text": None,
                 },
                 {
-                    # completely empty object
                 },
             ]
         }
@@ -117,12 +100,7 @@ class TestHubClientPathTraversalProtection:
             assert isinstance(fm, dict)
 
 
-# ==============================================================================
-# SEC-02: Path Traversal & Schema Loading in validate.py:load_schema
-# ==============================================================================
 class TestLoadSchemaSecurity:
-    """SEC-02: Strict validation of schema file names to prevent directory traversal."""
-
     @pytest.mark.parametrize(
         "bad_schema_name",
         [
@@ -164,14 +142,8 @@ class TestLoadSchemaSecurity:
         assert "properties" in lesson_schema
 
 
-# ==============================================================================
-# SEC-03: Subprocess Search Path Isolation in _shellout.py
-# ==============================================================================
 class TestSubprocessScriptLookupIsolation:
-    """SEC-03: Reference scripts must not be resolved or executed from untrusted CWD."""
-
     def test_find_reference_script_ignores_untrusted_cwd(self, tmp_path, monkeypatch):
-        # Create a malicious script in CWD
         cwd_dir = tmp_path / "untrusted_cwd"
         cwd_dir.mkdir()
         fake_relative = os.path.join("bench", "fake_script.py")
@@ -181,18 +153,13 @@ class TestSubprocessScriptLookupIsolation:
 
         monkeypatch.chdir(cwd_dir)
 
-        # Separate clean root without the script
         clean_root = tmp_path / "clean_root"
         clean_root.mkdir()
 
         resolved = _shellout.find_reference_script(str(clean_root), fake_relative)
-        # Must NOT find the script from CWD
         assert resolved is None, f"Expected None, but resolved untrusted CWD script: {resolved}"
 
     def test_find_reference_script_finds_script_in_repo_root(self, tmp_path, monkeypatch):
-        # Store-root scripts run only with explicit opt-in
-        # (COMMONTRACE_ALLOW_STORE_SCRIPTS=1): by default an untrusted clone
-        # must not be able to plant an executable script the victim runs.
         monkeypatch.setenv("COMMONTRACE_ALLOW_STORE_SCRIPTS", "1")
         clean_root = tmp_path / "repo_root"
         clean_root.mkdir()
@@ -218,9 +185,6 @@ class TestSubprocessScriptLookupIsolation:
         assert os.path.basename(resolved) == "measure_performance.py"
 
     def test_find_reference_script_ignores_store_root_by_default(self, tmp_path, monkeypatch):
-        # Without opt-in, a store-root script must not resolve even when it
-        # exists -- this is the untrusted-clone RCE guard. Packaged scripts
-        # still resolve (previous test); only the store-root candidate is gated.
         monkeypatch.delenv("COMMONTRACE_ALLOW_STORE_SCRIPTS", raising=False)
         clean_root = tmp_path / "repo_root"
         clean_root.mkdir()
@@ -234,13 +198,6 @@ class TestSubprocessScriptLookupIsolation:
         assert resolved is None
 
     def test_opted_in_store_copy_wins_over_an_existing_packaged_copy(self, tmp_path, monkeypatch):
-        # The opt-in exists specifically for a contributor iterating on a
-        # reference script that's ALSO shipped in the package (e.g.
-        # measure_performance.py) -- the case every real caller hits, since
-        # every basename they pass exists in commontrace/reference/. Checking
-        # the packaged copy first made this opt-in permanently unreachable:
-        # the packaged file always exists, so the loop always returned it
-        # before ever looking at the store root.
         monkeypatch.setenv("COMMONTRACE_ALLOW_STORE_SCRIPTS", "1")
         repo_root = tmp_path / "repo_root"
         script_path = repo_root / "benchmark" / "measure_performance.py"
@@ -254,12 +211,7 @@ class TestSubprocessScriptLookupIsolation:
         assert os.path.abspath(resolved) == os.path.abspath(str(script_path))
 
 
-# ==============================================================================
-# SEC-06: Tag Type Confusion in retrieval.py and reliability.py
-# ==============================================================================
 class TestTagTypeConfusionResilience:
-    """SEC-06: Frontmatter with non-list or mixed-type tags must not raise TypeError."""
-
     @pytest.mark.parametrize(
         "malformed_tags",
         [
@@ -282,10 +234,8 @@ class TestTagTypeConfusionResilience:
             "applies_when": "when testing",
             "description": "test description",
         }
-        # Must not raise TypeError
         sections = retrieval._lesson_text_weighted(fm)
         assert isinstance(sections, list)
-        # Tag section is index 2 in _lesson_text_weighted
         tag_text, weight = sections[2]
         assert isinstance(tag_text, str)
         assert weight == 2.0
@@ -321,17 +271,11 @@ class TestTagTypeConfusionResilience:
             "status": "active",
         }
 
-        # Must run minhash and contradiction search without TypeError
         contradictions = reliability.find_contradictions([fm1, fm2])
         assert isinstance(contradictions, list)
 
 
-# ==============================================================================
-# SEC-07: Root Dict Type Guards in validate.py:validate
-# ==============================================================================
 class TestValidateRootTypeGuard:
-    """SEC-07: Non-dictionary instances passed to validate() must return descriptive errors."""
-
     @pytest.mark.parametrize(
         "non_dict_instance",
         [
@@ -365,12 +309,7 @@ class TestValidateRootTypeGuard:
         assert validate.validate({}, schema) == ["missing required field 'name'"]
 
 
-# ==============================================================================
-# SEC-08: API Key Handling & Guidance in sync_cmd.py
-# ==============================================================================
 class TestSyncApiKeyHandling:
-    """SEC-08: Sync command API key security and error messaging."""
-
     def test_sync_parser_help_mentions_env_var_preference(self):
         parser = argparse.ArgumentParser()
         subparsers = parser.add_subparsers(dest="cmd")

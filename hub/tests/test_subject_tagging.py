@@ -1,25 +1,3 @@
-"""hub/crud.py: tag_trace_subjects / find_traces_by_subject /
-purge_traces_by_subject -- the structured half of audit 2.2's subject-
-erasure gap. `search_trace_content` (b4d9e12a6f37's predecessor) closed
-"no field this system could search on"; this closes "cannot honestly
-claim provably complete" for content a curator has explicitly tagged.
-
-What these tests defend, in order of how badly getting it wrong would
-hurt:
-
-1. **Tagging is a REPLACE, not an append** -- a retried or corrected tag
-   call must not accumulate duplicates or leave a stale subject behind.
-2. **The match is exact**, not stemmed or fuzzy: a subject_id that is a
-   substring or a stemmed variant of a tagged one must NOT match.
-3. **Purge deletes the whole amendment chain**, the same completeness
-   `delete_trace` already gives a single trace -- a subject's content can
-   persist across a supersession even where only one revision was tagged.
-4. **Tenancy**: a subject_id tagged in one org is invisible to, and
-   unpurgeable by, another.
-5. **Validation refuses, never silently truncates or drops**, an
-   oversized or malformed tag -- a silently dropped id is a subject this
-   trace would then fail to be found under later.
-"""
 from __future__ import annotations
 
 import json
@@ -142,8 +120,6 @@ class TestExactMatchIsNotFuzzy:
             assert await crud.find_traces_by_subject(session, org, "42") == []
 
     async def test_untagged_free_text_naming_the_subject_is_not_found(self, session_factory, org):
-        """The whole point of the distinction from search_trace_content:
-        this function ONLY ever returns explicitly tagged traces."""
         await _trace(session_factory, org, context="this concerns user-42 directly")
         async with session_factory() as session:
             assert await crud.find_traces_by_subject(session, org, "user-42") == []
@@ -188,10 +164,6 @@ class TestPurge:
             assert await session.get(Trace, trace_id) is None
 
     async def test_purge_deletes_the_whole_amendment_chain(self, session_factory, org, config):
-        """Content about a subject can persist across a supersession even
-        where only one revision in the chain was explicitly tagged --
-        purge_traces_by_subject delegates to delete_trace precisely so
-        the whole chain goes, not just the tagged revision."""
         original_id = await _trace(session_factory, org, title="original")
         async with session_scope(session_factory) as session:
             await crud.tag_trace_subjects(session, org, original_id, ["user-42"], actor="t")
@@ -212,9 +184,6 @@ class TestPurge:
         assert result == {"purged": 0, "ids": []}
 
     async def test_purge_decrements_the_org_trace_count(self, session_factory, org, config):
-        """Via contribute_trace, not the lightweight _trace() helper this
-        file otherwise uses -- trace_count is only ever incremented on
-        that real write path, and this is the one test that checks it."""
         rate_limiter = make_rate_limiter(config)
         async with session_scope(session_factory) as session:
             contributed = await crud.contribute_trace(

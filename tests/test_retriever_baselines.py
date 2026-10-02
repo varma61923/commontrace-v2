@@ -1,4 +1,3 @@
-"""The shipped ranker must stay at least as good as textbook BM25 on the independently written probes."""
 import os
 import sys
 

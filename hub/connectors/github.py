@@ -1,28 +1,4 @@
-"""GitHub: pull request and push events -> signals, for coding agents.
-
-Built from GitHub's published documentation:
-  * signature (docs.github.com .../validating-webhook-deliveries):
-    `X-Hub-Signature-256` is `sha256=` + hex HMAC-SHA256(secret, raw body),
-    compared in constant time. GitHub signs no timestamp, so replay protection
-    is `X-GitHub-Delivery` (a GUID, documented in webhook-events-and-payloads),
-    recorded in the ledger; a delivery without it is refused.
-  * payloads (the vendor's own examples, kept as test fixtures): `pull_request`
-    with `action`, `number`, `pull_request.merged`, `pull_request.merge_commit_sha`,
-    `repository.full_name`; `push` with `commits[].message`.
-  * a revert is recognised by git's own documented message,
-    `This reverts commit <full sha>.` (git-revert), on a pushed commit whose
-    sha is a merged PR's `merge_commit_sha`. A revert made another way is not seen.
-
-What it emits, for the occasion `<occasion_prefix><PR number>`:
-  pull_request closed, merged       CANDIDATE   (matures after window_days;
-                                                 14 for the coding kit)
-  pull_request closed, not merged   FAILURE
-  push containing a revert of a     REVERSAL    (by the merge commit sha)
-    merged PR's merge commit
-Everything else is acknowledged and ignored. `repository` in the config limits
-a connector to one repo, which matters because PR numbers repeat across repos.
-CI results are not read here: a failing CI that still merged is the team's call.
-"""
+"""GitHub: pull request and push events -> signals, for coding agents."""
 from __future__ import annotations
 
 import hashlib

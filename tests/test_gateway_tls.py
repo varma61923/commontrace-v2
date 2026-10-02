@@ -1,4 +1,3 @@
-"""Over TLS, a client that connects and never handshakes must not stall anyone else."""
 import shutil
 import socket
 import ssl
@@ -42,7 +41,7 @@ def test_a_plaintext_client_on_the_tls_port_is_dropped_and_the_server_keeps_serv
     with socket.create_connection(("127.0.0.1", tls_server), timeout=2) as raw:
         raw.sendall(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
         try:
-            raw.recv(1024)  # a TLS alert or a close; either way, no HTTP answer in the clear
+            raw.recv(1024)
         except OSError:
             pass
     ctx = ssl.create_default_context()

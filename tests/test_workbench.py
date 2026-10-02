@@ -1,5 +1,3 @@
-"""The lesson workbench through the gateway: reading is open to the token, acting needs --allow-approval, and every
-action goes through the same gates `lesson approve` applies."""
 import json
 import os
 
@@ -69,7 +67,7 @@ def test_the_queue_lists_review_drafts_with_their_gate_results(root, gw):
 
 def test_a_draft_that_restates_an_active_lesson_names_its_neighbour(root, gw):
     _lesson(root, "lesson_old", status="active")
-    _lesson(root, "lesson_new")                       # the same rule again
+    _lesson(root, "lesson_new")
     row = next(r for r in call(gw, "GET", "/v1/lessons?status=review")[1]["lessons"] if r["slug"] == "lesson_new")
     assert row["checks"]["failed"] == ["redundancy"]
     assert row["checks"]["nearest_active"]["slug"] == "lesson_old"

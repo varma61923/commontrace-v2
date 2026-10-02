@@ -76,7 +76,7 @@ def _guard(fn):
     def wrapped(args: argparse.Namespace) -> int:
         try:
             return fn(args)
-        except ValueError as exc:  # ProofError and KitError are ValueErrors
+        except ValueError as exc:
             print(f"[commontrace] error: {exc}", file=sys.stderr)
             return 2
     return wrapped

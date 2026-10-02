@@ -1,23 +1,3 @@
-"""contribute_trace surfaces near-duplicate candidates instead of silently
-leaving two disagreeing traces both live.
-
-Adapted (the idea, not the code) from Graphiti (getzep/graphiti,
-Apache-2.0, cloned to scratch for this research pass): its
-resolve_edge_contradictions calls an LLM per extracted fact to decide
-whether a new edge contradicts an existing one, then invalidates the
-loser automatically. That shape doesn't fit here -- an LLM call on the
-Hub's hottest write path, and automatic invalidation stronger than this
-module wants to claim unilaterally (amend_trace already exists as the
-explicit, human/agent-decided "this replaces that"). What's adapted is
-just the goal: an agent contributing a trace that looks like something
-already on file should find out, in the same call, so it can decide to
-amend instead of leaving both live to compete in search.
-
-The mechanism reuses distill.py's existing zero-LLM Jaccard clustering
-(already reused once, by _cluster_representatives, for an unrelated
-problem) over a bounded, tag-indexed candidate set -- never a corpus
-scan.
-"""
 from __future__ import annotations
 
 import pytest
@@ -85,8 +65,6 @@ class TestNearDuplicatesAreSurfaced:
     async def test_a_trace_with_no_tags_skips_the_check_entirely(
         self, session_factory, config, org
     ):
-        """No tags means no cheap, indexed candidate set to narrow on --
-        the check is skipped rather than falling back to a full scan."""
         await _contribute(session_factory, config, org)
         untagged = await _contribute(
             session_factory, config, org,
@@ -99,8 +77,6 @@ class TestNearDuplicatesAreSurfaced:
     async def test_is_informational_only_the_duplicate_stays_live(
         self, session_factory, config, org
     ):
-        """Never auto-amends or auto-merges -- both traces remain live,
-        full, independent rows; the caller decides whether to amend."""
         first = await _contribute(session_factory, config, org)
         second = await _contribute(
             session_factory, config, org,
@@ -116,9 +92,6 @@ class TestNearDuplicatesAreSurfaced:
     async def test_a_superseded_trace_is_not_offered_as_a_duplicate_candidate(
         self, session_factory, config, org
     ):
-        """The bi-temporal fix and this feature compose correctly: an
-        already-amended-away trace should not be suggested as the thing
-        to amend AGAIN."""
         original = await _contribute(session_factory, config, org)
         rate_limiter = make_rate_limiter(config)
         async with session_scope(session_factory) as session:

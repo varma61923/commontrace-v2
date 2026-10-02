@@ -1,16 +1,3 @@
-"""Separation of duties on the one action with fleet-wide blast radius.
-
-An `active` lesson is injected into every later retrieval verbatim.
-protocol/PROTOCOL.md puts a Validator between proposing and activating for
-that reason, and the gate enforced everything about WHAT was being
-activated -- no scaffolding, valid schema, no secrets or injection payloads
--- while leaving WHO entirely open. The same actor could draft a lesson and
-approve it a second later, which is the case the Validator role exists for.
-
-These tests cover the policy that closes it, and equally the promise that
-it changes nothing until a store opts in: a control that breaks existing
-stores on upgrade is a control that gets reverted.
-"""
 from __future__ import annotations
 
 import argparse
@@ -29,7 +16,6 @@ def _write_policy(root, text: str) -> None:
 
 
 def _draft(root, slug: str, *, actor: str, body: str | None = None) -> str:
-    """Write a lesson through the journaling path, so it has an author."""
     ldir = paths.lessons_dir(str(root))
     os.makedirs(ldir, exist_ok=True)
     path = os.path.join(ldir, f"lesson_{slug}.md")
@@ -56,8 +42,6 @@ class TestTheDefaultIsUnchanged:
         )
 
     def test_an_author_may_still_approve_their_own_lesson(self, tmp_path, monkeypatch):
-        """The behaviour this product shipped with. An upgrade that silently
-        started refusing it would break every existing store."""
         monkeypatch.setattr(lesson_cmd, "_actor", lambda: "cli:alice")
         path = _draft(tmp_path, "solo", actor="cli:alice")
         assert _approve(tmp_path, "solo") == 0
@@ -84,9 +68,6 @@ class TestTwoPersonApproval:
     def test_every_editor_counts_as_an_author_not_just_the_first(
         self, tmp_path, monkeypatch
     ):
-        """Conservative on purpose: a rule that had to judge which edits were
-        "substantive" would be a rule an author could route around by making
-        their real change look trivial."""
         _write_policy(tmp_path, self.POLICY)
         _draft(tmp_path, "shared", actor="cli:alice")
         _draft(tmp_path, "shared", actor="cli:bob",
@@ -96,22 +77,15 @@ class TestTwoPersonApproval:
         assert _approve(tmp_path, "shared") == 1
 
     def test_force_does_not_override_separation_of_duties(self, tmp_path, monkeypatch):
-        """--force exists for an author who judged a content warning a false
-        positive. That is precisely the judgement this policy says this
-        person may not make, so the flag must not reach it."""
         _write_policy(tmp_path, self.POLICY)
         monkeypatch.setattr(lesson_cmd, "_actor", lambda: "cli:alice")
         _draft(tmp_path, "forced", actor="cli:alice")
         assert _approve(tmp_path, "forced", force=True) == 1
 
     def test_a_lesson_with_no_recorded_authorship_is_refused(self, tmp_path, monkeypatch):
-        """A lesson that appeared on disk with no journal entry is exactly
-        the case a separation-of-duties rule should decline to certify: it
-        cannot tell whether the approver wrote it."""
         _write_policy(tmp_path, self.POLICY)
         ldir = paths.lessons_dir(str(tmp_path))
         os.makedirs(ldir, exist_ok=True)
-        # Written straight through frontmatter, bypassing the journal.
         frontmatter.write(
             os.path.join(ldir, "lesson_orphan.md"),
             {"name": "orphan", "status": "review"},
@@ -132,8 +106,6 @@ class TestRequireHuman:
         approval.check(policy, slug="x", approver="cli:alice", authors=("cli:bob",))
 
     def test_it_is_independent_of_separation(self, tmp_path):
-        """require_human refuses an agent even when the agent did not write
-        the lesson -- the two switches answer different questions."""
         policy = approval.ApprovalPolicy(require_human=True)
         with pytest.raises(approval.ApprovalDenied):
             approval.check(policy, slug="x", approver="mcp:reviewer", authors=())
@@ -141,8 +113,6 @@ class TestRequireHuman:
 
 class TestThePolicyFileItself:
     def test_an_unknown_mode_is_refused_loudly(self, tmp_path):
-        """A malformed policy that silently fell back to `single` would
-        disable a control the operator believes is on."""
         _write_policy(tmp_path, "mode: whatever\n")
         with pytest.raises(approval.PolicyError, match="mode must be one of"):
             approval.load_policy(str(tmp_path))
@@ -166,7 +136,6 @@ class TestThePolicyFileItself:
             approval.load_policy(str(tmp_path))
 
 
-
 class TestAuthorsOf:
     def test_authors_come_from_the_revision_journal_oldest_first(self, tmp_path):
         _draft(tmp_path, "hist", actor="cli:alice")
@@ -176,9 +145,6 @@ class TestAuthorsOf:
         assert approval.authors_of(str(tmp_path), "hist") == ("cli:alice", "mcp:agent")
 
     def test_unknown_actors_are_not_counted_as_authors(self, tmp_path):
-        """`write_lesson` records "unknown" when no actor was supplied.
-        Treating that as a person would let an unattributed edit satisfy a
-        separation rule."""
         _draft(tmp_path, "anon", actor="")
         assert approval.authors_of(str(tmp_path), "anon") == ()
 

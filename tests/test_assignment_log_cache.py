@@ -1,5 +1,3 @@
-"""The assignment log is read incrementally (holdout_io.read_log), and the gateway reuses its reports while the
-data is unchanged. Both must answer exactly what a full re-read would."""
 import json
 import os
 
@@ -16,7 +14,6 @@ def root(tmp_path):
 
 
 def _full_read(root):
-    """The reference: parse every line from scratch, with the same per-line rules."""
     path = holdout_io.holdout_log_path(root)
     records, corrupt = [], 0
     with open(path, encoding="utf-8") as fh:
@@ -57,10 +54,10 @@ def test_a_replaced_or_truncated_log_is_reread_from_scratch(root):
     holdout_io.read_log(root)
     path = holdout_io.holdout_log_path(root)
     lines = open(path, encoding="utf-8").read().splitlines(keepends=True)
-    open(path, "w", encoding="utf-8").write("".join(lines[:4]))          # truncated
+    open(path, "w", encoding="utf-8").write("".join(lines[:4]))
     assert holdout_io.read_log(root) == _full_read(root) and len(holdout_io.read_log(root)[0]) == 4
     tmp = path + ".new"
-    open(tmp, "w", encoding="utf-8").write("".join(lines[4:9]))          # replaced, longer than before
+    open(tmp, "w", encoding="utf-8").write("".join(lines[4:9]))
     os.replace(tmp, path)
     assert holdout_io.read_log(root) == _full_read(root)
 
@@ -73,7 +70,7 @@ def test_a_same_length_rewrite_of_the_last_line_is_noticed(root):
     head, last = text[:-1].rsplit("\n", 1)
     new = head + "\n" + last.replace('"revision": "r"', '"revision": "s"') + "\n"
     assert len(new) == len(text) and new != text
-    with open(path, "r+", encoding="utf-8") as fh:                       # same inode, same size
+    with open(path, "r+", encoding="utf-8") as fh:
         fh.write(new)
     assert holdout_io.read_log(root) == _full_read(root)
     assert holdout_io.read_log(root)[0][-1].revision == "s"
@@ -102,9 +99,6 @@ def test_corrupt_lines_are_counted_once(root):
     assert holdout_io.read_log(root) == _full_read(root) and holdout_io.read_log(root)[1] == 2
 
 
-# --- the gateway's report memo ------------------------------------------------------------------------------------
-
-
 def _memories(g):
     r = g.handle("GET", "/v1/memories", {"Authorization": "Bearer " + "t" * 40, "Host": "localhost"})
     return json.loads(r.body)
@@ -122,16 +116,16 @@ def test_reports_are_reused_while_the_data_is_unchanged_and_refreshed_once_it_ch
     monkeypatch.setattr(g, "_compute_analysis", lambda: (calls.append(1), real())[1])
     first = _memories(g)
     clock[0] += gateway.REPORT_MAX_AGE / 2
-    assert _memories(g) == first and len(calls) == 1                  # unchanged data: never recomputed
-    _assign(root, 30, 10)                                             # the data changes ...
-    assert _memories(g) != first and len(calls) == 2                  # ... long after the last compute: at once
+    assert _memories(g) == first and len(calls) == 1
+    _assign(root, 30, 10)
+    assert _memories(g) != first and len(calls) == 2
     second = _memories(g)
-    _assign(root, 40, 10)                                             # ... and again, right after a compute:
+    _assign(root, 40, 10)
     clock[0] += 1
-    assert len(calls) == 2 and _memories(g) == second                 # within the interval, the last report
+    assert len(calls) == 2 and _memories(g) == second
     clock[0] += gateway.REPORT_MIN_INTERVAL
     refreshed = _memories(g)
-    assert len(calls) == 3 and refreshed != second                    # after it, recomputed
+    assert len(calls) == 3 and refreshed != second
 
 
 def test_a_report_is_refreshed_after_its_maximum_age_or_when_a_trace_or_episode_appears(root, monkeypatch):
@@ -146,7 +140,7 @@ def test_a_report_is_refreshed_after_its_maximum_age_or_when_a_trace_or_episode_
     _memories(g)
     clock[0] += gateway.REPORT_MAX_AGE
     _memories(g)
-    assert len(calls) == 2                                            # nothing changed, but the report reads the time
+    assert len(calls) == 2
     for directory in (paths.traces_dir(root), paths.episodes_dir(root)):
         os.makedirs(directory, exist_ok=True)
         clock[0] += gateway.REPORT_MIN_INTERVAL
@@ -154,7 +148,7 @@ def test_a_report_is_refreshed_after_its_maximum_age_or_when_a_trace_or_episode_
         before = len(calls)
         with open(os.path.join(directory, "x.md"), "w", encoding="utf-8") as fh:
             fh.write("---\n---\n")
-        os.utime(directory, ns=(1, 1))                                # a distinct mtime, whatever the clock
+        os.utime(directory, ns=(1, 1))
         clock[0] += gateway.REPORT_MIN_INTERVAL
         _memories(g)
-        assert len(calls) == before + 1                               # outcomes can live in these files too
+        assert len(calls) == before + 1

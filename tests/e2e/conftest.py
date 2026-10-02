@@ -1,8 +1,3 @@
-"""E2E Test Suite Fixtures and Test Helpers for CommonTrace v2.
-
-Provides isolated environments, CLI invocation helpers, and synthetic test
-data generators for opaque-box testing across all 19 features.
-"""
 from __future__ import annotations
 
 import os
@@ -29,7 +24,6 @@ class CLIResult:
 
 @pytest.fixture
 def cli_runner() -> Callable[..., CLIResult]:
-    """Execute commontrace CLI as an opaque subprocess."""
     def _run(
         *args: Any,
         cwd: str | Path | None = None,
@@ -76,7 +70,6 @@ def cli_runner() -> Callable[..., CLIResult]:
 
 @pytest.fixture
 def isolated_store(tmp_path: Path, cli_runner: Callable[..., CLIResult]) -> Path:
-    """Provide a freshly initialized, isolated commontrace store directory."""
     store_dir = tmp_path / "workspace_store"
     store_dir.mkdir(parents=True, exist_ok=True)
     res = cli_runner(["init", "--dest", str(store_dir), "--agent-type", "code"])
@@ -86,7 +79,6 @@ def isolated_store(tmp_path: Path, cli_runner: Callable[..., CLIResult]) -> Path
 
 @pytest.fixture
 def lesson_factory() -> Callable[..., Path]:
-    """Helper to generate a valid lesson markdown file in a store."""
     def _create(
         store: Path,
         slug: str,
@@ -130,7 +122,6 @@ def lesson_factory() -> Callable[..., Path]:
 
 @pytest.fixture
 def trace_factory() -> Callable[..., Path]:
-    """Helper to generate a valid trace markdown file in a store."""
     def _create(
         store: Path,
         trace_id: str = "2026-09-20_test-trace-001",
@@ -172,7 +163,6 @@ def trace_factory() -> Callable[..., Path]:
 
 @pytest.fixture
 def episode_factory() -> Callable[..., Path]:
-    """Helper to generate a valid episode markdown file in a store for benchmark tests."""
     def _create(
         store: Path,
         name: str = "2026-07-01_test-episode",

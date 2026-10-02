@@ -1,13 +1,3 @@
-"""Tests for `commontrace commons` — the client half of the CommonTrace
-Knowledge Base.
-
-The property that matters most here is that this client and hub/commons.py
-sign the *same text the same way*. If they drift, nothing raises:
-estimate_jaccard compares mismatched positions and returns a confident,
-wrong similarity, and the resulting coverage number is quietly garbage.
-That is the worst failure mode available for a number this product intends
-to quote to customers, so it is pinned explicitly.
-"""
 from __future__ import annotations
 
 import argparse
@@ -41,10 +31,6 @@ def _write_trace(root, name, title, context, tags, repeated_error):
 
 class TestSignaturesMatchTheHub:
     def test_client_signs_a_failure_the_same_way_the_hub_signs_a_trace(self, tmp_path):
-        """The cross-boundary contract. hub/commons.py signs
-        title + context + tags; this must produce a byte-identical
-        signature for the same inputs, or every similarity score is wrong.
-        """
         pytest.importorskip("hub.commons", reason="hub package not importable in this env")
         from hub import commons as hub_commons
 
@@ -61,8 +47,6 @@ class TestSignaturesMatchTheHub:
 
 class TestBuildSignatures:
     def test_only_recurring_failures_are_signed(self, tmp_path):
-        """A commons query asks "what do I keep paying for", so only traces
-        that recorded a repeated error are submitted -- not every trace."""
         _write_trace(tmp_path, "recurring", "A", "ctx a", ["x"], repeated_error=True)
         _write_trace(tmp_path, "one-off", "B", "ctx b", ["y"], repeated_error=False)
 
@@ -79,9 +63,6 @@ class TestBuildSignatures:
         assert commons_cmd.build_signatures(str(tmp_path)) == []
 
     def test_malformed_tags_do_not_crash_signing(self, tmp_path):
-        """Hand-edited frontmatter can put a scalar in `tags`. Signing must
-        coerce rather than raise -- the same guard retrieval.py and
-        overlap_cmd.py already apply."""
         tdir = tmp_path / "memory" / "traces"
         tdir.mkdir(parents=True)
         (tdir / "bad.md").write_text(
@@ -94,11 +75,6 @@ class TestBuildSignatures:
 
 
 class TestResolveHubWarnsOnCliApiKey:
-    """A CLI argument is readable by any local user (`ps`, /proc/<pid>/
-    cmdline) and can land in shell history / auditd's process-exec logs --
-    none of which apply to COMMONTRACE_HUB_API_KEY. _resolve_hub warns when
-    the key came from the command line, not the environment."""
-
     def _args(self, **over):
         base = dict(hub_url="http://hub.invalid/mcp", hub_api_key=None)
         base.update(over)
@@ -119,7 +95,6 @@ class TestResolveHubWarnsOnCliApiKey:
 
 class TestSignCommandWritesSignaturesOnly:
     def test_written_file_contains_no_failure_text(self, tmp_path, capsys):
-        """The privacy claim the whole self-serve flow rests on."""
         secret_title = "ZZQQ-CONFIDENTIAL-TITLE"
         secret_ctx = "WWXX-CONFIDENTIAL-CONTEXT"
         _write_trace(tmp_path, "t1", secret_title, secret_ctx, ["stripe"], repeated_error=True)
@@ -180,10 +155,6 @@ class TestUsageShowsBonus:
 
 
 class TestSubmit:
-    """`commons submit` -- proposes a Knowledge Base entry for operator
-    review. Nothing about this command publishes anything; it just calls
-    the Hub's submit_kb_entry tool and reports the pending status back."""
-
     def _args(self, **over):
         base = dict(
             title="Stripe webhooks retry", context_text="duplicate delivery on 500",
@@ -275,7 +246,6 @@ class TestRender:
         assert "67%" in rendered
 
     def test_note_is_surfaced_not_buried(self):
-        """A caveat about sample size is worthless if it isn't shown."""
         rendered = commons_cmd._render({
             "n_failures": 1, "n_covered": 0, "covered_fraction": 0.0,
             "n_commons_traces": 0, "threshold": 0.3,
@@ -299,9 +269,6 @@ class TestRender:
         assert "Use an idempotency key" in rendered
 
     def test_disputed_matches_are_shown_and_marked_as_not_counted(self):
-        """A coverage figure that fell because the field found an answer
-        wrong is a different event from one that fell because the corpus
-        shrank. A report that shows only the number hides the difference."""
         rendered = commons_cmd._render({
             "n_failures": 1, "n_covered": 0, "covered_fraction": 0.0,
             "n_commons_traces": 1, "threshold": 0.3, "by_agent_type": {},
@@ -324,8 +291,6 @@ class TestRender:
         assert "not counted above" in rendered.lower()
 
     def test_a_report_with_no_disputed_matches_says_nothing_about_them(self):
-        """The section is evidence of a problem, so an absent problem must
-        not print a heading suggesting there is one."""
         rendered = commons_cmd._render({
             "n_failures": 1, "n_covered": 1, "covered_fraction": 1.0,
             "n_commons_traces": 1, "threshold": 0.3, "by_agent_type": {"code": 1},
@@ -335,11 +300,6 @@ class TestRender:
 
 
 class TestRenderCandidates:
-    """`commons ask` output. Unlike the coverage report, this one SHOWS
-    disputed entries in the ordinary results (ranked last) -- so the
-    warning has to travel with the entry, or a reader takes a contested
-    answer for a corroborated one."""
-
     @staticmethod
     def _result(standing, vote_count=6, trust=0.17):
         return {
@@ -378,30 +338,19 @@ class TestRenderCandidates:
         assert "review date" not in rendered
 
     def test_trust_is_shown_with_its_denominator(self):
-        """0.00 from one downvote and 0.00 from twelve are the same number
-        and completely different facts."""
         rendered = commons_cmd._render_candidates(
             self._result("disputed", vote_count=12, trust=0.0), "hydration error"
         )
         assert "trust 0.00 from 12 fleet(s)" in rendered
 
     def test_trust_is_hidden_entirely_when_nobody_has_voted(self):
-        """0.5 with no votes is a column default, not a measurement, and
-        printing it as one invites a reader to average it with real
-        scores."""
         rendered = commons_cmd._render_candidates(
             self._result("unproven", vote_count=0, trust=0.5), "hydration error"
         )
         assert "trust" not in rendered
 
 
-# --- Evaluating without adopting first ---------------------------------
-
-
 class TestSignFromAnExistingExport:
-    """The path that makes the thesis testable on day zero: a prospect with
-    no memory/ directory, no captured traces, and an incident export."""
-
     def _export(self, tmp_path):
         p = os.path.join(str(tmp_path), "incidents.csv")
         with open(p, "w", encoding="utf-8") as fh:
@@ -411,8 +360,6 @@ class TestSignFromAnExistingExport:
         return p
 
     def test_signs_without_any_commontrace_store(self, tmp_path, capsys):
-        """No `commontrace init`, no captured traces. If this needed either,
-        evaluating the product would require adopting it first."""
         out = os.path.join(str(tmp_path), "sig.json")
         rc = commons_cmd.run_sign(argparse.Namespace(
             out=out, from_file=self._export(tmp_path), dest=str(tmp_path),
@@ -431,8 +378,6 @@ class TestSignFromAnExistingExport:
         printed = capsys.readouterr().out
         assert "as csv" in printed
         assert "Failure text is NOT in this file" in printed
-        # The labels DO leave, and for an import they are the prospect's own
-        # incident titles. Saying so at the moment they decide to send it.
         assert "Labels" in printed and "ARE in this file" in printed
 
     def test_a_bad_file_fails_with_a_usable_message(self, tmp_path, capsys):
@@ -454,9 +399,6 @@ class TestSignFromAnExistingExport:
         assert "not both" in capsys.readouterr().err
 
 
-# --- `commons report --candidates`: the lookup the coverage bar hides ----
-
-
 def _report_args(**kw):
     base = dict(
         signatures=None, from_file=None, from_format=None, threshold=None,
@@ -469,7 +411,6 @@ def _report_args(**kw):
 
 
 def _stub_hub(monkeypatch, *, report, searches=None, search_error=None):
-    """Stand in for the two Hub calls, recording what was asked."""
     calls: list[list[int]] = []
 
     async def fake_overlap(hub_url, api_key, failures, **kw):
@@ -503,17 +444,6 @@ def _coverage(n_covered=0, matches=None, disputed=None):
 
 
 class TestTheReportNoLongerReadsAsAnEmptyKnowledgeBase:
-    """The defect this closes, recorded in the evaluation as the
-    single highest-value thing to fix in the codebase.
-
-    A prospect's export of nine failures -- seven of which the corpus
-    provably contained -- reported "0 of 9. 0%." The number was correct:
-    the coverage bar buys a 0% false-positive rate by discarding roughly
-    nine of every ten real answers. But "0%" and "this product knows
-    nothing about my problems" are indistinguishable to a reader, and only
-    the second one predicts what happens in the room.
-    """
-
     def test_an_uncovered_report_explains_the_bar_and_offers_the_lookup(
         self, monkeypatch, capsys
     ):
@@ -525,11 +455,9 @@ class TestTheReportNoLongerReadsAsAnEmptyKnowledgeBase:
         assert "0 of 3" in out
         assert "not the same as an empty Knowledge Base" in out
         assert "--candidates" in out
-        # The cost is stated up front: each lookup is a metered consultation.
         assert "consultation" in out
 
     def test_a_fully_covered_report_makes_no_such_offer(self, monkeypatch, capsys):
-        """Nothing was hidden, so there is nothing to explain away."""
         monkeypatch.setattr(commons_cmd, "build_signatures", lambda root: _failures())
         matches = [{"failure_label": f["label"], "similarity": 0.9, "trace": {"title": "t"}}
                    for f in _failures()]
@@ -552,18 +480,12 @@ class TestCandidatesAreLookedUpButNeverCounted:
         )
 
         assert commons_cmd.run_report(_report_args(candidates=True)) == 0
-        # alpha cleared the bar, so looking it up again would spend a
-        # consultation to repeat what the report already said.
         assert calls == [[2, 2, 2], [3, 3, 3]]
         out = capsys.readouterr().out
         assert "beta answer" in out
         assert "do x" in out
 
     def test_a_disputed_match_is_not_looked_up_again(self, monkeypatch):
-        """`_render` already gives disputed matches their own section
-        explaining why they are excluded from the figure. The Knowledge
-        Base demonstrably has something about them, so they are found, not
-        uncovered."""
         monkeypatch.setattr(commons_cmd, "build_signatures", lambda root: _failures())
         disputed = [{"failure_label": "beta", "similarity": 0.4, "trace": {"title": "d"}}]
         calls = _stub_hub(
@@ -574,9 +496,6 @@ class TestCandidatesAreLookedUpButNeverCounted:
         assert [2, 2, 2] not in calls
 
     def test_the_coverage_figure_is_untouched_by_the_lookups(self, monkeypatch, capsys):
-        """The whole point. Ranked hits are candidates a human judges; the
-        score distributions of true and absent matches overlap, so counting one would destroy the 0%
-        false-positive property the quotable number rests on."""
         monkeypatch.setattr(commons_cmd, "build_signatures", lambda root: _failures())
         _stub_hub(
             monkeypatch, report=_coverage(),
@@ -592,8 +511,6 @@ class TestCandidatesAreLookedUpButNeverCounted:
         assert "answer 1" in out
 
     def test_json_marks_the_lookups_as_not_coverage(self, monkeypatch, capsys):
-        """A machine consumer must not be able to add these to the
-        numerator by mistake."""
         monkeypatch.setattr(commons_cmd, "build_signatures", lambda root: _failures())
         _stub_hub(monkeypatch, report=_coverage(),
                   searches={(1, 1, 1): [{"rank": 1, "trace": {"title": "a"}}]})
@@ -610,9 +527,6 @@ class TestTheLookupsAreBoundedAndSurviveFailure:
     def test_the_budget_caps_lookups_and_says_how_many_were_skipped(
         self, monkeypatch, capsys
     ):
-        """Each lookup is a metered consultation, so an unbounded report
-        over a large import could spend a month's allowance in one
-        command."""
         monkeypatch.setattr(commons_cmd, "build_signatures", lambda root: _failures())
         calls = _stub_hub(monkeypatch, report=_coverage())
 
@@ -628,9 +542,6 @@ class TestTheLookupsAreBoundedAndSurviveFailure:
         assert calls == []
 
     def test_a_failed_lookup_does_not_discard_the_report(self, monkeypatch, capsys):
-        """A plan running out of consultations mid-report is the expected
-        case, not an exceptional one -- and the coverage report was already
-        paid for before the first lookup was attempted."""
         monkeypatch.setattr(commons_cmd, "build_signatures", lambda root: _failures())
         _stub_hub(monkeypatch, report=_coverage(), search_error="allowance exhausted")
 
@@ -638,9 +549,6 @@ class TestTheLookupsAreBoundedAndSurviveFailure:
         out = capsys.readouterr().out
         assert "0 of 3" in out
         assert "allowance exhausted" in out
-
-
-# --- `commons report --corpus`: measured here, sent nowhere ---------------
 
 
 def _local_args(tmp_path, corpus_records, export_records, **kw):
@@ -676,16 +584,6 @@ _EXPORT = [
 
 
 class TestALocalReportTouchesNothing:
-    """The privacy property, asserted rather than described.
-
-    The corpus is operator-curated public content and the failure text is
-    already on this machine, so both halves of the comparison are local.
-    That makes `--corpus` disclose strictly less than the shipped path,
-    which transmits a MinHash signature: here the operator does not learn
-    that a fleet asked, let alone what about. A regression that quietly
-    reintroduced a Hub call would destroy exactly that, and silently.
-    """
-
     def test_no_hub_call_is_made(self, tmp_path, monkeypatch, capsys):
         def explode(*a, **kw):
             raise AssertionError("a local report must not contact a Hub")
@@ -697,28 +595,20 @@ class TestALocalReportTouchesNothing:
         assert "computed locally" in capsys.readouterr().out.lower()
 
     def test_it_needs_no_hub_url_or_api_key(self, tmp_path, capsys):
-        """A prospect evaluating the corpus has no account yet."""
         assert commons_cmd.run_report(
             _local_args(tmp_path, _CORPUS, _EXPORT, hub_url=None, hub_api_key=None)) == 0
         out = capsys.readouterr().out
         assert "of 2" in out
 
     def test_the_lexical_matcher_reproduces_the_hubs_own_number(self, tmp_path, capsys):
-        """`--corpus` alone runs the same overlap code the Hub runs, so an
-        offline run is a check on the Hub rather than a different product."""
         commons_cmd.run_report(_local_args(tmp_path, _CORPUS, _EXPORT))
         out = capsys.readouterr().out
-        # The identically-worded failure clears any sane bar; the coffee
-        # machine clears none.
         assert "**1 of 2**" in out
         assert "Connection pool exhausted" in out
 
 
 class TestTheThresholdsCostIsVisible:
     def test_a_near_miss_is_shown_rather_than_hidden(self, tmp_path, capsys):
-        """A matcher that hides its own runner-up is how a threshold's cost
-        becomes invisible -- the exact defect the evaluation records against the
-        shipped coverage figure."""
         commons_cmd.run_report(_local_args(tmp_path, _CORPUS, _EXPORT))
         out = capsys.readouterr().out
         assert "below the bar, shown anyway" in out
@@ -734,8 +624,6 @@ class TestTheThresholdsCostIsVisible:
 
 class TestSemanticIsOptOutAndFailsLoudly:
     def test_semantic_without_a_corpus_is_refused(self, tmp_path, capsys):
-        """The Hub serves signatures, not embeddings, so there is nothing
-        for --semantic to compare against remotely."""
         args = _local_args(tmp_path, _CORPUS, _EXPORT, corpus=None, semantic=True)
         assert commons_cmd.run_report(args) == 1
         assert "--semantic needs --corpus" in capsys.readouterr().err
@@ -743,9 +631,6 @@ class TestSemanticIsOptOutAndFailsLoudly:
     def test_a_missing_model_stack_is_reported_not_raised(
         self, tmp_path, monkeypatch, capsys
     ):
-        """Never degrade silently to the other matcher: a coverage number
-        computed by a different matcher than the caller asked for is the
-        quiet substitution this codebase refuses elsewhere."""
         def unavailable(*a, **kw):
             raise commons_cmd.semantic.SemanticUnavailable("install the extra")
 
@@ -764,8 +649,6 @@ class TestSemanticIsOptOutAndFailsLoudly:
 
         monkeypatch.setattr(commons_cmd.semantic, "best_matches", fake)
         commons_cmd.run_report(_local_args(tmp_path, _CORPUS, _EXPORT, semantic=True))
-        # 0.65, not the higher-recall 0.60: that one leaks false positives on
-        # the dev probe set (commons/eval/semantic.py).
         assert seen["threshold"] == commons_cmd.semantic.DEFAULT_SEMANTIC_THRESHOLD
         assert "semantic (cosine >= 0.65" in capsys.readouterr().out
 
@@ -805,18 +688,7 @@ class TestTheCorpusFileIsValidated:
         assert "--corpus needs --from" in capsys.readouterr().err
 
 
-# --- `commons fetch`: the one call that asks about nothing ---------------
-
-
 class TestFetchingTheCorpus:
-    """The call that removes the disclosure price of using the corpus.
-
-    Every other Knowledge Base call describes a failure -- as a signature,
-    but the Hub still learns that this fleet is asking and roughly about
-    what. This one asks for public curated content and names nothing, so
-    afterwards `report --corpus` needs no network at all.
-    """
-
     def _args(self, tmp_path, **kw):
         base = dict(
             out=str(tmp_path / "corpus.jsonl"), limit=None,
@@ -848,12 +720,9 @@ class TestFetchingTheCorpus:
         written = [json.loads(x) for x in
                    open(args.out, encoding="utf-8").read().splitlines() if x.strip()]
         assert [r["title"] for r in written] == ["a", "b"]
-        # The file it writes must be the file --corpus reads.
         assert commons_cmd._load_corpus(args.out) == written
 
     def test_it_tells_you_the_next_command(self, tmp_path, monkeypatch, capsys):
-        """The point of holding the corpus is the offline run; a fetch that
-        does not say so leaves the privacy gain undiscovered."""
         self._stub(monkeypatch, {"entries": [{"title": "a", "solution_text": "s"}],
                                  "n_entries": 1})
         commons_cmd.run_fetch(self._args(tmp_path))
@@ -862,16 +731,12 @@ class TestFetchingTheCorpus:
         assert "nothing needs to leave this machine" in out
 
     def test_truncation_is_reported(self, tmp_path, monkeypatch, capsys):
-        """Silently returning a partial corpus would make every later local
-        coverage number quietly wrong."""
         self._stub(monkeypatch, {"entries": [{"title": "a", "solution_text": "s"}],
                                  "n_entries": 1, "truncated": True})
         commons_cmd.run_fetch(self._args(tmp_path))
         assert "truncated" in capsys.readouterr().err
 
     def test_a_disabled_export_is_reported_not_raised(self, tmp_path, monkeypatch, capsys):
-        """A deployment may decline to publish its corpus in bulk. That is a
-        configuration answer, not a crash."""
         self._stub(monkeypatch, commons_cmd.hub_client.HubConnectionError(
             "commons_export failed: entitlement_exceeded: ... "
             "ask the operator to set HUB_COMMONS_EXPORT_ENABLED=true."))
@@ -881,8 +746,6 @@ class TestFetchingTheCorpus:
     def test_an_empty_corpus_is_not_written_as_a_valid_file(
         self, tmp_path, monkeypatch, capsys
     ):
-        """Writing an empty corpus would make the next `report --corpus`
-        say 0% with total confidence, for the wrong reason."""
         self._stub(monkeypatch, {"entries": [], "n_entries": 0})
         args = self._args(tmp_path)
         assert commons_cmd.run_fetch(args) == 1

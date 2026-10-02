@@ -1,24 +1,3 @@
-"""hub/scim.py: SCIM 2.0 user provisioning, audit 1.2's remaining "no SCIM
-auto-provisioning" line.
-
-Two layers, tested separately, in order of how badly getting each wrong
-would hurt:
-
-1. **Auth is its own credential class.** A `scim`-scoped key can create
-   and deactivate `User` rows and reach nothing else; an ordinary
-   read/write/admin key (including a legacy, scopes=None key that
-   predates the `scopes` column) must be refused here even though it can
-   do everything else in this Hub. This is the property hub/scopes.py's
-   `_LEGACY_IMPLIED_SCOPES` split exists for -- getting it wrong would
-   silently hand every already-issued full-access production key a new,
-   more sensitive capability.
-2. **The lifecycle logic itself**: create/get/list/replace/patch/
-   deactivate against a real database, tenancy (an org's SCIM key never
-   reaches another org's users), and DELETE deactivating rather than
-   removing the row -- the same "disabled_at, never a delete" contract
-   hub/models.py:User already documents for every other deprovisioning
-   path.
-"""
 from __future__ import annotations
 
 import httpx
@@ -82,18 +61,12 @@ class TestAuthenticationIsItsOwnCredentialClass:
         assert resp.status_code == 401
 
     async def test_a_read_write_admin_key_cannot_reach_scim(self, session_factory, org):
-        """The whole point of `scim` being its own scope: a key that can
-        do everything else in this Hub still cannot reach this endpoint."""
         raw_key = await _issue(session_factory, org, ["read", "write", "admin"])
         async with _client(_app(session_factory)) as client:
             resp = await client.get("/scim/v2/Users", headers=_auth(raw_key))
         assert resp.status_code == 401
 
     async def test_a_legacy_key_with_no_scope_list_is_refused(self, session_factory, org):
-        """The property hub/scopes.py's `_LEGACY_IMPLIED_SCOPES` split
-        exists for: a key issued before the `scopes` column existed (and
-        therefore before `scim` existed at all) must not be retroactively
-        granted this new, more sensitive capability."""
         raw_key = await _issue(session_factory, org, None)
         async with _client(_app(session_factory)) as client:
             resp = await client.get("/scim/v2/Users", headers=_auth(raw_key))
@@ -144,9 +117,6 @@ class TestCoreLifecycle:
         assert fetched.disabled_at is None
 
     async def test_created_row_has_no_sso_identity_linked(self, session_factory, org):
-        """The module's central safety claim: SCIM creates the row, it
-        does not grant a login. Only `hub.manage link-sso` populates
-        issuer/external_subject."""
         async with session_scope(session_factory) as session:
             user = await scim.create_user(
                 session, org, {"userName": "b@example.com"}, actor="test",
@@ -200,8 +170,6 @@ class TestCoreLifecycle:
         assert updated.disabled_at is not None
 
     async def test_patch_accepts_string_boolean_active(self, session_factory, org):
-        """At least one real IdP integration sends `"False"` as a string
-        rather than a JSON boolean -- see _coerce_active's own docstring."""
         async with session_scope(session_factory) as session:
             user = await scim.create_user(session, org, {"userName": "e@example.com"}, actor="test")
             user_id = user.id
@@ -222,9 +190,6 @@ class TestCoreLifecycle:
         assert updated.disabled_at is not None
 
     async def test_patch_leaves_unsupported_attributes_untouched(self, session_factory, org):
-        """An operation this module does not model is left alone rather
-        than guessed at or rejected -- an IdP that bundles it with a real
-        `active` deactivation still gets that deactivation applied."""
         async with session_scope(session_factory) as session:
             user = await scim.create_user(
                 session, org, {"userName": "g@example.com", "displayName": "Before"}, actor="test",
@@ -346,9 +311,6 @@ class TestRoutesEndToEnd:
         assert resp.status_code == 404
 
     async def test_a_non_uuid_shaped_id_is_404_not_500(self, session_factory, org):
-        """id is a UUID column; a malformed id must resolve to the same
-        not-found a well-formed-but-nonexistent one gets, not an
-        unhandled DBAPIError -- see hub/crud.py:_is_uuid's own docstring."""
         raw_key = await _issue(session_factory, org, ["scim"])
         async with _client(_app(session_factory)) as client:
             resp = await client.get("/scim/v2/Users/does-not-exist", headers=_auth(raw_key))
@@ -367,15 +329,7 @@ class TestRoutesEndToEnd:
 
 
 class TestGroupsAreMembershipOnly:
-    """Audit 1.2's other named gap: a real Groups API needs many-to-many
-    membership, which hub/rbac.py's single-role-per-user model has no room
-    for. These groups exist to hold that membership faithfully, and MUST
-    grant nothing -- adding someone to a group changes nothing about what
-    they can do."""
-
     async def test_creating_a_group_grants_no_capability(self, session_factory, org):
-        """The central safety claim, checked at the source: hub/rbac.py
-        never imports or references ScimGroup at all."""
         import inspect
 
         from hub import rbac
@@ -493,8 +447,6 @@ class TestGroupsAreMembershipOnly:
         assert [m["value"] for m in body["members"]] == [user_id]
 
     async def test_patch_remove_single_member_via_filtered_path(self, session_factory, org):
-        """The `members[value eq "<id>"]` shape real IdPs (Okta among
-        them) send for a single-member removal."""
         async with session_scope(session_factory) as session:
             user = await scim.create_user(session, org, {"userName": "rm@example.com"}, actor="test")
             user_id = user.id
@@ -515,8 +467,6 @@ class TestGroupsAreMembershipOnly:
         assert body["members"] == []
 
     async def test_patch_remove_members_with_no_value_clears_all(self, session_factory, org):
-        """RFC 7644's own "remove the whole attribute" shape:
-        `{"op": "remove", "path": "members"}` with no `value` at all."""
         async with session_scope(session_factory) as session:
             u1 = await scim.create_user(session, org, {"userName": "clear1@example.com"}, actor="test")
             u2 = await scim.create_user(session, org, {"userName": "clear2@example.com"}, actor="test")
@@ -563,9 +513,6 @@ class TestGroupsAreMembershipOnly:
         assert updated.display_name == "Untouched"
 
     async def test_delete_actually_removes_the_row(self, session_factory, org):
-        """Unlike a User, a group confers no access -- there is no
-        deprovisioning history a real delete could falsify, so DELETE
-        here really deletes, unlike scim.deactivate_user."""
         from hub.models import ScimGroup
         async with session_scope(session_factory) as session:
             group = await scim.create_group(session, org, {"displayName": "Doomed"}, actor="test")

@@ -1,11 +1,3 @@
-"""Turns that cannot be worth a retrieval -- and the ones that only look like it.
-
-Most of this file is negative cases. A gate that skips retrieval is only safe
-if it never swallows a real query, and the dangerous inputs are not the
-acknowledgements it is built for -- they are the real questions that happen to
-START with one. "no results come back when the token expires" shares its first
-word with "no".
-"""
 from __future__ import annotations
 
 import pytest
@@ -24,7 +16,6 @@ TRIVIAL = [
     "cool!!!", "  lgtm  ", "sure...", "ok?",
 ]
 
-# Real queries. Every one of these must reach the ranker.
 REAL = [
     "no results come back when the token expires",
     "continue the deployment after the migration finishes",
@@ -56,8 +47,6 @@ class TestItCatchesContentlessTurns:
 
 
 class TestItNeverSwallowsARealQuery:
-    """The property that decides whether this gate is safe to ship."""
-
     @pytest.mark.parametrize("text", REAL)
     def test_a_real_query_reaches_the_ranker(self, text):
         assert is_trivial_prompt(text) is False, (
@@ -65,15 +54,10 @@ class TestItNeverSwallowsARealQuery:
         )
 
     def test_sharing_a_first_word_is_not_enough(self):
-        """The whole turn has to be an acknowledgement, not merely start
-        with one -- which is why the pattern is anchored at both ends."""
         assert is_trivial_prompt("no") is True
         assert is_trivial_prompt("no retries are configured") is False
 
     def test_short_and_low_entropy_is_not_the_test(self):
-        """`restart` and `rerun` are as short and as low-entropy as `ok`, and
-        both are real questions about real failure modes. The list is closed
-        on purpose rather than being a length or entropy heuristic."""
         assert is_trivial_prompt("restart") is False
         assert is_trivial_prompt("rerun") is False
         assert is_trivial_prompt("rollback") is False

@@ -1,4 +1,3 @@
-"""Scoring the outcome detector against labelled occasions (commontrace/precision.py)."""
 import json
 import os
 
@@ -17,14 +16,14 @@ def _row(oid, truth, returncode):
 
 
 def test_the_metrics_are_what_their_names_say():
-    rows = [_row("tp1", True, 0), _row("tp2", True, 0), _row("fp", False, 0),       # called success: 2 of 3 right
-            _row("tn", False, 1), _row("fn", True, 1),                               # called failure: 1 of 2 right
+    rows = [_row("tp1", True, 0), _row("tp2", True, 0), _row("fp", False, 0),
+            _row("tn", False, 1), _row("fn", True, 1),
             _row("undecided-success", True, 5), _row("undecided-failure", False, 5)]
     r = precision.evaluate(rows)
     assert (r.n, r.decided) == (7, 5)
     assert r.precision == pytest.approx(2 / 3) and r.failure_precision == pytest.approx(1 / 2)
     assert r.decided_share == pytest.approx(5 / 7)
-    assert r.recall == pytest.approx(2 / 4)       # of 4 true successes: 2 called, 1 called failure, 1 undecided
+    assert r.recall == pytest.approx(2 / 4)
     assert {w["occasion_id"] for w in r.wrong} == {"fp", "fn"}
 
 
@@ -57,7 +56,7 @@ def test_an_unknown_detector_is_a_sample_error_not_a_crash():
 
 def test_the_cli_exits_by_whether_the_target_is_met(tmp_path, capsys):
     path = tmp_path / "s.jsonl"
-    path.write_text("".join(json.dumps(_row(f"o{i}", i != 0, 0)) + "\n" for i in range(5)))  # 4 of 5 right
+    path.write_text("".join(json.dumps(_row(f"o{i}", i != 0, 0)) + "\n" for i in range(5)))
     assert main(["function", "precision", str(path), "--min-precision", "0.9"]) == 1
     assert main(["function", "precision", str(path), "--min-precision", "0.75"]) == 0
     assert main(["function", "precision", str(tmp_path / "missing.jsonl")]) == 2

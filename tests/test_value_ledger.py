@@ -1,29 +1,9 @@
-"""Tiered rates and a ledger a customer can check.
-
-`value.py`'s existing rules are what make its number defensible rather than
-promotional: a compromised experiment produces no figure, an underpowered
-memory contributes nothing, and memories that HURT are subtracted rather than
-dropped. Everything here has to hold those, because the two additions are
-exactly the kind that erode them if nobody is watching:
-
-  a rate card   invites a negotiated input to be read back later as if it
-                had been measured;
-  a ledger      makes a figure look audited, which is worse than no ledger
-                at all when the figure should not have been stated.
-
-So the tests below check the refusals as carefully as the arithmetic.
-"""
 from __future__ import annotations
 
 import pytest
 
 from commontrace import experiment, integrity, value
 
-# "These memories were injected on occasions that do not overlap", which is
-# the precondition a SUM of their contributions needs: without it one
-# occasion that received two of them would be counted twice, and value.py
-# withholds the total and the ledger rather than double-attributing. Stated
-# explicitly here so each test below says which world it is in.
 DISJOINT = value.OccasionOverlap(shared_pairs=frozenset(), unique_injected_occasions=400)
 
 
@@ -61,8 +41,6 @@ class TestTheRateCard:
         assert SUPPORT_CARD.blended_rate == pytest.approx(expected)
 
     def test_shares_that_do_not_cover_every_occasion_are_refused(self):
-        """A mix summing to less than one prices a volume that was never
-        measured, and summing to more counts occasions twice."""
         with pytest.raises(ValueError, match="sum to"):
             value.RateCard(tiers=(value.Tier("only half", 0.5, 10.0),))
 
@@ -95,9 +73,6 @@ class TestTheRateCardPricesTheReport:
         )
 
     def test_a_card_wins_over_a_flat_rate(self):
-        """Both supplied means the customer has superseded the flat number;
-        quietly preferring the vaguer one would price against a figure they
-        have already replaced."""
         report = value.compute(
             [_effect("a", experiment.VERDICT_HELPS, 0.05)],
             _clean_audit(), value_per_occasion=1.0, rate_card=SUPPORT_CARD,
@@ -128,8 +103,6 @@ class TestTheLedger:
         assert value.verify_ledger(ledger) is None
 
     def test_a_memory_that_hurts_carries_negative_money(self):
-        """The invariant that keeps this a measurement rather than a
-        brochure, now visible on the invoice itself."""
         report = value.compute(
             [_effect("hurts", experiment.VERDICT_HURTS, -0.03)],
             _clean_audit(), rate_card=SUPPORT_CARD, overlap=DISJOINT,
@@ -153,8 +126,6 @@ class TestTheLedger:
         assert value.verify_ledger(tampered) == 1
 
     def test_deleting_an_inconvenient_line_breaks_the_chain(self):
-        """The failure mode a spreadsheet cannot detect: quietly dropping the
-        one memory that HURT before sending the invoice."""
         report = value.compute(
             [
                 _effect("a", experiment.VERDICT_HELPS, 0.05),
@@ -180,8 +151,6 @@ class TestTheLedger:
         assert value.verify_ledger(list(reversed(ledger))) == 0
 
     def test_the_chain_starts_from_a_named_genesis(self):
-        """An empty-string genesis would let this chain be spliced into any
-        other SHA-256 chain that also started from nothing."""
         report = value.compute(
             [_effect("a", experiment.VERDICT_HELPS, 0.05)],
             _clean_audit(), rate_card=SUPPORT_CARD, overlap=DISJOINT,
@@ -195,15 +164,6 @@ class TestTheLedger:
 
 
 class TestTheLedgerSignature:
-    """verify_ledger proves a chain is internally consistent -- nobody
-    edited, dropped, or reordered a line. It does NOT prove who produced the
-    chain, because its genesis and algorithm are both public: anyone who can
-    write to wherever a ledger is stored can fabricate an entire replacement
-    chain from different figures and it will verify exactly as cleanly as a
-    genuine one. sign_ledger/verify_ledger_signature close that: only the
-    holder of the signing key can produce a signature the customer accepts.
-    """
-
     def _report(self):
         return value.compute(
             [
@@ -229,9 +189,6 @@ class TestTheLedgerSignature:
         )
 
     def test_a_signature_cannot_be_replayed_onto_another_org(self):
-        """Binding org_id into the payload stops a signature minted for one
-        customer's ledger from being presented as if it authenticated a
-        different customer's identical-looking chain."""
         ledger = self._report().ledger()
         key = b"issuer-secret-key"
         sig = value.sign_ledger(ledger, key, org_id="org_1", issued_at="t")
@@ -240,8 +197,6 @@ class TestTheLedgerSignature:
         )
 
     def test_a_signature_cannot_be_replayed_at_a_later_date(self):
-        """Binding issued_at stops an old, genuinely-issued signature from
-        being re-presented later as if it were freshly minted."""
         ledger = self._report().ledger()
         key = b"issuer-secret-key"
         sig = value.sign_ledger(ledger, key, org_id="org_1", issued_at="2026-01-01T00:00:00Z")
@@ -250,12 +205,6 @@ class TestTheLedgerSignature:
         )
 
     def test_a_fabricated_replacement_chain_verifies_but_does_not_sign(self):
-        """THE attack this exists to stop. An attacker with write access to
-        storage (but not the signing key) can regenerate an entirely
-        different, internally-consistent chain from scratch -- verify_ledger
-        alone cannot tell it apart from a genuine one, because both the
-        genesis and the algorithm are public. A signature under a key the
-        attacker does not hold is the one thing they cannot forge."""
         genuine = self._report().ledger()
         key = b"issuer-secret-key"
         genuine_sig = value.sign_ledger(genuine, key, org_id="org_1", issued_at="t")
@@ -264,22 +213,12 @@ class TestTheLedgerSignature:
             [_effect("helps", experiment.VERDICT_HELPS, 0.05)],
             _clean_audit(), rate_card=SUPPORT_CARD, overlap=DISJOINT,
         ).ledger()
-        assert value.verify_ledger(fabricated) is None  # internally consistent...
-        assert not value.verify_ledger_signature(  # ...but not genuinely issued
+        assert value.verify_ledger(fabricated) is None
+        assert not value.verify_ledger_signature(
             fabricated, genuine_sig, key, org_id="org_1", issued_at="t"
         )
 
     def test_a_tail_edit_that_still_passes_verify_ledger_fails_the_signature(self):
-        """The gap verify_ledger alone cannot close: an attacker who edits
-        only the LAST line and recomputes just that line's own entry_hash to
-        match produces a chain that still passes verify_ledger cleanly
-        (nothing downstream depends on the last entry), because
-        verify_ledger only ever checks that each hash follows from its own
-        row -- it has no independent opinion on what the row SHOULD say.
-        The signature does: it was minted over the ORIGINAL root, and the
-        edit changed the root (the last entry's hash), so it no longer
-        matches -- exactly the tamper-after-signing case a hash chain with
-        no key cannot catch on its own."""
         import dataclasses
         import hashlib
 
@@ -303,16 +242,12 @@ class TestTheLedgerSignature:
         )
         tampered = list(ledger[:-1]) + [tampered_last]
 
-        assert value.verify_ledger(tampered) is None  # the gap: still "consistent"
-        assert not value.verify_ledger_signature(     # the close: signature disagrees
+        assert value.verify_ledger(tampered) is None
+        assert not value.verify_ledger_signature(
             tampered, sig, key, org_id="org_1", issued_at="t"
         )
 
     def test_an_empty_ledger_still_signs_off_the_genesis(self):
-        """Zero counted lines is itself a claim worth authenticating -- an
-        issuer might understate an invoice down to nothing just as easily as
-        inflate one, and the root falls back to the named genesis rather
-        than being undefined."""
         key = b"issuer-secret-key"
         sig = value.sign_ledger([], key, org_id="org_1", issued_at="t")
         assert value.ledger_root([]) == value._LEDGER_GENESIS
@@ -321,13 +256,9 @@ class TestTheLedgerSignature:
 
 class TestTheLedgerRefusesWhenTheNumberWould:
     def test_a_compromised_experiment_gets_no_ledger(self):
-        """THE rule. A verifiable chain computed off a biased sample would
-        make an unsupportable figure look audited -- strictly worse than no
-        ledger, because it invites the reader to trust it."""
         compromised = integrity.audit([
             integrity.Assignment(
                 lesson="L", occasion_id=f"o{i}", injected=i % 2 == 0, rate=0.5,
-                # Only the treated arm ever reports: textbook attrition.
                 succeeded=True if i % 2 == 0 else None,
             )
             for i in range(400)

@@ -1,31 +1,3 @@
-"""An effect estimate is a statement about the world when it was measured.
-
-The product's argument is that a memory earns its place by measured effect.
-Nothing in that sentence had a date in it, and every part of it should: six
-months later the API the lesson described is deprecated, the policy it
-encoded has changed -- and the estimate is unchanged, because nothing re-ran
-it. The lesson is still active, still injected, still counted, still billed.
-
-The Hub already expired graduation from the pinned working-set block at a
-180-day horizon. The value ledger -- the surface attached to money -- had no
-horizon at all, so the two surfaces disagreed about whether the same evidence
-was current and the one that disagreed was the one the customer pays on.
-
-What these tests defend, in order of how badly getting it wrong would hurt:
-
-1. **The asymmetry.** Expiring every stale verdict is the obvious
-   implementation and is wrong in the vendor's favour: a stale HURTS that
-   stopped counting would RAISE the invoice, letting a vendor delete its own
-   harms by waiting. A stale HELPS stops counting; a stale HURTS keeps
-   counting. Both rules move the figure down.
-2. **Undated is not fresh.** "We cannot tell when this was measured" and
-   "this was measured too long ago" have the same standing in an argument
-   about whether a number is current.
-3. **Opting in is a decision.** Switching a horizon on changes an invoice, so
-   a caller that passes none must get exactly the historical behaviour.
-4. **The withheld memory leaves the signed ledger too**, or the ledger and
-   the figure disagree about the same period.
-"""
 from __future__ import annotations
 
 import datetime
@@ -37,10 +9,6 @@ from commontrace import decay, experiment, integrity, value
 NOW = datetime.datetime(2026, 9, 12, tzinfo=datetime.timezone.utc)
 HORIZON = 180
 
-#: The memories were injected on non-overlapping occasion sets, so they may
-#: legitimately be added (commontrace/value.py's aggregate gate). Without
-#: this the aggregate is withheld and the ledger is empty for a reason that
-#: has nothing to do with decay.
 DISJOINT = value.OccasionOverlap(
     shared_pairs=frozenset(), unique_injected_occasions=400)
 
@@ -69,8 +37,6 @@ def _clean_audit():
     ])
 
 
-# --- the freshness judgement -------------------------------------------------
-
 class TestFreshness:
     def test_recent_evidence_is_current(self):
         f = decay.freshness(_ago(10), now=NOW, horizon_days=HORIZON)
@@ -85,14 +51,10 @@ class TestFreshness:
         assert "past the 180-day evidence horizon" in f.describe()
 
     def test_the_boundary_is_inclusive(self):
-        """Exactly at the horizon is still current: an off-by-one here
-        expires a memory a day early and the operator cannot tell why."""
         assert decay.freshness(
             _ago(HORIZON), now=NOW, horizon_days=HORIZON).is_current
 
     def test_undated_evidence_is_not_current(self):
-        """Assuming in favour of the vendor because a timestamp is missing
-        is how missing timestamps become convenient."""
         for missing in (None, "", "   ", 42, [], "not-a-date"):
             f = decay.freshness(missing, now=NOW, horizon_days=HORIZON)
             assert f.state == decay.UNDATED, missing
@@ -104,8 +66,6 @@ class TestFreshness:
         assert decay.freshness(naive, now=NOW, horizon_days=HORIZON).is_current
 
     def test_a_datetime_works_as_well_as_a_string(self):
-        """This is fed by a JSONL line, a Postgres column and a hand-edited
-        YAML field."""
         moment = NOW - datetime.timedelta(days=5)
         assert decay.freshness(moment, now=NOW, horizon_days=HORIZON).is_current
 
@@ -116,8 +76,6 @@ class TestFreshness:
     def test_a_zero_or_negative_horizon_is_clamped(self):
         assert decay.freshness(_ago(1), now=NOW, horizon_days=0).horizon_days == 1
 
-
-# --- the asymmetry -----------------------------------------------------------
 
 class TestStaleResolvesAgainstTheVendor:
     def _f(self, days):
@@ -140,22 +98,15 @@ class TestStaleResolvesAgainstTheVendor:
         assert "Re-run the holdout" in why
 
     def test_a_stale_hurts_KEEPS_counting(self):
-        """The failure the obvious implementation has. A stale HURTS that
-        stopped counting would RAISE the invoice -- a vendor deleting its own
-        damage by waiting long enough."""
         counts, why = self._counts(experiment.VERDICT_HURTS, 400)
         assert counts
         assert why == ""
 
     def test_a_stale_verdict_that_never_counted_gets_no_invented_reason(self):
-        """UNDERPOWERED was already excluded for its own reason; staleness
-        must not overwrite it with one that sends the operator elsewhere."""
         counts, why = self._counts(experiment.VERDICT_UNDERPOWERED, 400)
         assert not counts
         assert why == ""
 
-
-# --- through the value report ------------------------------------------------
 
 class TestValueReport:
     EFFECTS = [
@@ -176,8 +127,6 @@ class TestValueReport:
         )
 
     def test_no_horizon_is_exactly_the_historical_behaviour(self):
-        """Switching a horizon on changes an invoice, so it is a decision
-        rather than an upgrade."""
         report = value.compute(self.EFFECTS, _clean_audit())
         assert report.n_counted == 3
         assert report.decay is None
@@ -194,8 +143,6 @@ class TestValueReport:
         assert "stale-hurts" in counted
 
     def test_both_rules_move_the_figure_down(self):
-        """Not a coincidence -- it is the rule. When evidence decays it
-        resolves against the party who benefits from the doubt."""
         without = value.compute(self.EFFECTS, _clean_audit())
         with_horizon = self._with_horizon()
         assert with_horizon.occasions_improved < without.occasions_improved
@@ -207,7 +154,6 @@ class TestValueReport:
         assert "400 days ago" in stale.why_not
 
     def test_the_withheld_memory_leaves_the_signed_ledger_too(self):
-        """Otherwise the ledger and the figure describe different periods."""
         report = self._with_horizon(
             value_per_occasion=25.0, overlap=DISJOINT)
         entries = report.ledger()
@@ -225,13 +171,11 @@ class TestValueReport:
     def test_an_undated_effect_is_withheld_like_an_expired_one(self):
         report = value.compute(
             self.EFFECTS, _clean_audit(),
-            last_measured={"fresh-helps": _ago(10)},  # the others have no date
+            last_measured={"fresh-helps": _ago(10)},
             evidence_horizon_days=HORIZON, now=NOW,
         )
         counted = {m.slug for m in report.memories if m.counted}
         assert "stale-helps" not in counted
-        # ...and the undated HURTS still counts, for the same reason a dated
-        # stale one does.
         assert "stale-hurts" in counted
 
     def test_everything_fresh_changes_nothing(self):
@@ -247,8 +191,6 @@ class TestValueReport:
         assert with_horizon.decay.stale == ()
 
 
-# --- what an operator does about it ------------------------------------------
-
 class TestDecayReport:
     def _report(self):
         return value.compute(
@@ -262,8 +204,6 @@ class TestDecayReport:
         assert set(due) == {"stale-helps", "stale-hurts"}
 
     def test_it_separates_stale_from_actually_withheld(self):
-        """A stale HURTS is still counted, and calling it "decayed" without
-        that distinction sends an operator to re-measure the wrong thing."""
         report = self._report()
         assert {i.slug for i in report.stale} == {"stale-helps", "stale-hurts"}
         assert {i.slug for i in report.withheld} == {"stale-helps"}

@@ -53,17 +53,6 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
 
 
 def _safe_tags(raw: object) -> list[str]:
-    """Coerce a frontmatter `tags` value to a list of strings.
-
-    A hand-edited or malformed lesson/trace file can have `tags` as a bare
-    scalar (`tags: 123`, `tags: true`) instead of a list -- valid YAML, and
-    exactly the shape `retrieval.py`/`reliability.py` already guard against
-    for the same reason. Without this, `tags: 123` crashed `overlap sign`
-    with a raw TypeError from `" ".join(...)`, and `tags: true` did too,
-    while `tags: some_string` silently split into individual characters
-    instead of raising -- inconsistent failure modes for the same class of
-    malformed input.
-    """
     return [str(t) for t in raw if t is not None] if isinstance(raw, (list, tuple)) else []
 
 
@@ -82,10 +71,6 @@ def _iter_lessons(root: str):
 
 
 def _iter_recurring_failures(root: str):
-    """A recurring failure is a trace with outcome.repeated_error = true --
-    the fleet hit the same thing twice. Those are exactly the failures a
-    commons could have prevented, which is why the report counts them and
-    not every trace."""
     tdir = paths.traces_dir(root)
     for path in sorted(glob.glob(os.path.join(tdir, "*.md"))):
         if os.path.basename(path) == "README.md":
@@ -107,9 +92,6 @@ def run_sign(args: argparse.Namespace) -> int:
     sig = overlap.FleetSignature(fleet_label=args.fleet_label, num_perm=args.num_perm)
 
     for fm in _iter_lessons(root):
-        # Sign the activation condition, not the rule text: the question is
-        # "does this lesson apply to that situation", which is what
-        # applies_when describes.
         text = " ".join(
             str(x) for x in (
                 fm.get("applies_when", ""), fm.get("description", ""),

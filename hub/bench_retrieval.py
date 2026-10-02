@@ -101,12 +101,8 @@ CORPUS = ROOT / "commons" / "seed" / "substrate-v1.jsonl"
 EVAL_DIR = ROOT / "commons" / "eval"
 PROBE_SETS = {"v1": EVAL_DIR / "probes-v1.jsonl", "v2": EVAL_DIR / "probes-v2.jsonl"}
 
-# The k values §12.7 reports, so the two tiers can be read off the same row.
 KS = (1, 3, 5, 10)
 
-# Deep enough that "findable" means findable, shallow enough that it is
-# still a list somebody could skim. The corpus is 46 records; asking for
-# more than it holds would make findable trivially 100%.
 FINDABLE_K = 25
 
 
@@ -115,14 +111,10 @@ def _load(path: Path) -> list[dict]:
 
 
 def probe_query(p: dict) -> str:
-    """Exactly what commons/eval/retrieval_tiers.py feeds the local tier.
-    A different query string here would measure a different question."""
     return f"{p['label']} {p.get('text', '')}"
 
 
 def as_lessons(corpus: list[dict]) -> list[tuple[str, dict]]:
-    """The local tier's own shape, copied from retrieval_tiers.py so the two
-    files cannot drift into measuring different corpora."""
     return [
         (
             r["title"],
@@ -139,18 +131,6 @@ def as_lessons(corpus: list[dict]) -> list[tuple[str, dict]]:
 
 
 async def _seed_corpus(session, org_id: str, corpus: list[dict]) -> None:
-    """ORM inserts, not bench_scaling's generate_series: 46 rows whose exact
-    wording IS the measurement. `search_vector` is a GENERATED column, so
-    Postgres builds it on insert and nothing here can forget to.
-
-    Deliberately does not maintain Organization.trace_count (unlike every
-    production insert path -- crud.contribute_trace/amend_trace/
-    review_kb_submission, manage.commons_seed): this script measures
-    search_traces against a disposable benchmark database/org, never
-    plan.max_traces enforcement, so there is nothing here that reads that
-    counter back. Do not seed benchmark data into a real customer org for
-    this reason -- its trace_count would silently under-report afterward.
-    """
     for r in corpus:
         session.add(
             Trace(
@@ -167,11 +147,6 @@ async def _seed_corpus(session, org_id: str, corpus: list[dict]) -> None:
 
 
 async def _seed_distractors(session, org_id: str, n: int) -> None:
-    """Unrelated rows, to answer the question a 46-record corpus cannot:
-    does relaxing the boolean operator drown the answer once a real fleet's
-    corpus is around it? Deliberately drawn from the same *domain* vocabulary
-    (production incidents) rather than random words -- distractors that share
-    no vocabulary with the probes would make any relaxation look free."""
     await session.execute(
         text(
             """
@@ -215,7 +190,6 @@ async def _seed_distractors(session, org_id: str, n: int) -> None:
 
 
 def _rank_of(target: str, titles: list[str]) -> int | None:
-    """1-indexed position of the target title, or None if absent."""
     for i, t in enumerate(titles, start=1):
         if t == target:
             return i
@@ -223,13 +197,6 @@ def _rank_of(target: str, titles: list[str]) -> int | None:
 
 
 def _summarize(ranks: list[int | None], n_returned: list[int]) -> dict:
-    """`ranks` is one entry per positive probe: the 1-indexed rank of its
-    target, or None. `n_returned` is how many results that probe got at all.
-
-    zero_result is computed from n_returned rather than from ranks, because
-    "the right answer was not in the list" and "there was no list" are
-    different failures and only the second one is invisible to a user.
-    """
     n = len(ranks)
     if n == 0:
         return {"n": 0}
@@ -255,8 +222,6 @@ async def _hub_positives(session, org_id: str, pos: list[dict]) -> dict:
 
 
 async def _hub_controls(session, org_id: str, neg: list[dict]) -> dict:
-    """For the negative controls there is no target, so the only question is
-    how much comes back. Reported at the same k values §12.7 uses."""
     out: dict[int, float] = {}
     for k in (1, 3, 5):
         hits = 0

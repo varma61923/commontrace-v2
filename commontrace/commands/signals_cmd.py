@@ -1,9 +1,3 @@
-"""`commontrace signals`: named, sized, trended clusters of this store's
-FAILING traces, and an export path to a regression dataset an existing
-eval tool (LangSmith, Braintrust) can run against. See
-commontrace/failure_signals.py for what a "signal" is and why the export
-formats are not guessed.
-"""
 from __future__ import annotations
 
 import argparse

@@ -1,31 +1,4 @@
-"""How often does the outcome detector get the occasion right? Measured on a labelled sample.
-
-`outcome_detect` turns signals a system already has into a success or a failure, or says it cannot
-tell yet. Whether that reading agrees with a person who looked at the case is a measurement, not a
-design property, and it is the number that decides whether the verdicts built on those outcomes can
-be trusted. This scores it.
-
-A sample is JSON lines, one per occasion a person has labelled:
-
-    {"occasion_id": "t-1", "truth": true, "combine": "all",
-     "signals": [{"detector": "from_csat", "args": {"score": 5, "scale_max": 5}},
-                 {"detector": "from_human_takeover", "args": {"human_took_over": false}}]}
-
-`signals` and `combine` are exactly what `POST /v1/outcome` and a function kit use. `truth` is the
-person's answer: did the task succeed.
-
-Reported:
-  precision          of the occasions the detector called SUCCESS, the share that truly succeeded.
-                     The figure that matters: a false success reports a win that did not happen.
-  failure precision  of those it called FAILURE, the share that truly failed.
-  decided            the share it answered at all. An undecided occasion records nothing, which is
-                     the correct response to a window still open, and costs speed, not correctness.
-  recall             of the truly successful, the share it called success.
-
-A sample taken from the same fleet and labelled by someone other than whoever configured the
-detectors is evidence; a sample the detector's author wrote is a regression suite for the detector's
-stated rules, and is described that way wherever it is reported.
-"""
+"""How often does the outcome detector get the occasion right? Measured on a labelled sample."""
 from __future__ import annotations
 
 import dataclasses

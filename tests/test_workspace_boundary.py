@@ -1,4 +1,3 @@
-"""Tests for workspace boundary sandboxing, path traversal defenses, and symlink security."""
 import os
 
 import pytest
@@ -11,9 +10,6 @@ from commontrace.paths import (
     safe_prepare_output_path,
 )
 
-# ============================================================================
-# 1. enforce_boundary & is_within_directory Unit Tests
-# ============================================================================
 
 class TestEnforceBoundary:
     def test_enforce_boundary_valid_contained_file(self, tmp_path):
@@ -97,10 +93,8 @@ class TestEnforceBoundary:
         subfile = base / "file.txt"
         subfile.write_text("content", encoding="utf-8")
 
-        # Equal to base should succeed
         assert enforce_boundary(str(base), str(base), allow_within=False) == os.path.realpath(str(base))
 
-        # Subfile within base should fail when allow_within=False
         with pytest.raises(PathTraversalError, match="path traversal detected"):
             enforce_boundary(str(base), str(subfile), allow_within=False)
 
@@ -118,10 +112,6 @@ class TestEnforceBoundary:
         assert is_within_directory(str(base), str(outside)) is False
         assert is_within_directory(str(base), "../outside.txt") is False
 
-
-# ============================================================================
-# 2. safe_prepare_output_path Symlink Defense Tests
-# ============================================================================
 
 class TestSafePrepareOutputPath:
     def test_empty_output_path_raises(self):
@@ -157,17 +147,13 @@ class TestSafePrepareOutputPath:
         out_link = tmp_path / "export_target.jsonl"
         os.symlink(str(victim), str(out_link))
 
-        # With allow_unlink_leaf=True (default)
         prepared = safe_prepare_output_path(str(out_link), allow_unlink_leaf=True)
         assert prepared == os.path.abspath(str(out_link))
 
-        # The symlink itself must have been unlinked
         assert not os.path.islink(str(out_link))
 
-        # The victim file must NOT have been overwritten
         assert victim.read_text(encoding="utf-8") == "CRITICAL_SECRET_CONTENT"
 
-        # Now writing to the prepared path writes to a clean new file
         with open(prepared, "w", encoding="utf-8") as fh:
             fh.write("NEW_EXPORT_DATA")
 
@@ -188,10 +174,6 @@ class TestSafePrepareOutputPath:
         assert victim.read_text(encoding="utf-8") == "CRITICAL_SECRET_CONTENT"
 
 
-# ============================================================================
-# 3. CLI Validation Path Sandboxing Tests
-# ============================================================================
-
 class TestCliValidationPathSandboxing:
     def test_lesson_validate_rejects_path_outside_workspace(self, tmp_path, capsys):
         outside_file = tmp_path / "outside_lesson.md"
@@ -203,7 +185,6 @@ class TestCliValidationPathSandboxing:
         workspace = tmp_path / "workspace"
         workspace.mkdir()
 
-        # Run within workspace
         exit_code = main(["lesson", "validate", "--dest", str(workspace), str(outside_file)])
         captured = capsys.readouterr()
 

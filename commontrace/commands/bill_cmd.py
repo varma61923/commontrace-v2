@@ -1,9 +1,4 @@
-"""`commontrace bill`: invoice proven value from verified proof packages.
-
-Nothing here has a default price. `bill template` prints the terms a schedule must set, all empty; the owner
-fills them in. `bill invoice` previews by default and writes the billing book only with `--commit`, so looking
-at what an invoice would be changes nothing.
-"""
+"""`commontrace bill`: invoice proven value from verified proof packages."""
 from __future__ import annotations
 
 import argparse

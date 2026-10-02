@@ -1,12 +1,3 @@
-"""commontrace/memory_sources.py: causal measurement of memory that lives in
-a plain file (CLAUDE.md/AGENTS.md-shaped), through the same holdout path
-`commontrace/measure.py`'s tests already hold to the same standard --
-the important test here is end-to-end: a fixture file where one section
-genuinely raises the task success rate and another does nothing, rendered
-occasion by occasion, then read back through `commontrace experiment`'s own
-analysis path. If that path cannot tell the two apart, nothing else here
-matters.
-"""
 from __future__ import annotations
 
 import json
@@ -16,10 +7,6 @@ import random
 from commontrace import experiment, holdout_io, memory_sources
 from commontrace.commands import experiment_cmd
 
-# Fixed for the same reason tests/test_measure.py fixes it: holdout_io.configure
-# derives a fresh salt from the clock on every call, which re-randomizes which
-# occasions land in which arm on every test run. These tests check that the
-# pipeline is wired correctly, not how often the statistics err.
 FIXED_SALT = "test-memory-sources-fixed-salt"
 
 FIXTURE = """# Project notes
@@ -104,7 +91,6 @@ class TestEndToEnd:
             occasion = f"task-{i}"
             result = source.render(occasion)
             delivered_idempotency = "idempotency" not in result.withheld
-            # Ground truth this test plants: only "idempotency" changes outcomes.
             p = 0.8 if delivered_idempotency else 0.4
             source.record_outcome(occasion, succeeded=rng.random() < p)
 
@@ -142,7 +128,7 @@ class TestEndToEnd:
 
 class TestBlocklist:
     def test_withdrawn_section_is_never_delivered_and_never_logged(self, tmp_path):
-        _configure(tmp_path, 0.0)  # rate 0 would deliver everything if not blocked
+        _configure(tmp_path, 0.0)
         path = _write(tmp_path)
         memory_sources.withdraw(str(tmp_path), path, "office-hours")
         source = memory_sources.FileMemorySource(path, root=str(tmp_path))

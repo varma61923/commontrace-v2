@@ -1,28 +1,3 @@
-"""Age-based deletion, and the two things that outrank it.
-
-What these tests defend, in order of how badly getting it wrong would hurt:
-
-1. **A plan deletes nothing.** Everything about this module is built so an
-   operator reads the consequences before they happen, and the one bug that
-   would make the whole design worthless is a plan that acts.
-2. **A stale approval is refused.** The digest names one specific set of
-   rows. If the store moved, applying it would delete a set nobody read --
-   and a purge is the one operation whose mistakes are unrecoverable and
-   invisible, because the evidence is what it deleted.
-3. **A legal hold beats a policy, visibly.** Held rows are counted and
-   named. A hold that merely skipped them would leave the operator reading
-   "purge complete" and believing data was gone that is not.
-4. **A running experiment blocks deletion of its arms.** Deleting some
-   observations mid-run is differential attrition -- it biases the causal
-   estimate invisibly, because the analysis just sees a smaller, apparently
-   clean dataset.
-5. **Floors are refused, not clamped.** An operator who asked for 7 days and
-   silently got 365 believes the store honours a number it does not, and
-   finds out from an auditor.
-6. **Tenancy.** These are two new org-scoped tables, and a new table that
-   skipped row-level security is exactly the hole d5c8b3a91e77 was written
-   to close.
-"""
 from __future__ import annotations
 
 import uuid
@@ -61,7 +36,6 @@ async def org(session_factory):
 
 
 async def _add_traces(session_factory, org_id, ages, **kwargs):
-    """One trace per age in days. Returns their ids, oldest first."""
     ids = []
     async with session_scope(session_factory) as session:
         for i, age in enumerate(ages):
@@ -82,8 +56,6 @@ class TestPolicies:
         async with session_scope(session_factory) as session:
             with pytest.raises(retention.RetentionError) as exc:
                 await retention.set_policy(session, org, "audit_log", 7)
-        # The number asked for AND the floor, so the operator can tell which
-        # one they got rather than discovering it later.
         assert "365" in str(exc.value) and "7" in str(exc.value)
         assert "proves a purge happened" in str(exc.value)
 
@@ -118,15 +90,11 @@ class TestPolicies:
             await retention.set_policy(session, org, "trace", 120, note="legal said so")
         async with session_scope(session_factory) as session:
             policies = await retention.policies_for(session, org)
-        # Two rows disagreeing about the same objects would make the
-        # retention period depend on iteration order.
         assert len(policies) == 1
         assert policies[0].max_age_days == 120
         assert policies[0].note == "legal said so"
 
     async def test_statuses_are_separate_policies(self, session_factory, org):
-        """"Keep quarantined traces two years and ordinary ones ninety days"
-        is the shape a real policy takes."""
         async with session_scope(session_factory) as session:
             await retention.set_policy(session, org, "trace", 90, status="active")
             await retention.set_policy(session, org, "trace", 730, status="quarantined")
@@ -147,7 +115,6 @@ class TestPlanning:
         assert "indefinitely" in plan.render()
 
     async def test_a_plan_deletes_nothing(self, session_factory, org):
-        """The single most important property in this module."""
         await _add_traces(session_factory, org, [400, 400, 10])
         async with session_scope(session_factory) as session:
             await retention.set_policy(session, org, "trace", 90)
@@ -198,14 +165,11 @@ class TestPlanning:
     async def test_the_digest_distinguishes_different_sets_of_the_same_size(
         self, session_factory, org
     ):
-        """Two sets of rows can have the same count; a digest over counts
-        would let an apply delete a set the operator never read."""
         await _add_traces(session_factory, org, [400])
         async with session_scope(session_factory) as session:
             await retention.set_policy(session, org, "trace", 90)
         async with session_scope(session_factory) as session:
             first = (await retention.plan(session, org, now=NOW)).digest
-        # Same count, different row.
         async with session_scope(session_factory) as session:
             await session.execute(Trace.__table__.delete())
         await _add_traces(session_factory, org, [400])
@@ -248,7 +212,6 @@ class TestApply:
         await self._one_policy(session_factory, org)
         async with session_scope(session_factory) as session:
             stale = (await retention.plan(session, org, now=NOW)).digest
-        # The store moves: another old trace arrives after the plan was read.
         await _add_traces(session_factory, org, [500])
         async with session_scope(session_factory) as session:
             with pytest.raises(retention.StalePlanError) as exc:
@@ -264,8 +227,6 @@ class TestApply:
     async def test_a_purge_is_audited_even_when_it_deletes_nothing(
         self, session_factory, org
     ):
-        """"The purge ran and deleted nothing" and "the purge never ran" are
-        different facts, and only one of them means the schedule is broken."""
         await self._one_policy(session_factory, org)
         async with session_scope(session_factory) as session:
             plan = await retention.plan(session, org, now=NOW)
@@ -302,8 +263,6 @@ class TestLegalHold:
             )
         async with session_scope(session_factory) as session:
             plan = await retention.plan(session, org, now=NOW)
-        # Counted and named, not skipped: an operator reading "purge
-        # complete" must not believe data is gone that is not.
         assert plan.n_doomed == 0
         assert plan.n_held == 2
         assert "Ohio subpoena 2026-44" in plan.render()
@@ -384,8 +343,6 @@ class TestLegalHold:
         async with session_scope(session_factory) as session:
             row = await session.get(LegalHold, hold_id)
             active = await retention.active_holds(session, org)
-        # "Frozen from March to July, by whom and why" is the question a
-        # hold is ultimately asked; deleting the row loses it.
         assert row is not None
         assert row.released_at is not None
         assert row.reason == "subpoena"
@@ -435,9 +392,6 @@ class TestRunningExperiment:
     async def test_a_running_experiment_blocks_deletion_of_its_arms(
         self, session_factory, org
     ):
-        """Deleting some observations mid-run is differential attrition: it
-        biases the estimate invisibly, because the analysis just sees a
-        smaller, apparently clean dataset."""
         await self._observations(session_factory, org, 4)
         async with session_scope(session_factory) as session:
             o = await session.get(Organization, org)
@@ -467,8 +421,6 @@ class TestRunningExperiment:
             await retention.set_policy(session, org, "holdout_observation", 90)
         async with session_scope(session_factory) as session:
             plan = await retention.plan(session, org, now=NOW)
-        # The export's digest is what the value ledger's signature commits
-        # to, and it cannot be recomputed from deleted rows.
         assert "export-assignments" in plan.render()
 
     async def test_a_running_experiment_does_not_block_other_types(
@@ -486,10 +438,6 @@ class TestRunningExperiment:
 
 class TestSchemaSafety:
     def test_every_org_scoped_table_has_row_level_security(self):
-        """A new tenant-scoped table that skipped RLS is exactly the hole
-        d5c8b3a91e77 was written to close. This fails on the NEXT one too,
-        which is the point of asserting it against the models rather than
-        against a list."""
         from hub.alembic.versions.a7c3e91d4b20_outcome_connectors import (
             _NEW_TABLES as _CONNECTOR_TABLES,
         )
@@ -519,13 +467,11 @@ class TestSchemaSafety:
             *_USER_TABLES, *_COLLAB_TABLES, *_ALERT_TABLES, *_SCIM_GROUP_TABLES, *_CONNECTOR_TABLES,
             "traces",
         }
-        # Documented exemptions, with the reason each one cannot be scoped.
-        # See d5c8b3a91e77's docstring.
         exempt = {
-            "api_keys",        # read to DISCOVER the caller's org, pre-auth
-            "organizations",   # same pre-auth path
-            "audit_log",       # nullable org_id: system events have none
-            "trace_relations",  # no org_id; reachable only through traces
+            "api_keys",
+            "organizations",
+            "audit_log",
+            "trace_relations",
         }
         org_scoped = {
             table.name for table in Base.metadata.sorted_tables
@@ -534,8 +480,6 @@ class TestSchemaSafety:
         assert org_scoped - exempt - protected == set()
 
     def test_every_purgeable_kind_names_a_real_model_column(self):
-        """A KIND whose timestamp or status column does not exist would
-        produce a policy that matches nothing, reported as working."""
         for name, kind in retention.KINDS.items():
             assert hasattr(kind.model, kind.timestamp), name
             assert hasattr(kind.model, "id"), name
@@ -546,8 +490,6 @@ class TestSchemaSafety:
     async def test_a_policy_for_a_vanished_type_is_reported_not_ignored(
         self, session_factory, org
     ):
-        """A policy the operator believes is running, that silently matches
-        nothing, is the worst of both."""
         async with session_scope(session_factory) as session:
             session.add(RetentionPolicy(
                 org_id=org, object_type="sometable", status="any", max_age_days=90,

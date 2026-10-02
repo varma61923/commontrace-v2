@@ -1,19 +1,3 @@
-"""MCP `retrieve` runs the fused ranking a store configured, exactly as
-`commontrace query` does.
-
-Until this existed the MCP surface was lexical-only, because the semantic
-arm was a subprocess that loads a model per call -- so a store that set
-`fusion=rrf` gave its shell users the fused ranking and its agents the
-weaker one (on LoCoMo, 54% vs 64.5% of answering turns in the top 10).
-commontrace/semantic_arm.py now runs the same ranking
-function in-process.
-
-The semantic arm is stubbed here -- a sentence-transformer is not a test
-dependency -- with the SAME fixed ranking on both surfaces, so what is
-tested is everything around it: the freshness gate, fusion, the harm split,
-exclude_shown, dosage, and above all that both surfaces make the same
-eligibility decision and log it the same way.
-"""
 from __future__ import annotations
 
 import json
@@ -53,9 +37,6 @@ MPNET = "multi-qa-mpnet-base-dot-v1"
 
 
 def _stub_both(monkeypatch, slugs=SEMANTIC, rc=0, model=MPNET):
-    """The same fixed semantic ranking behind both surfaces, from an index
-    built with `model` (the original one unless a test says otherwise, so
-    labels are the unsuffixed ones)."""
     monkeypatch.setattr(semantic_arm, "available", lambda: True)
     monkeypatch.setattr(semantic_arm, "stored_model", lambda root: model)
     monkeypatch.setattr(semantic_arm, "index_model", lambda root: model)
@@ -84,8 +65,6 @@ def _slugs(out, *names):
 
 
 def test_a_semantic_only_lesson_reaches_the_agent(store, monkeypatch):
-    """The gap: `unsubscribe-sync` shares no word with the task; only the
-    semantic arm finds it."""
     _stub_both(monkeypatch)
     out = call(mcp_server.build_server(store), "retrieve", task=TASK)
     assert "unsubscribe-sync" in _slugs(out, "lessons")
@@ -93,9 +72,6 @@ def test_a_semantic_only_lesson_reaches_the_agent(store, monkeypatch):
 
 
 def test_both_surfaces_make_the_same_eligibility_decision(store, monkeypatch):
-    """Same store, same query, same semantic ranking: the same lessons are
-    eligible, logged under the same label with the same relevance and floor.
-    (The arm each lands in differs per occasion id, by design.)"""
     _stub_both(monkeypatch)
     rc = query_cmd.run(_args(store, TASK, experiment=True, occasion_id="cli-1"))
     assert rc == 0
@@ -147,8 +123,6 @@ def test_exclude_shown_applies_to_the_semantic_arm_too(store, monkeypatch):
 
 
 def test_a_withdrawn_lesson_is_kept_out_of_the_semantic_arm_too(store, monkeypatch):
-    """Harm withdrawal (commontrace/harm.py) must hold on both arms, or the
-    lesson comes back through the one that was not filtered."""
     _stub_both(monkeypatch)
     from commontrace import evidence
 
@@ -175,10 +149,6 @@ def test_a_store_without_fusion_never_touches_the_semantic_arm(tmp_path, monkeyp
 
 
 def test_exclude_shown_leaves_both_surfaces_logging_the_same_relevance(store, monkeypatch):
-    """Filtering the semantic arm's output is not only about which lessons
-    come back -- a shown lesson is dropped either way -- it decides the
-    arm's RANK POSITIONS, and so every fused score written to the holdout
-    log. Both surfaces must filter it the same way."""
     _stub_both(monkeypatch)
     config = holdout_io.load_config(store)
     holdout_io.assign_and_log(store, ["refund-threshold"], occasion_id="seed",
@@ -195,9 +165,6 @@ def test_exclude_shown_leaves_both_surfaces_logging_the_same_relevance(store, mo
 
 
 def test_both_surfaces_refresh_the_index_before_the_arm_ranks(store, monkeypatch):
-    """A lesson approved since the last build must reach the semantic arm
-    without anyone running `commontrace index`: each surface refreshes a
-    stale index first (tests/test_semantic_arm.py covers the refresh itself)."""
     _stub_both(monkeypatch)
     events = []
 
@@ -223,8 +190,6 @@ def test_both_surfaces_refresh_the_index_before_the_arm_ranks(store, monkeypatch
 
 
 def test_a_fused_experiment_is_not_called_marginal(store, monkeypatch):
-    """Fused rows record a rank-fusion score beside the lexical floor; the
-    audit used to call all of them marginal (tests/test_integrity_fusion.py)."""
     _stub_both(monkeypatch)
     server = mcp_server.build_server(store)
     for i in range(40):

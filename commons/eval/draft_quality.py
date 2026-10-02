@@ -75,7 +75,6 @@ EXTRA_MODES: dict[str, tuple[list[str], list[str]]] = {
 }
 ALL_MODES = {**signal_ari.MODES, **EXTRA_MODES}
 
-# Replies the stub gives. Every N-th cluster gets a deliberately bad one so the harness has something to catch.
 _BAD = ("placeholder", "injection", "restatement")
 
 
@@ -106,7 +105,6 @@ def _seed_store(root: str, cluster: dict) -> None:
 
 
 def _stub_reply(cluster: dict, index: int, prompt: str) -> str:
-    """A scripted reply: a good one, or every fourth a bad one of a rotating kind."""
     ids = [f"{cluster['id']}-{i}" for i in range(len(cluster["traces"]))]
     solution = cluster["traces"][0]["solution"]
     context = cluster["traces"][0]["context"]
@@ -172,7 +170,7 @@ def run_cluster(cluster: dict, index: int, drafter: str, path: str | None) -> di
         with tempfile.TemporaryDirectory(prefix="commontrace-dq-") as root:
             _seed_store(root, cluster)
             if drafter == "stub" and index % 4 == 3 and (index // 4) % len(_BAD) == 2:
-                _write_existing(root, cluster)         # the lesson a "restatement" draft will copy
+                _write_existing(root, cluster)
             with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
                 cli_main(["distill", "--draft", "--min-cluster-size", "2", "--similarity-threshold", "0.1",
                           "--dest", root])
@@ -183,8 +181,6 @@ def run_cluster(cluster: dict, index: int, drafter: str, path: str | None) -> di
                 return {"id": cluster["id"], "outcome": "no_draft", "gate": "model", "usage": rec.usage}
             slug = sorted(candidates)[0].removesuffix(".md")
             if "llm_draft" not in frontmatter.read(os.path.join(ldir, f"{slug}.md"))[0]:
-                # The model produced nothing usable, so distill wrote its TODO scaffold. That is a
-                # failure of the model step, not of a gate, and is reported as such.
                 return {"id": cluster["id"], "outcome": "no_draft", "gate": "model", "usage": rec.usage}
             err = io.StringIO()
             with redirect_stdout(io.StringIO()), redirect_stderr(err):
@@ -204,7 +200,6 @@ def run_cluster(cluster: dict, index: int, drafter: str, path: str | None) -> di
 
 
 def _write_existing(root: str, cluster: dict) -> None:
-    """An active lesson stating the same rule the stub's 'restatement' draft will state."""
     from commontrace import lesson_io
     solution = cluster["traces"][0]["solution"]
     fm = templates.lesson_frontmatter(

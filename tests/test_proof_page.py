@@ -1,4 +1,3 @@
-"""The shareable proof page, and the wizard that starts and rehearses a proof."""
 import os
 import random
 import re
@@ -12,7 +11,6 @@ SUPPORT = functions.builtin_kits()["support"]
 
 
 def _run_fleet(root, n, *, rates=None, seed=1):
-    """Memories eligible on different occasions: `helps` +20pp, `hurts` -25pp, `null` nothing."""
     config = holdout_io.load_config(root)
     rng = random.Random(seed)
     truth = {"helps": 0.2, "hurts": -0.25, "null": 0.0}
@@ -49,8 +47,8 @@ def test_the_package_includes_a_self_contained_page(started, tmp_path):
     assert "Agent Learning Proof: Acme support" in page and "What each memory did" in page
     assert all(slug in page for slug in ("helps", "hurts", "null"))
     assert record["ledger_root"] in page and record["evidence"]["digest"] in page
-    assert "<svg" in page and "<table" in page          # the plot and the same figures as a table
-    assert 'role="img"' in page                          # described for a screen reader
+    assert "<svg" in page and "<table" in page
+    assert 'role="img"' in page
 
 
 def test_the_page_has_no_script_and_no_external_request(started, tmp_path):
@@ -105,9 +103,6 @@ def test_the_signature_line_says_what_a_signature_does_and_does_not_establish(st
     assert "not that they were honest" in signed
 
 
-# --- The wizard ------------------------------------------------------------------------
-
-
 EASY = {"key": "easy", "title": "Easy", "agent_type": "support", "occasion": {"label": "task", "example": "t-1"},
         "outcome": {"success": "the task finished", "window_days": 0, "signals": ["from_threshold"],
                     "combine": "single"},
@@ -124,7 +119,7 @@ def easy_kit(tmp_path):
 
 def test_a_simulated_fleet_reaches_the_planted_verdicts_through_the_whole_wizard(easy_kit, tmp_path, capsys,
                                                                                  monkeypatch):
-    monkeypatch.chdir(tmp_path)  # the wizard writes proof-<label>/ into the working directory
+    monkeypatch.chdir(tmp_path)
     store = str(tmp_path / "wiz")
     code = main(["proof", "wizard", easy_kit, "--label", "rehearsal", "--daily", "100", "--yes",
                  "--simulate", "--dest", store])

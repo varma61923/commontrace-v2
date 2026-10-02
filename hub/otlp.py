@@ -1,72 +1,3 @@
-"""OTLP/HTTP trace ingest: `POST /v1/traces` accepts a live OpenTelemetry
-SDK or Collector pointed directly at this Hub, so a completed GenAI span
-becomes a Trace the moment it exports -- no client-side exporter code
-running inside the caller's own process.
-
-WHY THIS EXISTS, AND HOW IT DIFFERS FROM WHAT ALREADY SHIPS
---------------------------------------------------------------
-`commontrace/otel_exporter.py`'s `CommonTraceSpanExporter` already does
-"a completed GenAI span becomes a Trace, live" -- but into the LOCAL
-store, from inside the same process that produced the span, via a real
-`opentelemetry.sdk.trace.export.SpanExporter` the caller attaches to their
-own `TracerProvider`. This module is the Hub-side counterpart: an
-application that already has ANY OTLP/HTTP-speaking exporter configured
-(the OTel SDK's own, a Collector's `otlphttp` exporter, a vendor SDK that
-re-exports over OTLP) needs only its endpoint pointed at this Hub, plus an
-`X-API-Key` header, to reach the SAME Trace object -- multi-tenant, over
-the network, no CommonTrace-specific code in the exporting process at
-all.
-
-NOT A SECOND PARSER
---------------------
-Every span here is normalized with `commontrace/adapters.py`'s
-`normalize(span, source="otel")` -- the EXACT function `commontrace
-import --source otel` and `CommonTraceSpanExporter` both already call.
-Both drafts of "vintage" the GenAI semantic conventions have shipped under
-(`gen_ai.prompt`/`gen_ai.completion`, then `gen_ai.input.messages`/
-`gen_ai.output.messages`) and a widely-used SDK's own attribute names
-(`traceloop.entity.input/output`) are all handled there, once; this module
-would otherwise need to track the same drift a second time.
-
-OTLP-JSON ONLY, NOT PROTOBUF -- STATED, NOT HIDDEN
------------------------------------------------------
-The full OTLP/HTTP spec accepts either `application/json` or
-`application/x-protobuf`. Only JSON is accepted here. Parsing the
-protobuf wire format needs the generated `ExportTraceServiceRequest`
-message classes (the `opentelemetry-proto` package), which is not among
-this Hub's declared dependencies (`hub/requirements.txt`) and would need
-its own scrutiny before being added -- a wrong field-number assumption in
-a hand-rolled decoder is a worse failure than a request format this
-module explicitly does not claim to accept. Every mainstream OTLP
-exporter (the Python/JS/Go SDKs' own OTLP/HTTP exporters, an OTel
-Collector's `otlphttp` exporter) supports an `encoding: json` /
-`OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/json` setting; a caller using
-protobuf gets a clear 415, not a silent partial parse.
-
-JOINING SPANS TO HOLDOUT OCCASIONS
------------------------------------
-A span that carries an occasion id (`commontrace.occasion_id`, OpenInference's
-`session.id` or GenAI `gen_ai.conversation.id`) AND an explicit boolean
-`commontrace.occasion.succeeded` closes that occasion's holdout observations in
-both arms. The span's own status is never used for this: it describes one call,
-not the task, and treating UNSET/OK as success would score an uninstrumented fleet
-as winning.
-
-AUTHENTICATION AND LIMITS
---------------------------
-`X-API-Key`, verified with `auth.verify_api_key` and requiring the
-`write` scope -- the identical mechanism `hub/rest.py`'s `/api/v1/traces`
-uses, not a second implementation, so a key valid for one is valid for
-the other under the same rules. Body size is bounded globally by
-`BodySizeLimitMiddleware` (every route, not re-implemented here); span
-COUNT per request is bounded separately (`_MAX_SPANS_PER_REQUEST`) because
-a body just under the byte limit can still carry thousands of tiny spans,
-each one a real write. Each span goes through the SAME per-org write-rate
-bucket and entitlement check `crud.contribute_trace` already enforces for
-every other ingestion path, and is deduplicated by its own OTel span id as
-an idempotency key, so a batch an exporter retries after a partial network
-failure does not create duplicate Traces for the spans that already landed.
-"""
 from __future__ import annotations
 
 import json
@@ -85,17 +16,8 @@ logger = logging.getLogger("commontrace.hub.otlp")
 
 OTLP_TRACES_PATH = "/v1/traces"
 
-#: Audit actor for anything arriving here, distinct from every other
-#: ingestion path's own actor (hub/rest.py's ACTOR_REST_API, the MCP
-#: path's per-key actor) -- the same "where did this trace come from"
-#: reasoning hub/admin.py's operator-console actor already documents.
 ACTOR_OTLP = "otlp-ingest"
 
-#: A hard ceiling on spans per request, independent of the global body-size
-#: limit: a batch under the byte cap can still carry an unreasonable
-#: number of tiny spans, each a real database write. 500 is generous for
-#: any single export batch a real SDK/Collector actually sends (the OTel
-#: SDK's own default `BatchSpanProcessor` caps an export batch at 512).
 _MAX_SPANS_PER_REQUEST = 500
 
 _DEFAULT_AGENT_TYPE = "general"
@@ -109,12 +31,6 @@ def _json_error(status: int, error: str, detail: str = "") -> JSONResponse:
 
 
 def _iter_spans(payload: dict):
-    """Every span in an OTLP-JSON `ExportTraceServiceRequest` body,
-    flattened out of `resourceSpans[].scopeSpans[].spans[]`. Resource- and
-    scope-level attributes are NOT merged into each span's own -- matching
-    exactly what `commontrace import --source otel` already does for the
-    same OTLP-JSON shape, not a richer merge invented only for this path.
-    """
     for resource_span in payload.get("resourceSpans") or []:
         if not isinstance(resource_span, dict):
             continue
@@ -134,12 +50,7 @@ def add_otlp_routes(
     rate_limiter: RateLimiter,
     trusted_proxy_hops: int = 0,
 ) -> None:
-    """Register `POST /v1/traces`. Call only when OTLP ingest is enabled.
-
-    `rate_limiter` is the SAME write-bucket limiter every other ingestion
-    surface shares (see hub/rest.py's `add_rest_routes` for why one shared
-    budget, not one per surface, is the point).
-    """
+    """Register `POST /v1/traces`. Call only when OTLP ingest is enabled."""
     from commontrace import adapters
 
     auth_limiter = make_named_limiter(
@@ -168,8 +79,6 @@ def add_otlp_routes(
 
         content_type = request.headers.get("content-type", "")
         if content_type and "json" not in content_type:
-            # Explicit 415 rather than attempting to parse: see this
-            # module's docstring on why protobuf is not accepted.
             return _json_error(
                 415, "unsupported_media_type",
                 "only OTLP/JSON (Content-Type: application/json) is accepted here",
@@ -199,16 +108,6 @@ def add_otlp_routes(
             for span in spans:
                 flat = adapters.normalize(span, source="otel")
                 span_id = str(flat.get("id") or "")
-                # A span with no context/solution text at all carries
-                # nothing this store's Trace schema requires -- skipped,
-                # not stored as an empty Trace and not counted as an
-                # error, matching commontrace/otel_exporter.py's own
-                # "a span with no GenAI content is skipped" rule for the
-                # identical shape.
-                # An explicit occasion outcome on the span closes that occasion's
-                # holdout observations, whether or not the span has text of its own
-                # (the "task finished" span usually has none). First report wins,
-                # so an exporter retry cannot flip it.
                 if flat.get("occasion_id") and isinstance(flat.get("occasion_succeeded"), bool):
                     try:
                         done = await crud.record_occasion_outcome(
@@ -240,8 +139,6 @@ def add_otlp_routes(
                 except crud.IdempotencyKeyConflict as exc:
                     errors.append({"span_id": span_id, "error": str(exc)})
                 except EntitlementExceeded as exc:
-                    # Every remaining span in this batch will hit the same
-                    # cap -- reported once, not once per remaining span.
                     errors.append({"span_id": span_id, "error": str(exc)})
                     break
                 except RateLimited as exc:

@@ -23,12 +23,6 @@ async def _fake_public_resolve(hostname: str) -> list:
 
 @pytest.fixture(autouse=True)
 def _skip_real_dns_for_webhook_hosts(monkeypatch):
-    """TestPrivilegedRoleGrantAlert registers a webhook endpoint at
-    ``example.invalid`` -- non-resolving by RFC 2606 design, which is
-    exactly what hub/events.py's SSRF check (`_reject_private_target`) now
-    requires resolving. Faking a genuinely public answer keeps that
-    guarantee; the check itself is exercised in
-    hub/tests/test_events.py::TestSsrfProtection."""
     monkeypatch.setattr(events, "_default_resolve", _fake_public_resolve)
 
 pytestmark = pytest.mark.asyncio
@@ -45,13 +39,6 @@ async def two_orgs(session_factory):
 
 
 class TestCreateOrgWarnsOnDuplicateName:
-    """Organization.name carries no DB uniqueness constraint, and every
-    hub/manage.py operation resolves an org by org_id, never by name -- so
-    a duplicate name cannot make an operation resolve the wrong org
-    programmatically. The real risk is an operator scanning a listing by
-    eye and picking the wrong row when two orgs share a display name.
-    create_org warns (not blocks) when that happens."""
-
     async def test_first_org_with_a_name_is_silent(self, session_factory, capsys):
         await manage.create_org("Acme Corp", session_factory=session_factory)
         err = capsys.readouterr().err
@@ -76,13 +63,6 @@ class TestCreateOrgWarnsOnDuplicateName:
 
 
 async def test_list_orgs_attributes_active_key_counts_correctly(session_factory, config, two_orgs, capsys):
-    """Regression test for switching from one ApiKey query per org (in the
-    loop) to a single grouped query looked up by org_id -- pins that a
-    batched count doesn't get mixed up between orgs, which is the real risk
-    a refactor like this introduces. org_a gets 2 active keys and 1 revoked
-    (which must not count), org_b gets 1; a bug that summed instead of
-    grouped, or grouped by the wrong key, would show up as wrong per-org
-    numbers here even though the total across both is right either way."""
     async with session_scope(session_factory) as session:
         await auth.issue_api_key(session, two_orgs["org_a"], expires_days=90)
         await auth.issue_api_key(session, two_orgs["org_a"], expires_days=90)
@@ -108,9 +88,6 @@ async def test_stats_reports_zero_on_empty_db(session_factory, capsys):
 
 
 async def test_stats_computes_real_counts_and_mean_trust(session_factory, config, two_orgs, capsys):
-    """Regression test for switching from Python len()/fmean() over fully
-    loaded ORM objects to SQL-side COUNT()/AVG() -- pins that the actual
-    numbers still come out right, not just that the query doesn't crash."""
     rate_limiter = make_rate_limiter(config)
     async with session_scope(session_factory) as session:
         t1 = await contribute_trace(
@@ -131,7 +108,6 @@ async def test_stats_computes_real_counts_and_mean_trust(session_factory, config
     assert "organizations:      2" in out
     assert "traces (total):     2" in out
     assert "votes:               2" in out
-    # trust=1.0 and trust=0.0 -> mean 0.5
     assert "mean trust:          0.500" in out
 
 
@@ -173,7 +149,6 @@ async def test_list_quarantined_shows_pending_review(session_factory, config, tw
     assert result["id"] in out
     assert "spammy title" in out
 
-    # filtering to the *other* org must not show org_a's quarantined trace
     capsys.readouterr()
     await manage.list_quarantined(two_orgs["org_b"], session_factory=session_factory)
     assert "no quarantined traces" in capsys.readouterr().out
@@ -184,8 +159,6 @@ async def test_release_quarantine_unknown_id_reports_error(session_factory, caps
         "00000000-0000-0000-0000-000000000000", session_factory=session_factory
     )
     assert "no such trace" in capsys.readouterr().err
-    # False (not just the stderr message) is what makes `main()` exit
-    # non-zero for a failed destructive op -- see test_main_command_exit_codes.
     assert result is False
 
 
@@ -202,8 +175,6 @@ async def test_amend_trace_creates_a_superseding_trace(session_factory, config, 
     )
     assert result is not False
     assert result["title"] == "corrected title"
-    # Blank fields carry the original forward unchanged, not overwritten
-    # with empty strings.
     assert result["context_text"] == "c"
     assert result["solution_text"] == "s"
 
@@ -242,12 +213,6 @@ async def test_amend_trace_unknown_id_reports_error(session_factory, config, cap
 
 
 async def test_amend_trace_malformed_id_reports_error_cleanly(session_factory, config, capsys):
-    """A non-UUID string bound against Trace.id's UUID column raises
-    asyncpg.DataError, not a clean not-found -- this is the one caller of
-    session.get(Trace, ...) reachable from a form an operator types
-    directly into (hub/admin.py's "Amend a trace"), so a fat-fingered id
-    must report the same clean error every other bad id here gets, not a
-    500 from a raw DBAPIError."""
     result = await manage.amend_trace(
         "not-a-real-id", "x", session_factory=session_factory, config=config,
     )
@@ -271,9 +236,6 @@ async def test_purge_trace_deletes_it_permanently(session_factory, config, two_o
 
 
 async def test_purge_trace_cleans_dangling_relation_referencing_it(session_factory, config, two_orgs):
-    """A relation row's related_trace_id is a plain column, not an FK -- it
-    would otherwise survive the referenced trace being purged. purge_trace
-    must clean that up explicitly (see its own docstring)."""
     rate_limiter = make_rate_limiter(config)
     async with session_scope(session_factory) as session:
         original = await contribute_trace(
@@ -284,8 +246,6 @@ async def test_purge_trace_cleans_dangling_relation_referencing_it(session_facto
             session, two_orgs["org_a"], config, rate_limiter,
             title="amended", context_text="c", solution_text="s", tags=[], agent_type="code",
         )
-        # Simulate what amend_trace's relation bookkeeping produces: a
-        # SUPERSEDED_BY edge on `original` pointing at `amended`.
         session.add(
             TraceRelation(
                 trace_id=original["id"], related_trace_id=amended["id"], relationship_type="SUPERSEDED_BY"
@@ -304,12 +264,6 @@ async def test_purge_trace_cleans_dangling_relation_referencing_it(session_facto
 async def test_purge_trace_on_an_amended_original_also_removes_the_amendment(
     session_factory, config, two_orgs
 ):
-    """Regression test: purge_trace used to delete only the exact id it was
-    given. amend_trace carries most content forward into a NEW row rather
-    than mutating in place, so purging the ORIGINAL id left the amended
-    row -- holding the same (or superset) content -- fully intact. A
-    deletion request against one link in a chain must remove the whole
-    logical trace, not just that link."""
     rate_limiter = make_rate_limiter(config)
     async with session_scope(session_factory) as session:
         original = await contribute_trace(
@@ -332,8 +286,6 @@ async def test_purge_trace_on_an_amended_original_also_removes_the_amendment(
 
 
 async def test_purge_trace_on_the_amendment_also_removes_the_original(session_factory, config, two_orgs):
-    """Same chain, purged from the other end: deleting the newest version
-    must also remove the older version it superseded."""
     rate_limiter = make_rate_limiter(config)
     async with session_scope(session_factory) as session:
         original = await contribute_trace(
@@ -356,9 +308,6 @@ async def test_purge_trace_on_the_amendment_also_removes_the_original(session_fa
 
 
 async def test_purge_trace_unrelated_traces_survive(session_factory, config, two_orgs):
-    """The chain walk must not over-reach: an unrelated trace (never
-    amended, no supersedes link) must survive purging a completely
-    different trace."""
     rate_limiter = make_rate_limiter(config)
     async with session_scope(session_factory) as session:
         target = await contribute_trace(
@@ -378,16 +327,6 @@ async def test_purge_trace_unrelated_traces_survive(session_factory, config, two
 
 
 async def test_amendment_chain_is_a_bounded_number_of_round_trips(session_factory, config, two_orgs):
-    """The BFS-per-level implementation this replaced issued one query per
-    LINK in the chain -- delete_trace is a customer-reachable MCP tool
-    (unlike purge_trace, which is operator-only), and nothing caps how deep
-    a chain gets: repeated `amend_trace` calls on the same trace is this
-    codebase's own documented curation pattern ("each attaching whatever
-    became known since"). A self-service delete on a chain built that way
-    would otherwise hold a pooled connection open for one round trip per
-    amendment. The recursive-CTE replacement must cost the same small,
-    constant number of round trips regardless of chain depth -- and must
-    still return exactly the right set of ids."""
     rate_limiter = make_rate_limiter(config)
     async with session_scope(session_factory) as session:
         trace = await contribute_trace(
@@ -419,27 +358,10 @@ async def test_amendment_chain_is_a_bounded_number_of_round_trips(session_factor
         result = await crud.amendment_chain(session, trace["id"])
 
     assert result == chain_ids
-    # One recursive CTE per link direction -- independent of `depth`, which
-    # is the property this fix exists for. The BFS it replaced would have
-    # issued one call per level, i.e. up to `depth` of them.
     assert calls <= 2, f"amendment_chain issued {calls} queries for a {depth}-deep chain"
 
 
 async def test_amendment_chain_includes_a_fork_off_an_ancestor(session_factory, config, two_orgs):
-    """amend_trace's own docstring documents a real, reachable way the
-    supersession graph forks: a retried amend_trace call with no (or a
-    different) idempotency_key against the same still-unmutated original
-    creates a SECOND trace superseding it, rather than extending the chain.
-    amendment_chain must still return the WHOLE connected component in that
-    case -- delete_trace/purge_trace trust this set to be the trace's
-    complete lineage, and a fork that silently falls outside it survives an
-    operation documented (and audited) as deleting all of it.
-
-    Shape: A -- B -- D (the "main" line amended twice), plus C, a second,
-    independent amendment of B (the fork). Querying from D (an amendment
-    of the fork point's own child, not of the fork point itself) must still
-    reach C: C shares an ancestor with D, not a direct edge to it.
-    """
     rate_limiter = make_rate_limiter(config)
     async with session_scope(session_factory) as session:
         a = await contribute_trace(
@@ -455,8 +377,6 @@ async def test_amendment_chain_includes_a_fork_off_an_ancestor(session_factory, 
             session, two_orgs["org_a"], b["id"], config, rate_limiter, title="d", actor="test",
         )
     async with session_scope(session_factory) as session:
-        # A second, independent amendment of B -- the fork. No idempotency_key,
-        # same as the retry scenario amend_trace's docstring describes.
         c = await amend_trace(
             session, two_orgs["org_a"], b["id"], config, rate_limiter, title="c", actor="test",
         )
@@ -503,10 +423,6 @@ async def test_purge_org_unknown_id_reports_error(session_factory, capsys):
 async def test_purge_org_cancels_a_live_stripe_subscription_first(
     session_factory, two_orgs, monkeypatch
 ):
-    """An org row deleted out from under an active Stripe subscription
-    keeps charging that customer's card every billing cycle with no
-    CommonTrace account left to ever notice -- see
-    billing.cancel_subscription's own docstring."""
     async with session_scope(session_factory) as session:
         org = await session.get(Organization, two_orgs["org_a"])
         org.stripe_customer_id = "cus_1"
@@ -532,8 +448,6 @@ async def test_purge_org_cancels_a_live_stripe_subscription_first(
 async def test_purge_org_a_failed_cancellation_blocks_deletion(
     session_factory, two_orgs, monkeypatch, capsys
 ):
-    """The org must survive intact so the operator can retry once
-    whatever is stopping Stripe from being reachable clears."""
     async with session_scope(session_factory) as session:
         org = await session.get(Organization, two_orgs["org_a"])
         org.stripe_customer_id = "cus_1"
@@ -577,10 +491,6 @@ async def _submit_via_cli_path(session_factory, config, org_id, title="t"):
 
 
 class TestSubmissionReviewCommands:
-    """hub/manage.py's operator wrappers around crud.review_kb_submission --
-    the trust-tier-gated surface a community submission actually goes
-    through to become Knowledge Base content."""
-
     async def test_list_submissions_reports_none_cleanly(self, session_factory, capsys):
         await manage.list_submissions(session_factory=session_factory)
         assert "no submissions" in capsys.readouterr().out
@@ -598,9 +508,6 @@ class TestSubmissionReviewCommands:
         assert result is False
 
     async def test_list_submissions_with_a_valid_status_filter(self, session_factory, config, two_orgs, capsys):
-        """A valid status ("pending", not the default None) exercises
-        crud.py:list_kb_submissions's own WHERE-clause filter, distinct
-        from the unfiltered full-history listing the test above covers."""
         await _submit_via_cli_path(session_factory, config, two_orgs["org_a"], title="Stripe retries")
         await manage.list_submissions("pending", session_factory=session_factory)
         out = capsys.readouterr().out
@@ -629,20 +536,10 @@ class TestSubmissionReviewCommands:
     async def test_approve_submission_reports_the_clamped_credit_not_the_raw_input(
         self, session_factory, config, two_orgs, capsys
     ):
-        """review_kb_submission clamps `credit` to [0, 2**63-1] before
-        writing it -- the operator-facing message must describe what was
-        actually written to the database, not the raw --credit argument,
-        or a negative (or absurdly large) value reads as granted when it
-        was silently bounded to something else."""
         s = await _submit_via_cli_path(session_factory, config, two_orgs["org_a"])
         await manage.approve_submission(s["id"], two_orgs["org_b"], "-50", session_factory=session_factory)
         out = capsys.readouterr().out
         assert "credited 0 bonus" in out
-        # Not a bare "-50" not in out: the org ids under test are random
-        # UUIDs, and a UUID coincidentally containing the substring "-50"
-        # (e.g. "...cb-50c2...") would fail this assertion for a reason
-        # that has nothing to do with the raw credit leaking. Anchor to the
-        # exact phrase the raw value would appear in if it leaked.
         assert "credited -50" not in out
         async with session_scope(session_factory) as session:
             org = await session.get(Organization, two_orgs["org_a"])
@@ -689,18 +586,7 @@ class TestSubmissionReviewCommands:
 
 @pytest.mark.filterwarnings("ignore:.*is marked with '@pytest.mark.asyncio'.*:pytest.PytestWarning")
 class TestPurgeRequiresConfirmation:
-    """purge-trace/purge-org are irreversible (no soft-delete, no undo).
-    Without a confirmation gate, a mistyped id or an extra stray Enter in a
-    terminal session silently deletes a customer's data with no chance to
-    reconsider. `main()` now requires either --yes or an interactive 'yes'
-    response before calling through to purge_trace/purge_org; direct
-    Python calls to those functions (every other test in this file) are
-    unaffected -- the gate lives in the CLI dispatch layer, not the
-    function itself."""
-
     def test_refuses_without_yes_when_stdin_is_not_a_tty(self, config, monkeypatch, capsys):
-        """pytest's captured stdin is never a tty, so this exercises the
-        same non-interactive path a cron job or CI script would hit."""
         monkeypatch.setenv("HUB_DATABASE_URL", config.database_url)
         exit_code = manage.main(["purge-org", "00000000-0000-0000-0000-000000000000"])
         assert exit_code == 2
@@ -709,14 +595,6 @@ class TestPurgeRequiresConfirmation:
         assert "--yes" in err
 
     def test_nothing_is_deleted_when_confirmation_is_refused(self, config, monkeypatch, capsys):
-        # Every step goes through manage.main(), which builds and tears
-        # down its own fresh engine/event loop per call (asyncio.run()
-        # inside main()) -- mixing that with the pytest-asyncio
-        # session_factory fixture's own loop caused asyncpg connections
-        # bound to one loop to be used from another ("Task ... attached to
-        # a different loop"). Chaining plain main() calls, the same
-        # pattern test_malformed_uuid_reports_a_clean_error_not_a_traceback
-        # already relies on, avoids that entirely.
         monkeypatch.setenv("HUB_DATABASE_URL", config.database_url)
 
         assert manage.main(["create-org", "confirm-gate-org"]) == 0
@@ -726,7 +604,6 @@ class TestPurgeRequiresConfirmation:
         assert exit_code == 2
         capsys.readouterr()
 
-        # Org must still be listable -- purge_org never ran.
         assert manage.main(["usage", org_id]) == 0
         out = capsys.readouterr().out
         assert "error" not in out.lower()
@@ -734,40 +611,30 @@ class TestPurgeRequiresConfirmation:
     def test_yes_flag_bypasses_the_prompt(self, config, monkeypatch, capsys):
         monkeypatch.setenv("HUB_DATABASE_URL", config.database_url)
         exit_code = manage.main(["purge-org", "00000000-0000-0000-0000-000000000000", "--yes"])
-        # Reaches the real function (proven by the *lookup* error, not the
-        # confirmation-refused error) -- no prompt, no tty needed.
         assert exit_code == 2
         err = capsys.readouterr().err
         assert "no such organization" in err
         assert "refusing" not in err
 
     def test_typing_yes_at_the_prompt_proceeds(self, config, monkeypatch, capsys):
-        """Simulates a real interactive session: stdin.isatty() reports
-        True and input() returns the operator's typed response."""
         monkeypatch.setenv("HUB_DATABASE_URL", config.database_url)
         monkeypatch.setattr(manage.sys.stdin, "isatty", lambda: True)
         monkeypatch.setattr("builtins.input", lambda prompt: "yes")
         exit_code = manage.main(["purge-org", "00000000-0000-0000-0000-000000000000"])
-        assert exit_code == 2  # unknown id -- reached the real lookup, not refused
+        assert exit_code == 2
         err = capsys.readouterr().err
         assert "no such organization" in err
 
     def test_typing_anything_else_at_the_prompt_refuses(self, config, monkeypatch, capsys):
         monkeypatch.setenv("HUB_DATABASE_URL", config.database_url)
         monkeypatch.setattr(manage.sys.stdin, "isatty", lambda: True)
-        monkeypatch.setattr("builtins.input", lambda prompt: "y")  # not the exact word "yes"
+        monkeypatch.setattr("builtins.input", lambda prompt: "y")
         exit_code = manage.main(["purge-org", "00000000-0000-0000-0000-000000000000"])
         assert exit_code == 2
         err = capsys.readouterr().err
         assert "aborted" in err
 
     def test_ctrl_d_at_the_prompt_aborts_cleanly_instead_of_crashing(self, config, monkeypatch, capsys):
-        """Ctrl-D at an interactive prompt raises EOFError from input() --
-        an entirely ordinary way to bail out, not an error condition.
-        Uncaught, this reached the operator as a raw Python traceback
-        instead of the same clean 'aborted' message every other way of
-        saying no already gets, and nothing destructive had happened yet
-        at the point it was raised."""
         monkeypatch.setenv("HUB_DATABASE_URL", config.database_url)
         monkeypatch.setattr(manage.sys.stdin, "isatty", lambda: True)
 
@@ -784,29 +651,17 @@ class TestPurgeRequiresConfirmation:
 async def test_argument_count_validation():
     assert manage.main(["purge-trace"]) == 2
     assert manage.main(["purge-trace", "a", "b"]) == 2
-    assert manage.main(["list-quarantined", "a", "b"]) == 2  # takes 0 or 1, not 2
-    assert manage.main(["approve-submission", "a"]) == 2  # needs a submission id AND an operator org id
+    assert manage.main(["list-quarantined", "a", "b"]) == 2
+    assert manage.main(["approve-submission", "a"]) == 2
     assert manage.main(["reject-submission"]) == 2
 
 
 async def test_auth_import_is_used():
-    # sanity: hub/manage.py's existing key-issuance commands are untouched
     assert auth.generate_raw_key().startswith("ct_live_")
 
 
 @pytest.mark.filterwarnings("ignore:.*is marked with '@pytest.mark.asyncio'.*:pytest.PytestWarning")
 def test_malformed_uuid_reports_a_clean_error_not_a_traceback(config, _schema, monkeypatch, capsys):
-    """Regression test for a real bug: `main()` only caught (ValueError,
-    LookupError), but a malformed id (`revoke-key not-a-uuid`) is rejected
-    by the UUID column type itself -- asyncpg raises that as a driver-level
-    error (sqlalchemy.exc.DBAPIError, a SQLAlchemyError, not a ValueError or
-    LookupError) that fell through uncaught and dumped a raw traceback for
-    the same kind of operator typo the branch above was meant to handle
-    cleanly. `main()` builds its own session_factory from HUB_DATABASE_URL
-    (not the session_factory fixture) and drives it with asyncio.run(), so
-    this has to be a plain sync test -- calling main() from inside a
-    already-running async test's event loop would itself raise.
-    """
     monkeypatch.setenv("HUB_DATABASE_URL", config.database_url)
     exit_code = manage.main(["revoke-key", "not-a-uuid"])
     assert exit_code == 2
@@ -817,24 +672,10 @@ def test_malformed_uuid_reports_a_clean_error_not_a_traceback(config, _schema, m
 
 @pytest.mark.filterwarnings("ignore:.*is marked with '@pytest.mark.asyncio'.*:pytest.PytestWarning")
 def test_main_exits_nonzero_when_a_destructive_op_fails(config, monkeypatch, capsys):
-    """The actual bug this fixes: revoke-key/release-quarantine/purge-trace/
-    purge-org/commons-seed/set-plan/usage all print "error: ..." to stderr
-    and return False on a failed lookup, but nothing about that is a raised
-    exception -- there is nothing wrong with the CLI, the id just didn't
-    resolve. Before main() checked the command's return value, every one of
-    these failures still exited 0, so an automated incident script checking
-    $? after e.g. `purge-org <id>` (to confirm a GDPR deletion actually
-    happened) would see success on a no-op."""
     monkeypatch.setenv("HUB_DATABASE_URL", config.database_url)
     for command, unknown_id, extra_args in (
         ("revoke-key", "00000000-0000-0000-0000-000000000000", []),
         ("release-quarantine", "00000000-0000-0000-0000-000000000000", []),
-        # --yes: this test is pinning the *lookup failure* path (an unknown
-        # id must still exit non-zero), not the separate --yes confirmation
-        # gate covered by TestPurgeRequiresConfirmation below. Without it,
-        # a non-interactive test run (stdin is not a tty) would refuse on
-        # the confirmation prompt before ever reaching purge_trace/
-        # purge_org, and this test would stop testing what it says it does.
         ("purge-trace", "00000000-0000-0000-0000-000000000000", ["--yes"]),
         ("purge-org", "00000000-0000-0000-0000-000000000000", ["--yes"]),
     ):
@@ -852,10 +693,6 @@ def test_main_exits_nonzero_when_a_destructive_op_fails(config, monkeypatch, cap
 
 @pytest.mark.filterwarnings("ignore:.*is marked with '@pytest.mark.asyncio'.*:pytest.PytestWarning")
 def test_main_dispatch_treats_only_false_as_failure():
-    """Isolates main()'s own dispatch logic (no DB needed): a command
-    returning False fails the CLI, True or None (every command with no
-    failure path) succeeds."""
-
     async def _fake_fail(*args):
         return False
 
@@ -879,15 +716,7 @@ def test_main_dispatch_treats_only_false_as_failure():
 
 
 class TestRetrievalHealthReport:
-    """`manage retrieval` is the operator's view of whether search is
-    finding anything, on real fleets rather than on the synthetic corpus in
-    hub/bench_retrieval.py."""
-
     async def test_reports_nothing_cleanly_on_an_empty_deployment(self, session_factory, capsys):
-        # Explicitly emptied rather than assumed empty: tests that drive
-        # manage.main() through HUB_DATABASE_URL create orgs on their own
-        # engine, outside this fixture's truncation, so "no orgs exist
-        # right now" is an ordering accident and not a property.
         async with session_scope(session_factory) as session:
             for org in (await session.execute(select(Organization))).scalars().all():
                 await session.delete(org)
@@ -913,8 +742,6 @@ class TestRetrievalHealthReport:
         out = capsys.readouterr().out
         assert "miss rate" in out
         assert "50%" in out
-        # The privacy property is stated in the report itself, not only in a
-        # docstring an operator never reads.
         assert "No query text is stored" in out
 
     async def test_an_unknown_org_is_an_error_not_an_empty_table(self, session_factory, capsys):
@@ -926,17 +753,6 @@ class TestRetrievalHealthReport:
 
 
 class TestPlanningTheExperimentBeforeStartingIt:
-    """`start-experiment` used to take a rate and no guidance, so an operator
-    picked one blind. The failure that produces is expensive and silent: the
-    fleet runs for a month, the report says "not enough data yet", the window
-    is spent, and the only fix -- a wider holdout -- had to be applied at the
-    start.
-
-    Planning ON the Hub rather than on paper matters because the Hub already
-    knows the numbers: this org's own retrieval volume and its own success
-    rate.
-    """
-
     @staticmethod
     async def _with_volume(session_factory, org_id, *, searches, resolved_rate=0.75, n=40):
         from hub.models import Trace
@@ -970,8 +786,6 @@ class TestPlanningTheExperimentBeforeStartingIt:
     async def test_an_org_with_no_volume_assumes_the_worst(
         self, session_factory, two_orgs, capsys
     ):
-        """A plan built on no data must not understate the sample: 50% is
-        where the variance peaks."""
         org_id = two_orgs["org_a"]
         capsys.readouterr()
         await manage.plan_experiment(org_id, "0.10", session_factory=session_factory)
@@ -982,8 +796,6 @@ class TestPlanningTheExperimentBeforeStartingIt:
     async def test_a_budget_no_rate_can_answer_returns_false(
         self, session_factory, two_orgs, capsys
     ):
-        """So an operator script can act on it, and so the exit code says
-        what the prose says."""
         org_id = two_orgs["org_a"]
         await self._with_volume(session_factory, org_id, searches=10)
         capsys.readouterr()
@@ -1020,11 +832,6 @@ class TestPlanningTheExperimentBeforeStartingIt:
 
 
 class TestStartExperimentWarnsAboutAnUnanswerableRate:
-    """Said at the only moment the rate can still be changed for free. An
-    operator who learns it from the report a month later has spent the
-    window, and the fix was always a one-line decision taken now.
-    """
-
     async def test_a_rate_too_low_for_the_volume_warns(
         self, session_factory, two_orgs, capsys
     ):
@@ -1036,25 +843,19 @@ class TestStartExperimentWarnsAboutAnUnanswerableRate:
         assert await manage.start_experiment(org_id, "0.05", session_factory=session_factory)
         out = capsys.readouterr().out
         assert "WARNING" in out
-        # It still starts: the operator's decision stands, they are told.
         assert "experiment started" in out
 
     async def test_an_org_with_no_volume_is_not_warned(
         self, session_factory, two_orgs, capsys
     ):
-        """Nothing to base a warning on, and inventing one would train
-        operators to ignore the real ones."""
         org_id = two_orgs["org_a"]
         capsys.readouterr()
         assert await manage.start_experiment(org_id, "0.2", session_factory=session_factory)
         assert "WARNING" not in capsys.readouterr().out
 
 
-# --- retention, legal holds and scheduled purge ------------------------------
-
 @pytest_asyncio.fixture
 async def aged_org(session_factory):
-    """One org with two traces old enough for any sane policy, and one new."""
     from datetime import datetime, timedelta, timezone
 
     from hub.models import Trace
@@ -1073,7 +874,6 @@ async def aged_org(session_factory):
 
 
 def _digest_from(out: str) -> str:
-    """The short plan digest, as an operator would copy it off the screen."""
     for line in out.splitlines():
         if line.startswith("plan "):
             return line.split()[1]
@@ -1089,8 +889,6 @@ class TestRetentionCLI:
         assert ok
         out = capsys.readouterr().out
         assert "keep 90 days" in out
-        # The single most important thing to say at this moment: configuring
-        # a policy is not the same act as applying it.
         assert "Nothing is deleted until" in out
 
     async def test_a_sub_floor_policy_is_refused_with_the_reason(
@@ -1161,8 +959,6 @@ class TestRetentionCLI:
         await manage.retention_plan(aged_org, session_factory=session_factory)
         stale = _digest_from(capsys.readouterr().out)
 
-        # The world moves between reading the plan and approving it: another
-        # old trace arrives, so the approved set is no longer the real one.
         from datetime import datetime, timedelta, timezone
         async with session_scope(session_factory) as session:
             session.add(Trace(
@@ -1184,12 +980,6 @@ class TestRetentionCLI:
     async def test_the_digest_commits_to_rows_not_to_the_policy_text(
         self, session_factory, aged_org, capsys
     ):
-        """Tightening 90d to 30d dooms the same two 400-day-old traces, so
-        the approval is still accurate and the apply proceeds. The digest
-        deliberately commits to the CONSEQUENCES an operator read, not to
-        the configuration that produced them -- a change that does not move
-        a single row has not invalidated their approval, and refusing it
-        would train operators to re-approve reflexively."""
         from sqlalchemy import func, select
 
         from hub.models import Trace
@@ -1287,10 +1077,6 @@ class TestRetentionCLI:
 
 
 class TestRetentionCommandTable:
-    """The dispatch table and the module docstring are what an operator
-    actually reads; a command that exists but is unreachable or undocumented
-    is not shipped."""
-
     async def test_every_retention_command_is_dispatchable(self):
         for name in ("set-retention", "clear-retention", "retention-plan",
                      "retention-apply", "legal-hold", "release-hold", "holds"):
@@ -1302,31 +1088,18 @@ class TestRetentionCommandTable:
             assert name in manage.__doc__, name
 
     async def test_apply_is_not_gated_on_an_interactive_prompt(self):
-        """Its confirmation is the plan digest, which names the exact rows
-        and refuses if anything moved. A prompt on top would add no safety
-        and would make the scheduled purge impossible to automate -- which
-        is the whole point of a retention policy rather than a delete
-        button."""
         assert "retention-apply" not in manage._DESTRUCTIVE_COMMANDS
 
-
-# --- webhook event export ----------------------------------------------------
 
 class TestWebhookCLI:
     URL = "https://example.invalid/hooks/commontrace"
 
     @pytest_asyncio.fixture
     async def hooked(self, session_factory, monkeypatch, capsys):
-        """One org with one endpoint, and the secret the CLI printed."""
         from hub import manage as manage_mod
         from hub.encryption import NULL_CIPHER
 
         monkeypatch.setattr(manage_mod, "_config_signing_key", lambda: "test-key")
-        # No HUB_DATABASE_URL is set in this test process, so the real
-        # `_config_cipher` (like `_config_signing_key` above) would fail
-        # building a HubConfig at all -- NULL_CIPHER is exactly what an
-        # unset HUB_ENCRYPTION_KEY would already produce, so this changes
-        # nothing about what these tests exercise.
         monkeypatch.setattr(manage_mod, "_config_cipher", lambda: NULL_CIPHER)
         async with session_scope(session_factory) as session:
             org = Organization(name="hooked")
@@ -1346,16 +1119,13 @@ class TestWebhookCLI:
     async def test_adding_prints_the_secret_once_and_says_it_is_not_stored(
         self, hooked
     ):
-        assert len(hooked["secret"]) == 64  # sha256 hex
-        # The operator has to be told they cannot read it back, at the one
-        # moment they could still copy it.
+        assert len(hooked["secret"]) == 64
         assert "shown ONCE" in hooked["out"]
         assert "not stored" in hooked["out"]
 
     async def test_the_secret_really_cannot_be_read_back(
         self, session_factory, hooked
     ):
-        """Not just "we do not print it again" -- it is not in the row."""
         from hub.models import WebhookEndpoint
 
         async with session_scope(session_factory) as session:
@@ -1524,8 +1294,6 @@ class TestEncryptionAtRestCLI:
         assert row.url != self.URL
         assert cipher.decrypt(row.url) == self.URL
 
-        # And the operator-facing commands still show the real URL, not
-        # the ciphertext sitting in the row.
         capsys.readouterr()
         assert await manage.webhook_list(org_id, session_factory=session_factory)
         assert self.URL in capsys.readouterr().out
@@ -1788,12 +1556,6 @@ class TestUserCommandTable:
 
 
 class TestPrivilegedRoleGrantAlert:
-    """A webhook subscriber gets `user.privileged_role_granted` the moment
-    anyone ends up holding Security Admin or Owner -- whether that is
-    routine onboarding, a promotion, or a break-glass re-enablement of a
-    disabled account (hub/DEPLOYMENT.md Sec9a). Nothing distinguishes those
-    cases technically, so this fires on all of them rather than none."""
-
     @pytest_asyncio.fixture
     async def org_id(self, session_factory):
         async with session_scope(session_factory) as session:
@@ -1875,7 +1637,6 @@ class TestPrivilegedRoleGrantAlert:
         assert await manage.set_user_role(
             user_id, rbac.ROLE_VIEWER, session_factory=session_factory)
         rows = await self._deliveries(session_factory, "user.privileged_role_granted")
-        # Only the original creation fired -- the demotion itself must not.
         assert len(rows) == 1
 
     async def test_reenabling_a_disabled_security_admin_fires_the_event(
@@ -1890,7 +1651,6 @@ class TestPrivilegedRoleGrantAlert:
         capsys.readouterr()
         assert await manage.enable_user(user_id, session_factory=session_factory)
         rows = await self._deliveries(session_factory, "user.privileged_role_granted")
-        # Once for the initial create, once for the break-glass re-enable.
         assert len(rows) == 2
         assert rows[1].payload["user_id"] == user_id
         assert rows[1].payload["role"] == rbac.ROLE_SECURITY_ADMIN

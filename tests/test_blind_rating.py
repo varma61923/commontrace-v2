@@ -1,4 +1,3 @@
-"""The blinded rating tool (commons/eval/blind_rating.py): blinding, refusal of partial data, arithmetic."""
 import csv
 import json
 import random
@@ -42,7 +41,6 @@ def test_the_sheet_says_nothing_about_where_an_item_came_from(dirs, tmp_path):
     assert sorted(key.values()) == ["drafts"] * 8 + ["handwritten"] * 8
     rows = list(csv.DictReader(open(out / "sheet.csv", newline="")))
     assert [r["item_id"] for r in rows] == sorted(r["item_id"] for r in rows) and len(rows) == 16
-    # shuffled: the first half is not simply one source
     assert len({key[r["item_id"]] for r in rows[:6]}) == 2 or len({key[r["item_id"]] for r in rows[:8]}) == 2
 
 

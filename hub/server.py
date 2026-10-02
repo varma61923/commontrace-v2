@@ -112,20 +112,8 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
         self._protected_path = protected_path
         self._auth_rate_limiter = auth_rate_limiter
         self._read_rate_limiter = read_rate_limiter
-        # See HubConfig.trusted_proxy_hops's docstring: 0 (default) means
-        # "trust only request.client.host", identical to this middleware's
-        # behavior before this parameter existed.
         self._trusted_proxy_hops = trusted_proxy_hops
-        # None when this deployment has not configured SSO at all
-        # (HubConfig.identity_provider()) -- in which case a JWT-shaped
-        # bearer token is refused with the same message an invalid API key
-        # gets, rather than this middleware attempting verification against
-        # a provider that does not exist.
         self._identity_provider = identity_provider
-        # Built ONCE, held for the middleware's lifetime -- see
-        # hub/sso.py:JWKSCache's own docstring for why a per-request cache
-        # would defeat its entire purpose. Only constructed when a provider
-        # is configured, so a deployment with no SSO pays nothing for it.
         self._jwks_cache = None
         if identity_provider is not None and identity_provider.jwks_uri:
             from hub.sso import JWKSCache
@@ -134,12 +122,6 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
 
     @staticmethod
     def _fetch_jwks(uri: str) -> dict:
-        # A short, blocking-safe HTTP fetch -- httpx is already a direct
-        # dependency (hub/requirements.txt) for other outbound calls
-        # (webhook delivery), so this adds no new one. Timeout deliberately
-        # tight: this only ever runs on a JWKS TTL miss, never per request,
-        # so a slow or unreachable IdP fails one verification rather than
-        # hanging the request that happened to trigger the refetch.
         import httpx
 
         response = httpx.get(uri, timeout=5.0)
@@ -148,12 +130,6 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
-        # Exact match or a path *segment* under it -- plain startswith()
-        # would also treat e.g. "/mcpadmin" as "under /mcp", which happens
-        # to be harmless today only because no such route exists in this
-        # app's route table (/mcp, /healthz, /readyz). Matching on the
-        # segment boundary makes that true by construction instead of by
-        # coincidence, so it stays true if a route is ever added later.
         if not (path == self._protected_path or path.startswith(self._protected_path + "/")):
             return await call_next(request)
 
@@ -169,13 +145,6 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
             )
         raw_token = header[len("bearer ") :].strip()
 
-        # Distinguished by SHAPE (three non-empty dot-separated segments),
-        # not by attempting one parse and catching its exception -- an API
-        # key (`ct_live_...`) never has that shape, so this is a clean
-        # either/or rather than a fallback chain. A JWT-shaped token is
-        # tried ONLY as a person; it is never also hashed and looked up as
-        # an API key, which would be wasted Argon2/HMAC work on bytes that
-        # cannot possibly match.
         from hub.sso import looks_like_jwt
 
         if looks_like_jwt(raw_token) and self._identity_provider is not None:
@@ -185,13 +154,8 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
                     session, raw_token, self._identity_provider,
                     jwks_cache=self._jwks_cache,
                 )
-                await session.commit()  # persists last_login_at touch
+                await session.commit()
             if person is None:
-                # One message for "not verifiable", "no linked user", and
-                # "deprovisioned" alike -- for the same reason
-                # verify_api_key collapses invalid/revoked/expired: telling
-                # a caller which one they hit is a probe they should not
-                # get for free.
                 return JSONResponse(
                     {"error": "invalid, expired, or unlinked identity token"}, status_code=401
                 )
@@ -204,13 +168,7 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
             from hub import rbac
 
             org_token = auth.current_org_id.set(person.org_id)
-            # Non-secret, and distinguishable from an API key's "api-key:
-            # <prefix>" actor string at a glance in an audit-log row.
             actor_token = auth.current_actor.set(f"user:{person.id}")
-            # Derived from the role (hub/rbac.py:ROLE_SCOPES) so the
-            # existing scope-based enforcement point stays meaningful for a
-            # person too; auth.require_capability is the ADDITIONAL,
-            # finer-grained gate this identity actually goes through.
             scope_token = auth.current_scopes.set(rbac.scopes_of(person.role))
             user_token = auth.current_user.set(person)
             try:
@@ -221,40 +179,17 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
                 auth.current_scopes.reset(scope_token)
                 auth.current_user.reset(user_token)
 
-        authenticated = auth.cached_key(raw_token)        # opt-in, seconds-long; see hub/auth.py
+        authenticated = auth.cached_key(raw_token)
         if authenticated is None:
             async with self._session_factory() as session:
                 authenticated = await auth.verify_api_key(session, raw_token)
-                await session.commit()  # persists last_used_at touch
+                await session.commit()
 
         if authenticated is None:
-            # One message for invalid / revoked / expired alike -- see
-            # hub/auth.py:verify_api_key for why they must be indistinguishable.
             return JSONResponse({"error": "invalid, revoked, or expired API key"}, status_code=401)
 
-        # The credential verified, so refund the auth-attempt token spent
-        # above. That limiter's job is bounding Argon2 CPU forced by
-        # credentials that DON'T verify; charging the ones that do made it
-        # the binding constraint on legitimate bulk traffic (a bulk push is
-        # hundreds of successful authentications from one address, against a
-        # 60/min budget) while doing nothing extra against an attacker, who
-        # by definition never reaches this line. Valid callers are governed
-        # by the per-org read limiter immediately below -- authenticated,
-        # accountable, and metered, which is the right instrument for them.
         self._auth_rate_limiter.refund(client_key)
 
-        # A DELETE on the MCP path is the client tearing its session down.
-        # It runs no tool, reads no row, and costs the server less than the
-        # 429 body refusing it would -- while refusing it makes an otherwise
-        # SUCCESSFUL command print "Session termination failed: 429" from
-        # inside the MCP SDK, which is what a user sees and reasonably reads
-        # as "my run failed". It is also self-defeating: the client stops
-        # waiting either way, so the only effect is that the server keeps
-        # the session state it was being asked to release.
-        #
-        # Still authenticated (above), so this is not an unauthenticated
-        # hole: only a caller holding a valid key for this org can reach it,
-        # and it cannot be used to do any work.
         if request.method != "DELETE":
             allowed, retry_after = await self._read_rate_limiter.check(authenticated.org_id)
             if not allowed:
@@ -262,10 +197,6 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
 
         org_token = auth.current_org_id.set(authenticated.org_id)
         actor_token = auth.current_actor.set(authenticated.key_prefix)
-        # What this particular credential may do, as distinct from which org
-        # it speaks for (hub/scopes.py). Set here, beside the org, because
-        # this is the only place that has seen the key row; every tool then
-        # reads it through auth.require_scope with nothing to pass around.
         scope_token = auth.current_scopes.set(authenticated.scopes)
         try:
             return await call_next(request)
@@ -322,8 +253,6 @@ class LoadShedMiddleware:
         self._semaphore = asyncio.Semaphore(max_concurrent) if max_concurrent > 0 else None
 
     async def __call__(self, scope, receive, send) -> None:
-        # Only HTTP is bounded. A websocket has no meaningful "request
-        # duration", and cancelling `lifespan` would take down startup.
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
@@ -342,9 +271,6 @@ class LoadShedMiddleware:
             await self.app(scope, receive, send)
             return
 
-        # Whether any bytes are already committed to the wire. Past that
-        # point a 504 is not available -- the status line has been sent --
-        # so the only honest thing left is to stop writing.
         started = False
 
         async def tracking_send(message) -> None:
@@ -362,9 +288,6 @@ class LoadShedMiddleware:
                 self._timeout, scope.get("method", "?"), scope.get("path", "?"),
             )
             if not started:
-                # 504, not 500: nothing is known to be broken. The request
-                # ran out of time, which is a different thing to tell a
-                # client, and the only one of the two worth retrying.
                 await _send_json(send, 504, _timeout_body(self._timeout))
 
 
@@ -485,13 +408,6 @@ def _rate_limited_response(detail: str, retry_after: float) -> JSONResponse:
 
 
 def _error_response(exc: Exception) -> dict:
-    # Before the generic PermissionError branch below, and deliberately a
-    # different label. "unauthorized" invites a client to re-authenticate,
-    # and for a scope denial that is a lie: the credential is valid, it is
-    # this action it may not take, and retrying with the same key will fail
-    # identically forever. The two extra fields let a caller render "this
-    # token needs the write scope" instead of a generic failure, without
-    # parsing the prose.
     if isinstance(exc, auth.ScopeDenied):
         return {
             "error": "forbidden",
@@ -500,9 +416,6 @@ def _error_response(exc: Exception) -> dict:
             "granted_scopes": list(exc.granted) if exc.granted is not None else None,
         }
     if isinstance(exc, auth.CapabilityDenied):
-        # Distinct from ScopeDenied for the same reason it exists: the
-        # credential is valid, and the remedy is re-roling a PERSON
-        # (hub.manage set-user-role), not reissuing a key.
         return {
             "error": "forbidden",
             "detail": str(exc),
@@ -510,24 +423,10 @@ def _error_response(exc: Exception) -> dict:
             "role": exc.role,
         }
     if isinstance(exc, auth.PersonRequiredError):
-        # Distinct from ScopeDenied/CapabilityDenied: the API key itself is
-        # perfectly valid, there is just no PERSON in context for a tool
-        # that only means something for one (whose inbox, who authored a
-        # comment, who is being assigned work).
         return {"error": "person_required", "detail": str(exc)}
     if isinstance(exc, PermissionError):
         return {"error": "unauthorized", "detail": str(exc)}
     if isinstance(exc, RateLimited):
-        # `retry_after` for the same reason the HTTP 429s carry the header:
-        # this limiter's shipped default (20 writes/minute) means a client
-        # pushing a backlog is refused as a matter of course, and a refusal
-        # that does not say when to come back leaves it guessing -- which,
-        # measured on this project's own `sync --push-traces`, is how a
-        # recoverable wait turned into a permanent per-file error.
-        # Counted here as well as at the HTTP layer: a write-limit refusal
-        # is returned INSIDE a 200 MCP response, so the middleware's
-        # status-code counter never sees it. Without this the metric would
-        # under-report exactly the limiter most likely to be misconfigured.
         observability.METRICS.observe_rate_limited("write")
         body = {"error": "rate_limited", "detail": str(exc)}
         retry_after = getattr(exc, "retry_after", None)
@@ -537,11 +436,6 @@ def _error_response(exc: Exception) -> dict:
     if isinstance(exc, crud.IdempotencyKeyConflict):
         return {"error": "conflict", "detail": str(exc)}
     if isinstance(exc, plans.EntitlementExceeded):
-        # Distinct from "rate_limited" on purpose. A rate limit clears by
-        # waiting; this one does not, and a client that retries a plan
-        # refusal on a backoff schedule will retry it forever. The extra
-        # fields are what let a client render an upgrade path instead of a
-        # generic failure.
         return {
             "error": "entitlement_exceeded",
             "detail": str(exc),
@@ -554,16 +448,8 @@ def _error_response(exc: Exception) -> dict:
     if isinstance(exc, commons.CommonsInputError):
         return {"error": "invalid_request", "detail": str(exc)}
     if isinstance(exc, crud.DeletionNotReady):
-        # Distinct from invalid_request: the request itself is well-formed,
-        # it is just too early, expired, or token-mismatched -- a client
-        # should surface this to a human, not treat it as a bug to fix and
-        # retry immediately.
         return {"error": "deletion_not_ready", "detail": str(exc)}
     if isinstance(exc, crud.SubscriptionCancellationFailed):
-        # Distinct from deletion_not_ready: the token and timing were fine,
-        # but nothing was deleted -- an external dependency (Stripe) has to
-        # actually confirm the subscription is cancelled first, so a client
-        # should retry rather than treat this as a bug in the request.
         return {"error": "deletion_blocked", "detail": str(exc)}
     if isinstance(exc, collab.CollabNotFound):
         return {"error": "not_found", "detail": str(exc)}
@@ -607,11 +493,6 @@ class IpAllowlistMiddleware(BaseHTTPMiddleware):
         self._trusted_proxy_hops = trusted_proxy_hops
 
     async def dispatch(self, request: Request, call_next):
-        # Defensive, not load-bearing: build_app never mounts this
-        # middleware at all when config.ip_allowlist is empty. Checked
-        # again here so the class's own behavior matches its docstring
-        # ("no restriction when unconfigured") independent of how a
-        # future caller constructs it.
         if not self._networks:
             return await call_next(request)
         if request.url.path in ("/healthz", "/readyz", "/disclosure"):
@@ -620,10 +501,6 @@ class IpAllowlistMiddleware(BaseHTTPMiddleware):
         try:
             client_ip = ipaddress.ip_address(client_ip_raw)
         except ValueError:
-            # "unknown" (no request.client at all) or a malformed
-            # X-Forwarded-For entry -- either way, a source address this
-            # deployment cannot verify is allowlisted is refused, not
-            # let through by default.
             return JSONResponse(
                 {"error": "forbidden", "detail": "source address could not be determined"},
                 status_code=403,
@@ -638,13 +515,6 @@ class IpAllowlistMiddleware(BaseHTTPMiddleware):
 def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rate_limiter: RateLimiter):
     from mcp.server.mcpserver import MCPServer
 
-    # Only for confirm_account_deletion, to cancel a live Stripe
-    # subscription before an org's row (and with it, its
-    # stripe_subscription_id) is gone for good -- see
-    # crud.confirm_org_deletion's own docstring. Unconfigured
-    # (StripeSettings() equivalent) on any deployment that never set the
-    # Stripe env vars, which is a no-op there since no org can hold a
-    # subscription id in the first place.
     stripe_settings = StripeSettings(
         secret_key=config.stripe_secret_key,
         webhook_secret=config.stripe_webhook_secret,
@@ -654,11 +524,6 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
 
     mcp = MCPServer(
         name="commontrace",
-        # Not an independent MCP-server-specific version: PROTOCOL.md §9
-        # explicitly unified the package/protocol/CLI version numbers into
-        # one 2.0.0 the whole product reports identically, precisely to
-        # stop drift like a Hub still announcing a stale "0.1.0" to every
-        # connecting MCP client.
         version=_COMMONTRACE_VERSION,
         instructions=(
             "CommonTrace Hub. search_traces/get_trace/list_tags read; contribute_trace "
@@ -685,12 +550,6 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         ),
     )
 
-    # Which scope each tool needs, recorded as the tool is registered.
-    # hub/tests/test_api_key_scopes.py asserts this covers every registered
-    # tool, so a new tool cannot be added without a scope decision: the
-    # failure mode being designed out is a tool that silently defaults to
-    # "any authenticated key may call this", which is exactly the state the
-    # whole surface was in before scopes existed.
     tool_scopes: dict[str, str] = {}
 
     def scoped_tool(scope: str):
@@ -716,12 +575,6 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
             async def guarded(*args, **kwargs):
                 try:
                     auth.require_scope(scope)
-                    # A no-op when the caller is a bare API key (no
-                    # verified person in context) -- see
-                    # auth.require_capability's own docstring. When a
-                    # person IS in context this is the gate that actually
-                    # distinguishes them; the scope check above is the
-                    # coarser one their role also derives (hub/rbac.py).
                     auth.require_capability(fn.__name__)
                 except Exception as exc:  # noqa: BLE001 - rendered, not raised
                     return _error_response(exc)
@@ -1025,11 +878,6 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
             org_id = auth.get_current_org_id()
             async with session_scope(session_factory) as session:
                 report = await crud.fleet_outcomes(session, org_id, agent_type=agent_type)
-                # The causal instrument, returned alongside the
-                # observational one rather than in a separate tool: a
-                # reader who sees only the before/after number has no way
-                # to know a stronger answer was available, and the whole
-                # point of the distinction is that it be visible.
                 report["causal"] = await crud.causal_effects(session, org_id)
                 return report
         except Exception as exc:  # noqa: BLE001
@@ -1207,14 +1055,6 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         except Exception as exc:  # noqa: BLE001
             return _error_response(exc)
 
-    # --- Self-service deletion --------------------------------------------
-    #
-    # delete_trace is immediate and org-scoped, same trust level as every
-    # other write tool above. Whole-account deletion is split into two
-    # differently-named calls with a mandatory delay between them
-    # (crud.request_org_deletion's docstring) precisely because a single
-    # call here would let one compromised API key wipe an org's entire
-    # history irreversibly with no window for anyone to notice.
 
     @scoped_tool(scopes.SCOPE_READ)
     async def search_trace_content(pattern: str, regex: bool = False, limit: int = 100) -> dict:
@@ -1376,33 +1216,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         except Exception as exc:  # noqa: BLE001
             return _error_response(exc)
 
-    # --- CommonTrace Knowledge Base (opt-in), gated by HUB_COMMONS_ENABLED
-    #
-    # `if config.commons_enabled:` around the @mcp.tool() registrations
-    # themselves, not a check inside each handler -- a disabled deployment
-    # must not even LIST these tools. A client that tries gets the MCP
-    # framework's own "unknown tool" error, which holds even if an org
-    # forgets the Knowledge Base exists; a per-call refusal only holds if
-    # every caller remembers to check first. account_usage is intentionally
-    # outside this block: it reports an org's own plan and its own usage,
-    # never Knowledge Base content, so disabling it does not disable that.
-    #
-    # There is no share_trace/unshare_trace tool here, and there never will
-    # be: an org's own trace can never be promoted directly into the
-    # Knowledge Base by anything an org's own API key can call. See
-    # hub/plans.py "why there is no org-to-org sharing here" -- letting one
-    # customer's data become visible to another was the design this module
-    # used to have, and it was retired on purpose.
-    #
-    # submit_kb_entry below is not that tool reborn: it writes a
-    # KnowledgeBaseSubmission row (a table entirely separate from Trace),
-    # which is invisible to every read path in this file until
-    # hub/manage.py review-submission -- an operator-trust-level action, not
-    # an MCP tool -- deliberately accepts it. See hub/crud.py's "Knowledge
-    # Base community submissions" section and
-    # hub/models.py:KnowledgeBaseSubmission.
     if config.commons_enabled:
-
         @scoped_tool(scopes.SCOPE_READ)
         async def commons_overlap(
             failures: list[dict] | None = None,
@@ -1660,28 +1474,15 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         except Exception as exc:  # noqa: BLE001
             return _error_response(exc)
 
-    # Published on the server object so a test can assert every registered
-    # tool declared a scope (hub/tests/test_api_key_scopes.py). Attached
-    # rather than returned separately so no caller of build_mcp_server has
-    # to change shape, and so the mapping is discoverable from the object
-    # that actually owns the tools.
     mcp.commontrace_tool_scopes = dict(tool_scopes)
     return mcp
 
 
 def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlette:
-    # An org pinned to another region is not authenticated by this deployment (hub/auth.py).
     auth.configure_region(config.data_region)
-    # require_listener: a replica serves cached keys only while it is
-    # listening for revocations from every other replica (hub/auth_invalidation.py).
     auth.configure_auth_cache(config.auth_cache_seconds, require_listener=True)
     rate_limiter = make_rate_limiter(config)
     if config.rate_limit_backend == "memory":
-        # In-process buckets reset on restart and N replicas allow ~N× the
-        # configured rate. Warning only: memory is the correct default for
-        # single-process eval/test (postgres would add a DB round-trip per
-        # request). Multi-replica deployments want
-        # HUB_RATE_LIMIT_BACKEND=postgres (hub/DEPLOYMENT.md §6).
         logger.warning(
             "rate limiting is in-process (HUB_RATE_LIMIT_BACKEND=memory): "
             "limits reset on restart and do not coordinate across replicas; "
@@ -1694,9 +1495,6 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
         max_request_body_size=config.max_request_body_bytes,
     )
 
-    # Registered only when an operator token is configured -- see
-    # HubConfig.admin_token. With none set there is no /admin route at all,
-    # so a deployment that has not opted in has no console to probe.
     if config.admin_token:
         add_admin_routes(
             inner_app,
@@ -1708,10 +1506,6 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
             config=config,
         )
 
-    # The customer-facing console, gated on its own secret. Distinct from the
-    # operator console above in audience, auth and blast radius: that one is
-    # cross-tenant and moderates; this one is scoped to a single org by a
-    # signed session and cannot change any state at all.
     stripe_settings = StripeSettings(
         secret_key=config.stripe_secret_key,
         webhook_secret=config.stripe_webhook_secret,
@@ -1732,9 +1526,6 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
             rate_limiter=rate_limiter,
         )
 
-    # Public, unauthenticated org creation -- opt-in only (hub/signup.py's
-    # own docstring covers why this defaults off and what it doesn't do,
-    # namely email verification).
     if config.signup_enabled:
         add_signup_routes(
             inner_app, session_factory,
@@ -1742,9 +1533,6 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
             config=config,
         )
 
-    # The JSON surface the CommonTrace Claude Code plugin speaks -- opt-in,
-    # and sharing the MCP path's write-rate bucket rather than opening a
-    # second one (hub/rest.py's add_rest_routes explains why that matters).
     if config.rest_api_enabled:
         add_rest_routes(
             inner_app,
@@ -1755,16 +1543,9 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
             signup_enabled=config.signup_enabled,
         )
 
-    # Stripe calls this, not a signed-in browser -- registered independently
-    # of the console above, and only once a webhook signing secret exists to
-    # verify a delivery actually came from Stripe.
     if config.stripe_webhook_secret:
         add_billing_webhook_route(inner_app, session_factory, stripe=stripe_settings)
 
-    # A live OpenTelemetry SDK/Collector, not a browser or the REST plugin --
-    # opt-in like every other surface above, and absent (not merely refused)
-    # until configured. See hub/otlp.py's own docstring for what this is and
-    # is not (OTLP-JSON only, no protobuf).
     if config.otlp_ingest_enabled:
         add_otlp_routes(
             inner_app,
@@ -1774,19 +1555,12 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
             trusted_proxy_hops=config.trusted_proxy_hops,
         )
 
-    # A system of record (Zendesk, GitHub) reporting how occasions turned out.
-    # Opt-in and absent until configured; authenticated by the vendor's signature,
-    # not an API key. See hub/connectors/service.py for the order of operations.
     if config.connectors_enabled:
         add_connector_routes(
             inner_app, session_factory, config=config,
             trusted_proxy_hops=config.trusted_proxy_hops,
         )
 
-    # An IdP calls this, authenticated per-org via a dedicated `scim`-scoped
-    # ApiKey (hub/scopes.py), not a shared deployment-wide secret -- so
-    # unlike /admin, /app and /signup this is always mounted; see
-    # hub/scim.py's own docstring for why that is safe.
     add_scim_routes(
         inner_app, session_factory,
         auth_rate_limiter=make_scim_auth_rate_limiter(config),
@@ -1810,25 +1584,8 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
         auth_rate_limiter=make_auth_rate_limiter(config),
         read_rate_limiter=make_read_rate_limiter(config),
         trusted_proxy_hops=config.trusted_proxy_hops,
-        # None when HUB_OIDC_ISSUER/HUB_OIDC_AUDIENCE are unset -- see
-        # HubConfig.identity_provider(). Built once, here, so a malformed
-        # HUB_OIDC_JWKS fails this deployment at startup rather than on
-        # whichever request happens to send the first JWT.
         identity_provider=config.identity_provider(),
     )
-    # Startup, not per-request: one diagnostic query, and the answer cannot
-    # change without an operator changing the role or the migrations. See
-    # hub/db.py:check_row_level_security for why a silently-bypassed policy
-    # is worth REFUSING to start over rather than merely logging about --
-    # and why an undeterminable answer (unreachable database) still never
-    # blocks startup.
-    #
-    # Chained onto the existing lifespan rather than registered with
-    # `add_event_handler`, which Starlette removed (1.6 has no such
-    # attribute) -- and which no test caught, because nothing exercised
-    # build_app's startup. The MCP app installs its own lifespan for the
-    # session manager, so this composes with it exactly as hub/main.py
-    # does for engine disposal rather than replacing it.
     _previous_lifespan = inner_app.router.lifespan_context
 
     @contextlib.asynccontextmanager
@@ -1844,10 +1601,6 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
     @contextlib.asynccontextmanager
     async def _lifespan_with_scheduler(app):
         async with _lifespan_with_rls_check(app):
-            # Each loop is independently opt-in (hub/scheduler.py's own
-            # docstring) -- a deployment relying on `hub.manage
-            # check-alerts`/`webhook-deliver` via its own cron for either
-            # one, or both, is unaffected either way.
             stop_event = asyncio.Event()
             tasks = []
             if config.alert_scheduler_enabled:
@@ -1898,25 +1651,12 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
         max_concurrent=config.max_concurrent_requests,
         timeout_seconds=config.request_timeout_seconds,
     )
-    # Only mounted when configured -- see HubConfig.ip_allowlist's own
-    # docstring. Added AFTER LoadShedMiddleware (so it runs BEFORE it,
-    # Starlette applies middleware outer-to-inner in reverse registration
-    # order): a source this deployment has decided should never reach it
-    # at all shouldn't spend a slot in the concurrency/timeout budget
-    # either, the same reasoning ApiKeyAuthMiddleware's own rate limiter
-    # runs before any cryptographic verification work.
     if config.ip_allowlist:
         inner_app.add_middleware(
             IpAllowlistMiddleware,
             networks=tuple(ipaddress.ip_network(c, strict=False) for c in config.ip_allowlist),
             trusted_proxy_hops=config.trusted_proxy_hops,
         )
-    # Before anything reads a body -- see BodySizeLimitMiddleware -- and
-    # inside RequestContextMiddleware, so a refusal is still logged with a
-    # request id.
     inner_app.add_middleware(BodySizeLimitMiddleware, max_bytes=config.max_request_body_bytes)
-    # Added last => outermost: a request id exists (and the request gets
-    # logged) even for calls the auth middleware rejects with a 401, and
-    # for one LoadShedMiddleware sheds or times out.
     inner_app.add_middleware(RequestContextMiddleware)
     return inner_app

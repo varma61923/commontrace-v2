@@ -1,23 +1,3 @@
-"""Telling someone else what happened, without telling them what was in it.
-
-What these tests defend, in order of how badly getting it wrong would hurt:
-
-1. **No trace content leaves.** A webhook is egress to a third party, set up
-   once and then forgotten, so it is the one place where a leak would be
-   permanent and unobserved. Every event type declares its exact fields and
-   anything else is REFUSED -- a whitelist, because a denylist fails the
-   moment somebody adds a field nobody thought to ban.
-2. **The signature actually stops a forgery and a replay.** An unsigned or
-   weakly-signed webhook is indistinguishable from anything else that can
-   reach the customer's URL, and a signature over the body alone can be
-   replayed forever.
-3. **No secret is stored.** A full dump of `webhook_endpoints` must yield no
-   ability to forge one event.
-4. **Delivery is at-least-once and says so.** A stable `event_id`, retries
-   with backoff, and a bounded give-up that is visible rather than silent --
-   a queue that gives up quietly is a queue that lies about delivery.
-5. **Tenancy.** One org's events never queue against another org's endpoint.
-"""
 from __future__ import annotations
 
 import json
@@ -39,8 +19,6 @@ URL = "https://example.invalid/hooks/commontrace"
 
 
 async def _fake_public_resolve(hostname: str) -> list:
-    """A DNS answer for a genuinely public, non-TEST-NET address (8.8.8.8
-    is not flagged is_private by ipaddress, unlike RFC 5737 ranges)."""
     return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("8.8.8.8", 0))]
 
 
@@ -52,13 +30,6 @@ def _fake_resolve_to(ip: str):
 
 @pytest.fixture(autouse=True)
 def _skip_real_dns_for_webhook_hosts(monkeypatch):
-    """Every fixture and call site in this module targets
-    ``example.invalid`` -- non-resolving by RFC 2606 design, which is
-    exactly what `_reject_private_target`'s DNS check now requires
-    resolving. Faking a genuinely public answer here keeps that guarantee
-    for tests that are not themselves about SSRF protection.
-    TestSsrfProtection below overrides this per-test with its own resolvers
-    to exercise the real rejection behavior."""
     monkeypatch.setattr(events, "_default_resolve", _fake_public_resolve)
 
 
@@ -80,8 +51,6 @@ async def endpoint(session_factory, org):
 
 
 class Recorder:
-    """A transport that records instead of sending, and can be told to fail."""
-
     def __init__(self, fail_times: int = 0, error="ConnectionError"):
         self.calls: list[tuple[str, str, dict]] = []
         self.fail_times = fail_times
@@ -94,8 +63,6 @@ class Recorder:
             raise RuntimeError(self.error)
 
 
-# --- the payload whitelist ---------------------------------------------------
-
 @pytest.mark.asyncio
 class TestPayloadWhitelist:
     async def test_a_declared_field_is_accepted(self):
@@ -104,7 +71,6 @@ class TestPayloadWhitelist:
         ) == {"trace_id": "t1", "agent_type": "support"}
 
     async def test_trace_content_is_refused_by_name(self, session_factory, org):
-        """The single property this module exists to keep."""
         with pytest.raises(events.EventError) as exc:
             events.check_payload(
                 "trace.created",
@@ -114,15 +80,10 @@ class TestPayloadWhitelist:
         assert "never trace content" in str(exc.value)
 
     async def test_any_undeclared_field_is_refused_not_just_known_bad_ones(self):
-        """A denylist fails the moment somebody adds a field nobody thought
-        to ban, so the check is that an INNOCUOUS unknown field is refused
-        too."""
         with pytest.raises(events.EventError, match="notes"):
             events.check_payload("trace.created", {"notes": "harmless"})
 
     async def test_a_nested_object_is_refused(self):
-        """A nested object is where free text gets in without anyone
-        deciding to put it there."""
         with pytest.raises(events.EventError, match="nested object"):
             events.check_payload("trace.created", {"trace_id": {"inner": "x"}})
 
@@ -141,8 +102,6 @@ class TestPayloadWhitelist:
             assert spec.fields, name
 
     async def test_no_event_type_declares_a_content_field(self):
-        """Asserted against the whole registry rather than one type, so it
-        fails on the NEXT event type somebody adds with a body in it."""
         forbidden = {
             "context_text", "solution_text", "body", "text", "content",
             "input", "output", "prompt", "completion", "title",
@@ -150,8 +109,6 @@ class TestPayloadWhitelist:
         for name, spec in events.EVENT_TYPES.items():
             assert not (set(spec.fields) & forbidden), name
 
-
-# --- signing -----------------------------------------------------------------
 
 class TestSigning:
     def test_a_signature_verifies(self):
@@ -173,9 +130,6 @@ class TestSigning:
             "other", header, body, now=int(NOW.timestamp()))
 
     def test_an_old_delivery_is_rejected_as_a_replay(self):
-        """A signature over the body alone could be captured and replayed
-        forever; the timestamp is only protection if altering it breaks the
-        signature."""
         body = '{"a":1}'
         stamp = int(NOW.timestamp())
         header = events.signature_header("s3cret", stamp, body)
@@ -197,8 +151,6 @@ class TestSigning:
     def test_the_secret_is_derived_not_stored(self):
         a = events.derive_secret(KEY, "endpoint-1", 1)
         assert a == events.derive_secret(KEY, "endpoint-1", 1)
-        # Different endpoint, different version, different deployment key:
-        # all three must change it, or a dump of one gives away another.
         assert a != events.derive_secret(KEY, "endpoint-2", 1)
         assert a != events.derive_secret(KEY, "endpoint-1", 2)
         assert a != events.derive_secret("other-key", "endpoint-1", 1)
@@ -207,8 +159,6 @@ class TestSigning:
         with pytest.raises(events.EventError, match="HUB_LEDGER_SIGNING_KEY"):
             events.derive_secret("", "endpoint-1", 1)
 
-
-# --- endpoints ---------------------------------------------------------------
 
 @pytest.mark.asyncio
 class TestEndpoints:
@@ -227,14 +177,9 @@ class TestEndpoints:
     async def test_subscribing_to_nothing_means_everything(self, session_factory, org):
         async with session_scope(session_factory) as session:
             endpoint, _ = await events.add_endpoint(session, org, URL, signing_key=KEY)
-        # Stored in full rather than as an empty "all" sentinel, so adding a
-        # new event type never silently starts delivering it to endpoints
-        # that predate it.
         assert set(endpoint.events) == set(events.EVENT_NAMES)
 
     async def test_the_endpoint_row_holds_no_secret(self, session_factory, endpoint):
-        """A full dump of this table must yield no ability to forge one
-        event."""
         async with session_scope(session_factory) as session:
             row = await session.get(WebhookEndpoint, endpoint["id"])
             columns = {c.name for c in row.__table__.columns}
@@ -247,20 +192,15 @@ class TestEndpoints:
             rotated = await events.rotate_secret(
                 session, endpoint["id"], signing_key=KEY)
         assert rotated != endpoint["secret"]
-        # And the old one stops verifying, which is what rotation means.
         body = "{}"
         header = events.signature_header(rotated, int(NOW.timestamp()), body)
         assert not events.verify_signature(
             endpoint["secret"], header, body, now=int(NOW.timestamp()))
 
 
-# --- at-rest encryption (hub/encryption.py) -----------------------------------
-
 @pytest.mark.asyncio
 class TestAtRestEncryption:
     async def test_no_cipher_stores_url_as_plaintext(self, session_factory, org):
-        """The default (no HUB_ENCRYPTION_KEY) -- every other test in this
-        module relies on this holding, since none of them pass a cipher."""
         async with session_scope(session_factory) as session:
             endpoint, _ = await events.add_endpoint(session, org, URL, signing_key=KEY)
         assert endpoint.url == URL
@@ -281,8 +221,6 @@ class TestAtRestEncryption:
     async def test_ssrf_validation_still_runs_on_the_plaintext_url(
         self, session_factory, org, monkeypatch
     ):
-        """A cipher must not let a private-address target slip past
-        `_reject_private_target` by encrypting before that check runs."""
         monkeypatch.setattr(
             events, "_default_resolve", _fake_resolve_to("127.0.0.1"))
         cipher = EnvelopeCipher.from_config(generate_key(), "")
@@ -304,15 +242,11 @@ class TestAtRestEncryption:
             result = await events.deliver_pending(
                 session, transport, signing_key=KEY, now=NOW, cipher=cipher)
         assert result.delivered == 1
-        # The transport must see the real URL, not the stored ciphertext.
         assert transport.calls[0][0] == URL
 
     async def test_delivery_with_the_wrong_cipher_fails_closed(
         self, session_factory, org
     ):
-        """A mismatched or missing key must not crash `deliver_pending` --
-        it should be reported as a failed delivery, the same as any other
-        transport error, never a raw traceback that stops the drain."""
         cipher = EnvelopeCipher.from_config(generate_key(), "")
         async with session_scope(session_factory) as session:
             await events.add_endpoint(session, org, URL, signing_key=KEY, cipher=cipher)
@@ -328,27 +262,20 @@ class TestAtRestEncryption:
         assert transport.calls == []
 
 
-# --- SSRF protection ----------------------------------------------------------
-
 @pytest.mark.asyncio
 class TestSsrfProtection:
-    """A webhook URL is egress to a third party's OWN infrastructure --
-    never a way to reach this deployment's own internal network. See
-    `_reject_private_target`'s docstring in hub/events.py for the full
-    rationale, including why this is checked again at delivery time."""
-
     @pytest.mark.parametrize("ip", [
-        "127.0.0.1",         # loopback
-        "10.0.0.5",          # RFC 1918 private
-        "172.16.0.1",        # RFC 1918 private
-        "192.168.1.1",       # RFC 1918 private
-        "169.254.169.254",   # link-local -- cloud metadata services live here
-        "224.0.0.1",         # multicast
-        "0.0.0.0",           # unspecified
-        "::1",               # IPv6 loopback
-        "::ffff:127.0.0.1",  # IPv4-mapped IPv6 loopback -- not a bypass
-        "100.100.100.200",   # carrier-grade NAT: Alibaba Cloud's metadata service
-        "100.64.0.1",        # carrier-grade NAT: neither private nor public
+        "127.0.0.1",
+        "10.0.0.5",
+        "172.16.0.1",
+        "192.168.1.1",
+        "169.254.169.254",
+        "224.0.0.1",
+        "0.0.0.0",
+        "::1",
+        "::ffff:127.0.0.1",
+        "100.100.100.200",
+        "100.64.0.1",
     ])
     async def test_a_private_or_internal_target_is_rejected(self, ip):
         with pytest.raises(events.EventError, match="private"):
@@ -356,9 +283,6 @@ class TestSsrfProtection:
                 URL, resolve=_fake_resolve_to(ip))
 
     async def test_a_genuinely_public_target_is_accepted(self):
-        # 8.8.8.8, unlike an RFC 5737 TEST-NET range, is not flagged
-        # is_private by ipaddress -- this actually exercises the allowed
-        # path rather than accidentally rejecting for the wrong reason.
         await events._reject_private_target(URL, resolve=_fake_resolve_to("8.8.8.8"))
         await events._reject_private_target(URL, resolve=_fake_resolve_to("2606:4700::1111"))
 
@@ -393,10 +317,6 @@ class TestSsrfProtection:
     async def test_http_transport_rechecks_at_delivery_time_not_only_registration(
         self, session_factory, org, monkeypatch
     ):
-        """DNS can change between `add_endpoint` and delivery -- the
-        send-time recheck is what actually narrows that window rather than
-        only validating a fact that was true once (see
-        `_reject_private_target`'s docstring)."""
         calls = {"n": 0}
 
         async def rebinding_resolve(hostname):
@@ -413,21 +333,15 @@ class TestSsrfProtection:
         async with session_scope(session_factory) as session:
             result = await events.deliver_pending(
                 session, transport, signing_key=KEY, now=NOW)
-        # Rejected as a retry, exactly like any other delivery failure --
-        # never silently delivered and never crashing deliver_pending.
         assert result.delivered == 0
         assert result.retrying == 1
 
-
-# --- emitting and delivery ---------------------------------------------------
 
 @pytest.mark.asyncio
 class TestEmitting:
     async def test_an_org_with_no_endpoints_queues_nothing_and_does_not_raise(
         self, session_factory, org
     ):
-        """Callers must not have to check first -- that is what makes emit
-        calls get conditionally skipped and quietly forgotten."""
         async with session_scope(session_factory) as session:
             queued = await events.emit(
                 session, org, "trace.created", {"trace_id": "t1"})
@@ -520,9 +434,6 @@ class TestDelivery:
     async def test_the_envelope_carries_a_stable_idempotency_key(
         self, session_factory, endpoint
     ):
-        """Delivery is at-least-once, so a receiver that treats each POST as
-        a new fact double-counts the first time a timeout is followed by a
-        successful retry."""
         await self._queue(session_factory, endpoint["org"])
         first = Recorder(fail_times=1)
         async with session_scope(session_factory) as session:
@@ -535,8 +446,6 @@ class TestDelivery:
         first_body = json.loads(first.calls[0][1])
         second_body = json.loads(second.calls[0][1])
         assert second_body["event_id"] == first_body["event_id"]
-        # A first delivery that announced itself as attempt 2 would read to
-        # a receiver as "you already missed one".
         assert first_body["attempt"] == 1
         assert second_body["attempt"] == 2
 
@@ -560,8 +469,6 @@ class TestDelivery:
                 session, transport, signing_key=KEY, now=NOW)
         assert result.retrying == 1 and result.delivered == 0
 
-        # Still failing, but not yet due: a second drain at the same instant
-        # must not hammer the endpoint.
         async with session_scope(session_factory) as session:
             again = await events.deliver_pending(
                 session, transport, signing_key=KEY, now=NOW)
@@ -583,8 +490,6 @@ class TestDelivery:
     async def test_it_gives_up_loudly_rather_than_retrying_forever(
         self, session_factory, endpoint
     ):
-        """An endpoint that has been wrong for a week is a configuration
-        problem, and a queue that retries it forever hides that."""
         await self._queue(session_factory, endpoint["org"])
         transport = Recorder(fail_times=99)
         moment = NOW
@@ -599,7 +504,6 @@ class TestDelivery:
             failed = await events.failed_deliveries(session, endpoint["org"])
         assert row.status == events.STATUS_FAILED
         assert row.attempts == events.MAX_ATTEMPTS
-        # Visible in the dead-letter view, not merely absent from pending.
         assert len(failed) == 1
 
     async def test_a_success_after_a_failure_clears_the_error(
@@ -661,13 +565,8 @@ class TestDelivery:
             assert await events.pending_count(session, endpoint["org"]) == 0
 
 
-# --- the paths that actually emit --------------------------------------------
-
 @pytest.mark.asyncio
 class TestEmittedFromRealPaths:
-    """An event nothing emits is not shipped. These go through the real
-    operations rather than calling emit directly."""
-
     async def test_a_legal_hold_announces_itself(self, session_factory, endpoint):
         from hub import retention
 
@@ -679,8 +578,6 @@ class TestEmittedFromRealPaths:
         async with session_scope(session_factory) as session:
             row = (await session.execute(select(WebhookDelivery))).scalar_one()
         assert row.event_type == "legal_hold.placed"
-        # The reason is free text about a legal matter: the event says a
-        # freeze exists, it does not describe why to a third party.
         assert "Ohio" not in json.dumps(row.payload)
 
     async def test_a_purge_announces_counts_and_the_plan_digest(

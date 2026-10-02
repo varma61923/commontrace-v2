@@ -1,38 +1,5 @@
 # ruff: noqa: E501 -- inline SVG paths, CSS and script source read best unwrapped
-"""The customer console's design system: tokens, app shell, components, charts.
-
-WHY A MODULE OF ITS OWN
------------------------
-hub/console.py renders pages; this module decides how they look and behave.
-The console used to borrow the operator console's stylesheet (hub/admin.py's
-`_CSS`), which suits one employee scanning queues and reads like a document to
-a customer deciding whether to renew. Keeping the customer-facing system here
-lets it evolve without restyling the operator's tool underneath them.
-
-CONSTRAINTS THAT SHAPED IT
---------------------------
-* **No build step, no network.** The Hub image ships no frontend toolchain,
-  and the Content-Security-Policy (hub/admin.py `content_security_policy`)
-  is `default-src 'none'`: no external stylesheet, font, script or image.
-  Everything is inline: one stylesheet, two scripts allowed by their SHA-256,
-  and charts drawn as inline SVG on the server.
-* **Works without script.** Every page is complete server-rendered HTML.
-  Script adds the command palette, keyboard shortcuts, the theme toggle,
-  sortable and filterable tables, relative timestamps and chart tooltips --
-  never content. Controls that need script start `hidden` and are revealed
-  by it, so nothing on screen does nothing.
-* **Accessible by construction.** Landmarks, a skip link, visible focus,
-  `aria-current` on navigation, every chart paired with a data table, and
-  colour never carrying meaning alone (status colours ship with a label).
-* **Light and dark are both designed.** Dark follows the OS unless the viewer
-  picks one; the choice is kept per browser (localStorage, a convenience --
-  the page renders correctly without it).
-
-Chart colours are the dataviz reference palette's first two categorical slots
-(blue "with memory", orange "without"), validated for CVD separation and
-contrast on this console's own surfaces in both modes; status colours are
-reserved for verdicts.
-"""
+"""The customer console's design system: tokens, app shell, components, charts."""
 from __future__ import annotations
 
 import html
@@ -43,8 +10,6 @@ from datetime import date, datetime, timezone
 def h(value: object) -> str:
     return html.escape("" if value is None else str(value), quote=True)
 
-
-# --- Stylesheet ----------------------------------------------------------------
 
 CSS = """
 :root{
@@ -513,10 +478,6 @@ main.auth{max-width:none;margin:0;gap:0}
 """
 
 
-# --- Icons -------------------------------------------------------------------
-# Drawn for this console (24px grid, 1.8 stroke, currentColor), so they follow
-# text colour in both themes and need no licence notice.
-
 _ICON_PATHS = {
     "overview": '<rect x="3.5" y="3.5" width="7" height="7" rx="1.6"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.6"/>'
                 '<rect x="3.5" y="13.5" width="7" height="7" rx="1.6"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.6"/>',
@@ -571,21 +532,11 @@ def initials(name: str) -> str:
     return letters or "?"
 
 
-# --- Scripts -----------------------------------------------------------------
-# Inline, and allowed by the CSP only by their exact SHA-256 (hub/admin.py
-# content_security_policy hashes whatever sits between the script tags), so
-# neither may ever be built from request data.
-
-#: Runs in <head> before first paint, so a viewer who chose a theme never sees
-#: the other one flash. Storage can be unavailable (private mode, blocked site
-#: data): the page then simply follows the OS.
 THEME_SCRIPT = (
     "<script>(function(){try{var t=localStorage.getItem('ct-theme');"
     "if(t==='light'||t==='dark'){document.documentElement.setAttribute('data-theme',t);}}catch(e){}})();</script>"
 )
 
-#: Everything the console does beyond server-rendered HTML. Builds every node
-#: from text (createElement/textContent), never from markup strings.
 APP_SCRIPT = """<script>(function(){
 var d=document,root=d.documentElement;
 function $(s,c){return (c||d).querySelector(s);}
@@ -743,9 +694,6 @@ d.addEventListener('keydown',function(e){
 })();</script>"""
 
 
-# --- Formatting ----------------------------------------------------------------
-
-
 def _as_datetime(value: object) -> datetime | None:
     if isinstance(value, datetime):
         dt = value
@@ -764,8 +712,6 @@ def _as_datetime(value: object) -> datetime | None:
 
 
 def time_html(value: object, *, empty: str = "—") -> str:
-    """A timestamp a person can read ("Sep 29, 2026 01:32 UTC"), machine-readable
-    in `datetime`, and shown relative ("3 days ago") once script runs."""
     dt = _as_datetime(value)
     if dt is None:
         return f'<span class="faint">{h(value) if value not in (None, "") else empty}</span>'
@@ -782,7 +728,6 @@ def meter(used: object, limit: object, *, quota: bool = True) -> str:
     if limit_f <= 0:
         return ""
     share = used_f / limit_f
-    # Amber and red mean "approaching / at a quota"; progress is not a quota.
     tone = "" if not quota else (" bad" if share >= 1 else (" warn" if share >= 0.8 else ""))
     return (
         f'<div class="meter{tone}" role="img" aria-label="{share:.0%} of the limit used">'
@@ -806,8 +751,6 @@ def _nice_max(value: float) -> float:
 
 
 def _count_axis(peak: float) -> tuple[float, float]:
-    """(axis top, tick step) for whole-number counts: about four ticks, never a
-    fractional one -- a "2.5 traces" gridline is a lie about the data."""
     peak = max(1.0, float(peak))
     step = _nice_max(peak / 4)
     step = max(1.0, math.ceil(step))
@@ -852,7 +795,6 @@ def bar_chart(chart_id: str, weeks: list[str], values: list[int], *, title: str,
         radius = min(4.0, bar_w / 2, bar_h)
         tip = f"Week of {_week_label(week)}\n{value:,} {unit}"
         if bar_h > 0:
-            # Rounded at the data end only, anchored square to the baseline.
             path = (f"M{x:.1f},{top + plot_h:.1f} V{y + radius:.1f} Q{x:.1f},{y:.1f} {x + radius:.1f},{y:.1f} "
                     f"H{x + bar_w - radius:.1f} Q{x + bar_w:.1f},{y:.1f} {x + bar_w:.1f},{y + radius:.1f} "
                     f"V{top + plot_h:.1f} Z")
@@ -874,18 +816,11 @@ def bar_chart(chart_id: str, weeks: list[str], values: list[int], *, title: str,
     return f'<div class="chart"><div class="plot">{"".join(parts)}</div>{table}</div>'
 
 
-#: Fewest resolved occasions an arm needs in a week for that week's rate to be
-#: drawn. A rate from two occasions swings between 0% and 100% and reads as an
-#: event; those weeks are gaps in the line, and stay in the tooltip and table.
 MIN_POINT_N = 5
 
 
 def rate_chart(chart_id: str, weeks: list[str], treated: list, control: list, *, title: str) -> str:
-    """Weekly success rate with memory and without it, one shared 0-100% axis.
-
-    Two series, so a legend and direct end labels; a week with no resolved
-    occasion in an arm is a gap in that line, never a zero. A crosshair
-    column per week carries both readings in one tooltip."""
+    """Weekly success rate with memory and without it, one shared 0-100% axis."""
     width, height, left, right, top, bottom = 760, 220, 40, 112, 12, 26
     plot_w, plot_h = width - left - right, height - top - bottom
     n = max(1, len(weeks))
@@ -931,7 +866,6 @@ def rate_chart(chart_id: str, weeks: list[str], treated: list, control: list, *,
         if i % label_every == 0 or i == n - 1:
             parts.append(f'<text class="viz-axis" x="{x_at(i):.1f}" y="{height - 6}" text-anchor="middle">'
                          f"{h(_week_label(week))}</text>")
-    # Crosshair columns first, so the lines draw over their hit areas.
     col_w = step if n > 1 else plot_w
     for i, week in enumerate(weeks):
         lines = [f"Week of {_week_label(week)}"]
@@ -951,7 +885,6 @@ def rate_chart(chart_id: str, weeks: list[str], treated: list, control: list, *,
     for dots, cls in ((d2, "viz-d2"), (d1, "viz-d1")):
         for x, y, _rate, _total in dots:
             parts.append(f'<circle class="viz-dot {cls}" cx="{x:.1f}" cy="{y:.1f}" r="4" pointer-events="none"/>')
-    # Direct labels at each line's last point, nudged apart if they collide.
     ends = []
     for dots, name in ((d1, "With"), (d2, "Without")):
         if dots:
@@ -979,9 +912,6 @@ def rate_chart(chart_id: str, weeks: list[str], treated: list, control: list, *,
 
 
 def forest_plot(effects: list[dict]) -> str:
-    """Each memory's estimated effect and 95% interval on one shared axis, the
-    zero line dashed. Colour is the verdict's, and the verdict is also written
-    next to it, so colour never carries the meaning alone."""
     rows = [e for e in effects if isinstance(e.get("effect"), (int, float))]
     if not rows:
         return ""
@@ -1027,8 +957,6 @@ def forest_plot(effects: list[dict]) -> str:
         if ci:
             track.append(f'<line class="fci" x1="{pos(float(ci[0])):.2f}" x2="{pos(float(ci[1])):.2f}" y1="11" y2="11" '
                          'vector-effect="non-scaling-stroke"/>')
-        # A zero-length round-capped line is a dot that survives the track's
-        # non-uniform scaling; a <circle> would be squashed into an ellipse.
         track.append(f'<line class="fring" x1="{pos(effect):.2f}" x2="{pos(effect):.2f}" y1="11" y2="11" '
                      'vector-effect="non-scaling-stroke"/>'
                      f'<line class="fpt" x1="{pos(effect):.2f}" x2="{pos(effect):.2f}" y1="11" y2="11" '

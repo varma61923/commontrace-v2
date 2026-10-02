@@ -1,14 +1,3 @@
-"""commontrace/lesson_cache.py -- the incremental store of parsed lesson
-frontmatter and tokenized fields that replaced a full YAML re-parse (plus
-re-tokenize) of the corpus on every `query`.
-
-The non-negotiable property under test: a cached retrieval must be
-BIT-IDENTICAL to the direct scan for the same corpus state. Retrieval
-eligibility is the denominator of a causal estimate
-(commontrace/integrity.py), so a cache that returns a different ranking than
-the code it replaced -- even by a rounding hair -- would silently change
-which lessons get randomized into an experiment.
-"""
 import os
 
 from commontrace import frontmatter, lesson_cache, paths, retrieval
@@ -23,16 +12,13 @@ def _write_lesson(root, slug, description="", applies_when="", tags=None,
         "name": slug, "description": description, "applies_when": applies_when,
         "tags": tags or [], "domain": domain, "importance": importance,
         "uses": uses, "status": status, "agent_type": agent_type,
-        "last_hit": "2026-07-01",  # a bare YAML date -- the exact value that
-                                   # breaks a naive JSON round-trip
+        "last_hit": "2026-07-01",
     }
     frontmatter.write(path, fm, "## Rule\nSomething.\n")
     return path
 
 
 def _direct_scan(root, agent_type=None):
-    """The pre-cache behaviour, reproduced verbatim: glob + parse every file,
-    no cache involved at all."""
     import glob
 
     out = []
@@ -74,9 +60,6 @@ class TestCacheMatchesDirectScan:
         assert [r.slug for r in cached_ranked][:1] == ["lesson_git_safety"]
 
     def test_cold_cache_and_warm_cache_rank_identically(self, tmp_path):
-        """The first call (nothing cached yet, everything parsed) and a
-        second call against the SAME unmodified files (everything served from
-        cache) must be indistinguishable to a caller."""
         root = str(tmp_path)
         for i in range(12):
             _write_lesson(root, f"lesson_{i:03d}",
@@ -102,7 +85,7 @@ class TestCacheMatchesDirectScan:
             _write_lesson(root, f"lesson_{i:03d}", description=f"content {i}")
             for i in range(5)
         ]
-        lesson_cache.load_active_with_terms(root)  # populate the cache
+        lesson_cache.load_active_with_terms(root)
 
         parsed = []
         real_read = frontmatter.read
@@ -112,7 +95,6 @@ class TestCacheMatchesDirectScan:
             return real_read(p)
 
         monkeypatch.setattr(frontmatter, "read", counting_read)
-        # Touch only lesson_002's content (mtime AND size change).
         with open(paths_written[2], "a", encoding="utf-8") as fh:
             fh.write("\nExtra line.\n")
 
@@ -134,8 +116,6 @@ class TestCacheMatchesDirectScan:
         assert gone not in terms
 
     def test_a_corrupt_cache_file_falls_back_to_a_full_reparse(self, tmp_path):
-        """Never raises, same posture as retrieval_io.load_config: a
-        malformed cache costs speed, not correctness."""
         root = str(tmp_path)
         _write_lesson(root, "lesson_a", description="anything at all")
         os.makedirs(os.path.dirname(lesson_cache.cache_path(root)), exist_ok=True)
@@ -147,27 +127,21 @@ class TestCacheMatchesDirectScan:
         assert lessons[0][1]["description"] == "anything at all"
 
     def test_a_corrupt_on_disk_terms_field_self_heals(self, tmp_path):
-        """`terms` is a pure function of the cached `fm`, so `_stamps_differ`
-        deliberately does not compare it -- but that means a cache entry
-        whose `terms` alone is corrupt (unlike `mtime_ns`/`size`/`fm`, all of
-        which stay unchanged) must still be recognized as needing a rewrite,
-        or the corruption never leaves the on-disk file and every future
-        call pays a full reparse for that lesson forever."""
         import json
 
         root = str(tmp_path)
         path = _write_lesson(root, "lesson_a", description="anything at all")
-        lesson_cache.load_active_with_terms(root)  # populate the cache
+        lesson_cache.load_active_with_terms(root)
 
         cpath = lesson_cache.cache_path(root)
         with open(cpath, encoding="utf-8") as fh:
             on_disk = json.load(fh)
-        on_disk["entries"][path]["terms"] = [["only", "one", "field"]]  # wrong length
+        on_disk["entries"][path]["terms"] = [["only", "one", "field"]]
         with open(cpath, "w", encoding="utf-8") as fh:
             json.dump(on_disk, fh)
 
         lessons, terms = lesson_cache.load_active_with_terms(root)
-        assert len(lessons) == 1  # self-heals in memory even without the fix
+        assert len(lessons) == 1
 
         with open(cpath, encoding="utf-8") as fh:
             healed = json.load(fh)
@@ -177,20 +151,14 @@ class TestCacheMatchesDirectScan:
         )
 
     def test_a_bare_yaml_date_field_survives_the_cache_round_trip(self, tmp_path):
-        """last_hit: 2026-07-01 parses as datetime.date under PyYAML -- the
-        exact value a naive JSON cache would crash on or silently corrupt."""
         root = str(tmp_path)
         _write_lesson(root, "lesson_a", description="anything")
-        # Must not raise.
         lessons, _terms = lesson_cache.load_active_with_terms(root)
         assert len(lessons) == 1
 
 
 class TestTermCacheIsOptional:
     def test_rank_lessons_without_term_cache_still_works(self, tmp_path):
-        """A caller with no cache (or a caller that never adopts one) gets
-        exactly today's behaviour -- `term_cache` can only skip work, never
-        change what is required to produce a result."""
         root = str(tmp_path)
         _write_lesson(root, "lesson_a", description="force-push shared branch")
         lessons = _direct_scan(root)
@@ -198,9 +166,6 @@ class TestTermCacheIsOptional:
         assert ranked[0].slug == "lesson_a"
 
     def test_a_path_missing_from_term_cache_still_ranks_correctly(self, tmp_path):
-        """A partial cache (e.g. a lesson added after the cache dict was
-        built by some other caller) tokenizes that one lesson fresh rather
-        than skipping or mis-scoring it."""
         root = str(tmp_path)
         _write_lesson(root, "lesson_a", description="force-push shared branch")
         _write_lesson(root, "lesson_b", description="unrelated changelog entry")
@@ -217,13 +182,11 @@ class TestTermCacheIsOptional:
         assert full == partial == none
 
     def test_a_malformed_term_cache_entry_falls_back_to_tokenizing_that_lesson(self, tmp_path):
-        """A cache entry with the wrong number of fields (a hand-edited or
-        format-drifted cache file) must not be trusted for that lesson."""
         root = str(tmp_path)
         _write_lesson(root, "lesson_a", description="force-push shared branch")
         lessons = _direct_scan(root)
 
-        bad_cache = {lessons[0][0]: [["only", "one", "field"]]}  # wrong length
+        bad_cache = {lessons[0][0]: [["only", "one", "field"]]}
         query = "force-push a shared branch"
         with_bad_cache = retrieval.rank_lessons(query, lessons, floor=0.0, term_cache=bad_cache)
         direct = retrieval.rank_lessons(query, lessons, floor=0.0, term_cache=None)
@@ -232,14 +195,6 @@ class TestTermCacheIsOptional:
 
 class TestScoringIsProcessOrderIndependent:
     def test_relevance_does_not_depend_on_hash_seed(self, tmp_path):
-        """The regression this pins: `covered` used to sum over a bare
-        `set[str]` (`matched`), and str iteration order is
-        PYTHONHASHSEED-randomized, so summing in an unspecified order could
-        move `rel` by a few ULP between processes -- exactly at the boundary
-        `rel >= floor` tests. Run the SAME corpus/query through several
-        distinct hash seeds (via a subprocess, the only way to actually vary
-        PYTHONHASHSEED) and assert bit-identical relevance.
-        """
         import json
         import subprocess
         import sys

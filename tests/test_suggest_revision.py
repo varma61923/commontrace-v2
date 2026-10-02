@@ -1,12 +1,3 @@
-"""Tests for `commontrace lesson suggest-revision` --
-commontrace/commands/lesson_cmd.py's run_suggest_revision.
-
-The behavior worth protecting: this drafts a NEW review-status lesson from
-a MISCALIBRATED lesson's own retrieval evidence, changes nothing about the
-original, and refuses outright for any other verdict -- a HARMFUL lesson's
-rule may be wrong, not just its activation condition, and tightening WHEN
-it fires does not fix that.
-"""
 from __future__ import annotations
 
 import json
@@ -55,21 +46,15 @@ def _episode(root: str, name: str, verdict: str, retrieved: str, hit: str,
 
 
 def _miscalibrated_lesson(store) -> None:
-    """A lesson that fires constantly but rarely helps -- MISCALIBRATED per
-    reliability.py's own verdict boundary (precision < 0.25, enough
-    evidence to clear min_evidence, and lift not below the HARMFUL bar)."""
     main(["init", "--agent-type", "code", "--dest", str(store)])
     _active_lesson(str(store), "broad")
     for i in range(12):
-        # 2/12 hit -> precision ~0.17, below the 0.25 MISCALIBRATED cutoff.
         hit = "broad" if i < 2 else "not_this_one"
         _episode(str(store), f"ep{i}", "CONFORM", "broad", hit,
                  task_invocation=f"task about widget {i}")
 
 
 def _harmful_lesson(store) -> None:
-    """A lesson that fires and correlates with worse outcomes -- HARMFUL
-    per reliability.py's own verdict boundary."""
     main(["init", "--agent-type", "code", "--dest", str(store)])
     _active_lesson(str(store), "bad")
     for i in range(12):
@@ -83,7 +68,7 @@ _GOOD_DRAFT_JSON = {
     "rule": "Do the thing, but only for widgets.",
     "applies_when": "the task is specifically about widget provisioning",
     "do_not_apply_when": "the task is about anything else",
-    "evidence": [],  # filled in per-test with real occasion ids
+    "evidence": [],
 }
 
 
@@ -204,22 +189,10 @@ class TestDraftingARevision:
         rc = main([
             "lesson", "approve", "broad-revision", "--force", "--dest", str(store),
         ])
-        # --force covers the near-duplicate-with-the-original refusal
-        # (redundancy.py), which is expected here since only applies_when
-        # changed; the point of this test is that the TODO scaffolding gate
-        # itself is satisfied by a genuine edit.
         assert rc == 0
 
 
 class TestDraftWithLLM:
-    """`--draft` never bypasses the approval gate (that is still
-    lesson_cmd.run_approve's job) -- what it changes is whether the draft
-    starts as a real attempt or a "TODO: tighten" placeholder. Both paths
-    still write a status=review draft; this class checks the LLM path fills
-    it in, and degrades to exactly the pre-`--draft` behavior whenever no
-    usable draft comes back.
-    """
-
     def test_llm_assisted_draft_fills_in_applies_when(self, store, monkeypatch, capsys):
         _miscalibrated_lesson(store)
         monkeypatch.setenv("COMMONTRACE_LLM_API_KEY", "k")

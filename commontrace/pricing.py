@@ -1,30 +1,4 @@
-"""Billing on proven value, and only on proven value.
-
-What this module is: arithmetic over evidence. A `PriceSchedule` holds the commercial terms; a package from
-`commontrace proof report` holds the evidence; `invoice` turns the two into lines, and refuses to bill what the
-evidence does not support. What it is not: a price list. There is no default for any commercial term. Every
-field of the schedule is required, so a missing price is an error, never a number nobody chose, and prices come
-from the owner's own file.
-
-The rules, each of which a test holds:
-
-  * A value line is built only from a package that VERIFIES (`proof.verify` recomputes the audit and every
-    estimate from the raw rows) and, if the schedule asks, carries a valid issuer signature.
-  * Never on a synthetic package, a COMPROMISED experiment, an effect that is not established (the value report is
-    not readable) or, unless the schedule says otherwise, an interim run.
-  * The basis is the point estimate or the lower 95% bound, as the schedule says, applied to occasions improved
-    times the agreed worth of one occasion.
-  * Cumulative, not per package: for each experiment (the pre-registered salt) the book records the value basis
-    already charged. A later package bills only the increase; a decrease becomes a credit carried forward, so the
-    sum of value charges can never exceed the share of what is proven now. The same package submitted twice
-    bills nothing the second time.
-  * Value charges never go below zero for an invoice (a credit is applied against later charges, or against the
-    platform fee only if the schedule allows), and an optional cap and minimum bound the invoice.
-  * Every value line names the package: its label, ledger root, data digest and the command that verifies it.
-
-The platform fee is agent-months times a rate: predictable, covers the cost of serving, and independent of any
-result. The agent count is supplied by the caller (the Hub counts active agents; see hub/plans.py).
-"""
+"""Billing on proven value, and only on proven value."""
 from __future__ import annotations
 
 import dataclasses
@@ -106,7 +80,7 @@ class PriceSchedule:
 
 @dataclass
 class Line:
-    kind: str                      # "platform" | "value" | "credit"
+    kind: str
     description: str
     amount: float
     quantity: float | None = None
@@ -130,9 +104,6 @@ class Invoice:
 
     def to_dict(self) -> dict:
         return dataclasses.asdict(self)
-
-
-# --- The book: what has already been charged -----------------------------------------------------------------
 
 
 def _blank_book() -> dict:
@@ -162,15 +133,12 @@ def write_book(directory: str, book: dict) -> None:
     os.replace(tmp, os.path.join(directory, BOOK_NAME))
 
 
-# --- Reading evidence ----------------------------------------------------------------------------------------
-
-
 @dataclass
 class Assessment:
     ok: bool
     reason: str = ""
     experiment: str = ""
-    basis: float = 0.0              # value (in currency) the evidence supports right now
+    basis: float = 0.0
     evidence: dict = field(default_factory=dict)
 
 
@@ -217,17 +185,12 @@ def assess(directory: str, schedule: PriceSchedule, key: bytes | None = None) ->
         "value_per_occasion": rate, "basis": schedule.value_basis})
 
 
-# --- The invoice -----------------------------------------------------------------------------------------------
-
-
 def _round(x: float) -> float:
     return round(x + 0.0, 2)
 
 
 def invoice(book: dict, schedule: PriceSchedule, *, org: str, period: str, agent_months: float,
             packages: list[str], key: bytes | None = None, commit: bool = True) -> Invoice:
-    """One invoice for `period`. `agent_months` is the sum, over the period, of agents under management
-    each month. With `commit`, the book is updated; the caller writes it (`write_book`)."""
     if agent_months < 0:
         raise PricingError("agent_months cannot be negative")
     if any(i["org"] == org and i["period"] == period for i in book["invoices"]):

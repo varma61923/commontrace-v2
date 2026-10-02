@@ -1,25 +1,4 @@
-"""`commontrace pilot` — the 30-day pilot, bundled into one report.
-
-Three steps (the pilot design, and the sales narrative it backs):
-
-1. **Map the issues** — `commontrace.taxonomy`: group recurring failures
-   into a clear taxonomy.
-2. **Reproduce + reinforce** — re-run representative cases with the lesson
-   enforced. This step is inherently a human/agent loop
-   (`commontrace query --experiment` + `commontrace capture
-   --occasion-id`) that this command cannot perform on
-   someone's behalf; what it reports is how far that loop has progressed
-   (active lessons, holdout assignments logged).
-3. **Measure what changed** — `commontrace.impact` plus the baseline-vs-
-   current resolution rate already computed by `commontrace bench --pilot`.
-
-"The result" is a yes/no gate, and it is deliberately conservative: a
-randomized holdout result (`commontrace experiment`) always outranks a
-correlational one, exactly as it does everywhere else in this codebase
-(README.md's "Prove the lessons cause the improvement", the product strategy).
-A pilot that only ran the correlational half gets "not yet conclusive," not
-a borrowed "yes."
-"""
+"""`commontrace pilot` — the 30-day pilot, bundled into one report."""
 from __future__ import annotations
 
 import html
@@ -37,7 +16,7 @@ RESULT_UNKNOWN = "unknown"
 @dataclass
 class Verdict:
     label: str
-    level: str  # RESULT_YES / RESULT_NO / RESULT_UNKNOWN
+    level: str
     explanation: str
 
 
@@ -48,10 +27,6 @@ def determine_result(
     resolution_delta: float | None,
     has_baseline: bool,
 ) -> Verdict:
-    """The yes/no gate. `causal_effects` is None when no holdout data exists
-    yet (as opposed to an empty list, which would mean data exists but no
-    lesson qualified for analysis -- callers pass None only in the true
-    absence of `memory/holdout_log.jsonl`)."""
     if causal_effects is not None:
         hurts = [e for e in causal_effects if e.verdict == "HURTS"]
         helps = [e for e in causal_effects if e.verdict == "HELPS"]
@@ -93,18 +68,6 @@ def determine_result(
 
     if has_baseline and resolution_delta is not None:
         if resolution_delta > 0.05:
-            # resolution_delta is a RELATIVE change ((current - baseline) /
-            # baseline -- see pilot_cmd.py), not a percentage-point
-            # difference in the resolution rate itself. reference/
-            # pilot_metrics.py's own table shows this same relative number
-            # next to the actual baseline/current values, so "+53%" reads
-            # correctly there; this headline shows the delta ALONE, where
-            # the identical number is easy to misread as "resolution rate
-            # is now 53%" or "up 53 percentage points" -- either of which
-            # can be wildly different from the real, smaller (or larger)
-            # absolute change. Spelling out "relative" here costs nothing
-            # and removes that ambiguity without changing what is computed
-            # or gated on.
             return Verdict(
                 f"LIKELY (resolution rate +{resolution_delta:.0%} relative to baseline)",
                 RESULT_UNKNOWN,

@@ -1,19 +1,3 @@
-"""The single most important test file in the Hub server.
-
-Creates two orgs with overlapping trace content, calls every one of the six
-Hub tools as org_a, and asserts zero rows belonging to org_b ever appear in
-any response -- and that get_trace on a known org_b trace id reports
-not_found, never a permission error (never confirming the id exists).
-
-This exercises hub/crud.py directly rather than driving a live MCP
-transport. That is deliberate, not a shortcut: per hub/server.py's module
-docstring, the MCP tool wrappers do nothing but resolve org_id from request
-context and call these exact crud functions -- there is no additional
-scoping logic at the transport layer to test separately. Testing crud.py
-directly is testing the real org-scoping code path, and it lets this test
-assert on the query layer without needing a running HTTP server.
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -33,10 +17,6 @@ pytestmark = pytest.mark.asyncio
 
 @pytest_asyncio.fixture
 async def two_orgs_with_overlapping_content(session_factory, config):
-    """org_a and org_b each contribute a trace with the *same* title/tags,
-    so a query-layer bug that forgets the org_id filter (e.g. matching on
-    title/tags alone) would be caught, not just a bug that returns
-    literally everything."""
     rate_limiter = make_rate_limiter(config)
 
     async with session_scope(session_factory) as session:
@@ -80,8 +60,6 @@ async def two_orgs_with_overlapping_content(session_factory, config):
 
 
 def _assert_no_org_b_leakage(payload, org_b_trace_id: str, org_b_id: str):
-    """Walk a tool's return value (a dict or list of dicts) and assert
-    nothing in it is org_b's trace id, nor contains org_b's private text."""
     blob = str(payload)
     assert org_b_trace_id not in blob, f"org_b trace id leaked into response: {payload!r}"
     assert org_b_id not in blob, f"org_b org id leaked into response: {payload!r}"
@@ -118,10 +96,8 @@ async def test_contribute_trace_is_scoped_to_calling_org(
 ):
     fixture = two_orgs_with_overlapping_content
     async with session_scope(session_factory) as session:
-        # org_a can see its own newly-contributed trace...
         own = await crud.get_trace(session, fixture["org_a_id"], fixture["org_a_trace_id"])
         assert own is not None
-        # ...but never org_b's, even though it was contributed in the same fixture.
         other = await crud.get_trace(session, fixture["org_a_id"], fixture["org_b_trace_id"])
     assert other is None
 
@@ -129,17 +105,12 @@ async def test_contribute_trace_is_scoped_to_calling_org(
 async def test_get_trace_on_other_orgs_id_is_not_found_not_forbidden(
     session_factory, config, two_orgs_with_overlapping_content
 ):
-    """The specific requirement from the brief: a known org_b trace id,
-    fetched as org_a, must come back not-found -- indistinguishable from an
-    id that never existed at all, not a 403-shaped 'yes it exists, no you
-    can't see it' response that would confirm the id is real."""
     fixture = two_orgs_with_overlapping_content
     async with session_scope(session_factory) as session:
         result = await crud.get_trace(session, fixture["org_a_id"], fixture["org_b_trace_id"])
     assert result is None
 
     async with session_scope(session_factory) as session:
-        # A trace id that never existed at all must look identical.
         never_existed = await crud.get_trace(session, fixture["org_a_id"], "00000000-0000-0000-0000-000000000000")
     assert never_existed is None
 
@@ -152,7 +123,6 @@ async def test_vote_trace_cannot_target_other_orgs_trace(
         result = await crud.vote_trace(session, fixture["org_a_id"], fixture["org_b_trace_id"], "up")
     assert result is None
 
-    # org_b's trace is unaffected -- its trust score is still the neutral default.
     async with session_scope(session_factory) as session:
         untouched = await crud.get_trace(session, fixture["org_b_id"], fixture["org_b_trace_id"])
     assert untouched["trust"] == 0.5
@@ -177,7 +147,6 @@ async def test_amend_trace_cannot_target_other_orgs_trace(
 async def test_list_tags_excludes_other_orgs_tags(session_factory, config, two_orgs_with_overlapping_content):
     fixture = two_orgs_with_overlapping_content
     async with session_scope(session_factory) as session:
-        # give org_a an exclusive tag and org_b a *different* exclusive tag
         await crud.contribute_trace(
             session,
             fixture["org_a_id"],
@@ -211,15 +180,12 @@ async def test_list_tags_excludes_other_orgs_tags(session_factory, config, two_o
 async def test_all_six_tools_as_org_a_never_return_org_b_rows(
     session_factory, config, two_orgs_with_overlapping_content
 ):
-    """Runs every one of the six Hub tools as org_a and asserts none of
-    org_b's identifiers or private content ever appear in any response --
-    the exact assertion the brief specifies."""
     fixture = two_orgs_with_overlapping_content
     org_a, org_b_trace_id, org_b_id = fixture["org_a_id"], fixture["org_b_trace_id"], fixture["org_b_id"]
 
     async with session_scope(session_factory) as session:
         search_result = await crud.search_traces(session, org_a, query="")
-    _assert_no_org_b_leakage(search_result, org_b_trace_id, org_b_id)  # walks the whole payload
+    _assert_no_org_b_leakage(search_result, org_b_trace_id, org_b_id)
 
     async with session_scope(session_factory) as session:
         contribute_result = await crud.contribute_trace(
@@ -255,11 +221,6 @@ async def test_all_six_tools_as_org_a_never_return_org_b_rows(
 
 
 async def test_quarantined_traces_still_scoped_to_owning_org(session_factory, config):
-    """A quarantined trace is excluded from search_traces/list_tags for
-    everyone -- including its own org -- but that exclusion must never be
-    confused with cross-org leakage: quarantine is a content-moderation
-    state, org_id scoping is a security boundary, and they're independent
-    axes tested independently here."""
     rate_limiter = make_rate_limiter(config)
     async with session_scope(session_factory) as session:
         org = Organization(name="spammy-org")
@@ -288,24 +249,6 @@ async def test_quarantined_traces_still_scoped_to_owning_org(session_factory, co
 
 
 async def test_org_identity_is_per_request_not_per_session(session_factory, config):
-    """A review raised that org identity might be bound at MCP *session*
-    creation rather than per request -- if tool handlers ran in a long-lived
-    task whose context was copied at spawn, `get_current_org_id()` would
-    return the initialize request's org forever, and any valid key plus
-    another org's `mcp-session-id` would read that org's traces.
-
-    Driven against a live server it does NOT reproduce: the contextvar the
-    middleware sets is the one the handler observes, including under
-    concurrent interleaved requests from two orgs. But the safety of that
-    depends on how the MCP SDK schedules handlers, which is an implicit
-    dependency on a library internal that an upgrade could change silently.
-
-    So this pins the property directly at the layer that matters: whatever the
-    contextvar says when a crud call runs is the org it operates on, and two
-    interleaved callers never observe each other's value. If an SDK upgrade
-    ever breaks the request-scoping, this fails instead of a customer finding
-    out.
-    """
     rate_limiter = make_rate_limiter(config)
 
     async with session_scope(session_factory) as session:
@@ -325,15 +268,12 @@ async def test_org_identity_is_per_request_not_per_session(session_factory, conf
     observed: list[tuple[str, str | None]] = []
 
     async def act_as(org_id: str, label: str) -> None:
-        """Set the contextvar, yield to the loop, then read it back."""
         token = auth.current_org_id.set(org_id)
         try:
-            await asyncio.sleep(0)  # force interleaving with the other task
+            await asyncio.sleep(0)
             seen = auth.get_current_org_id()
             observed.append((label, seen))
             async with session_scope(session_factory) as session:
-                # The org the handler acts on must be the one IT set, never
-                # whatever a concurrently-running caller set.
                 result = await crud.get_trace(session, seen, a_trace_id)
             if label == "a":
                 assert result is not None and result["title"] == "ctx-a-secret"
@@ -355,9 +295,6 @@ async def test_org_identity_is_per_request_not_per_session(session_factory, conf
 async def test_console_activity_counts_only_the_calling_orgs_rows(
     session_factory, config, two_orgs_with_overlapping_content,
 ):
-    """The Overview charts are drawn from crud.console_activity: every
-    count in it is scoped to the caller's org and to the current experiment
-    (its salt), and an occasion counts once however many memories it saw."""
     fixture = two_orgs_with_overlapping_content
     now = datetime.now(timezone.utc)
     async with session_scope(session_factory) as session:
@@ -371,14 +308,11 @@ async def test_console_activity_counts_only_the_calling_orgs_rows(
             )
 
         session.add_all([
-            # One treated occasion that saw two memories: counts once.
             obs(fixture["org_a_id"], "a-1", True, True),
             obs(fixture["org_a_id"], "a-1", True, True),
             obs(fixture["org_a_id"], "a-2", False, False),
-            # A previous experiment's salt, and an outcome older than the window.
             obs(fixture["org_a_id"], "a-old-salt", True, True, salt="retired-salt"),
             obs(fixture["org_a_id"], "a-ancient", True, True, at=now - timedelta(weeks=40)),
-            # Another org's occasions, under the same salt value.
             *[obs(fixture["org_b_id"], f"b-{i}", bool(i % 2), True) for i in range(6)],
         ])
 

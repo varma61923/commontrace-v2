@@ -1,16 +1,3 @@
-"""The local tier over MCP -- the surface an agent with no terminal uses.
-
-Everything here goes through the tool layer the way a client does
-(`MCPServer.call_tool`), never by calling the inner functions directly: the
-schema the SDK derives from each signature is part of the contract, and a test
-that bypasses it would pass while the tool is uncallable.
-
-`test_stdio_transport_end_to_end` goes one level further and spawns the real
-`commontrace serve` subprocess, speaking MCP over its stdio. That one exists
-for a failure mode nothing else here can catch: the command modules this
-server reuses PRINT, and on stdio a single stray line on stdout corrupts the
-JSON-RPC framing for the whole session.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -23,20 +10,12 @@ import pytest
 
 from commontrace import mcp_server, paths
 
-# The SDK is an optional extra (`pip install commontrace[serve]`) -- the base
-# client installs with PyYAML alone -- so these skip rather than fail on an
-# install that deliberately does not have it. `commontrace serve` says the same
-# thing in a sentence when actually run; test_serve_without_the_sdk_says_so
-# below covers that path, and does not need the SDK itself.
 pytest.importorskip("mcp", reason="`commontrace serve` needs the MCP SDK: pip install 'commontrace[serve]'")
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-# --- helpers -------------------------------------------------------------
-
 def _payload(result) -> dict:
-    """The dict a tool returned, out of whichever envelope the SDK used."""
     if getattr(result, "structured_content", None):
         sc = result.structured_content
         return sc.get("result", sc)
@@ -71,7 +50,6 @@ def server(store):
 
 
 def _capture_pattern(server, n: int = 3, **extra) -> list[str]:
-    """n near-identical failures, which is what makes a distillable cluster."""
     ids = []
     for i in range(n):
         out = call(
@@ -108,7 +86,6 @@ def _fill_in(server, slug: str) -> dict:
 
 
 def _curate(server) -> str:
-    """capture -> propose -> draft -> approve. Returns the now-active slug."""
     _capture_pattern(server)
     proposed = call(server, "propose_lessons")
     slug = proposed["candidates"][0]["slug"]
@@ -117,23 +94,11 @@ def _curate(server) -> str:
     return slug
 
 
-# --- the surface itself --------------------------------------------------
-
 def test_tool_surface_matches_the_advertised_list(server):
-    # `commontrace install` writes LOCAL_TOOLS into the generated MCP config
-    # without importing the SDK (the client package ships without it), so the
-    # constant is the only thing keeping that file honest.
     assert tool_names(server) == set(mcp_server.LOCAL_TOOLS)
 
 
 def test_the_names_live_in_a_dependency_free_module():
-    """`install_cmd` reads these to write its config, and must stay importable
-    where PyYAML is absent -- which is the Hub's own test environment.
-    Importing `mcp_server` for a tuple of strings pulled in the whole
-    retrieval stack and broke every hub-tests job at collection.
-
-    Same object, not an equal copy, so the split cannot let the two drift.
-    """
     from commontrace import mcp_tools
 
     assert mcp_server.LOCAL_TOOLS is mcp_tools.LOCAL_TOOLS
@@ -142,30 +107,16 @@ def test_the_names_live_in_a_dependency_free_module():
 
 def test_no_approval_removes_the_tools_rather_than_refusing_them(store):
     names = tool_names(mcp_server.build_server(store, allow_approval=False))
-    # Absent, not present-and-refusing: an agent plans against the tools it can
-    # see, and one that is listed but always fails wastes a turn every time.
     assert not (names & set(mcp_server.APPROVAL_TOOLS))
     assert "retrieve" in names and "capture" in names
 
 
 def test_every_tool_has_a_description_for_the_model(server):
-    # The description IS the interface here -- it is all the agent gets.
     for tool in asyncio.run(server.list_tools()):
         assert tool.description and len(tool.description) > 80, tool.name
 
 
-# --- retrieve ------------------------------------------------------------
-
 def test_retrieve_on_an_empty_store_explains_itself(server):
-    """The note now says WHICH kind of nothing this is.
-
-    It used to read "This store has no active lessons yet. `capture` your
-    work, then `propose_lessons` once a pattern repeats" for all three
-    no-active-lesson states -- right for this one, and a loop with no exit
-    for an operator whose lessons are all proposed and merely unapproved.
-    An empty store is told it is empty; the other two get their own note
-    (see tests/test_store_state.py).
-    """
     out = call(server, "retrieve", task="customer cannot reset their password")
     assert out["ok"] and out["lessons"] == [] and out["n_active"] == 0
     assert "empty" in out["note"]
@@ -173,7 +124,6 @@ def test_retrieve_on_an_empty_store_explains_itself(server):
 
 
 def test_retrieve_skips_a_contentless_turn_without_reading_the_store(server):
-    """"ok" cannot match a lesson, so it does not pay for a ranking pass."""
     _curate(server)
     out = call(server, "retrieve", task="ok")
     assert out["ok"] and out["skipped"] is True
@@ -182,11 +132,6 @@ def test_retrieve_skips_a_contentless_turn_without_reading_the_store(server):
 
 
 def test_a_skipped_turn_never_becomes_an_occasion(server):
-    """The safety property. The gate runs BEFORE any arm is assigned, so a
-    skipped turn logs nothing -- which is what keeps it a pre-randomization
-    filter. The same filter applied after assignment would drop occasions
-    once their arm was known, and that is the one thing a holdout cannot
-    survive."""
     _curate(server)
     before = call(server, "store_status")
     out = call(server, "retrieve", task="thanks", occasion_id="occ-trivial-1")
@@ -211,7 +156,6 @@ def test_retrieve_returns_the_body_not_just_the_frontmatter(server):
     out = call(server, "retrieve", task="customer says the password reset email never arrived")
     assert len(out["lessons"]) == 1
     lesson = out["lessons"][0]
-    # Without the body the agent gets a title and no instruction.
     assert "suppression" in lesson["body"]
     assert lesson["score"] > 0 and lesson["matched"]
 
@@ -230,25 +174,11 @@ def test_retrieve_matches_the_cli_ranking(server, store):
     mcp_slugs = [lesson["slug"] for lesson in call(server, "retrieve", task=task)["lessons"]]
     result = cli("query", task, "--dest", store)
     assert result.returncode == 0, result.stderr
-    # Same loader, same ranker: a fleet's shell-capable and shell-less agents
-    # must not be reading different memory.
     for slug in mcp_slugs:
         assert slug in result.stdout
 
 
-# --- the holdout ---------------------------------------------------------
-
 def test_a_withheld_lesson_never_ships_its_body(server, store):
-    """The control arm exists so the agent does NOT act on it -- shipping the
-    instructional text anyway is pure cost (this can run to
-    MAX_TEXT_CHARS-scale content, on every retrieve() call while an
-    experiment runs) plus a small, avoidable priming risk. Metadata stays,
-    so `withheld` is still informative about WHAT was suppressed.
-
-    rate must be < 1.0 (holdout_io.configure's own range check), so this
-    loops occasions -- same pattern as
-    test_holdout_assigns_both_arms_and_logs_every_one below -- until the
-    control arm actually shows up, rather than trying to force it."""
     from commontrace import holdout_io
 
     _curate(server)
@@ -261,19 +191,15 @@ def test_a_withheld_lesson_never_ships_its_body(server, store):
             break
     assert withheld_item is not None, "40 occasions at rate=0.9 produced no withheld lesson"
     assert "body" not in withheld_item
-    # Still informative -- just not usable.
     assert withheld_item["slug"] and withheld_item["description"]
     assert withheld_item["score"] > 0 and withheld_item["matched"]
 
 
 def test_an_injected_lesson_still_ships_its_body(server, store):
-    """The other half of the same property: NOT withholding must not
-    accidentally start stripping bodies from lessons the agent is meant to
-    use."""
     from commontrace import holdout_io
 
     _curate(server)
-    holdout_io.configure(store, rate=0.0)  # deterministic: nothing withheld
+    holdout_io.configure(store, rate=0.0)
     out = call(server, "retrieve", task="password reset email never arrived", occasion_id="occ-1")
     assert len(out["lessons"]) == 1
     assert "suppression" in out["lessons"][0]["body"]
@@ -291,8 +217,6 @@ def test_holdout_assigns_both_arms_and_logs_every_one(server, store):
 
     lines = [json.loads(x) for x in open(
         os.path.join(paths.memory_dir(store), "holdout_log.jsonl"), encoding="utf-8")]
-    # Eligibility is what makes the later comparison causal, so EVERY matched
-    # lesson is logged -- injected and withheld alike, not just the withheld.
     assert len(lines) == 40
     assert {line["injected"] for line in lines} == {True, False}
 
@@ -301,8 +225,6 @@ def test_the_same_occasion_always_gets_the_same_arm(server):
     _curate(server)
     first = call(server, "retrieve", task="password reset", occasion_id="occ-stable")
     again = call(server, "retrieve", task="password reset", occasion_id="occ-stable")
-    # A retry that flipped arms would put one occasion in both, which is not a
-    # randomized comparison any more.
     assert bool(first["withheld"]) == bool(again["withheld"])
 
 
@@ -314,32 +236,9 @@ def test_no_occasion_id_means_no_holdout_and_no_log(server, store):
 
 
 def test_exclude_shown_drops_a_lesson_already_injected_for_that_occasion(server, store):
-    """Session-scoped retrieval: a long multi-turn task should not be shown
-    the same guidance every turn -- see holdout_io.injected_slugs_for_occasion.
-
-    Seeds the log directly with assign_and_log (rate=0.0, so it always
-    records "injected") rather than driving a real holdout end to end:
-    `ExperimentConfig.running` requires rate > 0, and a real experiment's
-    randomization is exactly what a rate=0.0 setup cannot exercise --
-    that determinism is what this test needs from the LOG's contents, not
-    from the store's own holdout configuration.
-    """
     from commontrace import holdout_io
 
     slug = _curate(server)
-    # The store's own holdout must be OFF for this test, and turning it off
-    # explicitly is the fix for a real calendar-dependent flake.
-    #
-    # A fresh store runs at DEFAULT_HOLDOUT_RATE (0.10), and arms are
-    # `hash(lesson_slug, occasion, salt) < rate`. The slug a fresh curate
-    # produces embeds today's date (lesson_candidate_YYYYMMDD_1), so whether
-    # `occ-2` below lands in the treatment arm depended on the DATE THE
-    # TESTS RAN: measured across September 2026, 4 days in 28 put it in the
-    # control arm, and on those days this test failed with an empty
-    # `lessons` list -- the lesson was not missing, it was withheld.
-    #
-    # This test is about `exclude_shown`, not about randomization, so it
-    # takes the holdout out of the picture rather than betting on a hash.
     holdout_io.configure(store, rate=0.0)
     holdout_io.assign_and_log(store, [slug], occasion_id="occ-1", rate=0.0, salt="s")
 
@@ -379,17 +278,10 @@ def test_exclude_shown_is_a_no_op_when_not_given(server, store):
 
 
 def test_the_mcp_loop_alone_produces_a_measurable_experiment(server, store):
-    """The whole point: an agent with no terminal can run the causal loop.
-
-    Retrieve with an occasion id, act, capture the outcome under the SAME id --
-    and `commontrace experiment` finds both halves and reports arms.
-    """
     _curate(server)
     for i in range(60):
         occasion = f"case-{i}"
         out = call(server, "retrieve", task="password reset email missing", occasion_id=occasion)
-        # A control-arm occasion is one where the agent worked without the
-        # lesson, which is exactly the outcome we want it to record.
         resolved = not out["withheld"]
         assert call(
             server, "capture",
@@ -401,28 +293,13 @@ def test_the_mcp_loop_alone_produces_a_measurable_experiment(server, store):
 
     result = cli("experiment", "--dest", store)
     assert result.returncode == 0, result.stderr
-    # The failure this guards against is the silent one: assignments logged,
-    # outcomes captured, and nothing joining them -- which reads as a clean
-    # "no data" rather than as a bug.
     assert "no recorded outcome" not in result.stdout.lower(), result.stdout
-    # The count itself, not a substring of it -- "about 100 occasions" in the
-    # power projection contains "0 occasion" and made the loose form pass or
-    # fail for reasons unrelated to what it was checking.
     assert "Occasions analyzed: **0**" not in result.stdout, result.stdout
     assert "Occasions analyzed: **60**" in result.stdout, result.stdout
-    # And the run has to be sound: an experiment this test drove end to end
-    # with an outcome captured for every occasion must not report attrition.
     assert "**Sound.**" in result.stdout, result.stdout
 
 
 def test_experiment_status_scopes_to_the_current_randomization(server, store):
-    """The MCP tool must not pool an earlier randomization into the current
-    report -- the same defect `commontrace experiment` (the CLI) was fixed
-    for, in the entry scoping analysis to one salt. Changing the holdout rate
-    rotates the salt on purpose (a re-randomization, not a bigger sample), so
-    assignments made under the old salt are a different experiment and must
-    not be counted here either -- pooling them would make a clean rate change
-    read as a COMPROMISED experiment."""
     from commontrace import holdout_io
 
     _curate(server)
@@ -450,15 +327,8 @@ def test_experiment_status_scopes_to_the_current_randomization(server, store):
     assert out["running"] is True
     assert out["n_assignments"] == 20, "pooled the old salt's assignments in"
     assert out["excluded_other_randomization"] == 20
-    # The current salt's own rate (50%), not a blend with the old salt's
-    # default 10% -- (20*0.1 + 20*0.5)/40 = 0.3 is what an unscoped average
-    # over every logged assignment would report. `holdout_rate` used to be
-    # read from `_load()`'s unscoped average, computed before the scoping
-    # above ran, even though n_assignments/effects were already scoped.
     assert out["holdout_rate"] == 0.5, "blended the old salt's rate in"
 
-
-# --- capture -------------------------------------------------------------
 
 def test_capture_records_the_outcome_it_reports(server):
     _capture_pattern(server, n=1, resolved=True, tokens_used=1200)
@@ -474,8 +344,6 @@ def test_recapturing_an_occasion_merges_rather_than_replaces(server):
          solution_text="s" * 40, occasion_id="same", tokens_used=900)
     out = call(server, "capture", title="Ticket", context_text="c" * 40,
                solution_text="s" * 40, occasion_id="same", resolved=True)
-    # Reported from the trace on disk, not echoed from this call's arguments:
-    # attaching an outcome later must not erase the earlier one.
     assert out["outcome"] == {"tokens_used": 900, "resolved": True}
 
 
@@ -501,14 +369,6 @@ def test_capture_refuses_an_invalid_trace_instead_of_writing_it(server, store):
 
 
 def test_coerce_tags_raises_rather_than_silently_dropping_malformed_input():
-    # The declared tool schema (`tags: list[str] | None`) already rejects a
-    # top-level non-list value before it reaches the tool function -- the SDK's
-    # own pydantic validation refuses `tags=123` with a clear ToolError, so
-    # this scenario is not reachable through `capture`/`draft_lesson`'s real
-    # MCP surface. `_coerce_tags` is still hardened directly (raise, not
-    # silently return None) for any caller that isn't behind that schema --
-    # returning None here used to mean "no tags" was indistinguishable from
-    # "tags rejected," with nothing in a caller's response saying which.
     with pytest.raises(ValueError, match="tags"):
         mcp_server._coerce_tags(123)
     with pytest.raises(ValueError, match="tags"):
@@ -524,16 +384,11 @@ def test_the_cli_can_read_what_the_mcp_server_wrote(server, store):
     assert cli("lesson", "validate", "--dest", store).returncode == 0
 
 
-# --- curation ------------------------------------------------------------
-
 def test_propose_writes_candidates_the_rest_of_the_tooling_can_resolve(server, store):
     _capture_pattern(server)
     out = call(server, "propose_lessons")
     assert out["candidates"], out
     slug = out["candidates"][0]["slug"]
-    # The candidate naming belongs to `commontrace distill`; a second copy of
-    # it here produced files (`lesson_lesson_candidate_...`) that every other
-    # command failed to find.
     assert os.path.isfile(os.path.join(paths.lessons_dir(store), f"{slug}.md"))
     assert call(server, "get_lesson", slug=slug)["ok"]
     assert out["candidates"][0]["unfilled"], "a fresh candidate is scaffolding"
@@ -545,18 +400,6 @@ def test_propose_on_an_empty_store_is_an_answer_not_an_error(server):
 
 
 def test_propose_rejects_a_degenerate_similarity_cleanly(server, store):
-    """`similarity<=0` makes `distill.find_clusters` merge the WHOLE store
-    into one cluster (a deliberate, documented library behavior --
-    tests/test_distill.py exercises it directly) and then makes
-    `representative()`'s O(k^2) medoid search run over that single giant
-    cluster instead of the small near-duplicate groups it is sized for. An
-    agent passing similarity=0 to this customer-facing tool should get a
-    clean rejection, not an expensive scan and not a crash. This also
-    covers a second, adjacent bug the fix for the first one exposed:
-    argparse's `type=` validator calling sys.exit() on a bad value used to
-    propagate a bare SystemExit out of `_run_cli` -- uncaught by every
-    caller's `except Exception` -- instead of becoming this tool's normal
-    {"ok": false} contract."""
     _capture_pattern(server)
     out = call(server, "propose_lessons", similarity=0)
     assert out["ok"] is False
@@ -575,16 +418,11 @@ def test_draft_can_fill_a_lesson_in_over_several_calls(server):
     first = call(server, "draft_lesson", slug=slug, rule="Check the suppression list first.")
     assert first["ok"] and "Rule" in first["lesson"]["body"]
     second = call(server, "draft_lesson", slug=slug, importance=5)
-    # Only what was passed changes: the rule from the first call survives.
     assert second["lesson"]["importance"] == 5
     assert "Check the suppression list first." in second["lesson"]["body"]
 
 
 def test_draft_refuses_an_oversized_rule_instead_of_writing_it(server):
-    # capture_cmd/lesson_cmd both refuse an oversized write via
-    # _validators.check_text_size; draft_lesson writes straight to
-    # lesson_io.write_lesson and had no equivalent guard, even though it is
-    # the primary way an agent puts free-text content into a lesson.
     _capture_pattern(server)
     slug = call(server, "propose_lessons")["candidates"][0]["slug"]
     from commontrace.commands._validators import REFUSE_CHARS
@@ -612,23 +450,16 @@ def test_draft_reports_what_is_still_scaffolding(server):
 def test_draft_ignores_fields_the_agent_does_not_own(server):
     _capture_pattern(server)
     slug = call(server, "propose_lessons")["candidates"][0]["slug"]
-    # `uses` is retrieval telemetry the measurement layer reads; a caller that
-    # could set it could manufacture the reuse numbers a customer is shown.
     before = call(server, "get_lesson", slug=slug)["lesson"]["uses"]
     call(server, "draft_lesson", slug=slug, description="legitimate")
     after = call(server, "get_lesson", slug=slug)["lesson"]
     assert after["uses"] == before and after["description"] == "legitimate"
 
 
-# --- the approval gate ---------------------------------------------------
-
 def test_approve_refuses_scaffolding_and_names_it(server):
     _capture_pattern(server)
     slug = call(server, "propose_lessons")["candidates"][0]["slug"]
     out = call(server, "approve_lesson", slug=slug)
-    # An active lesson is fed to every later retrieval verbatim; activating one
-    # whose rule is still "TODO:" teaches the fleet nothing AND is counted as
-    # coverage by every report the customer reads.
     assert not out["ok"] and out["unfilled"]
     assert call(server, "get_lesson", slug=slug)["lesson"]["status"] == "review"
 
@@ -640,7 +471,6 @@ def test_approve_records_who_approved_it(server):
     assert call(server, "approve_lesson", slug=slug, approved_by="support-agent-7",
                 rationale="Re-read against all three traces.")["ok"]
     body = call(server, "get_lesson", slug=slug)["lesson"]["body"]
-    # An agent may approve, but which judgement was applied stays auditable.
     assert "support-agent-7" in body and "Re-read against all three traces." in body
 
 
@@ -651,10 +481,6 @@ def test_approve_only_applies_to_a_candidate_under_review(server):
 
 
 def test_approve_refuses_a_lesson_carrying_a_secret(server):
-    """OWASP ASI06: an active lesson is fed to every later retrieval
-    verbatim, so a credential embedded in the drafted text (an honest
-    mistake -- pasting a log line that still had one in it -- or a
-    deliberate plant) must not reach `active` uninspected."""
     _capture_pattern(server)
     slug = call(server, "propose_lessons")["candidates"][0]["slug"]
     _fill_in(server, slug)
@@ -690,13 +516,9 @@ def _set_policy(store, text: str) -> None:
 def test_approve_refuses_an_agent_approving_its_own_draft_under_two_person(
     server, store
 ):
-    """The case the Validator role exists for, and the one this surface left
-    open: an agent drafting and approving unattended, at machine speed. Only
-    once the store opts in -- with no policy file this is allowed, which
-    `test_approve_records_who_approved_it` above pins."""
     _capture_pattern(server)
     slug = call(server, "propose_lessons")["candidates"][0]["slug"]
-    _fill_in(server, slug)  # drafted by mcp:agent, via draft_lesson
+    _fill_in(server, slug)
     _set_policy(store, "mode: two-person\n")
 
     out = call(server, "approve_lesson", slug=slug, approved_by="agent")
@@ -706,8 +528,6 @@ def test_approve_refuses_an_agent_approving_its_own_draft_under_two_person(
 
 
 def test_a_different_reviewer_may_approve_under_two_person(server, store):
-    """The policy must leave a way through, or the only way to ship a lesson
-    is to turn the policy off."""
     _capture_pattern(server)
     slug = call(server, "propose_lessons")["candidates"][0]["slug"]
     _fill_in(server, slug)
@@ -728,8 +548,6 @@ def test_approve_refuses_any_agent_when_a_human_is_required(server, store):
 
 
 def test_approve_does_not_refuse_on_pii_alone(server):
-    """PII never blocks approval by itself -- see commontrace/memory_guard.py.
-    A support lesson legitimately references a customer's email address."""
     _capture_pattern(server)
     slug = call(server, "propose_lessons")["candidates"][0]["slug"]
     _fill_in(server, slug)
@@ -741,14 +559,11 @@ def test_approve_does_not_refuse_on_pii_alone(server):
 def test_reject_requires_a_reason(server):
     _capture_pattern(server)
     slug = call(server, "propose_lessons")["candidates"][0]["slug"]
-    # A rejection with no reason gets the same candidate re-proposed forever.
     assert not call(server, "reject_lesson", slug=slug, reason="   ")["ok"]
     out = call(server, "reject_lesson", slug=slug, reason="Two of the three traces differ.")
     assert out["ok"] and out["status"] == "archived"
     assert "Two of the three traces differ." in call(server, "get_lesson", slug=slug)["lesson"]["body"]
 
-
-# --- refusing bad input --------------------------------------------------
 
 @pytest.mark.parametrize("slug", [
     "../../etc/passwd", "../secret", "a/b", "..", "", "lesson name",
@@ -774,8 +589,6 @@ def test_an_unreadable_lesson_does_not_hide_the_readable_ones(server, store):
     assert call(server, "retrieve", task="password reset email")["ok"]
 
 
-# --- status --------------------------------------------------------------
-
 def test_status_reports_gaps_before_curation_and_none_after(server):
     _capture_pattern(server)
     before = call(server, "store_status")
@@ -783,8 +596,6 @@ def test_status_reports_gaps_before_curation_and_none_after(server):
 
     slug = call(server, "propose_lessons")["candidates"][0]["slug"]
     still = call(server, "store_status")
-    # A candidate full of "TODO:" covers nothing. Counting it would report the
-    # customer's remaining work as done.
     assert still["gaps"] == before["gaps"] and still["patterns_covered"] == 0
     assert still["lessons_by_status"] == {"review": 1}
 
@@ -795,21 +606,11 @@ def test_status_reports_gaps_before_curation_and_none_after(server):
     assert after["lessons_by_status"] == {"active": 1}
 
 
-# --- the transport itself ------------------------------------------------
-
 def test_stdio_transport_end_to_end(store):
-    """Spawn `commontrace serve` and speak MCP to it, as a client does.
-
-    The reused command modules print. On stdio one stray line on stdout
-    corrupts the framing for the WHOLE session, and the symptom looks like a
-    server crash triggered by something as ordinary as a malformed trace file.
-    Nothing short of a real subprocess proves that cannot happen.
-    """
     pytest.importorskip("mcp.client.stdio")
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
 
-    # A file the loaders warn about, so the noisy path is exercised on the wire.
     with open(os.path.join(paths.lessons_dir(store), "lesson_broken.md"), "w",
               encoding="utf-8") as fh:
         fh.write("---\nbad: [unclosed\n---\n")
@@ -842,28 +643,15 @@ def test_stdio_transport_end_to_end(store):
 
 
 def test_serve_resolves_the_store_before_the_client_connects(tmp_path):
-    """A bad --dest must fail loudly at startup, not look like an empty store."""
     result = subprocess.run(
         [sys.executable, "-m", "commontrace.cli", "serve", "--dest",
          str(tmp_path / "nope")],
         capture_output=True, text=True, cwd=REPO_ROOT, input="", timeout=60, check=False,
     )
-    # Whatever it does, it must not write MCP-looking frames to a caller that
-    # never spoke: stdout is the wire.
     assert '"jsonrpc"' not in result.stdout
 
 
-# --- what `commontrace install` advertises -------------------------------
-
 class TestTheGeneratedLocalConfig:
-    """`commontrace install` writes the MCP entry that attaches an agent to
-    this store. It has to be correct WITHOUT importing the SDK: the client
-    package installs with PyYAML alone, so install_cmd cannot enumerate the
-    real server and reads mcp_server.LOCAL_TOOLS instead. That constant is
-    checked against the built server by
-    test_tool_surface_matches_the_advertised_list above; these check the file.
-    """
-
     @staticmethod
     def _doc(root="/srv/fleet"):
         from commontrace.commands import install_cmd
@@ -878,14 +666,9 @@ class TestTheGeneratedLocalConfig:
         entry = self._doc()["mcpServers"]["commontrace-local"]
         assert entry["command"] == "commontrace"
         assert entry["args"] == ["serve", "--dest", "/srv/fleet"]
-        # No url/headers: this tier has no endpoint and no credential, and a
-        # config carrying either would imply a boundary that does not exist.
         assert "url" not in entry and "headers" not in entry
 
     def test_a_relative_root_would_resolve_somewhere_else(self, store):
-        """The client launches the server with a working directory of its own
-        choosing, so the config must carry the resolved root -- a relative one
-        silently lands on a different (usually empty) store."""
         from commontrace.commands import install_cmd
         entry = json.loads(install_cmd._local_mcp_config(store))["mcpServers"]["commontrace-local"]
         assert os.path.isabs(entry["args"][-1])
@@ -904,17 +687,11 @@ class TestTheGeneratedLocalConfig:
             finally:
                 os.environ.pop("COMMONTRACE_ROOT", None)
             written = dest / "commontrace.local.mcp.json"
-            # Without this file the agent gets the Hub entry only -- it can
-            # search what other orgs published and cannot touch one lesson of
-            # its own.
             assert written.is_file(), target
             assert json.loads(written.read_text())["mcpServers"]["commontrace-local"]
 
 
 def test_serve_without_the_sdk_says_so(store, monkeypatch):
-    """The base install has no MCP SDK, and this is the least legible place
-    for a bare ImportError: an MCP client spawns the server as a subprocess
-    and reports only that it exited -- indistinguishable from a crash."""
     import builtins
 
     real_import = builtins.__import__
@@ -930,22 +707,10 @@ def test_serve_without_the_sdk_says_so(store, monkeypatch):
     assert "commontrace[serve]" in str(excinfo.value)
 
 
-# --- dosage, core lessons and receipts -----------------------------------
-#
-# These go through the tool the way a client does, for a specific reason:
-# `dosage`, `receipts` and `release` are wired into `retrieve` behind a
-# try/except that turns a failure into a `receipt_error` field rather than an
-# error. A unit test of those modules passes whether or not the server calls
-# them, and the swallowed exception means a broken wiring looks like a working
-# retrieval. Everything below asserts against what actually reached disk.
-
 def _write_lesson(root: str, slug: str, *, body: str, core: bool = False,
                   description: str = "", importance: int = 3) -> str:
-    """An active lesson, written straight to the store."""
     from commontrace import frontmatter, lesson_io
 
-    # `lesson_*.md` is the enumeration `lesson_cache._lesson_paths` performs;
-    # a file named anything else is simply never seen.
     path = os.path.join(paths.lessons_dir(root), f"lesson_{slug}.md")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     fm = {
@@ -973,10 +738,6 @@ def _set_budget(root: str, **kwargs) -> None:
         json.dump(raw, fh)
 
 
-# Each lesson needs its OWN distinguishing term. The scorer is IDF-weighted,
-# so a word that appears in every lesson carries no information and scores
-# near zero -- a fixture of identically-described lessons matches nothing at
-# all, which looks exactly like a broken budget.
 _FAILURE_MODES = ("suppression", "bounce", "throttling", "greylisting", "spf")
 BUDGET_TASK = (
     "password reset email never arrived: suppression bounce throttling "
@@ -999,7 +760,6 @@ def _write_matching_lessons(root: str, n: int) -> list[str]:
 
 
 def test_retrieve_writes_a_receipt_rather_than_swallowing_the_attempt(server, store):
-    """The wiring is real: a receipt reaches disk and nothing was swallowed."""
     from commontrace import holdout_io, receipts
 
     holdout_io.configure(store, rate=0.0)
@@ -1010,24 +770,17 @@ def test_retrieve_writes_a_receipt_rather_than_swallowing_the_attempt(server, st
         occasion_id="occ-receipt-1",
     )
     assert out["ok"], out
-    # The try/except around the receipt turns any wiring mistake into this
-    # field, so asserting its ABSENCE is what makes this test meaningful.
     assert "receipt_error" not in out, out.get("receipt_error")
 
     written = receipts.read_all(store)
     assert [r.occasion_id for r in written] == ["occ-receipt-1"]
     receipt = written[0]
     assert slug in {a.slug for a in receipt.admitted}
-    # Pinned to the exact text, not just the name.
     assert all(a.revision for a in receipt.admitted)
     assert receipt.digest
 
 
 def test_the_receipt_records_what_was_never_a_candidate(server, store):
-    """The holdout log starts one step too late: a lesson that never matched
-    does not appear in it at all, so "the memory did not help" and "the
-    memory was never offered" are indistinguishable. The receipt's `visible`
-    set is what tells them apart."""
     from commontrace import receipts
 
     _curate(server)
@@ -1045,16 +798,11 @@ def test_the_receipt_records_what_was_never_a_candidate(server, store):
     receipt = receipts.read_all(store)[0]
     visible = {v.slug for v in receipt.visible}
     admitted = {a.slug for a in receipt.admitted}
-    # It was in the store and it was not injected -- and the receipt can say
-    # so, which is the whole point of recording the candidate set.
     assert "unrelated-refund-policy" in visible
     assert "unrelated-refund-policy" not in admitted
 
 
 def test_a_core_lesson_is_injected_even_when_it_does_not_match(server, store):
-    """`core: true` means the fleet's position, not "relevant today". Before
-    this, the only way to make a rule reliable was to make it match
-    everything, which is the same as making retrieval worse."""
     _curate(server)
     _write_lesson(
         store, "always-use-idempotency-keys",
@@ -1071,17 +819,12 @@ def test_a_core_lesson_is_injected_even_when_it_does_not_match(server, store):
     slugs = [lesson["slug"] for lesson in out["lessons"]]
     assert "always-use-idempotency-keys" in slugs
     assert out["core"] == ["always-use-idempotency-keys"]
-    # Core is admitted FIRST, so it cannot lose its slot to whatever happened
-    # to share vocabulary with today's request.
     assert slugs[0] == "always-use-idempotency-keys"
-    # And it still ships the rule itself, not just a title.
     core_item = next(x for x in out["lessons"] if x["slug"] == "always-use-idempotency-keys")
     assert "idempotency key" in core_item["body"]
 
 
 def test_what_did_not_fit_is_named_rather_than_silently_dropped(server, store):
-    """An agent given nine of ten lessons and told it was given ten acts on
-    the missing one's absence as though it were the fleet's position."""
     _curate(server)
     _write_matching_lessons(store, 3)
     _set_budget(store, max_lessons=2)
@@ -1094,11 +837,6 @@ def test_what_did_not_fit_is_named_rather_than_silently_dropped(server, store):
 
 
 def test_a_lesson_the_budget_crowds_out_is_never_logged_as_treated(server, store):
-    """The ordering bug this is here to prevent: if arms were assigned before
-    the budget ran, a lesson crowded out would be logged as TREATED on an
-    occasion it was never present for. An occasion counted as treated where
-    no memory was injected pulls the measured effect toward zero -- silently,
-    and worse the tighter the budget is."""
     from commontrace import holdout_io
 
     _curate(server)
@@ -1120,16 +858,12 @@ def test_a_lesson_the_budget_crowds_out_is_never_logged_as_treated(server, store
     records, unreadable = holdout_io.read_log(store)
     assert unreadable == 0
     logged = {r.lesson for r in records if r.occasion_id == "occ-crowded-1"}
-    # Every lesson with an arm was one the agent would actually have been
-    # handed. Nothing the budget dropped is in the experiment at all.
     assert not (logged & crowded_out), sorted(logged & crowded_out)
     admitted = {x["slug"] for x in out["lessons"]} | {x["slug"] for x in out.get("withheld", [])}
     assert logged <= admitted
 
 
 def test_use_reports_separate_injected_from_actually_used(server, store):
-    """Injected is not used. Without that distinction every reuse number this
-    product reports is an INJECTION number wearing a better name."""
     from commontrace import holdout_io, receipts
 
     holdout_io.configure(store, rate=0.0)

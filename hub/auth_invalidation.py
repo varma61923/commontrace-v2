@@ -1,19 +1,4 @@
-"""Clear every replica's verified-key cache the moment a key stops being valid anywhere.
-
-hub/auth.py's verified-key cache (HUB_AUTH_CACHE_SECONDS) was safe only within one process: a key revoked through
-another replica, or by an operator command, could still be served for the whole window. That made a 6x throughput
-gain (hub/bench_concurrency.py) a security trade an operator had to accept knowingly. This closes the gap rather
-than documenting it.
-
-Every change that decides whether a key verifies -- revocation, rotation, an org's deletion, a region pin --
-calls `auth.announce_auth_change`, which sends a NOTIFY inside the same transaction. Postgres delivers it on
-commit, to every connection LISTENing on the channel. Each replica holds one such connection here and clears its
-cache when one arrives.
-
-Fail-safe, not best-effort: while this listener is not connected (startup, a dropped connection, a restarting
-database), `auth.cached_key` returns nothing and nothing new is remembered. A replica that might miss a
-revocation does not cache, so the window can only ever be the time a NOTIFY takes to arrive.
-"""
+"""Clear every replica's verified-key cache the moment a key stops being valid anywhere."""
 from __future__ import annotations
 
 import asyncio
@@ -23,7 +8,6 @@ from hub import auth
 
 logger = logging.getLogger("commontrace.hub.auth_invalidation")
 
-#: Reconnect backoff bounds, in seconds.
 _MIN_BACKOFF = 0.5
 _MAX_BACKOFF = 30.0
 
@@ -35,10 +19,7 @@ def _asyncpg_dsn(database_url: str) -> str:
 
 
 async def listen(database_url: str, stop_event: asyncio.Event, *, connect=None) -> None:
-    """Hold a LISTEN connection until `stop_event` is set, reconnecting on loss.
-
-    `connect` is injectable for tests; it defaults to asyncpg.connect.
-    """
+    """Hold a LISTEN connection until `stop_event` is set, reconnecting on loss."""
     if connect is None:
         import asyncpg
 

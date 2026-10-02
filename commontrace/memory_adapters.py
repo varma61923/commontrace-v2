@@ -1,22 +1,3 @@
-"""Causal measurement for memory held in Mem0, Letta, Zep, Claude Managed
-Agents memory stores and AWS Bedrock AgentCore.
-
-Each adapter turns one vendor client's own retrieval call into `Item(id,
-text)`s; `MeasuredMemory` runs them through `CausalMemory`'s holdout, so
-`commontrace experiment` reports a verdict per memory. Callers pass an
-already-configured client -- this module imports no vendor SDK.
-
-Written against the published source of mem0ai 2.2.1, letta-client
-1.12.1, zep-cloud 3.30.0, anthropic 1.11.0 and bedrock-agentcore 1.24.0,
-not against live accounts.
-
-Harm withdrawal always stops the memory being handed out at recall time:
-by itself when the store's harm policy is `withdraw` (the verdict decides,
-see commontrace/measure.py), or by hand with `withdraw()`. Deleting it at the
-source as well is opt-in (`delete_at_source=True`, or `delete_harmful=True`
-for the automatic case), since it removes data from the customer's own store
--- and a deleted memory cannot be re-tested after a rewrite.
-"""
 from __future__ import annotations
 
 from collections.abc import Iterable
@@ -31,14 +12,10 @@ from commontrace.measure import DEFAULT_CHECK_EVERY, CausalMemory, Recall
 class Item:
     id: str
     text: str
-    #: The vendor's own record, untouched.
     raw: Any = None
 
 
 class Mem0Adapter:
-    """`Memory` (open source) or `MemoryClient` (platform). Both return
-    `{"results": [{"id", "memory", ...}]}` from `search`."""
-
     name = "mem0"
     can_delete = True
 
@@ -74,22 +51,6 @@ class LettaAdapter:
 
 
 class LettaCoreBlockAdapter:
-    """An agent's CORE memory blocks (the ones that sit in its context window), listed with
-    `client.agents.blocks.list(agent_id)` as `letta-client` defines it.
-
-    Archival passages are fetched on demand, so withholding is just not returning them.
-    Core blocks are always in context, so they are measured the way a whole-store memory
-    is: every block is eligible on every occasion, `query` is ignored, and the caller puts
-    `render(items)` of what `recall` returned into the prompt instead of letting Letta
-    compile the blocks. Detach/attach per session is NOT used: a block can be attached to
-    several agents, so detaching it for one occasion would change every other session
-    that shares it.
-
-    A persona or safety block should not be a control; pass `pinned=adapter.block_ids("persona")`
-    to `MeasuredMemory` so it is always delivered and never measured. Deleting a block is
-    the agent owner's decision, so `can_delete` is False.
-    """
-
     name = "letta-core"
     can_delete = False
 
@@ -124,9 +85,6 @@ class LettaCoreBlockAdapter:
 
 
 class ZepAdapter:
-    """Zep graph search. `scope="edges"` (the default) measures facts;
-    nodes and episodes can be measured but not deleted through here."""
-
     name = "zep"
     _TEXT_FIELD = {"edges": "fact", "nodes": "summary", "episodes": "content"}
 
@@ -158,13 +116,7 @@ class ZepAdapter:
 
 
 class ClaudeMemoryStoreAdapter:
-    """A Claude Managed Agents memory store.
-
-    The store has no search call and a session mounts it whole, so every
-    memory is eligible on every occasion and `query` is ignored. Give the
-    session `render(items)` of what `recall` returns instead of mounting the
-    live store, or withheld memories reach the agent anyway.
-    """
+    """A Claude Managed Agents memory store."""
 
     name = "claude-memory-store"
     can_delete = True
@@ -182,14 +134,12 @@ class ClaudeMemoryStoreAdapter:
         items = []
         for memory in self.client.beta.memory_stores.memories.list(self.memory_store_id, **params):
             if getattr(memory, "type", None) != "memory":
-                continue  # a memory_prefix (directory) entry
+                continue
             self._sha[memory.id] = memory.content_sha256
             items.append(Item(memory.id, memory.content or "", memory))
         return items
 
     def delete(self, item_id: str) -> None:
-        # Only the exact version that was measured: if the memory changed
-        # since, the server refuses rather than deleting the new text.
         kwargs: dict[str, Any] = {"memory_store_id": self.memory_store_id}
         if item_id in self._sha:
             kwargs["expected_content_sha256"] = self._sha[item_id]
@@ -201,9 +151,6 @@ class ClaudeMemoryStoreAdapter:
 
 
 class AgentCoreAdapter:
-    """Bedrock AgentCore long-term memory: `MemoryClient.retrieve_memories`,
-    which returns `[{"memoryRecordId", "content": {"text"}, ...}]`."""
-
     name = "agentcore"
     can_delete = True
 
@@ -248,8 +195,6 @@ class MeasuredMemory:
         self._causal = CausalMemory(
             self._eligible, root=self.root, key=lambda i: i.id, text=lambda i: i.text,
             pinned=pinned, scorer=f"adapter:{adapter.name}", on_harm=on_harm, check_every=check_every,
-            # A memory another system wrote is text this product never
-            # admitted, so it is screened the way an injected lesson is.
             screen=screen_injection,
         )
 
@@ -264,7 +209,6 @@ class MeasuredMemory:
         result = self._causal.recall_detailed(query, occasion_id=occasion_id, **kwargs)
         if self._delete_harmful and result.withdrawn and self.adapter.can_delete:
             for item_id in result.withdrawn:
-                # Blocklisted first, so a failed delete still stops delivery.
                 memory_sources.withdraw_key(self.root, self.source_key, item_id)
                 try:
                     self.adapter.delete(item_id)
@@ -276,8 +220,6 @@ class MeasuredMemory:
         return holdout_io.record_outcome(self.root, occasion_id, succeeded)
 
     def withdraw(self, item_id: str, *, delete_at_source: bool = False) -> None:
-        # Blocklist first: if the source delete then fails, recall still
-        # stops handing the memory out.
         memory_sources.withdraw_key(self.root, self.source_key, item_id)
         if delete_at_source:
             if not self.adapter.can_delete:

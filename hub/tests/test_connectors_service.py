@@ -1,17 +1,3 @@
-"""Outcome connectors end to end, against Postgres: signed deliveries from the
-vendors' own example payloads become recorded outcomes, and nothing else does.
-
-What these pin, in the order a reviewer would ask:
-  * authentic or nothing: bad signature, stale timestamp, unknown/disabled
-    connector, wrong tenant's secret -- all 401, all changing nothing, and the
-    unknown and bad-signature answers are byte-identical;
-  * replay: the same delivery twice, and eight copies at once, apply exactly once;
-  * windows: a solved ticket is a pending candidate, matures to success only after
-    its window, and a reopen inside the window is a failure at once;
-  * dry-run: nothing recorded, what-it-would-do is, and going live processes a
-    delivery first seen in dry-run;
-  * tenancy: the same occasion id in two orgs never crosses.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -72,8 +58,6 @@ def _zd_status(current, previous, *, ticket="1244", event_id="evt-1"):
     payload["detail"]["id"] = ticket
     payload["event"]["current"], payload["event"]["previous"] = current, previous
     payload["id"] = event_id
-    # The vendor example is dated 2025; a live event carries the current time, and
-    # an old one would (correctly) mature immediately.
     payload["time"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
     return payload
 
@@ -88,7 +72,6 @@ def _gh(payload: dict, event: str, delivery: str, secret=GH_SECRET):
 
 async def _org(session_factory, name="Acme"):
     async with session_scope(session_factory) as session:
-        # A running experiment, so holdout_assign will record observations.
         org = Organization(name=name, holdout_rate=0.5, holdout_salt="connector-tests")
         session.add(org)
         await session.flush()
@@ -106,7 +89,6 @@ async def _connector(session_factory, org_id, provider="zendesk", secret=ZD_SECR
 
 
 async def _occasion(session_factory, org_id, occasion):
-    """An unresolved observation for `occasion`, made the way a real fleet makes one."""
     async with session_scope(session_factory) as session:
         trace = Trace(org_id=org_id, title="t", context_text="c", solution_text="s", tags=[], agent_type="support")
         session.add(trace)
@@ -134,9 +116,6 @@ async def _count(session_factory, model, **where):
 
 async def _post(session_factory, connector_id, headers, body, **kw):
     return await service.ingest(session_factory, connector_id, headers, body, cipher=CIPHER, **kw)
-
-
-# --- Authenticity -----------------------------------------------------------------
 
 
 class TestAuthenticOrNothing:
@@ -192,7 +171,7 @@ class TestAuthenticOrNothing:
         async with session_scope(session_factory) as session:
             sealed = (await session.get(Connector, a_conn)).secret
             (await session.get(Connector, b_conn)).secret = sealed
-        headers, body = _zd(_zd_status("SOLVED", "OPEN"))  # signed with A's secret
+        headers, body = _zd(_zd_status("SOLVED", "OPEN"))
         assert (await _post(session_factory, b_conn, headers, body)).status == 401
 
     async def test_a_signed_body_that_is_not_json_is_a_400_not_a_500(self, session_factory):
@@ -214,9 +193,6 @@ class TestAuthenticOrNothing:
         headers, body = _zd(payload)
         result = await _post(session_factory, cid, headers, body)
         assert result.status == 200 and result.body["status"] == "unusable"
-
-
-# --- Replay and idempotency ---------------------------------------------------------
 
 
 class TestReplay:
@@ -250,11 +226,7 @@ class TestReplay:
         bad = _fixture("zendesk_ticket_csat_received.json")
         bad["detail"]["id"], bad["event"]["satisfaction_score"]["score"], bad["id"] = "1244", "BAD", "e2"
         await _post(session_factory, cid, *_zd(bad))
-        # record_occasion_outcome fills unresolved rows only, so the late BAD cannot flip it.
         assert await _outcome(session_factory, org, "1244") is True
-
-
-# --- Windows ------------------------------------------------------------------------
 
 
 class TestWindows:
@@ -264,7 +236,7 @@ class TestWindows:
         await _occasion(session_factory, org, "1244")
         result = await _post(session_factory, cid, *_zd(_zd_status("SOLVED", "OPEN")))
         assert result.body["signals"][0]["kind"] == "candidate_success"
-        assert await _outcome(session_factory, org, "1244") is None        # not yet
+        assert await _outcome(session_factory, org, "1244") is None
         assert await _count(session_factory, PendingOutcome) == 1
 
         now = datetime.now(timezone.utc)
@@ -329,7 +301,6 @@ class TestWindows:
 
 class TestGithubCodingFlow:
     def _merged(self, number=2, sha="c4295bd74fb0f4fda03689c3df3f2803b658fd85"):
-        """DERIVED from the vendor's closed example: merged fields set."""
         payload = _fixture("github_pull_request_closed.json")
         payload["number"] = number
         payload["pull_request"].update(merged=True, merged_at=payload["pull_request"]["closed_at"],
@@ -375,11 +346,8 @@ class TestGithubCodingFlow:
         cid = await _connector(session_factory, org, "github", GH_SECRET,
                                config={"repository": "acme/widgets", "window_days": 0})
         await _occasion(session_factory, org, "2")
-        await _post(session_factory, cid, *_gh(self._merged(), "pull_request", "d-1"))  # Codertocat/Hello-World
+        await _post(session_factory, cid, *_gh(self._merged(), "pull_request", "d-1"))
         assert await _outcome(session_factory, org, "2") is None
-
-
-# --- Dry run ------------------------------------------------------------------------
 
 
 class TestDryRun:
@@ -415,12 +383,9 @@ class TestDryRun:
         await _occasion(session_factory, org, "1244")
         await _post(session_factory, cid, *_zd(_zd_status("SOLVED", "OPEN")))
         async with session_scope(session_factory) as session:
-            await service.set_live(session, cid, False)  # back to dry-run
+            await service.set_live(session, cid, False)
         await service.finalize_matured(session_factory, now=datetime.now(timezone.utc) + timedelta(days=9))
         assert await _outcome(session_factory, org, "1244") is None
-
-
-# --- Tenancy and audit ----------------------------------------------------------------
 
 
 class TestTenancy:
@@ -443,9 +408,6 @@ class TestTenancy:
                 select(AuditLogEntry).where(AuditLogEntry.action == "connector.outcome"))).scalars().all()
         assert len(entries) == 1 and entries[0].actor == f"connector:zendesk:{cid[:8]}"
         assert entries[0].org_id == org
-
-
-# --- Management --------------------------------------------------------------------
 
 
 class TestManagement:
@@ -508,9 +470,6 @@ class TestManagement:
         assert HubConfig(database_url="x").connectors_enabled is False
 
 
-# --- The HTTP route -----------------------------------------------------------------
-
-
 class TestRoute:
     def _client(self, session_factory, config):
         app = Starlette()
@@ -537,8 +496,6 @@ class TestRoute:
         async with self._client(session_factory, config) as client:
             for hostile in ["%27%20OR%201%3D1", "..%2F..%2Fetc", "A" * 1500, "%00", "-1"]:
                 response = await client.post(f"/connectors/{hostile}/events", content=b"{}")
-                # 401 for anything that reaches the handler; 404 where the path
-                # itself does not route (an encoded slash). Never a 5xx.
                 assert response.status_code in (401, 404), hostile
 
     async def test_the_route_is_rate_limited_before_any_work(self, session_factory):
@@ -558,8 +515,6 @@ async def test_deleting_an_org_removes_its_connectors_ledger_and_pending(session
         await session.delete(await session.get(Organization, org))
     for model in (Connector, ConnectorDelivery, PendingOutcome):
         assert await _count(session_factory, model) == 0, model
-
-
 
 
 class TestHardening:
@@ -658,7 +613,6 @@ class TestIntercomSupportFlow:
     SECRET = "intercom-client-secret"
 
     def _signed(self, topic, conversation="1295", notification="notif-1", age_seconds=30):
-        """DERIVED from the vendor's notification envelope example."""
         payload = _fixture("intercom_notification_company_created.json")
         payload.update(topic=topic, id=notification,
                        created_at=int(datetime.now(timezone.utc).timestamp()) - age_seconds)

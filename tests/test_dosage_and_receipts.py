@@ -1,17 +1,3 @@
-"""How much memory reaches the agent, and proof of what it could have seen.
-
-Three gaps between "retrieval ranked these" and "the agent acted on that",
-each of which made a number this product reports mean something other than
-what it says:
-
-  * `top_k` bounds the COUNT and not the size, so ten terse lessons and ten
-    pages of prose are the same budget, and the second displaces the task.
-  * Some rules are how the fleet operates rather than "relevant to this
-    task", and the only way to make one reliable was to make it match
-    everything -- which is the same as making retrieval worse.
-  * Injected is not USED. Every reuse figure before receipts was counting
-    injections.
-"""
 from __future__ import annotations
 
 import datetime
@@ -31,8 +17,6 @@ class TestTheBudget:
             dosage.Budget(max_chars=-1)
 
     def test_zero_admits_nothing_rather_than_erroring(self):
-        """0 is a meaningful setting -- "inject nothing" -- and distinct from
-        a negative one, which is a mistake."""
         dose = dosage.select([_candidate("a")], dosage.Budget(max_lessons=0))
         assert dose.admitted == ()
         assert dose.dropped[0].reason == dosage.REASON_COUNT
@@ -40,8 +24,6 @@ class TestTheBudget:
 
 class TestDosage:
     def test_core_lessons_are_admitted_before_matched_ones(self):
-        """A rule that is the fleet's position should not lose a slot to
-        whatever happened to share vocabulary with today's request."""
         dose = dosage.select(
             [
                 _candidate("matched_a", relevance=0.9),
@@ -53,8 +35,6 @@ class TestDosage:
         assert [c.slug for c in dose.admitted] == ["always_on", "matched_a"]
 
     def test_matched_lessons_keep_retrievals_order(self):
-        """Retrieval has already ranked them; re-sorting here would apply a
-        second, different opinion about relevance."""
         dose = dosage.select(
             [_candidate("first", relevance=0.9), _candidate("second", relevance=0.1)],
             dosage.Budget(max_lessons=5, max_chars=10_000),
@@ -72,9 +52,6 @@ class TestDosage:
         assert [c.slug for c in dose.admitted] == ["showstopper", "minor"]
 
     def test_core_is_still_budgeted(self):
-        """A fleet that marks forty lessons core has not thereby earned forty
-        lessons of context. The unconditional reading crowds out every
-        matched lesson and makes retrieval look broken with no error."""
         dose = dosage.select(
             [_candidate(f"core{i}", core=True, importance=3) for i in range(5)]
             + [_candidate("matched", relevance=0.9)],
@@ -84,8 +61,6 @@ class TestDosage:
         assert dose.core_dropped, "an over-budget core set must be visible as such"
 
     def test_an_oversized_lesson_does_not_truncate_everything_below_it(self):
-        """Skipping it and continuing is the difference between "one lesson
-        is too long" and "retrieval stopped working at position three"."""
         dose = dosage.select(
             [
                 _candidate("huge", chars=9_000, relevance=0.9),
@@ -97,9 +72,6 @@ class TestDosage:
         assert dose.dropped[0].slug == "huge"
 
     def test_nothing_is_dropped_silently(self):
-        """An agent given nine of ten lessons and told it was given ten will
-        act on the missing one's absence as though it were the fleet's
-        position."""
         dose = dosage.select(
             [_candidate(f"l{i}") for i in range(5)],
             dosage.Budget(max_lessons=2, max_chars=10_000),
@@ -116,8 +88,6 @@ class TestDosage:
         assert "200" in gauge and "1,000" in gauge and "20%" in gauge
 
     def test_core_is_read_tolerantly_from_frontmatter(self):
-        """A hand-edited YAML file spells booleans several ways, and a store
-        that has never heard of core lessons has none."""
         assert dosage.is_core({"core": True})
         assert dosage.is_core({"core": "yes"})
         assert dosage.is_core({"core": "TRUE"})
@@ -127,21 +97,10 @@ class TestDosage:
 
 
 class TestRedundancySuppression:
-    """dosage.Budget's optional third gate: a candidate that restates one
-    already admitted is dropped instead of spending a slot and its
-    characters on guidance the agent already received. See
-    commontrace/dosage.py's module docstring for why this is off by default
-    and why core is checked but never suppressed."""
-
     def _dup_candidate(self, slug: str, text: str, **kwargs) -> dosage.Candidate:
-        """A candidate whose comparable text IS its body -- the common case
-        for a caller that only holds the rendered lesson."""
         return dosage.Candidate(slug=slug, text=text, compare_text=text, **kwargs)
 
     def test_off_by_default(self):
-        """The default budget admits two restatements of the same thing --
-        changing that is an upgrade side effect this product refuses to
-        ship silently."""
         same_text = "never retry a payment without an idempotency key"
         dose = dosage.select(
             [
@@ -167,8 +126,6 @@ class TestRedundancySuppression:
         assert dose.redundant_dropped == dose.dropped
 
     def test_the_freed_slot_goes_to_the_next_distinct_candidate(self):
-        """A dropped duplicate must not just vanish the slot -- the whole
-        point is that the budget was being spent on redundant guidance."""
         same_text = "never retry a payment without an idempotency key " * 5
         dose = dosage.select(
             [
@@ -181,10 +138,6 @@ class TestRedundancySuppression:
         assert [c.slug for c in dose.admitted] == ["first", "distinct"]
 
     def test_core_is_never_suppressed_but_is_noted(self):
-        """The fleet's unconditional rule must not be withheld because it
-        resembles something that matched today's vocabulary -- but two core
-        lessons saying the same thing is a real configuration problem, so it
-        is reported."""
         same_text = "never retry a payment without an idempotency key " * 5
         dose = dosage.select(
             [
@@ -215,16 +168,12 @@ class TestRedundancySuppression:
             dosage.Budget(redundancy_threshold=-0.1)
 
     def test_candidate_falls_back_to_text_when_compare_text_is_unset(self):
-        """A caller that never sets compare_text is compared on the rendered
-        body -- the sensible fallback, not a silent no-op."""
         candidate = dosage.Candidate(slug="a", text="hello world")
         assert candidate.comparable == "hello world"
 
 
 class TestReciprocalRankFusion:
     def test_agreement_across_arms_beats_one_arms_confidence(self):
-        """The entire point of fusing: a document both arms like outranks one
-        a single arm put first."""
         fused = retrieval.reciprocal_rank_fusion({
             "lexical": ["agreed", "lexical_only"],
             "semantic": ["agreed", "semantic_only"],
@@ -232,9 +181,6 @@ class TestReciprocalRankFusion:
         assert fused[0][0] == "agreed"
 
     def test_an_arm_that_missed_a_document_does_not_vote_against_it(self):
-        """A lexical arm cannot be expected to find a paraphrase; treating
-        its silence as a vote against would make adding an arm reduce
-        recall."""
         fused = dict(retrieval.reciprocal_rank_fusion({
             "lexical": ["a"],
             "semantic": ["b"],
@@ -242,15 +188,10 @@ class TestReciprocalRankFusion:
         assert fused["a"] == fused["b"]
 
     def test_only_position_matters_not_the_incoming_scores(self):
-        """The arms return a relevance in [0,1] and a cosine similarity,
-        which are not convertible into each other. RRF uses neither."""
         one = retrieval.reciprocal_rank_fusion({"arm": ["x", "y", "z"]})
         assert [item for item, _ in one] == ["x", "y", "z"]
 
     def test_the_order_is_deterministic(self):
-        """A retrieval order that varied between two identical calls would
-        put the same occasion in different arms of an experiment on a
-        retry."""
         arms = {"a": ["p", "q"], "b": ["q", "p"]}
         assert retrieval.reciprocal_rank_fusion(arms) == (
             retrieval.reciprocal_rank_fusion(arms)
@@ -270,12 +211,8 @@ class TestReciprocalRankFusion:
         assert retrieval.reciprocal_rank_fusion({}) == []
 
     def test_a_weight_shifts_which_arm_wins_a_disagreement(self):
-        """The two arms rank the same pair in opposite orders, so the fused
-        order is decided entirely by the weights. This is the knob
-        commons/eval/hybrid_fusion.py sweeps, and it has to reach the
-        shipped function rather than a copy of it."""
         arms = {"lexical": ["x", "y"], "semantic": ["y", "x"]}
-        assert retrieval.reciprocal_rank_fusion(arms)[0][0] == "x"  # tie -> id
+        assert retrieval.reciprocal_rank_fusion(arms)[0][0] == "x"
         lexical_heavy = retrieval.reciprocal_rank_fusion(
             arms, weights={"lexical": 3.0, "semantic": 1.0})
         semantic_heavy = retrieval.reciprocal_rank_fusion(
@@ -313,8 +250,6 @@ class TestReceipts:
         assert stored == written
 
     def test_the_digest_identifies_the_candidate_set_by_content(self, tmp_path):
-        """Answerable to the exact text six months later, not to a name whose
-        contents have moved since."""
         same = _receipt(visible=(("a", "rev-a"), ("b", "rev-b")))
         reordered = _receipt(visible=(("b", "rev-b"), ("a", "rev-a")))
         assert same.digest == reordered.digest
@@ -325,15 +260,11 @@ class TestReceipts:
         assert before.digest != after.digest
 
     def test_a_lesson_that_was_never_a_candidate_is_distinguishable(self, tmp_path):
-        """"The memory did not help" and "the memory was never offered" have
-        opposite remedies, and nothing could tell them apart before."""
         receipts.record(str(tmp_path), _receipt(visible=(("a", "rev-a"),)))
         [stored] = receipts.read_all(str(tmp_path))
         assert "b" not in {v.slug for v in stored.visible}
 
     def test_crowded_out_is_not_the_same_as_nothing_matched(self, tmp_path):
-        """A retrieval success and a product failure: the right lesson ranked
-        fourth and the budget admitted three."""
         receipts.record(str(tmp_path), _receipt(
             visible=(("a", "r"), ("b", "r")), admitted=(),
             withheld=(("a", dosage.REASON_CHARS), ("b", dosage.REASON_CHARS)),
@@ -345,8 +276,6 @@ class TestReceipts:
 
 class TestUseIsRecordedSeparatelyFromInjection:
     def test_injected_is_not_used(self, tmp_path):
-        """The one number receipts make possible: every 'lessons reused'
-        figure before this was counting injections."""
         receipts.record(str(tmp_path), _receipt(admitted=(("a", "rev-a", 1),)))
         found = receipts.coverage(str(tmp_path))
         assert found.n_with_any_admitted == 1
@@ -362,8 +291,6 @@ class TestUseIsRecordedSeparatelyFromInjection:
         assert found.used_rate == 1.0
 
     def test_using_nothing_is_a_real_answer_and_is_stored(self, tmp_path):
-        """The most informative outcome this product can collect, and the
-        shape most easily discarded as an empty value."""
         receipts.record(str(tmp_path), _receipt())
         receipts.record_use(str(tmp_path), "occ-1", [], succeeded=False)
         [entry] = receipts.read_uses(str(tmp_path))
@@ -371,23 +298,18 @@ class TestUseIsRecordedSeparatelyFromInjection:
         assert entry["succeeded"] is False
 
     def test_a_use_is_a_separate_line_not_an_edit(self, tmp_path):
-        """They are two events, by possibly different actors at different
-        times, and rewriting the first would lose that."""
         receipts.record(str(tmp_path), _receipt())
         receipts.record_use(str(tmp_path), "occ-1", ["a"])
         assert len(receipts.read_all(str(tmp_path))) == 1
         assert len(receipts.read_uses(str(tmp_path))) == 1
 
     def test_the_used_rate_excludes_occasions_that_got_nothing(self, tmp_path):
-        """An occasion nothing was injected into cannot have used anything;
-        including it would blend a retrieval problem into a usefulness
-        number."""
         receipts.record(str(tmp_path), _receipt("occ-1", admitted=(("a", "r", 1),)))
         receipts.record(str(tmp_path), _receipt("occ-2", admitted=()))
         receipts.record_use(str(tmp_path), "occ-1", ["a"])
         found = receipts.coverage(str(tmp_path))
         assert found.n_occasions == 2
-        assert found.used_rate == 1.0  # 1 of the 1 that received anything
+        assert found.used_rate == 1.0
 
     def test_a_corrupt_line_does_not_lose_the_rest(self, tmp_path):
         receipts.record(str(tmp_path), _receipt())

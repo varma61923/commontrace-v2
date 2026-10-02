@@ -1,5 +1,3 @@
-"""Tests for the production-hardening pass: search pagination + full-text
-matching, the N+1 batch-loading fix, audit-log writes, and API-key expiry."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -48,10 +46,6 @@ async def _contribute(
 
 
 async def _seed_kb(session_factory, operator_org_id, title, context="c", solution="s", contributor=None):
-    """A Knowledge Base entry, seeded directly the way
-    hub/manage.py:commons_seed does it -- the only way one exists in
-    production. vote_trace's cross-org path is only reachable for these
-    (commons_source == "seed"), never for another org's private trace."""
     async with session_scope(session_factory) as session:
         trace = Trace(
             org_id=operator_org_id,
@@ -108,10 +102,6 @@ class TestPagination:
         assert page["offset"] == 0
 
     async def test_offset_is_capped_not_left_unbounded(self, session_factory, config, org):
-        """OFFSET pagination costs Postgres work proportional to the offset
-        itself -- it still has to walk and discard every skipped row. An
-        unbounded caller-supplied offset turned one request into a scan of
-        the org's entire trace table just to throw the results away."""
         from hub.config import MAX_SEARCH_OFFSET
 
         async with session_scope(session_factory) as session:
@@ -133,8 +123,6 @@ class TestFullTextSearch:
         assert "Kubernetes" in page["traces"][0]["title"]
 
     async def test_stemming_matches_word_variants(self, session_factory, config, org):
-        """A capability the old ILIKE substring match did NOT have: querying
-        'deploy' finds a trace that says 'deployed'."""
         await _contribute(
             session_factory, config, org, "Release notes", "we deployed on friday", "rolled back safely"
         )
@@ -143,8 +131,6 @@ class TestFullTextSearch:
         assert len(page["traces"]) == 1
 
     async def test_query_with_punctuation_does_not_error(self, session_factory, config, org):
-        """plainto_tsquery must swallow operator characters that would make
-        to_tsquery raise a syntax error on user-supplied input."""
         await _contribute(session_factory, config, org, "t", "some context", "some solution")
         async with session_scope(session_factory) as session:
             page = await crud.search_traces(session, org, query="!!! & | context ???")
@@ -158,13 +144,6 @@ class TestFullTextSearch:
 
 
 class TestRelevanceTieOrdering:
-    """Exact ts_rank ties are the signature of near-duplicate text, and a
-    fleet produces those constantly: it resolves an occasion using a
-    lesson, then contributes a trace saying the same thing in the same
-    words. Inside a tie the ORIGINAL is the better result to hand an
-    agent, and keeping it on the page is also what lets the near-duplicate
-    clustering hold a stable randomization unit."""
-
     async def test_the_original_wins_a_relevance_tie_against_its_own_retellings(
         self, session_factory, config, org
     ):
@@ -186,9 +165,6 @@ class TestRelevanceTieOrdering:
     async def test_the_original_stays_on_page_one_as_retellings_accumulate(
         self, session_factory, config, org
     ):
-        """The property the clustering depends on: an original that falls
-        off the page once enough re-tellings exist leaves a page with no
-        fixed member to anchor a randomization unit to."""
         original = await _contribute(
             session_factory, config, org, "pool exhausted",
             "connection pool exhausted running the suite", "dispose the engine",
@@ -207,8 +183,6 @@ class TestRelevanceTieOrdering:
     async def test_recency_still_orders_the_no_query_browse_path(
         self, session_factory, config, org
     ):
-        """Oldest-first applies inside a relevance tie, not to browsing --
-        `search_traces` with no query is a recency feed and stays one."""
         await _contribute(session_factory, config, org, "first", "c", "s")
         newest = await _contribute(session_factory, config, org, "second", "c", "s")
         async with session_scope(session_factory) as session:
@@ -217,13 +191,6 @@ class TestRelevanceTieOrdering:
 
 
 class TestFailedOutcomeRanking:
-    """A trace whose own `outcome.resolved` is False -- an agent's
-    self-logged, unresolved attempt, not a curated solution -- must never
-    outrank a same-relevance trace with no such marker. Text relevance
-    alone cannot separate them: both describe the same failure in the same
-    words, so without this a hand-written lesson and a fleet's own escalated
-    retry of the same query rank on equal footing."""
-
     async def test_a_failed_occasion_sorts_after_an_otherwise_equal_result(
         self, session_factory, config, org
     ):
@@ -242,9 +209,6 @@ class TestFailedOutcomeRanking:
         assert titles == ["the actual fix", "escalated attempt"]
 
     async def test_a_resolved_occasion_is_not_demoted(self, session_factory, config, org):
-        """The floor is specifically for a recorded FAILURE, not for having
-        an outcome at all -- a successfully resolved occasion competes on
-        relevance exactly as before."""
         await _contribute(
             session_factory, config, org, "resolved once",
             "connection pool exhausted running tests", "dispose the engine",
@@ -256,7 +220,6 @@ class TestFailedOutcomeRanking:
         )
         async with session_scope(session_factory) as session:
             page = await crud.search_traces(session, org, query="connection pool exhausted tests")
-        # Both equally eligible for the top spot -- neither is demoted.
         assert {t["title"] for t in page["traces"][:2]} == {"resolved once", "no outcome recorded"}
 
     async def test_the_floor_also_applies_with_no_query(self, session_factory, config, org):
@@ -272,8 +235,6 @@ class TestFailedOutcomeRanking:
     async def test_a_failed_result_is_still_returned_not_dropped(
         self, session_factory, config, org
     ):
-        """A ranking floor, not a filter: still findable, just never ahead
-        of a better-standing result for the same query."""
         await _contribute(
             session_factory, config, org, "only match",
             "extremely specific unmatched vocabulary here", "unresolved",
@@ -285,16 +246,7 @@ class TestFailedOutcomeRanking:
 
 
 class TestBriefMode:
-    """context_text/solution_text are each allowed up to 20,000 characters
-    (HubConfig.max_text_chars), so a full page at MAX_SEARCH_LIMIT can
-    legitimately run to millions of characters -- enough to blow a calling
-    agent's own context budget, not just its bill. `brief=True` previews
-    both fields instead."""
-
     async def test_default_behavior_is_unchanged(self, session_factory, config, org):
-        """Off by default -- an existing caller reading context_text/
-        solution_text straight off a search result must keep working
-        exactly as before."""
         await _contribute(session_factory, config, org, "t", "short context", "short solution")
         async with session_scope(session_factory) as session:
             page = await crud.search_traces(session, org)
@@ -304,9 +256,6 @@ class TestBriefMode:
         assert "brief" not in trace
 
     async def test_a_short_field_is_returned_whole_but_marked_brief(self, session_factory, config, org):
-        """Short enough to need no truncation is not the same claim as
-        'this is the full record' -- brief=True always marks its output,
-        whether or not anything was actually cut."""
         await _contribute(session_factory, config, org, "t", "short context", "short solution")
         async with session_scope(session_factory) as session:
             page = await crud.search_traces(session, org, brief=True)
@@ -316,7 +265,7 @@ class TestBriefMode:
         assert trace["brief"] is True
 
     async def test_a_long_field_is_truncated_with_an_ellipsis(self, session_factory, config, org):
-        long_context = "word " * 500  # far past BRIEF_PREVIEW_CHARS
+        long_context = "word " * 500
         await _contribute(session_factory, config, org, "t", long_context, "short solution")
         async with session_scope(session_factory) as session:
             page = await crud.search_traces(session, org, brief=True)
@@ -330,8 +279,6 @@ class TestBriefMode:
         async with session_scope(session_factory) as session:
             page = await crud.search_traces(session, org, brief=True)
         preview = page["traces"][0]["context_text"]
-        # Never ends mid-word: strip the ellipsis and the remainder must be
-        # whole "alpha" tokens, not a fragment like "alph".
         body = preview.rstrip("…")
         assert body == "" or body.split()[-1] == "alpha"
 
@@ -347,8 +294,6 @@ class TestBriefMode:
         assert full["traces"][0]["tags"] == brief["traces"][0]["tags"] == ["x", "y"]
 
     async def test_get_trace_is_never_brief(self, session_factory, config, org):
-        """brief is a search_traces-only concept -- fetching one trace by id
-        to actually use it must always return the whole thing."""
         long_context = "word " * 500
         contributed = await _contribute(session_factory, config, org, "t", long_context, "s")
         async with session_scope(session_factory) as session:
@@ -359,19 +304,10 @@ class TestBriefMode:
     async def test_default_valued_operational_fields_are_omitted_in_brief_mode(
         self, session_factory, config, org
     ):
-        """`brief=True` exists so 'browse many, then get_trace the one you
-        pick' costs less than one non-brief call -- which measurably failed
-        while every one of these ~14 fields was always present, even at
-        their empty/false/zero default, on every brief result. None of them
-        were set on this trace, so none of them should ship."""
         await _contribute(session_factory, config, org, "t", "some context", "some solution")
         async with session_scope(session_factory) as session:
             page = await crud.search_traces(session, org, brief=True)
         trace = page["traces"][0]
-        # Not `retrievals`: search_traces increments it (as a side effect
-        # of being returned by THIS call) before hydrating the wire dict,
-        # so it is never actually 0 on a result -- pre-existing behavior,
-        # unrelated to this trimming.
         for field in (
             "agent_id", "profile", "extensions", "watch_condition", "review_after",
             "supersedes_trace_id", "contributor", "depth", "votes",
@@ -379,7 +315,6 @@ class TestBriefMode:
         ):
             assert field not in trace, f"{field!r} should be omitted at its default in brief mode"
         assert trace["retrievals"] == 1
-        # Always present regardless -- never conditionally dropped.
         for field in ("id", "title", "context_text", "solution_text", "tags",
                       "agent_type", "created_at", "trust", "quarantined", "brief"):
             assert field in trace
@@ -387,8 +322,6 @@ class TestBriefMode:
     async def test_a_populated_operational_field_still_ships_in_brief_mode(
         self, session_factory, config, org
     ):
-        """Only the DEFAULT value is omitted -- a field actually holding
-        something must still reach the caller in brief mode, same as full."""
         rate_limiter = make_rate_limiter(config)
         async with session_scope(session_factory) as session:
             await crud.contribute_trace(
@@ -404,9 +337,6 @@ class TestBriefMode:
     async def test_full_mode_still_ships_every_field_at_its_default(
         self, session_factory, config, org
     ):
-        """The trimming above is brief-only -- an existing full-mode caller
-        reading any of these fields off a normal result must see exactly
-        what it always has, default value included."""
         await _contribute(session_factory, config, org, "t", "some context", "some solution")
         async with session_scope(session_factory) as session:
             page = await crud.search_traces(session, org, brief=False)
@@ -419,8 +349,6 @@ class TestBriefMode:
 
 class TestBatchHydration:
     async def test_votes_and_relations_attach_to_the_right_traces(self, session_factory, config, org):
-        """Guards the N+1 fix: batch-loading must not cross-wire one trace's
-        votes onto another's."""
         a = await _contribute(session_factory, config, org, "alpha", "ca", "sa")
         b = await _contribute(session_factory, config, org, "bravo", "cb", "sb")
 
@@ -472,8 +400,6 @@ class TestAuditLog:
         assert {"contribute_trace", "vote_trace", "amend_trace"} <= actions
 
     async def test_audit_row_rolls_back_with_its_action(self, session_factory, config, org):
-        """An audit entry must not survive a transaction that failed -- the
-        log should never claim something happened that didn't."""
         rate_limiter = make_rate_limiter(config)
         with pytest.raises(RuntimeError):
             async with session_scope(session_factory) as session:
@@ -504,7 +430,6 @@ class TestApiKeyExpiry:
 
         async with session_scope(session_factory) as session:
             issued = await auth.issue_api_key(session, org, expires_days=30)
-        # Move its expiry into the past rather than sleeping.
         async with session_scope(session_factory) as session:
             key = await session.get(ApiKey, issued.key_id)
             key.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
@@ -536,25 +461,6 @@ class TestApiKeyExpiry:
     async def test_revocation_during_verification_is_honored_not_missed(
         self, session_factory, org, monkeypatch
     ):
-        """verify_api_key's initial SELECT filters on `revoked_at IS NULL`,
-        then spends most of its time in Argon2 verification (offloaded to a
-        worker thread -- deliberately expensive CPU work). An operator's
-        revoke_api_key landing in that window used to still authenticate the
-        request, because the in-memory candidate loaded before the revoke
-        has no way to see a commit that happened after it was loaded. The
-        fix re-reads revocation state fresh immediately after verify()
-        returns; this simulates a revoke landing exactly inside that
-        window by hooking the asyncio.to_thread call verify() is offloaded
-        through.
-
-        This window exists only in the legacy (Argon2 prefix-scan) path --
-        the fast `key_hmac` lookup added later reads revocation in the same
-        single indexed SELECT that finds the row, with no `to_thread` call
-        and no gap for a concurrent revoke to land in. A freshly issued key
-        now has `key_hmac` set at issuance and would resolve via that fast
-        path, never calling `asyncio.to_thread` at all -- clear it here to
-        force this key through the legacy path this test exercises, exactly
-        as a key issued before that column existed would be."""
         import asyncio as asyncio_module
 
         from sqlalchemy import update
@@ -588,13 +494,6 @@ class TestApiKeyExpiry:
 
 
 class TestLastUsedAtIsThrottled:
-    """last_used_at exists for idle-key auditing, which needs roughly-
-    current information, not per-request precision. Writing it
-    unconditionally means a hot key under real QPS issues an UPDATE
-    against its own single row on every authenticated request -- every one
-    of those write transactions briefly locks the same row, serializing
-    concurrent requests against each other for no operational benefit."""
-
     async def test_a_fresh_last_used_at_is_not_rewritten_on_the_next_call(
         self, session_factory, org
     ):
@@ -645,25 +544,9 @@ class TestLastUsedAtIsThrottled:
 
 
 class TestVoteTrustAggregate:
-    """`vote_trace` recomputes trust from a COUNT/GROUP BY aggregate rather
-    than hydrating every vote row for the trace -- this pins the actual
-    fraction, not just that the call doesn't crash, since the query shape
-    changed.
-
-    `vote_trace`'s trace lookup allows an org to vote on its own trace OR
-    any other org's trace currently shared to the commons (hub/crud.py --
-    see TestCrossOrgVoting below for the multi-org case this unlocks). A
-    given (trace, org) pair still has at most one Vote row, per
-    `uq_votes_trace_org`; revoting replaces it rather than accumulating a
-    second row. The single-org tests here pin that replace-not-accumulate
-    behavior.
-    """
-
     async def test_changing_a_vote_recomputes_trust_not_double_counts_it(
         self, session_factory, config, org
     ):
-        """One vote per org per trace: revoting up->down must move the
-        tally by one, not add a second row."""
         trace = await _contribute(session_factory, config, org, "t", "c", "s")
         async with session_scope(session_factory) as session:
             result = await crud.vote_trace(session, org, trace["id"], "up")
@@ -675,14 +558,6 @@ class TestVoteTrustAggregate:
 
 
 class TestVoteInputValidation:
-    """feedback_tag is constrained to a small enum, and feedback_text has no
-    length cap, at the DATABASE layer only (hub/models.py's CheckConstraint /
-    unbounded Text). Without matching application-level validation, a bad
-    tag reaches the DB's CHECK constraint as an uncaught IntegrityError --
-    an opaque HTTP 500 instead of a clean 400 -- and an oversized
-    feedback_text is a free storage/audit-log flooding vector (every vote
-    writes an AuditLogEntry)."""
-
     async def test_invalid_feedback_tag_is_a_clean_value_error_not_a_db_crash(
         self, session_factory, config, org
     ):
@@ -715,15 +590,6 @@ class TestVoteInputValidation:
 
 
 class TestCrossOrgVoting:
-    """vote_trace used to scope its trace lookup to `Trace.org_id ==
-    org_id` only, which made trust a self-rating. It now also reaches a
-    Knowledge Base entry (`commons_source == "seed"`) regardless of which
-    org is voting, since `trust` is surfaced to every org a Knowledge Base
-    entry matches for (commons_overlap/commons_search). A private trace --
-    one that never entered the Knowledge Base -- stays exactly as invisible
-    to other orgs as every other read path makes it; there is no org-to-org
-    path here at all, only org-to-Knowledge-Base."""
-
     async def test_another_org_can_vote_on_a_kb_entry(
         self, session_factory, org, other_org, establish_orgs
     ):
@@ -738,8 +604,6 @@ class TestCrossOrgVoting:
         self, session_factory, config, org, other_org
     ):
         trace = await _contribute(session_factory, config, org, "t", "c", "s")
-        # Never seeded into the Knowledge Base -- must be exactly as
-        # unreachable to other_org as get_trace/search_traces already make it.
         async with session_scope(session_factory) as session:
             result = await crud.vote_trace(session, other_org, trace["id"], "up")
         assert result is None
@@ -747,10 +611,6 @@ class TestCrossOrgVoting:
     async def test_cross_org_vote_response_excludes_private_fields(
         self, session_factory, org, other_org, establish_orgs
     ):
-        """The vote succeeded and the response reflects it (id, trust), but
-        a cross-org voter gets the same narrow projection commons_overlap
-        returns (H-08) -- voting on a Knowledge Base entry is not an
-        invitation to see its contributor/extensions/outcome/etc."""
         trace_id = await _seed_kb(session_factory, org, "t", contributor="alice@example.com")
         await establish_orgs(other_org)
 
@@ -765,8 +625,6 @@ class TestCrossOrgVoting:
     async def test_owner_voting_on_its_own_trace_still_gets_the_full_view(
         self, session_factory, config, org
     ):
-        """Unchanged behavior for the owner: full wire shape, including its
-        own votes list, same as before this fix."""
         trace = await _contribute(session_factory, config, org, "t", "c", "s")
         async with session_scope(session_factory) as session:
             result = await crud.vote_trace(session, org, trace["id"], "up")
@@ -777,33 +635,17 @@ class TestCrossOrgVoting:
         self, session_factory, org, other_org, establish_orgs
     ):
         trace_id = await _seed_kb(session_factory, org, "t")
-        # BOTH established. Without this the assertion below still passed,
-        # for the wrong reason: no vote counted at all, and `trust` fell
-        # back to its 0.5 no-votes default -- numerically identical to the
-        # 1-up-1-down aggregate this test exists to check. A test that can
-        # pass while counting nothing is not testing the aggregate.
         await establish_orgs(org, other_org)
         async with session_scope(session_factory) as session:
             await crud.vote_trace(session, org, trace_id, "up")
         async with session_scope(session_factory) as session:
             result = await crud.vote_trace(session, other_org, trace_id, "down")
-        # 1 up (the seeding org) + 1 down (other_org) = 0.5, an actual
-        # aggregate across two distinct orgs' votes.
         assert result["trust"] == pytest.approx(0.5)
         assert result["vote_count"] == 2
 
     async def test_the_owners_own_vote_cannot_flush_in_held_back_votes(
         self, session_factory, org, other_org, establish_orgs
     ):
-        """The bar is keyed on the TRACE being a Knowledge Base entry, not
-        on who is casting the vote -- and this is why.
-
-        Keyed on the voter instead ("an org rating its own trace needs no
-        bar"), the entry owner's single vote would take the unfiltered
-        path and count EVERY stored vote, including the ones the filtered
-        path had been holding out. A farm that could not move the number
-        directly would move it by waiting for the operator to vote once.
-        """
         trace_id = await _seed_kb(session_factory, org, "t")
         await establish_orgs(org)
         for i in range(6):
@@ -825,24 +667,12 @@ class TestCrossOrgVoting:
                 await session.execute(select(Vote).where(Vote.trace_id == trace_id))
             ).scalars().all()
 
-        # Only the owner's own (established) vote moved the published pair.
         assert trace.commons_votes == 1
         assert trace.trust == pytest.approx(1.0)
-        # The six held-back down-votes are still on record -- withheld from
-        # the tally, never discarded.
         assert len(stored) == 7
 
 
 class TestMalformedIdsAreCleanNotFoundNot500s:
-    """get_trace/vote_trace/amend_trace all compare a caller-supplied
-    trace_id directly against Trace.id, a UUID column. asyncpg validates
-    the bind parameter against the column's real type -- a non-UUID string
-    raised asyncpg.DataError (wrapped as DBAPIError by SQLAlchemy), which is
-    not an IntegrityError and isn't caught by any handler in
-    hub/server.py's _error_response, reaching the caller as an opaque HTTP
-    500 instead of the same clean "not found" a well-formed-but-nonexistent
-    id already produces."""
-
     async def test_get_trace_with_a_non_uuid_id_returns_none_not_raises(
         self, session_factory, config, org
     ):
@@ -869,12 +699,6 @@ class TestMalformedIdsAreCleanNotFoundNot500s:
 
 
 class TestOversizedIdempotencyKeyIsRejectedCleanly:
-    """Trace.idempotency_key is String(128) at the DB layer; a too-long
-    value raised asyncpg.StringDataRightTruncation on INSERT -- not an
-    IntegrityError, so not caught by contribute_trace's own IntegrityError
-    handler, reaching the caller as an HTTP 500 instead of a clean
-    rejection of a malformed request."""
-
     async def test_an_oversized_idempotency_key_is_rejected_before_it_reaches_the_db(
         self, session_factory, config, org
     ):

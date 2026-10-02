@@ -1,4 +1,3 @@
-"""Tests for commontrace/reference/pilot_metrics.py — the five business-outcome metrics."""
 import pilot_metrics as pm
 import pytest
 
@@ -36,7 +35,6 @@ class TestRateAndMean:
         assert val == pytest.approx(0.5)
 
     def test_rate_ignores_missing_field(self):
-        """A trace with no outcome.resolved at all should not count toward n."""
         traces = [_trace("a", resolved=True), _trace("b")]
         val, n = pm._rate(traces, "resolved")
         assert val == pytest.approx(1.0)
@@ -55,15 +53,12 @@ class TestRateAndMean:
         assert n == 2
 
     def test_rate_ignores_non_bool_values(self):
-        """Regression: a malformed/hand-edited value like the string 'false' is Python-
-        truthy and would otherwise invert the rate if not filtered to real bools."""
         traces = [{"id": "a", "outcome": {"resolved": "false"}}, _trace("b", resolved=True)]
         val, n = pm._rate(traces, "resolved")
-        assert val == pytest.approx(1.0)  # only the real bool counts
+        assert val == pytest.approx(1.0)
         assert n == 1
 
     def test_mean_ignores_non_numeric_and_bool_values(self):
-        """Regression: sum() on a mix of int and non-numeric string values raised TypeError."""
         traces = [
             {"id": "a", "outcome": {"tokens_used": 300}},
             {"id": "b", "outcome": {"tokens_used": "1500.5"}},
@@ -116,7 +111,6 @@ class TestComputeBucket:
 
 class TestPctDelta:
     def test_improvement_is_negative(self):
-        # Before/after framing: current lower than baseline -> negative %
         assert pm._pct_delta(600.0, 300.0) == pytest.approx(-0.5)
 
     def test_regression_is_positive(self):
@@ -129,12 +123,6 @@ class TestPctDelta:
         assert pm._pct_delta(0.0, 1.0) is None
 
     def test_bounded_rate_zero_baseline_with_improvement_is_100_percent(self):
-        """[BUG-BENCH-04]: for the four [0, 1] rate metrics specifically, a
-        genuine 0% -> positive-% improvement is the maximal signal a
-        bounded rate can report -- matching pilot_cmd.py's identical
-        handling of the same metric family, so `commontrace bench --pilot`
-        and `commontrace pilot` agree on the same underlying numbers
-        instead of reporting "N/A" and "+100%" respectively."""
         assert pm._pct_delta(0.0, 0.8, bounded_rate=True) == pytest.approx(1.0)
 
     def test_bounded_rate_zero_baseline_with_no_improvement_is_zero(self):
@@ -163,11 +151,6 @@ class TestRenderMarkdown:
         assert "Resolution rate" in md
 
     def test_zero_baseline_resolution_rate_shows_a_delta_not_na(self):
-        """[BUG-BENCH-04] end to end: a 0% -> 100% resolution-rate
-        improvement across the baseline/current split must render as an
-        actual delta, not "N/A" -- and must NOT apply the same "0 -> X"
-        treatment to avg_tokens_used, an unbounded metric where "0 -> 500"
-        has no meaningful percentage (still correctly N/A)."""
         traces = [
             _trace("a", resolved=False, tokens_used=0, baseline=True),
             _trace("b", resolved=True, tokens_used=500, baseline=False),

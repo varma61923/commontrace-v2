@@ -1,12 +1,3 @@
-"""Tests for `commontrace doctor`'s [OK]/[INFO]/[WARN] severity classification.
-
-Reclassification background: a fresh, normal client install (pip install -e ., then
-commontrace init, run outside a repo checkout) previously showed 4-5 [WARN] lines for
-conditions that are expected and require no action -- the optional attention extra not
-being installed, and reference scripts / protocol/ only existing inside a source checkout.
-Only a genuine problem (e.g. zero lessons captured yet) should read as [WARN]; the rest
-belong at [INFO].
-"""
 import os
 
 import pytest
@@ -16,8 +7,6 @@ from commontrace.cli import main
 
 @pytest.fixture
 def fresh_store(tmp_path, monkeypatch):
-    """A store outside any repo checkout -- the normal shape for a pip-installed client,
-    as opposed to running from within the commontrace-v2 source tree."""
     monkeypatch.delenv("COMMONTRACE_ROOT", raising=False)
     monkeypatch.chdir(tmp_path)
     main(["init", "--agent-type", "code", "--dest", str(tmp_path)])
@@ -25,9 +14,6 @@ def fresh_store(tmp_path, monkeypatch):
 
 
 def test_fresh_client_install_has_no_actionable_warnings_beyond_empty_store(fresh_store, capsys):
-    """A fresh install's only real problem is having zero lessons yet -- everything else
-    (attention extra, reference scripts, protocol/ dir) is expected to be absent for a
-    pip-installed client and must not read as [WARN]."""
     assert main(["doctor", "--dest", str(fresh_store)]) == 0
     out = capsys.readouterr().out
 
@@ -37,25 +23,12 @@ def test_fresh_client_install_has_no_actionable_warnings_beyond_empty_store(fres
     assert len(warn_lines) == 1
     assert "lessons in store" in warn_lines[0]
 
-    # Labels are stated neutrally ("attention extra", not "attention extra
-    # installed"): the INFO branch reports ABSENCE, and reusing the
-    # affirmative label made it claim the opposite of its own detail.
-    # "reference attention/query.py" is deliberately NOT here any more: it
-    # ships inside the package now (memory/attention/README.md), so its
-    # absence is a damaged install rather than the expected state of a
-    # pip-installed client. Reporting it as [INFO] meant the one command that
-    # exists to diagnose a broken retriever called the breakage normal.
     info_labels = {
         "protocol/ spec",
     }
     for label in info_labels:
         assert any(label in line for line in info_lines), f"expected an [INFO] line for: {label}"
 
-    # The attention extra is optional AND supported -- the README recommends
-    # installing it -- so both states are correct and neither is a [WARN].
-    # Asserting only the absent state made this test pass in exactly one of
-    # the two configurations the product ships, and fail for anyone who
-    # followed the install instructions.
     attention_lines = [
         line for line in out.splitlines()
         if "attention extra (numpy + sentence-transformers)" in line
@@ -63,24 +36,14 @@ def test_fresh_client_install_has_no_actionable_warnings_beyond_empty_store(fres
     assert len(attention_lines) == 1
     assert attention_lines[0].startswith(("[OK  ]", "[INFO]")), attention_lines[0]
 
-    # None of the informational conditions leaked through as [WARN].
     for label in info_labels | {"attention extra (numpy + sentence-transformers)"}:
         assert not any(label in line for line in warn_lines), f"{label} should not be [WARN]"
 
-    # The benchmark script ships inside the wheel, so a client with no repo
-    # checkout still gets [OK] -- `commontrace bench --pilot` works for them.
-    # Absence would mean a damaged install, which is a real problem, not info.
     assert "[OK  ] benchmark script found" in out
-    # [BUG-CLI-05]: doctor checked for measure_performance.py but not its
-    # sibling pilot_metrics.py -- `commontrace bench --pilot`/`commontrace
-    # pilot` import it directly, so a damaged install missing only this one
-    # file passed doctor cleanly and then failed at runtime with a raw
-    # ImportError instead of doctor's own clean diagnostic.
     assert "[OK  ] pilot metrics script found" in out
 
 
 def test_doctor_still_warns_on_genuine_problems(fresh_store, capsys):
-    """Reclassifying the informational checks must not silence real problems."""
     assert main(["doctor", "--dest", str(fresh_store)]) == 0
     out = capsys.readouterr().out
     assert "[WARN] lessons in store - 0 found" in out
@@ -89,9 +52,6 @@ def test_doctor_still_warns_on_genuine_problems(fresh_store, capsys):
 def test_doctor_warns_when_pilot_metrics_is_missing_from_a_damaged_install(
     fresh_store, capsys, monkeypatch
 ):
-    """[BUG-CLI-05]: a damaged install missing only pilot_metrics.py (but
-    still carrying measure_performance.py) must be caught here, not
-    silently pass doctor and fail later at runtime."""
     from commontrace.commands import doctor_cmd
 
     real_find = doctor_cmd.find_reference_script
@@ -109,8 +69,6 @@ def test_doctor_warns_when_pilot_metrics_is_missing_from_a_damaged_install(
 
 
 def test_doctor_in_repo_checkout_shows_ok_not_info_for_repo_only_checks(capsys):
-    """Inside an actual repo checkout, the repo-only checks (reference scripts, protocol/)
-    should still show [OK], not [INFO] -- INFO is only for the absent case."""
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     assert main(["doctor", "--dest", repo_root]) == 0
     out = capsys.readouterr().out
@@ -121,12 +79,6 @@ def test_doctor_in_repo_checkout_shows_ok_not_info_for_repo_only_checks(capsys):
 
 
 class TestDoctorReportsAgentNativeAccess:
-    """`commontrace serve` is what lets an agent with no shell use this store,
-    and it fails in the least legible place there is: an MCP client spawns it
-    as a subprocess and reports only that the server exited. `doctor` is where
-    someone looks when something is wrong, so the SDK's absence is named here.
-    """
-
     @staticmethod
     def _run(tmp_path, capsys):
         import argparse
@@ -147,20 +99,12 @@ class TestDoctorReportsAgentNativeAccess:
         monkeypatch.setattr(doctor_cmd, "_installed",
                             lambda name: False if name == "mcp" else real(name))
         out = self._run(tmp_path, capsys)
-        # Optional extra: an INFO line with the fix, never an [FAIL].
         assert "commontrace[serve]" in out
         line = next(x for x in out.splitlines() if "commontrace serve" in x)
         assert line.startswith("[INFO]"), line
 
 
 class TestAProbeCannotTakeDownTheReport:
-    """doctor runs precisely when the environment is already broken, which is
-    when a probe is most likely to misbehave. `find_spec` walks sys.meta_path,
-    so any import hook in that interpreter gets to raise inside it -- and an
-    unhandled exception from one optional-dependency probe would kill the
-    report before the checks that would have named the real problem.
-    """
-
     def test_a_raising_finder_does_not_crash_doctor(self, tmp_path, capsys, monkeypatch):
         import argparse
         import importlib.util
@@ -174,7 +118,6 @@ class TestAProbeCannotTakeDownTheReport:
         monkeypatch.setattr(doctor_cmd.sys, "modules", {})
         doctor_cmd.run(argparse.Namespace(dest=str(tmp_path)))
         out = capsys.readouterr().out
-        # It still reached the end and still reported the store.
         assert "store root" in out and "memory/ store present" in out
 
     def test_an_unanswerable_probe_reads_as_not_installed(self, monkeypatch):
@@ -184,15 +127,10 @@ class TestAProbeCannotTakeDownTheReport:
 
         monkeypatch.setattr(importlib.util, "find_spec",
                             lambda *a, **k: (_ for _ in ()).throw(RuntimeError("hook")))
-        # Conservative, because every caller's absent branch is INFO plus an
-        # install hint -- never a failure someone has to chase.
         assert doctor_cmd._installed("definitely_not_imported_anywhere") is False
 
 
 def test_doctor_says_whether_the_models_a_store_uses_are_cached(fresh_store, capsys, monkeypatch):
-    """An uncached model means the first query downloads it -- and never
-    works on a host without internet. The operator should hear that from
-    `doctor`, not from a failed query."""
     from commontrace import retrieval_io
     from commontrace.commands import doctor_cmd
 
@@ -208,7 +146,6 @@ def test_doctor_says_whether_the_models_a_store_uses_are_cached(fresh_store, cap
 
 
 def test_a_bare_model_name_is_looked_up_where_sentence_transformers_puts_it(monkeypatch):
-    """A stand-in module, so this runs where huggingface_hub is not installed."""
     import sys
     import types
 
@@ -220,9 +157,6 @@ def test_a_bare_model_name_is_looked_up_where_sentence_transformers_puts_it(monk
     assert doctor_cmd._model_cached("multi-qa-mpnet-base-dot-v1") is False
     assert seen == ["multi-qa-mpnet-base-dot-v1", "sentence-transformers/multi-qa-mpnet-base-dot-v1"]
     assert doctor_cmd._model_cached("") is False
-
-
-# --- Troubleshooting is generated from the checks, and the measurement checks -------------------------------------
 
 
 def _check_labels():

@@ -1,14 +1,4 @@
-"""Shared trace loaders for taxonomy_cmd / impact_cmd / pilot_cmd.
-
-Deliberately separate from distill_cmd's own `_load_traces` (which returns
-`distill.TraceCandidate` for clustering) even though the shapes overlap --
-that function is exercised by distill's existing tests and this module adds
-a second loader (`load_trace_instances`) that needs the full raw instance
-(outcome, extensions, baseline flag) rather than the clustering-only
-subset. Two small loaders that read the same directory is a cheaper risk
-than reshaping a tested command's internals for callers that did not need
-that change.
-"""
+"""Shared trace loaders for taxonomy_cmd / impact_cmd / pilot_cmd."""
 from __future__ import annotations
 
 import glob
@@ -20,7 +10,6 @@ from commontrace.frontmatter import FrontmatterError
 
 
 def _safe_tags(raw: object) -> list[str]:
-    """See distill_cmd._safe_tags -- same malformed-YAML-scalar guard."""
     return [str(t) for t in raw if t is not None] if isinstance(raw, (list, tuple)) else []
 
 
@@ -60,8 +49,6 @@ def load_trace_candidates(root: str, agent_type: str | None = None) -> list[dist
 
 
 def load_trace_instances(root: str, agent_type: str | None = None) -> list[dict]:
-    """Full raw trace instances (outcome, extensions, baseline flag) -- used
-    by `commontrace impact` and `commontrace pilot`."""
     out = []
     for path in _iter_trace_paths(root):
         try:

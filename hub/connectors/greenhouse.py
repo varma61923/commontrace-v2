@@ -1,30 +1,4 @@
-"""Greenhouse: recruiting events -> signals, for HR and recruiting agents.
-
-Built from Greenhouse's published webhook documentation (docs.greenhouse.io/webhooks):
-  * signature: the `Signature` header is `sha256 ` followed by the hex
-    HMAC-SHA256 of the ENTIRE request body keyed by the webhook's secret key.
-    (Note the space, not `=`.) Greenhouse signs no timestamp.
-  * replay key: "Each delivery will include a Greenhouse-Event-ID header ...
-    an unique id associated with this delivery." A delivery without one (the
-    ping Greenhouse sends when a webhook is saved may be such) is keyed by a
-    hash of its own signed body instead, so it is still replay-protected.
-  * payloads (the vendor's examples are the test fixtures): `action` and
-    `payload.application.id`; actions hire_candidate, unhire_candidate,
-    candidate_stage_change, reject_candidate, unreject_candidate.
-  * a webhook that gets a non-200 is retried up to 7 times, so an authentic
-    delivery this connector cannot use is still acknowledged with 200.
-
-What it emits, for the occasion `<occasion_prefix><application id>`:
-  hire_candidate                       CANDIDATE   (matures after window_days)
-  unhire_candidate                     REVERSAL    (a hire undone inside its window)
-  candidate_stage_change into a stage  SUCCESS     (a stage named in `success_stages`:
-                                                    an interview scheduled, an offer made)
-  reject_candidate                     FAILURE
-Everything else, including the ping, is acknowledged and ignored. A rejection is
-final: an application recorded as a failure is not revived by unreject_candidate,
-because an outcome already counted is never flipped. Which stage counts as
-"success" is the customer's definition, so it is configuration, not a guess.
-"""
+"""Greenhouse: recruiting events -> signals, for HR and recruiting agents."""
 from __future__ import annotations
 
 import hashlib

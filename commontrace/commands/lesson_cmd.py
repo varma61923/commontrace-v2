@@ -26,13 +26,6 @@ from commontrace.commands._format import cell, read_or_warn
 
 
 def _actor() -> str:
-    """Who made this change, for the revision journal.
-
-    Best-effort and clearly labelled as such. The point is not authentication
-    -- a local store has no identity to authenticate against -- it is that a
-    later reader can tell a person's edit apart from `distill`'s or an
-    agent's when asking what changed the instruction the fleet follows.
-    """
     import getpass
 
     try:
@@ -185,10 +178,6 @@ def run_new(args: argparse.Namespace) -> int:
     os.makedirs(ldir, exist_ok=True)
     filename = f"{args.slug}.md" if args.slug.startswith("lesson_") else f"lesson_{args.slug}.md"
     out_path = os.path.join(ldir, filename)
-    # Locked check-then-act: two concurrent `lesson new --slug same` both
-    # passed the exists check and the last writer won silently. Hold the
-    # file lock across the check and the write so the loser gets exit 1,
-    # matching run_approve/run_reject's locked RMW pattern.
     with frontmatter.locked(out_path):
         if os.path.exists(out_path):
             print(f"[commontrace] {out_path} already exists - aborting.", file=sys.stderr)
@@ -205,21 +194,6 @@ def run_new(args: argparse.Namespace) -> int:
             importance=args.importance,
             importance_rationale=args.importance_rationale,
             source_traces=[t.strip() for t in args.source_traces.split(",") if t.strip()],
-            # Scaffolded at `review`, not `active`.
-            #
-            # `lesson new` writes a body that is entirely template text
-            # ("## Rule\n[1 actionable sentence]"). Creating that at status
-            # `active` made it live the instant it was scaffolded: retrievable by
-            # `commontrace query`, counted as coverage by `taxonomy`/`pilot`, and
-            # published to the whole fleet by `sync --push` -- all before a single
-            # word of it had been written.
-            #
-            # It also bypassed the one control the protocol defines for exactly
-            # this: run_approve's own docstring says a lesson "is only ever
-            # activated by an explicit human/Validator call to this command,
-            # never automatically by whatever proposed it". `commontrace distill`
-            # already honours that by writing candidates at `review`; this path
-            # was the inconsistent one.
             status="review",
         )
         lesson_io.write_lesson(out_path, fm, templates.lesson_body(), root=root,
@@ -245,25 +219,6 @@ def _iter_lesson_paths(root: str, explicit: str | None):
 
 
 def _active_lesson_texts(root: str, *, exclude: str = "") -> list[tuple[str, str]]:
-    """(slug, comparable text) for every ACTIVE lesson, for the
-    near-duplicate check `run_approve` runs before activating a new one.
-
-    Only `active` lessons -- the corpus a new activation actually starts
-    competing with for a retrieval slot. A candidate still at `review` is
-    not yet injected anywhere, so comparing against it would flag two
-    unrelated drafts that happen to share a slug prefix or be mid-edit, not
-    a real collision.
-
-    A fresh `frontmatter.read` per file rather than `lesson_cache`'s
-    projection: approval happens once per lesson activated, not once per
-    retrieval, so the incremental-cache machinery built for that hot path
-    buys nothing here, and the projection it caches omits
-    `do_not_apply_when` and the body -- two of the four fields
-    `redundancy.comparable_text` needs. `exclude` is the slug being
-    approved itself, in case a previous partial run already flipped it to
-    active (re-approving would otherwise match against itself at
-    similarity 1.0).
-    """
     out = []
     for path in _iter_lesson_paths(root, None):
         parsed = read_or_warn(frontmatter.read, path)
@@ -293,16 +248,6 @@ def run_validate(args: argparse.Namespace) -> int:
         try:
             fm, body = frontmatter.read(path)
             errors = validate.validate(fm, schema)
-            # Schema-valid is not the same as fit to inject. An ACTIVE lesson
-            # is retrieved and fed to agents verbatim, counted as coverage by
-            # `taxonomy`/`pilot`, and pushed to the Hub by `sync` -- so one
-            # still full of "TODO:" scaffolding is a defect this command
-            # exists to catch, and it used to report it as "valid".
-            #
-            # Scoped to active lessons on purpose: a `status: review`
-            # candidate is SUPPOSED to carry placeholders (that is what
-            # `commontrace distill` writes and what a human is being asked to
-            # fill in), so flagging those would make the check noise.
             if fm.get("status") == "active":
                 unfilled = templates.unfilled_placeholders(fm, body)
                 if unfilled:
@@ -323,8 +268,6 @@ def run_validate(args: argparse.Namespace) -> int:
     return 1 if n_failed else 0
 
 
-# Re-exported from commontrace.lesson_io, which owns the one definition now
-# that the MCP server and the holdout logger resolve slugs too.
 _resolve_lesson_path = lesson_io.lesson_path
 _SLUG_RE = lesson_io.SLUG_RE
 
@@ -335,11 +278,6 @@ def _append_body_note(body: str, heading: str, text: str) -> str:
 
 
 def _guard_fields(fm: dict, body: str) -> dict:
-    """Every free-text field a Lesson carries, for `memory_guard.scan_fields`
-    at the approval gate. `body` alone covers Rule/Why/How-to-apply/
-    Counter-examples -- scanned as one string rather than split by section,
-    since a secret or an injection payload is exactly as dangerous in any
-    one of them and splitting buys nothing a caller here needs."""
     return {
         "description": fm.get("description", ""),
         "applies_when": fm.get("applies_when", ""),
@@ -351,13 +289,7 @@ def _guard_fields(fm: dict, body: str) -> dict:
 
 
 def run_approve(args: argparse.Namespace) -> int:
-    """The generic-pipeline Validator step (protocol/PROTOCOL.md §6's
-    "Validator" role, e.g. the code-review profile's Lambda): a candidate
-    lesson at status=review is only ever activated by an explicit human/
-    Validator call to this command, never automatically by whatever
-    proposed it (e.g. `commontrace distill`)."""
     root = paths.resolve_root(args.dest)
-    # `lesson auto-approve` passes its own approver; every gate below is the same.
     approver = getattr(args, "approver", None) or _actor()
     path = _resolve_lesson_path(root, args.slug)
     if path is None:
@@ -390,17 +322,6 @@ def run_approve(args: argparse.Namespace) -> int:
             )
             return 1
 
-        # Separation of duties, if the store asks for it
-        # (memory/approval-policy.yaml). No policy file means today's
-        # behaviour exactly: anyone may approve, including the author.
-        # Checked BEFORE the content scan below only because a "you may not
-        # approve this at all" answer makes the finding list moot; both
-        # refuse before any state changes.
-        #
-        # Deliberately NOT overridable by --force: --force exists for an
-        # author who has looked at their own lesson and judged the warning
-        # a false positive, which is precisely the judgement a
-        # separation-of-duties policy says this person may not make.
         try:
             policy = approval.load_policy(root)
             approval.check(
@@ -411,12 +332,6 @@ def run_approve(args: argparse.Namespace) -> int:
             print(f"[commontrace] refusing to approve {args.slug}: {exc}", file=sys.stderr)
             return 1
 
-        # OWASP ASI06 (Memory & Context Poisoning): an active lesson is
-        # injected into every later retrieval verbatim, same reasoning as
-        # the scaffolding check above. Only HIGH-confidence secret/injection
-        # findings refuse here (`GuardReport.should_block`) -- PII and
-        # medium-confidence matches are not surfaced as a refusal at all,
-        # by commontrace/memory_guard.py's own design.
         guard = memory_guard.scan_fields(_guard_fields(fm, body))
         if guard.should_block and not args.force:
             print(
@@ -434,18 +349,6 @@ def run_approve(args: argparse.Namespace) -> int:
                 print(f"    - [{f.category}] {f.label} in {f.field}: {f.excerpt!r}", file=sys.stderr)
             return 1
 
-        # Near-duplicate check (commontrace/redundancy.py), run HERE rather
-        # than at `lesson new`: this is the first point at which the
-        # lesson's real content exists rather than template scaffolding
-        # ("## Rule\n[1 actionable sentence]", identical across every fresh
-        # lesson and worthless to compare), and the first point at which
-        # activating it actually starts competing with the rest of the
-        # corpus for a retrieval slot. An agent curating unattended can
-        # re-derive the same rule from a second trace cluster and never
-        # notice the corpus already has it -- catching that here is cheaper
-        # than noticing it later in `commontrace consolidate`, and cheaper
-        # still than the two lessons quietly splitting the same slot's
-        # relevance forever, with neither winning reliably.
         duplicate = redundancy.closest(
             redundancy.comparable_text(fm, body),
             _active_lesson_texts(root, exclude=args.slug),
@@ -488,22 +391,11 @@ def run_approve(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
     print(f"[commontrace] approved {args.slug} (status: review -> active)")
-    # Point at the release machinery rather than cutting one automatically.
-    # Approving is one lesson changing state; a release is a decision about
-    # the SET the fleet runs, and silently cutting one per approval would
-    # make the history a log of individual edits -- which is what the
-    # revision journal already is -- instead of a record of deployments
-    # somebody chose. Six approvals over an afternoon are usually one
-    # deployment, and only the operator knows where that boundary is.
     print("  `commontrace release cut` records the active set as a rollback point.")
     return 0
 
 
 def run_auto_approve(args: argparse.Namespace) -> int:
-    """Approve every review-status lesson carrying `llm_draft` provenance,
-    through run_approve's own gates, as `approval.AUTO_APPROVER`. Each one is
-    stamped `auto_approved: true`, which keeps `experiment --configure` from
-    stopping the holdout while it is active."""
     root = paths.resolve_root(args.dest)
     try:
         policy = approval.load_policy(root)
@@ -576,17 +468,6 @@ def run_reject(args: argparse.Namespace) -> int:
 
 
 def _occasion_labels(root: str, wanted: set[str]) -> dict[str, str]:
-    """A short, best-effort label for each occasion id in `wanted` -- what
-    the task actually was, for `suggest-revision`'s evidence section.
-
-    Not indexed: this runs once per lesson a human is actively reviewing,
-    not on every retrieval, so scanning episodes/traces once is the same
-    cost `evidence_io.load_evidence` already pays to find these same
-    occasions in the first place. Best-effort on purpose -- a label this
-    cannot find (an occasion recorded by a profile with no
-    task_invocation/title at all) is simply omitted, not an error, since
-    the occasion id and hit/miss verdict alone are still real evidence.
-    """
     out: dict[str, str] = {}
     if not wanted:
         return out
@@ -619,13 +500,10 @@ def _occasion_labels(root: str, wanted: set[str]) -> dict[str, str]:
     return out
 
 
-#: Occasions listed per section of a revision/rewrite draft: the most recent ones. A lesson that has fired on
-#: thousands of occasions would otherwise put every one in the file and in the model's prompt.
 EVIDENCE_PER_SECTION = 40
 
 
 def _listed_ids(hit_occasions: list, miss_occasions: list) -> set[str]:
-    """The occasion ids `_evidence_sections` actually lists: the only ones a draft may cite."""
     return {ev.occasion_id for ev in hit_occasions[-EVIDENCE_PER_SECTION:] + miss_occasions[-EVIDENCE_PER_SECTION:]}
 
 
@@ -646,26 +524,7 @@ def _evidence_sections(hit_occasions: list, miss_occasions: list, labels: dict) 
 
 
 def run_suggest_revision(args: argparse.Namespace) -> int:
-    """Draft a tightened activation condition for a MISCALIBRATED lesson.
-
-    Without `--draft`, this aggregates the exact evidence `commontrace
-    reliability` already computed (which occasions this lesson fired on,
-    and which of those it actually helped) into a "TODO: tighten" scaffold
-    a human or agent then edits -- the same "propose a draft, a human/
-    Validator activates it" shape `commontrace distill` and `lesson new`
-    already use, not a new governance mechanism. `--draft` (commontrace/
-    llm.py) asks a configured LLM to fill that scaffold in from the same
-    evidence instead, and falls back to it (with a stated reason) if no
-    provider is configured or the model's answer is unusable -- either way
-    the draft still lands at status=review and still passes through
-    `lesson approve`'s scaffolding/content-safety/redundancy gate before it
-    can ever be activated.
-
-    Scoped to MISCALIBRATED specifically (see `reliability.py`'s own
-    verdict rationale): a HARMFUL lesson's rule may be wrong outright, and
-    tightening WHEN it fires does not fix a rule that is simply incorrect --
-    see `run_suggest_rewrite` for that case.
-    """
+    """Draft a tightened activation condition for a MISCALIBRATED lesson."""
     root = paths.resolve_root(args.dest)
     path = _resolve_lesson_path(root, args.slug)
     if path is None:
@@ -730,12 +589,6 @@ def run_suggest_revision(args: argparse.Namespace) -> int:
     out_path = os.path.join(paths.lessons_dir(root), f"lesson_{draft_slug}.md")
 
     with frontmatter.locked(out_path):
-        # A draft that was approved or rejected is resolved -- its file
-        # stays on disk (nothing in this codebase deletes lesson history),
-        # but it no longer blocks drafting a fresh attempt at the same
-        # slug, and `write_lesson` below simply journals overwriting it.
-        # Only a still-pending ('review') draft blocks a second one, so an
-        # operator can't lose track of which draft is the live one.
         if os.path.exists(out_path):
             existing = read_or_warn(frontmatter.read, out_path)
             if existing is not None and existing[0].get("status") == "review":
@@ -746,15 +599,6 @@ def run_suggest_revision(args: argparse.Namespace) -> int:
                     file=sys.stderr,
                 )
                 return 1
-        # TODO-prefixed on purpose when there is no LLM draft (see
-        # templates.PLACEHOLDER_MARKER): the ORIGINAL applies_when/
-        # do_not_apply_when are reproduced below each marker for reference,
-        # but the point of this command is that a human or agent reads the
-        # evidence and rewrites the condition -- `lesson approve` refuses
-        # this draft, same as any other unedited scaffolding, until that
-        # happens (or --force). An LLM draft is NOT exempt from that same
-        # gate -- it still lands at status=review and still has to pass
-        # the scaffolding/content-safety/redundancy checks in run_approve.
         draft_fm = templates.lesson_frontmatter(
             slug=draft_slug,
             description=f"Revision draft: tighten the activation condition for {slug}",
@@ -800,16 +644,6 @@ def run_suggest_revision(args: argparse.Namespace) -> int:
 
 
 def run_suggest_rewrite(args: argparse.Namespace) -> int:
-    """Draft a full rewrite for a HARMFUL lesson -- its rule may be wrong
-    outright, not just over-broad, so (unlike `suggest-revision`) tightening
-    `applies_when` alone cannot fix it. Always attempts an LLM draft: there
-    is no honest heuristic that fills in "what should this rule actually
-    say" the way distill.py's evidence grouping fills in "what varied
-    across these traces" -- see distill.py's own reasoning for refusing to
-    do that. Without a usable LLM this still writes a review-status draft,
-    with a TODO placeholder and a stated reason, so the command is never a
-    no-op -- it just leaves more for the human to write.
-    """
     root = paths.resolve_root(args.dest)
     path = _resolve_lesson_path(root, args.slug)
     if path is None:
@@ -949,11 +783,6 @@ def run_list(args: argparse.Namespace) -> int:
             continue
         if args.status and fm.get("status") != args.status:
             continue
-        # `.get(k, default)` returns the default only when the key is ABSENT.
-        # A key present with an empty YAML value parses to None, which has no
-        # __format__ for ":8s" -- so a half-finished edit (`status:`) crashed
-        # the browsing command with a traceback while `lesson validate`
-        # diagnosed the same file cleanly. Coerce before formatting.
         if as_json:
             rows.append({
                 "name": fm.get("name"), "agent_type": fm.get("agent_type"),
@@ -970,7 +799,6 @@ def run_list(args: argparse.Namespace) -> int:
             f"{fm.get('description') or ''}"
         )
     if as_json:
-        # default=str: YAML reads an unquoted date as a date object.
         print(json.dumps(rows, ensure_ascii=False, default=str))
     return 0
 
@@ -997,10 +825,6 @@ def run_history(args: argparse.Namespace) -> int:
     now = lesson_io.current_revision(path) if path else None
 
     if not records:
-        # Distinguished carefully. "No lesson" and "a lesson with no recorded
-        # history" are different facts, and the second is the ordinary state
-        # of every lesson written before the journal existed -- reporting it
-        # as the first would send someone looking for a missing file.
         if path is None:
             print(f"[commontrace] no lesson found for slug '{args.slug}'.", file=sys.stderr)
             return 1

@@ -1,9 +1,3 @@
-"""Regression tests for Diagnostics & Benchmark Remediations across M3:
-- MEM-01: Standalone root path auto-detection in measure_performance.py and pilot_metrics.py
-- MEM-05: CLI argument parsing and forwarding in bench_cmd.py (--diff, --history, --strict, --no-save, --threshold-*)
-- BOM decoding in measure_performance.py:parse_frontmatter and data loaders
-- Doctor command directory listing error resilience
-"""
 import argparse
 import os
 import subprocess
@@ -15,17 +9,11 @@ from commontrace.reference import measure_performance as mp
 from commontrace.reference import pilot_metrics as pm
 
 
-# ==============================================================================
-# MEM-01: Standalone Root Path Resolution
-# ==============================================================================
 class TestStandaloneRootPathResolution:
-    """MEM-01: Auto-detection of repository root when COMMONTRACE_ROOT is unset."""
-
     def test_measure_performance_auto_root_points_to_repo_root(self):
         script_dir = os.path.dirname(os.path.abspath(mp.__file__))
         expected_repo = os.path.dirname(os.path.dirname(script_dir))
         assert os.path.abspath(mp._AUTO_ROOT) == os.path.abspath(expected_repo)
-        # Check that expected repo has commontrace package and memory
         assert os.path.isdir(os.path.join(mp._AUTO_ROOT, "commontrace"))
         assert os.path.isdir(os.path.join(mp._AUTO_ROOT, "memory"))
 
@@ -38,7 +26,6 @@ class TestStandaloneRootPathResolution:
         assert os.path.abspath(pm._ROOT) == os.path.abspath(expected_repo)
 
     def test_measure_performance_standalone_execution(self):
-        """Execute measure_performance.py directly via subprocess without COMMONTRACE_ROOT."""
         repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         script_path = os.path.join(repo_root, "commontrace", "reference", "measure_performance.py")
 
@@ -57,7 +44,6 @@ class TestStandaloneRootPathResolution:
         assert "Episodes analyzed" in proc.stdout or "Not enough episodes" in proc.stdout
 
     def test_pilot_metrics_standalone_execution(self):
-        """Execute pilot_metrics.py directly via subprocess without COMMONTRACE_ROOT."""
         repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         script_path = os.path.join(repo_root, "commontrace", "reference", "pilot_metrics.py")
 
@@ -75,12 +61,7 @@ class TestStandaloneRootPathResolution:
         assert proc.returncode == 0
 
 
-# ==============================================================================
-# MEM-05: Bench CLI Argument Parsing and Forwarding
-# ==============================================================================
 class TestBenchCliArgumentForwarding:
-    """MEM-05: Parse and forward --diff, --history, --strict, --no-save, and --threshold-* flags."""
-
     def test_bench_parser_accepts_all_remediated_flags(self):
         parser = argparse.ArgumentParser()
         subparsers = parser.add_subparsers(dest="cmd")
@@ -189,11 +170,6 @@ class TestBenchCliArgumentForwarding:
             assert "--json" in extra_arg
 
     def test_bench_pilot_strict_is_refused_not_silently_dropped(self, tmp_path):
-        """pilot_metrics.py has no --strict flag and implements no
-        threshold-based pass/fail logic -- `bench --pilot --strict` used to
-        silently drop --strict (never forward it) and always exit 0
-        regardless of what the pilot metrics showed, so a CI regression
-        gate built on this looked wired up while enforcing nothing."""
         parser = argparse.ArgumentParser()
         subparsers = parser.add_subparsers(dest="cmd")
         bench_cmd.add_parser(subparsers)
@@ -206,12 +182,7 @@ class TestBenchCliArgumentForwarding:
             assert not mock_run.called, "must refuse before ever invoking pilot_metrics.py"
 
 
-# ==============================================================================
-# BOM Decoding in Benchmark & Pilot Data Loaders
-# ==============================================================================
 class TestBenchBomHandling:
-    """UTF-8 BOM handling in measure_performance and pilot_metrics."""
-
     def test_parse_frontmatter_handles_bom_string(self):
         bom_text = "\ufeff---\nname: bom_lesson\nimportance: 4\n---\nBody text\n"
         fm = mp.parse_frontmatter(bom_text)
@@ -299,17 +270,7 @@ class TestBenchBomHandling:
         assert traces[0]["outcome"]["resolved"] is True
 
 
-# ==============================================================================
-# [BUG-BENCH-01] Rigid "2*.md" Episode Pattern
-# ==============================================================================
 class TestLoadEpisodesAcceptsNonYearPrefixedNames:
-    """[BUG-BENCH-01]: load_episodes() globbed "episodes/2*.md" -- matching
-    only the date-prefixed name capture/trace tooling writes. An episode
-    file is explicitly meant to be hand-editable/hand-renamable, and a
-    custom-named one (a migrated export, a manually curated example) was
-    invisible to glob() entirely -- not even reaching skipped_paths, which
-    exists specifically so a shrinking metric denominator is never silent."""
-
     def test_a_non_year_prefixed_episode_is_loaded(self, tmp_path, monkeypatch):
         ep_dir = tmp_path / "memory" / "episodes"
         ep_dir.mkdir(parents=True, exist_ok=True)
@@ -338,12 +299,7 @@ class TestLoadEpisodesAcceptsNonYearPrefixedNames:
         assert skipped == []
 
 
-# ==============================================================================
-# Doctor Command Directory Listing Error Resilience
-# ==============================================================================
 class TestDoctorResilience:
-    """Doctor command must tolerate OSError during directory inspection."""
-
     def test_doctor_tolerates_oserror_on_lessons_dir(self, tmp_path, capsys):
         mem_dir = tmp_path / "memory"
         lessons_dir = mem_dir / "lessons"

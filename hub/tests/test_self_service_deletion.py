@@ -1,16 +1,3 @@
-"""Self-service deletion: an org acting through its own API key, not an
-operator's DB-access-trust-level CLI.
-
-`delete_trace` is immediate and org-scoped -- the same trust level as
-every other write tool, since a compromised key could already overwrite a
-trace's content via amend_trace. Whole-account deletion is not: a single
-`forget_org()` call would let one compromised key wipe an org's entire
-history irreversibly with no window for anyone to notice, so it is split
-into request_org_deletion / confirm_org_deletion, two differently-named
-calls with a mandatory delay between them. See
-hub/models.py:Organization's comment on the columns this uses and
-hub/crud.py:request_org_deletion's docstring for the full reasoning.
-"""
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -155,15 +142,6 @@ class TestDeleteTrace:
     async def test_a_chain_id_belonging_to_another_org_is_never_touched(
         self, session_factory, config, orgs, monkeypatch
     ):
-        """[BUG-HUB-03]: amendment_chain() itself has no org_id to scope by
-        (see its own docstring) -- delete_trace's org_id filter on the Trace
-        delete already made that safe for Trace rows, but the TraceRelation
-        delete had no equivalent guard. amend_trace can never actually
-        produce a chain spanning two orgs, so exercise the guard directly by
-        making amendment_chain report one anyway, standing in for a future
-        bug or a UUID collision -- the case delete_trace's own docstring
-        already calls out as the reason for the org_id filter it does have.
-        """
         rate_limiter = make_rate_limiter(config)
         async with session_scope(session_factory) as session:
             mine = await contribute_trace(
@@ -188,8 +166,8 @@ class TestDeleteTrace:
         assert deleted is True
 
         async with session_scope(session_factory) as session:
-            assert await session.get(Trace, mine["id"]) is None  # ours: gone
-            assert await session.get(Trace, theirs["id"]) is not None  # theirs: untouched
+            assert await session.get(Trace, mine["id"]) is None
+            assert await session.get(Trace, theirs["id"]) is not None
             surviving = (
                 await session.execute(
                     select(TraceRelation).where(TraceRelation.related_trace_id == theirs["id"])
@@ -287,9 +265,6 @@ class TestCancelOrgDeletion:
 
 class TestConfirmOrgDeletion:
     async def _requested_and_ready(self, session_factory, org_id):
-        """Request deletion, then move the clock back rather than sleeping
-        DELETION_GRACE_SECONDS -- same pattern
-        hub/tests/test_search_and_audit.py uses for API key expiry."""
         async with session_scope(session_factory) as session:
             result = await crud.request_org_deletion(session, org_id)
         async with session_scope(session_factory) as session:
@@ -429,13 +404,6 @@ class TestConfirmOrgDeletion:
 
 
 class TestConfirmOrgDeletionCancelsALiveStripeSubscriptionFirst:
-    """An org row deleted out from under an active Stripe subscription
-    keeps charging that customer's card every billing cycle with no
-    CommonTrace account left to ever notice -- see
-    billing.cancel_subscription's own docstring. cancel_subscription is
-    monkeypatched here at the name crud.py imports it under, the same
-    seam hub/tests/test_billing.py patches billing._post at."""
-
     async def _requested_and_ready(self, session_factory, org_id):
         async with session_scope(session_factory) as session:
             result = await crud.request_org_deletion(session, org_id)
@@ -481,9 +449,6 @@ class TestConfirmOrgDeletionCancelsALiveStripeSubscriptionFirst:
     async def test_a_failed_cancellation_blocks_deletion_entirely(
         self, session_factory, orgs, monkeypatch
     ):
-        """The org must survive intact -- traces, keys, everything -- so
-        the deletion can simply be retried once Stripe is reachable
-        again, rather than leaving a half-deleted account behind."""
         async with session_scope(session_factory) as session:
             org = await session.get(Organization, orgs["a"])
             org.stripe_customer_id = "cus_1"
@@ -507,10 +472,6 @@ class TestConfirmOrgDeletionCancelsALiveStripeSubscriptionFirst:
 
 @pytest.mark.filterwarnings("ignore::pytest.PytestWarning")
 class TestDeletionNotReadyErrorShape:
-    """DeletionNotReady is a ValueError subclass but must not collapse into
-    the generic invalid_request bucket -- a client needs to tell "your
-    request was malformed" apart from "come back later/get a fresh token"."""
-
     def test_maps_to_its_own_error_code_not_invalid_request(self):
         from hub.server import _error_response
 
@@ -524,11 +485,6 @@ class TestDeletionNotReadyErrorShape:
 
 @pytest.mark.filterwarnings("ignore::pytest.PytestWarning")
 class TestSubscriptionCancellationFailedErrorShape:
-    """Also its own error code, distinct from deletion_not_ready -- the
-    token and timing were fine here, an external dependency (Stripe) is
-    what blocked the request, so a client should retry rather than treat
-    this as a malformed request."""
-
     def test_maps_to_its_own_error_code(self):
         from hub.server import _error_response
 
@@ -537,7 +493,5 @@ class TestSubscriptionCancellationFailedErrorShape:
         assert body["error"] not in ("deletion_not_ready", "invalid_request")
 
     def test_is_not_a_value_error(self):
-        """Deliberately RuntimeError, not ValueError -- unlike
-        DeletionNotReady, this is never about a malformed request."""
         assert isinstance(crud.SubscriptionCancellationFailed("x"), RuntimeError)
         assert not isinstance(crud.SubscriptionCancellationFailed("x"), ValueError)

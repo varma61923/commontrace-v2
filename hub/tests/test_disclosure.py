@@ -1,8 +1,3 @@
-"""hub/disclosure.py -- audit 2.3/4.4's "unknown data residency"/"no
-canonical product identity" gaps get a PLACE to be answered, once an
-operator has real answers. No claim is asserted on this codebase's own
-behalf: an unconfigured deployment says exactly that.
-"""
 from __future__ import annotations
 
 import httpx
@@ -37,8 +32,6 @@ class TestUnconfiguredSaysSoExplicitly:
         assert body["operator_support_contact"] == "not disclosed by this deployment's operator"
 
     async def test_nothing_is_silently_omitted(self):
-        """A missing key and an explicit 'not disclosed' are different
-        claims -- a reviewer must never have to guess which one this is."""
         async with _client(_app()) as client:
             resp = await client.get("/disclosure")
         body = resp.json()

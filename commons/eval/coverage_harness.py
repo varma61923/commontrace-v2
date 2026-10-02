@@ -70,9 +70,6 @@ TEXT = {
 }
 
 
-# --- Vendor-shaped fakes: the documented return shapes, nothing more -------------
-
-
 def _mem0():
     client = NS(search=lambda q, **kw: {"results": [{"id": k, "memory": v} for k, v in TEXT.items()]},
                 delete=lambda i: None)
@@ -115,9 +112,6 @@ def _agentcore():
 
 ADAPTERS = {"mem0": _mem0, "letta": _letta, "zep": _zep, "claude-memory-store": _claude_store,
             "agentcore": _agentcore}
-
-
-# --- Coverage ----------------------------------------------------------------------
 
 
 def run_seed(adapter: str, seed: int, occasions: int = OCCASIONS) -> dict:
@@ -188,9 +182,6 @@ def coverage(adapters: list[str], seeds: int, jobs: int, occasions: int = OCCASI
     return [summarise(a, results[a]) for a in adapters]
 
 
-# --- Withdrawal ---------------------------------------------------------------------
-
-
 def _withdrawal_seed(args: tuple) -> dict:
     seed, max_occasions = args
     root = tempfile.mkdtemp(prefix="commontrace-wd-")
@@ -238,16 +229,12 @@ def withdrawal(seeds: int, jobs: int, max_occasions: int = 1500) -> dict:
     }
 
 
-# --- Attrition and mid-run edits ----------------------------------------------------
-
 ATTRITION_RANDOM = 0.30
 ATTRITION_DIFFERENTIAL = 0.60
 EDIT_AT = 0.5
 
 
 def _variant_seed(args: tuple) -> dict:
-    """One run of `variant` ("random_attrition", "differential_attrition" or "edit") on the
-    Mem0-shaped fake. Returns the per-memory estimates and the audit's verdict."""
     variant, seed, occasions = args
     root = tempfile.mkdtemp(prefix=f"commontrace-{variant}-")
     try:
@@ -262,7 +249,7 @@ def _variant_seed(args: tuple) -> dict:
         for i in range(occasions):
             if variant == "edit" and i == int(occasions * EDIT_AT):
                 texts[GOOD] = "set an idempotency key on webhook handlers, then wait for the ack"
-                effects[GOOD] = 0.0  # the rewrite does nothing; the pooled arm now averages two treatments
+                effects[GOOD] = 0.0
             delivered = {item.id for item in memory.recall("webhook fired twice", occasion_id=f"o{i}")}
             p = BASELINE + sum(e for k, e in effects.items() if k in delivered)
             succeeded = rng.random() < p
@@ -297,12 +284,9 @@ def _run_variant(variant: str, seeds: int, jobs: int, occasions: int) -> list[di
 
 def attrition(seeds: int, jobs: int, occasions: int = OCCASIONS) -> dict:
     """Random loss keeps the answer honest; loss correlated with outcome and treatment is flagged."""
-    # Same number of REPORTED outcomes as a run without loss, so a pass means the loss did
-    # not bias or mis-cover, not that power happened to survive it.
     random_runs = _run_variant("random_attrition", seeds, jobs, int(occasions / (1 - ATTRITION_RANDOM)))
     diff_runs = _run_variant("differential_attrition", seeds, jobs, occasions)
     random_summary = summarise("random_attrition", [r["memories"] for r in random_runs])
-    # The memory the loss is correlated with in every run: GOOD's injected arm loses its failures.
     biased = [r for r in diff_runs
               if GOOD in r["memories"] and r["memories"][GOOD]["ci_low"] > EFFECTS[GOOD]]
     flagged = [r for r in diff_runs if r["audit"] != integrity.VERDICT_SOUND]
@@ -329,9 +313,6 @@ def edits(seeds: int, jobs: int, occasions: int = OCCASIONS) -> dict:
         "edited_memory_flagged_compromised": sum(r["audit"] == integrity.VERDICT_COMPROMISED for r in runs) / seeds,
         "passed": all(r["audit"] == integrity.VERDICT_COMPROMISED for r in runs),
     }
-
-
-# --- CLI ----------------------------------------------------------------------------
 
 
 def main(argv: list[str] | None = None) -> int:

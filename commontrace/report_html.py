@@ -1,20 +1,4 @@
-"""Shared HTML page shell for the taxonomy/impact/pilot reports.
-
-Deliberately not a general markdown-to-HTML converter (that already exists
-in commontrace/reference/measure_performance.py, for the subprocess-run
-benchmark scripts) -- these three reports render structured data (stat
-cards, grouped tables) that reads better as hand-built HTML than as
-markdown pushed through a generic renderer, and they are in-process modules
-that should not take a dependency on the reference/ scripts (those ship
-standalone, runnable with nothing but PyYAML, and are meant to work without
-the rest of the package installed).
-
-Escaping is done INSIDE this module (wrap_page title/timestamp, stat_card
-label/value/note): trace titles, tags and lesson slugs are file content,
-not code, and are exactly as attacker-controllable as the frontmatter
-values measure_performance.py already escapes. Callers must still escape
-values they interpolate into their own fragments directly.
-"""
+"""Shared HTML page shell for the taxonomy/impact/pilot reports."""
 from __future__ import annotations
 
 import html
@@ -69,11 +53,6 @@ code { background: var(--soft); padding: 1px 5px; border-radius: 4px; font-size:
 
 
 def wrap_page(title: str, body_html: str, timestamp: str) -> str:
-    # Escape by default: title/timestamp are often lesson/trace-derived file
-    # content, and a caller that forgets html.escape() would otherwise ship
-    # stored XSS in a saved report. body_html stays raw (it is this module's
-    # own fragments), so escape values before composing them into it -- or
-    # use stat_card/table helpers below, which escape their inputs.
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>

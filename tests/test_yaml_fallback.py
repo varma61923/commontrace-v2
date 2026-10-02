@@ -1,17 +1,3 @@
-"""Differential test: parse_yaml_minimal vs real PyYAML.
-
-measure_performance.py carries a hand-rolled YAML subset parser so that
-`python measure_performance.py` works when executed directly in an
-environment without PyYAML installed. Its docstring makes specific
-behavioural claims -- scientific-notation handling, quote escaping, wrapped
-scalars -- and a claim CI does not check is just a comment.
-
-The contract under test is narrow and worth stating: for any frontmatter
-*this project's own writer emits*, the fallback must produce exactly what
-PyYAML produces. It is not a general YAML implementation and does not try to
-be; the documented gaps are asserted here too, so they stay deliberate rather
-than becoming surprises.
-"""
 import datetime
 import random
 
@@ -21,7 +7,6 @@ import yaml
 
 
 def _roundtrip(obj):
-    """Dump with PyYAML the way the project writes files, then parse both ways."""
     text = yaml.safe_dump(obj, sort_keys=False, allow_unicode=True)
     return yaml.safe_load(text), mp.parse_yaml_minimal(text), text
 
@@ -50,16 +35,6 @@ class TestScalarTypes:
         "0", "007", "010", "0x1f", "0b101", "1_000", "-42", "+7",
     ])
     def test_ambiguous_numeric_literals_resolve_identically(self, literal):
-        """PyYAML's YAML-1.1 resolvers, which are easy to get backwards.
-
-        Floats need BOTH a literal '.' and a *signed* exponent, so '7E3' and
-        '7.0e3' are both strings while '7.0e+3' is a float. Integers include
-        bare-leading-zero octal, so '010' is 8. Both classes of mistake are
-        silent: they yield a plausible wrong value rather than an error.
-
-        Ground truth is read from PyYAML here rather than hard-coded, because
-        the hard-coded version of this expectation was wrong.
-        """
         text = f"k: {literal}\n"
         assert mp.parse_yaml_minimal(text) == yaml.safe_load(text)
 
@@ -89,8 +64,6 @@ class TestCollections:
 
 class TestWrappedScalars:
     def test_a_long_scalar_wrapped_by_pyyaml_folds_back_to_one_line(self):
-        """PyYAML wraps at width=80 by default, so any long description in a
-        real lesson file arrives as continuation lines."""
         long_text = " ".join(f"word{i}" for i in range(60))
         _assert_agrees({"description": long_text})
 
@@ -132,8 +105,6 @@ class TestRealisticFrontmatter:
 
 
 class TestGeneratedCases:
-    """The 'hundreds of generated cases' the docstring claims, actually run."""
-
     def _random_scalar(self, rng):
         return rng.choice([
             rng.choice(["ok", "with: colon", "a'b", 'a"b', "trailing ", "# hash", ""]),
@@ -159,16 +130,12 @@ class TestGeneratedCases:
         return doc
 
     def test_three_hundred_generated_documents_agree(self):
-        rng = random.Random(20260820)  # fixed seed: a failure is reproducible
+        rng = random.Random(20260820)
         for _ in range(300):
             _assert_agrees(self._random_doc(rng))
 
 
 class TestDocumentedGaps:
-    """The docstring lists deliberate gaps. Asserting them keeps them
-    deliberate -- if one is ever closed, this test fails and the docstring
-    gets updated rather than quietly going stale."""
-
     def test_a_list_nested_directly_in_a_list_is_a_known_gap(self):
         text = "k:\n- - inner\n"
         assert yaml.safe_load(text) == {"k": [["inner"]]}

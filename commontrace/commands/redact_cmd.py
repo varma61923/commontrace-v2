@@ -1,12 +1,4 @@
-"""`commontrace redact`: remove credentials from traces already in the store.
-
-Captures and imports redact credentials as they are written
-(commontrace/memory_guard.py:redact_secrets). A store that predates that
-can still hold keys that leaked into its logs -- in a trace's fields, its
-body, and its filename when the key was in the title. This rewrites those
-traces in place, through the same atomic writer as every other command, and
-renames a file whose name was built from such a title.
-"""
+"""`commontrace redact`: remove credentials from traces already in the store."""
 
 from __future__ import annotations
 

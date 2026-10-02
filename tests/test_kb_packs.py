@@ -1,9 +1,3 @@
-"""commontrace/kb_packs.py and `commontrace kb`. The properties worth
-protecting: a pack is a SELECTION of the already-curated corpus (not new
-content), installs only at status=review, cannot be approved until a
-person states where it does not apply, and never overwrites a reviewer's
-edits on re-install.
-"""
 from __future__ import annotations
 
 import json

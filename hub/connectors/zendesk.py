@@ -1,25 +1,4 @@
-"""Zendesk: ticket events -> signals.
-
-Built from Zendesk's published documentation:
-  * signature: developer.zendesk.com/documentation/webhooks/verifying/ --
-    `X-Zendesk-Webhook-Signature` is base64(HMAC-SHA256(secret, TIMESTAMP + BODY)),
-    TIMESTAMP being `X-Zendesk-Webhook-Signature-Timestamp` (ISO-8601 UTC,
-    e.g. 2021-03-25T05:09:27Z). The secret is used as the literal string, not
-    base64-decoded.
-  * payloads: the event-subscribed ticket events
-    (api-reference/webhooks/event-types/ticket-events/): top-level `id` (event
-    uuid), `type`, `time`, `detail.id` (ticket id) and, for status changes,
-    `event.current` / `event.previous`; for CSAT, `event.satisfaction_score.score`.
-    Statuses are upper case (NEW, OPEN, PENDING, HOLD, SOLVED, CLOSED).
-
-What it emits, for the occasion `<occasion_prefix><ticket id>`:
-  ticket.status_changed to SOLVED/CLOSED          CANDIDATE   (matures after window_days)
-  ticket.status_changed from SOLVED/CLOSED back   REVERSAL    (the ticket was reopened)
-  ticket.csat_received with a BAD score           FAILURE
-Everything else is acknowledged and ignored. A GOOD score is not a success on
-its own: success is staying solved. Human takeover is not exposed by these
-events and is not inferred.
-"""
+"""Zendesk: ticket events -> signals."""
 from __future__ import annotations
 
 import base64
@@ -51,7 +30,6 @@ def verify(headers: Mapping[str, str], body: bytes, secret: str, *, now: datetim
     ).decode("ascii")
     if not base.constant_time_equal(expected, signature):
         raise base.SignatureError("Zendesk signature does not match")
-    # Checked after the signature, so the timestamp being read is the signed one.
     try:
         signed_at = base.parse_timestamp(stamp)
     except ValueError:

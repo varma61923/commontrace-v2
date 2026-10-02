@@ -1,5 +1,3 @@
-"""holdout_io.read_outcomes / record_outcome: the incremental read must give exactly the
-answers a full re-parse gives, and must never serve a log that was replaced under it."""
 import json
 import os
 import threading
@@ -10,7 +8,6 @@ from commontrace import holdout_io
 
 
 def _naive(root):
-    """The original behaviour: parse the whole file, last write wins, skip bad lines."""
     path = holdout_io.outcomes_log_path(root)
     out = {}
     if not os.path.isfile(path):
@@ -49,7 +46,6 @@ def test_recording_does_not_reparse_the_whole_log_each_time(tmp_path, monkeypatc
     monkeypatch.setattr(holdout_io.json, "loads", lambda *a, **k: calls.append(1) or real(*a, **k))
     for i in range(400):
         holdout_io.record_outcome(root, f"o{i}", True)
-    # Linear: each new line is parsed about once. The old behaviour parsed ~n^2/2 (80,000).
     assert len(calls) < 3 * 400
 
 
@@ -70,7 +66,7 @@ def test_a_replaced_log_is_never_served_stale(tmp_path):
     assert holdout_io.read_outcomes(root) == {"old": True}
     path = holdout_io.outcomes_log_path(root)
     os.remove(path)
-    with open(path, "w", encoding="utf-8") as fh:  # same path, new content, longer than before
+    with open(path, "w", encoding="utf-8") as fh:
         fh.write(json.dumps({"occasion_id": "new-one", "succeeded": False, "at": "x" * 200}) + "\n")
     assert holdout_io.read_outcomes(root) == {"new-one": False}
 
@@ -83,7 +79,7 @@ def test_a_log_rewritten_in_place_with_different_earlier_bytes_is_rebuilt(tmp_pa
     path = holdout_io.outcomes_log_path(root)
     size = os.path.getsize(path)
     body = "".join(json.dumps({"occasion_id": f"b{i}", "succeeded": False}) + "\n" for i in range(5))
-    with open(path, "r+", encoding="utf-8") as fh:  # same inode, same-or-longer length, other content
+    with open(path, "r+", encoding="utf-8") as fh:
         fh.write(body.ljust(size + 10))
     assert set(holdout_io.read_outcomes(root)) == {f"b{i}" for i in range(5)} == set(_naive(root))
 
@@ -104,9 +100,9 @@ def test_a_torn_final_line_is_read_for_the_call_but_not_remembered(tmp_path):
     holdout_io.record_outcome(root, "whole", True)
     path = holdout_io.outcomes_log_path(root)
     with open(path, "a", encoding="utf-8") as fh:
-        fh.write(json.dumps({"occasion_id": "partial", "succeeded": False}))  # no newline: a write in flight
+        fh.write(json.dumps({"occasion_id": "partial", "succeeded": False}))
     assert holdout_io.read_outcomes(root) == {"whole": True, "partial": False} == _naive(root)
-    holdout_io.record_outcome(root, "next", True)  # terminates the fragment first
+    holdout_io.record_outcome(root, "next", True)
     assert holdout_io.read_outcomes(root) == _naive(root) == {"whole": True, "partial": False, "next": True}
 
 
@@ -144,7 +140,7 @@ def test_concurrent_reporters_never_lose_or_duplicate_an_outcome(tmp_path):
         try:
             for i in range(60):
                 holdout_io.record_outcome(root, f"t{n}-{i}", i % 2 == 0)
-                holdout_io.record_outcome(root, f"shared-{i}", True)  # all threads race on these
+                holdout_io.record_outcome(root, f"shared-{i}", True)
         except Exception as exc:  # noqa: BLE001
             errors.append(exc)
 
@@ -155,4 +151,4 @@ def test_concurrent_reporters_never_lose_or_duplicate_an_outcome(tmp_path):
     got = holdout_io.read_outcomes(root)
     assert got == _naive(root) and len(got) == 4 * 60 + 60
     with open(holdout_io.outcomes_log_path(root), encoding="utf-8") as fh:
-        assert len([line for line in fh if line.strip()]) == len(got)  # no duplicate lines
+        assert len([line for line in fh if line.strip()]) == len(got)

@@ -1,14 +1,3 @@
-"""Tests for commontrace/overlap.py — the Fleet Overlap measurement.
-
-Two things need guarding here, and they are different in kind:
-
-1. **The estimator is correct.** A number that gets quoted to customers has
-   to be checked against ground truth, not eyeballed.
-2. **The disclosure boundary is what the docs say it is.** The first
-   implementation claimed "no content is shared" and leaked "idempotency"
-   via a lesson slug and "force-push" via a tag. These tests exist so that
-   regression cannot recur silently.
-"""
 import json
 import os
 
@@ -33,9 +22,6 @@ class TestMinHashEstimator:
         assert overlap.estimate_jaccard(a, b) < 0.1
 
     def test_estimate_tracks_true_jaccard_within_theoretical_error(self):
-        """Standard error of MinHash is ~1/sqrt(num_perm). Assert the mean
-        absolute error stays inside that bound over many random pairs --
-        this is what makes the reported percentage trustworthy."""
         import random
 
         rng = random.Random(11)
@@ -52,9 +38,6 @@ class TestMinHashEstimator:
         assert sum(errors) / len(errors) < theoretical
 
     def test_signatures_are_stable_across_processes(self):
-        """Python's hash() is randomized per process. If signing used it,
-        two fleets would compute different signatures for identical text and
-        every overlap would read as zero."""
         import subprocess
         import sys
 
@@ -69,7 +52,6 @@ class TestMinHashEstimator:
         assert a == b and a.strip()
 
     def test_empty_text_matches_nothing(self):
-        """An empty activation condition must not match everything."""
         empty = overlap.minhash("")
         real = overlap.minhash("postgres connection pool exhausted on deploy")
         assert overlap.estimate_jaccard(empty, real) == 0.0
@@ -107,8 +89,6 @@ class TestReport:
         assert r.matches[0].failure_label == "f1"
 
     def test_report_is_asymmetric(self):
-        """'What would B gain from A' is not 'how alike are A and B'. A big
-        mature fleet can cover a small one while gaining nothing back."""
         big = overlap.FleetSignature("big", overlap.DEFAULT_NUM_PERM, [
             _item("l1", "lesson", "postgres connection pool exhausted rolling deploy"),
         ])
@@ -116,7 +96,6 @@ class TestReport:
             _item("f1", "failure", "postgres connection pool exhausted rolling deploy"),
         ])
         assert overlap.build_report(small, big).n_covered == 1
-        # big has no failures recorded, so it gains nothing measurable
         assert overlap.build_report(big, small).n_failures == 0
 
     def test_no_failures_produces_actionable_note_not_a_crash(self):
@@ -160,16 +139,12 @@ class TestReport:
 
 
 class TestDisclosureBoundary:
-    """Regression guards for the leak found by testing the first version."""
-
     def test_signature_does_not_contain_source_text(self):
         secret = "proprietaryquantumpricingheuristic"
         sig = overlap.minhash(f"our {secret} misfired on tier three")
         assert secret not in json.dumps(sig)
 
     def test_redacted_label_hides_a_self_describing_slug(self):
-        """`lesson_stripe_idempotency` describes its own content -- that was
-        the actual leak. Redaction must remove it."""
         red = overlap.redact_label("lesson_stripe_idempotency")
         assert "stripe" not in red and "idempotency" not in red
 
@@ -208,7 +183,6 @@ class TestOverlapCLI:
         capsys.readouterr()
         assert main(["overlap", "sign", "--fleet-label", "f", "--out", str(out), "--dest", str(store)]) == 0
         assert out.is_file()
-        # A fleet compared against itself covers its own failures.
         assert main(["overlap", "report", "--ours", str(out), "--theirs", str(out)]) == 0
         assert "Fleet Overlap Report" in capsys.readouterr().out
 
@@ -221,8 +195,6 @@ class TestOverlapCLI:
         assert "Review it before sending" in captured.err
 
     def test_redacted_sign_leaks_no_source_terms(self, store, tmp_path, capsys):
-        """End-to-end version of the leak regression: with both redaction
-        flags, no distinctive source term appears anywhere in the file."""
         self._seed(store)
         out = tmp_path / "sig.json"
         main([
@@ -234,8 +206,6 @@ class TestOverlapCLI:
             assert term not in blob, f"{term!r} leaked into the signature file"
 
     def test_redaction_does_not_change_the_measurement(self, store, tmp_path):
-        """Redaction must cost nothing analytically -- it only touches
-        labels/tags, never the signatures the estimate is computed from."""
         self._seed(store)
         plain, red = tmp_path / "p.json", tmp_path / "r.json"
         main(["overlap", "sign", "--fleet-label", "f", "--out", str(plain), "--dest", str(store)])

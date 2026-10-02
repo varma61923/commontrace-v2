@@ -1,13 +1,3 @@
-"""The lesson workbench behind the console: what is waiting for review, why a draft would or would not pass, and
-the actions that act on it.
-
-Reading is always available through the gateway's token. ACTING (edit, approve, reject) is a separate switch the
-operator turns on (`commontrace gateway --allow-approval`), because approving a lesson changes what every agent
-is told, and a console left open on a robot's screen should not be able to do that by default. Every action goes
-through the same code the command line uses, so the same gates apply: unedited scaffolding, a high-confidence
-secret or injection finding, a restatement of an active lesson, and the store's separation-of-duties policy. A
-draft edited here is still a `status: review` draft; only `approve` activates it, and `force` is not offered.
-"""
 from __future__ import annotations
 
 import argparse
@@ -128,8 +118,6 @@ def _clean(value, field: str) -> str:
 
 
 def edit(root: str, slug: str, fields: dict, actor: str) -> dict:
-    """Change a REVIEW lesson's rule or conditions. Anything else is refused: an active lesson is changed by a
-    new draft that is approved, so the experiment sees a new revision rather than a silent rewrite."""
     (name, fm, body), _rows = _find(root, slug)
     if fm.get("status") != "review":
         raise WorkbenchError(409, "not_in_review", "only a lesson in review can be edited here")

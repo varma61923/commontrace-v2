@@ -1,26 +1,3 @@
-"""Collaboration on a trace, for a customer's own team: comments,
-assignment, and a notification inbox (audit §8.1: "No reviewer queue,
-comments, assignments, notification inbox, ownership").
-
-Distinct from hub/manage.py's Knowledge Base review queue (kb-review,
-approve-submission, reject-submission), which is an OPERATOR surface --
-cross-tenant, staff-only. This is the surface a customer's own team uses
-on their own traces, and it did not exist until hub/models.py:User gave a
-request an actual PERSON to attribute a comment to, be assigned to, or
-notify.
-
-Every function here takes an `AuthenticatedUser` (hub/auth.py), never just
-an org_id, for the reason hub/auth.py:get_current_user exists: a shared
-workload API key cannot author a remark or be the one someone assigns
-work to. hub/server.py's tool wrappers are the only caller that resolves
-one from request context.
-
-`target_type` is a real column (Comment/Assignment/Notification all carry
-it) but only `"trace"` is validated and reachable through the MCP tool
-surface today -- kept generic so a second target kind doesn't need a
-schema change, not because more than one is supported yet.
-"""
-
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -37,16 +14,11 @@ _MAX_COMMENT_CHARS = 4000
 
 
 class CollabError(ValueError):
-    """A well-formed request this module refuses on its own terms (an
-    empty body, a disabled assignee) -- reported as `invalid_request` by
-    hub/server.py, the same way crud.py's own input errors are, never as
-    an internal_error."""
+    ...
 
 
 class CollabNotFound(CollabError):
-    """The trace, user, or notification named does not exist in this org
-    -- reported as `not_found`, matching get_trace's own convention for an
-    id that is simply wrong (including one that belongs to another org)."""
+    ...
 
 
 async def _get_trace_or_raise(session: AsyncSession, org_id: str, trace_id: str) -> Trace:
@@ -75,8 +47,6 @@ async def add_comment(
     session.add(comment)
     await session.flush()
 
-    # Tell the assignee, if any -- not the comment's own author, who
-    # obviously already knows what they just wrote.
     assignment = (
         await session.execute(
             select(Assignment).where(
@@ -130,10 +100,6 @@ async def list_comments(session: AsyncSession, org_id: str, trace_id: str) -> li
 async def assign(
     session: AsyncSession, org_id: str, assigner, trace_id: str, assignee_user_id: str,
 ) -> dict:
-    """`assigner` is an `AuthenticatedUser`. Re-assigning a trace that
-    already has an assignee overwrites it -- see Assignment's own
-    docstring for why this is mutable current state, not an append-only
-    log."""
     await _get_trace_or_raise(session, org_id, trace_id)
 
     assignee = await session.get(User, assignee_user_id)
@@ -222,9 +188,6 @@ async def mark_notification_read(
     session: AsyncSession, org_id: str, person, notification_id: str,
 ) -> bool:
     notification = await session.get(Notification, notification_id)
-    # Scoped to the caller's OWN id, not just their org: another person in
-    # the same org must not be able to mark -- or even discover the
-    # existence of -- someone else's inbox entry by guessing an id.
     if (
         notification is None
         or notification.org_id != org_id

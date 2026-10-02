@@ -1,30 +1,3 @@
-"""Tests for Knowledge Base entry standing: the maintenance half.
-
-Everything else about the Knowledge Base is about getting content INTO it
--- `commons_seed` in bulk, `review_kb_submission` one accepted community
-proposal at a time. This file is about what happens to content once it is
-in and the world moves on: an entry the fleets who tried it say does not
-work, an entry whose version-pinned claim has expired, and an entry an
-operator decides to withdraw.
-
-Three properties are being pinned, and the third matters most:
-
-1. Standing is computed correctly from the signals already collected
-   (`Trace.trust`, `Trace.commons_votes`, `Trace.commons_review_after`).
-
-2. The query layer acts on it: a disputed entry stops counting toward the
-   coverage figure `commons_overlap` produces, and sorts last among
-   `commons_search` candidates. A retracted entry disappears from all
-   three Knowledge Base read paths at once.
-
-3. Nothing here ever removes content on its own. The strongest automatic
-   consequence of any number of downvotes is a smaller coverage claim and
-   a worse rank -- both of which make the product's own claims more
-   conservative, never less. Withdrawal is a human action. See
-   hub/commons.py's "votes inform, the operator decides"; the tests in
-   `TestVotesNeverRetract` are what make that a property rather than an
-   intention.
-"""
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -42,16 +15,6 @@ pytestmark = pytest.mark.asyncio
 
 @pytest_asyncio.fixture
 async def orgs(session_factory, establish_orgs):
-    """One operator org (the only one ever allowed to own Knowledge Base
-    entries) and four customer orgs -- four because MIN_VOTES_FOR_STANDING
-    is 3 and several tests need to cross it and then some.
-
-    The customer orgs are established voters (see the `establish_orgs`
-    fixture): this file is about what a *legitimate* field of voters does
-    to an entry's standing, so its voters have to be able to move the
-    number at all. The anti-sockpuppet bar that decides who can is pinned
-    separately, in TestSockpuppetsCannotMoveStanding below.
-    """
     async with session_scope(session_factory) as session:
         made = {}
         for name in ("operator", "cust-a", "cust-b", "cust-c", "cust-d"):
@@ -64,7 +27,6 @@ async def orgs(session_factory, establish_orgs):
 
 
 async def _seed(session_factory, operator_org_id, title, review_after=None, hits=0):
-    """One Knowledge Base entry, built the way commons_seed builds them."""
     async with session_scope(session_factory) as session:
         trace = Trace(
             org_id=operator_org_id,
@@ -94,8 +56,6 @@ async def _vote(session_factory, org_id, trace_id, vote_type, feedback_tag=""):
 
 
 async def _downvote_into_dispute(session_factory, orgs, trace_id, tag=""):
-    """Three down-votes from three different customer orgs -- the minimum
-    that can move an entry to `disputed`."""
     for name in ("cust-a", "cust-b", "cust-c"):
         await _vote(session_factory, orgs[name], trace_id, "down", feedback_tag=tag)
 
@@ -104,15 +64,8 @@ def _failure(label, title):
     return {"label": label, "signature": commons.signature_for(title, "ctx " + title, ["substrate"])}
 
 
-# --- 1. The standing function itself (pure, no DB) ----------------------
-
-
 @pytest.mark.filterwarnings("ignore::pytest.PytestWarning")
 class TestEntryStanding:
-    """Pure-function tests. The module-level `pytestmark` applies asyncio to
-    every test in the file; these opt out of the resulting warning rather
-    than dropping the mark the DB tests need."""
-
     def test_a_new_entry_with_no_votes_is_unproven(self):
         assert (
             commons.entry_standing(trust=0.5, votes=0, review_after=None)
@@ -120,9 +73,6 @@ class TestEntryStanding:
         )
 
     def test_one_angry_org_cannot_dispute_an_entry(self):
-        """The single most important constant in this model. `trust` is
-        already 0.0 here -- a bare trust score would call this the worst
-        entry in the corpus. One org is not the field."""
         assert (
             commons.entry_standing(trust=0.0, votes=1, review_after=None)
             == commons.STANDING_UNPROVEN
@@ -141,9 +91,6 @@ class TestEntryStanding:
         )
 
     def test_a_split_vote_is_neither_disputed_nor_established(self):
-        """trust exactly 0.5 is not a majority saying it failed, and it is
-        nowhere near corroborated. The band between the two thresholds is
-        'mixed results', and it stays its own thing."""
         assert (
             commons.entry_standing(trust=0.5, votes=10, review_after=None)
             == commons.STANDING_UNPROVEN
@@ -156,8 +103,6 @@ class TestEntryStanding:
         )
 
     def test_high_trust_from_too_few_votes_is_not_established(self):
-        """Symmetry with the dispute floor: two enthusiastic orgs do not
-        promote an entry any more than two unhappy ones demote it."""
         assert (
             commons.entry_standing(trust=1.0, votes=2, review_after=None)
             == commons.STANDING_UNPROVEN
@@ -178,16 +123,12 @@ class TestEntryStanding:
         )
 
     def test_no_review_date_means_never_stale(self):
-        """Most substrate knowledge does not expire. Forcing a horizon onto
-        every entry would make `stale` mean 'old' instead of 'due'."""
         assert (
             commons.entry_standing(trust=1.0, votes=99, review_after=None)
             != commons.STANDING_STALE
         )
 
     def test_disputed_outranks_stale(self):
-        """Evidence from the field about the content beats a calendar
-        date."""
         past = datetime.now(timezone.utc) - timedelta(days=1)
         assert (
             commons.entry_standing(trust=0.0, votes=5, review_after=past)
@@ -195,9 +136,6 @@ class TestEntryStanding:
         )
 
     def test_stale_outranks_established(self):
-        """An entry can be well-corroborated AND overdue -- corroborated
-        for the version it was written against. Overdue is the actionable
-        half, so it wins."""
         past = datetime.now(timezone.utc) - timedelta(days=1)
         assert (
             commons.entry_standing(trust=1.0, votes=10, review_after=past)
@@ -205,9 +143,6 @@ class TestEntryStanding:
         )
 
     def test_a_naive_review_date_is_read_as_utc_not_a_crash(self):
-        """Comparing naive to aware datetimes raises TypeError in Python,
-        which on this code path would be a 500 from a field whose only job
-        is to schedule a review."""
         naive_past = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=1)
         assert (
             commons.entry_standing(trust=0.5, votes=0, review_after=naive_past)
@@ -224,9 +159,6 @@ class TestEntryStanding:
             assert commons.counts_as_coverage(standing), standing
 
 
-# --- 2. Votes maintain the denormalized count ---------------------------
-
-
 class TestVoteCount:
     async def test_voting_records_the_total(self, session_factory, orgs):
         trace_id = await _seed(session_factory, orgs["operator"], "webhook idempotency")
@@ -238,10 +170,6 @@ class TestVoteCount:
             assert trace.commons_votes == 2
 
     async def test_changing_a_vote_does_not_inflate_the_count(self, session_factory, orgs):
-        """vote_trace UPSERTs -- one org holds one standing vote. A count
-        maintained by `+ 1` instead of by assignment would let a single org
-        vote its way past MIN_VOTES_FOR_STANDING alone, which is precisely
-        the thing that constant exists to prevent."""
         trace_id = await _seed(session_factory, orgs["operator"], "webhook idempotency")
         for vote_type in ("up", "down", "up", "down"):
             await _vote(session_factory, orgs["cust-a"], trace_id, vote_type)
@@ -263,16 +191,9 @@ class TestVoteCount:
         assert result["standing"] == commons.STANDING_UNPROVEN
 
     async def test_the_projection_does_not_reuse_the_name_votes(self, session_factory, orgs):
-        """`votes` on the owner's own projection (_to_wire) is the list of
-        vote RECORDS, including free-text feedback. Two keys of the same
-        name on two projections of one object, one an int and one a list of
-        dicts, is how the wrong one gets shipped."""
         trace_id = await _seed(session_factory, orgs["operator"], "webhook idempotency")
         result = await _vote(session_factory, orgs["cust-a"], trace_id, "up")
         assert "votes" not in result
-
-
-# --- 3. commons_overlap: disputed entries stop being coverage -----------
 
 
 class TestDisputedIsNotCoverage:
@@ -286,9 +207,6 @@ class TestDisputedIsNotCoverage:
         assert result["n_disputed"] == 0
 
     async def test_a_disputed_entry_does_not(self, session_factory, orgs):
-        """The coverage figure is the one number this product tells
-        customers to quote. An entry a majority of the fleets who tried it
-        say did not work is not a solved failure."""
         trace_id = await _seed(session_factory, orgs["operator"], "webhook idempotency")
         await _downvote_into_dispute(session_factory, orgs, trace_id)
 
@@ -300,10 +218,6 @@ class TestDisputedIsNotCoverage:
         assert result["covered_fraction"] == 0.0
 
     async def test_a_disputed_match_is_still_reported_separately(self, session_factory, orgs):
-        """'The Knowledge Base has something about this and it is
-        contested' is a materially different answer from 'the Knowledge
-        Base has nothing'. Dropping it silently would make the two
-        indistinguishable to the caller."""
         trace_id = await _seed(session_factory, orgs["operator"], "webhook idempotency")
         await _downvote_into_dispute(session_factory, orgs, trace_id)
 
@@ -320,10 +234,6 @@ class TestDisputedIsNotCoverage:
     async def test_a_disputed_entry_is_excluded_from_the_agent_type_breakdown(
         self, session_factory, orgs
     ):
-        """by_agent_type is a decomposition of n_covered. If a disputed
-        match still incremented it, the parts would not sum to the whole
-        and a reader would find coverage attributed to a domain the
-        headline number says has none."""
         trace_id = await _seed(session_factory, orgs["operator"], "webhook idempotency")
         await _downvote_into_dispute(session_factory, orgs, trace_id)
 
@@ -335,12 +245,6 @@ class TestDisputedIsNotCoverage:
         assert sum(result["by_agent_type"].values()) == result["n_covered"]
 
     async def test_a_disputed_entry_still_accrues_hits(self, session_factory, orgs):
-        """commons_hits answers 'how often was this served', which is what
-        lets kb-review rank a bad entry by the traffic it is misdirecting.
-        An entry that stopped counting as coverage but is still the top
-        match for hundreds of failures is the most urgent thing in an
-        operator's queue; suppressing its hit count would hide exactly
-        that."""
         trace_id = await _seed(session_factory, orgs["operator"], "webhook idempotency")
         await _downvote_into_dispute(session_factory, orgs, trace_id)
 
@@ -353,9 +257,6 @@ class TestDisputedIsNotCoverage:
             assert trace.commons_hits == 1
 
     async def test_a_stale_entry_still_counts_as_coverage(self, session_factory, orgs):
-        """'Due for review' is not 'known wrong'. Letting the coverage
-        figure fall on a calendar date would move the number with no
-        evidence behind the move."""
         past = datetime.now(timezone.utc) - timedelta(days=1)
         await _seed(session_factory, orgs["operator"], "webhook idempotency", review_after=past)
 
@@ -365,9 +266,6 @@ class TestDisputedIsNotCoverage:
             )
         assert result["n_covered"] == 1
         assert result["matches"][0]["trace"]["standing"] == commons.STANDING_STALE
-
-
-# --- 4. commons_search: disputed entries rank last, but are returned ----
 
 
 class TestSearchRanking:
@@ -382,11 +280,6 @@ class TestSearchRanking:
         assert result["candidates"][0]["trace"]["standing"] == commons.STANDING_UNPROVEN
 
     async def test_a_disputed_candidate_is_returned_not_dropped(self, session_factory, orgs):
-        """The difference between this tool and commons_overlap. Coverage
-        is a claim, so a contested entry is excluded from it. Lookup is
-        'here is what exists, judge it' -- answering 'nothing found' when
-        the corpus holds a contested answer is false and strictly less
-        useful."""
         trace_id = await _seed(session_factory, orgs["operator"], "webhook idempotency")
         await _downvote_into_dispute(session_factory, orgs, trace_id)
 
@@ -401,9 +294,6 @@ class TestSearchRanking:
         assert result["n_disputed"] == 1
 
     async def test_a_disputed_candidate_ranks_behind_a_worse_match(self, session_factory, orgs):
-        """The disputed entry is the BETTER lexical match here -- the query
-        is its own text. It still sorts last, because standing leads the
-        sort key."""
         disputed_id = await _seed(session_factory, orgs["operator"], "webhook idempotency")
         clean_id = await _seed(session_factory, orgs["operator"], "webhook retries duplicate")
         await _downvote_into_dispute(session_factory, orgs, disputed_id)
@@ -417,13 +307,9 @@ class TestSearchRanking:
         ranked = [c["trace"]["id"] for c in result["candidates"]]
         assert ranked.index(clean_id) < ranked.index(disputed_id)
         assert result["candidates"][-1]["trace"]["id"] == disputed_id
-        # rank is renumbered after the sort, not carried from before it.
         assert [c["rank"] for c in result["candidates"]] == list(
             range(1, len(result["candidates"]) + 1)
         )
-
-
-# --- 5. Retraction: gone from every read path at once -------------------
 
 
 class TestRetraction:
@@ -462,8 +348,6 @@ class TestRetraction:
         assert result["candidates"] == []
 
     async def test_a_retracted_entry_cannot_be_voted_on(self, session_factory, orgs):
-        """The third read path. A filter applied in two of three places is
-        the failure mode commons_visible() exists to make impossible."""
         trace_id = await _seed(session_factory, orgs["operator"], "webhook idempotency")
         async with session_scope(session_factory) as session:
             await crud.retract_kb_entry(session, trace_id)
@@ -471,10 +355,6 @@ class TestRetraction:
         assert await _vote(session_factory, orgs["cust-a"], trace_id, "up") is None
 
     async def test_the_owning_org_can_still_reach_its_own_row(self, session_factory, orgs):
-        """Retraction un-publishes an entry from the Knowledge Base; it does
-        not revoke the owning org's access to its own trace. vote_trace's
-        two branches are independent and only the Knowledge Base one is
-        gated."""
         trace_id = await _seed(session_factory, orgs["operator"], "webhook idempotency")
         async with session_scope(session_factory) as session:
             await crud.retract_kb_entry(session, trace_id)
@@ -484,9 +364,6 @@ class TestRetraction:
         assert result["id"] == trace_id
 
     async def test_retraction_keeps_the_row_its_votes_and_its_hits(self, session_factory, orgs):
-        """Not a delete. 'How many fleets did we serve this to before we
-        pulled it, and what did they say' is answerable only from exactly
-        the data a DELETE would destroy."""
         trace_id = await _seed(session_factory, orgs["operator"], "webhook idempotency", hits=17)
         await _downvote_into_dispute(session_factory, orgs, trace_id)
         async with session_scope(session_factory) as session:
@@ -512,16 +389,12 @@ class TestRetraction:
             assert trace.commons_retraction_reason == "the real reason"
 
     async def test_a_long_reason_is_truncated_not_rejected(self, session_factory, orgs):
-        """The column is String(200); an over-long reason reaching the DB
-        would surface as an uncaught IntegrityError from an operator CLI."""
         trace_id = await _seed(session_factory, orgs["operator"], "webhook idempotency")
         async with session_scope(session_factory) as session:
             entry = await crud.retract_kb_entry(session, trace_id, reason="x" * 500)
         assert len(entry["retraction_reason"]) == 200
 
     async def test_retracting_a_non_kb_trace_returns_none(self, session_factory, orgs):
-        """An ordinary customer trace is not a Knowledge Base entry, so
-        there is nothing to un-publish."""
         async with session_scope(session_factory) as session:
             trace = Trace(
                 org_id=orgs["cust-a"], title="private", context_text="c",
@@ -574,12 +447,6 @@ class TestRestore:
 
 class TestVotesNeverRetract:
     async def test_no_number_of_downvotes_withdraws_an_entry(self, session_factory, orgs):
-        """The property the whole design turns on. A corpus where four
-        downvotes can silently delete the operator's content is a corpus a
-        competitor can edit. Disputed content is de-ranked and stops being
-        counted as coverage -- both of which shrink this product's own
-        claims -- and it keeps being SERVED until a human decides
-        otherwise."""
         trace_id = await _seed(session_factory, orgs["operator"], "webhook idempotency")
         for name in ("cust-a", "cust-b", "cust-c", "cust-d"):
             await _vote(session_factory, orgs[name], trace_id, "down", feedback_tag="wrong")
@@ -590,8 +457,6 @@ class TestVotesNeverRetract:
             assert trace.shared_with_commons is True
             assert trace.quarantined is False
 
-        # Asked as a customer, not as the operator: commons_search excludes
-        # the caller's own rows, and the operator owns every seeded entry.
         async with session_scope(session_factory) as session:
             result = await crud.commons_search(
                 session, orgs["cust-a"], commons.signature_for(
@@ -601,9 +466,6 @@ class TestVotesNeverRetract:
         assert [c["trace"]["id"] for c in result["candidates"]] == [trace_id]
 
     async def test_a_security_flag_does_not_withdraw_an_entry_either(self, session_factory, orgs):
-        """`security_concern` is the one signal acted on at n=1 -- and what
-        it does is put the entry at the top of an operator's queue, not
-        remove it."""
         trace_id = await _seed(session_factory, orgs["operator"], "webhook idempotency")
         await _vote(
             session_factory, orgs["cust-a"], trace_id, "down", feedback_tag="security_concern"
@@ -616,15 +478,10 @@ class TestVotesNeverRetract:
         assert queue[0]["bucket"] == "urgent"
 
 
-# --- 6. The review queue: what makes curation scale ---------------------
-
-
 class TestReviewQueue:
     async def test_an_untouched_healthy_corpus_still_lists_unmatched_entries(
         self, session_factory, orgs
     ):
-        """A brand-new entry has never matched anything, which is not an
-        error -- but it is the lowest-priority bucket, not an omission."""
         trace_id = await _seed(session_factory, orgs["operator"], "webhook idempotency")
         async with session_scope(session_factory) as session:
             queue = await crud.kb_review_queue(session)
@@ -656,9 +513,6 @@ class TestReviewQueue:
         assert [i["bucket"] for i in queue] == ["urgent", "disputed", "stale", "never_hit"]
 
     async def test_within_a_bucket_the_busiest_entry_comes_first(self, session_factory, orgs):
-        """A wrong answer nobody reaches is a smaller problem than a wrong
-        answer served a thousand times. This ordering is the reason review
-        cost tracks the error rate rather than the corpus size."""
         quiet = await _seed(session_factory, orgs["operator"], "quiet one", hits=2)
         busy = await _seed(session_factory, orgs["operator"], "busy one", hits=900)
         await _downvote_into_dispute(session_factory, orgs, quiet)
@@ -669,7 +523,6 @@ class TestReviewQueue:
         assert [i["id"] for i in queue] == [busy, quiet]
 
     async def test_a_retracted_entry_is_not_in_the_queue(self, session_factory, orgs):
-        """Already dealt with."""
         trace_id = await _seed(session_factory, orgs["operator"], "webhook idempotency")
         await _downvote_into_dispute(session_factory, orgs, trace_id)
         async with session_scope(session_factory) as session:
@@ -678,9 +531,6 @@ class TestReviewQueue:
             assert await crud.kb_review_queue(session) == []
 
     async def test_a_customers_own_trace_is_never_in_the_queue(self, session_factory, orgs):
-        """The queue is over Knowledge Base entries, and it is built from
-        the same commons_visible() filter the query paths use -- so an
-        operator reading it is never shown a customer's private trace."""
         async with session_scope(session_factory) as session:
             trace = Trace(
                 org_id=orgs["cust-a"], title="our internal escalation policy",
@@ -702,14 +552,6 @@ class TestReviewQueue:
     async def test_count_kb_review_queue_is_the_true_total_not_the_capped_length(
         self, session_factory, orgs
     ):
-        """The admin Knowledge Base page's 'needs attention' tile used to
-        read `len(kb_review_queue(limit=_MAX_ROWS))`, which silently reads
-        as a total and stops matching the real queue size the moment it
-        exceeds `_MAX_ROWS` -- the exact defect the overview page's
-        traces/quarantined/keys tiles had for fleet-wide org counts.
-        `count_kb_review_queue` must report every entry needing attention,
-        independent of whatever `limit` a caller passes to the bounded
-        list."""
         for i in range(4):
             await _seed(session_factory, orgs["operator"], f"entry {i}")
         async with session_scope(session_factory) as session:
@@ -717,9 +559,6 @@ class TestReviewQueue:
             total = await crud.count_kb_review_queue(session)
         assert len(capped) == 2
         assert total == 4
-
-
-# --- 7. The operator CLI ------------------------------------------------
 
 
 class TestManageCommands:
@@ -784,20 +623,11 @@ class TestManageCommands:
         out = capsys.readouterr().out
         assert "knowledge base entries:  1" in out
         assert "retracted:" in out
-        assert live  # the surviving entry is the one counted above
+        assert live
 
     async def test_kb_stats_needs_review_counts_all_four_kb_review_buckets(
         self, session_factory, orgs, capsys
     ):
-        """`kb-review` lists FOUR buckets needing attention: urgent
-        (security-flagged), disputed, stale, and never_hit. `kb_stats`'s
-        "needs review" hint used to be computed as
-        `standings[disputed] + standings[stale]` -- `standing_of()` has no
-        "urgent" or "never_hit" value at all, so a security-flagged entry
-        or one that has never matched anything was invisible to this
-        summary even while `kb-review` itself listed it first. Neither
-        entry seeded below is disputed or stale, so the old computation
-        would have reported 0 and suppressed the hint entirely."""
         urgent = await _seed(session_factory, orgs["operator"], "urgent entry", hits=1)
         await _vote(session_factory, orgs["cust-a"], urgent, "down", feedback_tag="security_concern")
         await _seed(session_factory, orgs["operator"], "never hit", hits=0)
@@ -805,9 +635,6 @@ class TestManageCommands:
         await manage.kb_stats(session_factory=session_factory)
         out = capsys.readouterr().out
         assert "`kb-review` lists the 2 entry(ies) needing a decision." in out
-
-
-# --- 8. commons_seed's review_after field -------------------------------
 
 
 class TestSeedReviewAfter:
@@ -865,19 +692,10 @@ class TestSeedReviewAfter:
     async def test_an_unparseable_review_date_skips_the_line(
         self, session_factory, orgs, tmp_path, capsys
     ):
-        """Not silently ignored. A horizon that was meant to be set and
-        quietly was not is worse than no horizon at all, because the
-        operator believes the entry is being watched."""
         import json
 
         path = tmp_path / "kb.jsonl"
         path.write_text(
-            # `context_text` on both: the curated-corpus loader validates
-            # against the same protocol schema every customer trace passes,
-            # and the schema requires it (as does commons_seed's own
-            # documented line format). A record without it is skipped as
-            # non-conforming, which would make this test about the wrong
-            # thing entirely.
             json.dumps({"title": "t", "context_text": "c",
                         "solution_text": "s", "review_after": "next tuesday"})
             + "\n"
@@ -894,10 +712,6 @@ class TestSeedReviewAfter:
 
     @pytest.mark.filterwarnings("ignore::pytest.PytestWarning")
     def test_a_trailing_z_parses_on_every_supported_python(self):
-        """`datetime.fromisoformat` only learned to accept "Z" in 3.11, and
-        this package supports 3.10 -- so the most natural way to write a
-        UTC timestamp would be rejected on exactly the older interpreter
-        where the failure is least expected."""
         assert manage._parse_review_after("2027-06-01T00:00:00Z") == datetime(
             2027, 6, 1, tzinfo=timezone.utc
         )
@@ -914,14 +728,7 @@ class TestSeedReviewAfter:
             assert manage._parse_review_after(bad) is None
 
 
-# --- 9. Who is allowed to move the number -------------------------------
-
-
 async def _fresh_orgs(session_factory, n, prefix="sock"):
-    """Organizations exactly as `POST /api/v1/keys` or self-serve signup
-    leaves them: created a moment ago, nothing captured yet. This is what a
-    sockpuppet farm's orgs look like, because it is what every brand-new
-    org looks like -- there is nothing else to simulate."""
     async with session_scope(session_factory) as session:
         made = [Organization(name=f"{prefix}-{i}") for i in range(n)]
         session.add_all(made)
@@ -941,8 +748,6 @@ async def _standing_of(session_factory, trace_id):
 
 @pytest.mark.filterwarnings("ignore::pytest.PytestWarning")
 class TestVoteEligibility:
-    """The pure predicate. See hub/commons.py for why these two signals."""
-
     def test_an_established_org_qualifies(self):
         assert commons.vote_counts_toward_standing(
             trace_count=commons.COMMONS_VOTER_MIN_TRACES,
@@ -950,8 +755,6 @@ class TestVoteEligibility:
         )
 
     def test_an_org_that_has_captured_nothing_does_not(self):
-        """Age alone is not enough. An org that has never run anything has
-        no basis to judge whether a fix works -- it has not tried one."""
         assert not commons.vote_counts_toward_standing(
             trace_count=0,
             org_created_at=datetime.now(timezone.utc) - timedelta(days=365),
@@ -970,16 +773,11 @@ class TestVoteEligibility:
         )
 
     def test_a_missing_creation_timestamp_fails_closed(self):
-        """A malformed org row must not be a way *past* the age bar. The
-        absent value has to fail the check, not skip it."""
         assert not commons.vote_counts_toward_standing(
             trace_count=10_000, org_created_at=None
         )
 
     def test_a_naive_timestamp_is_read_as_utc_not_crashed_on(self):
-        """Postgres hands back naive datetimes for a column declared
-        without a timezone; subtracting one from an aware `now` raises.
-        A TypeError here would take down the whole vote path."""
         assert commons.vote_counts_toward_standing(
             trace_count=commons.COMMONS_VOTER_MIN_TRACES,
             org_created_at=(datetime.now(timezone.utc) - timedelta(days=30)).replace(
@@ -989,11 +787,6 @@ class TestVoteEligibility:
 
 
 class TestSockpuppetsCannotMoveStanding:
-    """The attack this exists to stop: organizations are free and
-    self-serve, so MIN_VOTES_FOR_STANDING = 3 costs one person three
-    signups. These tests are the property that that no longer buys
-    anything."""
-
     async def test_five_fresh_orgs_cannot_dispute_an_entry(self, session_factory, orgs):
         trace_id = await _seed(session_factory, orgs["operator"], "webhook idempotency")
         for sock in await _fresh_orgs(session_factory, 5):
@@ -1008,10 +801,6 @@ class TestSockpuppetsCannotMoveStanding:
     async def test_fresh_orgs_cannot_manufacture_established_standing_either(
         self, session_factory, orgs
     ):
-        """Symmetry matters as much as the down-vote case: if up-votes from
-        minted orgs counted, the same person could mint an entry's way to
-        `established` -- a corroboration claim this product quotes to
-        customers, bought for the price of five signups."""
         trace_id = await _seed(session_factory, orgs["operator"], "webhook idempotency")
         for sock in await _fresh_orgs(session_factory, 6):
             await _vote(session_factory, sock, trace_id, "up")
@@ -1019,11 +808,6 @@ class TestSockpuppetsCannotMoveStanding:
         assert await _standing_of(session_factory, trace_id) == commons.STANDING_UNPROVEN
 
     async def test_sockpuppets_cannot_drown_out_real_voters(self, session_factory, orgs):
-        """The realistic shape of the attack: an entry three real fleets
-        have reported does not work, and someone minting up-votes to pull
-        its trust back above the disputed ceiling. Only the real votes are
-        in the ratio at all, so the entry stays disputed no matter how many
-        are minted."""
         trace_id = await _seed(session_factory, orgs["operator"], "webhook idempotency")
         await _downvote_into_dispute(session_factory, orgs, trace_id)
         assert await _standing_of(session_factory, trace_id) == commons.STANDING_DISPUTED
@@ -1038,10 +822,6 @@ class TestSockpuppetsCannotMoveStanding:
         assert await _standing_of(session_factory, trace_id) == commons.STANDING_DISPUTED
 
     async def test_the_vote_is_stored_not_discarded(self, session_factory, orgs):
-        """Dropping the row would hide the attempt. The evidence an
-        operator needs to see a farm at all IS the pile of Vote rows from
-        orgs that cannot vote yet -- so every vote is recorded, and only
-        the tally is selective."""
         trace_id = await _seed(session_factory, orgs["operator"], "webhook idempotency")
         socks = await _fresh_orgs(session_factory, 4)
         for sock in socks:
@@ -1057,10 +837,6 @@ class TestSockpuppetsCannotMoveStanding:
     async def test_a_vote_recorded_today_starts_counting_once_the_org_qualifies(
         self, session_factory, orgs, establish_orgs
     ):
-        """Because the vote is kept rather than dropped, an org that votes
-        on day one and becomes a real customer later does not have to vote
-        again -- the next tally simply includes it. A legitimate new
-        customer is delayed, never silently disenfranchised."""
         trace_id = await _seed(session_factory, orgs["operator"], "webhook idempotency")
         newcomers = await _fresh_orgs(session_factory, 3, prefix="newcomer")
         for org_id in newcomers:
@@ -1068,8 +844,6 @@ class TestSockpuppetsCannotMoveStanding:
         assert await _standing_of(session_factory, trace_id) == commons.STANDING_UNPROVEN
 
         await establish_orgs(newcomers)
-        # Any subsequent vote re-tallies the entry from scratch; here it is
-        # one of the newcomers re-affirming, which re-counts all three.
         await _vote(session_factory, newcomers[0], trace_id, "down")
 
         async with session_scope(session_factory) as session:
@@ -1078,8 +852,6 @@ class TestSockpuppetsCannotMoveStanding:
         assert await _standing_of(session_factory, trace_id) == commons.STANDING_DISPUTED
 
     async def test_the_response_tells_the_voter_whether_it_counted(self, session_factory, orgs):
-        """Silence would be its own failure: an org watching the number not
-        move would reasonably conclude voting is broken."""
         trace_id = await _seed(session_factory, orgs["operator"], "webhook idempotency")
         sock = (await _fresh_orgs(session_factory, 1))[0]
 
@@ -1087,9 +859,6 @@ class TestSockpuppetsCannotMoveStanding:
         assert (await _vote(session_factory, orgs["cust-a"], trace_id, "up"))["vote_counted"] is True
 
     async def test_an_org_rating_its_own_trace_is_never_held_back(self, session_factory):
-        """The bar exists to protect a SHARED number. A brand-new org
-        rating its own trace moves nothing anyone else reads, so making it
-        wait a day would be friction with no threat behind it."""
         async with session_scope(session_factory) as session:
             own = Organization(name="brand-new")
             session.add(own)

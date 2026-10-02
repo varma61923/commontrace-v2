@@ -1,10 +1,3 @@
-"""Hostile and foreign trace ids across every org-scoped crud entry point.
-
-The MCP tools are thin wrappers over these functions (hub/server.py), and the
-org filter lives here. For each: another org's real id and malformed ids must
-come back as 'not found' (None / False), never an exception, and must leave
-the other org's trace untouched.
-"""
 from __future__ import annotations
 
 import pytest

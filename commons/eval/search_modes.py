@@ -1,54 +1,4 @@
-"""Can the commons be SEARCHED, and what does each way of searching cost?
-
-THE QUESTION
-------------
-The commons ships exactly one query surface: `commons_overlap`, which
-MinHashes a fleet's failures locally, compares each against the corpus at a
-THRESHOLD, and emits a coverage percentage. The evaluation
-measures that at 10.9% recall -- it misses roughly nine of every ten
-failures the corpus provably contains.
-
-The product strategy established that the threshold, not the matcher, is what
-discards those nine: the same corpus and the same tokenizer, ranked and
-returned top-k with no threshold, finds the right record 84.8% of the time
-at k=1. Its conclusion was that the open question is the OUTPUT CONTRACT --
-should the commons return ranked candidates alongside (never instead of)
-the coverage figure?
-
-That measurement used commontrace/retrieval.py, which reads the query TEXT.
-The commons cannot: its entire privacy proposition is that failure text
-never leaves the fleet, only MinHash signatures do. So §12.7's number does
-not transfer to the commons for free, and the question this script exists
-to answer is the one nobody had measured:
-
-    Ranked top-k over MINHASH SIGNATURES -- no threshold, no text leaving
-    the fleet -- what recall does that get?
-
-If it is good, the commons gets a Stack-Overflow-shaped search surface at
-zero privacy cost, and §11.1's conclusion that fixing recall requires
-embeddings (and therefore requires retracting the privacy guarantee) is
-wrong about this surface.
-
-WHAT IS COMPARED
-----------------
-Three ways of asking the same corpus the same 46 held-out questions:
-
-  1. threshold  -- what ships today. Jaccard >= 0.30 -> covered/not.
-  2. sig_rank   -- rank by estimated Jaccard, return top-k, NO threshold.
-                   Signature-in, so the privacy guarantee is unchanged.
-  3. text_rank  -- commontrace/retrieval.py over the query text. The
-                   §12.7 number. Requires sending text; included as the
-                   ceiling that a privacy-preserving mode is measured
-                   against, not as a recommendation.
-
-Negative controls are reported for every mode, because a ranked surface
-with no threshold returns SOMETHING for every query by construction. That
-is acceptable for candidates a human judges and is never acceptable for a
-coverage figure, which is why this script reports both and why the shipped
-coverage number is not touched by anything measured here.
-
-Run: python commons/eval/search_modes.py
-"""
+"""Can the commons be SEARCHED, and what does each way of searching cost?"""
 from __future__ import annotations
 
 import json
@@ -77,8 +27,6 @@ def _query_text(p: dict) -> str:
 
 
 def _probe_signature(p: dict) -> list[int]:
-    """Signed exactly as a client signs a recurring failure, so what is
-    measured here is what the wire actually carries."""
     return hub_commons.signature_for(p["label"], p.get("text", ""), p.get("tags") or [])
 
 
@@ -103,11 +51,7 @@ def _as_lessons(corpus: list[dict]) -> list[tuple[str, dict]]:
 
 
 def sig_rank(probe: dict, corpus_sigs: list[tuple[str, list[int]]], top_k: int) -> list[tuple[str, float]]:
-    """Rank the corpus by estimated Jaccard against the probe's signature.
-
-    The ONLY difference from what ships today is the absence of a
-    threshold: same signatures, same estimator, same corpus.
-    """
+    """Rank the corpus by estimated Jaccard against the probe's signature."""
     sig = _probe_signature(probe)
     scored = [(title, overlap.estimate_jaccard(sig, s)) for title, s in corpus_sigs]
     scored.sort(key=lambda x: -x[1])
@@ -153,9 +97,6 @@ def evaluate() -> dict:
         )
         return hits / len(pos) if pos else 0.0
 
-    # A signature-ranked result is only useful if a NON-ZERO score comes
-    # back; estimate_jaccard returns 0.0 when no permutation agrees, and a
-    # list of zero-scored records is noise wearing a ranking's clothes.
     def sig_nonzero_at(k: int, probes_: list[dict]) -> float:
         n = sum(1 for p in probes_ if any(s > 0 for _, s in sig_rank(p, corpus_sigs, k)))
         return n / len(probes_) if probes_ else 0.0

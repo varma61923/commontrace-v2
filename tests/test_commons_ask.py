@@ -1,10 +1,3 @@
-"""`commontrace commons ask` -- the client half of the knowledge-base lookup.
-
-The property that matters most is the same one that matters for `sign`:
-the question is MinHashed locally and the TEXT never goes on the wire. A
-regression there would silently convert the product's privacy claim into a
-false statement, which is worse than a crash.
-"""
 from __future__ import annotations
 
 import argparse
@@ -23,14 +16,10 @@ class TestQuestionSigning:
         assert all(isinstance(v, int) and not isinstance(v, bool) for v in sig)
 
     def test_signing_is_deterministic(self):
-        """Assignment must be reproducible: the same question asked twice
-        must compare identically against the corpus."""
         q = "postgres connection pool exhausted"
         assert commons_cmd.sign_question(q) == commons_cmd.sign_question(q)
 
     def test_it_uses_the_same_hash_as_stored_failures(self):
-        """A question and a trace must land in the same signature space, or
-        every similarity score is meaningless."""
         q = "webhook delivered twice"
         assert commons_cmd.sign_question(q) == overlap.minhash(q, commons_cmd.COMMONS_NUM_PERM)
 
@@ -78,8 +67,6 @@ class TestRendering:
         assert "Payment webhook delivered more than once" in out
 
     def test_it_shows_corroboration_when_a_trace_has_delivered_hits(self):
-        """The Stack-Overflow-shaped signal: this answer has covered other
-        fleets' real failures before."""
         out = commons_cmd._render_candidates(self._result(), "q")
         assert "covered 3 recurring failure(s) before" in out
 
@@ -94,8 +81,6 @@ class TestRendering:
         assert "lexical" in out.lower()
 
     def test_an_empty_commons_says_cold_start_not_no_answer(self):
-        """An empty corpus returning nothing is a cold start by construction,
-        not evidence the commons cannot help."""
         out = commons_cmd._render_candidates(
             self._result(n_candidates=0, candidates=[], n_commons_traces=0,
                          n_commons_traces_total=0),
@@ -112,8 +97,6 @@ class TestRendering:
         assert "scan limit" in out.lower()
 
     def test_it_survives_a_candidate_missing_optional_fields(self):
-        """Hub payloads are data, not guarantees -- a renderer that raises on
-        a missing optional field turns a partial answer into no answer."""
         out = commons_cmd._render_candidates(
             self._result(candidates=[{"rank": 1, "similarity": 0.1, "commons_hits": 0,
                                        "trace": {}}]),

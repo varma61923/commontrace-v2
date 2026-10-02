@@ -1,19 +1,4 @@
-"""kb_submissions table + organizations.bonus_commons_queries
-
-The community-contribution channel: an org can propose a Knowledge Base
-entry (kb_submissions, status='pending'), and hub/manage.py
-review-submission is the one deliberate operator action that can approve
-it into a new Trace row with commons_source='seed' -- never automatic,
-never triggered by the act of submitting alone. Approval also awards
-bonus_commons_queries, a permanent addition to that org's monthly
-Knowledge Base query allowance (hub/plans.py:query_allowance). See
-hub/models.py:KnowledgeBaseSubmission for why review (not opt-in) is what
-keeps this from repeating the adverse-selection failure the product strategy
-already ruled out.
-
-Revision ID: 79001d0e5699
-Revises: 7c4a1d92e5b8
-"""
+"""kb_submissions table + organizations.bonus_commons_queries"""
 from typing import Sequence, Union
 
 import sqlalchemy as sa

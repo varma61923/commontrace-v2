@@ -1,4 +1,3 @@
-"""Comprehensive unit tests for commontrace.validate JSON Schema validator and schemas."""
 import pytest
 
 from commontrace.validate import (
@@ -9,9 +8,6 @@ from commontrace.validate import (
     validate,
 )
 
-# ============================================================================
-# 1. load_schema Boundary and Security Tests
-# ============================================================================
 
 class TestLoadSchema:
     def test_load_valid_trace_schema(self):
@@ -34,7 +30,6 @@ class TestLoadSchema:
                 load_schema(invalid_arg)  # type: ignore
 
     def test_load_schema_rejects_path_separators(self):
-        # Forward slash, backslash, colon (Windows drive letters or stream separators)
         unsafe_names = [
             "../trace.schema.json",
             "subdir/trace.schema.json",
@@ -67,10 +62,6 @@ class TestLoadSchema:
             load_schema("nonexistent_schema_xyz_123.schema.json")
 
 
-# ============================================================================
-# 2. Type Checking and Type Mapping Tests
-# ============================================================================
-
 class TestTypeChecking:
     @pytest.mark.parametrize(
         "val,expected_type,expected_result",
@@ -95,7 +86,6 @@ class TestTypeChecking:
         assert _check_type(val, expected_type) is expected_result
 
     def test_bool_not_accepted_as_integer_or_number(self):
-        """In Python, bool is a subclass of int. Verify JSON Schema rules disallow True/False as int/number."""
         assert not _check_type(True, "integer")
         assert not _check_type(False, "integer")
         assert not _check_type(True, "number")
@@ -110,10 +100,6 @@ class TestTypeChecking:
         assert _check_type(None, ["integer", "null"])
         assert not _check_type(True, ["integer", "null"])
 
-
-# ============================================================================
-# 3. Supported Keywords and Constraint Enforcement
-# ============================================================================
 
 class TestKeywordValidation:
     def test_validate_non_dict_instance(self):
@@ -131,18 +117,15 @@ class TestKeywordValidation:
                 "title": {"type": "string"},
             },
         }
-        # Missing both
         errs = validate({}, schema)
         assert len(errs) == 2
         assert any("missing required field 'id'" in e for e in errs)
         assert any("missing required field 'title'" in e for e in errs)
 
-        # Missing one
         errs = validate({"id": "123"}, schema)
         assert len(errs) == 1
         assert "missing required field 'title'" in errs[0]
 
-        # Valid
         assert validate({"id": "123", "title": "Test"}, schema) == []
 
     def test_enum_keyword(self):
@@ -172,20 +155,16 @@ class TestKeywordValidation:
                 "ratio": {"type": "number", "minimum": 0.0, "maximum": 1.0},
             },
         }
-        # In range
         assert validate({"score": 1, "ratio": 0.0}, schema) == []
         assert validate({"score": 5, "ratio": 1.0}, schema) == []
         assert validate({"score": 3, "ratio": 0.5}, schema) == []
 
-        # Below minimum
         errs = validate({"score": 0}, schema)
         assert any("'score': 0 < minimum 1" in e for e in errs)
 
-        # Above maximum
         errs = validate({"score": 6}, schema)
         assert any("'score': 6 > maximum 5" in e for e in errs)
 
-        # Ratio out of range
         errs = validate({"ratio": -0.1}, schema)
         assert any("'ratio': -0.1 < minimum 0.0" in e for e in errs)
         errs = validate({"ratio": 1.05}, schema)
@@ -243,11 +222,9 @@ class TestKeywordValidation:
         assert validate({"outcome": {"resolved": True, "tokens_used": 100}}, schema) == []
         assert validate({"outcome": {"resolved": None, "tokens_used": None}}, schema) == []
 
-        # Missing nested required
         errs = validate({"outcome": {"tokens_used": 50}}, schema)
         assert any("missing required field 'resolved'" in e for e in errs)
 
-        # Negative tokens
         errs = validate({"outcome": {"resolved": True, "tokens_used": -5}}, schema)
         assert any("-5 < minimum 0" in e for e in errs)
 
@@ -261,10 +238,6 @@ class TestKeywordValidation:
         errs = validate({"title": None}, schema)
         assert any("'title': null not allowed" in e for e in errs)
 
-
-# ============================================================================
-# 4. assert_supported_schema and UnsupportedSchemaError Tests
-# ============================================================================
 
 class TestAssertSupportedSchema:
     def test_supported_schema_passes(self):
@@ -281,7 +254,7 @@ class TestAssertSupportedSchema:
                 "e": {"type": "object", "additionalProperties": True},
             },
         }
-        assert_supported_schema(schema)  # should not raise
+        assert_supported_schema(schema)
 
     def test_unsupported_top_level_keyword_raises(self):
         schema = {
@@ -322,10 +295,6 @@ class TestAssertSupportedSchema:
         with pytest.raises(UnsupportedSchemaError, match="tuple-form 'items' .* is not supported"):
             assert_supported_schema(schema)
 
-
-# ============================================================================
-# 5. Full trace.schema.json Validation Tests
-# ============================================================================
 
 class TestTraceSchemaValidation:
     @pytest.fixture
@@ -413,10 +382,6 @@ class TestTraceSchemaValidation:
         assert any("'trust': -0.1 < minimum 0" in e for e in errs)
 
 
-# ============================================================================
-# 6. Full lesson.schema.json Validation Tests
-# ============================================================================
-
 class TestLessonSchemaValidation:
     @pytest.fixture
     def lesson_schema(self):
@@ -479,7 +444,6 @@ class TestLessonSchemaValidation:
         errs = validate(valid_lesson, lesson_schema)
         assert any("'importance': expected type integer, got str" in e for e in errs)
 
-        # bool not allowed as integer
         valid_lesson["importance"] = True
         errs = validate(valid_lesson, lesson_schema)
         assert any("'importance': expected type integer, got bool" in e for e in errs)

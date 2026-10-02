@@ -1,9 +1,3 @@
-"""Tests for commontrace/taxonomy.py and `commontrace taxonomy` -- the
-read-only "map the issues" leave-behind, as distinct from `commontrace
-distill` (which writes candidate lessons and excludes already-curated
-traces). Taxonomy must show the whole map, including patterns already
-covered by an active lesson.
-"""
 from __future__ import annotations
 
 import json
@@ -45,8 +39,6 @@ class TestBuildTaxonomy:
         assert pattern.n_traces == 2
 
     def test_pattern_already_referenced_by_an_active_lesson_is_covered(self):
-        """Unlike `distill`, taxonomy does NOT exclude traces an existing
-        lesson already covers -- it must still show up, marked covered."""
         lessons = [_lesson("lesson_refund_window", "refunds", ["t1", "t2"])]
         tax = taxonomy.build_taxonomy([REFUND_A, REFUND_B], lessons)
         assert tax.n_patterns == 1
@@ -70,7 +62,7 @@ class TestBuildTaxonomy:
     def test_unclustered_traces_are_counted_but_not_a_pattern(self):
         tax = taxonomy.build_taxonomy([REFUND_A, REFUND_B, PASSWORD], lessons=[])
         assert tax.n_traces_total == 3
-        assert tax.n_patterns == 1  # PASSWORD alone never reaches min_cluster_size
+        assert tax.n_patterns == 1
         assert tax.n_unclustered == 1
 
     def test_empty_input_yields_empty_taxonomy(self):
@@ -114,9 +106,6 @@ class TestRenderMarkdown:
 
 class TestRenderHtml:
     def test_escapes_untrusted_trace_tags(self):
-        """Tags are free-form, attacker-controllable trace frontmatter (protocol/
-        schemas/trace.schema.json), not code -- an unescaped '<script>' tag
-        would be a stored XSS in the generated dashboard."""
         evil = _trace("evil1", "Shared pattern A", "shared payload words repeated words shared",
                        tags=["<script>alert(1)</script>"])
         evil2 = _trace("evil2", "Shared pattern B", "shared payload words repeated words shared",
@@ -145,7 +134,7 @@ class TestToDict:
         tax = taxonomy.build_taxonomy([REFUND_A, REFUND_B], lessons=[])
         d = taxonomy.to_dict(tax)
         assert d["domains"][0]["n_traces"] == 2
-        assert json.dumps(d)  # round-trips through json with no TypeError
+        assert json.dumps(d)
 
 
 @pytest.fixture

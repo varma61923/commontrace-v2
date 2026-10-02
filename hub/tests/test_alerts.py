@@ -1,23 +1,3 @@
-"""Threshold alerts and periodic reports (hub/alerts.py), delivered
-through the existing webhook pipeline (hub/events.py) -- audit §8.3.
-
-What these tests defend, in order of how badly getting it wrong would
-hurt:
-
-1. **An unknown metric or comparator is refused at rule-creation time**,
-   not silently ignored at evaluation time -- "deny by construction",
-   the same discipline hub/rbac.py applies to an unmapped tool.
-2. **A metric that cannot be computed (no data, an unlimited plan) never
-   fires** -- a rate over zero traces or a percentage of infinity is not
-   a signal, and firing on one would be a false alarm baked into the
-   product.
-3. **Cooldown actually suppresses re-firing** on the very next check even
-   though the condition still holds, and a fired rule DOES emit through
-   hub/events.py -- proven by a real queued WebhookDelivery, not just a
-   returned summary.
-4. **Tenancy**: a rule never fires against another org's data, and
-   `check_rules` scoped to one org never touches another's rules.
-"""
 from __future__ import annotations
 
 import socket
@@ -43,11 +23,6 @@ async def _fake_public_resolve(hostname: str) -> list:
 
 @pytest.fixture(autouse=True)
 def _skip_real_dns_for_webhook_hosts(monkeypatch):
-    """This module's endpoint targets ``example.invalid`` -- non-resolving
-    by RFC 2606 design, which is exactly what hub/events.py's SSRF check
-    (`_reject_private_target`) now requires resolving. Faking a genuinely
-    public answer keeps that guarantee; the check itself is exercised in
-    hub/tests/test_events.py::TestSsrfProtection."""
     monkeypatch.setattr(events, "_default_resolve", _fake_public_resolve)
 
 
@@ -62,8 +37,6 @@ async def org(session_factory) -> str:
 
 @pytest_asyncio.fixture
 async def hooked_org(session_factory, org) -> str:
-    """An org with a webhook endpoint subscribed to alert.triggered, so a
-    fired rule is provably delivered, not just returned as a summary."""
     async with session_scope(session_factory) as session:
         await events.add_endpoint(
             session, org, URL, events=["alert.triggered", "report.generated"],
@@ -223,7 +196,6 @@ class TestCheckRules:
         assert fired == []
 
     async def test_an_incomputable_metric_does_not_fire(self, session_factory, org):
-        """No traces yet -- quarantine_rate is None, never "0 > threshold"."""
         async with session_scope(session_factory) as session:
             await alerts.create_rule(
                 session, org, alerts.METRIC_QUARANTINE_RATE, alerts.COMPARATOR_GT, -1.0,

@@ -1,49 +1,4 @@
-"""Second-stage reranking with a cross-encoder, opt-in per store.
-
-Both first-stage arms score the task and each lesson SEPARATELY: the lexical
-arm counts shared rare words, the semantic arm compares two vectors encoded
-apart. A cross-encoder reads the task and the lesson TOGETHER and scores the
-pair, which is why it ranks better and why it is too slow to run over a
-whole store. So it runs over a short candidate pool the first stage already
-found (`POOL`), and only reorders it.
-
-Measured on the public LoCoMo dataset (1,531 questions, scored from its
-evidence labels), reranking the fused pool raised the share of questions
-with an answering turn in the top 5 from 53.1% to 67.0%, and MRR from 0.440
-to 0.626. Reranking the lexical arm alone, with no embedding model at all,
-reaches 59.7%.
-
-WHAT IT DOES NOT CHANGE. The pool is the first stage's output, after the
-relevance floor, `exclude_shown` and core-lesson handling, so the reranker
-can only reorder lessons the store would already consider. It never adds
-one.
-
-EXPERIMENTS. The reranker decides which lessons make the top k, so it
-decides eligibility: a store that turns it on starts a new treatment, and
-assignments record `ce:<model>(<first stage>)` as their label
-(retrieval_io.eligibility_label), so the audit sees the change rather than
-pooling two rankings.
-
-WHY IT IS NOT THE DEFAULT. On the curated lesson fixture (eight fields,
-top 3; commontrace/reference/measure_retrieval.py) the default is held to
-finding every relevant lesson with collateral under 2.4x, because every
-lesson retrieved is logged into the causal experiment. Fused retrieval
-fills every slot on the page, so its pollution is 3.0x in every field
-(the lexical default: 1.72-2.33x). A floor on the cross-encoder's score
-cuts that to 1.0-1.2x, but no floor keeps recall at 1.0: at -11 one field
-still loses a relevant lesson (0.94), and at -3 recall is 0.83. Measured
-with both models and both lexical scorers. On conversational benchmarks
-reranked fusion is the most accurate stack measured; on a curated store
-under experiment, its collateral dilutes the estimates the product
-exists to report. So plain fusion is a choice a store makes, not an
-upgrade; gated fusion (GATE_THRESHOLDS below) is the fused ranking that
-passes those gates, and is the default where the attention extra is
-installed.
-
-HARM WITHDRAWAL stays exact. A withdrawn lesson is scored alongside the pool
-and named only if its score would have put it on the page. A cross-encoder
-scores each pair on its own, so leaving it out moves nothing else.
-"""
+"""Second-stage reranking with a cross-encoder, opt-in per store."""
 
 from __future__ import annotations
 
@@ -52,80 +7,27 @@ import importlib.util
 import threading
 from collections.abc import Callable, Mapping, Sequence
 
-#: The rerank modes a store can configure (retrieval_io.RERANKS), each a
-#: cross-encoder trained on MS MARCO passage ranking, and the short name its
-#: eligibility label records: a different model is a different ranking, and
-#: so a different treatment. Measured over a 30-candidate pool of LoCoMo
-#: turns on a 4-core CPU:
-#:
-#:   mode                 model (params)          rerank p50   fused R@5 / MRR
-#:   cross-encoder        MiniLM-L-6 (22M)        265 ms       0.670 / 0.626
-#:   cross-encoder-fast   TinyBERT-L-2 (4M)       28 ms        0.606 / 0.545
-#:   (no reranking)                                            0.531 / 0.440
 MODELS = {
     "cross-encoder": ("cross-encoder/ms-marco-MiniLM-L-6-v2", "minilm6"),
     "cross-encoder-fast": ("cross-encoder/ms-marco-TinyBERT-L-2-v2", "tinybert2"),
 }
 DEFAULT_MODE = "cross-encoder"
 
-#: GATED FUSION (retrieval_io.FUSION_GATED). Plain fusion fills every slot on
-#: the page with whatever the semantic arm ranked, relevant or not, which the
-#: curated fixture's collateral ceiling rejects (below). Gated fusion lets a
-#: candidate that did NOT clear the lexical floor onto the page only when the
-#: cross-encoder scores it at least this high; floor-cleared lessons are
-#: admitted exactly as without fusion. On the fixture the unrelated lessons
-#: score -8 to -11 against the tasks, so every field keeps its recall and
-#: collateral unchanged at any threshold down to -6 (measured, both models).
-#: On LoCoMo, at -4: R@5 0.598 and R@10 0.669 with the fast model (lexical +
-#: fast rerank: 0.562 / 0.615), and 0.679 / 0.731
-#: with the accurate one.
-#:
-#: The threshold is part of the treatment, so it is set per semantic-arm
-#: embedder (retrieval_io.EMBEDDER_TAGS) and a store keeps the one its label
-#: names: "" is the original model, whose stores keep -4. With
-#: snowflake-arctic-embed-m the semantic arm finds more of what the page
-#: needs, and the gate can be looser before the fixture notices: re-measured
-#: with that arm, every field keeps recall 1.0 and its collateral down to -9
-#: (accurate) and -10 (fast); at -10 and -11 respectively a field's
-#: collateral rises. -8 keeps a margin under both. On LoCoMo, at -8: R@5
-#: 0.608 / R@10 0.694 fast, 0.703 / 0.762 accurate.
 GATE_THRESHOLDS = {
     ("cross-encoder", ""): -4.0,
     ("cross-encoder-fast", ""): -4.0,
     ("cross-encoder", "arctic-m"): -8.0,
     ("cross-encoder-fast", "arctic-m"): -8.0,
 }
-#: How many candidates each first-stage arm hands the reranker, unless
-#: POOL_DEPTHS sets it for the mode and semantic-arm embedder.
 POOL = 30
-#: Like the gate, the depth is part of the treatment, so it is set per
-#: (mode, embedder tag) and the original rules keep POOL. With the arctic
-#: arm the answer is almost always near the top of one arm or the other, so
-#: a shallower pool costs little and halves the reranker's work. On LoCoMo,
-#: R@10 / R@5 / MRR, pool of about 1.8x the depth once the arms overlap:
-#:
-#:   depth   accurate               fast
-#:   30      0.762 / 0.703 / 0.643  0.694 / 0.608 / 0.541
-#:   15      0.758 / 0.696 / 0.637  0.707 / 0.613 / 0.543   <- fast
-#:   10      0.739 / 0.685 / 0.630  0.701 / 0.620 / 0.545   <- accurate
-#:
-#: The accurate model reads 18 lesson-length pairs in about 360 ms on a
-#: 4-core CPU, where 53 took about 1.1 s; the fast one 27 in about 45 ms. The
-#: curated fixture is unchanged at either depth.
 POOL_DEPTHS = {
     ("cross-encoder", "arctic-m"): 10,
     ("cross-encoder-fast", "arctic-m"): 15,
 }
-#: Characters of lesson text the model reads. Its input is capped at 512
-#: tokens, shared with the task.
 MAX_CHARS = 1200
 
 _LOCK = threading.Lock()
 _LOADED: dict[str, object] = {}
-#: Whether to score in the warm worker (commontrace/warm.py) when one can be
-#: had. A one-shot CLI process sets it: loading the model there costs seconds
-#: per query, while the worker keeps it loaded. A long-lived process (the MCP
-#: server) leaves it off and keeps the model itself.
 _USE_WORKER = False
 
 
@@ -136,8 +38,6 @@ def use_worker(enabled: bool = True) -> None:
 
 
 def _worker_scores(mode: str, pairs: list[tuple[str, str]]) -> list[float] | None:
-    """The worker's scores for `pairs`, or None to score in-process. Same
-    model, loaded by this module's `_load` in the worker, so the same scores."""
     if not _USE_WORKER:
         return None
     from commontrace import warm
@@ -160,10 +60,6 @@ def mode_for_tag(model_tag: str) -> str | None:
 
 @contextlib.contextmanager
 def _no_progress_bars():
-    """Quiet the library's "Loading weights" bars for a load from the local
-    cache: they are noise on every query. A real download keeps its bars.
-    transformers keeps its own switch beside huggingface_hub's; both are
-    restored afterwards."""
     restore = []
     try:
         from huggingface_hub import utils as hub_utils
@@ -192,10 +88,6 @@ def _load(mode: str = DEFAULT_MODE):
     if mode not in _LOADED:
         from sentence_transformers import CrossEncoder
 
-        # From the local cache first: a cached model otherwise still costs a
-        # round trip to the Hugging Face Hub on every load (~2s per model,
-        # per query, and a request to a third party each time). Only a model
-        # that is not cached yet is fetched.
         try:
             with _no_progress_bars():
                 _LOADED[mode] = CrossEncoder(MODELS[mode][0], device="cpu", local_files_only=True)
@@ -205,12 +97,7 @@ def _load(mode: str = DEFAULT_MODE):
 
 
 def ready(mode: str = DEFAULT_MODE) -> str:
-    """Load the model now; "" when it can rerank, else why not.
-
-    Checked BEFORE the first stage runs, because the first stage fetches a
-    deeper pool for the reranker than it would for the page: a store that
-    cannot rerank must rank for the page, exactly as if it had not asked.
-    """
+    """Load the model now; "" when it can rerank, else why not."""
     if not available():
         return "the reranker needs the attention extra (`pip install commontrace[attention]`)"
     if _worker_scores(mode, []) is not None:
@@ -224,9 +111,6 @@ def ready(mode: str = DEFAULT_MODE) -> str:
 
 
 def texts(slugs: Sequence[str], path_of: Mapping[str, str], read) -> dict[str, str]:
-    """`lesson_text` for each slug, read from its file with `read(path) ->
-    (frontmatter, body)`. A lesson that cannot be read is left out, and so
-    cannot be reranked onto the page."""
     out: dict[str, str] = {}
     for slug in dict.fromkeys(slugs):
         path = path_of.get(slug)
@@ -241,8 +125,6 @@ def texts(slugs: Sequence[str], path_of: Mapping[str, str], read) -> dict[str, s
 
 
 def lesson_text(frontmatter: Mapping, body: str) -> str:
-    """What the cross-encoder reads for one lesson: what it is about, when
-    it applies, then the rule itself."""
     parts = [
         str(frontmatter.get("description") or ""),
         str(frontmatter.get("applies_when") or ""),
@@ -252,27 +134,16 @@ def lesson_text(frontmatter: Mapping, body: str) -> str:
 
 
 def pool_size(want: int, mode: str | None = None, embedder: str = "") -> int:
-    """How many candidates each first-stage arm should hand over for a page
-    of `want`, reranked by `mode` with a semantic arm whose embedder tag is
-    `embedder` ("" for the lexical arm alone, or the original model)."""
     return max(want, POOL_DEPTHS.get((mode, embedder), POOL))
 
 
 def gate_threshold(mode: str, embedder: str = "") -> float:
-    """The gate for `mode` with a semantic arm whose embedder tag is
-    `embedder`; an embedder this build has no threshold for gets the
-    original, strictest one."""
     return GATE_THRESHOLDS.get((mode, embedder), GATE_THRESHOLDS[(mode, "")])
 
 
 def admit_gated(
     floor_cleared: set[str], mode: str = DEFAULT_MODE, embedder: str = "",
 ) -> Callable[[str, float], bool]:
-    """Gated fusion's admission rule: a lesson the lexical arm scored at or
-    above the relevance floor is always admissible, as it is without fusion;
-    any other candidate, a semantic-arm find or a below-floor lexical match,
-    only if the cross-encoder scores it at least `gate_threshold(mode,
-    embedder)`."""
     threshold = gate_threshold(mode, embedder)
     return lambda slug, score: slug in floor_cleared or score >= threshold
 
@@ -286,22 +157,11 @@ def rerank(
     mode: str = DEFAULT_MODE,
     admit: Callable[[str, float], bool] | None = None,
 ) -> tuple[list[tuple[str, float]], list[str]]:
-    """Reorder `pool` by cross-encoder score and keep the top `want`.
-
-    Returns (page, withdrawn_on_page): the page as (slug, score) in rank
-    order, and those of `withdrawn` whose score would have placed them on
-    it. Ties keep first-stage order. `admit(slug, score)`, when given,
-    decides which scored candidates may be on the page at all (gated
-    fusion: `admit_gated`); a withdrawn lesson it would not admit is not
-    named. Raises whatever the model raises; the caller decides how to fall
-    back.
-    """
+    """Reorder `pool` by cross-encoder score and keep the top `want`."""
     candidates = [s for s in pool if s in text_of]
     extra = [s for s in withdrawn if s in text_of and s not in set(candidates)]
     if not candidates and not extra:
         return [], []
-    # Capped here, not only in `lesson_text`, so every caller -- both
-    # surfaces and the benchmark -- reranks the same text.
     pairs = [(task, text_of[s][:MAX_CHARS]) for s in candidates + extra]
     scores = _worker_scores(mode, pairs)
     if scores is None:
@@ -317,8 +177,6 @@ def rerank(
     for slug, score in zip(extra, scores[len(candidates):]):
         if admit is not None and not admit(slug, float(score)):
             continue
-        # Its position among the pool, had it stayed in: the lessons that
-        # outscore it go above it.
         above = sum(1 for _s, x in scored if x > float(score))
         if above < want:
             on_page.append(slug)

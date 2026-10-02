@@ -1,4 +1,3 @@
-"""The gateway: any agent, any language, one causal loop."""
 import http.client
 import io
 import json
@@ -47,9 +46,6 @@ ITEMS = [{"id": "a", "text": "check the idempotency key"}, {"id": "b", "text": "
 
 def _log_ids(root):
     return {r.lesson for r in holdout_io.read_log(root)[0]}
-
-
-# --- Auth, hosts, routing ---------------------------------------------------------------
 
 
 def test_health_and_the_schema_need_no_token_everything_else_does(gw):
@@ -103,9 +99,6 @@ def test_openapi_describes_exactly_the_routes_that_exist(gw):
     assert "security" not in doc["paths"]["/v1/health"]["get"]
 
 
-# --- Recall -----------------------------------------------------------------------------
-
-
 def test_recall_partitions_the_candidates_and_is_stable_per_occasion(gw):
     arms = set()
     for n in range(60):
@@ -116,13 +109,12 @@ def test_recall_partitions_the_candidates_and_is_stable_per_occasion(gw):
         assert r["holdout"] == {"running": True, "rate": 0.5}
         arms.add((frozenset(delivered)))
         again = recall(gw, f"occ-{n}", ITEMS)[1]
-        assert {i["id"] for i in again["deliver"]} == delivered      # a retry gets the same arms
-    assert len(arms) > 1                                             # both arms really occur
+        assert {i["id"] for i in again["deliver"]} == delivered
+    assert len(arms) > 1
     assert {i["text"] for i in recall(gw, "x1", ITEMS)[1]["deliver"]} <= {i["text"] for i in ITEMS}
 
 
 def test_nothing_is_withheld_until_an_experiment_is_started_on_purpose(root):
-    """The library default is a 10% holdout; hardware does not get that by accident."""
     g = gateway.Gateway(root, token=TOKEN)
     for n in range(40):
         status, r = recall(g, f"o{n}", ITEMS)
@@ -176,8 +168,8 @@ def test_protected_items_are_always_delivered_and_never_randomized_or_logged(roo
         assert {"safety/keep-clear-of-human", "flagged"} <= got
         assert set(r["protected"]) == {"safety/keep-clear-of-human", "flagged"}
         delivered_tuning.add("tuning/grip" in got)
-    assert delivered_tuning == {True, False}                       # the unprotected one IS randomized
-    assert _log_ids(root) == {"tuning/grip"}                       # the protected ones never enter the experiment
+    assert delivered_tuning == {True, False}
+    assert _log_ids(root) == {"tuning/grip"}
 
 
 def test_text_that_looks_like_an_injection_is_quarantined_before_any_arm_is_assigned(gw, root):
@@ -198,7 +190,7 @@ def test_a_store_that_measures_one_environment_refuses_another(root):
     assert call(g, "POST", "/v1/outcome", {"occasion_id": "o1", "succeeded": True, "env": "sim"})[0] == 409
     ok = recall(g, "o2", ITEMS, env="real")[1]
     assert ok["env"] == "real"
-    assert recall(g, "o3", ITEMS)[0] == 200                         # naming no environment is allowed
+    assert recall(g, "o3", ITEMS)[0] == 200
 
 
 def _seed_harm(root, n=300):
@@ -224,9 +216,6 @@ def test_a_memory_measured_to_hurt_is_withdrawn_through_the_gateway(root):
     assert {m["lesson_slug"]: m["withdrawn"] for m in memories} == {"harm": True, "ok": False}
 
 
-# --- Outcomes ---------------------------------------------------------------------------
-
-
 def test_a_boolean_outcome_is_recorded_once_and_a_conflict_is_409(gw, root):
     recall(gw, "o1", ITEMS)
     assert call(gw, "POST", "/v1/outcome", {"occasion_id": "o1", "succeeded": True})[1]["recorded"] is True
@@ -243,7 +232,7 @@ def test_a_boolean_outcome_is_recorded_once_and_a_conflict_is_409(gw, root):
     {"occasion_id": "o", "signals": "x"}, {"occasion_id": "o", "signals": [{"detector": "from_nothing"}]},
     {"occasion_id": "o", "signals": [{"detector": "__import__"}]},
     {"occasion_id": "o", "signals": [{"detector": "from_threshold", "args": {"value": [1]}}]},
-    {"occasion_id": "o", "signals": [{"detector": "from_threshold", "args": {"value": 1}}]},     # no bound
+    {"occasion_id": "o", "signals": [{"detector": "from_threshold", "args": {"value": 1}}]},
     {"occasion_id": "o", "signals": [{"detector": "from_threshold", "args": {"value": 1, "bogus": 2}}]},
     {"occasion_id": "o", "signals": [{"detector": "from_threshold", "args": {"value": 1, "maximum": 2}}],
      "combine": "xor"},
@@ -259,14 +248,14 @@ def test_bad_outcome_requests_are_400(gw, body):
 def test_a_robot_sends_measurements_and_the_gateway_applies_the_detectors(gw, root):
     recall(gw, "ep-1", ITEMS)
     signals = [
-        {"detector": "from_threshold", "args": {"value": 0.004, "maximum": 0.01}},      # placement error, m
+        {"detector": "from_threshold", "args": {"value": 0.004, "maximum": 0.01}},
         {"detector": "from_safety_stop", "args": {"stopped": False}},
         {"detector": "from_human_takeover", "args": {"human_took_over": False}},
     ]
     r = call(gw, "POST", "/v1/outcome", {"occasion_id": "ep-1", "signals": signals, "combine": "all"})[1]
     assert r["recorded"] and r["succeeded"] is True
     recall(gw, "ep-2", ITEMS)
-    signals[1]["args"]["stopped"] = True                                              # one veto fails it
+    signals[1]["args"]["stopped"] = True
     assert call(gw, "POST", "/v1/outcome", {"occasion_id": "ep-2", "signals": signals})[1]["succeeded"] is False
 
 
@@ -290,9 +279,6 @@ def test_windowed_detectors_work_over_json_timestamps(gw):
 def test_every_detector_the_gateway_exposes_exists_in_outcome_detect():
     names = {n for n in dir(outcome_detect) if n.startswith("from_")}
     assert {"from_safety_stop", "from_threshold", "from_event_within_window"} <= names
-
-
-# --- Store mode, console endpoints --------------------------------------------------------
 
 
 def _store_with_lesson(root):
@@ -338,15 +324,15 @@ def test_store_mode_reuses_the_ranking_index_until_a_lesson_changes(root, monkey
     query = "customer password reset email never arrived"
     for n in range(5):
         r = call(g, "POST", "/v1/recall", {"occasion_id": f"ix-{n}", "query": query})[1]
-    assert len(builds) == 1                                         # one build, not one per recall
+    assert len(builds) == 1
     path = os.path.join(paths.lessons_dir(root), "lesson_check_suppression.md")
     fm, body = frontmatter.read(path)
     frontmatter.write(path, {**fm, "core": True}, body + "\nEdited.\n")
     for n in range(12):
         r = call(g, "POST", "/v1/recall", {"occasion_id": f"core-{n}", "query": query})[1]
-        assert [i["id"] for i in r["deliver"]] == ["lesson_check_suppression"]   # core: never withheld
-        assert r["deliver"][0]["text"] == frontmatter.read(path)[1]              # the body as read fresh
-    assert len(builds) == 2                                         # the edit was noticed exactly once
+        assert [i["id"] for i in r["deliver"]] == ["lesson_check_suppression"]
+        assert r["deliver"][0]["text"] == frontmatter.read(path)[1]
+    assert len(builds) == 2
 
 
 def test_status_memories_occasions_and_agents_reflect_what_happened(gw, root):
@@ -364,14 +350,11 @@ def test_status_memories_occasions_and_agents_reflect_what_happened(gw, root):
     agents = {a["agent_id"]: a for a in call(gw, "GET", "/v1/agents")[1]["agents"]}
     assert set(agents) == {"arm-1", "arm-2"} and agents["arm-1"]["recalls"] == 15
     assert agents["arm-1"]["success_rate"] == pytest.approx(
-        sum(1 for n in range(30) if n % 2 and n % 3 != 0) / 15, abs=1e-4)   # rounded to 4 places
+        sum(1 for n in range(30) if n % 2 and n % 3 != 0) / 15, abs=1e-4)
 
 
 def test_memories_before_any_data_is_empty_not_an_error(gw):
     assert call(gw, "GET", "/v1/memories")[1]["memories"] == []
-
-
-# --- Durability --------------------------------------------------------------------------
 
 
 def test_relaxed_durability_skips_fsync_and_the_default_does_not(root, monkeypatch):
@@ -390,9 +373,6 @@ def test_relaxed_durability_skips_fsync_and_the_default_does_not(root, monkeypat
     assert holdout_io.read_outcomes(root) == {"s1": True, "r1": True}
 
 
-# --- Store-held policy and token ------------------------------------------------------------
-
-
 def test_an_environment_once_set_cannot_be_changed_and_prefixes_accumulate(root):
     gateway.merge_config(root, env="sim", protect=["safety/"])
     with pytest.raises(ValueError, match="measures 'sim'"):
@@ -409,9 +389,6 @@ def test_the_token_is_created_private_and_stable(root):
     assert len(first) >= 32 and gateway.load_or_create_token(root) == first
     mode = stat.S_IMODE(os.stat(gateway.token_path(root)).st_mode)
     assert mode & 0o077 == 0
-
-
-# --- stdio ---------------------------------------------------------------------------------
 
 
 def _stdio(g, *lines):
@@ -437,9 +414,6 @@ def test_the_stdio_transport_carries_the_same_calls_without_a_token(gw, root):
     assert replies[1]["body"]["recorded"] is True and replies[2]["body"]["ok"] is True
     assert replies[3]["status"] == 400 and replies[4]["status"] == 400 and replies[5]["status"] == 400
     assert holdout_io.read_outcomes(root) == {"s1": True}
-
-
-# --- Over a real socket ----------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -495,7 +469,7 @@ def test_over_http_chunked_missing_length_and_huge_bodies_are_refused(server):
 
 def test_a_client_that_stalls_is_dropped_not_held_forever(server):
     with socket.create_connection(("127.0.0.1", server), timeout=5) as s:
-        s.sendall(b"POST /v1/recall HTTP/1.1\r\nHost: localhost\r\nContent-Length: 50\r\n")  # never finishes
+        s.sendall(b"POST /v1/recall HTTP/1.1\r\nHost: localhost\r\nContent-Length: 50\r\n")
         start = time.time()
         s.settimeout(3)
         try:
@@ -533,4 +507,4 @@ def test_concurrent_robots_each_get_a_consistent_answer_and_nothing_is_lost(serv
     assert not errors
     assert len(holdout_io.read_outcomes(root)) == n_threads * per
     rows, corrupt = holdout_io.read_log(root)
-    assert corrupt == 0 and len(rows) == n_threads * per * 2          # two memories per occasion
+    assert corrupt == 0 and len(rows) == n_threads * per * 2

@@ -146,8 +146,6 @@ def run(args: argparse.Namespace) -> int:
         if config.fusion != retrieval_io.FUSION_NONE:
             from commontrace import semantic_arm
 
-            # A fused label names the semantic arm's model, which is the
-            # index's (commontrace/reference/query.py TRUSTED_MODELS).
             logged_as = retrieval_io.eligibility_label(
                 config.scorer, config.fusion, config.rerank,
                 embedder=retrieval_io.embedder_tag(semantic_arm.stored_model(root)))
@@ -188,17 +186,6 @@ def run(args: argparse.Namespace) -> int:
         f"on_harm={config.harm_policy}"
     )
 
-    # The consequence, stated at the moment it is caused -- the same posture
-    # holdout_io.configure takes about rotating the salt.
-    #
-    # Gated on assignments actually EXISTING, not on holdout_io's `running`:
-    # an unconfigured store's config defaults to DEFAULT_HOLDOUT_RATE, so
-    # `running` is True for a store that has never run an experiment at all,
-    # and warning there would teach people to ignore the warning.
-    # Fusion and reranking belong here for the same reason scorer and floor do: it decides
-    # which lessons are eligible on an occasion. The budget deliberately does
-    # NOT -- it changes how many of the eligible set are injected, which the
-    # holdout already records per lesson, not which lessons have an arm.
     changed_eligibility = (
         config.scorer != before.scorer
         or abs(config.floor - before.floor) > 1e-9

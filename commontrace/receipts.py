@@ -1,46 +1,4 @@
-"""What the agent could have seen, what it was given, and what it used.
-
-WHY THIS EXISTS
----------------
-The holdout log (commontrace/holdout_io.py) records ELIGIBILITY and ARM: for
-each (lesson, occasion), the lesson matched and was then injected or
-withheld. That is exactly what the causal comparison needs and it is not
-what an audit needs, because it starts one step too late. It cannot answer:
-
-  * **What else was there?** A lesson that was never a candidate does not
-    appear at all, so "the memory did not help" and "the memory was never
-    offered" are indistinguishable afterwards -- and they have opposite
-    remedies.
-  * **What did the agent actually read?** Retrieval returns a ranked list;
-    a budget (commontrace/dosage.py) then decides how much of it is
-    injected. An occasion where the right lesson ranked fourth and the
-    budget admitted three is a retrieval success and a product failure, and
-    nothing distinguished it from a ranking failure.
-  * **Did it matter?** Injected is not used. Without that distinction, every
-    reuse number this product reports is really an INJECTION number wearing
-    a better name.
-
-A receipt records all three for one occasion: the candidate set that was
-visible, the subset that was actually admitted (with rank, relevance and the
-budget that shaped it), and -- written later, when the outcome is known --
-which of those the agent says it used.
-
-BYTE-EXACT, AND WHY THAT WORD
------------------------------
-Each receipt stores every visible lesson's REVISION, not just its slug, and
-a digest over that whole set. So a dispute six months later about "what did
-the agent have in front of it" is answerable to the exact text, not to a
-name whose contents have moved since. That is the property that makes a
-receipt evidence rather than a log line, and it is why this is worth a file
-of its own rather than three more columns on the holdout log.
-
-APPEND-ONLY, AND NEVER RECONSTRUCTED
-------------------------------------
-Written at decision time, like the holdout log and for the same reason: a
-candidate set reconstructed afterwards is a candidate set computed against
-today's store, today's ranking, and today's budget. It would look
-authoritative and describe a retrieval that never happened.
-"""
+"""What the agent could have seen, what it was given, and what it used."""
 
 from __future__ import annotations
 
@@ -84,7 +42,6 @@ class Receipt:
     at: str
     visible: tuple[Visible, ...] = field(default_factory=tuple)
     admitted: tuple[Admitted, ...] = field(default_factory=tuple)
-    #: Why the admitted set is smaller than the visible one, per lesson.
     withheld: tuple[tuple[str, str], ...] = field(default_factory=tuple)
     query: str = ""
     scorer: str = ""
@@ -92,20 +49,11 @@ class Receipt:
     chars_used: int = 0
     max_chars: int = 0
     max_lessons: int = 0
-    #: The release the fleet was running, when one has been cut
-    #: (commontrace/release.py). Ties a retrieval to a named deployment
-    #: rather than to "whatever the files said at the time".
     release_id: str = ""
 
     @property
     def digest(self) -> str:
-        """Identifies the exact candidate set, by content.
-
-        Over (slug, revision) pairs sorted canonically, so two retrievals
-        that saw the same store agree regardless of ranking order -- the
-        digest answers "was the same knowledge available", which is a
-        different question from "was it ranked the same way".
-        """
+        """Identifies the exact candidate set, by content."""
         rows = _FIELD_SEP.join(
             f"{v.slug}={v.revision}" for v in sorted(self.visible, key=lambda v: v.slug)
         )
@@ -203,19 +151,7 @@ def record_use(
     succeeded: bool | None = None,
     now: datetime.datetime | None = None,
 ) -> dict:
-    """Record which admitted lessons the agent says it actually used.
-
-    A SEPARATE line rather than an edit to the receipt, because the receipt
-    is a record of a decision already made and this is a later, independent
-    claim about it -- possibly by a different actor, certainly at a different
-    time. Rewriting the earlier line would lose the fact that they were two
-    events, which is exactly what an auditor is trying to establish.
-
-    `used=[]` is a real answer and is stored as one: "the agent was given
-    four lessons and used none" is the most informative outcome this product
-    can collect, and the shape that most easily gets discarded as an empty
-    value.
-    """
+    """Record which admitted lessons the agent says it actually used."""
     moment = now or datetime.datetime.now(datetime.timezone.utc)
     entry = {
         "occasion_id": occasion_id,
@@ -260,11 +196,7 @@ class Coverage:
     n_occasions: int = 0
     n_with_any_admitted: int = 0
     n_with_any_used: int = 0
-    #: Occasions where something was visible but the budget admitted none of
-    #: it. A retrieval success and a product failure, and the pair this whole
-    #: module exists to be able to tell apart.
     n_crowded_out: int = 0
-    #: Lessons admitted but never reported used, by slug.
     never_used: tuple[str, ...] = field(default_factory=tuple)
 
     @property
@@ -273,12 +205,7 @@ class Coverage:
 
     @property
     def used_rate(self) -> float:
-        """Of the occasions that received anything, how many used it.
-
-        Deliberately NOT over all occasions: an occasion nothing was
-        injected into cannot have used anything, and including it would
-        blend a retrieval problem into a usefulness number.
-        """
+        """Of the occasions that received anything, how many used it."""
         return (
             self.n_with_any_used / self.n_with_any_admitted
             if self.n_with_any_admitted else 0.0
@@ -286,12 +213,7 @@ class Coverage:
 
 
 def coverage(root: str) -> Coverage:
-    """Join receipts against use reports.
-
-    The one number this makes possible and nothing else did: the difference
-    between injected and USED. Every "lessons reused" figure before this was
-    counting injections.
-    """
+    """Join receipts against use reports."""
     receipts = read_all(root)
     uses = read_uses(root)
     used_by_occasion: dict[str, set[str]] = {}

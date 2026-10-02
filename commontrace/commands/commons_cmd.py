@@ -1,37 +1,3 @@
-"""`commontrace commons` — consult, and optionally propose to, the
-CommonTrace Knowledge Base.
-
-    Of the failures my fleet keeps hitting, what fraction does the
-    Knowledge Base already solve? And: has anyone already written down
-    the answer to this ONE failure?
-
-This is not org-to-org sharing: the Knowledge Base is a single corpus the
-operator authors and curates (substrate knowledge -- protocol semantics,
-vendor documentation, standards, and accepted community submissions --
-never another customer's own trace), the way a team consults Stack
-Overflow or an internal wiki, not the way it would consult a competitor's
-support queue. `commons_access` (your plan) is the "optional" part:
-whether you consult it at all.
-
-`submit` lets you propose an entry -- like posting a Stack Overflow
-answer, not sharing your own incident history. Nothing is published by
-that call: an operator reviews it, and only an accepted submission ever
-becomes visible to anyone else, at which point it raises your Knowledge
-Base query allowance. `submissions` checks status. A pending or rejected
-submission is never visible to any other org, and is never added to your
-fleet's own coverage numbers either.
-
-No failure text is sent for `sign`/`report`/`ask`. `sign` MinHashes
-locally and only signatures leave this machine; what comes back is drawn
-only from the Knowledge Base's curated entries. `submit` is different by
-necessity -- proposing an entry means sending its actual text, since an
-operator has to read it to review it.
-
-(If you specifically want a bilateral, fully-offline comparison between
-two consenting fleets -- e.g. two teams inside the same company comparing
-notes -- see `commontrace overlap`, a separate, manual research tool that
-exchanges signature files by hand and involves no Hub.)
-"""
 from __future__ import annotations
 
 import argparse
@@ -45,10 +11,6 @@ from commontrace import failure_import, hub_client, overlap, paths, semantic, tr
 from commontrace.commands import _format
 from commontrace.commands._format import read_or_warn
 
-# Kept in step with hub/commons.py's signing. Both sides sign a trace on
-# title + context + tags -- the *situation*, not the fix -- so the
-# comparison is symmetric. A change here without the matching change there
-# silently degrades every similarity score rather than failing.
 COMMONS_NUM_PERM = overlap.DEFAULT_NUM_PERM
 
 
@@ -222,8 +184,6 @@ def _safe_tags(raw: object) -> list[str]:
 
 
 def _recurring_failures(root: str) -> list[dict]:
-    """Traces whose outcome recorded a repeated error -- the failures a
-    fleet keeps paying for, which is exactly what the commons might cover."""
     out = []
     tdir = paths.traces_dir(root)
     for path in sorted(glob.glob(os.path.join(tdir, "*.md"))):
@@ -240,13 +200,7 @@ def _recurring_failures(root: str) -> list[dict]:
 
 
 def build_signatures(root: str) -> list[dict]:
-    """Reduce this store's recurring failures to label+signature pairs.
-
-    Signed on title + context + tags to match hub/commons.py exactly. Labels
-    are local trace-id prefixes: they are echoed back in the report so a
-    result can be traced to a file, and they never leave without the
-    operator running this command.
-    """
+    """Reduce this store's recurring failures to label+signature pairs."""
     failures = []
     for tr in _recurring_failures(root):
         tags = _safe_tags(tr.get("tags"))
@@ -261,14 +215,7 @@ def build_signatures(root: str) -> list[dict]:
 
 
 def signatures_from_file(path: str, fmt_override: str | None = None) -> tuple[list[dict], dict]:
-    """Sign failures a fleet already has, identically to build_signatures().
-
-    Same `overlap.minhash` over the same title+text+tags concatenation, so a
-    signature produced from an incident export is comparable to one produced
-    from a `memory/traces/` store and to a Hub trace. If these ever diverge
-    the numbers stay plausible and become meaningless, which is the worst
-    failure mode available here -- hence one shared code path for the text.
-    """
+    """Sign failures a fleet already has, identically to build_signatures()."""
     failures, stats = failure_import.read_failures(path, fmt_override=fmt_override)
     signed = []
     for f in failures:
@@ -281,9 +228,6 @@ def signatures_from_file(path: str, fmt_override: str | None = None) -> tuple[li
 
 
 def _describe_import(stats: dict) -> None:
-    """Say what was actually measured. A coverage fraction computed over 400
-    copies of one alert describes that alert, not the fleet, so a collapse
-    or a cap has to be visible next to the number it changed."""
     print(f"  read {stats['rows']} row(s) as {stats['format']}; "
           f"{stats['unique']} distinct failure(s).")
     if stats["deduplicated"]:
@@ -294,12 +238,6 @@ def _describe_import(stats: dict) -> None:
               f"{stats['truncated']} failure(s) not measured.", file=sys.stderr)
 
 
-# Kept as a module-level name (not called inline as _format.resolve_hub)
-# because tests monkeypatch commons_cmd._resolve_hub directly to stub out
-# Hub connectivity -- every run_* function below resolves this name at
-# call time, so the monkeypatch still takes effect regardless of where the
-# real implementation lives. See commontrace/commands/_format.py:resolve_hub
-# for the implementation, shared with account_cmd.py.
 _resolve_hub = _format.resolve_hub
 
 
@@ -329,10 +267,6 @@ def run_sign(args: argparse.Namespace) -> int:
     print(f"  {len(failures)} recurring failure(s), as MinHash signatures only.")
     print("  Failure text is NOT in this file and cannot be reconstructed from it.")
     if stats:
-        # The labels DO travel, and for an imported file they are the
-        # prospect's own incident titles rather than opaque trace ids. Saying
-        # so here rather than in a doc, because this is the moment someone
-        # decides whether to send the file.
         print("  Labels (your incident titles) ARE in this file and are echoed back "
               "in the report.")
         print("  Review it before sending if those titles are themselves sensitive.")
@@ -347,38 +281,16 @@ def run_sign(args: argparse.Namespace) -> int:
     return 0
 
 
-# How many uncovered failures one `commons report --candidates` will look
-# up unless told otherwise. Each lookup is a metered consultation
-# (hub/crud.py:commons_search), so an unbounded report over a large import
-# could spend a month's allowance in one command. Ten is enough to make the
-# point on a realistic incident export while keeping the bill legible.
 DEFAULT_CANDIDATE_LOOKUPS = 10
 
 
 def _uncovered(failures: list[dict], report: dict) -> list[dict]:
-    """The failures the coverage bar did not clear, in input order.
-
-    Disputed matches count as *found*, not uncovered: the Knowledge Base
-    demonstrably has something about them, and `_render` already gives them
-    their own section explaining why they are excluded from the figure.
-    Looking them up again would spend a consultation to repeat what the
-    report just said.
-    """
     answered = {m.get("failure_label") for m in (report.get("matches") or [])}
     answered |= {m.get("failure_label") for m in (report.get("disputed_matches") or [])}
     return [f for f in failures if f.get("label") not in answered]
 
 
 def _render_report_candidates(found: list[dict], skipped: int) -> str:
-    """The ranked lookups, under a heading that cannot be misread as coverage.
-
-    Kept textually separate from the coverage section above, and never
-    folded into its arithmetic, because the evaluation measured
-    exactly why: the score distributions of true and absent matches
-    overlap, so a ranked hit is evidence for a human to weigh and not a
-    solved failure. The coverage figure keeps its 0% false-positive
-    property precisely by not counting anything on this list.
-    """
     lines = [
         "## Candidates to judge — NOT counted as coverage",
         "",
@@ -431,15 +343,6 @@ def _render_report_candidates(found: list[dict], skipped: int) -> str:
 
 
 def _render_candidates_offer(n_uncovered: int) -> str:
-    """Shown when the bar cleared nothing (or little) and the reader did not
-    ask for lookups.
-
-    This exists because of a specific, recorded failure: a prospect's export
-    of nine failures, seven of which this corpus provably contained, came
-    back "0 of 9, 0%" — and a reader has no way to tell that from "this
-    product knows nothing about my problems". The number was correct. The
-    impression it left was false, and that gap is what loses the room.
-    """
     return "\n".join([
         "## Before you read the number above as 'it knows nothing'",
         "",
@@ -502,12 +405,6 @@ def _render(report: dict) -> str:
                 "",
             ]
 
-    # Matched, then deliberately left out of the count above. Shown rather
-    # than dropped so the coverage figure never moves without the reader
-    # being able to see why: a number that fell because the field found an
-    # answer wrong is a different event from one that fell because the
-    # corpus shrank, and a report that hides the difference invites the
-    # wrong conclusion about both.
     disputed = report.get("disputed_matches") or []
     if disputed:
         lines += [
@@ -538,7 +435,6 @@ def _render(report: dict) -> str:
 
 
 def _load_corpus(path: str) -> list[dict]:
-    """A Knowledge Base corpus file, as `hub.manage commons-seed` consumes it."""
     records = []
     with open(path, "r", encoding="utf-8") as fh:
         for n, line in enumerate(fh, 1):
@@ -558,19 +454,7 @@ def _load_corpus(path: str) -> list[dict]:
 
 
 def run_local_report(args: argparse.Namespace) -> int:
-    """Coverage measured entirely on this machine, against a corpus file.
-
-    No Hub, no network, no signature: the corpus is public operator-curated
-    content and the failure text is already here, so both halves of the
-    comparison are local. That makes this strictly less disclosing than the
-    shipped path, which transmits a MinHash signature -- here the operator
-    does not learn that you asked, let alone what about.
-
-    The lexical matcher is the same `overlap` code the Hub runs, so
-    `--corpus` alone reproduces the Hub's number offline. `--semantic`
-    swaps in embeddings, whose measured recall is ~3.7x higher at the same
-    zero-false-positive bar (commons/eval/semantic.py).
-    """
+    """Coverage measured entirely on this machine, against a corpus file."""
     try:
         corpus = _load_corpus(args.corpus)
     except (OSError, ValueError) as exc:
@@ -583,10 +467,6 @@ def run_local_report(args: argparse.Namespace) -> int:
               file=sys.stderr)
         return 1
     try:
-        # The same reader signatures_from_file() uses, so the text both
-        # matchers see is identical -- the two sides of this comparison
-        # diverging is the failure mode that keeps numbers plausible while
-        # making them meaningless.
         raw, stats = failure_import.read_failures(
             args.from_file, fmt_override=getattr(args, "from_format", None))
     except failure_import.FailureImportError as exc:
@@ -708,9 +588,6 @@ def _render_local(report: dict, stats: dict) -> str:
 
 
 def run_report(args: argparse.Namespace) -> int:
-    # --corpus means "measure here", so it is answered before any Hub is
-    # resolved: a local run must not require a hub url or an api key, and
-    # must not be able to reach the network by accident.
     if getattr(args, "corpus", None):
         return run_local_report(args)
     if getattr(args, "semantic", False):
@@ -768,9 +645,6 @@ def run_report(args: argparse.Namespace) -> int:
         print(f"[commontrace] {exc}", file=sys.stderr)
         return 1
 
-    # The coverage call, its threshold and its output are untouched by
-    # everything below: the ranked lookups are a second, separate question
-    # asked only about the failures that call did not answer.
     uncovered = _uncovered(failures, report)
     looked_up: list[dict] = []
     skipped = 0
@@ -791,10 +665,6 @@ def run_report(args: argparse.Namespace) -> int:
                 )
                 entry["candidates"] = found.get("candidates") or []
             except (hub_client.HubClientUnavailable, hub_client.HubConnectionError) as exc:
-                # One failed lookup must not discard the coverage report the
-                # caller already paid for, nor the lookups that did succeed
-                # -- a plan running out of consultations mid-report is the
-                # expected case, not an exceptional one.
                 entry["error"] = str(exc)
             looked_up.append(entry)
 
@@ -803,8 +673,6 @@ def run_report(args: argparse.Namespace) -> int:
             report = dict(report)
             report["candidate_lookups"] = looked_up
             report["candidate_lookups_skipped"] = skipped
-            # Named so no consumer can mistake this for part of the
-            # coverage arithmetic, which is what the evaluation warns against.
             report["candidate_lookups_are_not_coverage"] = True
         print(json.dumps(report, indent=2))
         return 0
@@ -819,15 +687,6 @@ def run_report(args: argparse.Namespace) -> int:
 
 
 def run_fetch(args: argparse.Namespace) -> int:
-    """Pull the curated corpus down so every later question can be answered
-    here, without asking.
-
-    This is the one Knowledge Base call that carries no signature and names
-    no failure: it asks for public curated content, so the Hub learns only
-    that a fetch happened -- not what this fleet is failing at. Afterwards
-    `commons report --corpus` needs no network at all, which is why this
-    exists rather than a flag that fetches implicitly on every report.
-    """
     resolved = _resolve_hub(args)
     if resolved is None:
         return 1
@@ -864,15 +723,7 @@ def run_fetch(args: argparse.Namespace) -> int:
 
 
 def sign_question(question: str) -> list[int]:
-    """Sign a free-text question the same way a stored failure is signed.
-
-    Identical concatenation and identical `overlap.minhash` as
-    build_signatures(), because a question and a trace must land in the same
-    signature space or every similarity score is meaningless. A question has
-    no separate title/context/tags, so the whole string plays all three
-    roles -- which is exactly what build_signatures() does anyway once it
-    joins them with spaces.
-    """
+    """Sign a free-text question the same way a stored failure is signed."""
     return overlap.minhash(question, COMMONS_NUM_PERM)
 
 
@@ -909,17 +760,10 @@ def _render_candidates(result: dict, question: str) -> str:
         bits = [f"similarity {sim:.3f}" if isinstance(sim, (int, float)) else "similarity ?"]
         hits = c.get("commons_hits")
         if hits:
-            # The Stack-Overflow-shaped corroboration signal: this entry has
-            # demonstrably covered a real recurring failure before, for this
-            # fleet or another customer -- not a vote, an actual match.
             bits.append(f"has covered {hits:,} recurring failure(s) before")
         trust = trace.get("trust")
         votes = trace.get("vote_count") or 0
         if isinstance(trust, (int, float)) and votes:
-            # Trust without its denominator is not readable: 0.00 from one
-            # downvote and 0.00 from twelve are the same number and
-            # completely different facts. Suppressed entirely at zero votes,
-            # where 0.5 is a placeholder rather than a measurement.
             bits.append(f"trust {trust:.2f} from {votes} fleet(s)")
         if trace.get("agent_type"):
             bits.append(str(trace["agent_type"]))
@@ -992,11 +836,6 @@ def run_ask(args: argparse.Namespace) -> int:
 
 
 def run_usage(args: argparse.Namespace) -> int:
-    """Show the meter: a flat plan allowance, plus whatever this org has
-    permanently earned via accepted Knowledge Base submissions
-    (`commons submit`) -- never by the act of submitting alone. See
-    hub/plans.py "why bonus_commons_queries is not the same mistake
-    twice"."""
     resolved = _resolve_hub(args)
     if resolved is None:
         return 1

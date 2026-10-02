@@ -1,30 +1,5 @@
 #!/usr/bin/env python3
-"""pilot_metrics.py — CommonTrace's five business-outcome metrics.
-
-Computes, from memory/traces/*.md `outcome` frontmatter (see
-protocol/schemas/trace.schema.json and protocol/PROTOCOL.md#11-pilot-outcome-metrics):
-
-- repeated_error_rate : % of traces marking a recurrence of a known failure
-- resolution_rate     : % of traces whose task reached a successful conclusion
-- escalation_rate     : % of traces that required human escalation
-- frustration_rate    : % of traces with an explicit negative signal
-- avg_tokens_used / avg_llm_calls : mean cost per trace
-
-Unlike benchmark/measure_performance.py (which measures whether the protocol
-*machinery* is healthy — Omega/Alpha quality), this measures whether the
-*fleet's behavior* actually changed, split baseline (outcome.baseline: true)
-vs current. Intended to be run continuously against a production fleet, not
-only during an initial evaluation window: the same before/after split answers
-"did adopting this help?" on day 30 and "is it still helping?" on day 300.
-
-Usage:
-    python pilot_metrics.py                 # markdown stdout, all traces
-    python pilot_metrics.py --json          # raw JSON to stdout
-    python pilot_metrics.py --html          # HTML to memory/benchmark_reports/
-    python pilot_metrics.py --dest /path    # override store root
-
-Any agent_type may be filtered with --agent-type.
-"""
+"""pilot_metrics.py — CommonTrace's five business-outcome metrics."""
 import argparse
 import datetime
 import glob
@@ -32,7 +7,6 @@ import os
 import re
 import sys
 
-# Reuse the frontmatter parser + HTML renderer from the sibling benchmark script.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import measure_performance as mp
 
@@ -68,10 +42,7 @@ def load_traces(root=None, agent_type=None):
 
 
 def _rate(traces, field):
-    """Fraction of traces where outcome[field] is True, over traces where it's a real bool."""
     values = [t.get("outcome", {}).get(field) for t in traces if isinstance(t.get("outcome"), dict)]
-    # Strictly bool, not just truthy -- a malformed/hand-edited frontmatter value like the
-    # string "false" is truthy in Python and would otherwise invert the rate.
     values = [v for v in values if isinstance(v, bool)]
     if not values:
         return None, 0
@@ -105,39 +76,13 @@ def compute_bucket(traces):
 
 
 def split_baseline(traces):
-    # `is True`, not truthiness: trace.schema.json's `baseline` is a bool
-    # field, but a hand-edited trace is free to write `baseline: "false"`
-    # (a non-empty string, which is truthy in Python) and truthiness alone
-    # would misclassify that trace as baseline data -- silently mixing a
-    # CURRENT trace into the pre-CommonTrace baseline bucket it explicitly
-    # says it is not.
     baseline = [t for t in traces if isinstance(t.get("outcome"), dict) and t["outcome"].get("baseline") is True]
-    # Identity, not equality. `t not in baseline` is an O(n) dict comparison
-    # per trace -- O(n^2) overall with a full field-by-field compare at each
-    # step -- and it is correct today only because load_traces happens to set
-    # fm["_path"], making every dict unique. That is a load-bearing side
-    # effect of an unrelated line: drop or move `_path` and two traces with
-    # identical content would silently collapse into one.
     baseline_ids = {id(t) for t in baseline}
     current = [t for t in traces if id(t) not in baseline_ids]
     return baseline, current
 
 
 def _pct_delta(before, after, bounded_rate=False):
-    """Relative change from before -> after, as a signed fraction (e.g. -0.53 = -53%).
-
-    A true relative change from a zero baseline is undefined (division by
-    zero) for an unbounded quantity like avg_tokens_used -- "0 -> 500
-    tokens" has no meaningful percentage, so that case stays None/"N/A".
-    `bounded_rate=True` is for the four [0, 1] rate metrics specifically
-    (resolution_rate and friends): a genuine 0% -> positive-% improvement
-    is the maximal positive signal a bounded rate can report, exactly like
-    commontrace/commands/pilot_cmd.py's identical handling for the same
-    metric family -- without this, `commontrace bench --pilot` reported
-    "N/A" for a 0% -> 80% resolution-rate improvement while `commontrace
-    pilot` reported "+100%" for the identical underlying numbers, out of
-    the same trace store.
-    """
     if before is None or after is None:
         return None
     if before == 0:

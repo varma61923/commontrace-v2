@@ -1,6 +1,3 @@
-"""Automatic harm withdrawal for memory held anywhere (CausalMemory, the
-adapters, file sources): a memory measured to make outcomes worse stops being
-handed out, decided before arms are assigned, and only on readable evidence."""
 from __future__ import annotations
 
 import json
@@ -26,7 +23,6 @@ def _store(root, policy="withdraw", salt="withdrawal-tests"):
 
 
 def _seed_harm(root, n=300, harm_effect=-0.35, rates=None):
-    """Occasions on which 'harm' makes outcomes much worse and 'ok' does nothing."""
     config = holdout_io.load_config(str(root))
     rng = random.Random(7)
     for i in range(n):
@@ -75,8 +71,6 @@ def test_an_explicit_policy_overrides_the_stores(tmp_path):
 
 
 def test_withdrawal_happens_before_arms_are_assigned(tmp_path):
-    """A withdrawn memory is never logged as treated or withheld on an occasion it
-    was absent from -- that would bias every estimate involving it."""
     _store(tmp_path)
     _seed_harm(tmp_path)
     before = len(_log_rows(tmp_path))
@@ -88,8 +82,6 @@ def test_withdrawal_happens_before_arms_are_assigned(tmp_path):
 
 
 def test_the_control_arm_is_identical_when_nothing_is_harmful(tmp_path):
-    """Switching the policy on must not change what any occasion receives unless
-    a memory has actually been measured to hurt."""
     delivered = {}
     for policy in ("inform", "withdraw"):
         root = tmp_path / policy
@@ -99,12 +91,10 @@ def test_the_control_arm_is_identical_when_nothing_is_harmful(tmp_path):
             sorted(i["id"] for i in memory.recall("q", occasion_id=f"o{n}")) for n in range(200)
         ]
     assert delivered["inform"] == delivered["withdraw"]
-    assert {tuple(d) for d in delivered["inform"]} >= {("harm", "ok"), ("ok",), ("harm",)}  # both arms occur
+    assert {tuple(d) for d in delivered["inform"]} >= {("harm", "ok"), ("ok",), ("harm",)}
 
 
 def test_a_compromised_experiment_withdraws_nothing(tmp_path):
-    """Two holdout rates under one salt: the audit says COMPROMISED, there is no
-    evidence, so nothing may be withdrawn on it."""
     _store(tmp_path)
     _seed_harm(tmp_path, rates={i: 0.1 for i in range(100, 300)})
     assert evidence.withdrawn(str(tmp_path), "withdraw") == {}
@@ -117,7 +107,7 @@ def test_a_new_randomization_gives_a_withdrawn_memory_a_second_trial(tmp_path):
     _seed_harm(tmp_path)
     memory = CausalMemory(lambda q, **kw: ITEMS, root=str(tmp_path), check_every=1)
     assert "harm" in memory.recall_detailed("q", occasion_id="a").withdrawn
-    holdout_io.configure(str(tmp_path), rate=0.3)  # rotates the salt
+    holdout_io.configure(str(tmp_path), rate=0.3)
     assert memory.recall_detailed("q", occasion_id="b").withdrawn == {}
 
 
@@ -125,7 +115,6 @@ def test_a_pinned_memory_is_never_withdrawn(tmp_path):
     _store(tmp_path)
     _seed_harm(tmp_path)
     memory = CausalMemory(lambda q, **kw: ITEMS, root=str(tmp_path), pinned=["harm"])
-    # Pinned is delivered on every occasion; "ok" is subject to the random holdout.
     assert all("harm" in {i["id"] for i in memory.recall("q", occasion_id=f"live-{n}")} for n in range(20))
 
 
@@ -162,9 +151,6 @@ def test_a_failure_reading_the_evidence_leaves_recall_as_it_was(tmp_path, monkey
     assert memory.recall_detailed("q", occasion_id="a").withdrawn == {}
 
 
-# --- Adapters --------------------------------------------------------------------
-
-
 class _Mem0:
     def __init__(self):
         self.deleted = []
@@ -184,7 +170,7 @@ def test_an_adapter_withdraws_automatically_and_never_deletes_by_default(tmp_pat
     result = memory.recall_detailed("q", occasion_id="live")
     assert "harm" not in {i.id for i in result.items} and "harm" in result.withdrawn
     assert client.deleted == []
-    assert not ms.blocked_ids_for_key(str(tmp_path), memory.source_key)  # follows the evidence, not a file
+    assert not ms.blocked_ids_for_key(str(tmp_path), memory.source_key)
 
 
 def test_deleting_at_the_source_is_opt_in_and_blocklists_first(tmp_path):
@@ -217,10 +203,7 @@ def test_a_source_that_cannot_delete_is_only_blocked_from_delivery(tmp_path):
     adapter.can_delete = False
     memory = ma.MeasuredMemory(adapter, root=str(tmp_path), delete_harmful=True)
     assert "harm" not in {i.id for i in memory.recall("q", occasion_id="live")}
-    assert not ms.blocked_ids_for_key(str(tmp_path), memory.source_key)  # nothing to delete, nothing written
-
-
-# --- File sources ------------------------------------------------------------------
+    assert not ms.blocked_ids_for_key(str(tmp_path), memory.source_key)
 
 
 def test_a_file_source_reports_a_harmfully_withdrawn_section_apart_from_the_random_holdout(
@@ -236,6 +219,5 @@ def test_a_file_source_reports_a_harmfully_withdrawn_section_apart_from_the_rand
     assert rendered.harmful == [bad] and bad not in rendered.withheld
     assert "retry 3 times" not in rendered.text
     assert rendered.blocked == []
-    assert "idempotency" in rendered.text or "keys" in rendered.withheld  # the other section follows the holdout
-
+    assert "idempotency" in rendered.text or "keys" in rendered.withheld
 

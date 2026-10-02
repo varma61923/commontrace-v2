@@ -1,9 +1,3 @@
-"""The local console the gateway serves (commontrace/ui/).
-
-It is plain files with no build step, so the contract worth pinning is what a
-browser may do with them: nothing inline, nothing that turns an untrusted memory
-or agent id into markup, and the token never leaving the page's own origin.
-"""
 import os
 import re
 
@@ -31,7 +25,6 @@ def gw(tmp_path):
     ("/", "text/html"), ("/index.html", "text/html"), ("/ui/app.js", "text/javascript"),
     ("/ui/app.css", "text/css"), ("/ui/favicon.svg", "image/svg+xml")])
 def test_the_console_loads_without_a_token_and_carries_a_strict_csp(gw, path, ctype):
-    # The page has to load before it can ask for the token; the data behind it still needs one.
     r = gw.handle("GET", path, {"Host": "localhost:8787"})
     assert r.status == 200 and r.content_type.startswith(ctype)
     csp = r.headers["Content-Security-Policy"]
@@ -67,7 +60,7 @@ def test_the_page_has_no_inline_script_style_or_handlers():
 
 
 def test_script_never_turns_strings_into_markup_or_code():
-    js = re.sub(r"/\*.*?\*/|(?<![:\"'])//[^\n]*", "", _read("app.js"), flags=re.S)  # comments may name the rule
+    js = re.sub(r"/\*.*?\*/|(?<![:\"'])//[^\n]*", "", _read("app.js"), flags=re.S)
     for banned in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function",
                    "setAttribute(\"style\"", "setAttribute('style'", "srcdoc"):
         assert banned not in js, banned
@@ -78,7 +71,6 @@ def test_the_token_comes_from_the_fragment_and_is_scrubbed_from_the_address_bar(
     js = _read("app.js")
     assert "#token=" in js or "token=" in js
     assert "sessionStorage" in js and "replaceState" in js
-    # never persisted past the tab, never put in a URL, never sent anywhere but this origin
     assert "localStorage.setItem(\"token\"" not in js and "localStorage.setItem('token'" not in js
     assert not re.search(r"""fetch\(\s*["']https?://""", js)
     assert "?token=" not in js
@@ -94,11 +86,10 @@ def test_the_console_ships_in_the_package():
 def test_the_colours_are_defined_for_light_dark_and_forced_colours():
     css = _read("app.css")
     assert "prefers-color-scheme: dark" in css and "forced-colors" in css and 'data-theme="dark"' in css
-    assert "min-height: 44px" in css  # touch targets, for a tablet on a robot or a phone on a shop floor
+    assert "min-height: 44px" in css
 
 
 def test_in_a_real_browser_hostile_ids_are_text_and_the_token_leaves_the_address_bar(tmp_path):
-    """Skipped where Playwright or a Chromium is not installed (it is not a dependency)."""
     sync_api = pytest.importorskip("playwright.sync_api")
     exe = next((p for p in (os.environ.get("CHROMIUM_PATH"), "/opt/pw-browsers/chromium") if p and os.path.isfile(p)), None)
     if exe is None:
@@ -159,7 +150,6 @@ def _workbench_store(tmp_path):
 
 
 def test_in_a_real_browser_a_draft_is_edited_approved_and_a_failing_one_cannot_be_selected(tmp_path):
-    """Skipped where Playwright or a Chromium is not installed."""
     sync_api = pytest.importorskip("playwright.sync_api")
     exe = next((p for p in (os.environ.get("CHROMIUM_PATH"), "/opt/pw-browsers/chromium") if p and os.path.isfile(p)),
                None)
@@ -187,7 +177,7 @@ def test_in_a_real_browser_a_draft_is_edited_approved_and_a_failing_one_cannot_b
             assert page.is_disabled("#sel-lesson_todo") and not page.is_disabled("#sel-lesson_ready")
             page.click("a.q-name:has-text('lesson_todo')")
             page.wait_for_selector("#f-rule")
-            assert page.is_disabled("button:has-text('Approve')")            # the gates say no
+            assert page.is_disabled("button:has-text('Approve')")
             page.fill("#f-rule", "Always link the refund policy page.")
             page.fill("#f-applies_when", "A customer asks when a refund arrives.")
             page.fill("#f-do_not_apply_when", "The refund was already issued.")

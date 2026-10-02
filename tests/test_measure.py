@@ -1,11 +1,3 @@
-"""commontrace/measure.py: causal measurement of memory held by another store.
-
-The claim being tested is end to end, so the most important test here is
-too: a fake external store in which one memory genuinely raises the task
-success rate and another does nothing, run through CausalMemory and then
-through the SAME analysis path `commontrace experiment` uses. If that path
-cannot tell the two apart, nothing else in this file matters.
-"""
 from __future__ import annotations
 
 import json
@@ -17,13 +9,6 @@ from commontrace import experiment, holdout_io
 from commontrace.commands import experiment_cmd
 from commontrace.measure import CausalMemory, content_revision
 
-# Pinned, not left to holdout_io.configure: that derives a fresh salt from
-# the clock and a uuid on every call, which re-randomizes which occasions
-# land in which arm on every run. At alpha=0.05 a memory with no effect is
-# then called HELPS on roughly one randomization in twenty -- that is the
-# test's false-positive rate working as designed, and CI hit it. These
-# tests check that the pipeline is wired correctly, not how often the
-# statistics err, so the randomization is fixed and every run is identical.
 FIXED_SALT = "test-measure-fixed-salt"
 
 
@@ -38,11 +23,8 @@ def _configure(root, rate):
 
 
 class FakeStore:
-    """Returns every memory it holds, in rank order, as dicts shaped like a
-    typical memory API's results (`id` + `memory`)."""
-
     def __init__(self, memories):
-        self.memories = memories  # list of dicts
+        self.memories = memories
         self.calls = 0
 
     def search(self, query, **kwargs):
@@ -57,8 +39,6 @@ def _log_rows(root):
 
 
 def _analyze(root):
-    """Exactly the CLI's path: load, scope to the current salt, collapse to
-    observations, estimate."""
     rows, _rate, _corrupt = experiment_cmd._load(str(root))
     rows, _salt, _excluded = experiment_cmd.scope_to_current_salt(str(root), rows)
     return {e.lesson_slug: e for e in experiment.analyze(experiment_cmd._observations(rows))}
@@ -77,7 +57,6 @@ class TestEndToEnd:
         for i in range(400):
             occasion = f"task-{i}"
             delivered = {m["id"] for m in memory.recall("webhook fired twice", occasion_id=occasion)}
-            # The ground truth this test plants: only `good` changes outcomes.
             p = 0.8 if "good" in delivered else 0.4
             memory.record_outcome(occasion, succeeded=rng.random() < p)
 
@@ -87,8 +66,6 @@ class TestEndToEnd:
         assert effects["neutral"].verdict != experiment.VERDICT_HELPS
 
     def test_every_eligible_memory_is_logged_in_both_arms(self, tmp_path):
-        """The withheld arm is the evidence. A wrapper that logged only what
-        it delivered would have no control group at all."""
         _configure(tmp_path, 0.5)
         store = FakeStore([{"id": "m1", "memory": "a"}])
         memory = CausalMemory(store.search, root=str(tmp_path))
@@ -126,7 +103,6 @@ class TestWhatIsDelivered:
         memory = CausalMemory(store.search, root=str(tmp_path))
         out = memory.recall("q", occasion_id="o1")
         assert len(_log_rows(tmp_path)) == 1
-        # Both copies share one arm, so they are delivered or withheld together.
         assert len(out) in (0, 2)
 
     def test_a_stopped_experiment_passes_everything_through_and_logs_nothing(self, tmp_path):
@@ -179,8 +155,6 @@ class TestIdentity:
 
 class TestRevisions:
     def test_an_in_place_update_is_a_different_revision(self, tmp_path):
-        """A store that rewrites a memory under the same id must not have
-        both versions pooled as one treatment."""
         _configure(tmp_path, 0.5)
         store = FakeStore([{"id": "m", "memory": "old advice"}])
         memory = CausalMemory(store.search, root=str(tmp_path))
@@ -232,8 +206,6 @@ class TestOutcomes:
 
 class TestTornWritesToTheAssignmentLog:
     def test_a_torn_assignment_line_does_not_take_the_next_one_with_it(self, tmp_path):
-        """Same repair, on the log the estimate is computed from -- where a
-        lost row removes one arm's observation from a randomized comparison."""
         root = str(tmp_path)
         holdout_io.assign_and_log(root, ["a"], occasion_id="o1", rate=0.5, salt="s")
         with open(holdout_io.holdout_log_path(root), "a", encoding="utf-8") as fh:

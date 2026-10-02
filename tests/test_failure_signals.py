@@ -1,10 +1,3 @@
-"""commontrace/failure_signals.py: clustering FAILING traces into named
-signals, and exporting one as a regression dataset. The property worth
-protecting: only traces explicitly recorded as a failure are ever counted
-(an unrecorded outcome is not treated as a failure), and the two export
-formats use the same field names commontrace/adapters.py already reads
-back out of a real LangSmith/Braintrust export.
-"""
 from __future__ import annotations
 
 import os
@@ -42,8 +35,6 @@ def _capture(store, title, context, solution, *, resolved=None, repeated_error=N
     assert main(argv) == 0
 
     if created_at is not None:
-        # capture always stamps "now"; back-date it directly for trend tests,
-        # the same way tests elsewhere hand-edit frontmatter for a fixture.
         from commontrace import frontmatter
         tdir = paths.traces_dir(str(store))
         newest = max(
@@ -192,7 +183,7 @@ class TestSignalsCli:
             "signals", "export", name, "--format", "langsmith", "--dest", str(store),
         ]) == 0
         out = capsys.readouterr().out
-        assert out.strip().count("\n") == 1  # 2 JSONL lines
+        assert out.strip().count("\n") == 1
 
     def test_export_an_unknown_signal_name_fails_cleanly(self, store, capsys):
         rc = main(["signals", "export", "nope", "--format", "braintrust", "--dest", str(store)])
@@ -201,14 +192,12 @@ class TestSignalsCli:
 
 
 class TestDistillScopedToFailures:
-    """`distill --failed` / `--signal` draft from what went wrong, not everything that happened."""
-
     REFUND = "customer confused about refund timeline contradictory docs"
 
     def _seed(self, store):
         for n in (1, 2):
             _capture(store, f"Refund confusion {n}", self.REFUND, "link the policy", resolved=False)
-        for n in (1, 2):  # an identical pattern that went fine must not be drafted from
+        for n in (1, 2):
             _capture(store, f"Refund handled {n}", self.REFUND, "link the policy", resolved=True)
 
     def _candidates(self, store):

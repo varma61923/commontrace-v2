@@ -1,12 +1,3 @@
-"""search_traces can withdraw a trace the org's experiment measured making
-outcomes WORSE (commontrace/harm.py, Organization.harm_policy).
-
-These pin what an org opts into -- the trace stops being returned, is named
-with its evidence where it would have appeared, and its near-duplicates go
-with it -- and the ways it must not disturb the experiment: nothing moves
-under the default, nothing is acted on while the evidence is unreadable, a
-withdrawn trace is never assigned an arm and is not counted as retrieved.
-"""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -32,15 +23,12 @@ def _fresh_evidence_cache():
 
 @pytest_asyncio.fixture
 async def harmed(session_factory):
-    """An org whose experiment has established that BAD hurts, and a GOOD
-    trace created after it (so GOOD sorts first on a tag-only search)."""
     async with session_scope(session_factory) as session:
         o = Organization(name="fleet", holdout_rate=0.5, holdout_salt="harm-salt")
         session.add(o)
         await session.flush()
         org_id = o.id
     bad, good = await _lessons(session_factory, org_id, ["paste the reset link", "verify the owner"])
-    # Ground truth, seeded: an occasion succeeds exactly when BAD is withheld.
     await _drive(session_factory, org_id, bad, 200, 0.0, 1.0, "bad")
     return org_id, bad, good
 
@@ -82,15 +70,11 @@ async def test_withdraw_stops_returning_it_and_names_it(session_factory, harmed)
     assert entry["title"] == "paste the reset link"
     assert entry["evidence"]["verdict"] == "HURTS"
     assert entry["evidence"]["effect"] < 0
-    # Named, not handed over.
     assert "solution_text" not in entry and "context_text" not in entry
     assert "HURTS" in result["withdrawn_note"]
 
 
 async def test_it_is_named_only_on_the_page_it_would_have_appeared_on(session_factory, harmed):
-    """Tag-only search sorts newest first: GOOD, then BAD. With one result
-    per page, BAD would have been on page two -- so page one does not
-    claim to have kept it out, and page two does."""
     org_id, bad, good = harmed
     await _set_policy(session_factory, org_id, "withdraw")
 
@@ -105,9 +89,6 @@ async def test_it_is_named_only_on_the_page_it_would_have_appeared_on(session_fa
 
 
 async def test_its_near_duplicates_go_with_it(session_factory, harmed):
-    """The holdout measured BAD's near-duplicate cluster as one unit under
-    BAD's id, so the verdict is the cluster's. A re-telling left in the
-    results would hand the same content straight back."""
     org_id, bad, good = harmed
     async with session_scope(session_factory) as session:
         original = await session.get(Trace, bad)
@@ -127,10 +108,6 @@ async def test_its_near_duplicates_go_with_it(session_factory, harmed):
 
 
 async def test_an_amendment_is_not_withdrawn_with_the_text_it_replaced(session_factory, harmed):
-    """An amendment is a near-duplicate of what it superseded by
-    construction, and usually the fix. Withdrawing it on the strength of
-    the old text would block the one remedy for a harmful lesson; it has
-    its own id and gets its own trial."""
     org_id, bad, good = harmed
     async with session_scope(session_factory) as session:
         original = await session.get(Trace, bad)
@@ -149,8 +126,6 @@ async def test_an_amendment_is_not_withdrawn_with_the_text_it_replaced(session_f
 
 
 async def test_a_query_with_nothing_searchable_still_answers(session_factory, harmed):
-    """The branch that skips the search entirely must not trip over the
-    policy it never got to apply."""
     org_id, _bad, _good = harmed
     await _set_policy(session_factory, org_id, "withdraw")
     async with session_scope(session_factory) as session:
@@ -186,8 +161,6 @@ async def test_a_withdrawn_trace_is_not_counted_as_retrieved(session_factory, ha
 
 
 async def test_unreadable_evidence_withdraws_nothing(session_factory, harmed, monkeypatch):
-    """A COMPROMISED experiment yields no evidence, and effects a named
-    mechanism is biasing must not steer what the fleet is given."""
     org_id, bad, _good = harmed
     await _set_policy(session_factory, org_id, "withdraw")
 

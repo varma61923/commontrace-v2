@@ -1,5 +1,3 @@
-"""The opt-in verified-key cache: off by default, bounded, never caches a failure, forgotten on revocation in this
-process, and gone after its window. It must also make the request path skip the database when it is on."""
 import pytest
 
 from hub import auth
@@ -117,7 +115,6 @@ async def test_the_setting_is_validated(monkeypatch, value, ok):
 
 
 async def test_a_cached_key_skips_the_database_on_the_request_path(session_factory, config):
-    """Through the real middleware: after one verification, the next request opens no session at all."""
     import httpx
     from starlette.applications import Starlette
     from starlette.responses import JSONResponse
@@ -148,9 +145,6 @@ async def test_a_cached_key_skips_the_database_on_the_request_path(session_facto
         assert len(opened) == first
 
 
-# --- Across replicas (hub/auth_invalidation.py) -------------------------------------------------------------------
-
-
 @pytest.fixture
 def _listener_off_afterwards():
     yield
@@ -159,8 +153,6 @@ def _listener_off_afterwards():
 
 
 async def _raw_notify():
-    """Another replica committing a revocation: a NOTIFY from a different connection, which never touches this
-    process's cache directly."""
     import asyncpg
 
     from hub.abuse import _to_asyncpg_dsn
@@ -259,7 +251,6 @@ async def test_a_key_is_never_served_past_its_own_expiry(session_factory, config
 
 
 async def test_a_rolled_back_revocation_notifies_no_one(session_factory, config, _listener_off_afterwards):
-    """The NOTIFY rides the revoking transaction: no commit, no message."""
     import asyncio
 
     import asyncpg

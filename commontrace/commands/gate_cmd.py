@@ -1,7 +1,4 @@
-"""`commontrace gate`: fail a build when this store's memory is not safe to ship.
-
-See commontrace/gate.py for what each check is and why it blocks.
-"""
+"""`commontrace gate`: fail a build when this store's memory is not safe to ship."""
 from __future__ import annotations
 
 import argparse
