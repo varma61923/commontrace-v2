@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import datetime
 import glob
 import json
 import os
@@ -14,12 +15,12 @@ from commontrace import frontmatter, paths
 CACHE_NAME = "lessons.json"
 CACHE_DIR = ".cache"
 
-FORMAT_VERSION = 2
+FORMAT_VERSION = 3
 
 PROJECTED_FIELDS = (
     "name", "description", "applies_when", "tags",
     "domain", "importance", "uses", "status", "agent_type",
-    "core",
+    "core", "scopes", "valid_from", "valid_until",
 )
 
 
@@ -45,6 +46,54 @@ def field_terms(fm: dict) -> list[list[str]]:
 def project(fm: dict) -> dict:
     """The subset of a lesson's frontmatter that retrieval actually reads."""
     return {k: _json_safe(fm[k]) for k in PROJECTED_FIELDS if k in fm}
+
+
+def parse_moment(value: str | datetime.date | datetime.datetime) -> datetime.datetime:
+    if isinstance(value, datetime.datetime):
+        parsed = value
+    elif isinstance(value, datetime.date):
+        parsed = datetime.datetime.combine(value, datetime.time.min)
+    else:
+        text = str(value or "").strip()
+        if not text:
+            raise ValueError("a date/time is required")
+        try:
+            parsed = datetime.datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError(
+                f"could not parse {value!r} as a date/time; use YYYY-MM-DD or ISO 8601"
+            ) from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed.astimezone(datetime.timezone.utc)
+
+
+def filter_eligible(
+    lessons: list[tuple[str, dict]], *, scope: str = "", as_of: str | datetime.datetime | None = None,
+) -> list[tuple[str, dict]]:
+    moment = parse_moment(as_of) if as_of else datetime.datetime.now(datetime.timezone.utc)
+    requested_scope = str(scope or "").strip()
+    eligible = []
+    for path, fm in lessons:
+        raw_scopes = fm.get("scopes")
+        scopes = (
+            {str(item).strip() for item in raw_scopes if str(item).strip()}
+            if isinstance(raw_scopes, (list, tuple, set))
+            else {str(raw_scopes).strip()} if raw_scopes else set()
+        )
+        if requested_scope and scopes and requested_scope not in scopes:
+            continue
+        try:
+            valid_from = parse_moment(fm["valid_from"]) if fm.get("valid_from") else None
+            valid_until = parse_moment(fm["valid_until"]) if fm.get("valid_until") else None
+        except ValueError:
+            continue
+        if valid_from is not None and moment < valid_from:
+            continue
+        if valid_until is not None and moment >= valid_until:
+            continue
+        eligible.append((path, fm))
+    return eligible
 
 
 def _stat(path: str) -> tuple[int, int] | None:

@@ -31,14 +31,14 @@ def test_labels_parse_back():
     assert retrieval_io.semantic_only_label() == "semantic"
     assert retrieval_io.semantic_only_label("arctic-m") == "semantic@arctic-m"
     assert retrieval_io.parse_embedder("semantic@arctic-m") == "arctic-m"
-    assert retrieval_io.parse_eligibility_label("semantic@arctic-m") == ("idf-v2", "none")
+    assert retrieval_io.parse_eligibility_label("semantic@arctic-m") == ("adaptive-v1", "none")
 
 
 def test_config_label_carries_the_embedder_only_when_fused():
     config = retrieval_io.RetrievalConfig(fusion="gated", rerank="cross-encoder")
     assert config.eligibility_label_for(fused=True, embedder="arctic-m") == \
-        "gated(idf-v2+semantic@arctic-m)"
-    assert config.eligibility_label_for(fused=False, embedder="arctic-m") == "idf-v2"
+        "gated(adaptive-v1+semantic@arctic-m)"
+    assert config.eligibility_label_for(fused=False, embedder="arctic-m") == "adaptive-v1"
 
 
 def test_gate_threshold_is_per_embedder():

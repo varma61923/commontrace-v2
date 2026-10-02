@@ -82,8 +82,14 @@ A `Lesson` adds exactly what a `Trace` doesn't have: `domain` (open
 vocabulary, see §7), `importance` (1-5, see §6), `applies_when` /
 `do_not_apply_when` (the activation condition a Retriever checks before
 injecting it), `status` (`active` / `review` / `archived`), and
-`source_traces` (provenance). Not every deployment needs the Lesson layer —
-a fleet can contribute `Trace`s straight to the Hub and rely on
+`source_traces` (provenance). Optional `scopes` route a lesson to named
+projects/teams while leaving unscoped lessons fleet-wide; they are a retrieval
+partition, not an authorization boundary. Optional `valid_from` (inclusive)
+and `valid_until` (exclusive) express when the rule is true. The revision
+journal records when the store learned or changed it, keeping valid-time and
+recorded-time distinct.
+
+Not every deployment needs the Lesson layer — a fleet can contribute `Trace`s straight to the Hub and rely on
 `search_traces` for retrieval. Lessons exist for fleets that want an
 explicit approval gate before anything reaches a live decision, matching the
 "approve lessons before deployment" requirement of a production pilot.
@@ -319,6 +325,7 @@ digest is `hex(SHA-256(UTF-8("commontrace-raw-assignments-v1" + U+001E + join(U+
 
 **13.4 Lesson revision.** The first 12 hex characters of `SHA-256` over the compact JSON (keys sorted, no spaces,
 non-ASCII kept) of an object with the keys `description, domain, tags, importance, applies_when,
-do_not_apply_when` (absent is `null`; a list is sorted; a string has CRLF and CR turned into LF, trailing spaces and
+do_not_apply_when` (absent is `null`) plus `scopes, valid_from, valid_until` when those optional fields are present
+(they are omitted when absent, preserving revisions produced before these fields existed); a list is sorted; a string has CRLF and CR turned into LF, trailing spaces and
 tabs removed from every line, runs of three or more newlines reduced to two, and the ends trimmed) plus `_body`
 (the body, normalized the same way).

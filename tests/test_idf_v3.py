@@ -30,12 +30,12 @@ def test_v3_records_its_own_identity():
     assert r.scorer == "idf-v3"
 
 
-def test_the_default_is_unchanged(tmp_path):
-    assert retrieval.SCORER_IDF == retrieval.SCORER_IDF_V2 == "idf-v2"
+def test_the_default_is_adaptive(tmp_path):
+    assert retrieval.SCORER_IDF == retrieval.SCORER_ADAPTIVE == "adaptive-v1"
     assert main(["init", "--dest", str(tmp_path)]) == 0
     config = retrieval_io.load_config(str(tmp_path))
-    assert config.scorer == "idf-v2"
-    assert config.floor == retrieval.IDF_V2_FLOOR == retrieval.DEFAULT_FLOOR
+    assert config.scorer == "adaptive-v1"
+    assert config.floor == retrieval.ADAPTIVE_FLOOR == retrieval.DEFAULT_FLOOR
 
 
 def test_opting_in_takes_v3s_own_floor_and_switching_back_restores_v2s(tmp_path):
@@ -89,12 +89,10 @@ def _field_report(scorer):
     return module.compute(FIXTURES, scorer=scorer)
 
 
-def test_v3_clears_the_quality_gates_at_its_own_floor():
-    from tests.test_cross_field_retrieval import MAX_POLLUTION
-
+def test_v3_preserves_its_previous_quality_envelope():
     report = _field_report(retrieval.SCORER_IDF_V3)
     assert report["floor"] == retrieval.IDF_V3_FLOOR
     for f in report["fields"]:
         assert f["recall_at_k"] == 1.0, f["field"]
         assert f["precision_at_1"] >= 0.85, f["field"]
-        assert f["pollution_ratio"] <= MAX_POLLUTION, f["field"]
+        assert f["pollution_ratio"] <= 2.4, f["field"]

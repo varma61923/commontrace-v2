@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Scoped, bi-temporal local lessons.** Optional project/team `scopes` and inclusive `valid_from` / exclusive `valid_until` fields flow through the schema, CLI and MCP retrieval; `query --as-of` can reproduce the valid-time view while the revision journal preserves recorded-time history.
 - **A redesigned customer console.** One shell for every `/app` page: grouped sidebar navigation with the organisation and plan, a command palette (Ctrl/⌘ K) and `g` + letter shortcuts, and a light, dark or system theme remembered per browser.
 - **The warm worker runs `commontrace query` whole.** It already held the models; the CLI process still imported the package, parsed the lesson cache and built the lexical index on every call.
 - **`commontrace query` with the attention extra in about 0.55 s, from 7-8.5 s** (default fusion and reranking, 1000 lessons, 4-core CPU; semantic alone 0.25 s from 6.5 s).
@@ -30,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Lexical retrieval now defaults to `adaptive-v1`.** Stemmed, length-normalized IDF relevance uses a query-relative tail gate: the cross-field fixture keeps 100% recall@3 and precision@1 while reducing worst-field pollution from 2.33× to 1.06×. Historical scorers remain selectable and experiment logs pin old treatments.
 - **The verified-key cache is safe across replicas.** Revoking or rotating a key, deleting an org or changing its region sends a transactional Postgres NOTIFY; every replica's listener clears its cache on commit, and a replica caches only while that listener is connected.
 - **The shared rate limiter decides in one statement.** `HUB_RATE_LIMIT_BACKEND=postgres` refilled and decremented in two statements inside a transaction (four round trips, row lock held across them) for each of the two limiter checks on every authenticated request.
 - Recording an outcome no longer re-parses the whole outcomes log (O(n^2) over a run: 2.7 s for 800 occasions, and every report for a fleet with 100k).

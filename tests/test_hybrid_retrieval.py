@@ -60,7 +60,7 @@ class TestConfig:
         _write_config(str(tmp_path), fusion="rrf")
         config = retrieval_io.load_config(str(tmp_path))
         assert config.fusion == retrieval_io.FUSION_RRF
-        assert config.eligibility == "rrf(idf-v2+semantic)"
+        assert config.eligibility == "rrf(adaptive-v1+semantic)"
 
     def test_a_typo_does_not_stop_the_fleet_retrieving(self, tmp_path):
         _write_config(str(tmp_path), fusion="rff")
@@ -129,7 +129,7 @@ class TestConfig:
     def test_redundancy_threshold_does_not_change_eligibility(self, tmp_path):
         _write_config(str(tmp_path), redundancy_threshold=0.5)
         config = retrieval_io.load_config(str(tmp_path))
-        assert config.eligibility == "idf-v2"
+        assert config.eligibility == "adaptive-v1"
 
 
 class TestDriftIsCaught:
@@ -302,7 +302,7 @@ class TestHybridThroughTheCommand:
         records, unreadable = holdout_io.read_log(store)
         assert unreadable == 0
         assert records
-        assert {r.scorer for r in records} == {"rrf(idf-v2+semantic)"}
+        assert {r.scorer for r in records} == {"rrf(adaptive-v1+semantic)"}
 
     def test_an_unfused_store_records_the_plain_scorer(
         self, store, monkeypatch, capsys
@@ -315,7 +315,7 @@ class TestHybridThroughTheCommand:
         ))
         assert rc == 0, capsys.readouterr()
         records, _ = holdout_io.read_log(store)
-        assert {r.scorer for r in records} == {"idf-v2"}
+        assert {r.scorer for r in records} == {"adaptive-v1"}
 
     def test_a_failed_semantic_arm_does_not_log_a_fused_claim(
         self, store, monkeypatch, capsys
@@ -330,7 +330,7 @@ class TestHybridThroughTheCommand:
         assert rc == 0, capsys.readouterr()
         records, _ = holdout_io.read_log(store)
         assert records
-        assert {r.scorer for r in records} == {"idf-v2"}
+        assert {r.scorer for r in records} == {"adaptive-v1"}
         assert "must not be pooled" in capsys.readouterr().err
 
     def test_an_unfused_store_never_reaches_the_hybrid_path(
@@ -363,7 +363,7 @@ class TestHybridThroughTheCommand:
         assert rc == 0
         assert "attention" in capsys.readouterr().err
         records, _ = holdout_io.read_log(store)
-        assert {r.scorer for r in records} == {"idf-v2"}
+        assert {r.scorer for r in records} == {"adaptive-v1"}
 
     def test_a_query_matching_nothing_in_either_arm_says_so(
         self, store, monkeypatch, capsys
@@ -394,7 +394,7 @@ class TestMcpSurfaceIsHonestAboutFusion:
         else:
             payload = json.loads(result.content[0].text)
         assert "fusion_note" in payload
-        assert "idf-v2" in payload["fusion_note"]
+        assert "adaptive-v1" in payload["fusion_note"]
 
     def test_an_unfused_store_gets_no_such_note(self, store):
         pytest.importorskip("mcp")

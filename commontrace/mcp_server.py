@@ -358,6 +358,12 @@ def _lesson_wire(fm: dict, body: str = "", *, include_body: bool = False) -> dic
         "unfilled": templates.unfilled_placeholders(fm, body),
         "revision": revision.revision_of(fm, body),
     }
+    if fm.get("scopes"):
+        out["scopes"] = list(fm["scopes"])
+    if fm.get("valid_from"):
+        out["valid_from"] = fm["valid_from"]
+    if fm.get("valid_until"):
+        out["valid_until"] = fm["valid_until"]
     if include_body:
         out["body"] = body
     return out
@@ -429,7 +435,7 @@ def build_server(root: str, *, allow_approval: bool = True):
     @mcp.tool()
     async def retrieve(
         task: str, top_k: int = 5, occasion_id: str = "", agent_type: str = "",
-        exclude_shown: str = "",
+        exclude_shown: str = "", scope: str = "", as_of: str = "",
     ) -> dict:
         """Find the lessons that apply to the task you are about to attempt.
 
@@ -458,7 +464,9 @@ def build_server(root: str, *, allow_approval: bool = True):
         configured left no record, so nothing is excluded for it.
 
         Only `status: active` lessons are retrievable. A lesson still being
-        drafted is invisible here by design.
+        drafted is invisible here by design. `scope` includes matching scoped
+        lessons plus global lessons; `as_of` filters that active corpus to the
+        lessons valid at a date/time, defaulting to now.
 
         When the store has set `commontrace retrieval --fusion rrf` and its
         semantic index is current, lessons are ranked by keyword AND meaning
@@ -471,10 +479,11 @@ def build_server(root: str, *, allow_approval: bool = True):
         ranking pass, because there is nothing in it for a lesson to match.
         """
         with lesson_cache.one_scan():
-            return _retrieve(task, top_k, occasion_id, agent_type, exclude_shown)
+            return _retrieve(task, top_k, occasion_id, agent_type, exclude_shown, scope, as_of)
 
     def _retrieve(
         task: str, top_k: int, occasion_id: str, agent_type: str, exclude_shown: str,
+        scope: str, as_of: str,
     ) -> dict:
         if cache_gate.is_trivial_prompt(task):
             return _ok(
@@ -487,12 +496,20 @@ def build_server(root: str, *, allow_approval: bool = True):
                     "about to attempt, in a full sentence, to retrieve against it."
                 ),
             )
+        if as_of:
+            try:
+                lesson_cache.parse_moment(as_of)
+            except ValueError as exc:
+                return _err(str(exc))
         try:
             with _quiet():
                 active, term_cache = lesson_cache.load_active_with_terms(
                     root, agent_type or None,
                     reader=lambda p: read_or_warn(frontmatter.read, p),
                 )
+            active = lesson_cache.filter_eligible(
+                active, scope=scope, as_of=as_of or None,
+            )
             already_shown: set[str] = set()
             if exclude_shown:
                 already_shown = holdout_io.injected_slugs_for_occasion(root, exclude_shown)
@@ -541,6 +558,7 @@ def build_server(root: str, *, allow_approval: bool = True):
                 reliability_weight=retrieval_config.reliability_weight,
                 recency_lookup=recency_lookup,
                 recency_weight=retrieval_config.recency_weight,
+                adaptive_tail=not reranking,
             )
         except Exception as exc:  # noqa: BLE001 - a malformed store is an answer, not a crash
             return _err(f"could not read the lesson store: {type(exc).__name__}: {exc}")
@@ -718,6 +736,10 @@ def build_server(root: str, *, allow_approval: bool = True):
             "budget": dose.gauge(),
             "notice": injection_guard.NOTICE,
         }
+        if scope:
+            result["scope"] = scope
+        if as_of:
+            result["as_of"] = lesson_cache.parse_moment(as_of).isoformat()
         if quarantined:
             result["quarantined"] = quarantined
         if retrieval_config.fusion != retrieval_io.FUSION_NONE and fused is None and active:

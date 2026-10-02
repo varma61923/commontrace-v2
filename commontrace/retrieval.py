@@ -12,22 +12,27 @@ from commontrace._stem import stem as _stem
 
 IDF_V2_FLOOR = 0.04
 
+SCORER_ADAPTIVE = "adaptive-v1"
 SCORER_IDF_V3 = "idf-v3"
 SCORER_IDF_V2 = "idf-v2"
-SCORER_IDF = SCORER_IDF_V2
+SCORER_IDF = SCORER_ADAPTIVE
 SCORER_COUNT = "count-v1"
-LEXICAL_SCORERS = (SCORER_IDF_V3, SCORER_IDF_V2, SCORER_COUNT)
+LEXICAL_SCORERS = (SCORER_ADAPTIVE, SCORER_IDF_V3, SCORER_IDF_V2, SCORER_COUNT)
 
 IDF_V3_FLOOR = 0.064
+ADAPTIVE_FLOOR = IDF_V2_FLOOR
+ADAPTIVE_MIN_TAIL_RATIO = 0.30
+ADAPTIVE_MAX_TAIL_RATIO = 0.60
+ADAPTIVE_TAIL_RATIO_STEP = 0.04
 
-DEFAULT_FLOOR = IDF_V2_FLOOR
+DEFAULT_FLOOR = ADAPTIVE_FLOOR
 
 
 def default_floor(scorer: str) -> float:
     """The floor a store gets for `scorer` when it has not set its own."""
     if scorer == SCORER_COUNT:
         return 0.0
-    if scorer == SCORER_IDF_V2:
+    if scorer in (SCORER_ADAPTIVE, SCORER_IDF_V2):
         return IDF_V2_FLOOR
     return IDF_V3_FLOOR
 
@@ -40,9 +45,16 @@ def _tokenize(text: str) -> list[str]:
 
 
 def _terms_for(scorer: str, terms) -> set[str]:
-    if scorer == SCORER_IDF_V3:
+    if scorer in (SCORER_ADAPTIVE, SCORER_IDF_V3):
         return {_stem(t) for t in terms}
     return set(terms)
+
+
+def _adaptive_tail_ratio(n_terms: int) -> float:
+    return min(
+        ADAPTIVE_MAX_TAIL_RATIO,
+        ADAPTIVE_MIN_TAIL_RATIO + ADAPTIVE_TAIL_RATIO_STEP * max(0, n_terms),
+    )
 
 
 @dataclass(frozen=True)
@@ -186,6 +198,7 @@ def rank_lessons(
     reliability_weight: float = 0.0,
     recency_lookup: dict[str, float] | None = None,
     recency_weight: float = 0.0,
+    adaptive_tail: bool = True,
 ) -> list[RankedLesson]:
     query_terms = _terms_for(scorer, _tokenize(task))
     if not query_terms:
@@ -203,7 +216,7 @@ def rank_lessons(
     max_idf = index.max_idf
     total_query_idf = len(query_terms) * max_idf
 
-    scored: list[tuple[RankedLesson, int, int]] = []
+    scored: list[tuple] = []
     acc: dict[int, list] = {}
     acc_get = acc.get
     for term in sorted(query_terms):
@@ -233,7 +246,7 @@ def rank_lessons(
         else:
             rel = 0.0
 
-        if score > 0 and rel >= floor:
+        if score > 0 and (scorer == SCORER_ADAPTIVE and adaptive_tail or rel >= floor):
             slug = str(fm.get("name", ""))
             reliability_adj = reliability_lookup.get(slug, 0.0) if reliability_lookup else 0.0
             recency_adj = recency_lookup.get(slug, 0.0) if recency_lookup else 0.0
@@ -246,6 +259,13 @@ def rank_lessons(
                 adjusted, score, importance, uses,
                 path, fm, slug, matched, rel, reliability_adj, recency_adj,
             ))
+
+    if scorer == SCORER_ADAPTIVE and adaptive_tail and scored:
+        adaptive_floor = max(
+            floor,
+            max(item[8] for item in scored) * _adaptive_tail_ratio(len(query_terms)),
+        )
+        scored = [item for item in scored if item[8] >= adaptive_floor]
 
     top = heapq.nlargest(max(0, top_k), scored, key=lambda item: item[:4])
     return [

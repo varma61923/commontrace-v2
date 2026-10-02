@@ -22,8 +22,11 @@ def lesson_frontmatter(
     importance_rationale: str = "",
     source_traces: list[str] | None = None,
     status: str = "active",
+    scopes: list[str] | None = None,
+    valid_from: str = "",
+    valid_until: str = "",
 ) -> dict[str, Any]:
-    return {
+    lesson = {
         "name": slug,
         "description": description,
         "tags": tags,
@@ -41,6 +44,13 @@ def lesson_frontmatter(
         "hub_trace_id": None,
         "status": status,
     }
+    if scopes:
+        lesson["scopes"] = list(dict.fromkeys(str(scope).strip() for scope in scopes if str(scope).strip()))
+    if valid_from:
+        lesson["valid_from"] = valid_from
+    if valid_until:
+        lesson["valid_until"] = valid_until
+    return lesson
 
 
 def lesson_body() -> str:

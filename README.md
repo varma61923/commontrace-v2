@@ -432,6 +432,8 @@ see `commontrace/dosage.py` for that opt-in.
 ```bash
 commontrace query "customer is escalating about a delayed refund"
 commontrace query "..." --lexical        # force the dependency-free fallback
+commontrace query "..." --scope payments # matching scope + global lessons
+commontrace query "..." --as-of 2026-06-01  # valid-time view for audit/debugging
 ```
 
 Falls back automatically to a pure-Python lexical (word-overlap) ranker if
@@ -1093,7 +1095,7 @@ with the package (eight fields, 48 lessons, 144 queries):
 ```bash
 commontrace bench --retrieval                                  # per-field table
 commontrace bench --retrieval --json                           # machine-readable
-commontrace bench --retrieval --max-pollution 1.5 --max-spread 2   # CI gate
+commontrace bench --retrieval --max-pollution 1.1 --max-spread 1.1   # CI gate
 ```
 
 It exists because a single aggregate number cannot show the failure it is
@@ -1112,6 +1114,9 @@ significantly *hurting* outcomes when it was fine.
 The gate is deliberately two-sided (a ceiling on the worst field **and** the
 worst÷best spread): the historical scorer polluted at 1.89×–2.50× while its
 *spread* was 1.32×, so a spread-only gate would have called it acceptable.
+The previous `idf-v2` default still returned 1.72×–2.33× assignments per real
+match. The adaptive default returns 1.00×–1.06× on the same 144 queries while
+holding 100% recall@3 and 100% precision@1 in every field.
 
 ---
 
@@ -1153,7 +1158,7 @@ the same as running `commontrace index`.
 It is opt-in for a reason. Fusion changes which lessons are *eligible*, and
 eligibility is the denominator of every causal number this product reports —
 so the arm composition is recorded inside the label each holdout assignment
-carries (`rrf(idf-v2+semantic)`), and turning it on mid-experiment is
+carries (`rrf(adaptive-v1+semantic)`), and turning it on mid-experiment is
 reported as a compromised run rather than absorbed silently.
 
 **Reranking.** Both arms score the task and a lesson separately. A
@@ -1195,17 +1200,24 @@ On LoCoMo, fused retrieval with reranking puts an answering turn in the top
 `cross-encoder-fast` is `ms-marco-TinyBERT-L-2-v2` (4M). Both come
 with the attention extra and download on first use. Like fusion, it
 decides which lessons make the page, so assignments record it
-(`ce:minilm6(rrf(idf-v2+semantic))`) and turning it on starts a new
+(`ce:minilm6(rrf(adaptive-v1+semantic))`) and turning it on starts a new
 treatment. A store that cannot load the model ranks exactly as if it had
 not asked, and says so.
 
-**Stemming.** `commontrace retrieval --scorer idf-v3` makes "retrying" match
-"retry" and "uploads" match "upload". It lifts recall on free-text and
-conversational memory (LongMemEval session recall@5 0.852 → 0.926). It is
-not the default, because in one curated field of the fixture (clinical) it
-retrieves more collateral than `idf-v2`. It has its own floor, which the
-store takes automatically when switching, and like any eligibility change
-it starts a new randomization.
+**Adaptive lexical calibration, on by default.** `adaptive-v1` combines
+Porter stemming, field-weighted IDF and length normalization with a
+query-relative tail gate. The gate is deliberately gentler for short,
+ambiguous queries and rises from 0.30 to 0.60 of the best topical score as a
+query becomes more specific. A fixed floor alone admits incidental shared
+words; a fixed high floor loses difficult queries. Relative calibration keeps
+a near-tied runner-up while removing a weak tail before it consumes the
+agent's context. Candidate pools stay broad when a configured reranker will
+make the final decision.
+
+`idf-v3` keeps the same stemmed relevance with only its fixed floor;
+`idf-v2` removes stemming too. Both remain available because an experiment
+must finish on the scorer its existing assignments record. Switching any
+scorer starts a new randomization.
 
 **How much.** `top_k` bounds the count and says nothing about the size — ten
 terse lessons and ten pages of prose are the same `top_k=10`, and the second
@@ -1222,6 +1234,32 @@ chars (39%)"`) and names what did not fit under `not_injected`, with the
 reason. Nothing is silently truncated: an agent given nine of ten lessons and
 told it was given ten will act on the missing one's absence as though it were
 the fleet's position.
+
+**Which scope and point in time.** A shared local store can route lessons by
+project or team without copying the corpus. Optional `scopes` are container
+tags, not an authorization boundary: requesting one includes lessons carrying
+that scope plus unscoped fleet-wide lessons. Omitting the filter preserves the
+backward-compatible all-scopes view.
+
+```yaml
+scopes: [payments, checkout]
+valid_from: 2026-01-01
+valid_until: 2027-01-01T00:00:00Z  # exclusive
+```
+
+```bash
+commontrace lesson new ... --scopes payments,checkout \
+  --valid-from 2026-01-01 --valid-until 2027-01-01
+commontrace query "duplicate charge after retry" --scope payments
+commontrace query "which current rules were valid then?" --scope payments --as-of 2026-06-01
+```
+
+`valid_from` / `valid_until` are valid-time; `query --as-of` applies them to
+the currently active corpus. The append-only lesson revision journal records
+when CommonTrace learned or changed content (`lesson history --as-of`), keeping
+the two temporal axes separate rather than overwriting history. The MCP
+`retrieve` tool accepts the same `scope` and `as_of` fields and reports the
+applied slice in its response.
 
 **Which is unconditional.** Some rules are not "relevant to this task" — they
 are how the fleet operates. Mark one `core: true` in its frontmatter and it is

@@ -19,13 +19,13 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     p.add_argument(
         "--scorer", default=None, choices=list(retrieval.LEXICAL_SCORERS),
-        help=f"{retrieval.SCORER_IDF_V3}: IDF-weighted, length-normalized and "
-             "Porter-stemmed, comparable across fields (default). "
-             f"{retrieval.SCORER_IDF_V2}: the same without stemming. "
-             f"{retrieval.SCORER_COUNT}: the historical raw word-overlap sum. The "
-             "older two are kept so a store mid-experiment can stay on what its "
-             "existing assignments were made under; switching scorer takes that "
-             "scorer's default floor unless --floor is given.",
+        help=f"{retrieval.SCORER_ADAPTIVE}: stemmed, IDF-weighted relevance with a "
+             "query-calibrated tail gate that removes weak collateral matches (default). "
+             f"{retrieval.SCORER_IDF_V3}: the same stemmed relevance with only a fixed floor. "
+             f"{retrieval.SCORER_IDF_V2}: fixed-floor relevance without stemming. "
+             f"{retrieval.SCORER_COUNT}: the historical raw word-overlap sum. Older modes "
+             "remain available so a running experiment stays on its recorded treatment; "
+             "switching scorer takes that scorer's default floor unless --floor is given.",
     )
     p.add_argument(
         "--fusion", default=None, choices=list(retrieval_io.FUSIONS),

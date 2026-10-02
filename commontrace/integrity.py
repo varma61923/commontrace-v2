@@ -6,7 +6,7 @@ import datetime
 import statistics
 from dataclasses import dataclass, field
 
-from commontrace import experiment, survival
+from commontrace import experiment, retrieval, survival
 
 VALIDITY_ALPHA = 0.10
 
@@ -396,7 +396,7 @@ MARGINAL_BAND = 0.10
 _MARGINAL_WEAKENS = 0.40
 _MARGINAL_INVALIDATES = 0.70
 
-_FLOOR_GATED_SCORERS = frozenset({"idf-v3", "idf-v2", "count-v1"})
+_FLOOR_GATED_SCORERS = frozenset(retrieval.LEXICAL_SCORERS)
 
 
 def _floor_decided(row: Assignment) -> bool:

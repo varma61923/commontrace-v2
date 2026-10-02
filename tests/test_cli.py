@@ -44,6 +44,9 @@ def test_lesson_new_then_validate_round_trips(store):
             "--do-not-apply-when", "prospect has not seen the product value yet",
             "--importance", "4",
             "--importance-rationale", "Leading with discount trains prospects to always ask for one",
+            "--scopes", "enterprise-sales,emea",
+            "--valid-from", "2026-01-01",
+            "--valid-until", "2027-01-01T00:00:00Z",
             "--dest", str(store),
         ]
     )
@@ -54,12 +57,26 @@ def test_lesson_new_then_validate_round_trips(store):
     fm, body = frontmatter.read(str(lesson_path))
     assert fm["agent_type"] == "sales"
     assert fm["importance"] == 4
+    assert fm["scopes"] == ["enterprise-sales", "emea"]
+    assert fm["valid_from"] == "2026-01-01"
+    assert fm["valid_until"] == "2027-01-01T00:00:00Z"
     assert "## Rule" in body
 
     schema = validate.load_schema("lesson.schema.json")
     assert validate.validate(fm, schema) == []
 
     assert main(["lesson", "validate", "--dest", str(store)]) == 0
+
+
+def test_lesson_new_refuses_an_invalid_validity_window(store, capsys):
+    main(["init", "--agent-type", "sales", "--dest", str(store)])
+    rc = main([
+        "lesson", "new", "--slug", "invalid-window", "--description", "x",
+        "--domain", "sales", "--valid-from", "2027-01-01",
+        "--valid-until", "2026-01-01", "--dest", str(store),
+    ])
+    assert rc == 1
+    assert "must be later" in capsys.readouterr().err
 
 
 def test_lesson_validate_catches_schema_violations(store):

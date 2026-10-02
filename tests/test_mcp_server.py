@@ -160,6 +160,35 @@ def test_retrieve_returns_the_body_not_just_the_frontmatter(server):
     assert lesson["score"] > 0 and lesson["matched"]
 
 
+def test_retrieve_filters_by_scope_and_valid_time(store):
+    from commontrace import retrieval_io
+
+    retrieval_io.configure(
+        store, fusion=retrieval_io.FUSION_NONE, rerank=retrieval_io.RERANK_NONE,
+    )
+    description = "payment webhook retry policy"
+    _write_lesson(store, "global", body="global", description=description)
+    _write_lesson(store, "payments", body="payments", description=description, scopes=["payments"])
+    _write_lesson(store, "support", body="support", description=description, scopes=["support"])
+    _write_lesson(
+        store, "expired", body="expired", description=description,
+        scopes=["payments"], valid_until="2025-01-01",
+    )
+    out = call(
+        mcp_server.build_server(store), "retrieve", task=description,
+        scope="payments", as_of="2026-01-01",
+    )
+    assert {item["slug"] for item in out["lessons"]} == {"global", "payments"}
+    assert out["scope"] == "payments"
+    assert out["as_of"].startswith("2026-01-01")
+
+
+def test_retrieve_refuses_an_invalid_as_of(server):
+    out = call(server, "retrieve", task="password reset", as_of="not-a-date")
+    assert out["ok"] is False
+    assert "could not parse" in out["error"]
+
+
 def test_a_candidate_under_review_is_not_retrievable(server):
     _capture_pattern(server)
     slug = call(server, "propose_lessons")["candidates"][0]["slug"]
@@ -708,7 +737,7 @@ def test_serve_without_the_sdk_says_so(store, monkeypatch):
 
 
 def _write_lesson(root: str, slug: str, *, body: str, core: bool = False,
-                  description: str = "", importance: int = 3) -> str:
+                  description: str = "", importance: int = 3, **fm_extra) -> str:
     from commontrace import frontmatter, lesson_io
 
     path = os.path.join(paths.lessons_dir(root), f"lesson_{slug}.md")
@@ -722,6 +751,7 @@ def _write_lesson(root: str, slug: str, *, body: str, core: bool = False,
     }
     if core:
         fm["core"] = True
+    fm.update(fm_extra)
     lesson_io.write_lesson(path, fm, body, root=root, actor="test", reason="fixture")
     assert frontmatter.read(path)
     return path

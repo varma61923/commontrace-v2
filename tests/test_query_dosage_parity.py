@@ -41,7 +41,7 @@ class TestBudgetThroughTheCliQueryCommand:
                 "Check suppression list before resending.")
         _lesson(store, "second", "Password reset link expiry handling.",
                 "Regenerate the link rather than resending the old one.")
-        retrieval_io.configure(store, max_lessons=1)
+        retrieval_io.configure(store, max_lessons=1, scorer="idf-v3")
 
         rc = query_cmd.run(_args(store, "password reset email"))
         assert rc == 0
@@ -85,7 +85,7 @@ class TestBudgetThroughTheCliQueryCommand:
         )
         _lesson(store, "first", "Payment webhook delivered more than once.", same_rule)
         _lesson(store, "second", "Duplicate charge from a retried webhook.", same_rule)
-        retrieval_io.configure(store, redundancy_threshold=0.3)
+        retrieval_io.configure(store, redundancy_threshold=0.3, scorer="idf-v3")
 
         rc = query_cmd.run(_args(store, "payment webhook delivered twice retried"))
         assert rc == 0
@@ -101,11 +101,50 @@ class TestBudgetThroughTheCliQueryCommand:
         )
         _lesson(store, "first", "Payment webhook delivered more than once.", same_rule)
         _lesson(store, "second", "Duplicate charge from a retried webhook.", same_rule)
+        retrieval_io.configure(store, scorer="idf-v3")
 
         rc = query_cmd.run(_args(store, "payment webhook delivered twice retried"))
         assert rc == 0
         out = capsys.readouterr().out
         assert "first" in out and "second" in out
+
+
+class TestScopedTemporalEligibility:
+    def _retrieved(self, store, capsys, **args):
+        rc = query_cmd.run(_args(store, "payment webhook retry policy", **args))
+        output = capsys.readouterr()
+        assert rc == 0, output
+        return {line.split()[0] for line in output.out.splitlines() if "rel=" in line}
+
+    def test_a_scope_includes_matching_and_global_lessons(self, store, capsys):
+        _lesson(store, "global", "payment webhook retry policy", "global")
+        _lesson(store, "payments", "payment webhook retry policy", "payments", scopes=["payments"])
+        _lesson(store, "support", "payment webhook retry policy", "support", scopes=["support"])
+        assert self._retrieved(store, capsys, scope="payments") == {"global", "payments"}
+
+    def test_no_scope_keeps_the_backward_compatible_all_scopes_view(self, store, capsys):
+        _lesson(store, "global", "payment webhook retry policy", "global")
+        _lesson(store, "payments", "payment webhook retry policy", "payments", scopes=["payments"])
+        _lesson(store, "support", "payment webhook retry policy", "support", scopes=["support"])
+        assert self._retrieved(store, capsys) == {"global", "payments", "support"}
+
+    def test_as_of_selects_the_valid_time_slice(self, store, capsys):
+        _lesson(
+            store, "old", "payment webhook retry policy", "old",
+            valid_from="2023-01-01", valid_until="2025-01-01",
+        )
+        _lesson(
+            store, "current", "payment webhook retry policy", "current",
+            valid_from="2025-01-01", valid_until="2027-01-01",
+        )
+        _lesson(store, "future", "payment webhook retry policy", "future", valid_from="2027-01-01")
+        assert self._retrieved(store, capsys, as_of="2026-06-01") == {"current"}
+        assert self._retrieved(store, capsys, as_of="2024-06-01") == {"old"}
+
+    def test_an_invalid_as_of_is_refused(self, store, capsys):
+        _lesson(store, "global", "payment webhook retry policy", "global")
+        assert query_cmd.run(_args(store, "payment webhook retry policy", as_of="not-a-date")) == 1
+        assert "could not parse" in capsys.readouterr().err
 
 
 class TestHoldoutOnlyCoversWhatWasActuallyAdministered:

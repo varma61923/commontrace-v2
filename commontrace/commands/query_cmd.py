@@ -77,6 +77,14 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     p.add_argument("--agent-type", default=None)
     p.add_argument(
+        "--scope", default="",
+        help="Retrieve lessons for this project/team scope plus unscoped global lessons.",
+    )
+    p.add_argument(
+        "--as-of", default="", metavar="DATE",
+        help="Retrieve lessons valid at this date/time (YYYY-MM-DD or ISO 8601). Defaults to now.",
+    )
+    p.add_argument(
         "--relevance-floor", type=_relevance_floor, default=None,
         help="Minimum relevance (0-1) a lesson must reach to be retrieved at all. "
              "Defaults to this store's configured floor (`commontrace retrieval`). "
@@ -119,10 +127,13 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p.set_defaults(func=run)
 
 
-def _iter_active_lessons(root: str, agent_type: str | None) -> list[tuple[str, dict]]:
-    return lesson_cache.load_active(
+def _iter_active_lessons(
+    root: str, agent_type: str | None, scope: str = "", as_of: str = "",
+) -> list[tuple[str, dict]]:
+    lessons = lesson_cache.load_active(
         root, agent_type, reader=lambda p: read_or_warn(frontmatter.read, p),
     )
+    return lesson_cache.filter_eligible(lessons, scope=scope, as_of=as_of or None)
 
 
 def _already_shown(args: argparse.Namespace, root: str) -> set[str]:
@@ -219,19 +230,28 @@ def _screen_semantic(stdout: str, root: str) -> str:
 
 def _semantic_dose_or_pinned(
     stdout: str, root: str, agent_type: str | None, config: retrieval_io.RetrievalConfig, dosed: bool,
+    scope: str = "", as_of: str = "",
 ) -> tuple[str, list[str], str]:
+    active = _iter_active_lessons(root, agent_type, scope, as_of)
     if dosed:
-        return _dose_semantic(stdout, root, agent_type, config)
+        return _dose_semantic(stdout, root, agent_type, config, active=active)
     stdout = _screen_semantic(stdout, root)
+    allowed = {str(fm.get("name", "")) for _path, fm in active}
+    lines = [
+        line for line in stdout.splitlines()
+        if (slug := _slug_of_semantic_line(line)) is None or slug in allowed
+    ]
+    stdout = "\n".join(lines) + ("\n" if stdout.endswith("\n") else "")
     return stdout, _slugs_from_semantic_output(stdout), ""
 
 
 def _dose_semantic(
     stdout: str, root: str, agent_type: str | None, config: retrieval_io.RetrievalConfig,
+    active: list[tuple[str, dict]] | None = None,
 ) -> tuple[str, list[str], str]:
     lines = stdout.splitlines()
     order = list(dict.fromkeys(_slugs_from_semantic_output(stdout)))
-    active = _iter_active_lessons(root, agent_type)
+    active = _iter_active_lessons(root, agent_type) if active is None else active
     on_disk = {str(fm.get("name", "")) for _p, fm in active}
     cosine: dict[str, float] = {}
     for line in lines:
@@ -436,6 +456,11 @@ def _run_lexical(args: argparse.Namespace, root: str) -> int:
     lessons, term_cache = lesson_cache.load_active_with_terms(
         root, args.agent_type, reader=lambda p: read_or_warn(frontmatter.read, p),
     )
+    lessons = lesson_cache.filter_eligible(
+        lessons,
+        scope=getattr(args, "scope", ""),
+        as_of=getattr(args, "as_of", "") or None,
+    )
     lessons = _exclude_shown(lessons, _already_shown(args, root))
     config = retrieval_io.load_config(root)
     floor = config.floor if args.relevance_floor is None else args.relevance_floor
@@ -448,6 +473,7 @@ def _run_lexical(args: argparse.Namespace, root: str) -> int:
         term_cache=term_cache,
         reliability_lookup=reliability_lookup, reliability_weight=config.reliability_weight,
         recency_lookup=recency_lu, recency_weight=config.recency_weight,
+        adaptive_tail=not reranking,
     )
     ranked, withdrawn_ranked = harm.split(ranked, harmful, _core_slugs(lessons), depth)
     withdrawn = [r.slug for r in withdrawn_ranked]
@@ -469,9 +495,9 @@ def _run_lexical(args: argparse.Namespace, root: str) -> int:
             "under.\n"
             "  Switching scorers changes which lessons are eligible, which would pool two "
             "different treatments\n"
-            "  into one comparison. To adopt the field-robust scorer, finish or restart the "
+            "  into one comparison. To adopt the adaptive scorer, finish or restart the "
             "experiment:\n"
-            "    commontrace retrieval --scorer idf-v2 && commontrace experiment --configure "
+            "    commontrace retrieval --scorer adaptive-v1 && commontrace experiment --configure "
             "--rate <rate>",
             file=sys.stderr,
         )
@@ -570,6 +596,11 @@ def _run_hybrid(args: argparse.Namespace, root: str, missing_hint: str) -> int:
     lessons, term_cache = lesson_cache.load_active_with_terms(
         root, args.agent_type, reader=lambda p: read_or_warn(frontmatter.read, p),
     )
+    lessons = lesson_cache.filter_eligible(
+        lessons,
+        scope=getattr(args, "scope", ""),
+        as_of=getattr(args, "as_of", "") or None,
+    )
     already_shown = _already_shown(args, root)
     lessons = _exclude_shown(lessons, already_shown)
     reliability_lookup, recency_lu = _ranking_adjustments(root, lessons, config)
@@ -602,6 +633,7 @@ def _run_hybrid(args: argparse.Namespace, root: str, missing_hint: str) -> int:
         term_cache=term_cache,
         reliability_lookup=reliability_lookup, reliability_weight=config.reliability_weight,
         recency_lookup=recency_lu, recency_weight=config.recency_weight,
+        adaptive_tail=not reranking,
     )
     lexical, withdrawn_lexical = harm.split(lexical, harmful, core, depth)
     floor_cleared = {r.slug for r in lexical + withdrawn_lexical if r.relevance >= floor}
@@ -778,6 +810,11 @@ def _index_is_unusable(root: str) -> str:
 def _has_candidates(args: argparse.Namespace, root: str) -> bool:
     lessons, _terms = lesson_cache.load_active_with_terms(
         root, args.agent_type, reader=lambda p: read_or_warn(frontmatter.read, p))
+    lessons = lesson_cache.filter_eligible(
+        lessons,
+        scope=getattr(args, "scope", ""),
+        as_of=getattr(args, "as_of", "") or None,
+    )
     return bool(_exclude_shown(lessons, _already_shown(args, root)))
 
 
@@ -789,6 +826,13 @@ def run(args: argparse.Namespace) -> int:
 def _run(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
     rerank_arm.use_worker()
+    as_of = getattr(args, "as_of", "")
+    if as_of:
+        try:
+            lesson_cache.parse_moment(as_of)
+        except ValueError as exc:
+            print(f"[commontrace] {exc}", file=sys.stderr)
+            return 1
 
     config = retrieval_io.load_config(root)
     if not _has_candidates(args, root):
@@ -841,7 +885,9 @@ def _run(args: argparse.Namespace) -> int:
 
     core: set[str] = set()
     if harmful:
-        core = _core_slugs(_iter_active_lessons(root, args.agent_type))
+        core = _core_slugs(_iter_active_lessons(
+            root, args.agent_type, getattr(args, "scope", ""), getattr(args, "as_of", ""),
+        ))
     dosed = not retrieval_io.semantic_only_undosed_pinned(root)
 
     if not args.experiment:
@@ -850,7 +896,10 @@ def _run(args: argparse.Namespace) -> int:
             sys.stdout.write(stdout)
             return rc
         stdout, withdrawn = _withdraw_from_semantic(stdout, harmful, core, args.top_k)
-        stdout, _eligible, note = _semantic_dose_or_pinned(stdout, root, args.agent_type, config, dosed)
+        stdout, _eligible, note = _semantic_dose_or_pinned(
+            stdout, root, args.agent_type, config, dosed,
+            getattr(args, "scope", ""), getattr(args, "as_of", ""),
+        )
         sys.stdout.write(stdout + note)
         _print_withdrawn(withdrawn, harmful)
         return 0
@@ -868,7 +917,10 @@ def _run(args: argparse.Namespace) -> int:
         sys.stdout.write(stdout)
         return rc
     stdout, withdrawn = _withdraw_from_semantic(stdout, harmful, core, args.top_k)
-    stdout, slugs, note = _semantic_dose_or_pinned(stdout, root, args.agent_type, config, dosed)
+    stdout, slugs, note = _semantic_dose_or_pinned(
+        stdout, root, args.agent_type, config, dosed,
+        getattr(args, "scope", ""), getattr(args, "as_of", ""),
+    )
     if not slugs:
         sys.stdout.write(stdout + note)
         _print_withdrawn(withdrawn, harmful)

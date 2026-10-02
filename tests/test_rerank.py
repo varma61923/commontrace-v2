@@ -118,7 +118,7 @@ def test_the_reranker_lifts_a_lesson_from_the_pool_onto_the_page(store, ce, monk
                         occasion_id="r-1")
     rows = _logged(store, "r-1")
     assert rows["roster-drift"]["rank"] == 1, rows
-    assert {r["scorer"] for r in rows.values()} == {"ce:minilm6(idf-v2)"}
+    assert {r["scorer"] for r in rows.values()} == {"ce:minilm6(adaptive-v1)"}
     assert rows["roster-drift"]["relevance"] == 2.0
 
     retrieval_io.configure(store, rerank=retrieval_io.RERANK_NONE)
@@ -137,7 +137,7 @@ def test_both_surfaces_rerank_the_same_pool_the_same_way(store, ce, monkeypatch)
     for slug in cli_rows:
         for field in ("scorer", "floor", "relevance"):
             assert cli_rows[slug][field] == mcp_rows[slug][field], (slug, field)
-    assert {r["scorer"] for r in mcp_rows.values()} == {"ce:minilm6(rrf(idf-v2+semantic))"}
+    assert {r["scorer"] for r in mcp_rows.values()} == {"ce:minilm6(rrf(adaptive-v1+semantic))"}
 
 
 def test_a_store_that_cannot_rerank_ranks_as_if_it_had_not_asked(store, monkeypatch):
@@ -147,7 +147,7 @@ def test_a_store_that_cannot_rerank_ranks_as_if_it_had_not_asked(store, monkeypa
     server = mcp_server.build_server(store)
     out = call(server, "retrieve", task=TASK, top_k=2, occasion_id="no-ce")
     assert "attention extra" in out["rerank_note"]
-    assert {r["scorer"] for r in _logged(store, "no-ce").values()} == {"rrf(idf-v2+semantic)"}
+    assert {r["scorer"] for r in _logged(store, "no-ce").values()} == {"rrf(adaptive-v1+semantic)"}
 
     retrieval_io.configure(store, rerank=retrieval_io.RERANK_NONE)
     plain = call(server, "retrieve", task=TASK, top_k=2, occasion_id="plain")
@@ -212,7 +212,7 @@ def test_the_fast_model_is_its_own_treatment(store, ce, monkeypatch):
     retrieval_io.configure(store, rerank=retrieval_io.RERANK_CE_FAST)
     call(mcp_server.build_server(store), "retrieve", task=TASK, top_k=2, occasion_id="fast-1")
     assert {r["scorer"] for r in _logged(store, "fast-1").values()} == {
-        "ce:tinybert2(rrf(idf-v2+semantic))"}
+        "ce:tinybert2(rrf(adaptive-v1+semantic))"}
     assert set(loaded) == {retrieval_io.RERANK_CE_FAST}
     assert retrieval_io.parse_rerank_label("ce:tinybert2(idf-v2)") == (
         "idf-v2", retrieval_io.RERANK_CE_FAST)
@@ -281,7 +281,7 @@ def test_without_fusion_both_surfaces_rerank_the_lexical_arm(store, ce, monkeypa
     for slug in cli_rows:
         for field in ("scorer", "relevance", "rank"):
             assert cli_rows[slug][field] == mcp_rows[slug][field], (slug, field)
-    assert {r["scorer"] for r in cli_rows.values()} == {"ce:tinybert2(idf-v2)"}
+    assert {r["scorer"] for r in cli_rows.values()} == {"ce:tinybert2(adaptive-v1)"}
 
 
 def test_a_store_that_ran_semantic_retrieval_stays_semantic(tmp_path, no_override, monkeypatch):
@@ -319,7 +319,7 @@ def test_gated_fusion_admits_what_the_reranker_vouches_for(store, gate_ce, monke
     assert {"suppression-list", "unsubscribe-sync"} <= page
     assert "refund-threshold" not in page
     assert {r["scorer"] for r in _logged(store, "g-1").values()} == {
-        "ce:minilm6(gated(idf-v2+semantic))"}
+        "ce:minilm6(gated(adaptive-v1+semantic))"}
 
 
 def test_both_surfaces_gate_the_same_way(store, gate_ce, monkeypatch):
@@ -352,7 +352,7 @@ def test_the_gate_and_the_label_follow_the_semantic_arms_model(store, gate_ce, m
     assert set(cli_rows) == set(mcp_rows)
     assert "refund-threshold" in mcp_rows
     assert {r["scorer"] for r in list(cli_rows.values()) + list(mcp_rows.values())} == {
-        "ce:minilm6(gated(idf-v2+semantic@arctic-m))"}
+        "ce:minilm6(gated(adaptive-v1+semantic@arctic-m))"}
     assert {depth for _surface, depth in fetched} == {10}
     assert {surface for surface, _depth in fetched} == {"cli", "mcp"}
 
@@ -365,7 +365,7 @@ def test_gated_fusion_without_a_reranker_is_lexical_and_says_so(store, monkeypat
     out = call(mcp_server.build_server(store), "retrieve", task=TASK, occasion_id="g-no")
     assert "reranker" in out["fusion_note"]
     assert "unsubscribe-sync" not in _slugs(out, "lessons", "withheld")
-    assert {r["scorer"] for r in _logged(store, "g-no").values()} == {"idf-v2"}
+    assert {r["scorer"] for r in _logged(store, "g-no").values()} == {"adaptive-v1"}
 
 
 def test_a_new_store_fuses_gated_by_default_where_both_models_are_installed(
@@ -380,7 +380,7 @@ def test_a_new_store_fuses_gated_by_default_where_both_models_are_installed(
     assert main(["init", "--dest", root]) == 0
     config = retrieval_io.load_config(root)
     assert (config.fusion, config.rerank) == (retrieval_io.FUSION_GATED, retrieval_io.RERANK_CE)
-    assert config.eligibility == "ce:minilm6(gated(idf-v2+semantic))"
+    assert config.eligibility == "ce:minilm6(gated(adaptive-v1+semantic))"
     monkeypatch.setenv(retrieval_io.DEFAULT_FUSION_ENV, "none")
     assert retrieval_io.load_config(root).fusion == retrieval_io.FUSION_NONE
 

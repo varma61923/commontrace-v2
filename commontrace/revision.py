@@ -7,6 +7,8 @@ import json
 import re
 from typing import Any
 
+OPTIONAL_ELIGIBILITY_FIELDS = ("scopes", "valid_from", "valid_until")
+
 INJECTED_FIELDS = (
     "description",
     "domain",
@@ -14,6 +16,7 @@ INJECTED_FIELDS = (
     "importance",
     "applies_when",
     "do_not_apply_when",
+    *OPTIONAL_ELIGIBILITY_FIELDS,
 )
 
 REVISION_LENGTH = 12
@@ -32,6 +35,8 @@ def _normalize(text: str) -> str:
 def _canonical(fm: dict, body: str) -> str:
     payload: dict[str, Any] = {}
     for key in INJECTED_FIELDS:
+        if key in OPTIONAL_ELIGIBILITY_FIELDS and key not in fm:
+            continue
         value = fm.get(key)
         if isinstance(value, list):
             payload[key] = sorted(str(v) for v in value)
