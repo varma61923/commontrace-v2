@@ -75,6 +75,67 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# In-process adjacency memo: key (abs root, nodes stamp, edges stamp, as_of)
+# -> (nodes, active_edges, adjacency). Invalidated by file stamps, so graph
+# mutations (which rewrite nodes.jsonl/edges.jsonl) are picked up. Bounded to
+# avoid unbounded growth across many stores.
+_GRAPH_ADJ_CACHE: dict[tuple, tuple] = {}
+_GRAPH_ADJ_CACHE_MAX_ENTRIES = 64
+
+
+def _clear_graph_cache() -> None:
+    """Drop all memoized adjacency (primarily for tests)."""
+    _GRAPH_ADJ_CACHE.clear()
+
+
+def _graph_files_stamp(root: str) -> tuple[int, int, int, int]:
+    """Return (nodes_mtime_ns, nodes_size, edges_mtime_ns, edges_size)."""
+    try:
+        nst = os.stat(_nodes_file(root))
+        nodes_stamp = (int(nst.st_mtime_ns), int(nst.st_size))
+    except OSError:
+        nodes_stamp = (0, 0)
+    try:
+        est = os.stat(_edges_file(root))
+        edges_stamp = (int(est.st_mtime_ns), int(est.st_size))
+    except OSError:
+        edges_stamp = (0, 0)
+    return (nodes_stamp[0], nodes_stamp[1], edges_stamp[0], edges_stamp[1])
+
+
+def _cached_graph(root: str, as_of: str | None = None) -> tuple:
+    """Load nodes/edges and build adjacency, memoized per (root, stamp, as_of).
+
+    Returns ``(nodes, active_edges, adjacency)`` with the same content and
+    ordering as an uncached load; ``as_of`` filtering is applied before the
+    adjacency is built so cached results match fresh traversal exactly.
+    """
+    stamp = _graph_files_stamp(root)
+    key = (os.path.abspath(str(root)), stamp, as_of or "")
+    hit = _GRAPH_ADJ_CACHE.get(key)
+    if hit is not None:
+        return hit
+
+    nodes = load_nodes(root)
+    edges = load_edges(root)
+    moment = lesson_cache.parse_moment(as_of) if as_of else None
+    active_edges = [e for e in edges if _is_active_edge(e, moment)]
+
+    adj: dict[str, list[GraphEdge]] = {}
+    for e in active_edges:
+        adj.setdefault(e.source, []).append(e)
+        adj.setdefault(e.target, []).append(e)
+
+    value = (nodes, active_edges, adj)
+    _GRAPH_ADJ_CACHE[key] = value
+    while len(_GRAPH_ADJ_CACHE) > _GRAPH_ADJ_CACHE_MAX_ENTRIES:
+        oldest = next(iter(_GRAPH_ADJ_CACHE))
+        if oldest == key:
+            break
+        del _GRAPH_ADJ_CACHE[oldest]
+    return value
+
+
 def load_nodes(root: str) -> dict[str, GraphNode]:
     """Load all nodes into memory."""
     fpath = _nodes_file(root)
@@ -340,19 +401,18 @@ def multi_hop_subgraph(
     start_node_ids: list[str],
     max_hops: int = 2,
     as_of: str | None = None,
+    max_edges: int | None = None,
 ) -> dict[str, Any]:
-    """Traverse graph up to max_hops from the given start nodes."""
-    nodes = load_nodes(root)
-    edges = load_edges(root)
-    moment = lesson_cache.parse_moment(as_of) if as_of else None
+    """Traverse graph up to max_hops from the given start nodes.
 
-    active_edges = [e for e in edges if _is_active_edge(e, moment)]
+    ``max_edges`` caps the total collected edges (``None`` = uncapped, which
+    preserves the historical behavior exactly). Traversal stops early once the
+    cap is reached.
+    """
+    nodes, active_edges, adj = _cached_graph(root, as_of)
+    _ = active_edges  # adjacency already reflects the active edge set.
 
-    # Adjacency list
-    adj: dict[str, list[GraphEdge]] = {}
-    for e in active_edges:
-        adj.setdefault(e.source, []).append(e)
-        adj.setdefault(e.target, []).append(e)
+    cap: int | None = None if max_edges is None else max(0, int(max_edges))
 
     visited_nodes: dict[str, int] = {}  # node_id -> hop_distance
     collected_edges: list[GraphEdge] = []
@@ -365,11 +425,15 @@ def multi_hop_subgraph(
             queue.append((cid, 0))
 
     while queue:
+        if cap is not None and len(collected_edges) >= cap:
+            break
         curr_id, hop = queue.pop(0)
         if hop >= max_hops:
             continue
 
         for edge in adj.get(curr_id, []):
+            if cap is not None and len(collected_edges) >= cap:
+                break
             neighbor_id = edge.target if edge.source == curr_id else edge.source
             if edge not in collected_edges:
                 collected_edges.append(edge)
@@ -413,13 +477,22 @@ def graph_boost_for_lessons(
     query: str,
     candidate_slugs: list[str],
     as_of: str | None = None,
+    max_hops: int = 2,
+    max_edges: int | None = None,
 ) -> dict[str, float]:
-    """Compute graph-proximity boosts for candidate lesson slugs."""
+    """Compute graph-proximity boosts for candidate lesson slugs.
+
+    ``max_hops`` defaults to 2 (the historical traversal depth) and
+    ``max_edges`` defaults to ``None`` (uncapped); both are passed through to
+    :func:`multi_hop_subgraph`, so default calls behave exactly as before.
+    """
     entities = extract_entities_from_text(root, query)
     if not entities or not candidate_slugs:
         return {s: 0.0 for s in candidate_slugs}
 
-    subgraph = multi_hop_subgraph(root, start_node_ids=entities, max_hops=2, as_of=as_of)
+    subgraph = multi_hop_subgraph(
+        root, start_node_ids=entities, max_hops=max_hops, as_of=as_of, max_edges=max_edges
+    )
     hop_distances = subgraph.get("hop_distances", {})
 
     boosts: dict[str, float] = {}

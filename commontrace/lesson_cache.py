@@ -340,6 +340,7 @@ class TermCache(dict):
         self.lessons: list | None = None
         self.fingerprint: tuple | None = None
         self.fingerprint_hash: int = 0
+        self.bin_dir: str | None = None
 
 
 _SNAPSHOTS: dict[tuple, tuple[tuple, list, TermCache]] = {}
@@ -370,6 +371,7 @@ def load_active_with_terms(
     term_cache.lessons = lessons
     term_cache.fingerprint = tuple((p, term_cache.stamps[p]) for p, _fm in lessons)
     term_cache.fingerprint_hash = hash(term_cache.fingerprint)
+    term_cache.bin_dir = os.path.join(paths.memory_dir(root), CACHE_DIR)
     _SNAPSHOTS[memo_key] = (snap_key, lessons, term_cache)
     return lessons, term_cache
 

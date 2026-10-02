@@ -30,8 +30,69 @@ def _command_modules(only: str | None = None) -> list:
     return [importlib.import_module(f"commontrace.commands.{name}_cmd") for name in names]
 
 
+class _LazyCommandMap(dict):
+    """Dict-like choices for the top-level subparsers that imports on demand.
+
+    ``__iter__``/``__contains__``/``__len__`` answer from the static
+    ``_COMMANDS`` tuple so ``--help`` and ``list(choices)`` work without
+    importing anything. ``__getitem__`` imports ONLY the requested command
+    module and builds its real parser, so ``build_parser().parse_args([...])``
+    and the ``_name_parser_map`` lookup during parsing stay lazy.
+    """
+
+    def __init__(self, subparsers_action=None):
+        super().__init__()
+        self._subparsers_action = subparsers_action
+
+    def __contains__(self, key):
+        return key in _COMMANDS or dict.__contains__(self, key)
+
+    def __iter__(self):
+        return iter(_COMMANDS)
+
+    def __len__(self):
+        return len(_COMMANDS)
+
+    def __getitem__(self, key):
+        if dict.__contains__(self, key):
+            return dict.__getitem__(self, key)
+        if key not in _COMMANDS:
+            raise KeyError(key)
+        module = importlib.import_module(f"commontrace.commands.{key}_cmd")
+        action = self._subparsers_action
+        if action is None:
+            raise KeyError(key)
+        # Drop the static placeholder help for this command so the real
+        # module's help text does not appear twice.
+        action._choices_actions = [
+            a for a in action._choices_actions if a.dest != key
+        ]
+        module.add_parser(action)
+        return dict.__getitem__(self, key)
+
+    def __setitem__(self, key, value):
+        dict.__setitem__(self, key, value)
+
+    def get(self, key, default=None):
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
+    def keys(self):  # pragma: no cover - convenience, avoids accidental full import
+        return list(_COMMANDS)
+
+
 def build_parser(only: str | None = None) -> argparse.ArgumentParser:
-    """The CLI's parser: every subcommand, or just `only` when it names one."""
+    """The CLI's parser: every subcommand, or just `only` when it names one.
+
+    Lazy two-phase parsing: with ``only=None`` (or an unknown name) no
+    command module is imported -- the top-level parser only carries the
+    static command list from ``_COMMANDS`` for ``--help``. The invoked
+    module is imported on demand when its name is looked up during
+    ``parse_args`` (see ``_LazyCommandMap``). With ``only`` naming a real
+    command, only that module is imported eagerly.
+    """
     parser = argparse.ArgumentParser(
         prog="commontrace",
         description="CommonTrace Protocol client - capture experience, curate lessons, "
@@ -42,8 +103,16 @@ def build_parser(only: str | None = None) -> argparse.ArgumentParser:
         version=f"commontrace {__version__} (protocol {PROTOCOL_VERSION})",
     )
     subparsers = parser.add_subparsers(dest="command", required=_MISSING_DEPENDENCY is None)
-    for module in _command_modules(only):
-        module.add_parser(subparsers)
+    if only in _COMMANDS:
+        importlib.import_module(f"commontrace.commands.{only}_cmd").add_parser(subparsers)
+        return parser
+    lazy: dict = _LazyCommandMap(subparsers)
+    subparsers._name_parser_map = lazy  # type: ignore[assignment]
+    subparsers.choices = lazy  # type: ignore[assignment]
+    for name in _COMMANDS:
+        subparsers._choices_actions.append(
+            subparsers._ChoicesPseudoAction(name, (), f"{name} command")
+        )
     return parser
 
 

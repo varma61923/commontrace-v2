@@ -182,7 +182,25 @@ def _corpus_index(lessons, term_cache, scorer: str) -> _CorpusIndex:
     hit = _INDEX_CACHE.get(key)
     if hit is not None and (hit[0] is fingerprint or hit[0] == fingerprint):
         return hit[1]
+    bin_dir = getattr(term_cache, "bin_dir", None)
+    if bin_dir:
+        try:
+            from commontrace import corpus_bin
+            persisted = corpus_bin.load(bin_dir, scorer, lessons, fingerprint)
+        except Exception:
+            persisted = None
+        if persisted is not None:
+            if key not in _INDEX_CACHE and len(_INDEX_CACHE) >= _INDEX_CACHE_MAX:
+                _INDEX_CACHE.pop(next(iter(_INDEX_CACHE)))
+            _INDEX_CACHE[key] = (fingerprint, persisted)
+            return persisted
     index = _build_index(lessons, term_cache, scorer)
+    if bin_dir:
+        try:
+            from commontrace import corpus_bin
+            corpus_bin.save(bin_dir, scorer, fingerprint, index)
+        except Exception:
+            pass
     if key not in _INDEX_CACHE and len(_INDEX_CACHE) >= _INDEX_CACHE_MAX:
         _INDEX_CACHE.pop(next(iter(_INDEX_CACHE)))
     _INDEX_CACHE[key] = (fingerprint, index)
