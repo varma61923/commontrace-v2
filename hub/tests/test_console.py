@@ -560,7 +560,7 @@ class TestItChangesNothing:
 # --- Accessibility -----------------------------------------------------------
 #
 # Not a certified audit (audit §7.8 names that as needing a real auditor and
-# is correctly left "requires business action" in AUDIT_RESPONSE.md) -- a
+# is correctly left "requires business action" in the security audit) -- a
 # self-conducted check that every visible form control has a programmatically
 # associated name, the one WCAG failure a placeholder-only input actually is
 # (placeholder text is not reliably announced as a label and disappears the

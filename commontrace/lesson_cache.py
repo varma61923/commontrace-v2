@@ -11,9 +11,9 @@ Measured with `commontrace/reference/measure_local_latency.py --no-cache`:
       1,600   1815.4 ms   33.3 ms  1849.7 ms      98.1%
       6,400   7912.4 ms  193.5 ms  8115.0 ms      97.5%
 
-fitted alpha 1.02 -- LINEAR-OR-WORSE in `hub/SCALING.md`'s own verdict
+fitted alpha 1.02 -- LINEAR-OR-WORSE in the scaling analysis's own verdict
 language, on the tier `protocol/PROTOCOL.md` §5 says every agent without a Hub
-runs exclusively. `STRATEGY.md` §13.2's link 3 asks whether serving cost grows
+runs exclusively. The cost question is whether serving cost grows
 with corpus size; for the local tier the answer was "linearly, and parsing is
 98% of it". A lesson store only grows, so retrieval got slower exactly as the
 fleet learned more.

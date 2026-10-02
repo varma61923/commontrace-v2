@@ -124,7 +124,7 @@ def _id_suffix(trace_id: str) -> str:
     declines to match them (it compares the full id inside the file). So the
     second capture silently replaced the first.
 
-    That is not an exotic input. PILOT.md tells operators to use "a ticket
+    That is not an exotic input. The pilot design tells operators to use "a ticket
     number, a run id, a job id", and real ones are prefixed:
     JIRA-ROBOTICS-PLATFORM-4711 and ...-4712 share their first 25 characters.
     Reproduced: five captures under such ids left ONE file on disk.

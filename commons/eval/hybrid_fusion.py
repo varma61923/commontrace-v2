@@ -8,7 +8,7 @@ usable, the lexical one otherwise. It never runs both and combines them.
 
 Hybrid retrieval -- run both arms, fuse the two ranked lists -- is the
 standard answer in information retrieval, and the argument for it fits
-this product's corpus exactly. commons/eval/RESULTS.md says the failure
+this product's corpus exactly. The evaluation says the failure
 mode of lexical matching here is vocabulary: "two engineers describing the
 same substrate failure -- 'connection pool exhausted during a retry storm'
 and 'during a spike everything starts timing out waiting to acquire a

@@ -196,7 +196,7 @@ class Metrics:
     arguments, query text. Per-org labels would make this a cardinality
     problem (one time series per customer, unbounded) and a privacy one --
     a scrape endpoint is a different trust boundary from an authenticated
-    tool call, and DATA_RETENTION.md's reasoning about not logging query
+    tool call, and the retention policy's reasoning about not logging query
     text applies here for the same reason. Method, path and status are
     bounded, non-identifying sets.
 
@@ -220,7 +220,7 @@ class Metrics:
     # cumulatively, so the last bucket before +Inf already holds "everything
     # this fast or faster". Skewed toward the sub-100ms range because that
     # is where this Hub's own budget lives -- hub/auth.py's fast path is
-    # ~1ms, hub/SCALING.md's sublinear read paths top out around 60-100ms at
+    # ~1ms, the scaling analysis's sublinear read paths top out around 60-100ms at
     # 64k traces -- with enough coarse buckets past 1s to still say something
     # about a genuinely slow outlier instead of just lumping it into +Inf.
     BUCKETS_MS: tuple[float, ...] = (1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000)

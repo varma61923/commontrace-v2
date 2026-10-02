@@ -5,7 +5,7 @@ baseline/current resolution rate into one report.
 The property that matters most: a randomized-holdout (causal) result always
 outranks a correlational one, and the gate never reports "yes" from
 correlational data alone -- matching README.md's "Prove the lessons cause
-the improvement" and STRATEGY.md §8's insistence that every other number in
+the improvement" and the product strategy's insistence that every other number in
 this repo is correlational.
 """
 from __future__ import annotations

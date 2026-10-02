@@ -274,7 +274,7 @@
                                        interactive confirmation unless --yes is passed.
     purge-org <org_id> [--yes]     -> permanently deletes an org and everything scoped to
                                        it (api_keys, traces, votes -- FK ondelete=CASCADE).
-                                       Irreversible. See DATA_RETENTION.md. Prompts for
+                                       Irreversible. Prompts for
                                        interactive confirmation unless --yes is passed.
 
 The raw API key is only ever available at issuance/rotation time -- it is
@@ -286,7 +286,7 @@ only to rotate to a new one.
 This whole module is an operator/DB-access-trust-level tool, not exposed
 over the six org-scoped MCP tools (hub/server.py) -- an org's own API key
 grants read/write on its own traces, never account/data deletion. See
-hub/README.md and DATA_RETENTION.md for why that boundary is deliberate.
+hub/README.md and the retention policy for why that boundary is deliberate.
 
 Every command function below takes an optional `session_factory` (default
 None -> built from HubConfig.from_env()) so tests can inject a fixture's
@@ -1163,7 +1163,7 @@ async def kb_stats(session_factory=None) -> None:
             f"\nOver half the corpus ({len(zero_hit)}/{len(entries)}) has never matched a "
             "real query. Either these entries describe failures fleets are not actually "
             "hitting, or they are worded differently from how fleets describe them -- see "
-            "commons/eval/RESULTS.md on lexical matching's recall limits."
+            "The evaluation on lexical matching's recall limits."
         )
 
 
@@ -1268,7 +1268,7 @@ async def start_experiment(
     """Begin a randomized holdout for one org: withhold `rate` of eligible
     memory injections so the fleet generates its own control arm.
 
-    This is the falsifier STRATEGY.md §13.2 calls "the cheapest in the
+    This is the falsifier the product strategy calls "the cheapest in the
     document" and says to run first, and until now it could only be run
     against a local file store -- not against the Hub, which is the
     surface paying customers are actually on.
@@ -2112,7 +2112,7 @@ async def purge_org(
 ) -> bool:
     """Permanently deletes an org and everything scoped to it (api_keys,
     traces, and traces' votes/trace_relations all cascade via FK
-    ondelete=CASCADE). Irreversible -- see DATA_RETENTION.md §3.
+    ondelete=CASCADE). Irreversible.
 
     If this org has a live Stripe subscription, it is cancelled FIRST --
     see hub.billing.cancel_subscription's docstring for why an org row
@@ -2338,7 +2338,7 @@ async def retrieval(org_id: str | None = None, session_factory=None) -> bool:
     The live version of `hub/bench_retrieval.py`. The benchmark answers
     "does retrieval work" on a 46-record synthetic corpus with probes the
     same author wrote; this answers it on the fleet's own corpus with the
-    fleet's own queries, which is the only version that settles STRATEGY.md
+    fleet's own queries, which is the only version that settles the product strategy
     §13.2's link 2 for a real customer.
 
     This exists because the defect `hub/search.py` documents -- every
@@ -2386,7 +2386,7 @@ async def retrieval(org_id: str | None = None, session_factory=None) -> bool:
     print("No query text is stored anywhere. These are three integers per org per month;")
     print("a log of what a customer's agents were struggling with, in their own words,")
     print("would answer this no better and create exactly the retention liability")
-    print("DATA_RETENTION.md exists to avoid.")
+    print("the retention policy exists to avoid.")
     return True
 
 
@@ -3171,7 +3171,7 @@ _COMMANDS = {
 }
 
 # Deletion here is permanent (no soft-delete, no undo -- see purge_trace/
-# purge_org's own docstrings and DATA_RETENTION.md). Every other _COMMANDS
+# purge_org's own docstrings and the retention policy). Every other _COMMANDS
 # entry either only reads, or is itself reversible (revoke-key has
 # rotate-key, release-quarantine has nothing to reverse but also nothing to
 # lose). Gated on an interactive prompt so a mistyped id or a fat-fingered

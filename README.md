@@ -345,7 +345,7 @@ commontrace overlap report --ours acme.json --theirs partner.json
 Answers *"of the failures we keep hitting, how many has another fleet
 already solved?"* for two fleets who have agreed to compare notes directly
 — distinct from the CommonTrace Knowledge Base below, which has no
-fleet-to-fleet data flow at all (see [`STRATEGY.md`](STRATEGY.md)).
+fleet-to-fleet data flow at all.
 Neither side sends the other any lesson or trace text; only MinHash
 signatures are exchanged.
 
@@ -519,7 +519,7 @@ commontrace experiment                  # causal effect per lesson, validity che
 commontrace experiment --strict         # non-zero exit if a lesson HURTS, or if the run is not valid
 ```
 
-**Step-by-step, with the sample sizes you need: [PILOT.md](PILOT.md).**
+**Plan the sample size first: `commontrace experiment --plan`.**
 
 Every other number in this repo — including `reliability`'s `lift` — is
 **correlational**, and the confound is structural: a lesson is retrieved
@@ -664,7 +664,7 @@ matching [the Plans section below](#plans-and-what-they-actually-enforce)'s
 `bench --pilot`'s resolution-rate delta into one report, and its yes/no gate
 is deliberately conservative: a causal result from `commontrace experiment`
 (§9 above) always outranks a correlational one, and correlational data alone
-never earns an outright yes — see PILOT.md.
+never earns an outright yes.
 
 ### 10b — Block a release that should not ship
 
@@ -719,7 +719,7 @@ commontrace signals export "<name>" --format langsmith|braintrust
 
 # Reproduce the causal-detection claim against seeded ground truth
 python -m commons.eval.causal_harness
-python -m commons.eval.coverage_harness        # per memory adapter, 200 seeds; see commons/eval/CAUSAL_COVERAGE.md
+python -m commons.eval.coverage_harness        # per memory adapter, 200 seeds
 commontrace retrieval --on-harm withdraw       # stop delivering a memory measured to hurt (any store)
 ```
 
@@ -1037,8 +1037,7 @@ turn in the top 10 for 70.6% of questions, against 56.1% for mpnet.
 | `implicit_retrieval` | % of Alpha-retrieved lessons that actually helped |
 | `transfer_gap` | % of hits that crossed project boundaries |
 
-Run periodically (every 5-10 `/commontrace` runs). See `benchmark/STATUS.md` for
-interpretation guidelines and the roadmap.
+Run periodically (every 5-10 `/commontrace` runs).
 
 `measure_performance.py` answers "is the protocol machinery healthy" — is
 generation (Omega) and retrieval (Alpha) doing its job. It does **not**
@@ -1113,7 +1112,6 @@ significantly *hurting* outcomes when it was fine.
 The gate is deliberately two-sided (a ceiling on the worst field **and** the
 worst÷best spread): the historical scorer polluted at 1.89×–2.50× while its
 *spread* was 1.32×, so a spread-only gate would have called it acceptable.
-Methodology, thresholds and limitations: [`benchmark/STATUS.md`](benchmark/STATUS.md) §9.
 
 ---
 
@@ -1330,8 +1328,7 @@ them recovers it:
 | **`commons ask` (ranked)** | **89.1%** | **95.7%** | **100%** | **No** |
 
 Measured on 46 held-out failures written in on-call vocabulary
-(`python commons/eval/search_modes.py`, recorded in
-[`commons/eval/RESULTS.md`](commons/eval/RESULTS.md)). Your question is
+(`python commons/eval/search_modes.py`). Your question is
 MinHashed locally exactly as `sign` does it — **no failure text leaves your
 machine for either command.**
 
@@ -1440,7 +1437,7 @@ a different amount per submission). A **rejected or still-pending** one
 earns nothing.
 
 That "earns nothing until accepted" rule is the entire fix for the problem
-an earlier, retired design had (§3 in `STRATEGY.md`): a credit for the act
+an earlier, retired design had: a credit for the act
 of *sharing* rewards volume, and an org keeps its best lessons while
 farming credit with filler. A credit for *acceptance* rewards quality
 instead, because filler gets rejected. It does not make the underlying
@@ -1859,8 +1856,7 @@ Storage is real cost and grows monotonically. **Knowledge Base queries are
 the metered unit** because that is the only call whose value comes from
 content the org did not itself produce — everything else an org does is
 with its own data, and charging per query against your own memory is rent,
-not price. Purging frees storage allowance, so the deletion right in
-`DATA_RETENTION.md` is not a right in name only. The flat plan grant above
+not price. Purging frees storage allowance, so the deletion right is not a right in name only. The flat plan grant above
 is the floor, not the ceiling — see "Propose an entry" for the one way an
 org can permanently raise it, by having a Knowledge Base submission
 accepted rather than by the act of submitting.
@@ -1961,7 +1957,7 @@ prospect decides on. So it is measured rather than asserted, against probes
 the corpus was not built from:
 
 ```bash
-python commons/eval/run.py        # commons/eval/RESULTS.md records the run
+python commons/eval/run.py        
 ```
 
 46 held-out positives (real failures the corpus contains, written
@@ -1998,8 +1994,7 @@ similarity, and it is not a tweak — embeddings require a model to see the
 failure text, which is exactly what the current design refuses to transmit.
 That trade is unresolved and is written down as unresolved.
 
-`commons/eval/RESULTS.md` carries the sensitivity table and the limits in
-full — the most important being that the same author wrote both the corpus
+The most important limit: the same author wrote both the corpus
 and the probes, which makes 10.9% an optimistic bound rather than an
 estimate of a real fleet. The measurement that would settle it is a run
 against failures a customer actually collected, and it has not happened.
@@ -2070,19 +2065,15 @@ tests, not left to convention:
 | Health checks | `/healthz` (liveness, no DB dependency — a database blip must not trigger a restart storm) and `/readyz` (readiness, real query). |
 | Observability | Structured JSON logs with a per-request correlation id; CI fails the build if an API key or DB password ever appears in log output. |
 | Audit trail | Every mutation and every operator action writes a content-free audit row that survives the data it describes. |
-| Data deletion | Self-service via an org's own API key (`delete_trace`; `request_account_deletion`/`confirm_account_deletion` for a whole org, two calls with a mandatory delay between them), or operator-CLI (`manage.py purge-trace`/`purge-org`). All four perform hard deletes and follow amendment chains. See [`DATA_RETENTION.md`](DATA_RETENTION.md). |
-| Data retention | Per-org policies by object type and status, a purge plan you read before anything happens, and legal holds that outrank every policy. `manage.py set-retention` / `retention-plan` / `retention-apply` / `legal-hold`. See [`DATA_RETENTION.md`](DATA_RETENTION.md) §2. |
+| Data deletion | Self-service via an org's own API key (`delete_trace`; `request_account_deletion`/`confirm_account_deletion` for a whole org, two calls with a mandatory delay between them), or operator-CLI (`manage.py purge-trace`/`purge-org`). All four perform hard deletes and follow amendment chains. |
+| Data retention | Per-org policies by object type and status, a purge plan you read before anything happens, and legal holds that outrank every policy. `manage.py set-retention` / `retention-plan` / `retention-apply` / `legal-hold`. |
 | Event export | Signed, at-least-once webhooks carrying ids, counts and verdicts — **never trace content**, enforced by a per-event-type field whitelist. `manage.py webhook-add`. See `hub/README.md` "Event export". |
 | Rate limiting | Per-org token bucket. **Known limitation:** it is process-local, so N replicas allow roughly N× the configured rate — see `hub/DEPLOYMENT.md` §6 for the mitigations. |
 
 **What this does *not* have** is as important as the table above, and is
 written down rather than left to be discovered: no legal entity, no SOC 2,
 no penetration test, no SAML or browser-based login (OIDC, SCIM and human
-user accounts do exist), no residency commitment and no support SLA. [`TRUST.md`](TRUST.md) states the trust boundary and lists every gap at
-full weight; [`AUDIT_RESPONSE.md`](AUDIT_RESPONSE.md) answers a third-party
-readiness audit finding by finding, marking each one done, partial, not
-applicable, or *requires business action* — with the rule that the last
-category is never quietly downgraded by building something adjacent to it.
+user accounts do exist), no residency commitment and no support SLA.
 
 Before putting a client's data on it, work through the security checklist in
 `hub/DEPLOYMENT.md` §10 and the deliberately-documented limitations in §11.
@@ -2128,14 +2119,12 @@ commontrace-v2/
                                   yet published to PyPI (`pip install commontrace` is the
                                   intended path once it is).
   SKILL.md                     — Code-review reference profile spec (pipeline, agent briefs)
-  DOCUMENTATION.md             — Deep-dive on the code-review profile: design decisions, research refs
   README.md                    — This file
   AGENTS.md                    — Agent-facing guidance (any platform)
   requirements.txt             — Python deps for the code-review profile's attention layer
   install.sh                   — Setup script for the code-review profile (SKILL.md route)
   assets/                      — Architecture diagrams (.dot + .png)
   memory/                      — Local store: lessons/ (any agent_type), traces/ (generic), episodes/ (code profile)
-  benchmark/                   — measure_performance.py (protocol health) + pilot_metrics.py (business outcomes)
   tests/                       — pytest suite (frontmatter contract, benchmark, CLI)
   .devin/                      — Devin-specific skill config (optional)
 ```

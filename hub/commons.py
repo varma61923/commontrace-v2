@@ -604,7 +604,7 @@ def rank_candidates(
     This is the whole difference between a coverage meter and a knowledge
     base, and it is worth being precise about why it is not a tuning change.
     Measured on the shipped corpus and the held-out probes
-    (commons/eval/search_modes.py, recorded in commons/eval/RESULTS.md):
+    (commons/eval/search_modes.py, recorded in the evaluation):
 
         thresholded coverage   10.9% recall,  0% false positives
         ranked candidates      89.1% recall@1, 95.7%@5, 100%@10

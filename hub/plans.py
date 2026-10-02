@@ -24,7 +24,7 @@ something the customer did not get:
   metered because it is a genuinely separate resource.
 
 * `max_agents` -- how many distinct agents an org may have ACTIVE at once.
-  This is the expansion axis: STRATEGY.md §12.2 argues value here compounds
+  This is the expansion axis: the product strategy argues value here compounds
   with agents per fleet, tasks over time, and fleets per customer, and
   §12.6 concludes the variable to run on is "agents under management, not
   logos". A metric nobody counts cannot be run on, so it is counted here.
@@ -52,7 +52,7 @@ An earlier design routed the Knowledge Base through customer contribution:
 an org could opt a trace of its own into a pool other orgs' queries could
 match against, and earned extra query allowance for every hit that
 delivered. That is a peer-to-peer commons, and it has a fatal problem
-STRATEGY.md §3 already named and never solved: **adverse selection**. Why
+The product strategy already named and never solved: **adverse selection**. Why
 would an org contribute knowledge that helps a competitor? The naive
 answer ("reciprocity") fails because the most valuable lessons are the
 most proprietary -- contribution stays voluntary, orgs contribute their
@@ -206,7 +206,7 @@ PLANS: dict[str, Plan] = {
     ),
 }
 
-# --- The pricing shape (STRATEGY.md §24) -------------------------------------
+# --- The pricing shape -------------------------------------
 #
 # §13.1 states the identity this business runs on -- revenue is AGENTS UNDER
 # MANAGEMENT x price per agent per year -- and says the shape it permits

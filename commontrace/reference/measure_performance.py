@@ -22,7 +22,7 @@ Every invocation (other than --diff/--history, which only read existing history)
 its JSON report to memory/benchmark_reports/YYYY-MM-DD_HHMMSS_ffffff.json by default -- pass
 --no-save to skip this (e.g. for a scratch/read-only invocation).
 
-Alert thresholds (warn when metrics breach; see STATUS.md §5 P4):
+Alert thresholds (warn when metrics breach P4):
     --threshold-quality=0.7        lesson_quality warning below 70% (default)
     --threshold-retrieval=0.5      implicit_retrieval strict warning below 50% (default)
     --threshold-never-hit=0.3      warn if >30% of lessons are never-hit (default)
@@ -768,7 +768,7 @@ def compute_alerts(report, thresholds):
     if lq["value"] is not None and lq["value"] > 1.0:
         alerts.append(
             f"lesson_quality {lq['value']:.1%} > 100% — retro-validation artefact "
-            f"(Lambda validated proposals from earlier runs; see STATUS.md §2.2)"
+            f"(Lambda validated proposals from earlier runs)"
         )
     # Unimodal importance distribution: 95%+ (default) of lessons crammed into a single
     # importance level suggests a broken/degenerate rubric (everything drifts to one value).
@@ -1053,7 +1053,7 @@ def compute_semantic_duplicates(
 # Run persistence + trend analysis (P3)
 # ---------------------------------------------------------------------------
 
-# The 3 main metrics tracked over time (cf. STATUS.md "Main Metrics (3 axes)"). Each entry
+# The 3 main metrics tracked over time (cf. The benchmark methodology "Main Metrics (3 axes)"). Each entry
 # is (display_name, path_into_the_stored_json_report). implicit_retrieval's permissive
 # angle is carried alongside strict for context but is not itself one of the 3 axes.
 _TREND_METRIC_PATHS = [

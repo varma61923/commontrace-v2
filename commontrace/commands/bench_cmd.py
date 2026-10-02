@@ -64,7 +64,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
              "corpus (commontrace/fixtures/fields/): precision@1, recall@k, MRR, and the "
              "pollution ratio that turns retrieval imprecision into a wrong causal "
              "verdict. This is what keeps 'works for any agent type' a tested property "
-             "rather than a claim -- see benchmark/STATUS.md.",
+             "rather than a claim.",
     )
     p.add_argument(
         "--max-pollution", type=float, default=None,

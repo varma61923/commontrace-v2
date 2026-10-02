@@ -8,7 +8,7 @@ therefore computed the same path -- and nothing checked, because
 full id inside the file). `frontmatter.write` uses os.replace, which is atomic
 and silently clobbering. The second capture destroyed the first.
 
-The inputs that trigger it are the ones PILOT.md tells operators to use: "a
+The inputs that trigger it are the ones the pilot design tells operators to use: "a
 ticket number, a run id, a job id". Real ones are prefixed --
 JIRA-ROBOTICS-PLATFORM-4711 and ...-4712 share 25 characters. Reproduced
 before the fix: five captures under such ids left ONE file on disk, an 80%

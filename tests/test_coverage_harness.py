@@ -1,5 +1,5 @@
 """The coverage harness itself: its arithmetic and its CLI. The 200-seed evidence is
-a slow opt-in run (commons/eval/CAUSAL_COVERAGE.md), not a unit test."""
+a slow opt-in run, not a unit test."""
 from commons.eval import coverage_harness as ch
 
 

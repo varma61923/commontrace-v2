@@ -1,7 +1,7 @@
 """Tests for commontrace/reference/measure_performance.py's Phase 3 additions:
 
 - P3: run persistence by default + --diff + --history
-- P4: alert thresholds (STATUS.md §5 defaults) incl. unimodal importance distribution,
+- P4: alert thresholds (the benchmark methodology defaults) incl. unimodal importance distribution,
       and --strict exit-code semantics
 - P5: Operational Cost section reading memory/alpha_telemetry.jsonl
 - P8: Semantic near-duplicates section reading memory/attention/index.npz
@@ -38,7 +38,7 @@ write_lesson = _conftest.write_lesson
 
 
 # ---------------------------------------------------------------------------
-# P4 -- default thresholds match STATUS.md §5 P4 exactly
+# P4 -- default thresholds match the benchmark methodology P4 exactly
 # ---------------------------------------------------------------------------
 
 class TestDefaultThresholds:
@@ -77,7 +77,7 @@ class TestUnimodalAlert:
         assert any("nimodal" in a for a in alerts)
 
     def test_balanced_distribution_no_alert(self):
-        report = self._make_report({3: 10, 4: 9, 5: 1})  # mirrors real snapshot in STATUS.md
+        report = self._make_report({3: 10, 4: 9, 5: 1})  # mirrors real snapshot in the benchmark methodology
         alerts = bm.compute_alerts(report, self._thresholds())
         assert not any("nimodal" in a for a in alerts)
 

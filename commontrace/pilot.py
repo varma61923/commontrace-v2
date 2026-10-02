@@ -1,13 +1,13 @@
 """`commontrace pilot` — the 30-day pilot, bundled into one report.
 
-Three steps (PILOT.md, and the sales narrative it backs):
+Three steps (the pilot design, and the sales narrative it backs):
 
 1. **Map the issues** — `commontrace.taxonomy`: group recurring failures
    into a clear taxonomy.
 2. **Reproduce + reinforce** — re-run representative cases with the lesson
    enforced. This step is inherently a human/agent loop
    (`commontrace query --experiment` + `commontrace capture
-   --occasion-id`, per PILOT.md) that this command cannot perform on
+   --occasion-id`) that this command cannot perform on
    someone's behalf; what it reports is how far that loop has progressed
    (active lessons, holdout assignments logged).
 3. **Measure what changed** — `commontrace.impact` plus the baseline-vs-
@@ -16,7 +16,7 @@ Three steps (PILOT.md, and the sales narrative it backs):
 "The result" is a yes/no gate, and it is deliberately conservative: a
 randomized holdout result (`commontrace experiment`) always outranks a
 correlational one, exactly as it does everywhere else in this codebase
-(README.md's "Prove the lessons cause the improvement", STRATEGY.md §8).
+(README.md's "Prove the lessons cause the improvement", the product strategy).
 A pilot that only ran the correlational half gets "not yet conclusive," not
 a borrowed "yes."
 """
@@ -125,7 +125,7 @@ def determine_result(
         "NOT ENOUGH DATA",
         RESULT_UNKNOWN,
         "No baseline traces (`commontrace capture --baseline`) and no holdout "
-        "data yet. See PILOT.md to start the loop.",
+        "data yet. See the pilot design to start the loop.",
     )
 
 
@@ -189,7 +189,7 @@ def render_markdown(r: PilotReport) -> str:
         "",
         "Re-run representative cases with the lesson enforced: "
         "`commontrace query \"<task>\" --experiment --occasion-id <id>`, then "
-        "`commontrace capture ... --occasion-id <id>`. See PILOT.md for sample "
+        "`commontrace capture ... --occasion-id <id>`. See the pilot design for sample "
         "sizes.",
         "",
         "## 3. Measure what changed",
@@ -218,7 +218,7 @@ def render_markdown(r: PilotReport) -> str:
         "",
         "*Every correlational number above (resolution-rate delta, errors "
         "avoided, reliability lift) is subject to the confound explained in "
-        "STRATEGY.md §8: a lesson is retrieved because the situation matched "
+        "The product strategy: a lesson is retrieved because the situation matched "
         "it. `commontrace experiment` removes that confound by randomized "
         "holdout, and outranks every other number here whenever both exist.*",
     ]
@@ -244,7 +244,7 @@ def render_html(r: PilotReport, timestamp: str) -> str:
 Holdout assignments logged: <strong>{r.n_holdout_assignments}</strong></p>
 <p class="caveat">Re-run representative cases with the lesson enforced:
 <code>commontrace query "&lt;task&gt;" --experiment --occasion-id &lt;id&gt;</code>,
-then <code>commontrace capture ... --occasion-id &lt;id&gt;</code>. See PILOT.md.</p>
+then <code>commontrace capture ... --occasion-id &lt;id&gt;</code>.</p>
 <h2>3. Measure what changed</h2>
 {impact_mod.render_html_fragment(r.impact)}
 """

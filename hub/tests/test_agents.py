@@ -1,6 +1,6 @@
 """Agents under management: the expansion meter.
 
-STRATEGY.md §12.6 concludes the variable to run this business on is
+The product strategy concludes the variable to run this business on is
 "agents under management, not logos", and §13.1 asserted it was already
 measurable. It was not: `agent_type` is a CATEGORY ("support"), so a fleet
 of 25 support agents shared one value and nothing in the system could count

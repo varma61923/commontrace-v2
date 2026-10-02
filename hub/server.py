@@ -1448,8 +1448,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
             failures are solved" and buys 0% false positives with a threshold
             that discards about nine of every ten real answers. This tool
             ranks instead, and finds the right record 89.1% of the time at
-            rank 1 and 100% within the top 10 on the held-out evaluation
-            (commons/eval/RESULTS.md).
+            rank 1 and 100% within the top 10 on the held-out evaluation.
 
             Send one MinHash signature, generated locally by `commontrace
             commons sign` -- no failure text leaves your machine. What comes

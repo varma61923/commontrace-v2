@@ -736,7 +736,7 @@ def main() -> int:
 
     # Latency covers the whole retrieval stage (index load through brief assembly below),
     # not just the cosine matmul -- that's what actually costs an Alpha invocation wall-clock
-    # time and is what STATUS.md P5 asks to measure.
+    # time and is what the benchmark methodology P5 asks to measure.
     _t0 = time.monotonic()
     result = rank(args.query, args.top_k, args.include_importance_floor, args.agent_type)
     for message in result.stderr:

@@ -6,8 +6,8 @@ passes. It says so itself, in the paragraph this file exists to retire:
     "It also says nothing about concurrency. Every number above is a single
     query against an otherwise idle database."
 
-hub/DEPLOYMENT.md and STRATEGY.md §13.2 disclaim the same thing in nearly
-the same words. STRATEGY.md calls link 3 -- serving cost -- "the weakest
+hub/DEPLOYMENT.md and the product strategy disclaim the same thing in nearly
+the same words. The product strategy calls link 3 -- serving cost -- "the weakest
 link nobody has looked at". This is the look.
 
 WHAT IS MEASURED

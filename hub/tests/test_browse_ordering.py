@@ -1,6 +1,6 @@
 """The Knowledge Base catalogue's order must not be purchasable.
 
-STRATEGY.md §26 took `commons_hits` out of `commons_search`'s ranking,
+The product strategy took `commons_hits` out of `commons_search`'s ranking,
 because a caller writes that number with its own traffic and it was
 deciding which answer a customer read first. That fix named one surface
 and missed this one: `browse_commons`, the catalogue the web console

@@ -25,7 +25,7 @@ the eight fields pollute at 1.72x-2.50x; against the shipped scorer,
 1.72x-2.33x. Tuning the floor against THIS corpus alone would buy far more
 (1.00x-1.28x at floor=0.10), but a second corpus bounds how high the floor
 can go -- see DEFAULT_FLOOR in commontrace/retrieval.py and benchmark/
-STATUS.md §9.6, which records why it was lowered to 0.04 after shipping.
+The benchmark methodology, which records why it was lowered to 0.04 after shipping.
 The SPREAD barely moves either way (1.45x to 1.36x), because the old scorer
 was bad in every field roughly equally. A spread-only gate would have called
 that regression acceptable.

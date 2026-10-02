@@ -6,7 +6,7 @@ of the same fleet in the same window, differing only by whether the memory
 was injected -- so it survives "what else changed that quarter?", which is
 the question that kills an observational number.
 
-STRATEGY.md §11.3 names causally-measured memory as the entire moat, and
+The product strategy names causally-measured memory as the entire moat, and
 §13.2 calls running this "the cheapest falsifier in the document" and says
 to run it first. Both were true of `commontrace/experiment.py`, which
 works against a local file store; nothing in the Hub could do it, so the
@@ -230,7 +230,7 @@ class TestSearchIntegration:
     The local tier makes a holdout one flag (`query --experiment`):
     retrieval withholds and logs, so a fleet opts in without rewriting an
     agent's loop. Requiring two extra explicit calls around every Hub
-    retrieval is a rewrite, and STRATEGY.md §13.2 calls running this the
+    retrieval is a rewrite, and the product strategy calls running this the
     cheapest falsifier available -- so friction here is not a UX detail.
     """
 
@@ -1035,7 +1035,7 @@ class TestTheTreatmentIsPinnedToItsText:
 
 
 class TestWhatTheMemoryWasWorth:
-    """STRATEGY.md §11.5 names the pricing hypothesis this product rests on --
+    """The product strategy names the pricing hypothesis this product rests on --
     price against measured effect per fleet, not seats or trace volume -- and
     says the mechanism ships. Half of that was true: the effect size shipped,
     and this file's own surface computed no value at all.

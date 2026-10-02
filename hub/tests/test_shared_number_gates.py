@@ -1,6 +1,6 @@
 """Every write to a Knowledge Base row must declare which gate protects it.
 
-STRATEGY.md §26 fixed a specific bug -- `commons_hits` moved a shared
+The product strategy fixed a specific bug -- `commons_hits` moved a shared
 number without passing the anti-sockpuppet bar that `trust` /
 `commons_votes` passed -- and then named its own falsifier: *a third
 shared number, added later, that moves without passing
@@ -116,7 +116,7 @@ class TestEveryTraceWriteIsAccountedFor:
         )
 
     def test_no_undeclared_write_to_a_trace_column(self):
-        """The falsifier STRATEGY.md §26 named, as a test rather than a
+        """The falsifier the product strategy named, as a test rather than a
         prediction. A new counter on Trace fails here until someone writes
         down which gate protects it."""
         actual = _actual_trace_writes()
@@ -128,7 +128,7 @@ class TestEveryTraceWriteIsAccountedFor:
             "If the new write is owner-private (scoped Trace.org_id == org_id) "
             "say so. If it is a number other orgs can see or act on, it needs "
             "hub/commons.py:org_is_established, like trust and commons_hits -- "
-            "see STRATEGY.md §26 for what it cost to find that out the other way."
+            "see the product strategy for what it cost to find that out the other way."
         )
 
     def test_both_shared_counters_are_marked_established(self):

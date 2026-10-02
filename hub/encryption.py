@@ -24,7 +24,7 @@ underneath Postgres: a managed provider's encryption-at-rest (RDS/Cloud
 SQL), an encrypted filesystem (LUKS), or a Postgres TDE extension, none of
 which this application can configure on an operator's behalf. See
 hub/DEPLOYMENT.md's "Encryption at rest" section for what to set up there.
-SOC2_READINESS.md's Confidentiality table documents this as a deliberate
+The compliance record's Confidentiality table documents this as a deliberate
 split rather than leaving "what about at-rest encryption?" unanswered.
 
 WHAT THIS DOES TOUCH

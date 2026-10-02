@@ -14,7 +14,7 @@ buyer actually asks: *how often does this tell me a useless memory works?*
 That needs simulation, which is too slow for a test suite and too important
 to leave as an unchecked claim in a document.
 
-So this script measures it, and AUDIT_RESPONSE.md §3.2 cites the numbers it
+So this script measures it, and the security audit cites the numbers it
 produces along with the configuration below. Re-run it to check them.
 
     python -m commons.eval.sequential_error_rates

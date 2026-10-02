@@ -586,7 +586,7 @@ METRIC_COMMONS_QUERIES = "commons_queries"
 # traces came back. Three integers per org per month answer the question
 # "is retrieval finding anything", and a query log -- which is a log of what
 # a customer's agents were struggling with, in their own words -- answers it
-# no better while creating exactly the retention liability DATA_RETENTION.md
+# no better while creating exactly the retention liability the retention policy
 # exists to avoid.
 METRIC_SEARCHES = "searches"
 # Zero results for a query that DID reduce to at least one searchable term.
@@ -728,7 +728,7 @@ def _active_agent_cutoff(now: datetime | None = None) -> datetime:
 
 async def agents_under_management(session: AsyncSession, org_id: str) -> dict:
     """How many distinct agents this org actually runs -- the expansion
-    variable STRATEGY.md §12.6 concludes the business should be measured on.
+    variable the product strategy concludes the business should be measured on.
 
     Returns the count plus the evidence for reading it honestly. `active`
     is a FLOOR whenever `unattributed_traces` is non-zero: those traces
@@ -946,7 +946,7 @@ async def search_traces(
        `ts_rank` sums the weights of the query lexemes each row matched, so
        a trace matching five of eight terms outranks one matching one, and
        the ordering does a threshold's job without a threshold's failure
-       mode of discarding the answer at a cutoff (STRATEGY.md §12.7).
+       mode of discarding the answer at a cutoff.
 
     `terms` is the lexeme list the query reduced to. It is returned on
     every text search, and it is the difference between "your corpus has no
@@ -1297,7 +1297,7 @@ async def search_health(
     The live version of `hub/bench_retrieval.py`. The benchmark answers the
     question on a 46-record synthetic corpus with probes the same author
     wrote; this answers it on the fleet's own corpus with the fleet's own
-    queries, which is the only version that settles STRATEGY.md §13.2's
+    queries, which is the only version that settles the product strategy's
     link 2 for a real customer.
 
     `miss_rate` divides by searches that HAD searchable terms, not by all
@@ -1834,7 +1834,7 @@ async def search_trace_content(
     curator has explicitly tagged with `tag_trace_subjects` below,
     `find_traces_by_subject`/`purge_traces_by_subject` ARE that
     certification -- an exact structured match, not a scan -- which is
-    the other half of what AUDIT_RESPONSE.md 2.2 says this schema needed.
+    the other half of what the security audit says this schema needed.
 
     Deliberately a SCAN, not indexed: this is a rare, targeted compliance
     action, not a per-occasion retrieval call, and `HUB_DB_STATEMENT_TIMEOUT_MS`
@@ -3082,7 +3082,7 @@ async def list_tags(session: AsyncSession, org_id: str) -> list[str]:
 # is what makes "what else changed that quarter?" answerable, and the
 # answer "nothing, by construction".
 #
-# STRATEGY.md §11.3 names causally-measured memory as the entire moat, and
+# The product strategy names causally-measured memory as the entire moat, and
 # §13.2 calls running it "the cheapest falsifier in the document" and says
 # to run it first. Both were true of commontrace/experiment.py, which
 # works against a local file store -- and nothing in the Hub could do it,
@@ -3369,7 +3369,7 @@ async def holdout_for_results(
     retrieval itself withholds and logs, so a fleet opts in without
     rewriting an agent's loop. On the Hub the same experiment needed two
     extra explicit calls wrapped around every retrieval, which is a
-    rewrite -- and STRATEGY.md §13.2 calls running this the cheapest
+    rewrite -- and the product strategy calls running this the cheapest
     falsifier available, so friction here is not a UX detail, it is the
     thing that decides whether the falsifier ever gets run on a real fleet.
 
@@ -3944,7 +3944,7 @@ async def value_delivered(
 ) -> dict:
     """What this fleet's memory was worth, causally, in its own units.
 
-    STRATEGY.md 11.5 names the pricing hypothesis this product rests on --
+    The product strategy names the pricing hypothesis this product rests on --
     price against measured effect per fleet, not seats or trace volume,
     because measured effect is the only quantity here that is causal and the
     only one that scales with the customer's own benefit. It also says the
@@ -4592,7 +4592,7 @@ async def fleet_outcomes(
     # ONE grouped aggregate, not one row per trace.
     #
     # The first version of this selected `Trace.outcome` for every matching
-    # row and counted in Python. That is the shape STRATEGY.md §13.2 warns
+    # row and counted in Python. That is the shape the product strategy warns
     # about: `python -m hub.bench_scaling` measured it growing with the
     # customer's own corpus at an exponent of 1.12 -- superlinear, so every
     # doubling of a successful customer's history more than doubled the
@@ -5056,7 +5056,7 @@ async def review_kb_submission(
 # `review_kb_submission` one accepted proposal at a time. Nothing above
 # maintains it, and a curated corpus that only grows is one that decays --
 # the entries stay, the world moves, and the product keeps serving answers
-# that used to be right. DATA_RETENTION.md flagged the missing half
+# that used to be right. The retention policy flagged the missing half
 # plainly ("there is no CLI command to correct or remove a single
 # Knowledge Base entry after commons-seed has loaded it, short of a direct
 # database operation"); these three functions are it.
@@ -5089,7 +5089,7 @@ async def retract_kb_entry(
     a retraction -- "how many fleets did we serve this to before we pulled
     it, and what did they say about it" -- is answerable only from exactly
     the data a DELETE would destroy. `purge-trace` remains the path for
-    actually removing content (see DATA_RETENTION.md §3); this is the path
+    actually removing content; this is the path
     for un-publishing it, which is a different and far more common need.
 
     Idempotent in the way that matters: retracting an already-retracted
@@ -5589,7 +5589,7 @@ _SEARCH_NOTE = (
     "100% of the time, and the score distributions of true and absent "
     "matches overlap. Use `commons_overlap` -- thresholded, 0% false "
     "positives -- for any figure you intend to quote. See "
-    "commons/eval/RESULTS.md. Read each candidate's `standing` before "
+    "The evaluation. Read each candidate's `standing` before "
     "acting on it: `disputed` means a majority of the fleets that tried it "
     "reported it did not work, and those candidates are ranked last."
 )
@@ -5612,8 +5612,8 @@ async def commons_search(
     `commons_overlap` answers "what fraction of my failures does the
     Knowledge Base already solve", emits a number a customer may quote, and
     therefore buys 0% false positives with a threshold. That threshold was
-    measured to discard about nine of every ten real answers
-    (commons/eval/RESULTS.md), which is the correct price for a quotable
+    measured to discard about nine of every ten real answers,
+    which is the correct price for a quotable
     figure and the wrong price for looking something up.
 
     This tool ranks instead of thresholding. Measured on the same corpus,
@@ -5997,7 +5997,7 @@ async def browse_commons(
             #
             # None of these keys is caller-writable. `commons_hits` used to
             # lead here, which made the catalogue's front page purchasable
-            # with query volume -- see STRATEGY.md §26.6; it is the same
+            # with query volume; it is the same
             # defect as the commons_search tie-break, on a surface that fix
             # missed. `trust` is one org, one vote, gated by
             # _established_voters_only; created_at and id are stable and make
@@ -6102,7 +6102,7 @@ async def browse_commons(
 # Measured, not estimated: against 46 held-out failures the corpus provably
 # contains, described in on-call vocabulary rather than the corpus's own,
 # the matcher found 5 -- with zero false positives across 22 deliberately
-# absent failures (commons/eval/RESULTS.md). So the coverage figure this
+# absent failures. So the coverage figure this
 # tool returns systematically UNDER-states real coverage, and saying so is
 # not a disclaimer: a customer who reads the number as an estimate rather
 # than a floor will conclude the commons is empty when it is not.
@@ -6110,7 +6110,7 @@ _FLOOR_CAVEAT = (
     "This figure is a FLOOR, not an estimate: matching is lexical, so a failure "
     "the Knowledge Base does contain but your fleet words differently is counted "
     "as uncovered. Measured recall against known-present failures is roughly 1 in 9 "
-    "(commons/eval/RESULTS.md). Matches are reliable; misses are not evidence of absence."
+    "Matches are reliable; misses are not evidence of absence."
 )
 
 

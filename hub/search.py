@@ -14,7 +14,7 @@ against held-out paraphrased probes: **0.0% recall@1 and a 100%
 zero-result rate**, where the local file tier scored 84.8% recall@1 on the
 same 46 records. After this module: 95.7% recall@1, 0% zero-result.
 
-STRATEGY.md §12.7 measured the local tier and concluded "any single shared
+The product strategy measured the local tier and concluded "any single shared
 content word puts a lesson on the list"; §13.2 records link 2 -- *retrieval
 finds the right memory when a task is described in the operator's own
 words* -- as **measured, holds**; §13.3 says link 2 is one half of the only
@@ -44,7 +44,7 @@ almost everything, and both consequences are bad:
   *Cost.* On a 64,000-trace org, ONE query term present in every trace
   produced a 64,000-row match set, and `ts_rank` over it was 188ms of a
   233ms query. `hub/bench_scaling.py` fitted the path at alpha=0.87 --
-  STRATEGY.md §13.2's link-3 failure mode, serving cost that grows with the
+  The product strategy's link-3 failure mode, serving cost that grows with the
   customer's own corpus.
 
   *Quality.* That term cannot rank anything: it scores every document
@@ -121,7 +121,7 @@ RANK_NORMALIZATION = 1
 # the customer's own success. Measured on a 64,000-trace org: with no bound,
 # one query term present in every trace produced a 64,000-row match set and
 # `ts_rank` over it cost 188ms of a 233ms query, and hub/bench_scaling.py
-# fitted the natural-language read path at alpha=0.87 -- STRATEGY.md
+# fitted the natural-language read path at alpha=0.87 -- the product strategy
 # §13.2's link-3 failure mode, cost to serve growing with corpus size. With
 # it, the same sweep fits alpha=0.32 and the query runs in 66ms.
 #
@@ -193,7 +193,7 @@ def relevance(vector: ColumnElement, tsquery: ColumnElement) -> ColumnElement:
     trace matching five of eight query terms outranks one matching one --
     which is what makes a relaxed match usable rather than a firehose. The
     ordering does the work a threshold would do, without a threshold's
-    failure mode of discarding the answer at a cutoff (STRATEGY.md §12.7).
+    failure mode of discarding the answer at a cutoff.
     """
     return func.ts_rank(vector, tsquery, RANK_NORMALIZATION, type_=Float)
 
@@ -304,7 +304,7 @@ def choose_terms(frequencies: Sequence[tuple[str, int]], budget: int | None = No
     `ts_rank` over those rows was 188ms of the query's 233ms. Nine of the
     ten lexemes in that query matched nothing at all. Dropping the one that
     matched everything is the entire difference between a bounded read and
-    STRATEGY.md §13.2's link-3 failure mode -- serving cost that grows with
+    The product strategy's link-3 failure mode -- serving cost that grows with
     the customer's own corpus.
 
     THE RULE. A term matching more than `budget` documents is dropped

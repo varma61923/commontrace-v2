@@ -10,7 +10,7 @@ Two corpora, reported separately because they answer different questions:
 - commons/ (seed + probes-v1) was written independently with paraphrased queries: the fair comparison.
 
 Run: python commons/eval/retriever_baselines.py [--no-dense]
-Results and their limits are in commons/eval/RESULTS.md.
+Results and their limits are in the evaluation.
 """
 from __future__ import annotations
 

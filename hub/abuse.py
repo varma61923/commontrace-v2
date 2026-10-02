@@ -797,7 +797,7 @@ class PostgresRateLimiter:
         whose health endpoint answers in 63ms because something ELSE is
         rate-limited looks unhealthy to a load balancer for reasons that
         have nothing to do with its health.
-        See hub/SCALING.md "Concurrency: measured".
+        See the scaling analysis "Concurrency: measured".
 
         The 10s ceiling is kept from the blocking version it replaces: a
         rate-limit decision that has not come back in ten seconds is a

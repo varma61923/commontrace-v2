@@ -2,7 +2,7 @@
 
 WHY THIS EXISTS
 ---------------
-STRATEGY.md 11.5 states the pricing hypothesis this product rests on:
+The product strategy states the pricing hypothesis this product rests on:
 
     price against measured resolution-rate improvement per fleet, because
     that is the only quantity this product can prove causally and it scales

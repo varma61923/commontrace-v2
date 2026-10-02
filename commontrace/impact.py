@@ -1,5 +1,5 @@
 """`commontrace impact` — the Impact Dashboard: "Monitor errors avoided,
-lessons reused, and value generated or saved" (PILOT.md step 3: "Measure
+lessons reused, and value generated or saved" (the pilot design step 3: "Measure
 what changed").
 
 Three numbers, each defined precisely rather than asserted, because a
@@ -19,7 +19,7 @@ computed":
   matched its activation condition, so occasions where one fired differ
   systematically from occasions where none did. It is not a causal claim.
   For a causal number, run `commontrace query --experiment` +
-  `commontrace experiment` (see PILOT.md) and read that instead.
+  `commontrace experiment` and read that instead.
 
 * **Value generated or saved** — an *estimate*, and only ever computed from
   rates the caller supplies explicitly (`--cost-per-1k-tokens`,
@@ -179,7 +179,7 @@ def render_markdown(r: ImpactReport) -> str:
         "# CommonTrace Impact Dashboard",
         "",
         "Errors avoided, lessons reused, and value generated or saved "
-        "(PILOT.md step 3: \"Measure what changed\").",
+        "(the pilot design step 3: \"Measure what changed\").",
         "",
         f"- **Lessons reused**: {r.lessons_reused} "
         f"(across {r.n_occasions_with_lesson} occasion(s) where a lesson was retrieved)",

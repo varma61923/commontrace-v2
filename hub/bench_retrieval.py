@@ -1,7 +1,7 @@
 """Does the HUB find the right memory when a task is described in the
 operator's own words?
 
-STRATEGY.md §13.2 calls this link 2 and marks it *"measured, holds"*, citing
+The product strategy calls this link 2 and marks it *"measured, holds"*, citing
 84.8% recall@1 / 95.7%@5 / 97.8% findable. §13.3 then says link 2 plus §12.3
 is the one thing that makes this more than a good DevTools business.
 

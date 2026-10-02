@@ -29,7 +29,7 @@ injected (`lessons_retrieved_by_alpha`), which proved useful
 `Trace.outcome.resolved`, `Trace.outcome.repeated_error`) — is already
 being recorded and was, until now, joined by nothing.
 
-WHY IT MATTERS COMMERCIALLY (see STRATEGY.md)
+WHY IT MATTERS COMMERCIALLY
 ---------------------------------------------
 Human review does not scale past a few hundred lessons, and a single
 fleet's own lesson corpus can accumulate contradictions just as easily as

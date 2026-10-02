@@ -2,7 +2,7 @@
 
 WHY THIS EXISTS
 ---------------
-DOCUMENTATION.md §6.4 describes exactly this job -- "classic memory
+The original design describes exactly this job -- "classic memory
 consolidation (archive/fuse/reformulate/recalibrate lessons)" -- and assigns
 it to a companion skill, Dreamer, that lives outside this repository and
 detects fusion candidates via pairwise cosine similarity over
@@ -21,7 +21,7 @@ optional extra:
     read as the same rule here, whether or not the semantic layer is
     installed.
   * **Contradict**: `commontrace/reliability.py`'s existing
-    `find_contradictions` -- not reinvented, exactly the DOCUMENTATION.md
+    `find_contradictions` -- not reinvented, exactly the original design
     §6.4 principle for the fusion mechanism itself ("Proposals submitted to
     Lambda Phase 11 -- existing mechanism, not reinvented").
   * **Archive**: active lessons with `uses == 0` and `last_hit == "NEVER"` --

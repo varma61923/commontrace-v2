@@ -1,6 +1,6 @@
 """Tests for hub/manage.py's monitoring/admin commands: stats, the
 quarantine review queue, and permanent deletion (purge-trace/purge-org --
-the deletion path DATA_RETENTION.md previously documented as
+the deletion path the retention policy previously documented as
 unimplemented)."""
 from __future__ import annotations
 

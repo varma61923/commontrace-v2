@@ -11,7 +11,6 @@ env
 
 # Local store / generated artifacts -- never belong in a server image
 memory/
-benchmark/
 tests/
 assets/
 
@@ -70,8 +69,7 @@ commontrace/**
 # so without it the container starts and dies.
 !commontrace/revision.py
 # Turns a causal effect into a quantity a price can attach to
-# (hub/crud.py:value_delivered) -- the pricing basis STRATEGY.md 11.5
-# names. Imported at module level, so without it the container starts
+# (hub/crud.py:value_delivered) -- the pricing basis. Imported at module level, so without it the container starts
 # and dies.
 !commontrace/value.py
 # Evidence decay: how old a measured effect may be and still be billed

@@ -8,7 +8,7 @@ never triggered by the act of submitting alone. Approval also awards
 bonus_commons_queries, a permanent addition to that org's monthly
 Knowledge Base query allowance (hub/plans.py:query_allowance). See
 hub/models.py:KnowledgeBaseSubmission for why review (not opt-in) is what
-keeps this from repeating the adverse-selection failure STRATEGY.md §3
+keeps this from repeating the adverse-selection failure the product strategy
 already ruled out.
 
 Revision ID: 79001d0e5699

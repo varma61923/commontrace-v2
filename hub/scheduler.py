@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_INTERVAL_SECONDS = 300
 
 #: Webhook deliveries are the one surface where "real time" is the whole
-#: point (STRATEGY.md's alert-consumer-on-the-other-end use case), so this
+#: point (the product strategy's alert-consumer-on-the-other-end use case), so this
 #: defaults an order of magnitude shorter than the alert sweep above.
 DEFAULT_WEBHOOK_INTERVAL_SECONDS = 30
 

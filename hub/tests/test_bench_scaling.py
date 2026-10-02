@@ -1,6 +1,6 @@
 """Tests for the corpus-scaling benchmark's own arithmetic.
 
-The benchmark answers STRATEGY.md §13.2's cost question, and a benchmark
+The benchmark answers the product strategy's cost question, and a benchmark
 that reports a wrong exponent is worse than no benchmark: it would settle
 a strategic question with a number nobody could see was broken. The
 measurement itself needs Postgres and minutes; the fit and the verdict

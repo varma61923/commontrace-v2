@@ -9,7 +9,7 @@ including none of the measurement tools.
 Drift like this is silent by construction: the generated file is still
 valid JSON, still connects, and still works for the six tools it names.
 Nothing fails. The customer simply never learns the rest exist, which for
-the holdout tools means the experiment STRATEGY.md §13.2 calls the
+the holdout tools means the experiment the product strategy calls the
 cheapest falsifier available never gets run.
 
 Lives in hub/tests/ rather than tests/ because it imports hub.smoke, and

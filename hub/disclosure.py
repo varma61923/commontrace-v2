@@ -7,7 +7,7 @@ product identity: owner, legal entity ... support contact").
 WHAT THIS DOES NOT DO
 ------------------------
 It does not pick a region, register a company, or invent a support
-contact. Those are exactly the business decisions AUDIT_RESPONSE.md §2.3
+contact. Those are exactly the business decisions the security audit
 and §4.4 name as still outstanding, and no code change makes them for an
 operator. What was actually missing was a PLACE to state them once a real
 decision exists -- every deployment re-answering "where is my data" with
@@ -28,12 +28,10 @@ compliance or its absence.
 THIS ASSERTS NOTHING ABOUT COMPLIANCE
 ------------------------------------------
 `/disclosure` states facts an operator configured; it makes no claim
-about SOC 2, a penetration test, or any other attestation (see
-AUDIT_RESPONSE.md §7.1-§7.3, SOC2_READINESS.md). Conflating "here is
+about SOC 2, a penetration test, or any other attestation. Conflating "here is
 where we say our data lives" with "we are independently verified" is
 exactly the failure mode a trust center risks, which is why this is named
-`/disclosure`, returns only self-reported facts, and links to
-AUDIT_RESPONSE.md for what has and has not been independently verified.
+`/disclosure`, and returns only self-reported facts.
 """
 
 from __future__ import annotations

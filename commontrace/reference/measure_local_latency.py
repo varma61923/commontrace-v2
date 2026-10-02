@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Does one agent's `query` get slower as its fleet learns more?
 
-`hub/SCALING.md` asks this of the Hub and answers it: no read path against a
+The scaling analysis asks this of the Hub and answers it: no read path against a
 customer's trace corpus grows linearly. That document measures the SERVER.
 This one measures the tier the product actually runs on -- the pip-installable
 client and the MCP server, which `protocol/PROTOCOL.md` §5 calls the local tier
 and which every agent without a Hub deployment uses exclusively.
 
-The question matters for the same reason link 3 in `STRATEGY.md` §13.2 matters:
+The question matters because
 a lesson store grows monotonically by design (that is the product working), so
 if retrieval cost grows with it, the product gets slower precisely as it starts
 delivering value.
@@ -48,7 +48,7 @@ RUNS_PER_POINT = 5
 # Drawn from six fields rather than one, for the same reason
 # commontrace/fixtures/fields/ exists: a corpus of near-identical synthetic
 # rows measures the generator, not the retriever (the mistake
-# hub/SCALING.md caught in its own first run and pinned a test against).
+# The scaling analysis caught in its own first run and pinned a test against).
 _VOCAB = [
     "pagination", "cursor", "offset", "retry", "backoff", "timeout", "idempotent",
     "migration", "rollback", "schema", "index", "lock", "deadlock", "transaction",

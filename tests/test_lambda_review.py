@@ -1,5 +1,5 @@
 """Lambda's per-proposal verdicts, persisted in each episode (roadmap P1,
-benchmark/STATUS.md) and reported by `commontrace bench`.
+The benchmark methodology) and reported by `commontrace bench`.
 
 `lesson_quality` sees only what was applied, so it could not tell a
 proposal Lambda rejected from one it sent back for refinement -- two

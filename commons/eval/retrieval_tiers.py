@@ -1,6 +1,6 @@
 """Why the two retrieval tiers get wildly different recall on identical data.
 
-STRATEGY.md §12.4.3 asserted that per-org retrieval "runs on the same
+The product strategy asserted that per-org retrieval "runs on the same
 lexical machinery" as the commons matcher and is therefore capped by the
 same 10.9% recall defect. That claim was made by analogy and never
 measured. This script measures it, on the same corpus and the same probes,
@@ -123,13 +123,13 @@ def main() -> int:
         print("  top-1 score, absent          (no negative-control probes)")
     print("  (distributions overlap -- the score separates on average, not per case)")
     print()
-    print("COMMONS matcher, same corpus and probes (commons/eval/RESULTS.md)")
+    print("COMMONS matcher, same corpus and probes")
     print("  recall at the shipped threshold  10.9%")
     print("  false positives on the controls   0.0%")
     print()
     print("The difference is the THRESHOLD, not the tokenizer. Each tier made the")
     print("right trade for what it emits: a quoted percentage needs precision, a")
-    print("skimmed ranked list needs recall. See commons/eval/RESULTS.md 'Two tiers'.")
+    print("skimmed ranked list needs recall. See the evaluation 'Two tiers'.")
     return 0
 
 

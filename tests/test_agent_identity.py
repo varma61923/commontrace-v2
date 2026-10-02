@@ -3,7 +3,7 @@
 agent_type is a CATEGORY ("support"); agent_id is the IDENTITY. Only the
 second can answer "how many agents does this fleet run", which is the
 number a Hub plan's agent limit is enforced against (hub/plans.py) and the
-variable STRATEGY.md §12.6 concludes the business should be run on.
+variable the product strategy concludes the business should be run on.
 """
 from __future__ import annotations
 

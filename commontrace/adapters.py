@@ -26,7 +26,7 @@ API key, opens a socket, or knows a vendor's hostname.
 
 That is a product decision, not a shortcut. This product's entire trust
 story is that a fleet's experience stays on the fleet's own infrastructure
-(see DATA_RETENTION.md and the Knowledge Base boundary in README.md). An
+(see the retention policy and the Knowledge Base boundary in README.md). An
 importer that authenticated to a vendor and pulled would mean CommonTrace
 holding a third party's credentials and making egress calls on the
 customer's behalf, during onboarding, before any trust has been

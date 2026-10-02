@@ -1,6 +1,6 @@
 """Corpus hygiene, without the optional attention extra.
 
-DOCUMENTATION.md §6.4 describes fusion/archive/contradiction detection as
+The original design describes fusion/archive/contradiction detection as
 delegated to a companion skill outside this repository, using pairwise
 cosine over the optional semantic index. Every one of these tests runs
 against the core install alone -- PyYAML, nothing else -- because that is

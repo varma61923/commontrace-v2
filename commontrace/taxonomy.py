@@ -1,8 +1,8 @@
 """`commontrace taxonomy` — "Map the issues": group recurring failures into a
 clear, structured taxonomy.
 
-This is the first of the pilot's three leave-behinds (see PILOT.md and
-STRATEGY.md's outcome-metrics framing): "a structured map of the failure
+This is the first of the pilot's three leave-behinds (see the pilot design and
+The product strategy's outcome-metrics framing): "a structured map of the failure
 patterns CommonTrace can address."
 
 It reuses commontrace/distill.py's clustering (word-overlap Jaccard over
@@ -161,7 +161,7 @@ def render_markdown(tax: Taxonomy) -> str:
         "# CommonTrace Taxonomy",
         "",
         "A structured map of the failure patterns CommonTrace can address, "
-        "built from recurring traces (PILOT.md step 1: \"Map the issues\").",
+        "built from recurring traces (the pilot design step 1: \"Map the issues\").",
         "",
         f"- Traces considered: **{tax.n_traces_total}**",
         f"- Recurring patterns found: **{tax.n_patterns}**",

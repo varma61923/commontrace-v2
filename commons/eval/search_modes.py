@@ -4,11 +4,11 @@ THE QUESTION
 ------------
 The commons ships exactly one query surface: `commons_overlap`, which
 MinHashes a fleet's failures locally, compares each against the corpus at a
-THRESHOLD, and emits a coverage percentage. commons/eval/RESULTS.md
+THRESHOLD, and emits a coverage percentage. The evaluation
 measures that at 10.9% recall -- it misses roughly nine of every ten
 failures the corpus provably contains.
 
-STRATEGY.md §12.7 established that the threshold, not the matcher, is what
+The product strategy established that the threshold, not the matcher, is what
 discards those nine: the same corpus and the same tokenizer, ranked and
 returned top-k with no threshold, finds the right record 84.8% of the time
 at k=1. Its conclusion was that the open question is the OUTPUT CONTRACT --

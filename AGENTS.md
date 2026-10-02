@@ -40,7 +40,6 @@ The full pipeline spec lives in `SKILL.md`. Architecture diagrams are in `assets
 | `deploy/` | Helm chart and Terraform; validated in CI, never applied by it. |
 | `SKILL.md` | Code-review reference profile pipeline spec |
 | `README.md` | User-facing quick-start and reference |
-| `DOCUMENTATION.md` | Deep design doc on the code-review profile, research refs, roadmap |
 | `requirements.txt` | Python deps for the code-review profile's attention layer (numpy, sentence-transformers, PyYAML) |
 | `install.sh` | Setup script for the code-review profile (SKILL.md route) |
 | `memory/INDEX.md` | Index of all stored lessons/traces/episodes |

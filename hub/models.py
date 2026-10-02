@@ -89,7 +89,7 @@ class Organization(Base):
     # allowance (hub/plans.py:query_allowance), earned one
     # hub/manage.py review-submission approval at a time -- never by the
     # act of submitting. That is what keeps this from being the same
-    # credit-for-volume mechanic STRATEGY.md §3 already ruled out: a
+    # credit-for-volume mechanic the product strategy already ruled out: a
     # rejected or ignored KnowledgeBaseSubmission earns nothing, so the
     # only way to raise this number is to write something an operator
     # judged worth publishing.
@@ -315,7 +315,7 @@ class Trace(Base):
     # The AGENT, as distinct from the KIND of agent above. agent_type is a
     # category ("support", "sales", "code"): a fleet of 25 support agents
     # shares one value, so it can never answer "how many agents does this
-    # org run" -- the variable STRATEGY.md §12.6 concludes the business
+    # org run" -- the variable the product strategy concludes the business
     # should be run on, and which nothing in this system could compute
     # before this column existed.
     #
@@ -422,7 +422,7 @@ class Trace(Base):
     shared_with_commons: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     shared_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Free-text justification recorded at seed time for why this entry
-    # belongs in the Knowledge Base -- substrate knowledge (STRATEGY.md §4),
+    # belongs in the Knowledge Base -- substrate knowledge,
     # never any customer's business logic. Stored so a reviewer can audit
     # what the operator believed it was publishing and why.
     shared_rationale: Mapped[str] = mapped_column(String(500), default="", nullable=False)
@@ -624,7 +624,7 @@ class KnowledgeBaseSubmission(Base):
     never even read by hub/commons.py's matching code. There is no window
     in which unreviewed content is live.
 
-    WHY REVIEW, NOT JUST OPT-IN. STRATEGY.md §3's adverse-selection
+    WHY REVIEW, NOT JUST OPT-IN. The product strategy's adverse-selection
     argument holds against ANY credit-for-contributing design where
     contribution alone earns the credit: an org keeps its genuinely
     valuable lessons and contributes generic filler to collect the reward.
@@ -869,7 +869,7 @@ class HoldoutObservation(Base):
     "what else changed that quarter?" has an answer, and the answer is
     "nothing, by construction".
 
-    STRATEGY.md §11.3 names causally-measured memory as the entire moat
+    The product strategy names causally-measured memory as the entire moat
     and §13.2 calls running it "the cheapest falsifier in the document",
     to be run first. Both were true of `commontrace/experiment.py`, which
     works against a local file store. Nothing in the Hub could do it --

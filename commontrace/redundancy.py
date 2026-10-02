@@ -13,7 +13,7 @@ none of them could ask it:
     characters. A store with a few redundant pairs silently injects less
     distinct guidance than its budget suggests.
 
-  * **Corpus maintenance** (`commontrace consolidate`). DOCUMENTATION.md
+  * **Corpus maintenance** (`commontrace consolidate`). The original design
     §6.4 describes "classic memory consolidation (archive/fuse/reformulate)"
     and delegates it to a companion skill that lives outside this
     repository, using pairwise cosine over `memory/attention/index.npz`.

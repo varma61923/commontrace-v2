@@ -1,6 +1,6 @@
 """Does serving one customer get more expensive as their corpus grows?
 
-STRATEGY.md §13.2 calls this link 3 and marks it "unmeasured, and the
+The product strategy calls this link 3 and marks it "unmeasured, and the
 weakest link nobody has looked at", with a falsifier stated precisely:
 
     If serving cost grows with corpus size faster than value does, this is
@@ -405,7 +405,7 @@ async def run(sizes: list[int], as_json: bool) -> int:
     print(f"  <= {FLAT_EXPONENT}   flat        cost per call ignores how much history the customer has")
     print(f"  <  {LINEAR_EXPONENT}   sublinear   grows, but slower than the corpus")
     print(f"  >= {LINEAR_EXPONENT}   LINEAR      every doubling of their corpus doubles the cost of")
-    print( "                            serving them -- STRATEGY.md §13.2's failure mode")
+    print( "                            serving them -- the product strategy's failure mode")
     bad = [r["path"] for r in report if r["verdict"] == "LINEAR-OR-WORSE"]
     if bad:
         print(f"\nLinear-or-worse: {', '.join(bad)}")

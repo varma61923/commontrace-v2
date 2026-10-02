@@ -5,7 +5,7 @@ The gap this closes is worth naming, because it was mine and it repeated a
 mistake one layer up. `holdout_assign`, `record_occasion_outcome` and
 `fleet_outcomes` were added to the Hub and wired to nothing a customer
 could reach: no `hub_client` function, no CLI command. A fleet would have
-had to hand-write MCP calls to run the experiment that STRATEGY.md §13.2
+had to hand-write MCP calls to run the experiment that the product strategy
 calls the cheapest falsifier available. Building an instrument and leaving
 it where the users are not is the exact failure §19 corrected for the Hub,
 committed again at the client boundary in the same session.

@@ -4,7 +4,7 @@ stay unclaimed, and does a tampered log get refused rather than scored?
 
 WHY THIS EXISTS
 ---------------
-STRATEGY.md and README.md describe a specific claim: randomized-holdout
+The product strategy and README.md describe a specific claim: randomized-holdout
 measurement recovers a real effect on a customer's own data, and refuses
 to report a number when the experiment that would produce it is
 compromised. Both halves are already covered by unit tests

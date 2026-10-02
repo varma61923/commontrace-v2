@@ -262,7 +262,7 @@ class Match:
 class OverlapReport:
     """`covered_fraction` is the headline: of this fleet's recurring
     failures, what fraction another fleet has already solved. That is the
-    number STRATEGY.md §5 says the commons thesis lives or dies on."""
+    number the product strategy says the commons thesis lives or dies on."""
 
     consumer_fleet: str
     provider_fleet: str

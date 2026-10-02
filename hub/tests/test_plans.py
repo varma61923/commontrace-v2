@@ -418,7 +418,7 @@ class TestTheErrorIsActionable:
 
 
 class TestTheValueLinkedPricingShape:
-    """STRATEGY.md §24.2 takes the pricing decision §11.6 had reserved: a
+    """The pricing shape: a
     per-agent platform fee plus a share of MEASURED value.
 
     The share is charged only on effects the holdout established, and that is

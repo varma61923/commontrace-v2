@@ -5,7 +5,7 @@ content words. Two engineers describing the same substrate failure --
 "connection pool exhausted during a retry storm" and "during a spike
 everything starts timing out waiting to acquire a connection" -- share
 almost no words, so the measured recall of the thresholded coverage figure
-is 8.7% on the held-out probe set (commons/eval/RESULTS.md).
+is 8.7% on the held-out probe set.
 
 Measured against the same corpus, the same dev/held-out split and the same
 negative controls, cosine similarity over sentence embeddings reaches 32.6%
@@ -15,7 +15,7 @@ number this module exists to make available.
 
 WHY IT COSTS NO PRIVACY -- AND ACTUALLY BUYS SOME
 --------------------------------------------------
-RESULTS.md once recorded semantic matching as blocked because "an embedding
+The evaluation once recorded semantic matching as blocked because "an embedding
 is computed by a model that has to see the text". That is true and
 harmless. What the guarantee forbids is the OPERATOR seeing a customer's
 failure text -- not a model running on the customer's own machine, on text
@@ -142,7 +142,7 @@ def best_matches(
     of threshold. `best` is reported unthresholded on purpose: the caller
     decides what to do with a near miss, and a matcher that hides its own
     runner-up is how a threshold's cost becomes invisible -- which is the
-    exact defect commons/eval/RESULTS.md records against the shipped
+    exact defect the evaluation records against the shipped
     coverage figure.
     """
     import numpy as np

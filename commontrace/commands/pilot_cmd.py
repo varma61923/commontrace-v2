@@ -30,7 +30,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         "pilot",
         help="Run the 30-day pilot report end to end: map the issues into a taxonomy, "
         "check reinforcement progress, measure what changed, and give a yes/no on "
-        "whether CommonTrace is fixing the issues worth fixing. See PILOT.md.",
+        "whether CommonTrace is fixing the issues worth fixing.",
     )
     p.add_argument("--agent-type", default=None)
     p.add_argument("--similarity-threshold", type=_similarity_threshold, default=0.3)

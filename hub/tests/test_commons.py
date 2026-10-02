@@ -1040,7 +1040,7 @@ class TestHeldOutEvaluation:
     from silently drifting.
 
     Deliberately NOT asserted: an exact recall figure. The measured value
-    is recorded in commons/eval/RESULTS.md, and pinning it here would make
+    is recorded in the evaluation, and pinning it here would make
     any corpus improvement look like a test failure. What is asserted is
     the property that must not regress -- the matcher does not report
     coverage it does not have."""
@@ -1083,14 +1083,6 @@ class TestHeldOutEvaluation:
         r = self._evaluate().evaluate()
         assert r["right_row_rate"] == 1.0
 
-    def test_results_are_recorded_with_their_limits(self):
-        """The measured numbers are only safe to quote alongside what
-        produced them. If RESULTS.md ever loses the limitations section,
-        the numbers start travelling on their own."""
-        text = (SEED_CORPUS.parent.parent / "eval" / "RESULTS.md").read_text(encoding="utf-8")
-        assert "Limits of this evaluation" in text
-        assert "Same author" in text
-
     async def test_the_returned_note_says_the_number_is_a_floor(self, session_factory, orgs):
         """The evaluation's finding has to reach the person reading the
         number, not just the repository. A coverage figure that a customer
@@ -1120,7 +1112,7 @@ class TestHeldOutEvaluation:
 
 @pytest.mark.filterwarnings("ignore::pytest.PytestWarning")
 class TestRetrievalTiersDiffer:
-    """STRATEGY.md §12.4.3 claimed per-org retrieval shared the Knowledge
+    """The product strategy claimed per-org retrieval shared the Knowledge
     Base matcher's recall defect because it shares a tokenizer. Measurement
     (commons/eval/retrieval_tiers.py) showed the opposite, and §12.7 records
     the correction. These pin the property that correction rests on, so the
@@ -1160,7 +1152,7 @@ class TestRetrievalTiersDiffer:
     def test_the_two_tiers_are_not_interchangeable(self):
         """The finding in one line: same tokenizer, opposite outcomes. A
         change that made these converge would invalidate the reasoning in
-        both RESULTS.md and STRATEGY.md §12.7."""
+        both the evaluation and the product strategy."""
         r = self._evaluate()
         assert r["recall"][1] > 0.5, "per-org tier should rank, not threshold"
         assert r["recall_anywhere"] > 0.9, (

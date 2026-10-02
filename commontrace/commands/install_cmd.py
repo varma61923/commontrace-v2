@@ -21,7 +21,7 @@ _HUB_TOOLS = [
     # the six protocol tools
     "search_traces", "contribute_trace", "get_trace", "vote_trace", "amend_trace", "list_tags",
     # measurement: is this working, did the memory cause it, and what was
-    # that worth (the last one is the pricing basis, STRATEGY.md 11.5)
+    # that worth (the last one is the pricing basis, the product strategy)
     "fleet_outcomes", "holdout_assign", "record_occasion_outcome",
     "value_delivered",
     # the graduated subset of that measurement: the memories whose effect

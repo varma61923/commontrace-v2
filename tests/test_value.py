@@ -1,7 +1,7 @@
 """What the memory was worth -- and the three rules that keep it a
 measurement rather than a brochure.
 
-STRATEGY.md §11.5 names the pricing hypothesis this product rests on: price
+The product strategy names the pricing hypothesis this product rests on: price
 against measured effect per fleet, not seats or trace volume, because
 measured effect is the only quantity here that is causal. It says the
 mechanism ships and the number stays a business decision.

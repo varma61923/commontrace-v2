@@ -33,7 +33,7 @@ anything subtler is the caller's. It also does not claim a precision figure
 against a labelled sample. Both need a real fleet's data
 to do honestly -- a stated combination rule invented without one would be
 exactly the kind of unverifiable number this product refuses to publish
-elsewhere (see STRATEGY.md's own discipline about §11.1's 10.9%). A caller
+elsewhere. A caller
 with more than one signal available combines them according to what THEIR
 fleet's signals actually mean; this module gives each signal cleanly, not a
 merged opinion.

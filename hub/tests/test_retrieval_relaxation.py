@@ -100,7 +100,7 @@ class TestQueryTermsAreOrNotAnd:
     async def test_one_shared_word_is_enough_to_surface_a_trace(
         self, session_factory, config, org
     ):
-        """STRATEGY.md §12.7's sentence about the local tier, asserted of the
+        """The product strategy's sentence about the local tier, asserted of the
         Hub. It is the whole contract: a ranked top-k list must not hide the
         answer, and a threshold -- boolean or numeric -- is what hides it."""
         await _contribute(session_factory, config, org, "Cache stampede", "many workers", "add jitter")

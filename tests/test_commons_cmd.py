@@ -503,7 +503,7 @@ def _coverage(n_covered=0, matches=None, disputed=None):
 
 
 class TestTheReportNoLongerReadsAsAnEmptyKnowledgeBase:
-    """The defect this closes, recorded in commons/eval/RESULTS.md as the
+    """The defect this closes, recorded in the evaluation as the
     single highest-value thing to fix in the codebase.
 
     A prospect's export of nine failures -- seven of which the corpus
@@ -575,8 +575,7 @@ class TestCandidatesAreLookedUpButNeverCounted:
 
     def test_the_coverage_figure_is_untouched_by_the_lookups(self, monkeypatch, capsys):
         """The whole point. Ranked hits are candidates a human judges; the
-        score distributions of true and absent matches overlap
-        (commons/eval/RESULTS.md), so counting one would destroy the 0%
+        score distributions of true and absent matches overlap, so counting one would destroy the 0%
         false-positive property the quotable number rests on."""
         monkeypatch.setattr(commons_cmd, "build_signatures", lambda root: _failures())
         _stub_hub(
@@ -718,7 +717,7 @@ class TestALocalReportTouchesNothing:
 class TestTheThresholdsCostIsVisible:
     def test_a_near_miss_is_shown_rather_than_hidden(self, tmp_path, capsys):
         """A matcher that hides its own runner-up is how a threshold's cost
-        becomes invisible -- the exact defect RESULTS.md records against the
+        becomes invisible -- the exact defect the evaluation records against the
         shipped coverage figure."""
         commons_cmd.run_report(_local_args(tmp_path, _CORPUS, _EXPORT))
         out = capsys.readouterr().out

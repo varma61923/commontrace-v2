@@ -15,7 +15,7 @@ It computed nothing. So a deployment holding a year of a fleet's outcome
 history could not answer the one question the whole product exists to
 answer -- "is it working?" -- and neither could the operator running it.
 
-That is not a missing report. STRATEGY.md §11.3 names measured effect on
+That is not a missing report. The product strategy names measured effect on
 the customer's own data as the entire moat ("nobody rips out the thing
 with a measured effect size on their own data"), and §11.5 names measured
 resolution-rate improvement as the only pricing denominator this product
@@ -245,7 +245,7 @@ class Tally:
     object per row just to count booleans. Measured at
     `python -m hub.bench_scaling`, that made the call grow with the
     customer's own corpus at an exponent of 1.12 -- superlinear, and
-    exactly the shape STRATEGY.md §13.2 names as fatal for the unit
+    exactly the shape the product strategy names as fatal for the unit
     economics.
 
     Splitting the counting from the statistics lets the database do the
@@ -358,7 +358,7 @@ def compare_tallies(baseline: Tally, current: Tally, alpha: float = DEFAULT_ALPH
     3. **`worsened` is a real verdict.** A significant move in the wrong
        direction is reported as such, with the same prominence as a win. A
        measurement instrument that can only return good news is not a
-       measurement instrument, and the moat argument in STRATEGY.md §11.3
+       measurement instrument, and the moat argument in the product strategy
        depends on this number being one a customer can trust against their
        own interest.
     """

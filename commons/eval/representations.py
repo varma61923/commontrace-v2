@@ -1,6 +1,6 @@
 """Would a different token representation fix the commons' recall problem?
 
-WHY THIS IS AN EXPERIMENT AND NOT A PATCH. commons/eval/RESULTS.md measured
+WHY THIS IS AN EXPERIMENT AND NOT A PATCH. The evaluation measured
 the shipped matcher at 10.9% recall with a 0% false-positive rate: when a
 fleet describes a failure in its own words, the commons finds knowledge it
 provably holds about one time in nine. That is the single defect blocking

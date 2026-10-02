@@ -373,7 +373,7 @@ def _render_report_candidates(found: list[dict], skipped: int) -> str:
     """The ranked lookups, under a heading that cannot be misread as coverage.
 
     Kept textually separate from the coverage section above, and never
-    folded into its arithmetic, because commons/eval/RESULTS.md measured
+    folded into its arithmetic, because the evaluation measured
     exactly why: the score distributions of true and absent matches
     overlap, so a ranked hit is evidence for a human to weigh and not a
     solved failure. The coverage figure keeps its 0% false-positive
@@ -385,7 +385,7 @@ def _render_report_candidates(found: list[dict], skipped: int) -> str:
         "The coverage figure above uses a deliberately strict bar so that a number "
         "you may quote never over-claims. Measured against labelled pairs, that bar "
         "discards roughly nine of every ten real answers "
-        "(`commons/eval/RESULTS.md`). Ranked lookup keeps the same privacy "
+        "Ranked lookup keeps the same privacy "
         "properties — still signatures, still no failure text leaving this machine — "
         "and finds the right entry 89% of the time at rank 1.",
         "",
@@ -447,7 +447,7 @@ def _render_candidates_offer(n_uncovered: int) -> str:
         "strict on purpose — it buys a 0% false-positive rate so the percentage is "
         "safe to quote — and the price, measured against labelled pairs, is that it "
         "discards roughly nine of every ten answers the Knowledge Base actually has "
-        "(`commons/eval/RESULTS.md`).",
+        ".",
         "",
         "**A low number here is not the same as an empty Knowledge Base.** Ranked "
         "lookup, with identical privacy properties, finds the right entry 89% of the "
@@ -804,7 +804,7 @@ def run_report(args: argparse.Namespace) -> int:
             report["candidate_lookups"] = looked_up
             report["candidate_lookups_skipped"] = skipped
             # Named so no consumer can mistake this for part of the
-            # coverage arithmetic, which is what RESULTS.md warns against.
+            # coverage arithmetic, which is what the evaluation warns against.
             report["candidate_lookups_are_not_coverage"] = True
         print(json.dumps(report, indent=2))
         return 0

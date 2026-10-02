@@ -8,7 +8,7 @@ the only HTML the Hub served. A paying customer had an MCP tool surface and
 a CLI, and nothing else.
 
 That is a real gap and not a cosmetic one. The product's central claim
-(STRATEGY.md 13.3) is that it can prove causally, on the customer's own
+ is that it can prove causally, on the customer's own
 data, that the memory changed outcomes -- and three commits of work went
 into making that number trustworthy: a validity audit, an attrition check,
 a treatment pinned to a content revision. All of it renders in a terminal,
@@ -186,7 +186,7 @@ def read_session(secret: str, token: str) -> dict | None:
 # --- Shareable, read-only Proof links ---------------------------------------
 #
 # WHY THIS EXISTS. hub/plans.py's whole pricing model is "share of measured
-# value" (STRATEGY.md), and the Proof page below is the only place that
+# value", and the Proof page below is the only place that
 # value is actually shown -- with the SOUND/WEAKENED/COMPROMISED verdict
 # rendered ABOVE the number it qualifies, not as a footnote (see
 # _validity_block's docstring: "a page that shows the number first ... is
@@ -1899,7 +1899,7 @@ def add_console_routes(
 
     # Guards hub/console.py's shared, unauthenticated Proof view (below):
     # each real causal_effects() call is genuine statistical work, not a
-    # cheap read (hub/SCALING.md measures it up to 1.4s on a large org), and
+    # cheap read (the scaling analysis measures it up to 1.4s on a large org), and
     # this route has no session to charge a per-org read limiter against.
     # Generous on purpose -- a link embedded in a live deck or forwarded
     # thread can get a real burst of legitimate views -- but not unbounded.
@@ -2058,7 +2058,7 @@ def add_console_routes(
         return _page(
             "Your fleet", _render_overview(data, causal, billing_state, activity, setup),
             # Longer than the other auto-refreshing pages: causal_effects is
-            # real statistical work (hub/SCALING.md measures it up to 1.4s on
+            # real statistical work (the scaling analysis measures it up to 1.4s on
             # a large org), and this is the page most likely left open in a
             # background tab.
             auto_refresh_seconds=45,
@@ -2145,7 +2145,7 @@ def add_console_routes(
         # An optional rate the reader supplies in the URL. Never stored: this
         # product ships the quantity and takes the price from whoever is
         # reading, which is what keeps a number nobody agreed to out of the
-        # one place people treat as authoritative (STRATEGY.md 11.5).
+        # one place people treat as authoritative.
         try:
             rate = float(request.query_params.get("per_occasion") or 0) or None
         except ValueError:
@@ -2230,7 +2230,7 @@ def add_console_routes(
         org_id = str(claims["org"])
         # Public and unauthenticated, so unlike every other console route
         # this one is reachable by anyone who has ever seen the link -- and
-        # crud.causal_effects is real statistical work (hub/SCALING.md
+        # crud.causal_effects is real statistical work (the scaling analysis
         # measures it at up to 1.4s on a large org), not a cheap read. Keyed
         # by org_id (from the verified token), not client address: the
         # threat here is one link being hit hard by whoever holds it, from

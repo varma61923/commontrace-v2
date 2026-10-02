@@ -1,7 +1,7 @@
 """Does semantic similarity fix the coverage bar's recall -- and does it
 actually cost the privacy guarantee?
 
-WHAT THIS ANSWERS. commons/eval/RESULTS.md measured the shipped matcher at
+WHAT THIS ANSWERS. The evaluation measured the shipped matcher at
 10.9% recall with a 0% false-positive rate, attributed it to representation
 rather than tuning, and named the fix: "semantic rather than lexical
 similarity -- embedding each failure and comparing vectors." It then

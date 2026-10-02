@@ -229,7 +229,7 @@ CORE_TOOLS = [
     # randomized holdout (hub/crud.py) -- the causal instrument, org-scoped
     "holdout_assign", "record_occasion_outcome",
     # what that instrument was WORTH (commontrace/value.py) -- the causal
-    # effect turned into a quantity a price can attach to, which STRATEGY.md
+    # effect turned into a quantity a price can attach to, which the product strategy
     # 11.5 names as this product's pricing basis. Org-scoped and unmetered.
     "value_delivered",
     # the graduated subset of that instrument (hub/crud.py:working_set) --
@@ -318,7 +318,7 @@ async def _round_trip(session, report: Reporter, marker: str) -> str | None:
     # search above passes under a conjunctive matcher and under a relaxed
     # one alike, so it cannot tell them apart -- and a deployment whose
     # query terms are ANDed returns nothing here while every other check on
-    # this page stays green (hub/RETRIEVAL.md: 0.0% recall@1, 100%
+    # this page stays green (the retrieval analysis: 0.0% recall@1, 100%
     # zero-result, HTTP 200 throughout). This is the check that fails.
     phrased = await _call(
         session, report, "search_traces finds it from a natural-language description",
