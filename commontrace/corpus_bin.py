@@ -13,6 +13,14 @@ succeeds when the current corpus fingerprint matches entry-for-entry. Any
 mismatch (edit, add, delete, reorder, scorer change, version change)
 falls back to a rebuild. All floats are float64, so a loaded index scores
 bit-identically to a freshly built one.
+
+Version history:
+- v1: postings + doc frequencies + n_terms + length factors + tie breaks.
+- v2: same layout, with the doc-length array (`n_terms`, unique-term
+  count per doc) promoted to a load-bearing contract: the BM25 scorer
+  (`bm25-v1`) normalizes every term by `n_terms[i] / avg_field_len`, so a
+  persisted index without an exact doc-length array is unusable for it.
+  v1 blobs are rejected (callers rebuild + re-save as v2).
 """
 from __future__ import annotations
 
@@ -21,7 +29,7 @@ import struct
 import tempfile
 
 _MAGIC = b"CTCI"
-_VERSION = 1
+_VERSION = 2
 
 _HEADER = struct.Struct("<4sBB")
 _SCORER_PREFIX = struct.Struct("<B")
@@ -116,6 +124,8 @@ def load(cache_dir: str, scorer: str, lessons, fingerprint):
         magic, ver, scorer_len = _HEADER.unpack_from(blob, off)
         off += _HEADER.size
         if magic != _MAGIC or ver != _VERSION:
+            # Wrong magic, or a v1 blob without the doc-length contract:
+            # reject so the caller rebuilds from the term streams.
             return None
         stored_scorer = blob[off:off + scorer_len].decode("utf-8")
         off += scorer_len

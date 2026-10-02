@@ -23,6 +23,7 @@ from commontrace import (
     retrieval_io,
     revision,
     store_state,
+    ttl,
 )
 from commontrace.commands._format import read_or_warn
 from commontrace.commands._shellout import has_attention_deps, run_script
@@ -85,6 +86,10 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Retrieve lessons valid at this date/time (YYYY-MM-DD or ISO 8601). Defaults to now.",
     )
     p.add_argument(
+        "--show-expired", action="store_true",
+        help="Include lessons past their `expires` TTL (hidden by default).",
+    )
+    p.add_argument(
         "--relevance-floor", type=_relevance_floor, default=None,
         help="Minimum relevance (0-1) a lesson must reach to be retrieved at all. "
              "Defaults to this store's configured floor (`commontrace retrieval`). "
@@ -133,11 +138,25 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
 
 def _iter_active_lessons(
     root: str, agent_type: str | None, scope: str = "", as_of: str = "",
+    show_expired: bool = False,
 ) -> list[tuple[str, dict]]:
     lessons = lesson_cache.load_active(
         root, agent_type, reader=lambda p: read_or_warn(frontmatter.read, p),
     )
-    return lesson_cache.filter_eligible(lessons, scope=scope, as_of=as_of or None)
+    return lesson_cache.filter_eligible(
+        lessons, scope=scope, as_of=as_of or None, show_expired=show_expired,
+    )
+
+
+def _expired_hidden_notice(
+    lessons: list[tuple[str, dict]], scope: str = "", as_of: str | None = None,
+) -> str:
+    """Notice text for TTL-hidden lessons among scope-valid candidates."""
+    in_scope = lesson_cache.filter_eligible(
+        lessons, scope=scope, as_of=as_of, show_expired=True,
+    )
+    hidden = ttl.count_expired(in_scope, as_of)
+    return ttl.format_notice(hidden) if hidden else ""
 
 
 def _already_shown(args: argparse.Namespace, root: str) -> set[str]:
@@ -234,11 +253,22 @@ def _screen_semantic(stdout: str, root: str) -> str:
 
 def _semantic_dose_or_pinned(
     stdout: str, root: str, agent_type: str | None, config: retrieval_io.RetrievalConfig, dosed: bool,
-    scope: str = "", as_of: str = "",
+    scope: str = "", as_of: str = "", show_expired: bool = False,
 ) -> tuple[str, list[str], str]:
-    active = _iter_active_lessons(root, agent_type, scope, as_of)
+    active = _iter_active_lessons(root, agent_type, scope, as_of, show_expired)
+    notice = ""
+    if not show_expired:
+        notice = _expired_hidden_notice(
+            lesson_cache.load_active(
+                root, agent_type, reader=lambda p: read_or_warn(frontmatter.read, p),
+            ),
+            scope=scope, as_of=as_of or None,
+        )
+        if notice:
+            notice = "\n" + notice + "\n"
     if dosed:
-        return _dose_semantic(stdout, root, agent_type, config, active=active)
+        text, eligible, note = _dose_semantic(stdout, root, agent_type, config, active=active)
+        return text, eligible, note + notice
     stdout = _screen_semantic(stdout, root)
     allowed = {str(fm.get("name", "")) for _path, fm in active}
     lines = [
@@ -246,7 +276,7 @@ def _semantic_dose_or_pinned(
         if (slug := _slug_of_semantic_line(line)) is None or slug in allowed
     ]
     stdout = "\n".join(lines) + ("\n" if stdout.endswith("\n") else "")
-    return stdout, _slugs_from_semantic_output(stdout), ""
+    return stdout, _slugs_from_semantic_output(stdout), notice
 
 
 def _dose_semantic(
@@ -460,10 +490,15 @@ def _run_lexical(args: argparse.Namespace, root: str) -> int:
     lessons, term_cache = lesson_cache.load_active_with_terms(
         root, args.agent_type, reader=lambda p: read_or_warn(frontmatter.read, p),
     )
+    scope = getattr(args, "scope", "")
+    as_of = getattr(args, "as_of", "") or None
+    show_expired = bool(getattr(args, "show_expired", False))
+    notice = "" if show_expired else _expired_hidden_notice(lessons, scope=scope, as_of=as_of)
     lessons = lesson_cache.filter_eligible(
         lessons,
-        scope=getattr(args, "scope", ""),
-        as_of=getattr(args, "as_of", "") or None,
+        scope=scope,
+        as_of=as_of,
+        show_expired=show_expired,
     )
     lessons = _exclude_shown(lessons, _already_shown(args, root))
     config = retrieval_io.load_config(root)
@@ -521,6 +556,8 @@ def _run_lexical(args: argparse.Namespace, root: str) -> int:
             file=sys.stderr,
         )
     if not ranked:
+        if notice:
+            print(notice)
         if withdrawn:
             _print_withdrawn(withdrawn, harmful)
             return 0
@@ -530,6 +567,8 @@ def _run_lexical(args: argparse.Namespace, root: str) -> int:
     ranked_by_slug = {r.slug: r for r in ranked}
     considered, dose = _apply_dosage(lessons, page, config)
     if not dose.admitted:
+        if notice:
+            print(notice)
         print(
             f"[commontrace] {len(ranked)} lesson(s) matched, but this store's injection "
             f"budget ({dose.gauge()}) admitted none. Widen it with `commontrace retrieval "
@@ -571,6 +610,8 @@ def _run_lexical(args: argparse.Namespace, root: str) -> int:
             print(f"{c.slug:45s} [core]  {item['fm'].get('description', '')}")
             print(f"  ({item['path']})")
 
+    if notice:
+        print(notice)
     if dose.dropped:
         print(
             "\n[commontrace] not injected: "
@@ -615,10 +656,15 @@ def _run_hybrid(args: argparse.Namespace, root: str, missing_hint: str) -> int:
     lessons, term_cache = lesson_cache.load_active_with_terms(
         root, args.agent_type, reader=lambda p: read_or_warn(frontmatter.read, p),
     )
+    scope = getattr(args, "scope", "")
+    as_of = getattr(args, "as_of", "") or None
+    show_expired = bool(getattr(args, "show_expired", False))
+    notice = "" if show_expired else _expired_hidden_notice(lessons, scope=scope, as_of=as_of)
     lessons = lesson_cache.filter_eligible(
         lessons,
-        scope=getattr(args, "scope", ""),
-        as_of=getattr(args, "as_of", "") or None,
+        scope=scope,
+        as_of=as_of,
+        show_expired=show_expired,
     )
     already_shown = _already_shown(args, root)
     lessons = _exclude_shown(lessons, already_shown)
@@ -716,6 +762,8 @@ def _run_hybrid(args: argparse.Namespace, root: str, missing_hint: str) -> int:
     )
     _note_rerank_skipped(config, rerank_skipped, label)
     if not fused:
+        if notice:
+            print(notice)
         if withdrawn:
             _print_withdrawn(withdrawn, harmful)
             return 0
@@ -730,6 +778,8 @@ def _run_hybrid(args: argparse.Namespace, root: str, missing_hint: str) -> int:
 
     _considered, dose = _apply_dosage(lessons, fused, config)
     if not dose.admitted:
+        if notice:
+            print(notice)
         print(
             f"[commontrace] {len(fused)} lesson(s) matched, but this store's injection "
             f"budget ({dose.gauge()}) admitted none. Widen it with `commontrace retrieval "
@@ -778,6 +828,8 @@ def _run_hybrid(args: argparse.Namespace, root: str, missing_hint: str) -> int:
         print(f"{slug:45s} {score_label}  {description}")
         print(f"  arms: {'+'.join(arms) or 'none'}  ({path})")
 
+    if notice:
+        print(notice)
     if dose.dropped:
         print(
             "\n[commontrace] not injected: "
@@ -848,6 +900,7 @@ def _has_candidates(args: argparse.Namespace, root: str) -> bool:
         lessons,
         scope=getattr(args, "scope", ""),
         as_of=getattr(args, "as_of", "") or None,
+        show_expired=bool(getattr(args, "show_expired", False)),
     )
     return bool(_exclude_shown(lessons, _already_shown(args, root)))
 
@@ -921,6 +974,7 @@ def _run(args: argparse.Namespace) -> int:
     if harmful:
         core = _core_slugs(_iter_active_lessons(
             root, args.agent_type, getattr(args, "scope", ""), getattr(args, "as_of", ""),
+            bool(getattr(args, "show_expired", False)),
         ))
     dosed = not retrieval_io.semantic_only_undosed_pinned(root)
 
@@ -933,6 +987,7 @@ def _run(args: argparse.Namespace) -> int:
         stdout, _eligible, note = _semantic_dose_or_pinned(
             stdout, root, args.agent_type, config, dosed,
             getattr(args, "scope", ""), getattr(args, "as_of", ""),
+            bool(getattr(args, "show_expired", False)),
         )
         sys.stdout.write(stdout + note)
         _print_withdrawn(withdrawn, harmful)
@@ -954,6 +1009,7 @@ def _run(args: argparse.Namespace) -> int:
     stdout, slugs, note = _semantic_dose_or_pinned(
         stdout, root, args.agent_type, config, dosed,
         getattr(args, "scope", ""), getattr(args, "as_of", ""),
+        bool(getattr(args, "show_expired", False)),
     )
     if not slugs:
         sys.stdout.write(stdout + note)

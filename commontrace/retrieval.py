@@ -9,6 +9,8 @@ from typing import Any
 
 from commontrace._lexical import STOPWORDS as _STOPWORDS
 from commontrace._lexical import WORD_RE as _WORD_RE
+from commontrace._lexical import has_cjk as _has_cjk
+from commontrace._lexical import segment_cjk as _segment_cjk
 from commontrace._stem import stem as _stem
 
 IDF_V2_FLOOR = 0.04
@@ -16,9 +18,13 @@ IDF_V2_FLOOR = 0.04
 SCORER_ADAPTIVE = "adaptive-v1"
 SCORER_IDF_V3 = "idf-v3"
 SCORER_IDF_V2 = "idf-v2"
+SCORER_BM25 = "bm25-v1"
 SCORER_IDF = SCORER_ADAPTIVE
 SCORER_COUNT = "count-v1"
-LEXICAL_SCORERS = (SCORER_ADAPTIVE, SCORER_IDF_V3, SCORER_IDF_V2, SCORER_COUNT)
+LEXICAL_SCORERS = (SCORER_ADAPTIVE, SCORER_IDF_V3, SCORER_IDF_V2, SCORER_BM25, SCORER_COUNT)
+
+BM25_K1 = 1.2
+BM25_B = 0.75
 
 IDF_V3_FLOOR = 0.064
 ADAPTIVE_FLOOR = IDF_V2_FLOOR
@@ -33,7 +39,7 @@ def default_floor(scorer: str) -> float:
     """The floor a store gets for `scorer` when it has not set its own."""
     if scorer == SCORER_COUNT:
         return 0.0
-    if scorer in (SCORER_ADAPTIVE, SCORER_IDF_V2):
+    if scorer in (SCORER_ADAPTIVE, SCORER_IDF_V2, SCORER_BM25):
         return IDF_V2_FLOOR
     return IDF_V3_FLOOR
 
@@ -42,11 +48,20 @@ _LENGTH_CLAMP = (0.5, 1.5)
 
 
 def _tokenize(text: str) -> list[str]:
-    return [w for w in _WORD_RE.findall(text.lower()) if w not in _STOPWORDS and len(w) > 1]
+    toks = [w for w in _WORD_RE.findall(text.lower()) if w not in _STOPWORDS and len(w) > 1]
+    if not any(_has_cjk(t) for t in toks):
+        return toks
+    out: list[str] = []
+    for tok in toks:
+        if _has_cjk(tok):
+            out.extend(_segment_cjk(tok))
+        else:
+            out.append(tok)
+    return out
 
 
 def _terms_for(scorer: str, terms) -> set[str]:
-    if scorer in (SCORER_ADAPTIVE, SCORER_IDF_V3):
+    if scorer in (SCORER_ADAPTIVE, SCORER_IDF_V3, SCORER_BM25):
         return {_stem(t) for t in terms}
     return set(terms)
 
@@ -99,6 +114,19 @@ def _length_factor(n_terms: int, avg_terms: float) -> float:
     raw = 1.0 / (1.0 + _LENGTH_B * ((n_terms / avg_terms) - 1.0))
     low, high = _LENGTH_CLAMP
     return max(low, min(high, raw))
+
+
+def _bm25_term(tf: float, idf: float, doc_len: int, avg_len: float) -> float:
+    """One term's BM25 contribution (k1=1.2, b=0.75).
+
+    `tf` is the field-weighted presence sum from the shared postings
+    (sum of field weights where the term occurs); `doc_len`/`avg_len`
+    are unique-term counts from the same `_CorpusIndex`, so no second
+    index is built. Saturates: doubling `tf` less than doubles the
+    contribution.
+    """
+    norm = (1.0 - BM25_B + BM25_B * (doc_len / avg_len)) if avg_len > 0 else 1.0
+    return idf * (tf * (BM25_K1 + 1.0)) / (tf + BM25_K1 * norm)
 
 
 def _rank_int(value: Any) -> int:
@@ -243,6 +271,8 @@ def rank_lessons(
     scored: list[tuple] = []
     acc: dict[int, list] = {}
     acc_get = acc.get
+    is_bm25 = scorer == SCORER_BM25
+    avg_len = index.avg_field_len
     for term in sorted(query_terms):
         post = index.postings.get(term)
         if post is None:
@@ -250,6 +280,15 @@ def rank_lessons(
         term_idf = query_idf.get(term, 0.0)
         for i, weight_sum, best in zip(*post):
             a = acc_get(i)
+            if is_bm25:
+                contrib = _bm25_term(weight_sum, term_idf, index.n_terms[i], avg_len)
+                if a is None:
+                    acc[i] = [weight_sum, contrib, [term]]
+                    continue
+                a[0] += weight_sum
+                a[1] += contrib
+                a[2].append(term)
+                continue
             if a is None:
                 acc[i] = [weight_sum, term_idf * (best / _MAX_FIELD_WEIGHT), [term]]
                 continue
@@ -264,6 +303,11 @@ def rank_lessons(
 
         if scorer == SCORER_COUNT:
             rel = score
+        elif scorer == SCORER_BM25:
+            if total_query_idf > 0 and matched:
+                rel = min(1.0, covered / total_query_idf)
+            else:
+                rel = 0.0
         elif total_query_idf > 0 and matched:
             lam = length_factors[i] if length_factors else _length_factor(index.n_terms[i], index.avg_field_len)
             rel = min(1.0, (covered * lam) / total_query_idf)
@@ -553,3 +597,289 @@ def hierarchical_expand(
             scored.append((fid, round(score, 6)))
     scored.sort(key=lambda pair: (-pair[1], pair[0]))
     return scored[: max(0, top_n)]
+
+
+# ---------------------------------------------------------------------------
+# Hybrid retrieval with reranking (MMR, multi-channel, truth subspace)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RetrievalChannel:
+    """A retrieval channel with its ranked results."""
+    name: str
+    results: list[tuple[str, float]]  # [(id, score), ...]
+    weight: float = 1.0
+
+
+def maximal_marginal_relevance(
+    query_embedding: list[float] | None,
+    embeddings: dict[str, list[float]] | None,
+    ranked_items: list[tuple[str, float]],
+    lambda_param: float = 0.5,
+    top_k: int = 10,
+) -> list[tuple[str, float]]:
+    """Apply Maximal Marginal Relevance (MMR) for diverse reranking.
+
+    MMR balances relevance to the query with diversity among selected items.
+    Formula: MMR = λ * relevance - (1-λ) * max_similarity_to_selected
+
+    Args:
+        query_embedding: Query vector (optional; if None, uses ranked scores)
+        embeddings: Dict of item_id -> embedding vector (optional)
+        ranked_items: List of (item_id, relevance_score) sorted by relevance
+        lambda_param: Trade-off between relevance (0-1). Higher = more relevance-focused
+        top_k: Number of items to return
+
+    Returns:
+        List of (item_id, mmr_score) sorted by MMR score
+    """
+    if not ranked_items or top_k <= 0:
+        return []
+
+    if lambda_param < 0 or lambda_param > 1:
+        raise ValueError(f"lambda_param must be in [0, 1], got {lambda_param}")
+
+    # If no embeddings provided, fall back to simple ranking
+    if query_embedding is None or embeddings is None:
+        return ranked_items[:top_k]
+
+    selected_ids: list[str] = []
+    selected_embeddings: list[list[float]] = []
+    remaining = list(ranked_items)
+
+    while len(selected_ids) < min(top_k, len(remaining)):
+        best_idx = -1
+        best_mmr = -float("inf")
+
+        for i, (item_id, relevance) in enumerate(remaining):
+            if item_id in selected_ids:
+                continue
+
+            item_emb = embeddings.get(item_id)
+            if item_emb is None:
+                # No embedding for this item, skip
+                continue
+
+            # Relevance component
+            relevance_score = relevance
+
+            # Diversity component: max similarity to already selected
+            if selected_embeddings:
+                max_sim = 0.0
+                for sel_emb in selected_embeddings:
+                    sim = _cosine_similarity(item_emb, sel_emb)
+                    max_sim = max(max_sim, sim)
+            else:
+                max_sim = 0.0
+
+            # MMR score
+            mmr = lambda_param * relevance_score - (1 - lambda_param) * max_sim
+
+            if mmr > best_mmr:
+                best_mmr = mmr
+                best_idx = i
+
+        if best_idx >= 0:
+            item_id, _ = remaining[best_idx]
+            selected_ids.append(item_id)
+            selected_embeddings.append(embeddings[item_id])
+            remaining.pop(best_idx)
+        else:
+            # No more valid items
+            break
+
+    # Return with MMR scores
+    result = []
+    for item_id in selected_ids:
+        original_score = next(score for iid, score in ranked_items if iid == item_id)
+        result.append((item_id, original_score))
+
+    return result
+
+
+def _cosine_similarity(vec1: list[float], vec2: list[float]) -> float:
+    """Compute cosine similarity between two vectors."""
+    if len(vec1) != len(vec2):
+        return 0.0
+
+    dot = sum(a * b for a, b in zip(vec1, vec2))
+    norm1 = math.sqrt(sum(a * a for a in vec1))
+    norm2 = math.sqrt(sum(b * b for b in vec2))
+
+    if norm1 == 0 or norm2 == 0:
+        return 0.0
+
+    return dot / (norm1 * norm2)
+
+
+def multi_channel_retrieval(
+    channels: list[RetrievalChannel],
+    top_k: int = 10,
+    rrf_k: int = DEFAULT_RRF_K,
+) -> list[tuple[str, float]]:
+    """Fuse multiple retrieval channels using RRF.
+
+    Args:
+        channels: List of RetrievalChannel with ranked results
+        top_k: Number of results to return
+        rrf_k: RRF constant (higher = more rank-based fusion)
+
+    Returns:
+        List of (item_id, fused_score) sorted by fused score
+    """
+    if not channels:
+        return []
+
+    # Build arms dict for RRF
+    arms: dict[str, list[str]] = {}
+    weights: dict[str, float] = {}
+
+    for channel in channels:
+        arms[channel.name] = [item_id for item_id, _ in channel.results]
+        weights[channel.name] = channel.weight
+
+    # Apply RRF fusion
+    fused = reciprocal_rank_fusion(arms, k=rrf_k, top_k=top_k, weights=weights)
+
+    return fused
+
+
+@dataclass(frozen=True)
+class TruthEpoch:
+    """A truth epoch for temporal consistency tracking."""
+    epoch_id: str
+    valid_at: str
+    invalid_at: str | None = None
+    facts: set[str] = frozenset()  # Set of fact IDs valid in this epoch
+
+
+@dataclass
+class TruthSubspace:
+    """Truth subspace with temporal consistency tracking."""
+    epochs: list[TruthEpoch]
+    current_epoch: str | None = None
+
+    def get_active_facts(self, as_of: str | None = None) -> set[str]:
+        """Get facts valid at a given time."""
+        if not as_of:
+            # Current time: use current epoch
+            if self.current_epoch:
+                epoch = next((e for e in self.epochs if e.epoch_id == self.current_epoch), None)
+                return epoch.facts if epoch else set()
+            return set()
+
+        # Historical query: find epoch containing the timestamp
+        from commontrace import lesson_cache
+
+        moment = lesson_cache.parse_moment(as_of)
+        for epoch in self.epochs:
+            valid_at = lesson_cache.parse_moment(epoch.valid_at)
+            invalid_at = lesson_cache.parse_moment(epoch.invalid_at) if epoch.invalid_at else None
+
+            if valid_at <= moment and (invalid_at is None or invalid_at > moment):
+                return set(epoch.facts)
+
+        return set()
+
+    def add_epoch(self, epoch: TruthEpoch) -> None:
+        """Add a new truth epoch."""
+        self.epochs.append(epoch)
+        if not self.current_epoch:
+            self.current_epoch = epoch.epoch_id
+
+    def advance_epoch(self, new_epoch_id: str, valid_at: str) -> None:
+        """Advance to a new truth epoch."""
+        # Invalidate current epoch
+        if self.current_epoch:
+            for i, epoch in enumerate(self.epochs):
+                if epoch.epoch_id == self.current_epoch:
+                    self.epochs[i] = TruthEpoch(
+                        epoch_id=epoch.epoch_id,
+                        valid_at=epoch.valid_at,
+                        invalid_at=valid_at,
+                        facts=epoch.facts,
+                    )
+                    break
+
+        # Add new epoch
+        self.current_epoch = new_epoch_id
+        self.epochs.append(TruthEpoch(epoch_id=new_epoch_id, valid_at=valid_at))
+
+
+def hybrid_retrieve_with_rerank(
+    query: str,
+    lessons: list[tuple[str, dict]],
+    channels: list[RetrievalChannel] | None = None,
+    top_k: int = 10,
+    apply_mmr: bool = True,
+    mmr_lambda: float = 0.5,
+    truth_subspace: TruthSubspace | None = None,
+    scorer: str = SCORER_IDF,
+    term_cache: dict[str, list[list[str]]] | None = None,
+) -> list[RankedLesson]:
+    """Hybrid retrieval with multi-channel fusion and MMR reranking.
+
+    Args:
+        query: Search query
+        lessons: List of (path, frontmatter) lesson tuples
+        channels: Optional retrieval channels for fusion
+        top_k: Number of results to return
+        apply_mmr: Whether to apply MMR reranking
+        mmr_lambda: MMR lambda parameter (0-1)
+        truth_subspace: Optional truth subspace for temporal filtering
+        scorer: Lexical scorer to use
+        term_cache: Optional term cache for performance
+
+    Returns:
+        List of RankedLesson with MMR-applied scores
+    """
+    # Base lexical retrieval
+    ranked = rank_lessons(
+        query, lessons, top_k=top_k * 2,  # Get more for reranking
+        scorer=scorer, term_cache=term_cache,
+    )
+
+    if not ranked:
+        return []
+
+    # Apply truth subspace filtering if provided
+    if truth_subspace:
+        active_facts = truth_subspace.get_active_facts()
+        ranked = [r for r in ranked if r.slug in active_facts]
+
+    # Multi-channel fusion if channels provided
+    if channels:
+        # Convert RankedLesson to channel format
+        lexical_channel = RetrievalChannel(
+            name="lexical",
+            results=[(r.slug, r.score) for r in ranked],
+            weight=1.0,
+        )
+        all_channels = [lexical_channel] + channels
+
+        fused = multi_channel_retrieval(all_channels, top_k=top_k * 2)
+
+        # Re-rank based on fusion
+        fused_ids = {item_id for item_id, _ in fused}
+        ranked = [r for r in ranked if r.slug in fused_ids]
+        ranked.sort(key=lambda r: next(score for iid, score in fused if iid == r.slug), reverse=True)
+
+    # Apply MMR for diversity
+    if apply_mmr and len(ranked) > 1:
+        # Without embeddings, MMR falls back to simple ranking
+        # In a full implementation, you would pass embeddings here
+        mmr_results = maximal_marginal_relevance(
+            query_embedding=None,
+            embeddings=None,
+            ranked_items=[(r.slug, r.score) for r in ranked],
+            lambda_param=mmr_lambda,
+            top_k=top_k,
+        )
+
+        # Reconstruct RankedLesson with MMR order
+        mmr_ids = {item_id for item_id, _ in mmr_results}
+        ranked = [r for r in ranked if r.slug in mmr_ids]
+        ranked.sort(key=lambda r: next(score for iid, score in mmr_results if iid == r.slug), reverse=True)
+
+    return ranked[:top_k]

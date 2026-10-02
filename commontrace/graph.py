@@ -9,13 +9,14 @@ from __future__ import annotations
 import json
 import os
 import re
+import warnings
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any
 
 from commontrace import lesson_cache, paths
 
-ENTITY_TYPES = ("service", "tool", "error", "concept", "lesson", "scope", "user", "file")
+ENTITY_TYPES = ("service", "tool", "error", "concept", "lesson", "scope", "user", "file", "memory", "document")
 RELATIONS = (
     "depends_on",
     "causes",
@@ -26,6 +27,10 @@ RELATIONS = (
     "uses",
     "violates",
     "relates_to",
+    # Memory relationship types (from Supermemory)
+    "updates",
+    "extends",
+    "derives",
 )
 
 
@@ -37,6 +42,12 @@ class GraphNode:
     properties: dict[str, Any]
     created_at: str
     updated_at: str
+    # Version chain fields for memory evolution (Supermemory pattern)
+    parent_id: str | None = None  # parentMemoryId
+    root_id: str | None = None  # rootMemoryId
+    version: int = 1  # version number
+    is_latest: bool = True  # isLatest flag
+    is_forgotten: bool = False  # isForgotten flag
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -48,8 +59,9 @@ class GraphEdge:
     target: str
     relation: str
     weight: float
-    valid_from: str
-    valid_until: str | None
+    valid_at: str | None  # When fact becomes true (transaction time)
+    invalid_at: str | None  # When fact becomes false (transaction time)
+    expired_at: str | None  # When record expires (validity time)
     properties: dict[str, Any]
     created_at: str
 
@@ -255,17 +267,52 @@ def add_edge(
     target: str,
     relation: str,
     weight: float = 1.0,
-    valid_from: str | None = None,
-    valid_until: str | None = None,
+    valid_at: str | None = None,
+    invalid_at: str | None = None,
+    expired_at: str | None = None,
     properties: dict[str, Any] | None = None,
     provenance: dict[str, Any] | None = None,
 ) -> GraphEdge:
-    """Add a directed relationship between two nodes."""
+    """Add a directed relationship between two nodes with bi-temporal support.
+
+    Bi-temporal fields:
+    - valid_at: When the fact becomes true (transaction time)
+    - invalid_at: When the fact becomes false (transaction time)
+    - expired_at: When the record expires (validity time)
+
+    Contradiction resolution: "latest valid_at wins" - if multiple edges exist
+    between the same nodes with the same relation, the one with the latest
+    valid_at timestamp is considered the current truth.
+    """
     src = source.strip().lower()
     dst = target.strip().lower()
     if not src or not dst:
         raise ValueError("Source and target must be non-empty")
-    if relation not in RELATIONS:
+    try:
+        from commontrace import ontology as _ontology_mod
+
+        _ontology_present = _ontology_mod.ontology_exists(root)
+    except Exception:
+        _ontology_mod = None  # type: ignore[assignment]
+        _ontology_present = False
+    if _ontology_present and _ontology_mod is not None:
+        try:
+            canonical = _ontology_mod.validate_relation(root, relation)
+            if not _ontology_mod.is_known_edge(root, relation):
+                if canonical != relation:
+                    warnings.warn(
+                        f"graph.add_edge: unknown relation {relation!r}; "
+                        f"falling back to {canonical!r}",
+                        UserWarning,
+                        stacklevel=2,
+                    )
+                relation = canonical
+            else:
+                relation = canonical
+        except Exception:
+            if relation not in RELATIONS:
+                relation = "relates_to"
+    elif relation not in RELATIONS:
         relation = "relates_to"
 
     nodes = load_nodes(root)
@@ -276,44 +323,80 @@ def add_edge(
 
     edges = load_edges(root)
     now_iso = _now()
-    valid_from = valid_from or now_iso
+    valid_at = valid_at or now_iso
 
-    # Look for existing active edge between src, dst and relation
-    for edge in edges:
-        if edge.source == src and edge.target == dst and edge.relation == relation:
-            if edge.valid_until is None:
-                edge.weight = max(edge.weight, float(weight))
-                if properties:
-                    edge.properties.update(properties)
-                save_edges(root, edges)
-                if provenance is not None:
-                    try:
-                        from commontrace import provenance as _prov
+    # Contradiction resolution: "latest valid_at wins"
+    # Find all edges between src, dst with same relation
+    matching_edges = [
+        e for e in edges
+        if e.source == src and e.target == dst and e.relation == relation
+    ]
 
-                        _prov.append_provenance(
-                            root,
-                            target_kind="edge",
-                            target_id=f"{src}->{dst}:{relation}",
-                            source_path=str((provenance or {}).get("source_path", "")),
-                            run_id=str((provenance or {}).get("run_id", "")),
-                            detail=(provenance or {}).get("detail", ""),
-                        )
-                    except Exception:
-                        pass
-                return edge
+    if matching_edges:
+        # Find the edge with the latest valid_at
+        latest_edge = max(
+            matching_edges,
+            key=lambda e: lesson_cache.parse_moment(e.valid_at or e.created_at)
+        )
+        latest_valid_at = lesson_cache.parse_moment(latest_edge.valid_at or latest_edge.created_at)
+        new_valid_at = lesson_cache.parse_moment(valid_at)
 
-    new_edge = GraphEdge(
-        source=src,
-        target=dst,
-        relation=relation,
-        weight=round(float(weight), 3),
-        valid_from=valid_from,
-        valid_until=valid_until,
-        properties=properties or {},
-        created_at=now_iso,
-    )
-    edges.append(new_edge)
-    save_edges(root, edges)
+        # If new edge has later valid_at, invalidate the old one
+        if new_valid_at > latest_valid_at:
+            for edge in matching_edges:
+                if edge.invalid_at is None:
+                    edge.invalid_at = valid_at
+            # Create new edge with latest valid_at
+            new_edge = GraphEdge(
+                source=src,
+                target=dst,
+                relation=relation,
+                weight=round(float(weight), 3),
+                valid_at=valid_at,
+                invalid_at=invalid_at,
+                expired_at=expired_at,
+                properties=properties or {},
+                created_at=now_iso,
+            )
+            edges.append(new_edge)
+            save_edges(root, edges)
+        else:
+            # New edge is older, just update the latest edge if needed
+            latest_edge.weight = max(latest_edge.weight, float(weight))
+            if properties:
+                latest_edge.properties.update(properties)
+            save_edges(root, edges)
+            if provenance is not None:
+                try:
+                    from commontrace import provenance as _prov
+
+                    _prov.append_provenance(
+                        root,
+                        target_kind="edge",
+                        target_id=f"{src}->{dst}:{relation}",
+                        source_path=str((provenance or {}).get("source_path", "")),
+                        run_id=str((provenance or {}).get("run_id", "")),
+                        detail=(provenance or {}).get("detail", ""),
+                    )
+                except Exception:
+                    pass
+            return latest_edge
+    else:
+        # No existing edge, create new one
+        new_edge = GraphEdge(
+            source=src,
+            target=dst,
+            relation=relation,
+            weight=round(float(weight), 3),
+            valid_at=valid_at,
+            invalid_at=invalid_at,
+            expired_at=expired_at,
+            properties=properties or {},
+            created_at=now_iso,
+        )
+        edges.append(new_edge)
+        save_edges(root, edges)
+
     if provenance is not None:
         try:
             from commontrace import provenance as _prov
@@ -332,23 +415,54 @@ def add_edge(
 
 
 def _is_active_edge(edge: GraphEdge, moment: datetime | None) -> bool:
-    if not moment:
-        return edge.valid_until is None
+    """Check if an edge is active at a given moment using bi-temporal logic.
 
-    if edge.valid_from:
+    An edge is active if:
+    1. It has been validated (valid_at <= moment or valid_at is None)
+    2. It has not been invalidated (invalid_at is None or invalid_at > moment)
+    3. It has not expired (expired_at is None or expired_at > moment)
+
+    If moment is None, return edges that are currently valid (not invalidated).
+    """
+    if not moment:
+        # Current time: edge is active if not invalidated and not expired
+        if edge.invalid_at is not None:
+            return False
+        if edge.expired_at is not None:
+            try:
+                exp = lesson_cache.parse_moment(edge.expired_at)
+                now = lesson_cache.parse_moment(_now())
+                if exp <= now:
+                    return False
+            except Exception:
+                pass
+        return True
+
+    # Historical query: check all bi-temporal conditions
+    if edge.valid_at:
         try:
-            vf = lesson_cache.parse_moment(edge.valid_from)
-            if vf > moment:
+            va = lesson_cache.parse_moment(edge.valid_at)
+            if va > moment:
                 return False
         except Exception:
             pass
-    if edge.valid_until:
+
+    if edge.invalid_at:
         try:
-            vu = lesson_cache.parse_moment(edge.valid_until)
-            if vu <= moment:
+            ia = lesson_cache.parse_moment(edge.invalid_at)
+            if ia <= moment:
                 return False
         except Exception:
             pass
+
+    if edge.expired_at:
+        try:
+            exp = lesson_cache.parse_moment(edge.expired_at)
+            if exp <= moment:
+                return False
+        except Exception:
+            pass
+
     return True
 
 
@@ -548,3 +662,269 @@ def export_json(root: str, as_of: str | None = None) -> dict[str, Any]:
         "total_nodes": len(nodes),
         "total_active_edges": len(active_edges),
     }
+
+
+def query_edges_by_interval(
+    root: str,
+    starts_at: str | None = None,
+    ends_at: str | None = None,
+    source: str | None = None,
+    target: str | None = None,
+    relation: str | None = None,
+) -> list[GraphEdge]:
+    """Temporal retriever with interval queries.
+
+    Returns edges that were active at any point within the time interval
+    [starts_at, ends_at]. This is useful for historical analysis and fact
+    evolution tracking.
+
+    Args:
+        root: Graph store root directory
+        starts_at: Start of time interval (ISO format string or None for unbounded)
+        ends_at: End of time interval (ISO format string or None for unbounded)
+        source: Optional source node filter
+        target: Optional target node filter
+        relation: Optional relation filter
+
+    Returns:
+        List of GraphEdge objects that were active during the interval
+    """
+    edges = load_edges(root)
+    start_moment = lesson_cache.parse_moment(starts_at) if starts_at else None
+    end_moment = lesson_cache.parse_moment(ends_at) if ends_at else None
+
+    results: list[GraphEdge] = []
+
+    for edge in edges:
+        # Apply node and relation filters
+        if source and edge.source != source.strip().lower():
+            continue
+        if target and edge.target != target.strip().lower():
+            continue
+        if relation and edge.relation != relation:
+            continue
+
+        # Check if edge was active during the interval
+        # Edge is active if it overlaps with [starts_at, ends_at]
+        edge_valid_at = lesson_cache.parse_moment(edge.valid_at) if edge.valid_at else None
+        edge_invalid_at = lesson_cache.parse_moment(edge.invalid_at) if edge.invalid_at else None
+        edge_expired_at = lesson_cache.parse_moment(edge.expired_at) if edge.expired_at else None
+
+        # Determine edge's active window
+        edge_start = edge_valid_at
+        edge_end = edge_invalid_at or edge_expired_at
+
+        # If no start time, edge has always been valid (from beginning of time)
+        if edge_start is None:
+            edge_start = datetime.min.replace(tzinfo=timezone.utc)
+
+        # If no end time, edge is still valid (indefinite future)
+        if edge_end is None:
+            edge_end = datetime.max.replace(tzinfo=timezone.utc)
+
+        # Check for overlap with query interval
+        query_start = start_moment if start_moment else datetime.min.replace(tzinfo=timezone.utc)
+        query_end = end_moment if end_moment else datetime.max.replace(tzinfo=timezone.utc)
+
+        # Intervals overlap if: edge_start <= query_end AND edge_end >= query_start
+        if edge_start <= query_end and edge_end >= query_start:
+            results.append(edge)
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Version chain management for memory evolution (Supermemory pattern)
+# ---------------------------------------------------------------------------
+
+
+def get_version_chain(
+    root: str,
+    node_id: str,
+) -> list[GraphNode]:
+    """Get the complete version chain for a memory node.
+
+    Returns all versions of a memory from root to latest, ordered by version number.
+    This enables tracking memory evolution over time.
+
+    Args:
+        root: Graph store root directory
+        node_id: The node ID to get the version chain for
+
+    Returns:
+        List of GraphNode objects representing the version chain, ordered by version
+    """
+    nodes = load_nodes(root)
+    target_node = nodes.get(node_id.strip().lower())
+
+    if not target_node:
+        return []
+
+    # Find the root of the version chain
+    root_id = target_node.root_id or target_node.id
+
+    # Collect all nodes in the version chain
+    chain_nodes: list[GraphNode] = []
+    for node in nodes.values():
+        if node.root_id == root_id or node.id == root_id:
+            chain_nodes.append(node)
+
+    # Sort by version number
+    chain_nodes.sort(key=lambda n: n.version)
+
+    return chain_nodes
+
+
+def create_memory_version(
+    root: str,
+    parent_id: str,
+    new_properties: dict[str, Any] | None = None,
+    new_name: str | None = None,
+    provenance: dict[str, Any] | None = None,
+) -> GraphNode:
+    """Create a new version of a memory node.
+
+    Establishes version chain with parent node, incrementing version number.
+    The parent node's is_latest flag is set to False.
+
+    Args:
+        root: Graph store root directory
+        parent_id: ID of the parent memory node
+        new_properties: New properties for the version (merged with parent)
+        new_name: New name for the version (optional)
+        provenance: Optional provenance metadata
+
+    Returns:
+        The newly created version node
+    """
+    nodes = load_nodes(root)
+    parent = nodes.get(parent_id.strip().lower())
+
+    if not parent:
+        raise ValueError(f"Parent node {parent_id} not found")
+
+    # Determine root_id
+    root_id = parent.root_id or parent.id
+
+    # Find the next version number
+    chain = get_version_chain(root, parent_id)
+    next_version = max((n.version for n in chain), default=0) + 1
+
+    # Merge properties
+    merged_properties = dict(parent.properties)
+    if new_properties:
+        merged_properties.update(new_properties)
+
+    # Create new version node
+    new_id = f"{root_id}:v{next_version}"
+    now_iso = _now()
+
+    new_node = GraphNode(
+        id=new_id,
+        entity_type=parent.entity_type,
+        name=new_name or parent.name,
+        properties=merged_properties,
+        created_at=now_iso,
+        updated_at=now_iso,
+        parent_id=parent.id,
+        root_id=root_id,
+        version=next_version,
+        is_latest=True,
+        is_forgotten=False,
+    )
+
+    # Update parent's is_latest flag
+    parent.is_latest = False
+    parent.updated_at = now_iso
+
+    # Save both nodes
+    nodes[parent.id] = parent
+    nodes[new_id] = new_node
+    save_nodes(root, nodes)
+
+    # Record provenance
+    if provenance is not None:
+        try:
+            from commontrace import provenance as _prov
+
+            _prov.append_provenance(
+                root,
+                target_kind="node",
+                target_id=new_id,
+                source_path=str((provenance or {}).get("source_path", "")),
+                run_id=str((provenance or {}).get("run_id", "")),
+                detail=(provenance or {}).get("detail", ""),
+            )
+        except Exception:
+            pass
+
+    return new_node
+
+
+def get_memory_relationships(
+    root: str,
+    node_id: str,
+) -> dict[str, str]:
+    """Get all memory relationships for a node.
+
+    Returns a mapping of relationship type to target node ID for memory-specific
+    relationships (updates, extends, derives).
+
+    Args:
+        root: Graph store root directory
+        node_id: The node ID to get relationships for
+
+    Returns:
+        Dict mapping relationship type to target node ID
+    """
+    edges = load_edges(root)
+    relationships: dict[str, str] = {}
+
+    memory_relations = {"updates", "extends", "derives"}
+
+    for edge in edges:
+        if edge.source == node_id.strip().lower() and edge.relation in memory_relations:
+            if _is_active_edge(edge, None):
+                relationships[edge.relation] = edge.target
+
+    return relationships
+
+
+def add_memory_relationship(
+    root: str,
+    source_id: str,
+    target_id: str,
+    relation: str,
+    provenance: dict[str, Any] | None = None,
+) -> GraphEdge:
+    """Add a memory-specific relationship between nodes.
+
+    Convenience function for adding memory relationships (updates, extends, derives).
+    Uses the standard add_edge but validates the relation type.
+
+    Args:
+        root: Graph store root directory
+        source_id: Source node ID
+        target_id: Target node ID
+        relation: Relationship type (must be one of: updates, extends, derives)
+        provenance: Optional provenance metadata
+
+    Returns:
+        The created edge
+    """
+    valid_relations = {"updates", "extends", "derives"}
+
+    if relation not in valid_relations:
+        raise ValueError(
+            f"Invalid memory relation '{relation}'. "
+            f"Must be one of: {', '.join(sorted(valid_relations))}"
+        )
+
+    return add_edge(
+        root,
+        source=source_id,
+        target=target_id,
+        relation=relation,
+        weight=1.0,
+        provenance=provenance,
+    )

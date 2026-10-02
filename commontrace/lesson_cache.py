@@ -10,17 +10,18 @@ import json
 import os
 import tempfile
 
-from commontrace import frontmatter, paths
+from commontrace import frontmatter, paths, ttl
 
 CACHE_NAME = "lessons.json"
 CACHE_DIR = ".cache"
 
-FORMAT_VERSION = 3
+# v4: project the optional `expires` TTL field (v3 and older caches reparse).
+FORMAT_VERSION = 4
 
 PROJECTED_FIELDS = (
     "name", "description", "applies_when", "tags",
     "domain", "importance", "uses", "status", "agent_type",
-    "core", "scopes", "valid_from", "valid_until",
+    "core", "scopes", "valid_from", "valid_until", "expires",
 )
 
 
@@ -70,6 +71,7 @@ def parse_moment(value: str | datetime.date | datetime.datetime) -> datetime.dat
 
 def filter_eligible(
     lessons: list[tuple[str, dict]], *, scope: str = "", as_of: str | datetime.datetime | None = None,
+    show_expired: bool = False,
 ) -> list[tuple[str, dict]]:
     moment = parse_moment(as_of) if as_of else datetime.datetime.now(datetime.timezone.utc)
     requested_scope = str(scope or "").strip()
@@ -91,6 +93,10 @@ def filter_eligible(
         if valid_from is not None and moment < valid_from:
             continue
         if valid_until is not None and moment >= valid_until:
+            continue
+        # Per-lesson TTL: `expires` hides the lesson at and after the instant
+        # unless the caller opts into expired lessons explicitly.
+        if not show_expired and ttl.lesson_is_expired(fm, moment):
             continue
         eligible.append((path, fm))
     return eligible

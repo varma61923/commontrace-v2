@@ -517,13 +517,23 @@ def ingest_fact_triples(
     root: str,
     scope: str = "",
     run_id: str = "",
+    edge_types: Any = None,
 ) -> IngestionResult:
     """Ingest (subject, predicate, object, valid_at) triples.
 
     Writes graph nodes + edges and atomic facts. Returns an IngestionResult.
+
+    ``edge_types`` is an optional allowlist enforcing a predicate naming
+    convention: predicates are normalized to snake_case and only those in
+    the allowlist are kept as-is; anything else is coerced to
+    ``"relates_to"`` (the original predicate is preserved in the edge
+    ``properties["predicate"]`` and the fact statement). When ``None``
+    (default), the legacy behavior applies: predicates in graph ``RELATIONS``
+    are kept, others map to ``"relates_to"``.
     """
     from commontrace import graph as graph_mod
     from commontrace import hierarchical
+    from commontrace import ontology as ontology_mod
 
     label = path_or_list if isinstance(path_or_list, str) else "<triples>"
     result = IngestionResult(source_path=str(label), source_type="fact_triples")
@@ -533,6 +543,13 @@ def ingest_fact_triples(
         result.errors.append(f"triples load error: {exc}")
         return result
 
+    allowed: set[str] | None = None
+    if edge_types is not None:
+        try:
+            allowed = {ontology_mod.normalize_edge_name(e) for e in edge_types}
+        except TypeError:
+            allowed = {ontology_mod.normalize_edge_name(edge_types)}
+
     for triple in triples:
         subj = sanitize_contextualizer_text(triple["subject"], max_len=500)
         pred_raw = str(triple["predicate"]).strip().lower()
@@ -540,7 +557,11 @@ def ingest_fact_triples(
         valid_at = str(triple.get("valid_at") or "")
         if not subj or not obj or not pred_raw:
             continue
-        relation = pred_raw if pred_raw in graph_mod.RELATIONS else "relates_to"
+        if allowed is not None:
+            pred_norm = ontology_mod.normalize_edge_name(pred_raw)
+            relation = pred_norm if pred_norm in allowed else "relates_to"
+        else:
+            relation = pred_raw if pred_raw in graph_mod.RELATIONS else "relates_to"
         prov = {
             "source_path": str(label),
             "run_id": run_id,

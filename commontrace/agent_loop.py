@@ -75,6 +75,17 @@ def _assemble_context(root: str, task_prompt: str) -> str:
             lines.append(f"- **{f.statement}** (conf: {f.confidence:.2f}){scope_str}")
         lines.append("")
 
+    # Include discoverable skills as name + description only;
+    # full SKILL.md bodies load on demand via commontrace.skills.load_body.
+    try:
+        from commontrace import skills as _skills
+
+        discovered = _skills.discover(root)
+        if discovered:
+            lines.append(_skills.format_for_context(discovered))
+    except Exception:
+        pass
+
     return "\n".join(lines)
 
 

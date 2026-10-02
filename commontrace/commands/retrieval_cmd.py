@@ -23,6 +23,9 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
              "query-calibrated tail gate that removes weak collateral matches (default). "
              f"{retrieval.SCORER_IDF_V3}: the same stemmed relevance with only a fixed floor. "
              f"{retrieval.SCORER_IDF_V2}: fixed-floor relevance without stemming. "
+             f"{retrieval.SCORER_BM25}: Okapi BM25 saturation (k1=1.2, b=0.75) over "
+             "the same postings, with CJK-aware bigram matching; repeated terms "
+             "give diminishing returns instead of linear ones. "
              f"{retrieval.SCORER_COUNT}: the historical raw word-overlap sum. Older modes "
              "remain available so a running experiment stays on its recorded treatment; "
              "switching scorer takes that scorer's default floor unless --floor is given.",

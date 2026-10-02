@@ -20,6 +20,10 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p_list.add_argument("--category", default="", choices=("", *hierarchical.CATEGORIES))
     p_list.add_argument("--scope", default="", help="Filter by routing scope.")
     p_list.add_argument("--as-of", default="", help="Point-in-time temporal evaluation date.")
+    p_list.add_argument(
+        "--include-forgotten", action="store_true",
+        help="Include forgotten facts (hidden by default); shown with a [forgotten] marker.",
+    )
     p_list.add_argument("--dest", default=None)
     p_list.set_defaults(func=run_list)
 
@@ -31,6 +35,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p_add.add_argument("--confidence", type=float, default=0.8, help="Confidence score 0.0 to 1.0.")
     p_add.add_argument("--valid-from", default=None, help="Start date (YYYY-MM-DD or ISO 8601).")
     p_add.add_argument("--valid-until", default=None, help="End date (YYYY-MM-DD or ISO 8601).")
+    p_add.add_argument("--expires-at", default=None, help="TTL expiry instant (YYYY-MM-DD or ISO 8601).")
     p_add.add_argument("--source-trace", default="", help="Trace ID where this was observed.")
     p_add.add_argument("--dest", default=None)
     p_add.set_defaults(func=run_add)
@@ -58,6 +63,19 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p_del.add_argument("--dest", default=None)
     p_del.set_defaults(func=run_delete)
 
+    # forget
+    p_forget = sub.add_parser(
+        "forget",
+        help="Hide a fact from default listings (reversible, git-audited).",
+    )
+    p_forget.add_argument("fact_id", help="ID of the fact to forget.")
+    p_forget.add_argument(
+        "--undo", action="store_true",
+        help="Restore a forgotten fact to default listings.",
+    )
+    p_forget.add_argument("--dest", default=None)
+    p_forget.set_defaults(func=run_forget)
+
 
 def run_list(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
@@ -68,6 +86,7 @@ def run_list(args: argparse.Namespace) -> int:
         scope=args.scope,
         category=args.category,
         as_of=args.as_of or None,
+        include_forgotten=bool(getattr(args, "include_forgotten", False)),
     )
     if not facts:
         print("No matching facts found.")
@@ -78,6 +97,8 @@ def run_list(args: argparse.Namespace) -> int:
     for f in facts:
         scopes_str = ",".join(f.scopes) if f.scopes else "(global)"
         stmt = f.statement if len(f.statement) <= 45 else f.statement[:42] + "..."
+        if f.forgotten:
+            stmt += " [forgotten]"
         print(f"{f.id:<18} {f.category:<14} {f.confidence:<6.2f} {scopes_str:<16} {stmt}")
     return 0
 
@@ -92,6 +113,7 @@ def run_add(args: argparse.Namespace) -> int:
             scopes=args.scope,
             valid_from=args.valid_from,
             valid_until=args.valid_until,
+            expires_at=args.expires_at,
             confidence=args.confidence,
             source_trace_id=args.source_trace,
         )
@@ -150,4 +172,23 @@ def run_delete(args: argparse.Namespace) -> int:
         print(f"Fact '{args.fact_id}' not found.", file=sys.stderr)
         return 1
     print(f"Deleted fact '{args.fact_id}'.")
+    return 0
+
+
+def run_forget(args: argparse.Namespace) -> int:
+    root = paths.resolve_root(args.dest)
+    try:
+        fact = hierarchical.forget_fact(
+            root, args.fact_id, undo=bool(getattr(args, "undo", False)),
+        )
+    except KeyError:
+        print(f"Fact '{args.fact_id}' not found.", file=sys.stderr)
+        return 1
+    except Exception as exc:
+        print(f"[commontrace] {exc}", file=sys.stderr)
+        return 1
+    if fact.forgotten:
+        print(f"Forgot fact '{fact.id}' (hidden from default listings).")
+    else:
+        print(f"Restored fact '{fact.id}' to default listings.")
     return 0

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import re
 from dataclasses import dataclass, field
 
 from commontrace import redundancy, reliability, templates
@@ -143,3 +145,120 @@ def render(report: ConsolidationReport) -> str:
         "thing with no shared vocabulary. It is a floor on redundancy, not a ceiling.",
     ]
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Skill-candidate emission: repeated contradiction-free patterns -> skill drafts
+# ---------------------------------------------------------------------------
+
+_SKILL_SLUG_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _skill_slug(a: str, b: str) -> str:
+    """A valid skill name for the fuse pair (a, b); matches skills.NAME_RE."""
+    first, second = (a, b) if a <= b else (b, a)
+    stem = _SKILL_SLUG_RE.sub("-", f"{first}-and-{second}".lower()).strip("-")
+    stem = re.sub(r"-{2,}", "-", stem).strip("-")
+    return (stem or "skill")[:60].rstrip("-") or "skill"
+
+
+@dataclass(frozen=True)
+class SkillCandidate:
+    """A repeated contradiction-free pattern worth promoting to a skill."""
+
+    name: str
+    description: str
+    when_to_use: str = ""
+    sources: tuple[str, ...] = field(default_factory=tuple)
+    rationale: str = ""
+
+
+def find_skill_candidates(
+    report: ConsolidationReport,
+    lessons: list[dict],
+) -> list[SkillCandidate]:
+    """Fuse pairs with no contradiction involvement become skill candidates.
+
+    A pair is "repeated" when :func:`build_report` flags it as a fusion
+    candidate (the same guidance written twice), and "contradiction-free"
+    when neither lesson appears in any contradiction in the same report.
+    Contradicted pairs are excluded: promoting them to a skill would
+    entrench guidance the corpus itself disagrees with.
+    """
+    by_name = {str(fm.get("name", "")): fm for fm in lessons if fm.get("name")}
+    contradicted: set[str] = set()
+    for c in report.contradict:
+        contradicted.add(str(c.slug_a))
+        contradicted.add(str(c.slug_b))
+
+    candidates: list[SkillCandidate] = []
+    seen_names: set[str] = set()
+    for pair in sorted(report.fuse, key=lambda p: (p.a, p.b)):
+        if pair.a in contradicted or pair.b in contradicted:
+            continue
+        base = _skill_slug(pair.a, pair.b)
+        name, n = base, 2
+        while name in seen_names:
+            suffix = f"-{n}"
+            name, n = f"{base[:60 - len(suffix)]}{suffix}", n + 1
+        seen_names.add(name)
+        first = by_name.get(pair.a, {})
+        applies = str(first.get("applies_when", "") or "").strip()
+        description = (
+            f"Repeated pattern from lessons `{pair.a}` and `{pair.b}` "
+            f"({pair.similarity:.0%} similar) with no contradicting guidance."
+        )
+        candidates.append(SkillCandidate(
+            name=name,
+            description=description,
+            when_to_use=applies,
+            sources=(pair.a, pair.b),
+            rationale=(
+                f"fuse similarity {pair.similarity:.0%}; "
+                "neither lesson appears in a contradiction candidate"
+            ),
+        ))
+    return candidates
+
+
+def emit_skill_drafts(
+    root: str,
+    candidates: list[SkillCandidate],
+    *,
+    overwrite: bool = False,
+) -> list[str]:
+    """Write skill drafts under ``<root>/skills/<name>/SKILL.md``.
+
+    Each draft carries valid skill frontmatter (name, description,
+    when_to_use, user_invocable) at status draft -- a human promotes or
+    rejects it. Existing drafts are left alone unless *overwrite* is true.
+    Returns the list of written file paths.
+    """
+    from commontrace import frontmatter
+
+    written: list[str] = []
+    for cand in candidates:
+        dir_path = os.path.join(os.path.abspath(root), "skills", cand.name)
+        out_path = os.path.join(dir_path, "SKILL.md")
+        if os.path.exists(out_path) and not overwrite:
+            continue
+        fm: dict = {
+            "name": cand.name,
+            "description": cand.description,
+        }
+        if cand.when_to_use:
+            fm["when_to_use"] = cand.when_to_use
+        fm["user_invocable"] = False
+        sources = "\n".join(f"- `{slug}`" for slug in cand.sources)
+        body = (
+            f"Consolidated draft from repeated lessons:\n{sources}\n\n"
+            f"{cand.rationale}\n\n"
+            "## When to use\n"
+            f"{cand.when_to_use or 'TODO: the shared trigger both lessons describe.'}\n\n"
+            "## Procedure\n"
+            "TODO: the shared reusable steps distilled from the sources above.\n"
+        )
+        os.makedirs(dir_path, exist_ok=True)
+        frontmatter.write(out_path, fm, body)
+        written.append(out_path)
+    return sorted(written)
