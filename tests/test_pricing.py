@@ -23,6 +23,12 @@ def _no_fsync(monkeypatch):
     monkeypatch.setattr(os, "fsync", lambda fd: None)
 
 
+@pytest.fixture(autouse=True)
+def _pinned_salt(monkeypatch):
+    real = holdout_io.configure
+    monkeypatch.setattr(holdout_io, "configure", lambda *a, **kw: real(*a, **{**kw, "salt": kw.get("salt") or "pinned"}))
+
+
 def _grow(root, start, n, *, help_=0.2, harm=0.0, rates=None, seed=1):
     config = holdout_io.load_config(root)
     rng = random.Random(f"{seed}:{start}")
