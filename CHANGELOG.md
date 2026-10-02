@@ -127,6 +127,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Unchanged lessons are not re-parsed, and the semantic arm's slugs are de-duplicated in linear time.** A
+  long-lived process (MCP server, warm worker) re-read the same lessons' YAML on every retrieval, about 5 ms each
+  with PyYAML's pure-Python loader; `frontmatter.read` now memoises the parse by the exact frontmatter text (a copy
+  per read, never a malformed one). De-duplicating the semantic arm's output scanned a list, quadratic in the
+  importance override's length (65 ms per retrieval at 10,000 lessons). MCP `retrieve` at 10,000 lessons: 518 to
+  372 ms p50, 633 to 398 ms p95.
 - **One directory pass per retrieval.** A retrieval listed the lessons directory up to five times (the index
   staleness check before and after a refresh, the lesson cache, and the semantic arm's two newer-than-the-index
   checks), each a stat of every lesson. Inside `lesson_cache.one_scan()` every reader shares one listing; MCP

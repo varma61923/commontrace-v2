@@ -613,3 +613,67 @@ class TestEpisodeFrontmatterRequiredFields:
             assert verdict in self.VALID_VERDICTS, (
                 f"{os.path.basename(path)}: verdict '{verdict}' not in {self.VALID_VERDICTS}"
             )
+
+
+class TestParsedFrontmatterIsMemoised:
+    """A long-lived process re-reads the same unchanged lessons every retrieval;
+    PyYAML's pure-Python loader is ~5 ms a file. The parse is memoised by the
+    exact frontmatter text, and every read still gets its own copy."""
+
+    def _lesson(self, tmp_path, description="Retry with a key.", name="l"):
+        from commontrace import frontmatter
+
+        path = tmp_path / f"lesson_{name}.md"
+        frontmatter.write(str(path), {"name": name, "description": description, "tags": ["a"]}, "## Rule\nx\n")
+        return str(path)
+
+    def test_an_unchanged_file_is_parsed_once(self, tmp_path, monkeypatch):
+        from commontrace import frontmatter
+
+        path = self._lesson(tmp_path, name="once")
+        frontmatter._PARSED.clear()
+        calls = []
+        real = frontmatter.yaml.load
+        monkeypatch.setattr(frontmatter.yaml, "load", lambda *a, **k: calls.append(1) or real(*a, **k))
+        for _ in range(3):
+            assert frontmatter.read(path)[0]["description"] == "Retry with a key."
+        assert len(calls) == 1
+
+    def test_an_edited_file_is_parsed_again(self, tmp_path):
+        from commontrace import frontmatter
+
+        path = self._lesson(tmp_path, name="edit")
+        frontmatter.read(path)
+        self._lesson(tmp_path, description="Changed.", name="edit")
+        assert frontmatter.read(path)[0]["description"] == "Changed."
+
+    def test_each_read_gets_its_own_copy(self, tmp_path):
+        from commontrace import frontmatter
+
+        path = self._lesson(tmp_path, name="copy")
+        first, _ = frontmatter.read(path)
+        first["tags"].append("mutated")
+        first["description"] = "mutated"
+        second, _ = frontmatter.read(path)
+        assert second["tags"] == ["a"] and second["description"] == "Retry with a key."
+
+    def test_malformed_frontmatter_is_never_cached(self, tmp_path):
+        import pytest
+
+        from commontrace import frontmatter
+
+        path = tmp_path / "lesson_bad.md"
+        path.write_text("---\nname: [unclosed\n---\nbody\n", encoding="utf-8")
+        for _ in range(2):
+            with pytest.raises(frontmatter.FrontmatterError):
+                frontmatter.read(str(path))
+        assert "name: [unclosed\n" not in frontmatter._PARSED
+
+    def test_the_memo_is_bounded(self, tmp_path, monkeypatch):
+        from commontrace import frontmatter
+
+        monkeypatch.setattr(frontmatter, "_PARSED_MAX", 3)
+        frontmatter._PARSED.clear()
+        for i in range(6):
+            frontmatter.read(self._lesson(tmp_path, description=f"d{i}", name=f"b{i}"))
+        assert len(frontmatter._PARSED) == 3

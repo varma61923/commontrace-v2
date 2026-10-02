@@ -486,14 +486,16 @@ def _slug_of_semantic_line(line: str) -> str | None:
 
 
 def _slugs_from_semantic_output(stdout: str) -> list[str]:
-    seen: list[str] = []
+    # A slug can legitimately appear twice (top-k hit plus importance-floor
+    # override); the holdout must treat it as one eligible lesson. A dict, not
+    # a list scan: the override can list thousands of lessons, and the scan
+    # made this quadratic (65 ms per retrieval at 10,000 lessons).
+    seen: dict[str, None] = {}
     for line in stdout.splitlines():
         slug = _slug_of_semantic_line(line)
-        # A slug can legitimately appear twice (top-k hit plus importance-floor
-        # override); the holdout must treat it as one eligible lesson.
-        if slug is not None and slug not in seen:
-            seen.append(slug)
-    return seen
+        if slug is not None:
+            seen.setdefault(slug, None)
+    return list(seen)
 
 
 _INDEX_HEADER = re.compile(r"^# Index: \d+ lessons, model=(?P<model>\S+)\s*$", re.MULTILINE)

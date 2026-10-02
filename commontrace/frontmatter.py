@@ -1,7 +1,9 @@
 """Read/write Markdown files with YAML frontmatter (the CommonTrace file format)."""
 from __future__ import annotations
 
+import collections
 import contextlib
+import copy
 import os
 import re
 import stat
@@ -124,6 +126,36 @@ class FrontmatterError(ValueError):
     a raw yaml.YAMLError/AttributeError/OSError traceback reach the user."""
 
 
+#: Parsed frontmatter by its exact text, most recently used last. PyYAML's
+#: pure-Python loader takes about 5 ms per lesson where libyaml is absent, and
+#: a long-lived process (the MCP server, the warm worker) re-reads the same
+#: unchanged lessons on every retrieval: about 90 ms of an MCP `retrieve` at
+#: 10,000 lessons. Keyed by the text itself, so an edited file is parsed
+#: again and an unchanged one never is; a malformed one is never cached.
+_PARSED: "collections.OrderedDict[str, Any]" = collections.OrderedDict()
+_PARSED_MAX = 4096
+
+
+def _parse(fm_text: str) -> Any:
+    """`fm_text` parsed with the strict loader; a fresh copy every call, so a
+    caller that edits what it read (lesson approve, revise) changes only its own."""
+    cached = _PARSED.get(fm_text)
+    if cached is None:
+        # bandit flags any yaml.load() call regardless of Loader, but
+        # _StrictBoolLoader is a yaml.SafeLoader subclass (see its class
+        # docstring above) that only narrows two implicit-conversion
+        # rules -- it accepts no more of the YAML spec than SafeLoader
+        # does, so this carries none of the arbitrary-object-instantiation
+        # risk B506 exists to catch.
+        cached = yaml.load(fm_text, Loader=_StrictBoolLoader)  # nosec B506
+        _PARSED[fm_text] = cached
+        while len(_PARSED) > _PARSED_MAX:
+            _PARSED.popitem(last=False)
+    else:
+        _PARSED.move_to_end(fm_text)
+    return copy.deepcopy(cached)
+
+
 def read(path: str) -> tuple[dict[str, Any], str]:
     """Return (frontmatter_dict, body_markdown) for a `---\nYAML\n---\nbody` file."""
     # A path the user typed -- `lesson validate /nope/x.md`, or a directory
@@ -143,13 +175,7 @@ def read(path: str) -> tuple[dict[str, Any], str]:
         return {}, content
     fm_text = content[delims[0].end():delims[1].start()]
     try:
-        # bandit flags any yaml.load() call regardless of Loader, but
-        # _StrictBoolLoader is a yaml.SafeLoader subclass (see its class
-        # docstring above) that only narrows two implicit-conversion
-        # rules -- it accepts no more of the YAML spec than SafeLoader
-        # does, so this carries none of the arbitrary-object-instantiation
-        # risk B506 exists to catch.
-        fm = yaml.load(fm_text, Loader=_StrictBoolLoader)  # nosec B506
+        fm = _parse(fm_text)
     except yaml.YAMLError as exc:
         raise FrontmatterError(f"{path}: malformed YAML frontmatter: {exc}") from exc
     if fm is None:
