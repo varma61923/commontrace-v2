@@ -253,12 +253,12 @@ def test_attention_query_load_importances_mtimes_and_staleness(tmp_path, monkeyp
     assert "modified after the index was last built" in reasons[0]
 
 
-def test_query_cmd_importance_floor_flag():
+def test_query_cmd_importance_floor_flag(tmp_path):
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers()
     query_cmd.add_parser(subparsers)
 
-    args = parser.parse_args(["query", "my task", "--include-importance-floor", "3"])
+    args = parser.parse_args(["query", "my task", "--include-importance-floor", "3", "--dest", str(tmp_path)])
     assert args.include_importance_floor == 3
 
     with patch("commontrace.commands.query_cmd._has_candidates", return_value=True), \

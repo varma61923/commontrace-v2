@@ -68,10 +68,17 @@ def test_a_config_file_naming_v3_without_a_floor_gets_v3s_floor(tmp_path):
 def test_the_holdout_log_records_v3_when_the_store_uses_it(tmp_path):
     root = str(tmp_path)
     assert main(["init", "--dest", root]) == 0
-    from tests.test_mcp_server import _write_lesson
-
-    _write_lesson(root, "retry-uploads", body="Retry with backoff.",
-                  description="retry the failed upload with backoff")
+    from commontrace import lesson_io, paths
+    lesson_path = os.path.join(paths.lessons_dir(root), "lesson_retry-uploads.md")
+    os.makedirs(os.path.dirname(lesson_path), exist_ok=True)
+    fm = {
+        "name": "retry-uploads",
+        "description": "retry the failed upload with backoff",
+        "status": "active",
+        "importance": 3,
+        "tags": [],
+    }
+    lesson_io.write_lesson(lesson_path, fm, "Retry with backoff.", root=root, actor="test", reason="fixture")
     assert main(["retrieval", "--scorer", "idf-v3", "--dest", root]) == 0
     holdout_io.configure(root, rate=0.5)
     assert main(["query", "--lexical", "--experiment", "--occasion-id", "o-1",
