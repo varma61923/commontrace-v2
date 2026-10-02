@@ -45,7 +45,6 @@ class TestVisionDisabledByDefault:
         path.write_bytes(bytes(range(256)) * 4)
         monkeypatch.delenv("COMMONTRACE_VISION_ENABLED", raising=False)
         assert isinstance(vision.describe_image(str(path)), str)
-        # Even forced on, a failing model degrades to metadata, not a crash.
         monkeypatch.setenv("COMMONTRACE_VISION_ENABLED", "1")
         monkeypatch.setenv("COMMONTRACE_LLM_API_KEY", "k")
         out = vision.describe_image(str(path), enabled=True)

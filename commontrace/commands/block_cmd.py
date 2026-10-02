@@ -1,4 +1,4 @@
-"""`commontrace block`: manage stateful agent working memory blocks (Letta Core Memory pattern)."""
+"""`commontrace block`: manage stateful agent working memory blocks."""
 from __future__ import annotations
 
 import argparse
@@ -14,18 +14,15 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     sub = p.add_subparsers(dest="subcommand", required=True)
 
-    # list
     p_list = sub.add_parser("list", help="List all configured memory blocks.")
     p_list.add_argument("--dest", default=None)
     p_list.set_defaults(func=run_list)
 
-    # get
     p_get = sub.add_parser("get", help="Show the content and metadata of a memory block.")
     p_get.add_argument("name", help="Name of the memory block (e.g. persona, human, project).")
     p_get.add_argument("--dest", default=None)
     p_get.set_defaults(func=run_get)
 
-    # set
     p_set = sub.add_parser("set", help="Create or overwrite a memory block.")
     p_set.add_argument("name", help="Name of the memory block.")
     p_set.add_argument("content", help="New text content for the block.")
@@ -35,7 +32,6 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p_set.add_argument("--dest", default=None)
     p_set.set_defaults(func=run_set)
 
-    # append
     p_app = sub.add_parser("append", help="Append text to an existing memory block.")
     p_app.add_argument("name", help="Name of the memory block.")
     p_app.add_argument("text", help="Text to append.")
@@ -44,7 +40,6 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p_app.add_argument("--dest", default=None)
     p_app.set_defaults(func=run_append)
 
-    # replace
     p_rep = sub.add_parser("replace", help="Replace exact text within a memory block.")
     p_rep.add_argument("name", help="Name of the memory block.")
     p_rep.add_argument("--old", required=True, help="Exact substring to find.")
@@ -54,13 +49,11 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p_rep.add_argument("--dest", default=None)
     p_rep.set_defaults(func=run_replace)
 
-    # history
     p_hist = sub.add_parser("history", help="Show revision audit history.")
     p_hist.add_argument("name", nargs="?", default="", help="Optional block name to filter history.")
     p_hist.add_argument("--dest", default=None)
     p_hist.set_defaults(func=run_history)
 
-    # delete
     p_del = sub.add_parser("delete", help="Delete a memory block.")
     p_del.add_argument("name", help="Name of the memory block to delete.")
     p_del.add_argument("--actor", default="cli")

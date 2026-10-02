@@ -1,4 +1,3 @@
-"""Per-lesson TTL expiry + fact forget/undo (T2)."""
 from __future__ import annotations
 
 import json
@@ -9,9 +8,6 @@ import pytest
 from commontrace import frontmatter, hierarchical, lesson_cache, paths, ttl
 from commontrace.cli import main
 
-# ---------------------------------------------------------------------------
-# helpers
-# ---------------------------------------------------------------------------
 
 def _write_lesson(root, slug, description="force-push shared branch guidance",
                   expires=None, status="active"):
@@ -43,10 +39,6 @@ def _result_slugs(out):
     return [ln for ln in out.splitlines() if "rel=" in ln]
 
 
-# ---------------------------------------------------------------------------
-# lesson `expires`: frontmatter validation + ttl helpers
-# ---------------------------------------------------------------------------
-
 class TestExpiresValidation:
     def test_validate_expires_accepts_date_and_iso(self):
         assert frontmatter.validate_expires("2026-12-31").startswith("2026-12-31")
@@ -66,36 +58,26 @@ class TestExpiresValidation:
         assert ttl.lesson_is_expired({}, "2100-01-01") is False
         assert ttl.lesson_is_expired({"expires": ""}, "2100-01-01") is False
 
-    def test_count_partition_summarize_agree(self):
+    def test_count_and_summarize_agree(self):
         lessons = [
             ("a", {"expires": "2000-01-01"}),
             ("b", {"expires": "2100-01-01"}),
             ("c", {}),
         ]
         assert ttl.count_expired(lessons) == 1
-        live, expired = ttl.partition_expired(lessons)
-        assert [p for p, _ in live] == ["b", "c"]
-        assert [p for p, _ in expired] == ["a"]
         summary = ttl.summarize(lessons, [])
         assert summary["expired_lessons"] == 1
         assert summary["total_lessons"] == 3
         assert "hidden by TTL" in ttl.format_notice(1)
 
 
-# ---------------------------------------------------------------------------
-# filter_eligible: hide-by-default + --show-expired semantics
-# ---------------------------------------------------------------------------
-
 class TestFilterEligibleExpiry:
     def test_expiry_boundary_exact_instant(self):
         lessons = [("p", {"expires": "2026-04-30T12:00:00Z"})]
-        # valid_from <= as_of < expires: one second before is still eligible
         assert len(lesson_cache.filter_eligible(
             lessons, as_of="2026-04-30T11:59:59Z")) == 1
-        # moment >= expires: expired (exclusive bound, like valid_until)
         assert lesson_cache.filter_eligible(
             lessons, as_of="2026-04-30T12:00:00Z") == []
-        # ... unless explicitly requested
         assert len(lesson_cache.filter_eligible(
             lessons, as_of="2026-04-30T12:00:00Z",
             show_expired=True)) == 1
@@ -114,10 +96,6 @@ class TestFilterEligibleExpiry:
         assert lesson_cache.filter_eligible(lessons) == []
         assert len(lesson_cache.filter_eligible(lessons, show_expired=True)) == 1
 
-
-# ---------------------------------------------------------------------------
-# query CLI: hide-by-default, --show-expired passthrough, notice
-# ---------------------------------------------------------------------------
 
 class TestQueryShowExpired:
     def test_expired_hidden_with_notice_by_default(self, store, capsys):
@@ -163,10 +141,6 @@ class TestQueryShowExpired:
         assert "hidden by TTL" not in capsys.readouterr().out
 
 
-# ---------------------------------------------------------------------------
-# facts: expires_at + forgotten
-# ---------------------------------------------------------------------------
-
 class TestFactExpiry:
     def test_expires_at_stored_and_validated(self, store):
         fact, action = hierarchical.add_fact(
@@ -207,15 +181,12 @@ class TestForgetUndo:
         forgotten = hierarchical.forget_fact(store, fact.id)
         assert forgotten.forgotten is True
         assert forgotten.revision != rev
-        # hidden from default listings, all statuses, even point-in-time
         assert hierarchical.list_facts(store) == []
         assert hierarchical.list_facts(store, as_of="2026-02-01T00:00:00Z",
                                        status="") == []
         shown = hierarchical.list_facts(store, include_forgotten=True)
         assert [f.id for f in shown] == [fact.id]
-        # search hides forgotten too
         assert hierarchical.search_facts(store, "debug flag") == []
-        # undo restores
         restored = hierarchical.forget_fact(store, fact.id, undo=True)
         assert restored.forgotten is False
         assert [f.id for f in hierarchical.list_facts(store)] == [fact.id]
@@ -289,7 +260,6 @@ class TestFactBackCompat:
         facts = hierarchical.load_facts(store)
         assert facts["fact-legacy0001"].expires_at is None
         assert facts["fact-legacy0001"].forgotten is False
-        # ... and it still lists like any other active fact
         assert any(f.id == "fact-legacy0001"
                    for f in hierarchical.list_facts(store))
 

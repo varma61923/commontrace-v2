@@ -62,8 +62,6 @@ def _infer_format(path: str, explicit: str | None) -> str:
         explicit = "jsonl"
     if explicit in ("csv", "cogx"):
         return explicit
-    # JSONL rows and cogx envelopes share no extension convention, so peek:
-    # a cogx/v1 envelope is unambiguous by content and wins over the default.
     from commontrace import interop
 
     if interop.detect_file_format(path) == "cogx":

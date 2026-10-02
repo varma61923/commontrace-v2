@@ -6,11 +6,9 @@ from commontrace import frontmatter, graph, retrieval
 
 
 def test_t3_graph_boost_lesson_retrieval_lifecycle(isolated_store: str):
-    """E2E-T3-CB-3: Knowledge graph linking boosts candidate lesson ranking in retrieval query."""
     lessons_dir = os.path.join(isolated_store, "memory", "lessons")
     os.makedirs(lessons_dir, exist_ok=True)
 
-    # Lesson 1: General retry
     l1_path = os.path.join(lessons_dir, "lesson_generic_retry.md")
     frontmatter.write(
         l1_path,
@@ -24,7 +22,6 @@ def test_t3_graph_boost_lesson_retrieval_lifecycle(isolated_store: str):
         "Retry transient network requests up to 3 times.",
     )
 
-    # Lesson 2: Specific Stripe rate limit
     l2_path = os.path.join(lessons_dir, "lesson_stripe_backoff.md")
     frontmatter.write(
         l2_path,
@@ -38,12 +35,10 @@ def test_t3_graph_boost_lesson_retrieval_lifecycle(isolated_store: str):
         "Handle HTTP 429 errors from Stripe by sleeping with randomized jitter.",
     )
 
-    # Build knowledge graph linking service:stripe to lesson_stripe_backoff
     graph.add_node(isolated_store, "service:stripe", entity_type="service", name="Stripe API")
     graph.add_node(isolated_store, "lesson:lesson_stripe_backoff", entity_type="lesson", name="Stripe Backoff")
     graph.add_edge(isolated_store, "service:stripe", "lesson:lesson_stripe_backoff", "resolves", weight=1.0)
 
-    # Query with graph boost lookup
     task = "Investigate HTTP 429 errors when sending requests to Stripe API"
     candidate_slugs = ["lesson_generic_retry", "lesson_stripe_backoff"]
     boosts = graph.graph_boost_for_lessons(isolated_store, task, candidate_slugs)

@@ -594,8 +594,14 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         occasion_id: str = "",
         brief: bool = False,
         pinned: list[str] | None = None,
+        scope: str = "",
+        as_of: str = "",
     ) -> dict:
         """Search this org's traces by full-text query and/or tags.
+
+        `scope` keeps traces routed to that scope plus unscoped (global)
+        ones; `as_of` (ISO 8601) keeps traces whose validity window covers
+        that moment.
 
         Describe the task you are about to attempt, in your own words and in
         a full sentence -- that is the query shape this is built for. Terms
@@ -655,7 +661,8 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
             org_id = auth.get_current_org_id()
             async with session_scope(session_factory) as session:
                 result = await crud.search_traces(
-                    session, org_id, query=query, tags=tags, limit=limit, offset=offset, brief=brief
+                    session, org_id, query=query, tags=tags, limit=limit, offset=offset, brief=brief,
+                    scope=scope, as_of=as_of or None,
                 )
                 if occasion_id:
                     result["holdout"] = await crud.holdout_for_results(
@@ -677,6 +684,9 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         profile: str = "",
         outcome: dict | None = None,
         idempotency_key: str | None = None,
+        scopes: list[str] | None = None,
+        valid_from: str = "",
+        valid_until: str = "",
     ) -> dict:
         """Contribute a new trace. Returns its id, quarantine status, and
         `possible_duplicates` -- ids of other live traces in this org a
@@ -735,6 +745,9 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
                     outcome=outcome,
                     actor=auth.get_current_actor(),
                     idempotency_key=idempotency_key,
+                    scopes=scopes,
+                    valid_from=valid_from or None,
+                    valid_until=valid_until or None,
                 )
             return result
         except Exception as exc:  # noqa: BLE001

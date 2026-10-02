@@ -3,6 +3,10 @@ from __future__ import annotations
 import os
 
 import pytest
+
+pytest.importorskip("sqlalchemy")
+pytest.importorskip("asyncpg")
+pytest.importorskip("pytest_asyncio")
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -39,7 +43,6 @@ async def hub_session():
 
 @pytest.mark.asyncio
 async def test_t1_hub_contribute_with_scopes_and_validity(hub_session):
-    """E2E-T1-HUB-1: Contribute trace with scoped routing and bitemporal validity bounds."""
     session, org_id = hub_session
     config = HubConfig(database_url=TEST_DATABASE_URL)
     limiter = RateLimiter(per_minute=1000, burst=1000)
@@ -60,12 +63,10 @@ async def test_t1_hub_contribute_with_scopes_and_validity(hub_session):
 
 @pytest.mark.asyncio
 async def test_t1_hub_scoped_search_containment(hub_session):
-    """E2E-T1-HUB-2: Hub search by scope matches explicitly scoped and global traces, excluding others."""
     session, org_id = hub_session
     config = HubConfig(database_url=TEST_DATABASE_URL)
     limiter = RateLimiter(per_minute=1000, burst=1000)
 
-    # Scoped trace: infra
     t_infra = await crud.contribute_trace(
         session, org_id, config, limiter,
         title="Infra Terraform state lock",
@@ -75,7 +76,6 @@ async def test_t1_hub_scoped_search_containment(hub_session):
         scopes=["infra"],
     )
 
-    # Scoped trace: frontend
     t_front = await crud.contribute_trace(
         session, org_id, config, limiter,
         title="Frontend Vite bundling error",
@@ -85,7 +85,6 @@ async def test_t1_hub_scoped_search_containment(hub_session):
         scopes=["frontend"],
     )
 
-    # Global trace
     t_global = await crud.contribute_trace(
         session, org_id, config, limiter,
         title="Global git pre-commit hook",
@@ -95,7 +94,6 @@ async def test_t1_hub_scoped_search_containment(hub_session):
         scopes=[],
     )
 
-    # Search with scope='infra'
     found_infra = await crud.search_traces(session, org_id, scope="infra")
     found_ids = {t["id"] for t in found_infra["traces"]}
     assert t_infra["id"] in found_ids, "Infra-scoped trace must be included"
@@ -105,12 +103,10 @@ async def test_t1_hub_scoped_search_containment(hub_session):
 
 @pytest.mark.asyncio
 async def test_t1_hub_bitemporal_as_of_filtering(hub_session):
-    """E2E-T1-HUB-3: Hub search with as_of point-in-time filtering matches valid time window."""
     session, org_id = hub_session
     config = HubConfig(database_url=TEST_DATABASE_URL)
     limiter = RateLimiter(per_minute=1000, burst=1000)
 
-    # 2025 trace
     t_2025 = await crud.contribute_trace(
         session, org_id, config, limiter,
         title="2025 Python 3.9 migration",
@@ -121,7 +117,6 @@ async def test_t1_hub_bitemporal_as_of_filtering(hub_session):
         valid_until="2025-12-31T23:59:59Z",
     )
 
-    # 2026 trace
     t_2026 = await crud.contribute_trace(
         session, org_id, config, limiter,
         title="2026 Python 3.12 migration",
@@ -132,13 +127,11 @@ async def test_t1_hub_bitemporal_as_of_filtering(hub_session):
         valid_until="2026-12-31T23:59:59Z",
     )
 
-    # Query as of mid-2025
     found_2025 = await crud.search_traces(session, org_id, as_of="2025-06-01T00:00:00Z")
     ids_2025 = {t["id"] for t in found_2025["traces"]}
     assert t_2025["id"] in ids_2025
     assert t_2026["id"] not in ids_2025
 
-    # Query as of mid-2026
     found_2026 = await crud.search_traces(session, org_id, as_of="2026-06-01T00:00:00Z")
     ids_2026 = {t["id"] for t in found_2026["traces"]}
     assert t_2026["id"] in ids_2026
@@ -146,15 +139,20 @@ async def test_t1_hub_bitemporal_as_of_filtering(hub_session):
 
 
 def test_t1_hub_doctor_health_checks(isolated_store: str):
-    """E2E-T1-HUB-4: Diagnostics command commontrace doctor passes all environment and store health checks."""
     res_doc = run_cli("doctor", dest=isolated_store)
     res_doc.assert_success()
     assert "ok" in res_doc.stdout.lower() or "check" in res_doc.stdout.lower()
 
 
 def test_t1_hub_alembic_migration_exists():
-    """E2E-T1-HUB-5: Verify Alembic migrations directory contains required migrations."""
-    alembic_dir = "/root/Test/commontrace-v2/hub/alembic/versions"
-    assert os.path.exists(alembic_dir), "Alembic versions directory must exist"
-    migration_files = [f for f in os.listdir(alembic_dir) if f.endswith(".py")]
-    assert len(migration_files) >= 35, "Must have comprehensive Alembic migrations in hub"
+    """The migration chain has one head, and it includes the scopes/validity migration."""
+    pytest.importorskip("alembic")
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    script = ScriptDirectory.from_config(Config(os.path.join(repo, "hub", "alembic.ini")))
+    heads = script.get_heads()
+    assert len(heads) == 1, f"migration chain must have one head, got {heads}"
+    chain = {rev.revision for rev in script.walk_revisions()}
+    assert "2fa881205556" in chain

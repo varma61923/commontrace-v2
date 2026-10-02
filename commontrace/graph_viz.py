@@ -1,8 +1,4 @@
-"""Self-contained interactive graph viz export (offline, no CDN).
-
-Renders the bi-temporal knowledge graph as a single HTML string with a
-hand-rolled force-directed SVG + vanilla JS layout. Works offline.
-"""
+"""Self-contained interactive graph viz export (offline, no CDN)."""
 from __future__ import annotations
 
 import html
@@ -46,7 +42,6 @@ def _node_field(node: Any, name: str, default: Any = None) -> Any:
 
 def _edge_field(edge: Any, name: str, default: Any = None) -> Any:
     if isinstance(edge, dict):
-        # support valid_from alias for valid_at
         if name == "valid_at" and "valid_at" not in edge and "valid_from" in edge:
             return edge.get("valid_from", default)
         if name == "valid_from" and "valid_from" not in edge and "valid_at" in edge:
@@ -86,14 +81,11 @@ def _node_is_deleted(node: Any) -> bool:
 
 
 def _edge_is_inactive(edge: Any, moment: Any) -> bool:
-    """True when the edge is NOT active at moment (None = now)."""
     try:
-        # Reuse canonical logic when the object looks like a GraphEdge.
         if not isinstance(edge, dict) and hasattr(edge, "valid_at"):
             return not _graph_mod._is_active_edge(edge, moment)
     except Exception:
         pass
-    # Generic dict/alias-tolerant fallback (supports valid_from).
     valid_raw = _edge_field(edge, "valid_at", None)
     if valid_raw is None:
         valid_raw = _edge_field(edge, "valid_from", None)
@@ -127,14 +119,7 @@ def _edge_is_inactive(edge: Any, moment: Any) -> bool:
 
 
 def render_html(root: str, as_of: str | None = None) -> str:
-    """Render the graph at ``root`` as a self-contained HTML string.
-
-    Args:
-        root: store root containing memory/graph/nodes.jsonl + edges.jsonl.
-        as_of: optional ISO moment for bi-temporal filtering. When given,
-            only edges active at that moment are included. When None, all
-            edges are included with inactive ones dimmed.
-    """
+    """Render the graph at ``root`` as a self-contained HTML string."""
     try:
         nodes_map = _graph_mod.load_nodes(root)
     except Exception:
@@ -153,14 +138,8 @@ def render_html(root: str, as_of: str | None = None) -> str:
     if not isinstance(all_edges, list):
         all_edges = []
 
-    moment = None
-    if as_of:
-        try:
-            moment = _lesson_cache.parse_moment(as_of)
-        except Exception:
-            moment = None
+    moment = _lesson_cache.parse_moment(as_of) if as_of else None
 
-    # Partition edges into active / inactive at the requested moment.
     active_edges: list[Any] = []
     inactive_edges: list[Any] = []
     for e in all_edges:
@@ -169,12 +148,8 @@ def render_html(root: str, as_of: str | None = None) -> str:
         else:
             active_edges.append(e)
 
-    # When as_of is given, filter strictly (exclude inactive). Otherwise
-    # include inactive edges but render them dimmed so superseded history
-    # stays visible.
     shown_edges = active_edges if moment is not None else (active_edges + inactive_edges)
 
-    # Stable ordering for deterministic output.
     def _node_sort(n: Any) -> str:
         return str(_node_field(n, "id", ""))
 
@@ -188,7 +163,6 @@ def render_html(root: str, as_of: str | None = None) -> str:
     node_list = sorted(node_list, key=_node_sort)
     shown_edges = sorted(shown_edges, key=_edge_sort)
 
-    # Version chains grouped by root/entity.
     chains: dict[str, list[Any]] = {}
     for n in node_list:
         chains.setdefault(_chain_key(n), []).append(n)
@@ -201,7 +175,6 @@ def render_html(root: str, as_of: str | None = None) -> str:
     n_superseded = sum(1 for n in node_list if _node_is_superseded(n))
     n_deleted = sum(1 for n in node_list if _node_is_deleted(n))
 
-    # ---- build SVG elements with initial geometric layout ----
     W, H = 800, 600
     pos: list[tuple[float, float]] = []
     n_count = max(1, len(node_list))
@@ -232,7 +205,6 @@ def render_html(root: str, as_of: str | None = None) -> str:
             f"</g>"
         )
 
-    # index lookup for endpoints
     id_to_idx = {str(_node_field(n, "id", "")): i for i, n in enumerate(node_list)}
     svg_edges: list[str] = []
     for e in shown_edges:
@@ -263,7 +235,6 @@ def render_html(root: str, as_of: str | None = None) -> str:
             f"</g>"
         )
 
-    # ---- legend ----
     present_types = sorted({str(_node_field(n, "entity_type", "concept")) for n in node_list})
     if not present_types:
         present_types = ["concept"]
@@ -272,10 +243,8 @@ def render_html(root: str, as_of: str | None = None) -> str:
         f'style="background:{_esc(_color_for(t))}"></span>{_esc(t)}</span>'
         for t in present_types
     )
-    # Edge vocabulary legend (guarantees vocab presence even on empty graphs).
     vocab_items = "".join(f"<code>{_esc(r)}</code>" for r in LABELED_RELATIONS)
 
-    # ---- chains panel ----
     chain_blocks: list[str] = []
     for key in sorted(chains):
         members = chains[key]
@@ -291,7 +260,6 @@ def render_html(root: str, as_of: str | None = None) -> str:
         )
     chains_html = "\n".join(chain_blocks) if chain_blocks else "<p>No version chains.</p>"
 
-    # ---- embedded data for JS inspect ----
     js_nodes = []
     for n in node_list:
         js_nodes.append(
@@ -328,7 +296,6 @@ def render_html(root: str, as_of: str | None = None) -> str:
             }
         )
     data_json = json.dumps({"nodes": js_nodes, "edges": js_edges})
-    # Avoid breaking out of the embedding script tag.
     data_json = data_json.replace("</", "<\\/")
 
     counts_text = (

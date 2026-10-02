@@ -1,4 +1,3 @@
-"""T3 runtime tests: git-backed memory, watch cascade, consolidation daemon."""
 from __future__ import annotations
 
 import argparse
@@ -18,15 +17,11 @@ GIT = shutil.which("git")
 needs_git = pytest.mark.skipif(GIT is None, reason="git not on PATH")
 
 
-# ---------------------------------------------------------------- git
-
-
 @needs_git
 def test_git_init_commit_log(tmp_path):
     root = str(tmp_path)
     init = memory_git.init_repo(root)
     assert init["ok"] and init["git_available"]
-    # Second init is idempotent.
     again = memory_git.init_repo(root)
     assert again["ok"] and again.get("already") is True
 
@@ -64,14 +59,37 @@ def test_git_graceful_when_not_a_repo(tmp_path):
     assert logged["ok"] is False and logged["entries"] == []
 
 
+@needs_git
+def test_a_store_inside_another_repo_is_never_committed(tmp_path):
+    project = tmp_path / "project"
+    store = project / "fleet"
+    store.mkdir(parents=True)
+    assert memory_git.init_repo(str(project))["ok"]
+    (project / "work.txt").write_text("unrelated work in progress\n")
+    (store / "memory").mkdir()
+    (store / "memory" / "facts.jsonl").write_text("{}\n")
+
+    assert memory_git.is_repo(str(store)) and not memory_git.owns_repo(str(store))
+    result = memory_git.commit_all(str(store), "commontrace: fact forget x")
+    assert result["committed"] is False
+    assert memory_git.log(str(project))["entries"] == []
+
+
+@needs_git
+def test_commits_stay_inside_the_store(tmp_path):
+    store = tmp_path / "fleet"
+    assert memory_git.init_repo(str(store))["ok"]
+    assert memory_git.owns_repo(str(store))
+    (store / "a.txt").write_text("a\n")
+    first = memory_git.commit_all(str(store), "snapshot")
+    assert first["committed"] and first["commit"] == memory_git.head_hash(str(store))
+
+
 def test_git_graceful_when_binary_missing(tmp_path, monkeypatch):
     monkeypatch.setattr(memory_git, "_git_binary", lambda: None)
     assert memory_git.init_repo(str(tmp_path))["ok"] is False
     assert memory_git.commit_all(str(tmp_path), "x")["committed"] is False
     assert memory_git.log(str(tmp_path))["entries"] == []
-
-
-# ---------------------------------------------------------------- watch
 
 
 def _seed_store(root: str) -> tuple[str, str]:
@@ -92,7 +110,7 @@ def test_watch_detects_changed_file(tmp_path):
     state = os.path.join(root, "state.json")
 
     first = watch_mod.scan(root, state)
-    assert len(first) == 2  # baseline: everything present counts as changed
+    assert len(first) == 2
 
     second = watch_mod.scan(root, state)
     assert second == []
@@ -116,20 +134,15 @@ def test_reconcile_rebuilds_lesson_cache(tmp_path):
     assert result["changed"], "baseline pass must report files"
     assert result["rebuilt"] is True
     assert result["cache"]["ok"] is True
-    # Second pass: quiet.
     quiet = watch_mod.reconcile(root, state)
     assert quiet["changed"] == [] and quiet["rebuilt"] is False
 
-    # Touch the graph file only: still detected, cache refresh attempted.
     time.sleep(0.02)
     with open(os.path.join(root, "memory", "graph", "edges.jsonl"), "a",
               encoding="utf-8") as fh:
         fh.write('{"source": "b", "target": "c"}\n')
     again = watch_mod.reconcile(root, state)
     assert again["changed"] == [os.path.join("memory", "graph", "edges.jsonl")]
-
-
-# ---------------------------------------------------------------- daemon
 
 
 def test_should_run_semantics():
@@ -166,7 +179,6 @@ def test_daemon_run_once_invokes_hooks(tmp_path, monkeypatch):
     assert result["ok"] and result["ran"] is True
     assert calls == [os.path.abspath(root)]
     assert result["hooks"]["dream"] == 0
-    # Crash marker cleaned up; daemon state records last_run.
     assert not os.path.exists(daemon_mod.marker_path(root))
     with open(daemon_mod.state_path(root), encoding="utf-8") as fh:
         saved = json.load(fh)
@@ -205,9 +217,6 @@ def test_daemon_run_once_real_hooks_on_empty_store(tmp_path):
     assert "dream" in result["hooks"] and "consolidate" in result["hooks"]
 
 
-# ---------------------------------------------------------------- CLI parsers
-
-
 def _parser_with(mod) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="commontrace")
     sub = parser.add_subparsers(dest="command")
@@ -223,7 +232,7 @@ def test_watch_cli_parsers_exist(capsys):
     root_dir = os.getcwd()
     assert watch_cmd.run(args) == 0
     assert "watch" in capsys.readouterr().out.lower()
-    assert root_dir  # silence linters about unused
+    assert root_dir
 
 
 def test_watch_cli_reports_changes(tmp_path, capsys, monkeypatch):
@@ -245,225 +254,3 @@ def test_daemon_cli_parsers_exist(tmp_path, monkeypatch, capsys):
     assert callable(args.func)
     assert daemon_cmd.run(args) == 0
     assert "daemon" in capsys.readouterr().out.lower()
-
-
-# ---------------------------------------------------------------- memory constraints
-
-
-@needs_git
-def test_memory_constraints_validation(tmp_path):
-    root = str(tmp_path)
-    memory_git.init_repo(root)
-
-    # Create memory directory with a file
-    mem_dir = os.path.join(root, "memory", "lessons")
-    os.makedirs(mem_dir, exist_ok=True)
-    with open(os.path.join(mem_dir, "lesson_test.md"), "w", encoding="utf-8") as f:
-        f.write("# Test\n" * 10)  # Small file
-
-    # Validation should pass
-    result = memory_git.validate_memory_tree(root)
-    assert result["ok"] is True
-    assert len(result["errors"]) == 0
-
-    # Create a file that exceeds default limit
-    with open(os.path.join(mem_dir, "lesson_large.md"), "w", encoding="utf-8") as f:
-        f.write("# Large\n" * 10000)  # Exceeds 20k chars
-
-    result = memory_git.validate_memory_tree(root)
-    assert result["ok"] is False
-    assert len(result["errors"]) > 0
-    assert "exceeds limit" in str(result["errors"])
-
-
-@needs_git
-def test_memory_constraints_config_loading(tmp_path):
-    root = str(tmp_path)
-    memory_git.init_repo(root)
-
-    # Test default constraints
-    config = memory_git._load_constraints(root)
-    assert config.max_file_characters == 20_000
-    assert config.max_core_memory_characters == 65_536
-    assert config.max_depth == 2
-
-    # Create custom config
-    config_path = os.path.join(root, memory_git.CONSTRAINTS_CONFIG_PATH)
-    with open(config_path, "w", encoding="utf-8") as f:
-        json.dump({
-            "version": 1,
-            "maxFileCharacters": 50000,
-            "maxCoreMemoryCharacters": 100000,
-            "maxDepth": 5,
-            "fileCharacterLimits": [
-                {"pattern": "memory/lessons/*.md", "maxCharacters": 100000}
-            ]
-        }, f)
-
-    # Load custom config
-    config = memory_git._load_constraints(root)
-    assert config.max_file_characters == 50000
-    assert config.max_core_memory_characters == 100000
-    assert config.max_depth == 5
-    assert len(config.file_character_limits) == 1
-
-
-@needs_git
-def test_glob_pattern_matching(tmp_path):
-    # Test glob matching for file limits
-    assert memory_git._glob_match("memory/lessons/*.md", "memory/lessons/test.md")
-    # * does NOT match across directory levels
-    assert memory_git._glob_match("memory/lessons/*.md", "memory/lessons/sub/test.md") is False
-    # ** matches across directory levels
-    assert memory_git._glob_match("**/test.md", "memory/lessons/test.md")
-    assert memory_git._glob_match("memory/**/test.md", "memory/lessons/sub/test.md")
-    assert memory_git._glob_match("memory/**", "memory/lessons/sub/test.md")
-
-
-# ---------------------------------------------------------------- pre-commit hooks
-
-
-@needs_git
-def test_pre_commit_hook_installation(tmp_path):
-    root = str(tmp_path)
-    memory_git.init_repo(root)
-
-    result = memory_git.install_pre_commit_hook(root)
-    assert result["ok"] is True
-    assert "hook_path" in result
-
-    hook_path = result["hook_path"]
-    assert os.path.exists(hook_path)
-    assert os.access(hook_path, os.X_OK)  # Executable
-
-    # Check hook content
-    with open(hook_path, "r", encoding="utf-8") as f:
-        content = f.read()
-    assert "CommonTrace Memory Validation Hook" in content
-    assert "validate_memory_tree" in content
-
-
-# ---------------------------------------------------------------- conflict detection and repair
-
-
-@needs_git
-def test_conflict_detection(tmp_path):
-    root = str(tmp_path)
-    memory_git.init_repo(root)
-
-    # No conflicts initially
-    result = memory_git.detect_conflicts(root)
-    assert result["ok"] is True
-    assert result["has_conflicts"] is False
-    assert len(result["conflicted_files"]) == 0
-
-    # Test graceful handling of non-repo (use a sibling directory outside the repo)
-    import tempfile
-    with tempfile.TemporaryDirectory() as plain_dir:
-        result = memory_git.detect_conflicts(plain_dir)
-        assert result["ok"] is False
-        assert result["has_conflicts"] is False
-        assert "error" in result
-
-
-@needs_git
-def test_conflict_repair(tmp_path):
-    root = str(tmp_path)
-    memory_git.init_repo(root)
-
-    # No conflicts to repair
-    result = memory_git.repair_conflicts(root, strategy="theirs")
-    assert result["ok"] is True
-    assert result["repaired"] is False
-    assert len(result["files"]) == 0
-
-
-@needs_git
-def test_memory_repair_subagent_invocation(tmp_path):
-    root = str(tmp_path)
-    memory_git.init_repo(root)
-
-    # Create a mock conflict summary
-    conflict_summary = {
-        "has_conflicts": True,
-        "conflicted_files": ["memory/lessons/test.md", "config.json"]
-    }
-
-    result = memory_git.invoke_memory_repair_subagent(root, conflict_summary)
-    assert result["ok"] is True
-    assert "resolution" in result
-    assert "strategy" in result
-    assert result["strategy"]["memory_files"] == "theirs"
-    assert result["strategy"]["other_files"] == "ours"
-
-
-# ---------------------------------------------------------------- memory handoff pattern
-
-
-@needs_git
-def test_memory_handoff_token_creation(tmp_path):
-    root = str(tmp_path)
-    memory_git.init_repo(root)
-
-    # Create initial commit
-    mem_dir = os.path.join(root, "memory", "lessons")
-    os.makedirs(mem_dir, exist_ok=True)
-    with open(os.path.join(mem_dir, "test.md"), "w", encoding="utf-8") as f:
-        f.write("# Test\n")
-    memory_git.commit_all(root, "initial")
-
-    # Create handoff token
-    result = memory_git.create_handoff_token(root, "worker-1")
-    assert result["ok"] is True
-    assert "token" in result
-    assert result["token"].target_worker == "worker-1"
-    assert result["token"].commit_hash is not None
-
-
-@needs_git
-def test_memory_handoff_acceptance(tmp_path):
-    root = str(tmp_path)
-    memory_git.init_repo(root)
-
-    # Create initial commit
-    mem_dir = os.path.join(root, "memory", "lessons")
-    os.makedirs(mem_dir, exist_ok=True)
-    with open(os.path.join(mem_dir, "test.md"), "w", encoding="utf-8") as f:
-        f.write("# Test\n")
-    memory_git.commit_all(root, "initial")
-
-    # Create and accept handoff
-    token_result = memory_git.create_handoff_token(root, "worker-1")
-    token = token_result["token"]
-
-    result = memory_git.accept_handoff(root, token)
-    assert result["ok"] is True
-    assert result["accepted"] is True
-    assert result["worker"] == "worker-1"
-
-    # Test mismatched commit
-    token.commit_hash = "badhash123"
-    result = memory_git.accept_handoff(root, token)
-    assert result["ok"] is False
-    assert result["accepted"] is False
-    assert "commit mismatch" in result["error"]
-
-
-@needs_git
-def test_background_worker_sync(tmp_path):
-    root = str(tmp_path)
-    memory_git.init_repo(root)
-
-    # Create initial commit
-    mem_dir = os.path.join(root, "memory", "lessons")
-    os.makedirs(mem_dir, exist_ok=True)
-    with open(os.path.join(mem_dir, "test.md"), "w", encoding="utf-8") as f:
-        f.write("# Test\n")
-    memory_git.commit_all(root, "initial")
-
-    # Sync worker
-    result = memory_git.sync_background_worker_memory(root, "worker-1")
-    assert result["ok"] is True
-    assert result["synced"] is True
-    assert result["worker"] == "worker-1"
-    assert result["commit"] is not None

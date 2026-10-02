@@ -3,6 +3,10 @@ from __future__ import annotations
 import os
 
 import pytest
+
+pytest.importorskip("sqlalchemy")
+pytest.importorskip("asyncpg")
+pytest.importorskip("pytest_asyncio")
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -38,7 +42,6 @@ async def hub_boundary_session():
 
 @pytest.mark.asyncio
 async def test_t2_hub_idempotency_key_replay(hub_boundary_session):
-    """E2E-T2-HUB-1: Submitting identical trace with same idempotency key returns original trace ID."""
     session, org_id = hub_boundary_session
     config = HubConfig(database_url=TEST_DATABASE_URL)
     limiter = RateLimiter(per_minute=1000, burst=1000)
@@ -65,7 +68,6 @@ async def test_t2_hub_idempotency_key_replay(hub_boundary_session):
 
 @pytest.mark.asyncio
 async def test_t2_hub_unmatched_search_empty_result(hub_boundary_session):
-    """E2E-T2-HUB-2: Searching for completely unmatched query terms returns empty list without error."""
     session, org_id = hub_boundary_session
     found = await crud.search_traces(session, org_id, query="nonexistentxyzzy987654321")
     assert found["traces"] == []
@@ -74,12 +76,10 @@ async def test_t2_hub_unmatched_search_empty_result(hub_boundary_session):
 
 @pytest.mark.asyncio
 async def test_t2_hub_rate_limiting_enforcement(hub_boundary_session):
-    """E2E-T2-HUB-3: Rate limiter with 0 allowance immediately raises RateLimited."""
     session, org_id = hub_boundary_session
     config = HubConfig(database_url=TEST_DATABASE_URL)
     strict_limiter = RateLimiter(per_minute=1, burst=1)
 
-    # First request consumes token
     await crud.contribute_trace(
         session, org_id, config, strict_limiter,
         title="Rate limit test 1",
@@ -87,7 +87,6 @@ async def test_t2_hub_rate_limiting_enforcement(hub_boundary_session):
         solution_text="Sol",
     )
 
-    # Second immediate request should hit rate limit
     with pytest.raises(RateLimited):
         await crud.contribute_trace(
             session, org_id, config, strict_limiter,
@@ -99,16 +98,13 @@ async def test_t2_hub_rate_limiting_enforcement(hub_boundary_session):
 
 @pytest.mark.asyncio
 async def test_t2_hub_invalid_as_of_format_graceful(hub_boundary_session):
-    """E2E-T2-HUB-4: Malformed as_of timestamp does not crash the search query."""
     session, org_id = hub_boundary_session
-    # Pass completely invalid timestamp string
-    found = await crud.search_traces(session, org_id, as_of="invalid-date-format-abc")
-    assert "traces" in found
+    with pytest.raises(ValueError, match="as_of"):
+        await crud.search_traces(session, org_id, as_of="invalid-date-format-abc")
 
 
 @pytest.mark.asyncio
 async def test_t2_hub_nonexistent_trace_lookup(hub_boundary_session):
-    """E2E-T2-HUB-5: Reading a nonexistent trace ID returns None cleanly."""
     session, org_id = hub_boundary_session
     trace = await crud.get_trace(session, org_id, "00000000-0000-0000-0000-000000000000")
     assert trace is None

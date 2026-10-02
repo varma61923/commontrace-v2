@@ -92,6 +92,10 @@
       "type": "string",
       "description": "Optional exclusive valid-time end as YYYY-MM-DD or ISO 8601. Retrieval omits the lesson at and after this instant."
     },
+    "expires": {
+      "type": "string",
+      "description": "Optional TTL as YYYY-MM-DD or ISO 8601. From this instant the lesson is hidden from retrieval unless --show-expired is given."
+    },
     "source_traces": {
       "type": "array",
       "items": { "type": "string" },

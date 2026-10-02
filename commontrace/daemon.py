@@ -1,14 +1,4 @@
-"""Consolidation daemon: cron/idle/event triggers, file lock, crash recovery.
-
-Single-pass only — ``run_once`` does one guarded pass and returns a status
-dict. Scheduling (cron/systemd) re-invokes it; see commands/daemon_cmd.py
-(``commontrace daemon --once``).
-
-Locking: POSIX ``fcntl.flock`` (non-blocking) when available, else an
-atomic ``O_CREAT | O_EXCL`` lockfile. Crash marker: ``daemon.crash``
-written at pass start with PID/timestamp and removed on clean exit; a
-pre-existing marker means the previous pass died mid-flight.
-"""
+"""Consolidation daemon: cron/idle/event triggers, file lock, crash recovery."""
 from __future__ import annotations
 
 import json
@@ -16,7 +6,7 @@ import os
 import time
 
 try:
-    import fcntl  # POSIX only; absent on Windows
+    import fcntl
 except ImportError:  # pragma: no cover - platform fallback
     fcntl = None  # type: ignore[assignment]
 
@@ -37,11 +27,7 @@ def state_path(root: str) -> str:
     return os.path.join(os.path.abspath(root), STATE_REL)
 
 
-# ---------------------------------------------------------------- lock
-
 class _Lock:
-    """Held lock handle; release via .release() or context manager."""
-
     def __init__(self, path: str, fh=None, excl_created: bool = False):
         self.path = path
         self.fh = fh
@@ -99,7 +85,6 @@ def acquire_lock(root: str) -> _Lock | None:
                 pass
             return None
         return _Lock(path, fh=fh)
-    # Fallback: atomic create; another process's file means locked.
     try:
         fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     except FileExistsError:
@@ -118,8 +103,6 @@ def acquire_lock(root: str) -> _Lock | None:
     return _Lock(path, excl_created=True)
 
 
-# ------------------------------------------------------------- triggers
-
 def _as_trigger(trigger) -> dict:
     if trigger is None:
         return {"type": "once"}
@@ -133,13 +116,7 @@ def _as_trigger(trigger) -> dict:
 
 
 def should_run(trigger, state: dict | None = None) -> bool:
-    """Whether a pass should fire for *trigger* given daemon *state*.
-
-    trigger: "cron" | "once" | "manual" | "event" | "idle" or a dict with a
-    "type" key plus optional "min_interval_s" / "idle_s". state: dict with
-    optional "last_run" (epoch seconds) and "pending_changes" (int/bool).
-    Unknown trigger types default to True (fail-open for cron-like use).
-    """
+    """Whether a pass should fire for *trigger* given daemon *state*."""
     trig = _as_trigger(trigger)
     kind = str(trig.get("type", "once")).lower()
     state = state or {}
@@ -181,8 +158,6 @@ def should_run(trigger, state: dict | None = None) -> bool:
     return True
 
 
-# -------------------------------------------------------------- run_once
-
 def _load_daemon_state(root: str) -> dict:
     try:
         with open(state_path(root), encoding="utf-8") as fh:
@@ -205,9 +180,7 @@ def _save_daemon_state(root: str, state: dict) -> None:
 
 
 def _invoke_hooks(root: str) -> dict:
-    """Call dream/consolidate entry points defensively; skip when missing."""
     results: dict = {}
-    # Dream pass (programmatic entry point preferred).
     try:
         from commontrace.commands import dream_cmd
         main_dream = getattr(dream_cmd, "main_dream", None)
@@ -217,7 +190,6 @@ def _invoke_hooks(root: str) -> dict:
             results["dream"] = "skipped: main_dream missing"
     except Exception as exc:  # noqa: BLE001 - one hook must not kill the pass
         results["dream"] = f"error: {exc}"
-    # Consolidation report (read-only; never mutates lessons).
     try:
         from commontrace import consolidate as consolidate_mod
         from commontrace import evidence_io
@@ -235,12 +207,7 @@ def _invoke_hooks(root: str) -> dict:
 
 
 def run_once(root: str, triggers=None) -> dict:
-    """One guarded consolidation pass. Never raises; returns a status dict.
-
-    triggers: a single trigger (str/dict), a list of them, or None (=="once").
-    Keys: ok, skipped/skipped_reason or ran, recovered (previous crash),
-    hooks (per-entry-point results), last_run.
-    """
+    """One guarded consolidation pass. Never raises; returns a status dict."""
     root = os.path.abspath(root)
     if triggers is None:
         trigger_list = [{"type": "once"}]

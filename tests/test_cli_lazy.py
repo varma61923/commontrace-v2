@@ -1,4 +1,3 @@
-"""Lazy CLI loading: only the invoked subcommand module is imported."""
 from __future__ import annotations
 
 import subprocess

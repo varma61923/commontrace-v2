@@ -9,6 +9,7 @@ LOCAL_TOOLS = (
     "memory_block_read", "memory_block_update", "memory_block_list", "memory_block_delete",
     "query_facts", "record_fact",
     "graph_query", "graph_neighbors", "graph_viz_html",
+    "list_skills", "load_skill",
 )
 
 APPROVAL_TOOLS = ("approve_lesson", "reject_lesson")

@@ -1,29 +1,14 @@
-"""Per-lesson TTL expiry and fact forget/expire accounting.
-
-Single home for ``expires`` (lesson frontmatter) and ``expires_at`` /
-``forgotten`` (atomic fact JSONL) semantics, so ``lesson_cache``,
-``hierarchical``, ``query_cmd`` (hidden-count notice) and ``doctor``
-(counts) agree with each other.
-
-Stdlib only: every other commontrace module may import this one without
-creating an import cycle.
-"""
+"""Per-lesson TTL expiry and fact forget/expire accounting."""
 from __future__ import annotations
 
 import datetime
 from typing import Any
 
-#: The optional lesson frontmatter field holding an ISO-8601 instant after
-#: which the lesson is expired (exclusive bound: moment >= expires means
-#: expired, mirroring ``valid_until`` semantics).
 EXPIRES_FIELD = "expires"
 
 
 def parse_expiry(value: str | datetime.date | datetime.datetime) -> datetime.datetime:
-    """Parse an ``expires``/``expires_at`` value into an aware UTC datetime.
-
-    Raises ``ValueError`` on empty or unparseable input.
-    """
+    """Parse an ``expires``/``expires_at`` value into an aware UTC datetime."""
     if isinstance(value, datetime.datetime):
         parsed = value
     elif isinstance(value, datetime.date):
@@ -60,14 +45,7 @@ def _moment(as_of: str | datetime.date | datetime.datetime | None) -> datetime.d
 def lesson_is_expired(
     fm: dict[str, Any], as_of: str | datetime.date | datetime.datetime | None = None,
 ) -> bool:
-    """True when a lesson's ``expires`` instant has passed.
-
-    Lessons without ``expires`` never expire here. An unparseable ``expires``
-    value counts as expired (fail-closed), consistent with how
-    ``lesson_cache.filter_eligible`` treats unparseable ``valid_from`` /
-    ``valid_until`` (the lesson is withheld, and ``frontmatter.validate_expires``
-    explains how to fix the value).
-    """
+    """True when a lesson's ``expires`` instant has passed."""
     raw = fm.get(EXPIRES_FIELD)
     if raw is None or (isinstance(raw, str) and not raw.strip()):
         return False
@@ -86,29 +64,10 @@ def count_expired(
     return sum(1 for _path, fm in lessons if lesson_is_expired(fm, moment))
 
 
-def partition_expired(
-    lessons: list[tuple[str, dict[str, Any]]],
-    as_of: str | datetime.date | datetime.datetime | None = None,
-) -> tuple[list[tuple[str, dict[str, Any]]], list[tuple[str, dict[str, Any]]]]:
-    """Split lessons into (live, expired) at ``as_of`` (default: now)."""
-    moment = _moment(as_of)
-    live, expired = [], []
-    for item in lessons:
-        (expired if lesson_is_expired(item[1], moment) else live).append(item)
-    return live, expired
-
-
 def fact_is_expired(
     fact: Any, as_of: str | datetime.date | datetime.datetime | None = None,
 ) -> bool:
-    """True when a fact's ``expires_at`` instant has passed.
-
-    Facts without ``expires_at`` never expire here. Unlike lessons, an
-    unparseable ``expires_at`` counts as *not* expired (fail-open): expiry
-    does not gate fact listing, so a typo must not silently reclassify a
-    fact -- ``add_fact``/``update_fact`` validate strictly at write time
-    instead.
-    """
+    """True when a fact's ``expires_at`` instant has passed."""
     raw = getattr(fact, "expires_at", None)
     if isinstance(fact, dict):
         raw = fact.get("expires_at")
@@ -131,11 +90,7 @@ def summarize(
     facts: list[Any],
     as_of: str | datetime.date | datetime.datetime | None = None,
 ) -> dict[str, int]:
-    """Small count bundle for ``doctor`` and query notices.
-
-    Takes already-loaded data (not a store root) so this module stays
-    dependency-free; callers load via ``lesson_cache`` / ``hierarchical``.
-    """
+    """Small count bundle for ``doctor`` and query notices."""
     moment = _moment(as_of)
     fact_list = list(facts)
     return {

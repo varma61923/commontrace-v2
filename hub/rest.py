@@ -234,11 +234,14 @@ def add_rest_routes(
         scope = _text(payload.get("scope"))
         as_of = _text(payload.get("as_of")) or None
 
-        async with session_scope(session_factory) as session:
-            found = await crud.search_traces(
-                session, authenticated.org_id, query=query, limit=limit, brief=True,
-                scope=scope, as_of=as_of,
-            )
+        try:
+            async with session_scope(session_factory) as session:
+                found = await crud.search_traces(
+                    session, authenticated.org_id, query=query, limit=limit, brief=True,
+                    scope=scope, as_of=as_of,
+                )
+        except ValueError as exc:
+            return _json_error(400, "bad_request", str(exc))
         results = []
         for trace in found.get("traces", []):
             row = dict(trace)

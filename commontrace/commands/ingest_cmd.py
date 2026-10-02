@@ -1,8 +1,4 @@
-"""`commontrace ingest`: Unified multimodal ingestion command.
-
-Ingests code repositories, Markdown documentation, JSON structured logs, and
-failure transcripts into governed lessons, atomic facts, and the knowledge graph.
-"""
+"""`commontrace ingest`: Unified multimodal ingestion command."""
 from __future__ import annotations
 
 import argparse
@@ -29,7 +25,6 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         default=None,
         help="Format of the source to ingest.",
     )
-    # --format is an alias for --type (for compatibility with PROJECT.md spec)
     p.add_argument(
         "--format", dest="source_format",
         choices=choices,
@@ -53,11 +48,11 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
 def run(args: argparse.Namespace) -> int:
     from commontrace.ingest import IngestionPipeline
 
-    root = args.dest or paths.store_root()
+    root = paths.resolve_root(args.dest)
     raw_type = args.source_type or args.source_format or "code"
-    source_type = raw_type.replace("-", "_")  # json-logs → json_logs
+    source_type = raw_type.replace("-", "_")
     if source_type == "logs":
-        source_type = "json_logs"  # alias: bare 'logs' means structured logs
+        source_type = "json_logs"
     elif source_type == "triples":
         source_type = "fact_triples"
 

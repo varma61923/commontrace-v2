@@ -14,10 +14,6 @@ STOPWORDS = frozenset(
     """.split()
 )
 
-# CJK bigram lane: WORD_RE keeps a Han/Hangul/Kana compound (e.g. "深度学习")
-# as one token, so a query sharing only part of the compound never matches.
-# Splitting CJK runs into overlapping character bigrams gives partial-compound
-# recall while leaving the ASCII/English path completely untouched.
 _CJK_RE = re.compile(
     "[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff"
     "\u3040-\u309f\u30a0-\u30ff\uff66-\uff9d"
@@ -31,13 +27,7 @@ def has_cjk(text: str) -> bool:
 
 
 def segment_cjk(token: str) -> list[str]:
-    """Split `token`'s CJK runs into overlapping character bigrams.
-
-    Non-CJK runs pass through as single tokens; a CJK run shorter than
-    two characters passes through unchanged. Pure-ASCII input returns
-    `[token]`, so the English path is byte-identical with or without
-    this lane.
-    """
+    """Split `token`'s CJK runs into overlapping character bigrams."""
     if not has_cjk(token):
         return [token]
     out: list[str] = []

@@ -26,7 +26,6 @@ def store(tmp_path):
 
 
 def test_block_lifecycle(store):
-    # Set persona block
     b = memory_blocks.set_block(
         store, "persona", "You are an autonomous staff software architect.",
         max_chars=500, actor="test", reason="init persona",
@@ -35,7 +34,6 @@ def test_block_lifecycle(store):
     assert b.char_count == len("You are an autonomous staff software architect.")
     assert len(b.revision) == 16
 
-    # Append
     b2 = memory_blocks.append_block(
         store, "persona", "Always verify diffs before committing.",
         actor="test", reason="add rule",
@@ -43,24 +41,21 @@ def test_block_lifecycle(store):
     assert "verify diffs" in b2.content
     assert b2.revision != b.revision
 
-    # Replace
     b3 = memory_blocks.replace_block(
         store, "persona", "Always verify diffs", "Thoroughly verify diffs",
         actor="test", reason="refine wording",
     )
     assert "Thoroughly verify diffs" in b3.content
 
-    # List
     all_blocks = memory_blocks.list_blocks(store)
     assert len(all_blocks) == 1
     assert all_blocks[0].name == "persona"
 
-    # History
     history = memory_blocks.block_history(store, "persona")
     assert len(history) == 3
     assert history[0]["action"] == "set"
-    assert history[1]["action"] == "set"  # append uses set_block internally
-    assert history[2]["action"] == "set"  # replace uses set_block internally
+    assert history[1]["action"] == "set"
+    assert history[2]["action"] == "set"
 
 
 def test_block_quota_enforced(store):
@@ -117,7 +112,6 @@ def test_block_atomic_file_writes(store, monkeypatch):
     blocks_dir = os.path.join(store, "memory", "blocks")
     assert not any(f.endswith(".tmp") for f in os.listdir(blocks_dir))
 
-    # Test failure during update leaves original uncorrupted
     original_replace = os.replace
 
     def broken_replace(src, dst):
@@ -129,7 +123,6 @@ def test_block_atomic_file_writes(store, monkeypatch):
     with pytest.raises(OSError):
         memory_blocks.set_block(store, "atomic_test", "New unsafe content.")
 
-    # Original content should still be intact
     monkeypatch.setattr(os, "replace", original_replace)
     block_restored = memory_blocks.get_block(store, "atomic_test")
     assert block_restored.content == "Safe content."

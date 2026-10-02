@@ -1,25 +1,4 @@
-"""COGX-style portable envelope plus third-party memory dump adapters.
-
-The COGX envelope is one JSON document (``cogx/v1``) carrying the durable
-half of a store -- lessons, atomic facts, graph nodes/edges, and working
-memory blocks -- so two stores (or two tools) can swap memory without
-sharing infrastructure:
-
-.. code-block:: json
-
-    {"format": "cogx/v1", "schema_version": 1,
-     "exported_at": "2026-01-01T00:00:00+00:00",
-     "records": [{"kind": "lesson", "data": {...}}, ...]}
-
-Record ``kind`` is one of ``lesson`` / ``fact`` / ``graph_node`` /
-``graph_edge`` / ``block`` (``trace`` is accepted on read as a
-compatibility alias and written back to ``memory/traces/``).
-
-The ``import_mem0_dump`` / ``import_zep_episodes`` / ``import_letta_blocks``
-adapters convert third-party dump shapes (already-loaded JSON: a dict or a
-list) into envelope-style records, which :func:`apply_store` can then write
-into a store. Stdlib only.
-"""
+"""COGX-style portable envelope plus third-party memory dump adapters."""
 from __future__ import annotations
 
 import datetime
@@ -39,8 +18,6 @@ KIND_FACT = "fact"
 KIND_GRAPH_NODE = "graph_node"
 KIND_GRAPH_EDGE = "graph_edge"
 KIND_BLOCK = "block"
-#: ``trace`` is not emitted by :func:`collect_store` but is accepted on read
-#: so older/alien envelopes carrying raw traces still import.
 KIND_TRACE = "trace"
 
 RECORD_KINDS = (KIND_LESSON, KIND_FACT, KIND_GRAPH_NODE, KIND_GRAPH_EDGE, KIND_BLOCK)
@@ -72,10 +49,6 @@ def _slugify(title: str) -> str:
     return slug[:60] or "imported"
 
 
-# ---------------------------------------------------------------------------
-# Envelope
-# ---------------------------------------------------------------------------
-
 def make_record(kind: str, data: dict[str, Any]) -> dict[str, Any]:
     """One envelope record. Raises ValueError on a bad kind or data."""
     if kind not in ACCEPTED_KINDS:
@@ -88,11 +61,7 @@ def make_record(kind: str, data: dict[str, Any]) -> dict[str, Any]:
 
 
 def build_envelope(records: list[dict[str, Any]] | dict[str, Any]) -> dict[str, Any]:
-    """Wrap validated records in a ``cogx/v1`` envelope.
-
-    Accepts either a list of ``{"kind", "data"}`` records or an existing
-    envelope dict (validated and normalized).
-    """
+    """Wrap validated records in a ``cogx/v1`` envelope."""
     if isinstance(records, dict):
         return loads_cogx(json.dumps(records))
     validated = [make_record(r.get("kind", ""), r.get("data", {})) for r in records]
@@ -165,11 +134,7 @@ def is_cogx_document(obj: object) -> bool:
 
 
 def detect_file_format(path: str) -> str:
-    """Return ``"cogx"``, ``"csv"``, or ``"jsonl"`` for an import file.
-
-    Never raises: unreadable or ambiguous files fall back to the extension
-    (``.csv`` -> csv, anything else -> jsonl).
-    """
+    """Return ``"cogx"``, ``"csv"``, or ``"jsonl"`` for an import file."""
     ext = os.path.splitext(str(path))[1].lower()
     if ext == ".csv":
         return "csv"
@@ -185,10 +150,6 @@ def detect_file_format(path: str) -> str:
     except ValueError:
         return "jsonl"
 
-
-# ---------------------------------------------------------------------------
-# Store <-> records
-# ---------------------------------------------------------------------------
 
 def _lesson_records(root: str, status: str | None = None,
                      agent_type: str | None = None) -> list[dict[str, Any]]:
@@ -276,11 +237,7 @@ def _block_records(root: str) -> list[dict[str, Any]]:
 def collect_store(root: str, kinds: list[str] | tuple[str, ...] | None = None,
                    status: str | None = None,
                    agent_type: str | None = None) -> list[dict[str, Any]]:
-    """Read a store into envelope-style records.
-
-    *kinds* subsets the record kinds (default: every kind). Unknown kinds
-    raise ValueError. Lesson rows honor the *status* / *agent_type* filters.
-    """
+    """Read a store into envelope-style records."""
     want = tuple(kinds) if kinds is not None else RECORD_KINDS
     for kind in want:
         if kind not in RECORD_KINDS:
@@ -301,23 +258,35 @@ def collect_store(root: str, kinds: list[str] | tuple[str, ...] | None = None,
     return out
 
 
+def _unsafe(fields: dict[str, Any]) -> bool:
+    from commontrace import memory_guard
+
+    return memory_guard.scan_fields({k: v for k, v in fields.items() if isinstance(v, str)}).should_block
+
+
 def _apply_lesson(root: str, data: dict[str, Any]) -> bool:
+    from commontrace import lesson_io
+
     fm = data.get("frontmatter") if isinstance(data.get("frontmatter"), dict) else None
-    body = data.get("body", "")
+    body = str(data.get("body", "") or "")
     if fm is None:
-        # Tolerate flat/native lesson rows: everything but kind/body is frontmatter.
         fm = {k: v for k, v in data.items() if k not in ("kind", "body", "slug")}
         if not fm.get("name") and not data.get("slug"):
             return False
     slug = str(data.get("slug") or fm.get("name") or "imported")
-    if slug.endswith(".md"):
-        slug = slug[:-len(".md")]
-    if slug.startswith("lesson_"):
-        slug = slug[len("lesson_"):]
-    slug = _slugify(slug)
+    slug = slug[:-len(".md")] if slug.endswith(".md") else slug
+    slug = _slugify(slug[len("lesson_"):] if slug.startswith("lesson_") else slug)
+    if lesson_io.lesson_path(root, slug) is not None:
+        return False
+    fm = dict(fm)
+    fm["name"] = slug
+    if fm.get("status") != "archived":
+        fm["status"] = "review"
+    if _unsafe({"body": body, **{k: fm.get(k) for k in ("description", "applies_when", "do_not_apply_when")}}):
+        return False
     ldir = paths.lessons_dir(root)
     os.makedirs(ldir, exist_ok=True)
-    frontmatter.write(os.path.join(ldir, f"lesson_{slug}.md"), dict(fm), str(body or ""))
+    frontmatter.write(os.path.join(ldir, f"lesson_{slug}.md"), fm, body)
     return True
 
 
@@ -325,83 +294,63 @@ def _apply_fact(root: str, data: dict[str, Any]) -> bool:
     from commontrace import hierarchical
 
     statement = _as_text(data.get("statement"))
-    if not statement:
+    if not statement or _unsafe({"statement": statement}):
         return False
-    # Full-fidelity payloads (as collect_store emits) merge by id so
-    # revisions, confirmations, and validity windows survive the round trip.
     if data.get("id") and data.get("revision"):
+        row = {k: v for k, v in data.items() if k in hierarchical._FACT_FIELDS}
+        row["statement"] = statement
         try:
-            facts = hierarchical.load_facts(root)
-            fact = hierarchical.AtomicFact(
-                id=str(data["id"]),
-                statement=statement,
-                category=str(data.get("category") or hierarchical.DEFAULT_CATEGORY),
-                scopes=list(data.get("scopes") or []),
-                confidence=float(data.get("confidence", 0.8)),
-                confirmations=int(data.get("confirmations", 1)),
-                valid_from=str(data.get("valid_from") or _utcnow_iso()),
-                valid_until=data.get("valid_until"),
-                source_traces=list(data.get("source_traces") or []),
-                status=str(data.get("status") or "active"),
-                superseded_by=data.get("superseded_by"),
-                revision=str(data.get("revision") or ""),
-                created_at=str(data.get("created_at") or _utcnow_iso()),
-                updated_at=str(data.get("updated_at") or _utcnow_iso()),
-            )
+            fact = hierarchical._coerce_fact(row)
+            hierarchical.prepare_fact(fact.statement, fact.category, fact.valid_from, fact.valid_until, None)
+        except (TypeError, ValueError):
+            return False
+        with hierarchical.mutate_facts(root) as facts:
             facts[fact.id] = fact
-            hierarchical.save_facts(root, facts)
-            return True
-        except Exception:
-            pass
+        return True
     scopes = data.get("scopes")
     scopes = [str(s) for s in scopes if str(s).strip()] if isinstance(scopes, list) else []
     try:
-        confidence = float(data.get("confidence", 0.8))
+        confidence = min(1.0, max(0.0, float(data.get("confidence", 0.8))))
     except (TypeError, ValueError):
         confidence = 0.8
     try:
         hierarchical.add_fact(
-            root=root,
-            statement=statement,
+            root=root, statement=statement,
             category=str(data.get("category") or hierarchical.DEFAULT_CATEGORY),
-            scopes=scopes,
-            confidence=min(1.0, max(0.0, confidence)),
-            source_trace_id=str(data.get("source_id") or ""),
+            scopes=scopes, confidence=confidence, source_trace_id=str(data.get("source_id") or ""),
         )
-        return True
-    except Exception:
+    except ValueError:
         return False
+    return True
 
 
 def _apply_graph_node(root: str, data: dict[str, Any]) -> bool:
     from commontrace import graph as graph_mod
 
-    node_id = str(data.get("id") or "").strip()
+    node_id = str(data.get("id") or "").strip().lower()
     if not node_id:
         return False
-    try:
-        nodes = graph_mod.load_nodes(root)
-        now = _utcnow_iso()
-        existing = nodes.get(node_id.strip().lower())
+    with graph_mod.batch(root) as txn:
+        existing = txn.nodes.get(node_id)
         if existing is not None:
-            if data.get("name"):
-                existing.name = str(data["name"]).strip()
-            if isinstance(data.get("properties"), dict):
-                existing.properties.update(data["properties"])
-            existing.updated_at = str(data.get("updated_at") or now)
-        else:
-            nodes[node_id.strip().lower()] = graph_mod.GraphNode(
-                id=node_id.strip().lower(),
-                entity_type=str(data.get("entity_type") or "concept"),
-                name=str(data.get("name") or node_id),
-                properties=dict(data.get("properties") or {}),
-                created_at=str(data.get("created_at") or now),
-                updated_at=str(data.get("updated_at") or now),
-            )
-        graph_mod.save_nodes(root, nodes)
-        return True
-    except Exception:
-        return False
+            graph_mod.add_node(root, node_id, existing.entity_type, name=str(data.get("name") or ""),
+                               properties=data.get("properties") if isinstance(data.get("properties"), dict) else None)
+            return True
+        fields = {k: v for k, v in data.items() if k in graph_mod.GraphNode.__dataclass_fields__}
+        fields["id"] = node_id
+        if fields.get("entity_type") not in graph_mod.ENTITY_TYPES:
+            fields["entity_type"] = "concept"
+        fields.setdefault("name", node_id)
+        fields["properties"] = dict(fields.get("properties") or {})
+        now = _utcnow_iso()
+        fields.setdefault("created_at", now)
+        fields.setdefault("updated_at", now)
+        try:
+            txn.nodes[node_id] = graph_mod.GraphNode(**fields)
+        except TypeError:
+            return False
+        txn.nodes_dirty = True
+    return True
 
 
 def _apply_graph_edge(root: str, data: dict[str, Any]) -> bool:
@@ -412,41 +361,17 @@ def _apply_graph_edge(root: str, data: dict[str, Any]) -> bool:
     if not source or not target:
         return False
     try:
-        edges = graph_mod.load_edges(root)
-        now = _utcnow_iso()
-        for edge in edges:
-            if (edge.source == source.strip().lower()
-                    and edge.target == target.strip().lower()
-                    and edge.relation == str(data.get("relation") or "relates_to")):
-                if edge.valid_until is None:
-                    try:
-                        edge.weight = max(edge.weight, float(data.get("weight", 1.0)))
-                    except (TypeError, ValueError):
-                        pass
-                    if isinstance(data.get("properties"), dict):
-                        edge.properties.update(data["properties"])
-                    graph_mod.save_edges(root, edges)
-                    return True
-        try:
-            weight = float(data.get("weight", 1.0))
-        except (TypeError, ValueError):
-            weight = 1.0
-        edges.append(graph_mod.GraphEdge(
-            source=source.strip().lower(),
-            target=target.strip().lower(),
-            relation=str(data.get("relation") or "relates_to"),
-            weight=round(weight, 3),
-            valid_from=str(data.get("valid_from") or now),
-            valid_until=data.get("valid_until"),
-            properties=dict(data.get("properties") or {}),
-            created_at=str(data.get("created_at") or now),
-        ))
-        graph_mod.save_edges(root, edges)
-        # add_edge's auto-vivification aside, make sure endpoints exist.
-        graph_mod.load_nodes(root)
-        return True
-    except Exception:
+        edge = graph_mod.add_edge(
+            root, source, target, str(data.get("relation") or graph_mod.FALLBACK_RELATION),
+            weight=data.get("weight", 1.0),
+            valid_at=data.get("valid_at") or data.get("valid_from") or None,
+            invalid_at=data.get("invalid_at") or data.get("valid_until") or None,
+            expired_at=data.get("expired_at") or None,
+            properties=data.get("properties") if isinstance(data.get("properties"), dict) else None,
+        )
+    except ValueError:
         return False
+    return edge is not None
 
 
 def _apply_block(root: str, data: dict[str, Any], actor: str) -> bool:
@@ -455,31 +380,26 @@ def _apply_block(root: str, data: dict[str, Any], actor: str) -> bool:
     name = str(data.get("name") or data.get("label") or "").strip()
     content = data.get("content", data.get("value", ""))
     content = content if isinstance(content, str) else _as_text(content)
-    if not name:
+    if not name or _unsafe({"content": content}):
         return False
     try:
-        max_chars = int(data.get("max_chars") or data.get("limit") or 2000)
+        max_chars = int(data.get("max_chars") or data.get("limit") or memory_blocks.DEFAULT_MAX_CHARS)
     except (TypeError, ValueError):
-        max_chars = 2000
-    max_chars = max(max_chars, len(content), 1)
+        max_chars = memory_blocks.DEFAULT_MAX_CHARS
+    max_chars = min(max(max_chars, len(content.strip()), 1), memory_blocks.MAX_QUOTA_CHARS)
     metadata = data.get("metadata")
     try:
         memory_blocks.set_block(
-            root=root, name=name, content=content, max_chars=max_chars,
-            actor=actor, reason="cogx import",
+            root=root, name=name, content=content, max_chars=max_chars, actor=actor, reason="cogx import",
             metadata=dict(metadata) if isinstance(metadata, dict) else None,
         )
-        return True
-    except Exception:
+    except memory_blocks.MemoryBlockError:
         return False
+    return True
 
 
 def _apply_trace(root: str, data: dict[str, Any], agent_type: str) -> bool:
-    """Compatibility path for envelopes carrying raw ``trace`` records."""
-    import uuid
-
-    from commontrace import templates
-    from commontrace.commands.capture_cmd import _id_suffix
+    from commontrace import trace_io
 
     title = _as_text(data.get("title"))
     context = _as_text(data.get("context", data.get("context_text")))
@@ -488,68 +408,49 @@ def _apply_trace(root: str, data: dict[str, Any], agent_type: str) -> bool:
         return False
     tags = data.get("tags")
     tags = [str(t) for t in tags if str(t).strip()] if isinstance(tags, list) else []
-    trace_id = str(uuid.uuid4())
-    slug = _slugify(title)
-    tdir = paths.traces_dir(root)
-    os.makedirs(tdir, exist_ok=True)
-    date = datetime.date.today().isoformat()
-    fm = templates.trace_frontmatter(
-        trace_id, title, str(data.get("agent_type") or agent_type or "general"),
-        tags, str(data.get("profile") or ""), None,
-    )
-    instance = dict(fm)
-    instance["context_text"] = context
-    instance["solution_text"] = solution
-    frontmatter.write(
-        os.path.join(tdir, f"{date}_{slug}_{_id_suffix(trace_id)}.md"),
-        fm, templates.trace_body(context, solution),
-    )
+    try:
+        trace_io.write_new(root, title=title, context=context, solution=solution, tags=tags,
+                           agent_type=str(data.get("agent_type") or agent_type or "general"))
+    except ValueError:
+        return False
     return True
 
 
 def apply_store(root: str, records: list[dict[str, Any]],
                 actor: str = "import", agent_type: str = "general") -> dict[str, int]:
-    """Write envelope records into a store. Returns per-kind applied counts.
+    """Write envelope records into a store. Returns per-kind applied counts."""
+    from commontrace import graph as graph_mod
 
-    Unknown kinds and invalid payloads are counted under ``"skipped"``
-    rather than raising, so one bad record cannot sink a whole handoff.
-    """
     counts = {"lesson": 0, "fact": 0, "graph_node": 0, "graph_edge": 0,
               "block": 0, "trace": 0, "skipped": 0}
-    for rec in records or []:
-        if not isinstance(rec, dict):
-            counts["skipped"] += 1
-            continue
-        kind, data = rec.get("kind"), rec.get("data")
-        if kind not in ACCEPTED_KINDS or not isinstance(data, dict):
-            counts["skipped"] += 1
-            continue
-        try:
-            if kind == KIND_LESSON:
-                ok = _apply_lesson(root, data)
-            elif kind == KIND_FACT:
-                ok = _apply_fact(root, data)
-            elif kind == KIND_GRAPH_NODE:
-                ok = _apply_graph_node(root, data)
-            elif kind == KIND_GRAPH_EDGE:
-                ok = _apply_graph_edge(root, data)
-            elif kind == KIND_BLOCK:
-                ok = _apply_block(root, data, actor)
-            else:
-                ok = _apply_trace(root, data, agent_type)
-        except Exception:
-            ok = False
-        counts[kind if ok else "skipped"] += 1
+    appliers = {
+        KIND_LESSON: lambda d: _apply_lesson(root, d),
+        KIND_FACT: lambda d: _apply_fact(root, d),
+        KIND_GRAPH_NODE: lambda d: _apply_graph_node(root, d),
+        KIND_GRAPH_EDGE: lambda d: _apply_graph_edge(root, d),
+        KIND_BLOCK: lambda d: _apply_block(root, d, actor),
+        KIND_TRACE: lambda d: _apply_trace(root, d, agent_type),
+    }
+    ordered = sorted(
+        (r for r in records or [] if isinstance(r, dict)),
+        key=lambda r: 0 if r.get("kind") == KIND_GRAPH_NODE else 1,
+    )
+    counts["skipped"] += sum(1 for r in records or [] if not isinstance(r, dict))
+    with graph_mod.batch(root):
+        for rec in ordered:
+            kind, data = rec.get("kind"), rec.get("data")
+            if kind not in appliers or not isinstance(data, dict):
+                counts["skipped"] += 1
+                continue
+            try:
+                ok = appliers[kind](data)
+            except (OSError, ValueError, TypeError, frontmatter.FrontmatterError):
+                ok = False
+            counts[kind if ok else "skipped"] += 1
     return counts
 
 
-# ---------------------------------------------------------------------------
-# Third-party dump adapters (Mem0 / Zep / Letta)
-# ---------------------------------------------------------------------------
-
 def _coerce_items(doc: Any, *keys: str) -> list[dict[str, Any]]:
-    """Vendor dumps vary: a bare list, or a dict holding the list under one
-    of several keys. Return the item dicts, or [] for anything else."""
     if isinstance(doc, list):
         return [d for d in doc if isinstance(d, dict)]
     if isinstance(doc, dict):
@@ -557,17 +458,12 @@ def _coerce_items(doc: Any, *keys: str) -> list[dict[str, Any]]:
             items = doc.get(key)
             if isinstance(items, list):
                 return [d for d in items if isinstance(d, dict)]
-        # A single-item dict shaped like one memory/episode/block.
         return []
     return []
 
 
 def import_mem0_dump(doc: Any) -> list[dict[str, Any]]:
-    """Convert a Mem0 export (``memories``/``results`` list) to fact records.
-
-    Mem0 memories are atomic user/model statements, so they map naturally
-    onto CommonTrace atomic facts. Accepts a parsed-JSON dict or list.
-    """
+    """Convert a Mem0 export (``memories``/``results`` list) to fact records."""
     from commontrace import hierarchical
 
     items = _coerce_items(doc, "memories", "results", "data", "items", "facts")
@@ -609,7 +505,7 @@ def _lesson_frontmatter(slug: str, title: str, body: str,
                         agent_type: str, source: str) -> dict[str, Any]:
     description = (title or body.splitlines()[0] if body else source)[:140] or source
     return {
-        "name": f"lesson_{slug}",
+        "name": slug,
         "description": description,
         "tags": [source],
         "agent_type": agent_type or "general",
@@ -620,16 +516,12 @@ def _lesson_frontmatter(slug: str, title: str, body: str,
         "do_not_apply_when": "the episode context does not match",
         "uses": 0,
         "last_hit": "NEVER",
-        "status": "active",
+        "status": "review",
     }
 
 
 def import_zep_episodes(doc: Any, agent_type: str = "general") -> list[dict[str, Any]]:
-    """Convert Zep graph episodes (``episodes`` list) to lesson records.
-
-    Episodes are longer narratives than Mem0 memories, so they land as
-    lessons (title + body) pending curation.
-    """
+    """Convert Zep graph episodes (``episodes`` list) to lesson records."""
     items = _coerce_items(doc, "episodes", "messages", "results", "data", "facts", "items")
     out: list[dict[str, Any]] = []
     for item in items:
@@ -654,12 +546,7 @@ def import_zep_episodes(doc: Any, agent_type: str = "general") -> list[dict[str,
 
 
 def import_letta_blocks(doc: Any) -> list[dict[str, Any]]:
-    """Convert Letta core-memory blocks to block records.
-
-    Accepts a ``blocks`` list of ``{label, value, limit}`` dicts, a bare
-    list of ``{name/label, content/value}`` dicts, or a plain
-    ``{label: value}`` mapping.
-    """
+    """Convert Letta core-memory blocks to block records."""
     items = _coerce_items(doc, "blocks", "core_memory", "memory", "data", "items")
     if isinstance(doc, dict) and not items:
         items = [

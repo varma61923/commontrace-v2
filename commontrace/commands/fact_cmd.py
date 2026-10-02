@@ -1,4 +1,4 @@
-"""`commontrace fact`: manage atomic facts lifecycle (EverOS + Mem0 pattern)."""
+"""`commontrace fact`: manage atomic facts lifecycle."""
 from __future__ import annotations
 
 import argparse
@@ -14,7 +14,6 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     sub = p.add_subparsers(dest="subcommand", required=True)
 
-    # list
     p_list = sub.add_parser("list", help="List facts with optional filters.")
     p_list.add_argument("--status", default="active", choices=("active", "superseded", "deleted", "all"))
     p_list.add_argument("--category", default="", choices=("", *hierarchical.CATEGORIES))
@@ -27,7 +26,6 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p_list.add_argument("--dest", default=None)
     p_list.set_defaults(func=run_list)
 
-    # add
     p_add = sub.add_parser("add", help="Add or reinforce an atomic fact.")
     p_add.add_argument("statement", help="The atomic declarative statement.")
     p_add.add_argument("--category", default=hierarchical.DEFAULT_CATEGORY, choices=hierarchical.CATEGORIES)
@@ -40,7 +38,6 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p_add.add_argument("--dest", default=None)
     p_add.set_defaults(func=run_add)
 
-    # search
     p_srch = sub.add_parser("search", help="Search active facts by relevance and confidence.")
     p_srch.add_argument("query", help="Search query string.")
     p_srch.add_argument("--scope", default="", help="Filter by scope.")
@@ -50,20 +47,17 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p_srch.add_argument("--dest", default=None)
     p_srch.set_defaults(func=run_search)
 
-    # supersede
     p_sup = sub.add_parser("supersede", help="Supersede an existing fact with a new one.")
     p_sup.add_argument("old_id", help="ID of the outdated fact.")
     p_sup.add_argument("new_statement", help="New replacement fact statement or fact ID.")
     p_sup.add_argument("--dest", default=None)
     p_sup.set_defaults(func=run_supersede)
 
-    # delete
     p_del = sub.add_parser("delete", help="Soft-delete a fact.")
     p_del.add_argument("fact_id", help="ID of the fact to delete.")
     p_del.add_argument("--dest", default=None)
     p_del.set_defaults(func=run_delete)
 
-    # forget
     p_forget = sub.add_parser(
         "forget",
         help="Hide a fact from default listings (reversible, git-audited).",

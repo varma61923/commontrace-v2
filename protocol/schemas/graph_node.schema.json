@@ -29,7 +29,10 @@
         "lesson",
         "scope",
         "user",
-        "file"
+        "file",
+        "symbol",
+        "memory",
+        "document"
       ]
     },
     "name": {
@@ -49,6 +52,33 @@
     "updated_at": {
       "type": "string",
       "description": "ISO-8601 UTC timestamp recording the latest update to this node."
+    },
+    "parent_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Id of the previous version of this entity, if any."
+    },
+    "root_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Id of the first version of this entity, if any."
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Version number within the entity's chain."
+    },
+    "is_latest": {
+      "type": "boolean",
+      "description": "Whether this is the newest version of the entity."
+    },
+    "is_forgotten": {
+      "type": "boolean",
+      "description": "Whether the node has been forgotten."
     }
   }
 }

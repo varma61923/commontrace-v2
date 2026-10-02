@@ -7,7 +7,6 @@ from e2e_tests.harness.cli_runner import run_cli
 
 
 def test_t2_fact_empty_statement_rejection(isolated_store: str):
-    """E2E-T2-AF-1: Empty or whitespace-only propositions must be rejected."""
     with pytest.raises(ValueError):
         hierarchical.add_fact(isolated_store, "   ")
 
@@ -16,7 +15,6 @@ def test_t2_fact_empty_statement_rejection(isolated_store: str):
 
 
 def test_t2_fact_confidence_boundary_clamping(isolated_store: str):
-    """E2E-T2-AF-2: Confidence scores outside [0.0, 1.0] must be clamped or validated."""
     f_high, _ = hierarchical.add_fact(isolated_store, "High confidence fact", confidence=1.5)
     assert f_high.confidence <= 1.0, "Confidence must not exceed 1.0"
 
@@ -25,7 +23,6 @@ def test_t2_fact_confidence_boundary_clamping(isolated_store: str):
 
 
 def test_t2_fact_extreme_timestamps(isolated_store: str):
-    """E2E-T2-AF-3: Historical epoch (1970) and far-future (2099) timestamps are handled cleanly."""
     t_past = "1970-01-01T00:00:00Z"
     t_future = "2099-12-31T23:59:59Z"
 
@@ -39,14 +36,12 @@ def test_t2_fact_extreme_timestamps(isolated_store: str):
     )
     assert f_future.valid_from is not None
 
-    # Query at 1970-01-01T12:00:00Z
     res_past = hierarchical.list_facts(isolated_store, status="", as_of="1970-01-01T12:00:00Z")
     assert any(f.id == f_past.id for f in res_past)
     assert not any(f.id == f_future.id for f in res_past)
 
 
 def test_t2_fact_scope_sorting_dedup(isolated_store: str):
-    """E2E-T2-AF-4: Adding identical proposition with scopes in different order yields same fact ID."""
     stmt = "Redis TLS encryption is mandatory."
     f1, act1 = hierarchical.add_fact(isolated_store, stmt, scopes=["security", "infra"])
     f2, act2 = hierarchical.add_fact(isolated_store, stmt, scopes=["infra", "security"])
@@ -56,7 +51,6 @@ def test_t2_fact_scope_sorting_dedup(isolated_store: str):
 
 
 def test_t2_fact_nonexistent_supersession(isolated_store: str):
-    """E2E-T2-AF-5: Attempting to supersede a nonexistent fact ID fails cleanly."""
     with pytest.raises(Exception):
         hierarchical.supersede_fact(isolated_store, "fact-nonexistent-12345", "New statement")
 

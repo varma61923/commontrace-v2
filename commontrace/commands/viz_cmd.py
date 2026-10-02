@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 
 from commontrace import paths
 
@@ -25,9 +26,18 @@ def run(args: argparse.Namespace) -> int:
     from commontrace import graph_viz
 
     root = paths.resolve_root(args.dest)
-    html = graph_viz.render_html(root, as_of=args.as_of or None)
+    try:
+        html = graph_viz.render_html(root, as_of=args.as_of or None)
+    except ValueError as exc:
+        print(f"[commontrace] viz: {exc}", file=sys.stderr)
+        return 2
     out = args.out or os.path.join(paths.memory_dir(root), "graph.html")
-    with open(out, "w", encoding="utf-8") as fh:
-        fh.write(html)
+    try:
+        out = paths.safe_prepare_output_path(out)
+        with open(out, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(html)
+    except (OSError, ValueError) as exc:
+        print(f"[commontrace] viz: could not write {out!r}: {exc}", file=sys.stderr)
+        return 1
     print(f"[commontrace] viz: wrote {out}")
     return 0

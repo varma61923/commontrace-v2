@@ -47,6 +47,10 @@ TROUBLESHOOTING: dict[str, tuple[str, str]] = {
                                              "`commontrace lesson approve <slug>`."),
     "trace filename collisions": ("Two traces whose file names collide overwrite each other.",
                                   "Re-capture the affected traces; recent versions suffix every name with an id."),
+    "expired lessons": ("A lesson past its `expires` date is hidden from retrieval, so its guidance silently stops.",
+                        "Renew the date if the lesson still holds, or archive it."),
+    "atomic facts": ("Facts feed agent context; forgotten and expired ones are kept for audit but not shown.",
+                     "`commontrace fact list --include-forgotten` to review them."),
     "credentials in stored traces": ("A trace holding a credential would be replayed to every later reader.",
                                      "Run `commontrace redact` on the store and rotate the credential."),
     "store agent_type": ("The declared kind of agent decides starter domains and defaults.",
@@ -218,6 +222,23 @@ def _model_cached(name: str) -> bool:
     return False
 
 
+def _report_memory_lifecycle(root: str) -> None:
+    from commontrace import frontmatter, hierarchical, lesson_cache, ttl
+
+    try:
+        lessons = lesson_cache.load_active(root, None, reader=frontmatter.read)
+        facts = list(hierarchical.load_facts(root).values())
+    except (OSError, ValueError):
+        return
+    counts = ttl.summarize(lessons, facts)
+    if counts["expired_lessons"]:
+        _info("expired lessons", f"{counts['expired_lessons']} active lesson(s) past `expires` are hidden "
+                                 "from retrieval; renew or archive them")
+    if counts["total_facts"]:
+        _info("atomic facts", f"{counts['total_facts']} stored, {counts['forgotten_facts']} forgotten, "
+                              f"{counts['expired_facts']} past `expires_at`")
+
+
 def _check_measurement(root: str) -> None:
     import stat
 
@@ -325,6 +346,8 @@ def run(args: argparse.Namespace) -> int:
             )
         else:
             _check("credentials in stored traces", True, "none found")
+
+        _report_memory_lifecycle(root)
 
         declared = _declared_agent_type(root)
         effective = paths.store_agent_type(root)

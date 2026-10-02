@@ -1,13 +1,4 @@
 #!/usr/bin/env python3
-"""CommonTrace v2 Master E2E Test Runner
-
-Executes the 4-tier opaque-box E2E test suite and outputs structured results.
-Usage:
-    python3 e2e_tests/run_e2e.py
-    python3 e2e_tests/run_e2e.py --tier 1
-    python3 e2e_tests/run_e2e.py --tier 1,2
-    python3 e2e_tests/run_e2e.py --json
-"""
 from __future__ import annotations
 
 import argparse
@@ -52,7 +43,6 @@ def run_tier(tier_num: int, name: str, path: str, extra_args: list[str]) -> dict
     proc = subprocess.run(cmd, env=env, cwd=REPO_ROOT, capture_output=True, text=True, check=False)
     duration = time.time() - start_time
 
-    # Parse counts from pytest output
     passed = 0
     skipped = 0
     failed = 0

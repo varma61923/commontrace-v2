@@ -1,14 +1,4 @@
-"""Image captioning for multimodal ingestion (default OFF).
-
-`describe_image` reads an image file and, only when vision is explicitly
-enabled AND the configured LLM provider speaks vision, asks the model to
-describe it. Otherwise it returns a metadata-only string (mime + size), so
-callers still get something indexable without spending a model call.
-
-Nothing here ever raises: an unreadable file yields None, and every other
-failure (no config, a provider without image support, an LLM outage, garbage
-bytes) yields the metadata string.
-"""
+"""Image captioning for multimodal ingestion (default OFF)."""
 from __future__ import annotations
 
 import mimetypes
@@ -16,12 +6,10 @@ import os
 
 from commontrace import llm as _llm_mod
 
-#: Providers whose `complete_with_image` path is implemented.
 VISION_PROVIDERS = ("anthropic", "openai-compatible", "ollama")
 
 DEFAULT_PROMPT = "Describe this image in one or two sentences for a searchable memory index."
 
-#: Refuse to send absurd payloads to a model; report metadata instead.
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
 _ENABLE_ENV = "COMMONTRACE_VISION_ENABLED"
@@ -70,10 +58,7 @@ def describe_image(
     config: _llm_mod.Config | None = None,
     enabled: bool | None = None,
 ) -> str | None:
-    """Describe the image at `path`, or return metadata when vision is off.
-
-    Returns None only when the file cannot be read; never raises.
-    """
+    """Describe the image at `path`, or return metadata when vision is off."""
     try:
         with open(path, "rb") as fh:
             blob = fh.read()

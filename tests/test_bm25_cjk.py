@@ -1,9 +1,3 @@
-"""BM25 scorer + CJK tokenizer lane (T4).
-
-Covers: BM25 saturation, CJK compound matching, corpus_bin v2
-round-trip + v1 fallback, and parity of the pre-existing scorers
-(default scorer and floors unchanged, English token path identical).
-"""
 from __future__ import annotations
 
 import pytest
@@ -36,10 +30,6 @@ def _fm(name, desc, applies="", tags=(), domain=""):
         "uses": 0,
     }
 
-
-# ---------------------------------------------------------------------------
-# Scorer identity / parity of existing scorers
-# ---------------------------------------------------------------------------
 
 class TestScorerIdentity:
     def test_bm25_constants(self):
@@ -109,10 +99,6 @@ class TestScorerIdentity:
         assert [r.__dict__ for r in cached] == [r.__dict__ for r in fresh]
 
 
-# ---------------------------------------------------------------------------
-# BM25 saturation
-# ---------------------------------------------------------------------------
-
 class TestBm25Saturation:
     def _corpus(self):
         lessons = [
@@ -129,7 +115,6 @@ class TestBm25Saturation:
         ranked = retrieval.rank_lessons(
             "payment", lessons, scorer="bm25-v1", floor=0.0, top_k=10)
         rel = {r.slug: r.relevance for r in ranked}
-        # Same term in 4x the field weight must rank first but far below 4x.
         assert ranked[0].slug == "multi"
         assert rel["multi"] > rel["once"] > 0
         assert rel["multi"] / rel["once"] < 4.0
@@ -146,7 +131,6 @@ class TestBm25Saturation:
         four = _bm25_term(4.0, 1.0, 10, 10.0)
         assert four > one > 0
         assert four < 4.0 * one
-        # Diminishing increments: the 4th unit adds less than the 2nd did.
         two = _bm25_term(2.0, 1.0, 10, 10.0)
         three = _bm25_term(3.0, 1.0, 10, 10.0)
         assert (two - one) > (four - three) > 0
@@ -154,10 +138,6 @@ class TestBm25Saturation:
     def test_longer_doc_scores_lower_all_else_equal(self):
         assert _bm25_term(1.0, 1.0, 40, 10.0) < _bm25_term(1.0, 1.0, 10, 10.0)
 
-
-# ---------------------------------------------------------------------------
-# CJK bigram lane
-# ---------------------------------------------------------------------------
 
 class TestCjkLane:
     def test_english_path_byte_identical(self):
@@ -213,10 +193,6 @@ class TestCjkLane:
         assert not has_cjk("fix payment failure")
 
 
-# ---------------------------------------------------------------------------
-# corpus_bin v2: round-trip + v1 fallback
-# ---------------------------------------------------------------------------
-
 def _save_load_roundtrip(tmp_path, scorer):
     lessons = [
         ("p0", _fm("a", "payment refund failure", "when payment fails",
@@ -253,8 +229,6 @@ class TestCorpusBinV2:
         lessons, _fp = _save_load_roundtrip(tmp_path, scorer)
         for query in ("payment refund", "深度学习"):
             want = retrieval.rank_lessons(query, lessons, scorer=scorer, floor=0.0)
-            # Fresh-process load path is exercised via load(); rank from the
-            # loaded index must equal a from-scratch build.
             assert [r.__dict__ for r in want] == [
                 r.__dict__ for r in retrieval.rank_lessons(
                     query, lessons, scorer=scorer, floor=0.0)]
@@ -264,10 +238,9 @@ class TestCorpusBinV2:
         lessons, fingerprint = _save_load_roundtrip(tmp_path, scorer)
         path = corpus_bin.bin_path(str(tmp_path), scorer)
         blob = bytearray(open(path, "rb").read())
-        blob[4] = 1  # _HEADER is <4sBB: version byte right after magic
+        blob[4] = 1
         open(path, "wb").write(bytes(blob))
         assert corpus_bin.load(str(tmp_path), scorer, lessons, fingerprint) is None
-        # Ranking still correct via the rebuild path.
         ranked = retrieval.rank_lessons(
             "payment refund", lessons, scorer=scorer, floor=0.0)
         assert ranked[0].slug == "a"

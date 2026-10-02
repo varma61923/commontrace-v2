@@ -64,7 +64,6 @@ def run_cli(
     cmd.extend(argv)
 
     if dest:
-        # Append --dest if it is not already present in argv
         if "--dest" not in argv:
             cmd.extend(["--dest", dest])
 

@@ -7,8 +7,6 @@ from e2e_tests.harness.cli_runner import run_cli
 
 
 def test_t3_agent_memory_to_dream_pipeline(isolated_store: str):
-    """E2E-T3-CB-2: Working memory block updates flow through dream consolidation into profile.md."""
-    # 1. Agent initializes and mutates working memory blocks
     memory_blocks.set_block(
         isolated_store,
         "persona",
@@ -24,7 +22,6 @@ def test_t3_agent_memory_to_dream_pipeline(isolated_store: str):
         reason="current task",
     )
 
-    # 2. Add an atomic fact discovered during execution
     hierarchical.add_fact(
         isolated_store,
         "Kubernetes ephemeral storage limit must be 10Gi per node.",
@@ -33,7 +30,6 @@ def test_t3_agent_memory_to_dream_pipeline(isolated_store: str):
         confidence=0.95,
     )
 
-    # 3. Capture an episodic execution trace
     res_cap = run_cli(
         "capture",
         "--title", "Kubernetes pod eviction incident",
@@ -44,12 +40,10 @@ def test_t3_agent_memory_to_dream_pipeline(isolated_store: str):
     )
     res_cap.assert_success()
 
-    # 4. Trigger scheduled dreaming pass
     res_dream = run_cli("dream", dest=isolated_store)
     res_dream.assert_success()
     assert "profile synthesized" in res_dream.stdout
 
-    # 5. Verify synthesized active space profile contains consolidated view
     profile_path = os.path.join(isolated_store, "memory", "profile.md")
     assert os.path.exists(profile_path)
     with open(profile_path, encoding="utf-8") as f:

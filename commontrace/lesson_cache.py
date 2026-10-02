@@ -15,7 +15,6 @@ from commontrace import frontmatter, paths, ttl
 CACHE_NAME = "lessons.json"
 CACHE_DIR = ".cache"
 
-# v4: project the optional `expires` TTL field (v3 and older caches reparse).
 FORMAT_VERSION = 4
 
 PROJECTED_FIELDS = (
@@ -94,8 +93,6 @@ def filter_eligible(
             continue
         if valid_until is not None and moment >= valid_until:
             continue
-        # Per-lesson TTL: `expires` hides the lesson at and after the instant
-        # unless the caller opts into expired lessons explicitly.
         if not show_expired and ttl.lesson_is_expired(fm, moment):
             continue
         eligible.append((path, fm))

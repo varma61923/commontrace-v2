@@ -1,4 +1,3 @@
-"""Tests for stdlib multimodal ingestion (pdf/docx/html/image)."""
 import struct
 import zipfile
 import zlib
@@ -66,7 +65,6 @@ def _minimal_html(secret: str = SECRET) -> bytes:
 
 
 def _minimal_png() -> bytes:
-    # 1x1 RGBA PNG via stdlib struct + zlib.
     def chunk(ctype: bytes, data: bytes) -> bytes:
         out = struct.pack(">I", len(data)) + ctype + data
         out += struct.pack(">I", zlib.crc32(ctype + data) & 0xFFFFFFFF)
@@ -74,7 +72,7 @@ def _minimal_png() -> bytes:
 
     sig = b"\x89PNG\r\n\x1a\n"
     ihdr = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
-    raw = b"\x00\xff\x00\x00"  # filter + one red pixel
+    raw = b"\x00\xff\x00\x00"
     idat = zlib.compress(raw)
     return sig + chunk(b"IHDR", ihdr) + chunk(b"IDAT", idat) + chunk(b"IEND", b"")
 
@@ -92,22 +90,20 @@ def _minimal_wav(channels: int = 1, rate: int = 8000, bits: int = 16,
 
 
 def _minimal_mp3() -> bytes:
-    # MPEG-1 Layer III, 128 kbps, 44100 Hz, padding 0.
-    # header: FF FB (sync+MPEG1+L3) 90 (128k/44.1k) 64 (joint stereo)
     hdr = bytes([0xFF, 0xFB, 0x90, 0x64])
-    frame_len = 144 * 128000 // 44100  # 417
+    frame_len = 144 * 128000 // 44100
     frame = hdr + b"\x00" * (frame_len - 4)
-    return frame + frame  # two frames so next-frame verification hits
+    return frame + frame
 
 
 def _minimal_ogg(serial: int = 0x12345678) -> bytes:
     header = (
-        b"OggS" + bytes([0, 0x02])  # version 0, BOS flag
-        + struct.pack("<q", 0)  # granule position
+        b"OggS" + bytes([0, 0x02])
+        + struct.pack("<q", 0)
         + struct.pack("<I", serial)
-        + struct.pack("<I", 0)  # sequence number
-        + struct.pack("<I", 0)  # checksum (unused by parser)
-        + bytes([1, 4])  # one segment of 4 bytes
+        + struct.pack("<I", 0)
+        + struct.pack("<I", 0)
+        + bytes([1, 4])
     )
     return header + b"abcd"
 
@@ -122,9 +118,9 @@ def _minimal_flac(sample_rate: int = 44100, channels: int = 2,
     )
     body = (
         struct.pack(">H", 4096) + struct.pack(">H", 4096)
-        + b"\x00\x00\x00" + b"\x00\x00\x00"  # min/max frame sizes
+        + b"\x00\x00\x00" + b"\x00\x00\x00"
         + packed.to_bytes(8, "big")
-        + b"\x00" * 16  # md5 placeholder
+        + b"\x00" * 16
     )
     assert len(body) == 34
     return b"fLaC" + bytes([0x80]) + len(body).to_bytes(3, "big") + body
@@ -155,11 +151,9 @@ def _minimal_srt() -> bytes:
 
 
 def _minimal_jpeg() -> bytes:
-    # SOI + APP0(JFIF) + SOF0(1x1) + EOI
     soi = b"\xff\xd8"
     jfif_body = b"JFIF\x00\x01\x02\x00\x00\x01\x00\x01\x00\x00"
     app0 = b"\xff\xe0" + struct.pack(">H", len(jfif_body) + 2) + jfif_body
-    # SOF0: precision=8, height=1, width=1, components=1 (id=1, sampling=0x11, q=0)
     sof_body = struct.pack(">BHHB", 8, 1, 1, 1) + b"\x01\x11\x00"
     sof0 = b"\xff\xc0" + struct.pack(">H", len(sof_body) + 2) + sof_body
     eoi = b"\xff\xd9"
@@ -278,9 +272,9 @@ class TestAudio:
         assert chunks[0].chunk_type == "audio_metadata"
         joined = " ".join(c.content for c in chunks)
         assert "WAV" in joined
-        assert "8000" in joined  # sample rate
+        assert "8000" in joined
         assert "16-bit" in joined
-        assert "1.00s" in joined  # 16000 data bytes / 16000 B/s
+        assert "1.00s" in joined
 
     def test_wav_stereo(self, tmp_path):
         p = str(tmp_path / "stereo.wav")
@@ -301,7 +295,7 @@ class TestAudio:
         _check_provenance(chunks, p, "audio")
         joined = " ".join(c.content for c in chunks)
         assert "MPEG-1" in joined
-        assert "128" in joined  # kbps estimate
+        assert "128" in joined
         assert "44100" in joined
         assert "duration" in joined.lower()
 
@@ -313,7 +307,7 @@ class TestAudio:
         joined = " ".join(c.content for c in chunks)
         assert "OGG" in joined
         assert "1 page" in joined
-        assert "12345678" in joined  # stream serial hex
+        assert "12345678" in joined
 
     def test_flac_streaminfo(self, tmp_path):
         p = str(tmp_path / "track.flac")
@@ -325,7 +319,7 @@ class TestAudio:
         assert "44100" in joined
         assert "16-bit" in joined
         assert "2 channel" in joined
-        assert "1.00s" in joined  # 44100 samples @ 44100 Hz
+        assert "1.00s" in joined
 
     def test_audio_is_descriptive_not_decoded(self, tmp_path):
         p = str(tmp_path / "tone.wav")
@@ -337,7 +331,7 @@ class TestAudio:
         for ext in (".wav", ".mp3", ".ogg", ".flac"):
             p = str(tmp_path / f"bad{ext}")
             _write(p, b"\x00\x01\x02not audio data")
-            res = ingest_multimodal(p)  # must not raise
+            res = ingest_multimodal(p)
             assert res.errors, ext
             assert res.chunks_extracted == 0, ext
 
@@ -350,11 +344,11 @@ class TestSubtitles:
         _check_provenance(chunks, p, "subtitle")
         assert chunks[0].chunk_type == "subtitle_text"
         joined = "\n".join(c.content for c in chunks)
-        assert "Hello subtitle world" in joined  # <i> stripped
-        assert "Second cue with voice tag" in joined  # <v> stripped
+        assert "Hello subtitle world" in joined
+        assert "Second cue with voice tag" in joined
         assert "<i>" not in joined and "<v" not in joined
-        assert "position:0%" not in joined  # cue settings dropped
-        assert "00:00:01.000 --> 00:00:04.000" in joined  # cue offsets kept
+        assert "position:0%" not in joined
+        assert "00:00:01.000 --> 00:00:04.000" in joined
         assert SECRET not in joined
 
     def test_srt_parse_and_cleanup(self, tmp_path):
@@ -366,7 +360,7 @@ class TestSubtitles:
         assert "Hello srt world" in joined
         assert "Second cue here" in joined
         assert "<b>" not in joined
-        assert "00:00:01.000 --> 00:00:04.000" in joined  # comma normalized
+        assert "00:00:01.000 --> 00:00:04.000" in joined
 
     def test_srt_ingest_source_type(self, tmp_path):
         p = str(tmp_path / "caps.srt")
@@ -377,7 +371,6 @@ class TestSubtitles:
         assert not res.errors
 
     def test_chunking_respects_cue_boundaries(self, tmp_path):
-        # ~200 cues x ~90 chars each >> 3500-char target -> several chunks.
         lines = ["WEBVTT", ""]
         for i in range(200):
             start = i * 2
@@ -403,8 +396,8 @@ class TestSubtitles:
         for ext, fn in ((".vtt", _minimal_vtt), (".srt", _minimal_srt)):
             p = str(tmp_path / f"bad{ext}")
             _write(p, b"not a subtitle\nno timestamps here\n--> broken \n")
-            res = ingest_multimodal(p)  # must not raise
-            assert res.chunks, ext  # descriptive chunk, nothing lost
+            res = ingest_multimodal(p)
+            assert res.chunks, ext
             assert not res.errors, (ext, res.errors)
 
 

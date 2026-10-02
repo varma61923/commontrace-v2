@@ -79,12 +79,7 @@ class LettaCoreBlockAdapter:
         return [bid for bid, label in self._labels.items() if label in labels]
 
     def delete(self, item_id: str, *, force: bool = False) -> None:
-        """Detach or delete a core block from the agent.
-
-        By default, core memory blocks are protected. When allow_delete is True
-        or force=True, detaches the block via `client.agents.blocks.detach`,
-        or deletes it via `client.blocks.delete`.
-        """
+        """Detach or delete a core block from the agent."""
         if not self.allow_delete and not force:
             raise NotImplementedError("a core memory block is the agent owner's to remove")
 

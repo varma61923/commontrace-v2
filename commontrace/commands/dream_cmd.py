@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 import datetime
 import io
-import json
 import os
 import sys
 from contextlib import redirect_stderr, redirect_stdout
@@ -95,28 +94,25 @@ def run(args: argparse.Namespace) -> int:
         cli(["consolidate", *(["--draft"] if draft else []), "--dest", root])
     lines += ["## Consolidation", "", "```", out.getvalue().strip(), "```", ""]
 
-    # Synthesize Active Space Profile & Consolidate Graph
     from commontrace import graph as graph_mod
     from commontrace import hierarchical, memory_blocks, store_state
+    from commontrace.commands._traces import load_trace_instances
 
-    # Graph relationship mining from traces
-    tdir = paths.traces_dir(root)
     linked_edges = 0
-    if os.path.isdir(tdir):
-        for fname in os.listdir(tdir):
-            if fname.endswith(".json") and not fname.startswith("."):
-                try:
-                    with open(os.path.join(tdir, fname), "r", encoding="utf-8") as tf:
-                        tdata = json.load(tf)
-                        ttags = tdata.get("tags") or []
-                        tid = tdata.get("id") or fname[:-5]
-                        if ttags:
-                            for tag in ttags:
-                                graph_mod.add_node(root, f"concept:{tag}", "concept", name=tag)
-                                graph_mod.add_edge(root, f"concept:{tag}", f"trace:{tid}", "affects")
-                                linked_edges += 1
-                except Exception:
+    with graph_mod.batch(root):
+        for trace in load_trace_instances(root):
+            tid = str(trace.get("id") or "").strip()
+            tags = trace.get("tags") if isinstance(trace.get("tags"), list) else []
+            if not tid or not tags:
+                continue
+            graph_mod.add_node(root, f"trace:{tid}", "memory", name=str(trace.get("title") or tid)[:200])
+            for tag in tags:
+                tag = str(tag).strip()
+                if not tag:
                     continue
+                graph_mod.add_node(root, f"concept:{tag}", "concept", name=tag)
+                graph_mod.add_edge(root, f"concept:{tag}", f"trace:{tid}", "affects")
+                linked_edges += 1
 
     blocks = memory_blocks.list_blocks(root)
     facts = hierarchical.list_facts(root, status="active")
@@ -130,7 +126,6 @@ def run(args: argparse.Namespace) -> int:
         "",
     ]
 
-    # Synthesize memory/profile.md
     profile_lines = [
         f"# CommonTrace Active Space Profile ({now.strftime('%Y-%m-%d %H:%M')}Z)", "",
         "## Working Memory Blocks",

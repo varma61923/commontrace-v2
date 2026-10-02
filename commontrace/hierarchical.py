@@ -1,22 +1,17 @@
-"""Hierarchical Memory & Atomic Fact Lifecycle engine (EverOS + Mem0 pattern).
-
-Distills noisy agent traces and operational observations into atomic, verifiable facts.
-Manages full lifecycle transitions: ADD, UPDATE, SUPERSEDE, DELETE, and NOOP reinforcement,
-with bitemporal validity and scoped routing.
-
-Includes entity extraction and linking (ported from Mem0's spaCy-based pipeline).
-"""
+"""Atomic facts: distilled propositions with a governed, bitemporal lifecycle."""
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
 import re
-from dataclasses import asdict, dataclass
+from collections.abc import Iterator
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from commontrace import lesson_cache, paths
+from commontrace import _jsonl, lesson_cache, paths
 
 DEFAULT_CATEGORY = "general"
 CATEGORIES = (
@@ -26,11 +21,10 @@ CATEGORIES = (
     "bug_pattern",
     "tool_rule",
     "environment",
+    "reference",
     "general",
 )
-
-# Entity boosting weight for retrieval (from Mem0 pattern)
-ENTITY_BOOST_WEIGHT = 0.5
+MAX_STATEMENT_CHARS = 2000
 
 
 @dataclass
@@ -45,16 +39,12 @@ class AtomicFact:
     valid_until: str | None
     expires_at: str | None = None
     forgotten: bool = False
-    source_traces: list[str] = None  # type: ignore[assignment]
-    status: str = "active"  # "active" | "superseded" | "deleted"
+    source_traces: list[str] = field(default_factory=list)
+    status: str = "active"
     superseded_by: str | None = None
     revision: str = ""
     created_at: str = ""
     updated_at: str = ""
-
-    def __post_init__(self) -> None:
-        if self.source_traces is None:
-            self.source_traces = []
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -64,23 +54,16 @@ _FACT_FIELDS = frozenset(AtomicFact.__dataclass_fields__)
 
 
 def _coerce_fact(data: dict[str, Any]) -> AtomicFact:
-    """Build an AtomicFact from a JSONL row, tolerating schema drift.
-
-    Unknown keys are ignored (forward-compat) and rows predating the
-    ``expires_at`` / ``forgotten`` fields load with their defaults
-    (back-compat). Missing required keys still raise, so corrupt rows are
-    skipped by ``load_facts`` as before.
-    """
     clean = {k: v for k, v in data.items() if k in _FACT_FIELDS}
     if "forgotten" in clean:
         clean["forgotten"] = bool(clean["forgotten"])
+    if clean.get("source_traces") is None:
+        clean["source_traces"] = []
     return AtomicFact(**clean)
 
 
 def _facts_dir(root: str) -> str:
-    path = os.path.join(paths.memory_dir(root), "facts")
-    os.makedirs(path, exist_ok=True)
-    return path
+    return os.path.join(paths.memory_dir(root), "facts")
 
 
 def _facts_file(root: str) -> str:
@@ -95,50 +78,47 @@ def _normalize_statement(text: str) -> str:
     return re.sub(r"\s+", " ", text.strip().lower())
 
 
+def _clean_scopes(scopes) -> list[str]:
+    return sorted({str(s).strip() for s in (scopes or []) if str(s).strip()})
+
+
 def _fact_id(statement: str, scopes: list[str]) -> str:
     norm = _normalize_statement(statement)
-    scope_str = ",".join(sorted(scopes))
-    h = hashlib.sha256(f"{norm}|{scope_str}".encode("utf-8")).hexdigest()[:12]
+    h = hashlib.sha256(f"{norm}|{','.join(sorted(scopes))}".encode("utf-8")).hexdigest()[:12]
     return f"fact-{h}"
 
 
+def _free_id(base: str, taken) -> str:
+    if base not in taken:
+        return base
+    n = 2
+    while f"{base}-{n}" in taken:
+        n += 1
+    return f"{base}-{n}"
+
+
 def _compute_revision(fact_dict: dict[str, Any]) -> str:
-    payload = json.dumps(
-        {k: v for k, v in fact_dict.items() if k != "revision"},
-        sort_keys=True,
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()[:16]
+    payload = json.dumps({k: v for k, v in fact_dict.items() if k != "revision"}, sort_keys=True)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
-def load_facts(root: str) -> dict[str, AtomicFact]:
-    """Load all facts from disk into a dictionary keyed by fact id."""
-    fpath = _facts_file(root)
-    facts: dict[str, AtomicFact] = {}
-    if not os.path.exists(fpath):
-        return facts
-
-    with open(fpath, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                data = json.loads(line)
-                fact = _coerce_fact(data)
-                facts[fact.id] = fact
-            except Exception:
-                continue
-    return facts
+def _stamp(fact: AtomicFact) -> None:
+    fact.updated_at = _now()
+    fact.revision = _compute_revision(fact.to_dict())
 
 
-def save_facts(root: str, facts: dict[str, AtomicFact]) -> None:
-    """Save all facts atomically to disk."""
-    fpath = _facts_file(root)
-    tmp_path = f"{fpath}.tmp"
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        for fact in facts.values():
-            f.write(json.dumps(fact.to_dict()) + "\n")
-    os.replace(tmp_path, fpath)
+def _moment(value: str | None, label: str) -> str | None:
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        return lesson_cache.parse_moment(value).isoformat()
+    except ValueError as exc:
+        raise ValueError(f"invalid fact `{label}` value {value!r}: {exc}") from exc
+
+
+def _check_window(valid_from: str | None, valid_until: str | None) -> None:
+    if valid_from and valid_until and lesson_cache.parse_moment(valid_until) <= lesson_cache.parse_moment(valid_from):
+        raise ValueError(f"fact `valid_until` ({valid_until}) must be after `valid_from` ({valid_from})")
 
 
 def _normalize_expires_at(expires_at: str | None) -> str | None:
@@ -149,9 +129,99 @@ def _normalize_expires_at(expires_at: str | None) -> str | None:
     try:
         return ttl.parse_expiry(expires_at).isoformat()
     except ValueError as exc:
-        raise ValueError(
-            f"invalid fact `expires_at` value {expires_at!r}: {exc}"
-        ) from exc
+        raise ValueError(f"invalid fact `expires_at` value {expires_at!r}: {exc}") from exc
+
+
+def load_facts(root: str) -> dict[str, AtomicFact]:
+    """Every fact on disk, keyed by id; unreadable rows are skipped."""
+    facts: dict[str, AtomicFact] = {}
+    for row in _jsonl.read_rows(_facts_file(root)):
+        try:
+            fact = _coerce_fact(row)
+        except TypeError:
+            continue
+        facts[fact.id] = fact
+    return facts
+
+
+def save_facts(root: str, facts: dict[str, AtomicFact]) -> None:
+    """Atomically replace the fact file with *facts*."""
+    _jsonl.write_rows(_facts_file(root), (fact.to_dict() for fact in facts.values()))
+
+
+@contextlib.contextmanager
+def mutate_facts(root: str) -> Iterator[dict[str, AtomicFact]]:
+    """Load, lock and save the fact file around one read-modify-write."""
+    path = _facts_file(root)
+    with _jsonl.locked(path):
+        facts = load_facts(root)
+        yield facts
+        save_facts(root, facts)
+
+
+def _matching_active(facts: dict[str, AtomicFact], statement: str, scopes: list[str]) -> AtomicFact | None:
+    norm = _normalize_statement(statement)
+    for existing in facts.values():
+        if existing.status != "active" or _normalize_statement(existing.statement) != norm:
+            continue
+        if not scopes or not existing.scopes or any(s in existing.scopes for s in scopes):
+            return existing
+    return None
+
+
+def _add_locked(
+    facts: dict[str, AtomicFact],
+    statement: str,
+    category: str,
+    scopes: list[str],
+    valid_from: str | None,
+    valid_until: str | None,
+    expires_at: str | None,
+    confidence: float,
+    source_trace_id: str,
+) -> tuple[AtomicFact, str]:
+    existing = _matching_active(facts, statement, scopes)
+    if existing is not None:
+        existing.confirmations += 1
+        existing.confidence = min(1.0, round(existing.confidence + 0.05, 3))
+        if source_trace_id and source_trace_id not in existing.source_traces:
+            existing.source_traces.append(source_trace_id)
+        existing.scopes = _clean_scopes([*existing.scopes, *scopes])
+        _stamp(existing)
+        return existing, "NOOP"
+
+    now_iso = _now()
+    fact = AtomicFact(
+        id=_free_id(_fact_id(statement, scopes), facts),
+        statement=statement,
+        category=category,
+        scopes=scopes,
+        confidence=min(1.0, max(0.0, round(float(confidence), 3))),
+        confirmations=1,
+        valid_from=valid_from or now_iso,
+        valid_until=valid_until,
+        expires_at=expires_at,
+        source_traces=[source_trace_id] if source_trace_id else [],
+        created_at=now_iso,
+        updated_at=now_iso,
+    )
+    fact.revision = _compute_revision(fact.to_dict())
+    facts[fact.id] = fact
+    return fact, "ADD"
+
+
+def prepare_fact(statement: str, category: str, valid_from, valid_until, expires_at):
+    statement = (statement or "").strip()
+    if not statement:
+        raise ValueError("Fact statement cannot be empty")
+    if len(statement) > MAX_STATEMENT_CHARS:
+        raise ValueError(f"Fact statement exceeds {MAX_STATEMENT_CHARS} characters ({len(statement)})")
+    if category not in CATEGORIES:
+        category = DEFAULT_CATEGORY
+    valid_from = _moment(valid_from, "valid_from")
+    valid_until = _moment(valid_until, "valid_until")
+    _check_window(valid_from, valid_until)
+    return statement, category, valid_from, valid_until, _normalize_expires_at(expires_at)
 
 
 def add_fact(
@@ -165,71 +235,31 @@ def add_fact(
     confidence: float = 0.8,
     source_trace_id: str = "",
 ) -> tuple[AtomicFact, str]:
-    """Add a new atomic fact or reinforce an existing one (NOOP).
+    """Add a fact, or reinforce the matching active one. Returns (fact, 'ADD' | 'NOOP')."""
+    statement, category, valid_from, valid_until, expires_at = prepare_fact(
+        statement, category, valid_from, valid_until, expires_at)
+    with mutate_facts(root) as facts:
+        return _add_locked(
+            facts, statement, category, _clean_scopes(scopes), valid_from, valid_until,
+            expires_at, confidence, source_trace_id,
+        )
 
-    Returns (fact, action) where action is 'ADD' or 'NOOP'.
-    """
-    statement = statement.strip()
-    if not statement:
-        raise ValueError("Fact statement cannot be empty")
 
-    scopes = sorted(set(s.strip() for s in (scopes or []) if s.strip()))
-    if category not in CATEGORIES:
-        category = DEFAULT_CATEGORY
-
-    now_iso = _now()
-    valid_from = valid_from or now_iso
-    normalized_expires_at = _normalize_expires_at(expires_at)
-    facts = load_facts(root)
-
-    # Check for existing match (exact normalized statement and overlapping scopes)
-    norm = _normalize_statement(statement)
-    for existing in facts.values():
-        if existing.status == "active" and _normalize_statement(existing.statement) == norm:
-            if not scopes or any(s in existing.scopes for s in scopes):
-                # Reinforce existing fact
-                existing.confirmations += 1
-                existing.confidence = min(1.0, round(existing.confidence + 0.05, 3))
-                if source_trace_id and source_trace_id not in existing.source_traces:
-                    existing.source_traces.append(source_trace_id)
-                # Expand scopes if new ones provided
-                for s in scopes:
-                    if s not in existing.scopes:
-                        existing.scopes.append(s)
-                existing.scopes.sort()
-                existing.updated_at = now_iso
-                existing.revision = _compute_revision(existing.to_dict())
-                save_facts(root, facts)
-                return existing, "NOOP"
-
-    fid = _fact_id(statement, scopes)
-    if fid in facts:
-        # Avoid collisions with deactivated facts
-        fid = f"{fid}-{int(datetime.now(timezone.utc).timestamp()) % 10000}"
-
-    fact_dict = {
-        "id": fid,
-        "statement": statement,
-        "category": category,
-        "scopes": scopes,
-        "confidence": min(1.0, max(0.0, round(confidence, 3))),
-        "confirmations": 1,
-        "valid_from": valid_from,
-        "valid_until": valid_until,
-        "expires_at": normalized_expires_at,
-        "forgotten": False,
-        "source_traces": [source_trace_id] if source_trace_id else [],
-        "status": "active",
-        "superseded_by": None,
-        "revision": "",
-        "created_at": now_iso,
-        "updated_at": now_iso,
-    }
-    fact_dict["revision"] = _compute_revision(fact_dict)
-    fact = AtomicFact(**fact_dict)
-    facts[fact.id] = fact
-    save_facts(root, facts)
-    return fact, "ADD"
+def add_facts(root: str, items: list[dict[str, Any]]) -> list[tuple[AtomicFact, str]]:
+    """Add or reinforce many facts in one locked write; bad items raise ValueError."""
+    prepared = []
+    for item in items:
+        statement, category, valid_from, valid_until, expires_at = prepare_fact(
+            item.get("statement", ""), item.get("category", DEFAULT_CATEGORY),
+            item.get("valid_from"), item.get("valid_until"), item.get("expires_at"))
+        prepared.append((statement, category, _clean_scopes(item.get("scopes")), valid_from,
+                         valid_until, expires_at, float(item.get("confidence", 0.8)),
+                         str(item.get("source_trace_id", "") or "")))
+    if not prepared:
+        return []
+    with mutate_facts(root) as facts:
+        return [_add_locked(facts, s, c, sc, vf, vu, ea, conf, src)
+                for s, c, sc, vf, vu, ea, conf, src in prepared]
 
 
 _UNSET: Any = object()
@@ -245,30 +275,30 @@ def update_fact(
     valid_until: str | None = None,
     expires_at: Any = _UNSET,
 ) -> AtomicFact:
-    """Update an existing active fact."""
-    facts = load_facts(root)
-    if fact_id not in facts:
-        raise KeyError(f"Fact '{fact_id}' not found")
-
-    fact = facts[fact_id]
-    if statement is not None and statement.strip():
-        fact.statement = statement.strip()
-    if category is not None and category in CATEGORIES:
-        fact.category = category
-    if scopes is not None:
-        fact.scopes = sorted(set(s.strip() for s in scopes if s.strip()))
-    if confidence is not None:
-        fact.confidence = min(1.0, max(0.0, round(confidence, 3)))
-    if valid_until is not None:
-        fact.valid_until = valid_until
-    if expires_at is not _UNSET:
-        # None clears the TTL; a string must parse or this raises ValueError.
-        fact.expires_at = _normalize_expires_at(expires_at)
-
-    fact.updated_at = _now()
-    fact.revision = _compute_revision(fact.to_dict())
-    save_facts(root, facts)
-    return fact
+    """Change fields of an existing fact."""
+    new_until = _moment(valid_until, "valid_until") if valid_until is not None else None
+    new_expiry = _normalize_expires_at(expires_at) if expires_at is not _UNSET else None
+    if statement is not None and len(statement.strip()) > MAX_STATEMENT_CHARS:
+        raise ValueError(f"Fact statement exceeds {MAX_STATEMENT_CHARS} characters")
+    with mutate_facts(root) as facts:
+        if fact_id not in facts:
+            raise KeyError(f"Fact '{fact_id}' not found")
+        fact = facts[fact_id]
+        if statement is not None and statement.strip():
+            fact.statement = statement.strip()
+        if category is not None and category in CATEGORIES:
+            fact.category = category
+        if scopes is not None:
+            fact.scopes = _clean_scopes(scopes)
+        if confidence is not None:
+            fact.confidence = min(1.0, max(0.0, round(float(confidence), 3)))
+        if new_until is not None:
+            _check_window(fact.valid_from, new_until)
+            fact.valid_until = new_until
+        if expires_at is not _UNSET:
+            fact.expires_at = new_expiry
+        _stamp(fact)
+        return fact
 
 
 def supersede_fact(
@@ -279,85 +309,103 @@ def supersede_fact(
     category: str | None = None,
     as_of: str | None = None,
 ) -> tuple[AtomicFact, AtomicFact]:
-    """Supersede an existing fact with a new fact statement or ID."""
-    facts = load_facts(root)
-    if old_fact_id not in facts:
-        raise KeyError(f"Old fact '{old_fact_id}' not found")
-
-    old_fact = facts[old_fact_id]
-    now_iso = as_of or _now()
-
-    # Determine if new target is already an existing fact id or a new statement
-    if new_fact_id_or_statement in facts:
-        new_fact = facts[new_fact_id_or_statement]
-        if as_of and not new_fact.valid_from:
-            new_fact.valid_from = as_of
-    else:
-        new_fact, _ = add_fact(
-            root=root,
-            statement=new_fact_id_or_statement,
-            category=category or old_fact.category,
-            scopes=scopes if scopes is not None else list(old_fact.scopes),
-            valid_from=now_iso,
-        )
-        facts = load_facts(root)
-
-    # Invalidate old fact
-    old_fact = facts[old_fact_id]
-    old_fact.status = "superseded"
-    old_fact.valid_until = now_iso
-    old_fact.superseded_by = new_fact.id
-    old_fact.updated_at = _now()
-    old_fact.revision = _compute_revision(old_fact.to_dict())
-    save_facts(root, facts)
-
-    return old_fact, new_fact
+    """End an active fact's validity and point it at its replacement."""
+    when = _moment(as_of, "as_of") or _now()
+    with mutate_facts(root) as facts:
+        if old_fact_id not in facts:
+            raise KeyError(f"Old fact '{old_fact_id}' not found")
+        old_fact = facts[old_fact_id]
+        if old_fact.status != "active":
+            raise ValueError(
+                f"fact '{old_fact_id}' is {old_fact.status}, not active; only an active fact can be superseded")
+        target = new_fact_id_or_statement
+        if target in facts:
+            new_fact = facts[target]
+            if new_fact.status != "active":
+                raise ValueError(f"replacement fact '{target}' is {new_fact.status}, not active")
+        else:
+            statement, cat, _vf, _vu, _ea = prepare_fact(target, category or old_fact.category, None, None, None)
+            new_scopes = _clean_scopes(scopes if scopes is not None else old_fact.scopes)
+            same = _matching_active(facts, statement, new_scopes)
+            if same is not None and same.id == old_fact.id:
+                raise ValueError(
+                    f"the replacement restates fact '{old_fact_id}' itself; "
+                    "supersede it with a statement that differs")
+            new_fact, _action = _add_locked(
+                facts, statement, cat, new_scopes, when, None, None, old_fact.confidence, "")
+        if new_fact.id == old_fact.id:
+            raise ValueError(f"fact '{old_fact_id}' cannot supersede itself")
+        old_fact.status = "superseded"
+        old_fact.valid_until = when
+        old_fact.superseded_by = new_fact.id
+        _stamp(old_fact)
+        return old_fact, new_fact
 
 
 def _audit_git(root: str, action: str, fact_id: str) -> None:
-    """Best-effort git commit auditing a forget/restore. Never raises."""
     try:
         from commontrace import memory_git
 
-        memory_git.commit_all(root, f"commontrace: fact {action} {fact_id}")
+        if memory_git.owns_repo(root):
+            memory_git.commit_all(root, f"commontrace: fact {action} {fact_id}")
     except Exception:
         pass
 
 
 def forget_fact(root: str, fact_id: str, undo: bool = False) -> AtomicFact:
-    """Hide a fact from default listings (``forgotten=True``), reversibly.
-
-    Forgetting keeps the row (unlike ``delete_fact`` which ends validity);
-    ``undo=True`` restores it. Both transitions recompute the revision hash
-    and are git-audited best-effort via ``memory_git.commit_all``.
-    Raises ``KeyError`` when the fact does not exist.
-    """
-    facts = load_facts(root)
-    if fact_id not in facts:
-        raise KeyError(f"Fact '{fact_id}' not found")
-    fact = facts[fact_id]
-    fact.forgotten = not undo
-    fact.updated_at = _now()
-    fact.revision = _compute_revision(fact.to_dict())
-    save_facts(root, facts)
+    """Hide a fact from default listings, or restore it with ``undo=True``."""
+    with mutate_facts(root) as facts:
+        if fact_id not in facts:
+            raise KeyError(f"Fact '{fact_id}' not found")
+        fact = facts[fact_id]
+        fact.forgotten = not undo
+        _stamp(fact)
     _audit_git(root, "restore" if undo else "forget", fact_id)
     return fact
 
 
 def delete_fact(root: str, fact_id: str) -> bool:
-    """Soft-delete an active fact."""
-    facts = load_facts(root)
-    if fact_id not in facts:
-        return False
+    """Soft-delete a fact: its validity ends now and it leaves default listings."""
+    with mutate_facts(root) as facts:
+        fact = facts.get(fact_id)
+        if fact is None:
+            return False
+        if fact.status == "deleted":
+            return True
+        fact.status = "deleted"
+        fact.valid_until = _now()
+        _stamp(fact)
+        return True
 
-    fact = facts[fact_id]
-    now_iso = _now()
-    fact.status = "deleted"
-    fact.valid_until = now_iso
-    fact.updated_at = now_iso
-    fact.revision = _compute_revision(fact.to_dict())
-    save_facts(root, facts)
-    return True
+
+def retire_source(root: str, source_id: str, keep: set[str]) -> int:
+    """End the facts that only *source_id* supports and that it no longer states."""
+    if not source_id:
+        return 0
+    ended = 0
+    with mutate_facts(root) as facts:
+        now_iso = _now()
+        for fact in facts.values():
+            if fact.id in keep or fact.status != "active" or source_id not in fact.source_traces:
+                continue
+            fact.source_traces = [s for s in fact.source_traces if s != source_id]
+            if not fact.source_traces:
+                fact.status = "deleted"
+                fact.valid_until = now_iso
+                ended += 1
+            _stamp(fact)
+    return ended
+
+
+def _valid_at(fact: AtomicFact, moment: datetime) -> bool:
+    try:
+        if fact.valid_from and lesson_cache.parse_moment(fact.valid_from) > moment:
+            return False
+        if fact.valid_until:
+            return lesson_cache.parse_moment(fact.valid_until) > moment
+    except ValueError:
+        return False
+    return fact.status not in ("superseded", "deleted")
 
 
 def list_facts(
@@ -368,51 +416,25 @@ def list_facts(
     as_of: str | None = None,
     include_forgotten: bool = False,
 ) -> list[AtomicFact]:
-    """List facts matching the given filters and temporal validity.
-
-    When `as_of` is provided, facts valid at that timestamp
-    (valid_from <= as_of < valid_until) are included regardless of
-    whether their current status is 'superseded' or 'deleted'.
-
-    Forgotten facts (see `forget_fact`) are hidden by default and only
-    returned when `include_forgotten` is true, including for point-in-time
-    queries -- forgetting is a visibility flag, orthogonal to validity.
-    """
-    facts = load_facts(root)
-    results: list[AtomicFact] = []
+    """Facts matching the filters; with `as_of`, the facts valid at that moment."""
     moment = lesson_cache.parse_moment(as_of) if as_of else None
-
-    for fact in facts.values():
+    results: list[AtomicFact] = []
+    for fact in load_facts(root).values():
         if fact.forgotten and not include_forgotten:
             continue
-        if not moment and status and fact.status != status:
+        if moment is None and status and fact.status != status:
             continue
         if category and fact.category != category:
             continue
         if scope and fact.scopes and scope not in fact.scopes:
             continue
-        if moment:
-            # Check temporal validity
-            if fact.valid_from:
-                try:
-                    vf = lesson_cache.parse_moment(fact.valid_from)
-                    if vf > moment:
-                        continue
-                except Exception:
-                    pass
-            if fact.valid_until:
-                try:
-                    vu = lesson_cache.parse_moment(fact.valid_until)
-                    if vu <= moment:
-                        continue
-                except Exception:
-                    pass
-            elif fact.status in ("superseded", "deleted"):
-                continue
-
+        if moment is not None and not _valid_at(fact, moment):
+            continue
         results.append(fact)
-
     return sorted(results, key=lambda f: (f.category, -f.confidence, f.id))
+
+
+_TOKEN_RE = re.compile(r"[a-z0-9]+")
 
 
 def search_facts(
@@ -424,151 +446,27 @@ def search_facts(
     limit: int = 10,
     include_forgotten: bool = False,
 ) -> list[tuple[AtomicFact, float]]:
-    """Search active facts by relevance and confidence."""
+    """Active facts ranked by token overlap with *query*, weighted by confidence."""
     candidates = list_facts(
         root, status="active", scope=scope, category=category, as_of=as_of,
         include_forgotten=include_forgotten,
     )
-    if not candidates or not query.strip():
-        return [(c, c.confidence) for c in candidates[:limit]]
-
-    query_tokens = set(re.findall(r"[a-z0-9]+", query.lower()))
+    limit = max(0, int(limit))
+    query_tokens = set(_TOKEN_RE.findall(query.lower()))
+    if not candidates or not query_tokens:
+        ranked = sorted(candidates, key=lambda f: (-f.confidence, f.id))
+        return [(c, c.confidence) for c in ranked[:limit]]
     scored: list[tuple[AtomicFact, float]] = []
-
     for fact in candidates:
-        statement_tokens = set(re.findall(r"[a-z0-9]+", fact.statement.lower()))
-        if not statement_tokens:
-            continue
+        statement_tokens = set(_TOKEN_RE.findall(fact.statement.lower()))
         overlap = len(query_tokens & statement_tokens)
-        if overlap == 0:
+        if not overlap:
             continue
-        # Jaccard + lexical recall
         lex_score = overlap / len(query_tokens | statement_tokens)
-        # Combined score with confidence weight
-        final_score = round(lex_score * 0.7 + (fact.confidence * 0.3), 4)
-        scored.append((fact, final_score))
-
-    scored.sort(key=lambda x: -x[1])
+        scored.append((fact, round(lex_score * 0.7 + fact.confidence * 0.3, 4)))
+    scored.sort(key=lambda x: (-x[1], x[0].id))
     return scored[:limit]
 
-
-# ---------------------------------------------------------------------------
-# Append-only v2 additions: forward-looking Foresight records.
-# Existing fact lifecycle above is untouched.
-# ---------------------------------------------------------------------------
-
-FORESIGHT_STATUSES = ("open", "confirmed", "refuted", "expired")
-
-
-@dataclass
-class Foresight:
-    id: str
-    statement: str
-    owner: str
-    evidence_ids: list[str]
-    valid_from: str
-    status: str  # "open" | "confirmed" | "refuted" | "expired"
-    created_at: str
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-    @staticmethod
-    def from_dict(data: dict[str, Any]) -> Foresight:
-        return Foresight(
-            id=str(data.get("id", "")),
-            statement=str(data.get("statement", "")),
-            owner=str(data.get("owner", "")),
-            evidence_ids=[str(e) for e in (data.get("evidence_ids") or [])],
-            valid_from=str(data.get("valid_from", "")),
-            status=str(data.get("status", "open")),
-            created_at=str(data.get("created_at", "")),
-        )
-
-
-def _foresights_file(root: str) -> str:
-    return os.path.join(_facts_dir(root), "foresights.jsonl")
-
-
-def _foresight_id(statement: str, owner: str) -> str:
-    norm = _normalize_statement(statement)
-    h = hashlib.sha256(f"foresight|{norm}|{owner.strip().lower()}".encode("utf-8")).hexdigest()[:12]
-    return f"foresight-{h}"
-
-
-def record_foresight(
-    root: str,
-    statement: str,
-    owner: str = "",
-    evidence_ids: list[str] | None = None,
-    valid_from: str | None = None,
-    status: str = "open",
-) -> Foresight:
-    """Persist a forward-looking foresight (prediction/expectation) record."""
-    statement = (statement or "").strip()
-    if not statement:
-        raise ValueError("Foresight statement cannot be empty")
-    if status not in FORESIGHT_STATUSES:
-        status = "open"
-    now_iso = _now()
-    evidence = [str(e) for e in (evidence_ids or []) if str(e).strip()]
-    fid = _foresight_id(statement, owner or "")
-    # Avoid id collision with an existing different record.
-    existing = load_foresights(root)
-    if any(f.id == fid and f.statement != statement for f in existing):
-        fid = f"{fid}-{int(datetime.now(timezone.utc).timestamp()) % 10000}"
-    fs = Foresight(
-        id=fid,
-        statement=statement,
-        owner=(owner or "").strip(),
-        evidence_ids=evidence,
-        valid_from=valid_from or now_iso,
-        status=status,
-        created_at=now_iso,
-    )
-    fpath = _foresights_file(root)
-    with open(fpath, "a", encoding="utf-8") as fh:
-        fh.write(json.dumps(fs.to_dict()) + "\n")
-    return fs
-
-
-def load_foresights(root: str) -> list[Foresight]:
-    """Load all foresight records (in file order)."""
-    fpath = _foresights_file(root)
-    out: list[Foresight] = []
-    if not os.path.exists(fpath):
-        return out
-    with open(fpath, "r", encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                out.append(Foresight.from_dict(json.loads(line)))
-            except Exception:
-                continue
-    return out
-
-
-def list_foresights(
-    root: str,
-    status: str = "",
-    owner: str = "",
-) -> list[Foresight]:
-    """List foresights with optional status/owner filters (newest last)."""
-    items = load_foresights(root)
-    if status:
-        items = [f for f in items if f.status == status]
-    if owner:
-        items = [f for f in items if f.owner == owner]
-    return items
-
-
-# ---------------------------------------------------------------------------
-# Entity Extraction & Linking (ported from Mem0's spaCy-based pipeline)
-# Includes sophisticated filtering: generic heads, non-specific adjectives,
-# formatting artifacts. Global deduplication via normalized text.
-# ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class _EntityCandidate:
@@ -581,7 +479,6 @@ class _EntityCandidate:
     priority: int
 
 
-# Words that are too generic to be useful as entity heads
 _GENERIC_HEADS = {
     "thing", "stuff", "way", "time", "experience", "situation", "case",
     "fact", "matter", "issue", "idea", "thought", "feeling", "place",
@@ -593,7 +490,6 @@ _GENERIC_HEADS = {
     "section", "side", "end", "edge", "surface", "point",
 }
 
-# Entity labels emitted by spaCy that are usually safe to treat as named entities
 _ACCEPTED_NER_LABELS = {
     "PERSON", "ORG", "GPE", "LOC", "FAC", "PRODUCT", "WORK_OF_ART",
     "EVENT", "NORP", "LAW", "LANGUAGE",
@@ -603,21 +499,17 @@ _REJECTED_NER_LABELS = {
     "DATE", "TIME", "CARDINAL", "ORDINAL", "QUANTITY", "MONEY", "PERCENT",
 }
 
-# Generic role words and title-cased English words that should not become
-# single-token named entities just because spaCy tagged them as PROPN
 _GENERIC_SINGLE_ENTITY_TERMS = {
     "user", "assistant", "agent", "customer", "client", "person", "people",
     "human", "memory", "message", "conversation", "chat", "session", "system",
     "top",
 }
 
-# Modifiers that describe circumstance, not content
 _CIRCUMSTANTIAL_MODS = {
     "solo", "individual", "team", "group", "joint", "collaborative", "first",
     "last", "next", "previous", "final", "initial", "main", "side", "top",
 }
 
-# Adjectives too vague to make a compound entity specific
 _NON_SPECIFIC_ADJ = {
     "many", "few", "several", "some", "any", "all", "most", "more", "less",
     "much", "little", "enough", "various", "numerous", "multiple", "countless",
@@ -637,7 +529,6 @@ _NON_SPECIFIC_ADJ = {
     "final", "initial", "side",
 }
 
-# Generic tail words to strip from compound entities
 _GENERIC_ENDINGS = {
     "work", "works", "job", "jobs", "task", "tasks", "stuff", "things",
     "thing", "info", "information", "details", "data", "content", "material",
@@ -646,7 +537,6 @@ _GENERIC_ENDINGS = {
     "products", "product", "items", "item",
 }
 
-# Capitalized single words that are too generic to be proper nouns
 _GENERIC_CAPS = {
     "works", "items", "things", "stuff", "resources", "options", "tips",
     "ideas", "steps", "ways", "methods", "tools", "features", "benefits",
@@ -655,12 +545,10 @@ _GENERIC_CAPS = {
     "introduction", "pros", "cons", "advantages", "disadvantages",
 }
 
-# Markdown/formatting markers to skip during extraction
 _FORMATTING_MARKERS = {"*", "-", "+", "\u2022", "\u2013", "\u2014", "#", "##", "###", "**", "__"}
 
 
 def _is_sentence_start(tokens: list, idx: int) -> bool:
-    """Check if a token is at the start of a sentence or after formatting."""
     if idx == 0:
         return True
     tok = tokens[idx]
@@ -671,20 +559,13 @@ def _is_sentence_start(tokens: list, idx: int) -> bool:
 
 
 def _strip_generic_ending(toks: list) -> list:
-    """Remove generic trailing words from compound token sequences."""
     if len(toks) <= 1:
         return toks
     last = toks[-1].lemma_.lower() if hasattr(toks[-1], "lemma_") else toks[-1].lower()
     return toks[:-1] if last in _GENERIC_ENDINGS and len(toks) > 2 else toks
 
 
-def _lemmatize_compound(toks: list) -> str:
-    """Join compound tokens, lemmatizing nouns."""
-    return " ".join(t.lemma_ if t.pos_ == "NOUN" else t.text for t in toks)
-
-
 def _has_artifacts(txt: str) -> bool:
-    """Check for formatting artifacts that indicate non-entity text."""
     return any([
         "**" in txt or "__" in txt or ":*" in txt,
         re.search(r"\s\*\s|\s\*$|^\*\s", txt),
@@ -702,7 +583,6 @@ def _clean_text(txt: str) -> str:
 
 
 def _norm_text(txt: str) -> str:
-    """Normalize text for deduplication (lowercase, collapse whitespace)."""
     return " ".join(txt.lower().split())
 
 
@@ -1008,11 +888,6 @@ def _spans_overlap(a: _EntityCandidate, b: _EntityCandidate) -> bool:
 
 
 def _resolve_candidates(candidates: list[_EntityCandidate]) -> list[tuple[str, str]]:
-    """Deduplicate and resolve overlapping entity candidates.
-
-    Global deduplication via normalized text. Higher priority (lower number)
-    and higher confidence win. Overlapping spans are resolved by priority.
-    """
     deduped_by_text: dict[str, _EntityCandidate] = {}
     for candidate in candidates:
         key = _norm_text(candidate.text)
@@ -1039,15 +914,6 @@ def _resolve_candidates(candidates: list[_EntityCandidate]) -> list[tuple[str, s
 
 
 def _extract_entities_from_doc(doc) -> list[tuple[str, str]]:
-    """Extract typed entity candidates from a spaCy Doc.
-
-    Args:
-        doc: A spaCy Doc object (from nlp(text)).
-
-    Returns:
-        Deduplicated list of (entity_type, entity_text) tuples.
-        Entity types include PROPER, QUOTED, TOPIC, and IDENTIFIER.
-    """
     tokens = list(doc)
     candidates: list[_EntityCandidate] = []
     _add_ner_candidates(doc, candidates)
@@ -1059,17 +925,9 @@ def _extract_entities_from_doc(doc) -> list[tuple[str, str]]:
 
 
 def _extract_entities_fallback(text: str) -> list[tuple[str, str]]:
-    """Extract entity candidates using pure regex heuristics when spaCy is unavailable.
-
-    Extracts:
-    - QUOTED: single/double quoted strings
-    - IDENTIFIER: code identifiers (camelCase, PascalCase, snake_case, dotted paths)
-    - PROPER: capitalized multi-word phrases and common tech entities
-    """
     candidates: list[_EntityCandidate] = []
     _add_quoted_candidates(text, candidates)
 
-    # Technical identifiers (dotted paths, snake_case, camelCase)
     for m in re.finditer(
         r"\b([A-Za-z_][\w-]*(?:\.[A-Za-z_][\w-]+)+|[a-z0-9]+(?:_[a-z0-9]+)+|[a-z]+[A-Z][a-zA-Z0-9]*|[A-Z][a-z0-9]+[A-Z][a-zA-Z0-9]*)\b",
         text,
@@ -1078,7 +936,6 @@ def _extract_entities_fallback(text: str) -> list[tuple[str, str]]:
         if len(val) > 2 and val.lower() not in _GENERIC_SINGLE_ENTITY_TERMS:
             _add_candidate(candidates, "IDENTIFIER", val, "tech_id_regex", m.start(), m.end(), 0.8, 1)
 
-    # Capitalized multi-word phrases (proper nouns)
     for m in re.finditer(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b", text):
         val = m.group(1).strip()
         words = val.split()
@@ -1093,7 +950,6 @@ _SPACY_INITIALIZED = False
 
 
 def _get_spacy_nlp():
-    """Lazily load spaCy model once with validation of pipeline components."""
     global _SPACY_NLP, _SPACY_INITIALIZED
     if _SPACY_INITIALIZED:
         return _SPACY_NLP
@@ -1111,15 +967,7 @@ def _get_spacy_nlp():
 
 
 def extract_entities(text: str) -> list[tuple[str, str]]:
-    """Extract typed entity candidates from text using spaCy (or regex fallback).
-
-    Args:
-        text: Input text to extract entities from.
-
-    Returns:
-        List of (entity_type, entity_text) tuples. Entity types are
-        PROPER, QUOTED, TOPIC, or IDENTIFIER.
-    """
+    """Extract typed entity candidates from text using spaCy (or regex fallback)."""
     if not text or not text.strip():
         return []
 
@@ -1131,345 +979,3 @@ def extract_entities(text: str) -> list[tuple[str, str]]:
             pass
 
     return _extract_entities_fallback(text)
-
-
-def extract_entities_batch(texts: list[str], batch_size: int = 32) -> list[list[tuple[str, str]]]:
-    """Extract typed entity candidates from multiple texts using spaCy pipe (or fallback).
-
-    Args:
-        texts: List of input texts to extract entities from.
-        batch_size: Batch size for spaCy pipe processing.
-
-    Returns:
-        List of entity lists, one per input text. Each entity list contains
-        (entity_type, entity_text) tuples.
-    """
-    if not texts:
-        return []
-
-    nlp = _get_spacy_nlp()
-    if nlp is not None:
-        try:
-            return [_extract_entities_from_doc(doc) for doc in nlp.pipe(texts, batch_size=batch_size)]
-        except Exception:
-            pass
-
-    return [_extract_entities_fallback(t) for t in texts]
-
-
-# ---------------------------------------------------------------------------
-# Entity Store with batch processing
-# ---------------------------------------------------------------------------
-
-@dataclass
-class Entity:
-    id: str
-    text: str
-    entity_type: str
-    normalized_text: str
-    source_traces: list[str]
-    created_at: str
-    updated_at: str
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-def _entities_file(root: str) -> str:
-    return os.path.join(_facts_dir(root), "entities.jsonl")
-
-
-def _entity_id(text: str, entity_type: str) -> str:
-    norm = _norm_text(text)
-    h = hashlib.sha256(f"entity|{entity_type}|{norm}".encode("utf-8")).hexdigest()[:12]
-    return f"entity-{h}"
-
-
-def load_entities(root: str) -> dict[str, Entity]:
-    """Load all entities from disk into a dictionary keyed by entity id."""
-    fpath = _entities_file(root)
-    entities: dict[str, Entity] = {}
-    if not os.path.exists(fpath):
-        return entities
-
-    with open(fpath, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                data = json.loads(line)
-                entity = Entity(**data)
-                entities[entity.id] = entity
-            except Exception:
-                continue
-    return entities
-
-
-def save_entities(root: str, entities: dict[str, Entity]) -> None:
-    """Save all entities atomically to disk."""
-    fpath = _entities_file(root)
-    tmp_path = f"{fpath}.tmp"
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        for entity in entities.values():
-            f.write(json.dumps(entity.to_dict()) + "\n")
-    os.replace(tmp_path, fpath)
-
-
-def add_entity(
-    root: str,
-    text: str,
-    entity_type: str,
-    source_trace_id: str = "",
-) -> Entity:
-    """Add an entity to the store with global deduplication.
-
-    If an entity with the same normalized text and type already exists,
-    it is reinforced (source_traces updated, timestamp refreshed).
-
-    Args:
-        root: Memory root directory.
-        text: Entity text as extracted.
-        entity_type: Entity type (PROPER, QUOTED, TOPIC, IDENTIFIER).
-        source_trace_id: Optional trace ID that sourced this entity.
-
-    Returns:
-        The Entity object (new or reinforced).
-    """
-    text = text.strip()
-    if not text:
-        raise ValueError("Entity text cannot be empty")
-
-    normalized = _norm_text(text)
-    entities = load_entities(root)
-    now_iso = _now()
-
-    # Check for existing match (same normalized text and type)
-    for existing in entities.values():
-        if existing.normalized_text == normalized and existing.entity_type == entity_type:
-            # Reinforce existing entity
-            if source_trace_id and source_trace_id not in existing.source_traces:
-                existing.source_traces.append(source_trace_id)
-            existing.updated_at = now_iso
-            save_entities(root, entities)
-            return existing
-
-    # Create new entity
-    eid = _entity_id(text, entity_type)
-    entity = Entity(
-        id=eid,
-        text=text,
-        entity_type=entity_type,
-        normalized_text=normalized,
-        source_traces=[source_trace_id] if source_trace_id else [],
-        created_at=now_iso,
-        updated_at=now_iso,
-    )
-    entities[eid] = entity
-    save_entities(root, entities)
-    return entity
-
-
-def add_entities_batch(
-    root: str,
-    entities: list[tuple[str, str]],
-    source_trace_id: str = "",
-) -> list[Entity]:
-    """Add multiple entities in batch for efficiency.
-
-    Args:
-        root: Memory root directory.
-        entities: List of (entity_type, entity_text) tuples.
-        source_trace_id: Optional trace ID that sourced these entities.
-
-    Returns:
-        List of Entity objects (new or reinforced).
-    """
-    if not entities:
-        return []
-
-    loaded = load_entities(root)
-    now_iso = _now()
-    results: list[Entity] = []
-
-    # Build O(1) lookup table: (normalized_text, entity_type) -> Entity
-    lookup: dict[tuple[str, str], Entity] = {
-        (e.normalized_text, e.entity_type): e for e in loaded.values()
-    }
-
-    for entity_type, text in entities:
-        text = text.strip()
-        if not text:
-            continue
-
-        normalized = _norm_text(text)
-        key = (normalized, entity_type)
-
-        existing = lookup.get(key)
-        if existing is not None:
-            if source_trace_id and source_trace_id not in existing.source_traces:
-                existing.source_traces.append(source_trace_id)
-            existing.updated_at = now_iso
-            results.append(existing)
-        else:
-            eid = _entity_id(text, entity_type)
-            entity = Entity(
-                id=eid,
-                text=text,
-                entity_type=entity_type,
-                normalized_text=normalized,
-                source_traces=[source_trace_id] if source_trace_id else [],
-                created_at=now_iso,
-                updated_at=now_iso,
-            )
-            loaded[eid] = entity
-            lookup[key] = entity
-            results.append(entity)
-
-    save_entities(root, loaded)
-    return results
-
-
-def list_entities(
-    root: str,
-    entity_type: str = "",
-) -> list[Entity]:
-    """List entities with optional type filter."""
-    entities = load_entities(root)
-    if entity_type:
-        return [e for e in entities.values() if e.entity_type == entity_type]
-    return list(entities.values())
-
-
-def deduplicate_entities(root: str) -> dict[str, Any]:
-    """Perform global deduplication on stored entities.
-
-    Merges entities sharing identical (normalized_text, entity_type),
-    combining source traces and preserving earliest created_at and
-    latest updated_at.
-
-    Args:
-        root: Memory root directory.
-
-    Returns:
-        Summary dict with initial_count, final_count, and duplicates_removed.
-    """
-    entities = load_entities(root)
-    initial_count = len(entities)
-    if initial_count <= 1:
-        return {"initial_count": initial_count, "final_count": initial_count, "duplicates_removed": 0}
-
-    canonical_map: dict[tuple[str, str], Entity] = {}
-    for entity in entities.values():
-        key = (entity.normalized_text, entity.entity_type)
-        if key not in canonical_map:
-            canonical_map[key] = entity
-        else:
-            existing = canonical_map[key]
-            for st in entity.source_traces:
-                if st and st not in existing.source_traces:
-                    existing.source_traces.append(st)
-            try:
-                ex_created = lesson_cache.parse_moment(existing.created_at)
-                en_created = lesson_cache.parse_moment(entity.created_at)
-                if en_created < ex_created:
-                    existing.created_at = entity.created_at
-            except Exception:
-                pass
-            try:
-                ex_updated = lesson_cache.parse_moment(existing.updated_at)
-                en_updated = lesson_cache.parse_moment(entity.updated_at)
-                if en_updated > ex_updated:
-                    existing.updated_at = entity.updated_at
-            except Exception:
-                pass
-
-    final_entities = {e.id: e for e in canonical_map.values()}
-    save_entities(root, final_entities)
-    return {
-        "initial_count": initial_count,
-        "final_count": len(final_entities),
-        "duplicates_removed": initial_count - len(final_entities),
-    }
-
-
-def extract_and_store_entities(
-    root: str,
-    text: str,
-    source_trace_id: str = "",
-) -> list[Entity]:
-    """Extract entities from text and store them in the entity store.
-
-    Convenience function combining extract_entities and add_entities_batch.
-
-    Args:
-        root: Memory root directory.
-        text: Input text to extract entities from.
-        source_trace_id: Optional trace ID that sourced this text.
-
-    Returns:
-        List of Entity objects stored.
-    """
-    extracted = extract_entities(text)
-    if not extracted:
-        return []
-    return add_entities_batch(root, extracted, source_trace_id)
-
-
-def build_entity_index_from_store(
-    root: str,
-    lessons: list[tuple[str, dict]],
-) -> dict[str, list[int]]:
-    """Build an entity index from stored entities, compatible with retrieval.rank_lessons.
-
-    This function maps entity tokens to lesson indices using the entity store.
-    It's designed to work with the entity_index parameter in retrieval.rank_lessons
-    to enable entity-boosted retrieval.
-
-    Args:
-        root: Memory root directory.
-        lessons: List of (path, frontmatter_dict) tuples from the lesson corpus.
-
-    Returns:
-        Dictionary mapping normalized entity tokens to sorted lists of lesson indices.
-        Compatible with retrieval.rank_lessons entity_index parameter.
-    """
-    entities = load_entities(root)
-    if not entities:
-        return {}
-
-    # Build token -> doc_ids index
-    index: dict[str, list[int]] = {}
-    word_re = re.compile(r"\w+", re.UNICODE)
-
-    # Precompute all alias keys for each lesson
-    lesson_keys: list[set[str]] = []
-    for path, fm in lessons:
-        keys = set()
-        if isinstance(path, str):
-            keys.add(path)
-            base = os.path.basename(path)
-            keys.add(base)
-            slug = os.path.splitext(base)[0]
-            keys.add(slug)
-            keys.add(f"lesson:{slug}")
-        if isinstance(fm, dict):
-            name = fm.get("name") or fm.get("slug")
-            if name:
-                keys.add(str(name))
-                keys.add(f"lesson:{name}")
-        lesson_keys.append(keys)
-
-    for lesson_idx, keys in enumerate(lesson_keys):
-        for entity in entities.values():
-            if any(st in keys for st in entity.source_traces):
-                tokens = word_re.findall(entity.normalized_text)
-                for token in tokens:
-                    if len(token) > 2:
-                        index.setdefault(token.lower(), []).append(lesson_idx)
-
-    # Sort each posting list
-    for token in index:
-        index[token] = sorted(set(index[token]))  # Dedupe and sort
-
-    return index

@@ -3,6 +3,10 @@ from __future__ import annotations
 import os
 
 import pytest
+
+pytest.importorskip("sqlalchemy")
+pytest.importorskip("asyncpg")
+pytest.importorskip("pytest_asyncio")
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -38,14 +42,10 @@ async def hub_governance_session():
 
 @pytest.mark.asyncio
 async def test_t4_multi_tenant_scoped_governance(hub_governance_session, isolated_store: str):
-    """E2E-T4-RW-3: Enterprise multi-tenant deployment verifies strict scope isolation
-    across backend, frontend, data-infra.
-    """
     session, org_id = hub_governance_session
     config = HubConfig(database_url=TEST_DATABASE_URL)
     limiter = RateLimiter(per_minute=1000, burst=1000)
 
-    # 1. Global policy trace: All teams must follow TLS 1.3
     t_global = await crud.contribute_trace(
         session, org_id, config, limiter,
         title="Enterprise Security Policy TLS 1.3",
@@ -55,7 +55,6 @@ async def test_t4_multi_tenant_scoped_governance(hub_governance_session, isolate
         scopes=[],
     )
 
-    # 2. Backend scoped trace: Connection pooling
     t_backend = await crud.contribute_trace(
         session, org_id, config, limiter,
         title="Backend PgBouncer connection pooling",
@@ -65,7 +64,6 @@ async def test_t4_multi_tenant_scoped_governance(hub_governance_session, isolate
         scopes=["backend"],
     )
 
-    # 3. Frontend scoped trace: Next.js bundle chunking
     t_frontend = await crud.contribute_trace(
         session, org_id, config, limiter,
         title="Frontend Webpack code-splitting policy",
@@ -75,7 +73,6 @@ async def test_t4_multi_tenant_scoped_governance(hub_governance_session, isolate
         scopes=["frontend"],
     )
 
-    # 4. Data-infra scoped trace: Spark shuffle partitions
     t_data = await crud.contribute_trace(
         session, org_id, config, limiter,
         title="Data infra Spark shuffle tuning",
@@ -85,7 +82,6 @@ async def test_t4_multi_tenant_scoped_governance(hub_governance_session, isolate
         scopes=["data-infra"],
     )
 
-    # Verify Backend query: Sees global + backend, but NOT frontend or data-infra
     found_backend = await crud.search_traces(session, org_id, scope="backend")
     backend_ids = {t["id"] for t in found_backend["traces"]}
     assert t_global["id"] in backend_ids, "Backend must see global security policy"
@@ -93,7 +89,6 @@ async def test_t4_multi_tenant_scoped_governance(hub_governance_session, isolate
     assert t_frontend["id"] not in backend_ids, "Backend must NOT see frontend traces"
     assert t_data["id"] not in backend_ids, "Backend must NOT see data-infra traces"
 
-    # Verify Frontend query: Sees global + frontend, but NOT backend or data-infra
     found_frontend = await crud.search_traces(session, org_id, scope="frontend")
     frontend_ids = {t["id"] for t in found_frontend["traces"]}
     assert t_global["id"] in frontend_ids
@@ -101,7 +96,6 @@ async def test_t4_multi_tenant_scoped_governance(hub_governance_session, isolate
     assert t_backend["id"] not in frontend_ids
     assert t_data["id"] not in frontend_ids
 
-    # Verify Data-infra query: Sees global + data-infra, but NOT backend or frontend
     found_data = await crud.search_traces(session, org_id, scope="data-infra")
     data_ids = {t["id"] for t in found_data["traces"]}
     assert t_global["id"] in data_ids

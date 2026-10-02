@@ -1,15 +1,9 @@
-"""Web-crawler connector: robots-respecting stdlib fetch -> markdown chunker.
-
-Fetches ``http(s)`` URLs with :mod:`urllib` only, honours ``robots.txt`` via
-:mod:`urllib.robotparser`, converts HTML to heading-preserving text, chunks
-with the shared markdown chunker (secret redaction included), writes atomic
-facts + provenance (unless dry-run), and checkpoints visited URLs in a
-git-tracked JSON state token.
-"""
+"""Web connector: fetch seed pages (robots.txt honoured) into facts with provenance."""
 from __future__ import annotations
 
 import html as _html
 import re
+import urllib.error
 import urllib.parse
 import urllib.request
 import urllib.robotparser
@@ -18,71 +12,77 @@ from typing import Any
 from commontrace.connectors.base import (
     Connector,
     SyncResult,
-    categorize_chunk,
     chunk_markdown_text,
-    decode_state_token,
     encode_state_token,
-    load_connector_state,
     new_run_id,
-    register_connector,
+    record_chunks,
+    resolve_cursor,
     save_connector_state,
 )
-from commontrace.ingest import IngestionResult, _redact_secrets
+from commontrace.ingest import Chunk, IngestionResult, _fingerprint, _redact_secrets
 
 STATE_KEY = "web_crawler:default"
-_MAX_BYTES = 512 * 1024
-
-
-def _origin(url: str) -> str:
-    parts = urllib.parse.urlsplit(url)
-    return "%s://%s" % (parts.scheme, parts.netloc)
+MAX_PAGE_BYTES = 512 * 1024
+MAX_ROBOTS_BYTES = 64 * 1024
+MAX_VISITED = 10_000
 
 
 def _is_http_url(url: str) -> bool:
     try:
-        scheme = urllib.parse.urlsplit(url).scheme.lower()
-    except Exception:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
         return False
-    return scheme in ("http", "https")
+    return parts.scheme.lower() in ("http", "https") and bool(parts.netloc)
 
 
-def _robots_allowed(url: str, user_agent: str, timeout: int) -> bool:
-    """True when fetching ``url`` is allowed (fail-open on robots errors)."""
+class _HttpOnlyRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not _is_http_url(newurl):
+            raise urllib.error.HTTPError(newurl, code, "redirect to a non-http(s) URL refused", headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_OPENER = urllib.request.build_opener(_HttpOnlyRedirects)
+
+
+def _get(url: str, user_agent: str, timeout: float, limit: int) -> tuple[str, bytes]:
+    req = urllib.request.Request(url, headers={"User-Agent": user_agent})
+    with _OPENER.open(req, timeout=timeout) as resp:  # nosec B310 - http(s) only, checked above
+        ctype = str(resp.headers.get("Content-Type", "") or "")
+        return ctype, resp.read(limit)
+
+
+def _robots_allowed(url: str, user_agent: str, timeout: float) -> bool:
+    parts = urllib.parse.urlsplit(url)
+    robots_url = f"{parts.scheme}://{parts.netloc}/robots.txt"
     try:
-        origin = _origin(url)
-        parser = urllib.robotparser.RobotFileParser()
-        parser.set_url(origin + "/robots.txt")
-        parser.read()
-        try:
-            return bool(parser.can_fetch(user_agent or "*", url))
-        except Exception:
-            return True
-    except Exception:
+        _ctype, raw = _get(robots_url, user_agent, timeout, MAX_ROBOTS_BYTES)
+    except urllib.error.HTTPError as exc:
+        return exc.code not in (401, 403)
+    except (OSError, ValueError):
         return True
-
-
-def _html_to_markdown_text(html_text: str) -> str:
-    """Convert HTML to heading-preserving plain text using stdlib only."""
-    text = html_text if isinstance(html_text, str) else str(html_text)
-    text = re.sub(r"(?is)<(script|style|noscript)[^>]*>.*?</\1\s*>", "\n", text)
-    text = re.sub(r"(?i)<\s*h([1-3])[^>]*>(.*?)</\s*h\1\s*>",
-                  lambda m: "\n%s %s\n" % ("#" * int(m.group(1)), _strip_tags(m.group(2))),
-                  text)
-    text = re.sub(r"(?i)<\s*(p|div|section|article|br|li|tr)[^>]*>", "\n", text)
-    text = _strip_tags(text)
-    text = _html.unescape(text)
-    text = re.sub(r"[ \t]+", " ", text)
-    text = re.sub(r"\n\s*\n\s*\n+", "\n\n", text)
-    return text.strip()
+    parser = urllib.robotparser.RobotFileParser()
+    parser.parse(raw.decode("utf-8", errors="replace").splitlines())
+    return bool(parser.can_fetch(user_agent or "*", url))
 
 
 def _strip_tags(fragment: str) -> str:
     return re.sub(r"<[^>]+>", "", fragment)
 
 
-@register_connector
+def _html_to_markdown_text(html_text: str) -> str:
+    text = re.sub(r"(?is)<(script|style|noscript)[^>]*>.*?</\1\s*>", "\n", html_text)
+    text = re.sub(r"(?is)<!--.*?-->", "", text)
+    text = re.sub(r"(?is)<\s*h([1-3])[^>]*>(.*?)</\s*h\1\s*>",
+                  lambda m: "\n%s %s\n" % ("#" * int(m.group(1)), _strip_tags(m.group(2)).strip()), text)
+    text = re.sub(r"(?i)<\s*(p|div|section|article|br|li|tr)[^>]*>", "\n", text)
+    text = _html.unescape(_strip_tags(text))
+    text = re.sub(r"[ \t]+", " ", text)
+    return re.sub(r"\n\s*\n\s*\n+", "\n\n", text).strip()
+
+
 class WebCrawlerConnector(Connector):
-    """Crawl a small set of seed URLs into markdown chunks."""
+    """Fetch a set of seed URLs; each URL is fetched once until its state is reset."""
 
     name = "web_crawler"
 
@@ -91,51 +91,38 @@ class WebCrawlerConnector(Connector):
         scope: str = "",
         max_pages: int = 20,
         timeout: int = 10,
-        user_agent: str = "CommonTraceBot/1.0 (+https://commontrace.local)",
+        user_agent: str = "CommonTraceBot/1.0",
     ):
         self.scope = scope
         self.max_pages = max_pages
         self.timeout = timeout
         self.user_agent = user_agent
 
-    def authorize(self, credentials: dict[str, Any] | None = None) -> dict[str, Any]:
-        return {"ok": True, "connector": self.name}
-
-    # -- fetch pipeline (split for test monkeypatching) ------------------
     def _allowed(self, url: str) -> bool:
         return _robots_allowed(url, self.user_agent, self.timeout)
 
     def _fetch(self, url: str) -> str:
-        req = urllib.request.Request(url, headers={"User-Agent": self.user_agent})
-        with urllib.request.urlopen(req, timeout=self.timeout) as resp:  # nosec B310
-            ctype = ""
-            try:
-                ctype = str(resp.headers.get("Content-Type", ""))
-            except Exception:
-                ctype = ""
-            if ctype and "text" not in ctype.lower() and "html" not in ctype.lower():
-                raise ValueError("unsupported content-type: %s" % ctype)
-            raw = resp.read(_MAX_BYTES)
-        text = raw.decode("utf-8", errors="replace")
+        ctype, raw = _get(url, self.user_agent, self.timeout, MAX_PAGE_BYTES)
+        if ctype and not re.search(r"text/|html|xml|markdown", ctype, re.I):
+            raise ValueError("unsupported content-type: %s" % ctype)
+        charset = re.search(r"charset=([\w\-]+)", ctype or "", re.I)
+        try:
+            text = raw.decode(charset.group(1) if charset else "utf-8", errors="replace")
+        except LookupError:
+            text = raw.decode("utf-8", errors="replace")
         return _redact_secrets(text)
 
     def _fetch_text(self, url: str) -> str:
-        html_text = self._fetch(url)
-        markdownish = _html_to_markdown_text(html_text)
-        # Belt-and-braces: redact again after tag stripping/unescaping.
-        return _redact_secrets(markdownish)
+        return _redact_secrets(_html_to_markdown_text(self._fetch(url)))
 
-    def _chunk_url(self, url: str, text: str) -> list:
+    @staticmethod
+    def _chunk_url(url: str, text: str) -> list[Chunk]:
         chunks = chunk_markdown_text(text, url)
         if chunks:
             return chunks
-        # Fallback so short pages still produce evidence (redacted).
-        body = _redact_secrets(text.strip())
+        body = text.strip()
         if len(body) < 50:
             return []
-        from commontrace.connectors.base import _fingerprint
-        from commontrace.ingest import Chunk
-
         return [Chunk(
             content=body[:2000],
             source_path=url,
@@ -158,51 +145,23 @@ class WebCrawlerConnector(Connector):
         timeout: int | None = None,
         **kwargs: Any,
     ) -> SyncResult:
-        from commontrace import hierarchical
-        from commontrace import provenance as _prov
-
-        seeds: list[str] = []
-        if urls:
-            seeds.extend(urls)
-        if url:
-            seeds.append(url)
-        extra = kwargs.get("sources") or kwargs.get("seeds") or []
-        if isinstance(extra, str):
-            extra = [extra]
-        seeds.extend(list(extra or []))
-        # Deduplicate, preserving order.
-        seen: set[str] = set()
-        ordered: list[str] = []
-        for u in seeds:
-            u = str(u).strip()
-            if u and u not in seen:
-                seen.add(u)
-                ordered.append(u)
-
+        seeds = list(dict.fromkeys(
+            str(u).strip() for u in [*(urls or []), *([url] if url else [])] if str(u).strip()
+        ))
         rid = run_id or new_run_id()
-        active_scope = scope if scope != "" else self.scope
-        limit = int(max_pages if max_pages is not None else self.max_pages)
+        active_scope = scope or self.scope
+        limit = max(0, int(max_pages if max_pages is not None else self.max_pages))
         if timeout is not None:
             self.timeout = int(timeout)
-        result = IngestionResult(source_path=",".join(ordered), source_type="web_crawler")
+        result = IngestionResult(source_path=",".join(seeds), source_type="web_crawler")
 
-        cursor: dict[str, Any] = {}
-        if state_token:
-            cursor = decode_state_token(state_token)
-        if not cursor:
-            entry = load_connector_state(root, STATE_KEY)
-            if entry.get("state_token") and not state_token:
-                cursor = decode_state_token(entry.get("state_token", ""))
-            if not cursor and isinstance(entry.get("cursor"), dict):
-                cursor = dict(entry["cursor"])
-        visited = cursor.get("visited", [])
-        visited_set = set(visited) if isinstance(visited, list) else set()
-
-        pending = [u for u in ordered if u not in visited_set][:limit]
-        chunks: list = []
-        newly_visited: list[str] = list(visited) if isinstance(visited, list) else []
-
-        for target in pending:
+        visited = resolve_cursor(root, STATE_KEY, state_token).get("visited", [])
+        visited = [v for v in visited if isinstance(v, str)] if isinstance(visited, list) else []
+        seen = set(visited)
+        pending = [u for u in seeds if u not in seen]
+        chunks: list[Chunk] = []
+        fetched: list[tuple[str, list[Chunk]]] = []
+        for target in pending[:limit]:
             if not _is_http_url(target):
                 result.errors.append("web_crawler: skipping non-http(s) URL: %r" % target)
                 continue
@@ -210,70 +169,24 @@ class WebCrawlerConnector(Connector):
                 if not self._allowed(target):
                     result.errors.append("web_crawler: disallowed by robots.txt: %r" % target)
                     continue
-            except Exception as exc:
-                result.errors.append("web_crawler: robots check failed for %r: %s" % (target, exc))
-                continue
-            try:
-                text = self._fetch_text(target)
-            except Exception as exc:
+                page_chunks = self._chunk_url(target, self._fetch_text(target))
+            except (OSError, ValueError) as exc:
                 result.errors.append("web_crawler: fetch failed for %r: %s" % (target, exc))
                 continue
-            try:
-                page_chunks = self._chunk_url(target, text)
-            except Exception as exc:
-                result.errors.append("web_crawler: chunk failed for %r: %s" % (target, exc))
-                continue
             chunks.extend(page_chunks)
-            newly_visited.append(target)
-            if not dry_run:
-                for chunk in page_chunks:
-                    statement = "%s: %s" % (chunk.breadcrumb, chunk.content[:200])
-                    statement = statement.strip()
-                    if len(statement) > 30:
-                        try:
-                            hierarchical.add_fact(
-                                root,
-                                statement=statement[:500],
-                                category=categorize_chunk(chunk.breadcrumb),
-                                scopes=[active_scope] if active_scope else None,
-                                confidence=0.7,
-                            )
-                            result.facts_written += 1
-                        except Exception as exc:
-                            result.errors.append("fact error: %s" % exc)
-                    try:
-                        _prov.append_provenance(
-                            root,
-                            target_kind="chunk",
-                            target_id=chunk.chunk_id,
-                            source_path=chunk.source_path,
-                            run_id=rid,
-                            detail={
-                                "connector": self.name,
-                                "breadcrumb": chunk.breadcrumb,
-                                "chunk_type": chunk.chunk_type,
-                            },
-                        )
-                    except Exception as exc:
-                        result.errors.append("provenance error: %s" % exc)
-
+            fetched.append((target, page_chunks))
         result.chunks_extracted = len(chunks)
-        new_cursor = {"visited": newly_visited}
+
+        new_visited = (visited + [t for t, _c in fetched])[-MAX_VISITED:]
+        new_cursor = {"visited": new_visited}
         new_token = encode_state_token(new_cursor)
         if not dry_run:
+            for target, page_chunks in fetched:
+                record_chunks(root, page_chunks, source_id=f"web:{target}", scope=active_scope,
+                              run_id=rid, connector=self.name, result=result)
             try:
                 save_connector_state(root, STATE_KEY, new_token, new_cursor)
-            except Exception as exc:
+            except OSError as exc:
                 result.errors.append("state persist error: %s" % exc)
-        return SyncResult(
-            connector=self.name, chunks=chunks, result=result,
-            new_state_token=new_token, run_id=rid, dry_run=dry_run,
-        )
-
-    def webhook_handler(self, root: str, payload: dict[str, Any]) -> dict[str, Any]:
-        if not isinstance(payload, dict):
-            return {"ok": False, "connector": self.name, "reason": "payload must be a dict"}
-        url = str(payload.get("url", "")).strip()
-        if not url or not _is_http_url(url):
-            return {"ok": False, "connector": self.name, "reason": "missing/invalid 'url'"}
-        return {"ok": True, "connector": self.name, "queued": url}
+        return SyncResult(connector=self.name, chunks=chunks, result=result, new_state_token=new_token,
+                          run_id=rid, dry_run=dry_run, pending=max(0, len(pending) - limit))

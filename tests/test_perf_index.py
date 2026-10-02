@@ -1,4 +1,3 @@
-"""Persisted corpus index: parity with fresh builds + latency improvement."""
 from __future__ import annotations
 
 import os
@@ -53,7 +52,6 @@ def test_bin_roundtrip_matches_fresh_build(tmp_path):
     before = _ranked(root, "payment refund failure")
     assert os.path.exists(corpus_bin.bin_path(
         os.path.join(root, "memory", ".cache"), retrieval.SCORER_ADAPTIVE))
-    # Simulate a fresh process: drop in-process caches, keep disk files.
     _fresh_state()
     after = _ranked(root, "payment refund failure")
     assert after == before
@@ -71,7 +69,6 @@ def test_bin_invalidated_by_edit(tmp_path):
     ranked = retrieval.rank_lessons(
         "payment refund failure", lessons, top_k=5, term_cache=terms)
     after = [(r.slug, r.relevance, r.score) for r in ranked]
-    # Rebuild path must agree with a from-scratch build (no bin).
     _fresh_state()
     try:
         os.unlink(corpus_bin.bin_path(
@@ -85,7 +82,7 @@ def test_bin_invalidated_by_edit(tmp_path):
     rebuilt = retrieval.rank_lessons(
         "payment refund failure", lessons2, top_k=5, term_cache=terms2)
     assert after == [(r.slug, r.relevance, r.score) for r in rebuilt]
-    assert before != after or True  # edit may or may not move top-5
+    assert before != after or True
 
 
 def test_corrupt_bin_falls_back(tmp_path):
@@ -101,9 +98,6 @@ def test_corrupt_bin_falls_back(tmp_path):
 
 
 def test_bin_load_faster_than_rebuild(tmp_path):
-    # Needs enough documents that fixed load overhead is dwarfed by the
-    # O(corpus) rebuild (production win measured 4.8x at 10k lessons).
-    # Min-of-3 filters scheduling noise on shared boxes.
     import commontrace.corpus_bin as _binmod
 
     root = _make_corpus(tmp_path, n=4000)

@@ -4,6 +4,7 @@ import argparse
 import csv
 import difflib
 import importlib
+import os
 import sys
 
 from commontrace import PROTOCOL_VERSION, __version__
@@ -31,15 +32,6 @@ def _command_modules(only: str | None = None) -> list:
 
 
 class _LazyCommandMap(dict):
-    """Dict-like choices for the top-level subparsers that imports on demand.
-
-    ``__iter__``/``__contains__``/``__len__`` answer from the static
-    ``_COMMANDS`` tuple so ``--help`` and ``list(choices)`` work without
-    importing anything. ``__getitem__`` imports ONLY the requested command
-    module and builds its real parser, so ``build_parser().parse_args([...])``
-    and the ``_name_parser_map`` lookup during parsing stay lazy.
-    """
-
     def __init__(self, subparsers_action=None):
         super().__init__()
         self._subparsers_action = subparsers_action
@@ -65,8 +57,6 @@ class _LazyCommandMap(dict):
         action = self._subparsers_action
         if action is None:
             raise KeyError(key)
-        # Drop the static placeholder help for this command so the real
-        # module's help text does not appear twice.
         action._choices_actions = [
             a for a in action._choices_actions if a.dest != key
         ]
@@ -91,15 +81,7 @@ class _LazyCommandMap(dict):
 
 
 def build_parser(only: str | None = None) -> argparse.ArgumentParser:
-    """The CLI's parser: every subcommand, or just `only` when it names one.
-
-    Lazy two-phase parsing: with ``only=None`` (or an unknown name) no
-    command module is imported -- the top-level parser only carries the
-    static command list from ``_COMMANDS`` for ``--help``. The invoked
-    module is imported on demand when its name is looked up during
-    ``parse_args`` (see ``_LazyCommandMap``). With ``only`` naming a real
-    command, only that module is imported eagerly.
-    """
+    """The CLI's parser: every subcommand, or just `only` when it names one."""
     parser = argparse.ArgumentParser(
         prog="commontrace",
         description="CommonTrace Protocol client - capture experience, curate lessons, "
@@ -195,6 +177,12 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("\n[commontrace] interrupted.", file=sys.stderr)
         return 130
+    except BrokenPipeError:
+        try:
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        except OSError:
+            pass
+        return 0
     except (
         OSError,
         ValueError,

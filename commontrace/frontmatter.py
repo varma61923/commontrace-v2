@@ -134,12 +134,7 @@ def read_body(path: str) -> str:
 
 
 def validate_expires(value: object) -> str:
-    """Validate an ``expires`` frontmatter value, returning normalized ISO 8601.
-
-    Accepts ``YYYY-MM-DD`` or full ISO 8601 (the same inputs
-    ``lesson_cache.parse_moment`` accepts). Raises ``FrontmatterError`` on
-    empty or unparseable input.
-    """
+    """Validate an ``expires`` frontmatter value, returning normalized ISO 8601."""
     from commontrace import ttl
 
     try:

@@ -1,181 +1,146 @@
-"""Connector auto-sync framework for CommonTrace.
-
-A Connector bridges an external source (local directory, website, webhook
-emitter) into governed memory. Every connector:
-
-- exposes ``authorize`` / ``sync`` / ``webhook_handler`` (the ABC contract),
-- checkpoints progress with opaque state tokens persisted as git-tracked
-  JSON under ``memory/connectors/state.json``,
-- emits chunks via :mod:`commontrace.ingest` (``Chunk`` / ``IngestionResult``
-  / ``_redact_secrets``) and records origin via
-  :func:`commontrace.provenance.append_provenance` with
-  ``source_path`` + ``run_id``.
-"""
+"""Connector framework: resumable syncs from external sources into governed memory."""
 from __future__ import annotations
 
 import base64
-import hashlib
 import json
 import os
-import re
-import textwrap
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from commontrace.ingest import Chunk, IngestionResult, _redact_secrets
+from commontrace import _jsonl, paths
+from commontrace.ingest import (
+    Chunk,
+    IngestionResult,
+    _chunk_markdown_text,
+    _screened_statement,
+    categorize_heading,
+)
 
 CONNECTORS_DIRNAME = "connectors"
 STATE_FILENAME = "state.json"
 
-_MAX_MD_CHUNK = 2000
-
 
 def new_run_id() -> str:
-    """Return a short unique run identifier."""
     return uuid.uuid4().hex[:12]
 
 
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _fingerprint(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
-
-
-def _connectors_dir(root: str) -> str:
-    from commontrace import paths
-
-    d = os.path.join(paths.memory_dir(root), CONNECTORS_DIRNAME)
-    os.makedirs(d, exist_ok=True)
-    return d
-
-
 def _state_file(root: str) -> str:
-    return os.path.join(_connectors_dir(root), STATE_FILENAME)
+    return os.path.join(paths.memory_dir(root), CONNECTORS_DIRNAME, STATE_FILENAME)
 
 
 def load_connector_states(root: str) -> dict[str, Any]:
-    """Return the whole persisted state map (git-tracked JSON)."""
-    fpath = _state_file(root)
-    if not os.path.exists(fpath):
-        return {}
     try:
-        with open(fpath, "r", encoding="utf-8") as fh:
+        with open(_state_file(root), encoding="utf-8") as fh:
             data = json.load(fh)
-    except Exception:
+    except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
 
 
 def load_connector_state(root: str, key: str) -> dict[str, Any]:
-    """Return the persisted entry for ``key`` or ``{}``."""
-    states = load_connector_states(root)
-    entry = states.get(key, {})
+    entry = load_connector_states(root).get(key, {})
     return dict(entry) if isinstance(entry, dict) else {}
 
 
-def save_connector_state(
-    root: str, key: str, state_token: str, cursor: dict[str, Any]
-) -> dict[str, Any]:
-    """Persist ``state_token`` + ``cursor`` for ``key``; return the entry."""
-    fpath = _state_file(root)
-    states = load_connector_states(root)
+def save_connector_state(root: str, key: str, state_token: str, cursor: dict[str, Any]) -> dict[str, Any]:
     entry = {
         "state_token": state_token,
         "cursor": cursor,
-        "updated_at": _now_iso(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
     }
-    states[key] = entry
-    tmp = fpath + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(states, fh, indent=2, sort_keys=True)
-        fh.write("\n")
-    os.replace(tmp, fpath)
+    path = _state_file(root)
+    with _jsonl.locked(path):
+        states = load_connector_states(root)
+        states[key] = entry
+        _jsonl.write_json(path, states)
     return entry
 
 
 def encode_state_token(cursor: dict[str, Any]) -> str:
-    """Encode a cursor dict as an opaque state token."""
     raw = json.dumps(cursor or {}, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return base64.urlsafe_b64encode(raw).decode("ascii")
 
 
 def decode_state_token(token: str | None) -> dict[str, Any]:
-    """Decode a state token back to a cursor dict (``{}`` on any error)."""
     if not token:
         return {}
     try:
         padded = str(token).strip()
         padded += "=" * (-len(padded) % 4)
-        raw = base64.urlsafe_b64decode(padded.encode("ascii"))
-        data = json.loads(raw.decode("utf-8"))
-    except Exception:
+        data = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
         return {}
     return dict(data) if isinstance(data, dict) else {}
 
 
+def resolve_cursor(root: str, key: str, state_token: str | None) -> dict[str, Any]:
+    """An explicit token wins; otherwise the persisted cursor for *key*."""
+    cursor = decode_state_token(state_token)
+    if cursor:
+        return cursor
+    entry = load_connector_state(root, key)
+    cursor = decode_state_token(entry.get("state_token"))
+    if cursor:
+        return cursor
+    stored = entry.get("cursor")
+    return dict(stored) if isinstance(stored, dict) else {}
+
+
 def chunk_markdown_text(text: str, source_path: str) -> list[Chunk]:
-    """Split markdown-ish text by headings into bounded, redacted chunks.
-
-    Mirrors :func:`commontrace.ingest._chunk_markdown` but operates on a
-    string (for fetched web content) instead of a file path.
-    """
-    chunks: list[Chunk] = []
-    text = text if isinstance(text, str) else str(text)
-    sections = re.split(r"(?m)^(#{1,3}\s.+)$", text)
-    heading = os.path.basename(source_path) or source_path
-    body = ""
-
-    def flush(h: str, b: str) -> None:
-        b = b.strip()
-        if len(b) < 50:
-            return
-        for i, block in enumerate(textwrap.wrap(b, _MAX_MD_CHUNK)):
-            chunks.append(Chunk(
-                content=_redact_secrets(block),
-                source_path=source_path,
-                chunk_id="%s_%s_%d" % (_fingerprint(source_path + h), _fingerprint(h)[:8], i),
-                breadcrumb=h.strip("# ").strip()[:200],
-                chunk_type="markdown_section",
-            ))
-
-    for part in sections:
-        if re.match(r"^#{1,3}\s", part):
-            flush(heading, body)
-            heading = part
-            body = ""
-        else:
-            body += part
-    flush(heading, body)
-    return chunks
+    return _chunk_markdown_text(text, source_path, os.path.basename(source_path) or source_path)
 
 
-def categorize_chunk(breadcrumb: str) -> str:
-    """Mirror ingest_markdown_documentation heading -> category routing."""
-    bc = (breadcrumb or "").lower()
-    if any(kw in bc for kw in ("requirement", "constraint", "rule", "must", "should")):
-        return "constraint"
-    if any(kw in bc for kw in ("prefer", "recommend", "best practice")):
-        return "preference"
-    if any(kw in bc for kw in ("architecture", "design", "pattern", "structure")):
-        return "architecture"
-    return "general"
+def record_chunks(
+    root: str,
+    chunks: list[Chunk],
+    *,
+    source_id: str,
+    scope: str,
+    run_id: str,
+    connector: str,
+    result: IngestionResult,
+) -> None:
+    """Write *chunks* as facts attributed to *source_id*, retiring that source's stale facts."""
+    from commontrace import hierarchical, provenance
+
+    items: list[dict[str, Any]] = []
+    for chunk in chunks:
+        statement = _screened_statement(f"{chunk.breadcrumb}: {chunk.content[:200]}", result)
+        if statement:
+            items.append({
+                "statement": statement, "category": categorize_heading(chunk.breadcrumb),
+                "scopes": [scope] if scope else [], "confidence": 0.7, "source_trace_id": source_id,
+            })
+    try:
+        written = hierarchical.add_facts(root, items)
+        result.facts_written += len(written)
+        hierarchical.retire_source(root, source_id, keep={f.id for f, _ in written})
+    except (OSError, ValueError) as exc:
+        result.errors.append(f"fact error: {exc}")
+    for chunk in chunks:
+        try:
+            provenance.append_provenance(
+                root, target_kind="chunk", target_id=chunk.chunk_id, source_path=chunk.source_path,
+                run_id=run_id,
+                detail={"connector": connector, "breadcrumb": chunk.breadcrumb, "chunk_type": chunk.chunk_type},
+            )
+        except OSError as exc:
+            result.errors.append(f"provenance error: {exc}")
 
 
 @dataclass
 class SyncResult:
     """Outcome of one connector sync pass."""
-
     connector: str
     chunks: list[Chunk] = field(default_factory=list)
     result: IngestionResult | None = None
     new_state_token: str = ""
     run_id: str = ""
     dry_run: bool = False
+    pending: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         base = self.result.to_dict() if self.result is not None else {}
@@ -185,23 +150,15 @@ class SyncResult:
             "new_state_token": self.new_state_token,
             "run_id": self.run_id,
             "dry_run": self.dry_run,
+            "pending": self.pending,
         })
         return base
 
 
 class Connector(ABC):
-    """Abstract connector contract.
-
-    Subclasses must implement :meth:`authorize`, :meth:`sync` and
-    :meth:`webhook_handler`. State tokens are opaque base64 cursors;
-    persistence lives in git-tracked ``memory/connectors/state.json``.
-    """
+    """A source that syncs new content since its last state token."""
 
     name = "base"
-
-    def authorize(self, credentials: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Validate access to the source. Returns at least ``{"ok": bool}``."""
-        return {"ok": True}
 
     @abstractmethod
     def sync(
@@ -214,56 +171,4 @@ class Connector(ABC):
         dry_run: bool = False,
         **kwargs: Any,
     ) -> SyncResult:
-        """Sync new content since ``state_token`` into ``root``."""
-        ...
-
-    def webhook_handler(self, root: str, payload: dict[str, Any]) -> dict[str, Any]:
-        """Handle an inbound webhook/event payload. Never raise on bad input."""
-        return {
-            "ok": False,
-            "error": f"Connector '{self.name}' does not implement webhook handling",
-            "received": False,
-        }
-
-    # -- shared state-token helpers --------------------------------------
-    def state_key(self) -> str:
-        return self.name
-
-    def get_persisted_state(self, root: str) -> dict[str, Any]:
-        return load_connector_state(root, self.state_key())
-
-    def resolve_cursor(self, root: str, state_token: str | None) -> dict[str, Any]:
-        """Explicit token wins; otherwise fall back to persisted state."""
-        if state_token:
-            cursor = decode_state_token(state_token)
-            if cursor:
-                return cursor
-        entry = self.get_persisted_state(root)
-        token = entry.get("state_token", "")
-        if token:
-            cursor = decode_state_token(token)
-            if cursor:
-                return cursor
-        cursor = entry.get("cursor", {})
-        return dict(cursor) if isinstance(cursor, dict) else {}
-
-    def persist_cursor(self, root: str, cursor: dict[str, Any]) -> str:
-        token = encode_state_token(cursor)
-        save_connector_state(root, self.state_key(), token, cursor)
-        return token
-
-
-_REGISTRY: dict[str, type[Connector]] = {}
-
-
-def register_connector(cls: type[Connector]) -> type[Connector]:
-    _REGISTRY[cls.name] = cls
-    return cls
-
-
-def get_connector(name: str) -> type[Connector] | None:
-    return _REGISTRY.get(name)
-
-
-def list_connectors() -> list[str]:
-    return sorted(_REGISTRY)
+        """Sync content changed since *state_token* into the store at *root*."""

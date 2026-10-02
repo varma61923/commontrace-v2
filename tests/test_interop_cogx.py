@@ -1,4 +1,3 @@
-"""COGX envelope round-trip plus Mem0/Zep/Letta adapter tests (task T1)."""
 from __future__ import annotations
 
 import os
@@ -112,7 +111,6 @@ class TestCliRoundTrip:
         dest = tmp_path / "store2"
         main(["init", "--agent-type", "code", "--dest", str(dest)])
         capsys.readouterr()
-        # No --format flag: import must auto-detect the cogx envelope.
         rc = main(["import", out, "--agent-type", "code", "--dest", str(dest)])
         assert rc == 0
 
@@ -201,7 +199,7 @@ class TestZepAdapter:
         assert rec["data"]["slug"] == "e1"
         assert "SSO" in rec["data"]["body"]
         assert rec["data"]["frontmatter"]["agent_type"] == "general"
-        assert rec["data"]["frontmatter"]["status"] == "active"
+        assert rec["data"]["frontmatter"]["status"] == "review"
 
     def test_zep_records_apply_to_store(self, store):
         main(["init", "--agent-type", "code", "--dest", str(store)])

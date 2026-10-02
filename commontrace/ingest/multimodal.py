@@ -1,33 +1,4 @@
-"""Zero-dependency multimodal ingestion (pdf/docx/html/image/audio/subtitles).
-
-Stdlib only: no external libs. Each chunker returns ``list[Chunk]``
-using the shared :class:`commontrace.ingest.Chunk` shape, with
-``modality`` + source provenance carried on every chunk:
-
-- ``chunk.chunk_type`` encodes the modality (``pdf_text``,
-  ``docx_text``, ``html_text``, ``image_description``,
-  ``audio_metadata``, ``subtitle_text``).
-- ``chunk.source_path`` is the ingested file (provenance).
-- ``chunk.modality`` (dynamic attr) is one of
-  ``pdf`` / ``docx`` / ``html`` / ``image`` / ``audio`` / ``subtitle``.
-- ``chunk.provenance`` (dynamic attr) is a dict with
-  ``source_path``, ``modality`` and ``extractor`` keys.
-
-Dispatch contract for the lead:
-
-- ``INGEST_FNS`` maps file extension -> ``callable(path) -> list[Chunk]``.
-- ``ingest_multimodal(path)`` dispatches by extension and returns
-  an :class:`IngestionResult` with ``chunks_extracted`` populated
-  (errors recorded, never raised).
-
-Audio notes: WAV/MP3/OGG/FLAC extractors parse container metadata
-only (headers, frame sync, page tables, STREAMINFO) and emit a
-descriptive chunk — no audio is decoded.
-
-Subtitle notes: VTT/SRT parsers strip tags/positioning, keep cue
-text with ``[HH:MM:SS.mmm --> HH:MM:SS.mmm]`` offsets, and pack cues
-to ~3500 chars on cue boundaries.
-"""
+"""Zero-dependency multimodal ingestion (pdf/docx/html/image/audio/subtitles)."""
 
 from __future__ import annotations
 
@@ -37,17 +8,17 @@ import re
 import struct
 import textwrap
 import zipfile
+import zlib
 
 from commontrace.ingest import Chunk, IngestionResult, _fingerprint, _redact_secrets
 
 _MAX_MM_CHUNK = 2000
+MAX_FILE_BYTES = 64 * 1024 * 1024
+MAX_INFLATED_BYTES = 32 * 1024 * 1024
+IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg")
 
 _EXTRACTOR = "commontrace.ingest.multimodal"
 
-
-# ---------------------------------------------------------------------------
-# Provenance helper
-# ---------------------------------------------------------------------------
 
 def _make_chunk(
     content: str,
@@ -57,7 +28,6 @@ def _make_chunk(
     breadcrumb: str,
     index: int,
 ) -> Chunk:
-    """Build one redacted Chunk with modality + provenance attached."""
     redacted = _redact_secrets(content)
     chunk = Chunk(
         content=redacted,
@@ -66,7 +36,6 @@ def _make_chunk(
         breadcrumb=breadcrumb,
         chunk_type=chunk_type,
     )
-    # Dynamic provenance fields (Chunk dataclass has no slots).
     chunk.modality = modality  # type: ignore[attr-defined]
     chunk.source = path  # type: ignore[attr-defined]
     chunk.provenance = {  # type: ignore[attr-defined]
@@ -94,10 +63,6 @@ def _split_bounded(
     ]
 
 
-# ---------------------------------------------------------------------------
-# PDF — BT/ET stream strings, no external libs
-# ---------------------------------------------------------------------------
-
 _PDF_BT_ET_RE = re.compile(r"BT(.*?)ET", re.DOTALL)
 _PDF_PAREN_RE = re.compile(r"\((?:\\.|[^\\()])*\)")
 _PDF_HEX_RE = re.compile(r"<([0-9A-Fa-f\s]+)>")
@@ -105,7 +70,6 @@ _PDF_TJ_RE = re.compile(r"(?:Tj|TJ|')", re.DOTALL)
 
 
 def _unescape_pdf_string(token: str) -> str:
-    # token includes surrounding parens
     inner = token[1:-1]
     out: list[str] = []
     i = 0
@@ -150,7 +114,6 @@ def _decode_pdf_hex(token: str) -> str:
     for enc in ("utf-8", "utf-16-be", "latin-1"):
         try:
             text = raw.decode(enc)
-            # Heuristic: utf-16-be decode of ascii bytes yields NULs; reject.
             if enc == "utf-16-be" and "\x00" not in text:
                 continue
             return text
@@ -159,20 +122,39 @@ def _decode_pdf_hex(token: str) -> str:
     return raw.decode("latin-1", errors="replace")
 
 
+_PDF_STREAM_RE = re.compile(rb"<<(.{0,2000}?)>>\s*stream\r?\n(.*?)\r?\n?endstream", re.DOTALL)
+
+
+def _inflate_pdf_streams(raw: bytes) -> bytes:
+    out: list[bytes] = []
+    budget = MAX_INFLATED_BYTES
+    for match in _PDF_STREAM_RE.finditer(raw):
+        if b"FlateDecode" not in match.group(1):
+            continue
+        decoder = zlib.decompressobj()
+        try:
+            data = decoder.decompress(match.group(2), budget)
+        except zlib.error:
+            continue
+        budget -= len(data)
+        out.append(data)
+        if budget <= 0:
+            break
+    return b"\n".join(out)
+
+
 def extract_pdf_text(path: str) -> str:
-    """Extract text strings from PDF content streams (BT...ET regions)."""
+    """Extract text strings from PDF content streams (BT...ET regions), compressed or not."""
     with open(path, "rb") as fh:
-        raw = fh.read()
-    text = raw.decode("latin-1", errors="replace")
+        raw = fh.read(MAX_FILE_BYTES + 1)
+    if len(raw) > MAX_FILE_BYTES:
+        raise ValueError(f"{path!r} is larger than {MAX_FILE_BYTES} bytes; skipped")
+    text = (raw + b"\n" + _inflate_pdf_streams(raw)).decode("latin-1", errors="replace")
     regions = _PDF_BT_ET_RE.findall(text)
-    # Fallback: scan whole file if no BT/ET blocks found.
     if not regions:
         regions = [text]
     parts: list[str] = []
     for region in regions:
-        # Only consider string tokens near a text-showing operator.
-        # Simplest robust approach: collect parenthesized + hex strings
-        # inside regions that mention a text operator at all.
         if "Tj" not in region and "TJ" not in region and "'" not in region and regions != [text]:
             continue
         for m in _PDF_PAREN_RE.finditer(region):
@@ -180,19 +162,13 @@ def extract_pdf_text(path: str) -> str:
             if decoded.strip():
                 parts.append(decoded)
         for m in _PDF_HEX_RE.finditer(region):
-            # Skip dict delimiters like << >> (regex only matches hex chars
-            # so '<<' won't match; but guard tiny tokens).
             token = m.group(1)
             if len(re.sub(r"\s+", "", token)) < 4:
                 continue
-            # Only accept plausible text hex (printable-heavy after decode).
             decoded = _decode_pdf_hex(token)
             if decoded.strip() and sum(c.isprintable() or c.isspace() for c in decoded) >= max(1, len(decoded) // 2):
-                # Avoid swallowing binary stream noise: require the region
-                # to look like a content stream (has Tj/TJ).
                 if "Tj" in region or "TJ" in region:
                     parts.append(decoded)
-    # Join: PDF Tj tokens are usually word/line fragments.
     return "\n".join(p.strip() for p in parts if p.strip())
 
 
@@ -200,17 +176,12 @@ def chunk_pdf(path: str) -> list[Chunk]:
     text = extract_pdf_text(path)
     base = os.path.basename(path)
     if not text.strip():
-        # Still emit one descriptive chunk so dispatch counts the file.
         return [_make_chunk(
             f"[PDF] No extractable text in {base}.",
             path, "pdf", "pdf_text", base, 0,
         )]
     return _split_bounded(text, path, "pdf", "pdf_text", base)
 
-
-# ---------------------------------------------------------------------------
-# DOCX — stdlib zipfile + XML paragraph text
-# ---------------------------------------------------------------------------
 
 _W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 _W_P = f"{_W_NS}p"
@@ -223,11 +194,16 @@ def extract_docx_paragraphs(path: str) -> list[str]:
     """Return paragraph texts from word/document.xml (stdlib only)."""
     with zipfile.ZipFile(path, "r") as zf:
         try:
-            xml_bytes = zf.read("word/document.xml")
+            info = zf.getinfo("word/document.xml")
         except KeyError:
             raise ValueError(f"not a docx: missing word/document.xml in {path!r}")
+        if info.file_size > MAX_INFLATED_BYTES:
+            raise ValueError(f"word/document.xml in {path!r} inflates to {info.file_size} bytes; refused")
+        with zf.open(info) as member:
+            xml_bytes = member.read(MAX_INFLATED_BYTES + 1)
+        if len(xml_bytes) > MAX_INFLATED_BYTES:
+            raise ValueError(f"word/document.xml in {path!r} inflates past {MAX_INFLATED_BYTES} bytes; refused")
     xml_text = xml_bytes.decode("utf-8", errors="replace")
-    # Try ElementTree first.
     try:
         import xml.etree.ElementTree as ET
 
@@ -249,7 +225,6 @@ def extract_docx_paragraphs(path: str) -> list[str]:
             return paras
     except Exception:
         pass
-    # Regex fallback: group <w:t> runs by <w:p> blocks.
     paras = []
     for p_block in re.findall(r"<w:p[\s>].*?</w:p>", xml_text, re.DOTALL):
         runs = re.findall(r"<w:t[^>]*>(.*?)</w:t>", p_block, re.DOTALL)
@@ -281,10 +256,6 @@ def chunk_docx(path: str) -> list[Chunk]:
     return chunks
 
 
-# ---------------------------------------------------------------------------
-# HTML — tag-strip to text
-# ---------------------------------------------------------------------------
-
 _SCRIPT_STYLE_RE = re.compile(
     r"<\s*(script|style|noscript)[^>]*>.*?</\s*\1\s*>", re.IGNORECASE | re.DOTALL
 )
@@ -303,7 +274,6 @@ def extract_html_text(path: str) -> tuple[str, str]:
     title = _html.unescape(title)
     text = _SCRIPT_STYLE_RE.sub(" ", raw)
     text = _COMMENT_RE.sub(" ", text)
-    # Block-level tags become newlines to preserve section breaks.
     text = re.sub(r"</\s*(p|div|br|li|tr|h[1-6]|section|article)\s*/?>", "\n", text, flags=re.IGNORECASE)
     text = re.sub(r"<\s*(br|hr)[^>]*>", "\n", text, flags=re.IGNORECASE)
     text = _TAG_RE.sub(" ", text)
@@ -324,10 +294,6 @@ def chunk_html(path: str) -> list[Chunk]:
         )]
     return _split_bounded(text, path, "html", "html_text", breadcrumb)
 
-
-# ---------------------------------------------------------------------------
-# Images — PNG/JPEG dimension + EXIF-ish header parse via struct
-# ---------------------------------------------------------------------------
 
 def _parse_png(data: bytes) -> tuple[int | None, int | None, dict]:
     info: dict = {"format": "PNG"}
@@ -351,7 +317,7 @@ def _parse_png(data: bytes) -> tuple[int | None, int | None, dict]:
                 compression=comp, filter=filt, interlace=inter,
             )
             break
-        offset += length + 4  # data + CRC
+        offset += length + 4
         if ctype == b"IEND" or offset > len(data):
             break
     info["width"] = width
@@ -375,38 +341,36 @@ def _parse_jpeg(data: bytes) -> tuple[int | None, int | None, dict]:
         if data[pos] != 0xFF:
             pos += 1
             continue
-        # Skip padding FF bytes.
         while pos < n and data[pos] == 0xFF:
             pos += 1
         if pos >= n:
             break
         marker = data[pos]
         pos += 1
-        if marker == 0xD9:  # EOI
+        if marker == 0xD9:
             break
         if marker == 0x01 or 0xD0 <= marker <= 0xD7:
-            continue  # standalone markers
+            continue
         if pos + 2 > n:
             break
         (seg_len,) = struct.unpack(">H", data[pos:pos + 2])
         if seg_len < 2:
             break
         seg = data[pos + 2:pos + seg_len]
-        if marker == 0xE0 and seg[:5] == b"JFIF\x00":  # APP0 JFIF
+        if marker == 0xE0 and seg[:5] == b"JFIF\x00":
             try:
                 major, minor = seg[5], seg[6]
                 info["jfif"] = f"{major}.{minor}"
             except IndexError:
                 info["jfif"] = "present"
             info["app_segments"].append("APP0/JFIF")
-        elif marker == 0xE1:  # APP1 — possibly EXIF
+        elif marker == 0xE1:
             info["app_segments"].append("APP1")
             if seg[:6] == b"Exif\x00\x00":
                 info["exif_present"] = True
         elif 0xE0 <= marker <= 0xEF:
             info["app_segments"].append(f"APP{marker - 0xE0}")
         elif marker in sof_markers and len(seg) >= 5:
-            # SOF: precision(1) + height(2) + width(2) + components(1)...
             try:
                 precision = seg[0]
                 (height, width) = struct.unpack(">HH", seg[1:5])
@@ -422,7 +386,6 @@ def _parse_jpeg(data: bytes) -> tuple[int | None, int | None, dict]:
 
 
 def _describe_image(path: str) -> tuple[str, str, dict]:
-    """Return (format_label, description, info) without decoding pixels."""
     with open(path, "rb") as fh:
         data = fh.read()
     size = len(data)
@@ -460,10 +423,6 @@ def chunk_image(path: str) -> list[Chunk]:
     )]
 
 
-# ---------------------------------------------------------------------------
-# Audio — container metadata only (WAV/MP3/OGG/FLAC), no audio decode
-# ---------------------------------------------------------------------------
-
 _WAV_FORMAT_NAMES = {
     1: "PCM",
     3: "IEEE float",
@@ -474,7 +433,6 @@ _WAV_FORMAT_NAMES = {
 
 
 def _parse_wav(data: bytes) -> dict:
-    """Parse RIFF/WAVE header + chunks; return fmt/data metadata dict."""
     if len(data) < 12 or data[0:4] != b"RIFF" or data[8:12] != b"WAVE":
         raise ValueError("not a WAV file (missing RIFF/WAVE header)")
     channels = sample_rate = bits = byte_rate = None
@@ -493,7 +451,6 @@ def _parse_wav(data: bytes) -> dict:
             )
         elif cid == b"data" and data_size is None:
             data_size = min(size, avail)
-        # Chunks are word-aligned: odd sizes carry one pad byte.
         pos = body_off + size + (size & 1)
     if channels is None or sample_rate is None or bits is None or byte_rate is None:
         raise ValueError("WAV missing fmt chunk")
@@ -510,8 +467,6 @@ def _parse_wav(data: bytes) -> dict:
 
 
 _MPEG_BITRATES: dict[tuple[int, int], list[int | None]] = {
-    # (mpeg_version_key, layer) -> bitrate table in kbps, index 0..15.
-    # version key 1 = MPEG-1, 2 = MPEG-2/2.5.
     (1, 1): [None, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448, None],
     (1, 2): [None, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, None],
     (1, 3): [None, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, None],
@@ -526,7 +481,6 @@ _MPEG_MODE_LABEL = {0: "stereo", 1: "joint stereo", 2: "dual channel", 3: "mono"
 
 
 def _mpeg_header_at(data: bytes, pos: int) -> dict | None:
-    """Decode one MPEG audio frame header at ``pos``; None if invalid."""
     if pos + 4 > len(data):
         return None
     b0, b1, b2, b3 = data[pos:pos + 4]
@@ -539,7 +493,7 @@ def _mpeg_header_at(data: bytes, pos: int) -> dict | None:
     padding = (b2 >> 1) & 0x01
     if ver == 1 or layer_bits == 0 or br_idx in (0, 15) or sr_idx == 3:
         return None
-    layer = 4 - layer_bits  # bits 11->L1, 10->L2, 01->L3
+    layer = 4 - layer_bits
     vkey = 1 if ver == 3 else 2
     if ver == 3:
         sample_rate = (44100, 48000, 32000)[sr_idx]
@@ -554,7 +508,7 @@ def _mpeg_header_at(data: bytes, pos: int) -> dict | None:
         frame_len = (12 * bitrate * 1000 // sample_rate + padding) * 4
     elif layer == 2 or vkey == 1:
         frame_len = 144 * bitrate * 1000 // sample_rate + padding
-    else:  # MPEG-2/2.5 Layer III uses 72x slots.
+    else:
         frame_len = 72 * bitrate * 1000 // sample_rate + padding
     if frame_len < 4:
         return None
@@ -570,15 +524,12 @@ def _mpeg_header_at(data: bytes, pos: int) -> dict | None:
 
 
 def _parse_mp3(data: bytes) -> dict:
-    """Scan for the first MPEG frame sync; estimate bitrate/duration."""
     offset = 0
     if data[:3] == b"ID3" and len(data) >= 10:
-        # ID3v2: 10-byte header, size is 4 synchsafe bytes.
         sync_size = sum(b << (7 * (3 - i)) for i, b in enumerate(data[6:10]))
         offset = min(len(data), 10 + sync_size)
     info: dict | None = None
     frame_at = -1
-    # Cap the scan so pathological files stay cheap; headers live up front.
     for pos in range(offset, min(len(data) - 4, offset + 1_048_576)):
         info = _mpeg_header_at(data, pos)
         if info is not None:
@@ -586,7 +537,6 @@ def _parse_mp3(data: bytes) -> dict:
             break
     if info is None or frame_at < 0:
         raise ValueError("no MPEG frame sync found (not an MP3 stream)")
-    # Verify against the expected next frame when the file is long enough.
     verified = False
     nxt = frame_at + info["frame_len"]
     if nxt + 4 <= len(data):
@@ -598,7 +548,7 @@ def _parse_mp3(data: bytes) -> dict:
         )
     audio_bytes = len(data) - frame_at
     if len(data) >= 128 and data[-128:-125] == b"TAG":
-        audio_bytes -= 128  # trailing ID3v1 tag is not audio
+        audio_bytes -= 128
     bitrate = info["bitrate_kbps"]
     duration = (audio_bytes * 8 / (bitrate * 1000)) if bitrate else None
     return {
@@ -615,7 +565,6 @@ def _parse_mp3(data: bytes) -> dict:
 
 
 def _parse_ogg(data: bytes) -> dict:
-    """Walk Ogg page headers; count pages/serials without decoding."""
     if len(data) < 27 or data[0:4] != b"OggS":
         raise ValueError("not an OGG container (missing OggS capture pattern)")
     pos = 0
@@ -667,7 +616,6 @@ _FLAC_BLOCK_NAMES = {
 
 
 def _parse_flac(data: bytes) -> dict:
-    """Parse FLAC metadata blocks; extract STREAMINFO fields."""
     if data[:4] != b"fLaC":
         raise ValueError("not a FLAC stream (missing fLaC marker)")
     pos = 4
@@ -713,7 +661,6 @@ def _parse_flac(data: bytes) -> dict:
 
 
 def _describe_audio(path: str) -> tuple[str, str]:
-    """Return (label, description) for an audio container; no decode."""
     with open(path, "rb") as fh:
         data = fh.read()
     size = len(data)
@@ -791,10 +738,6 @@ def chunk_flac(path: str) -> list[Chunk]:
     return _chunk_audio(path)
 
 
-# ---------------------------------------------------------------------------
-# Subtitles — VTT + SRT cue parse, tag strip, ~3500-char cue-boundary chunks
-# ---------------------------------------------------------------------------
-
 _SUB_CHUNK = 3500
 
 _SUB_TAG_RE = re.compile(r"<[^>]*>")
@@ -802,7 +745,6 @@ _SUB_WS_RE = re.compile(r"[ \t\xa0]+")
 
 
 def _parse_sub_timestamp(ts: str) -> float:
-    """Parse HH:MM:SS.mmm / MM:SS.mmm (dot or comma) to seconds."""
     token = ts.strip().split()[0].replace(",", ".")
     if "." in token:
         main, frac = token.split(".", 1)
@@ -831,7 +773,6 @@ def _format_sub_timestamp(seconds: float) -> str:
 
 
 def _clean_cue_lines(lines: list[str]) -> str:
-    """Strip tags/positioning artifacts; collapse whitespace; join cues."""
     cleaned: list[str] = []
     for line in lines:
         text = _SUB_TAG_RE.sub("", line)
@@ -843,12 +784,10 @@ def _clean_cue_lines(lines: list[str]) -> str:
 
 
 def _parse_vtt_cues(text: str) -> list[tuple[float, float, str]]:
-    """Parse WEBVTT cues -> [(start_s, end_s, text)]. Skips bad cues."""
     lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     cues: list[tuple[float, float, str]] = []
     i = 0
     n = len(lines)
-    # Skip BOM/header line and any leading blanks.
     while i < n and not lines[i].strip():
         i += 1
     if i < n and lines[i].lstrip("\ufeff").strip().upper().startswith("WEBVTT"):
@@ -859,7 +798,6 @@ def _parse_vtt_cues(text: str) -> list[tuple[float, float, str]]:
             i += 1
             continue
         if line.upper().startswith("NOTE"):
-            # NOTE comment block runs to the next blank line.
             i += 1
             while i < n and lines[i].strip():
                 i += 1
@@ -870,8 +808,6 @@ def _parse_vtt_cues(text: str) -> list[tuple[float, float, str]]:
                 i += 1
             continue
         if "-->" not in line:
-            # Possible cue identifier: only meaningful if the next
-            # non-blank line is a timestamp line.
             j = i + 1
             while j < n and not lines[j].strip():
                 j += 1
@@ -900,7 +836,6 @@ def _parse_vtt_cues(text: str) -> list[tuple[float, float, str]]:
 
 
 def _parse_srt_cues(text: str) -> list[tuple[float, float, str]]:
-    """Parse SubRip cues -> [(start_s, end_s, text)]. Skips bad cues."""
     normalized = text.replace("\r\n", "\n").replace("\r", "\n")
     cues: list[tuple[float, float, str]] = []
     for block in re.split(r"\n[ \t]*\n", normalized.strip()):
@@ -926,7 +861,6 @@ def _chunk_subtitle_cues(
     path: str,
     kind: str,
 ) -> list[Chunk]:
-    """Pack cues to ~3500 chars on cue boundaries, offsets as timestamps."""
     base = os.path.basename(path)
     if not cues:
         return [_make_chunk(
@@ -981,10 +915,6 @@ def chunk_srt(path: str) -> list[Chunk]:
     return _chunk_subtitle_cues(_parse_srt_cues(text), path, "SRT")
 
 
-# ---------------------------------------------------------------------------
-# Dispatch
-# ---------------------------------------------------------------------------
-
 INGEST_FNS: dict[str, object] = {
     ".pdf": chunk_pdf,
     ".docx": chunk_docx,
@@ -1028,21 +958,23 @@ _MODALITY_SOURCE_TYPE = {
 
 
 def ingest_multimodal(path: str) -> IngestionResult:
-    """Dispatch a single file to its stdlib extractor.
-
-    Returns an :class:`IngestionResult` with ``chunks_extracted``
-    populated. Unknown extensions and parse failures are recorded in
-    ``errors`` — never raised. The extracted chunks are also stashed on
-    ``result.chunks`` for callers that want them without a second call.
-    """
+    """Dispatch a single file to its stdlib extractor."""
     ext = os.path.splitext(path)[1].lower()
     modality = _EXT_MODALITY.get(ext, "")
     source_type = _MODALITY_SOURCE_TYPE.get(modality, "multimodal")
     result = IngestionResult(source_path=path, source_type=source_type)
+    result.chunks = []  # type: ignore[attr-defined]
     fn = INGEST_FNS.get(ext)  # type: ignore[assignment]
     if fn is None:
         result.errors.append(f"unsupported multimodal extension: {ext!r} for {path!r}")
-        result.chunks = []  # type: ignore[attr-defined]
+        return result
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        result.errors.append(f"file not found: {path!r}")
+        return result
+    if size > MAX_FILE_BYTES:
+        result.errors.append(f"{path!r} is {size} bytes, over the {MAX_FILE_BYTES}-byte limit; skipped")
         return result
     try:
         chunks = fn(path)  # type: ignore[operator]

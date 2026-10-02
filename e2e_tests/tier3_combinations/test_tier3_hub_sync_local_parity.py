@@ -3,6 +3,10 @@ from __future__ import annotations
 import os
 
 import pytest
+
+pytest.importorskip("sqlalchemy")
+pytest.importorskip("asyncpg")
+pytest.importorskip("pytest_asyncio")
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -39,12 +43,10 @@ async def hub_sync_session():
 
 @pytest.mark.asyncio
 async def test_t3_hub_sync_and_local_parity(hub_sync_session, isolated_store: str):
-    """E2E-T3-CB-5: Local capture and Hub trace ingestion exhibit identical scope filtering semantics."""
     session, org_id = hub_sync_session
     config = HubConfig(database_url=TEST_DATABASE_URL)
     limiter = RateLimiter(per_minute=1000, burst=1000)
 
-    # 1. Local trace capture
     res_cap = run_cli(
         "capture",
         "--title", "Kafka consumer group lag alert",
@@ -55,7 +57,6 @@ async def test_t3_hub_sync_and_local_parity(hub_sync_session, isolated_store: st
     )
     res_cap.assert_success()
 
-    # 2. Replicate trace to Hub with scope
     hub_trace = await crud.contribute_trace(
         session, org_id, config, limiter,
         title="Kafka consumer group lag alert",
@@ -66,12 +67,10 @@ async def test_t3_hub_sync_and_local_parity(hub_sync_session, isolated_store: st
     )
     assert hub_trace["id"] is not None
 
-    # 3. Query Hub with matching scope
     found = await crud.search_traces(session, org_id, scope="streaming")
     found_ids = {t["id"] for t in found["traces"]}
     assert hub_trace["id"] in found_ids
 
-    # 4. Query Hub with non-matching scope
     mismatched = await crud.search_traces(session, org_id, scope="unrelated-scope")
     mismatched_ids = {t["id"] for t in mismatched["traces"]}
     assert hub_trace["id"] not in mismatched_ids

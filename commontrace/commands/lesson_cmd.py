@@ -279,6 +279,11 @@ def run_validate(args: argparse.Namespace) -> int:
                 valid_from = valid_until = None
             if valid_from is not None and valid_until is not None and valid_from >= valid_until:
                 errors = list(errors) + ["valid_until must be later than valid_from"]
+            if fm.get("expires") not in (None, ""):
+                try:
+                    frontmatter.validate_expires(fm["expires"])
+                except frontmatter.FrontmatterError as exc:
+                    errors = list(errors) + [str(exc)]
             if fm.get("status") == "active":
                 unfilled = templates.unfilled_placeholders(fm, body)
                 if unfilled:

@@ -8,7 +8,6 @@ from commontrace import failure_import, memory_guard
 
 
 def test_t2_ingest_empty_file_rejection(tmp_path: Path):
-    """E2E-T2-ING-1: Ingesting an empty file raises FailureImportError."""
     empty_file = tmp_path / "empty.jsonl"
     empty_file.write_text("", encoding="utf-8")
 
@@ -17,7 +16,6 @@ def test_t2_ingest_empty_file_rejection(tmp_path: Path):
 
 
 def test_t2_ingest_corrupt_jsonl_error_handling(tmp_path: Path):
-    """E2E-T2-ING-2: Corrupt non-JSON lines in JSONL file raise clear parse errors."""
     corrupt_file = tmp_path / "corrupt.jsonl"
     corrupt_file.write_text("{\"title\": \"Valid line\"}\nNOT_VALID_JSON{{{\n", encoding="utf-8")
 
@@ -26,7 +24,6 @@ def test_t2_ingest_corrupt_jsonl_error_handling(tmp_path: Path):
 
 
 def test_t2_ingest_secret_key_redaction():
-    """E2E-T2-ING-3: Ingested traces containing API keys and bearer tokens must be redacted."""
     raw_text = (
         "Encountered 401 when calling Anthropic using API key "
         "sk-ant-api03-abcdef1234567890abcdef1234567890 and AWS AKIAIOSFODNN7EXAMPLE"
@@ -40,7 +37,6 @@ def test_t2_ingest_secret_key_redaction():
 
 
 def test_t2_ingest_unsupported_format_rejection(tmp_path: Path):
-    """E2E-T2-ING-4: Ingestion with unsupported format override raises FailureImportError."""
     test_file = tmp_path / "test.data"
     test_file.write_text("some content", encoding="utf-8")
 
@@ -49,7 +45,6 @@ def test_t2_ingest_unsupported_format_rejection(tmp_path: Path):
 
 
 def test_t2_ingest_duplicate_records_deduplication(tmp_path: Path):
-    """E2E-T2-ING-5: Repeated identical failure traces are automatically deduplicated in stats."""
     dup_file = tmp_path / "duplicates.jsonl"
     record = "{\"title\": \"Database lock timeout\", \"text\": \"Lock timeout on accounts\"}\n"
     dup_file.write_text(record * 5, encoding="utf-8")

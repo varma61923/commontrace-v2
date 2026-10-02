@@ -15,7 +15,6 @@ _TIMEOUT_SECONDS = 60
 _SUPPORTED_PROVIDERS = ("anthropic", "openai-compatible", "ollama", "bedrock", "vertex")
 _CLOUD_PROVIDERS = ("bedrock", "vertex")
 
-# `ollama` is an alias for `openai-compatible` pointing at a local server.
 _OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434/v1"
 
 REQUIRED_KEYS = ("rule", "applies_when", "do_not_apply_when", "evidence")
@@ -47,9 +46,6 @@ def load_config() -> Config:
             f"COMMONTRACE_LLM_PROVIDER={provider!r} is not supported "
             f"(use one of: {', '.join(_SUPPORTED_PROVIDERS)})."
         )
-    # `ollama` is an alias for `openai-compatible` against a local server:
-    # a missing BASE_URL defaults to localhost instead of refusing, and no
-    # API key is needed. An explicit BASE_URL still wins.
     ollama_alias = provider == "ollama"
     if ollama_alias:
         provider = "openai-compatible"
@@ -170,13 +166,7 @@ def _call_openai_compatible(config: Config, prompt: str) -> tuple[str, dict]:
 def complete_with_image(
     config: Config, prompt: str, image_bytes: bytes, mime: str,
 ) -> tuple[str, dict]:
-    """Ask the model about an image, returning (text, usage).
-
-    Anthropic takes the image as a base64 source block; an
-    OpenAI-compatible endpoint (including the `ollama` alias) takes it as a
-    data-URI `image_url` part. Both go through `_post_json`, so the same
-    http(s)-only and error-to-`LLMUnavailable` rules apply.
-    """
+    """Ask the model about an image, returning (text, usage)."""
     import base64
 
     provider = "openai-compatible" if config.provider == "ollama" else config.provider
@@ -307,6 +297,15 @@ def _non_empty_str(parsed: dict, key: str) -> str:
     return value.strip()
 
 
+def complete(prompt: str, config: Config | None = None) -> tuple[str, dict]:
+    """One completion from the configured provider: (text, usage)."""
+    cfg = config or load_config()
+    caller = {"anthropic": _call_anthropic, "openai-compatible": _call_openai_compatible,
+              "ollama": _call_openai_compatible,
+              "bedrock": _call_bedrock, "vertex": _call_vertex}[cfg.provider]
+    return caller(cfg, prompt)
+
+
 def draft(
     prompt: str,
     *,
@@ -314,10 +313,7 @@ def draft(
     config: Config | None = None,
 ) -> Draft:
     cfg = config or load_config()
-    caller = {"anthropic": _call_anthropic, "openai-compatible": _call_openai_compatible,
-              "ollama": _call_openai_compatible,
-              "bedrock": _call_bedrock, "vertex": _call_vertex}[cfg.provider]
-    text, usage_raw = caller(cfg, prompt)
+    text, usage_raw = complete(prompt, cfg)
 
     parsed = _extract_json_object(text)
     missing = [k for k in REQUIRED_KEYS if k not in parsed]

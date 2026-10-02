@@ -1,4 +1,3 @@
-"""Tests for multimodal ingestion pipeline (M2)."""
 from __future__ import annotations
 
 import json
@@ -9,7 +8,6 @@ import pytest
 
 @pytest.fixture()
 def store(tmp_path):
-    """Initialise a minimal commontrace store."""
     store = tmp_path / "store"
     store.mkdir()
     from commontrace import paths
@@ -45,7 +43,6 @@ class TestCodeIngestion:
         )
 
         result = ingest_code_repository(store, str(src))
-        # Verify no raw secret appears in any lesson file
         from commontrace import paths
         for fname in os.listdir(paths.lessons_dir(store)):
             if fname.endswith(".md"):
@@ -60,7 +57,6 @@ class TestCodeIngestion:
         (src / "broken.py").write_text("def foo(:\n    pass\n", encoding="utf-8")
 
         result = ingest_code_repository(store, str(src))
-        # Should not raise, should handle gracefully
         assert result.source_type == "code"
 
 
@@ -100,16 +96,14 @@ class TestJsonLogIngestion:
 
         result = ingest_json_logs(store, str(log_file), scope="payments", service_name="api-gateway")
         assert result.source_type == "json_logs"
-        assert result.graph_nodes_written >= 2  # service + error nodes
+        assert result.graph_nodes_written >= 2
         assert result.graph_edges_written >= 1
-        # Recurring error (2 occurrences) should generate a trace
         traces = [f for f in os.listdir(paths.traces_dir(store)) if f.endswith(".md")]
         assert len(traces) >= 1
 
 
 class TestTranscriptIngestion:
-    def test_ingest_failure_transcript_drafts_lessons(self, store, tmp_path):
-        from commontrace import paths
+    def test_ingest_failure_transcript_records_traces(self, store, tmp_path):
         from commontrace.ingest import ingest_failure_transcript
 
         transcript = tmp_path / "run.jsonl"
@@ -121,10 +115,16 @@ class TestTranscriptIngestion:
 
         result = ingest_failure_transcript(store, str(transcript), scope="db")
         assert result.source_type == "transcript"
-        assert result.lessons_drafted >= 1
+        assert result.traces_written == 1 and result.lessons_drafted == 0
 
-        lessons = [f for f in os.listdir(paths.lessons_dir(store)) if f.endswith(".md")]
-        assert len(lessons) >= 1
+        from commontrace.commands._traces import load_trace_candidates
+
+        candidates = load_trace_candidates(store)
+        assert len(candidates) == 1
+        assert "database is unreachable" in candidates[0].context_text
+
+        again = ingest_failure_transcript(store, str(transcript), scope="db")
+        assert again.traces_written == 0
 
 
 class TestIngestionPipeline:

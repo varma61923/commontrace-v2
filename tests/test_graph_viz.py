@@ -34,9 +34,9 @@ def test_edge_vocab_present(store):
     graph.add_node(store, "memory:b", "memory", "B")
     graph.add_node(store, "memory:c", "memory", "C")
     graph.add_node(store, "memory:d", "memory", "D")
-    graph.add_memory_relationship(store, "memory:b", "memory:a", "updates")
-    graph.add_memory_relationship(store, "memory:c", "memory:b", "extends")
-    graph.add_memory_relationship(store, "memory:d", "memory:c", "derives")
+    graph.add_edge(store, "memory:b", "memory:a", "updates")
+    graph.add_edge(store, "memory:c", "memory:b", "extends")
+    graph.add_edge(store, "memory:d", "memory:c", "derives")
     graph.add_edge(store, "memory:d", "memory:a", "supersedes")
     out = render_html(store)
     for rel in ("updates", "extends", "derives", "supersedes"):
@@ -46,7 +46,6 @@ def test_edge_vocab_present(store):
 def test_superseded_dimming_class(store):
     n1 = graph.add_node(store, "memory:evo", "memory", "Evo", properties={"status": "draft"})
     graph.create_memory_version(store, "memory:evo", new_properties={"status": "v2"})
-    # invalidated edge history
     graph.add_node(store, "service:api", "service", "API")
     graph.add_node(store, "tool:cache", "tool", "Cache")
     graph.add_edge(store, "service:api", "tool:cache", "uses", valid_at="2024-01-01T00:00:00Z")

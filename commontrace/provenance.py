@@ -1,8 +1,4 @@
-"""Provenance evidence log for graph nodes/edges.
-
-Appends one JSON record per line to ``memory/graph/provenance.jsonl``.
-Uses O_APPEND for atomic line appends.
-"""
+"""Provenance evidence log for graph nodes/edges."""
 from __future__ import annotations
 
 import json
@@ -10,13 +6,11 @@ import os
 from datetime import datetime, timezone
 from typing import Any
 
-from commontrace import paths
+from commontrace import _jsonl, paths
 
 
 def _provenance_file(root: str) -> str:
-    d = os.path.join(paths.memory_dir(root), "graph")
-    os.makedirs(d, exist_ok=True)
-    return os.path.join(d, "provenance.jsonl")
+    return os.path.join(paths.memory_dir(root), "graph", "provenance.jsonl")
 
 
 def _now() -> str:
@@ -31,16 +25,7 @@ def append_provenance(
     run_id: str = "",
     detail: Any = "",
 ) -> dict[str, Any]:
-    """Append a provenance record and return it.
-
-    Args:
-        root: CommonTrace store root.
-        target_kind: e.g. "node" or "edge".
-        target_id: node id or "source->target:relation" edge key.
-        source_path: file/origin that produced the target.
-        run_id: ingest/run identifier.
-        detail: free-form detail (str or dict).
-    """
+    """Append a provenance record and return it."""
     fpath = _provenance_file(root)
     record = {
         "target_kind": str(target_kind),
@@ -50,12 +35,7 @@ def append_provenance(
         "detail": detail if isinstance(detail, (dict, list)) else str(detail or ""),
         "created_at": _now(),
     }
-    line = (json.dumps(record) + "\n").encode("utf-8")
-    fd = os.open(fpath, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
-    try:
-        os.write(fd, line)
-    finally:
-        os.close(fd)
+    _jsonl.append_row(fpath, record)
     return record
 
 

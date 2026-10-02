@@ -35,3 +35,49 @@ def read(path: str) -> tuple[dict[str, Any], str]:
             instance[field] = str(val)
 
     return instance, body
+
+
+def write_new(
+    root: str,
+    *,
+    title: str,
+    context: str,
+    solution: str,
+    tags: list[str],
+    agent_type: str | None = None,
+    trace_id: str | None = None,
+    outcome: dict[str, Any] | None = None,
+    extra: dict[str, Any] | None = None,
+) -> str | None:
+    """Write one schema-valid Trace with credentials redacted; returns its path."""
+    import datetime
+    import os
+    import uuid
+
+    from commontrace import memory_guard, paths, templates, validate
+    from commontrace.commands.capture_cmd import _free_path, _id_suffix, _slugify
+
+    title = memory_guard.redact_secrets(title)[0].strip()[:200] or "Trace"
+    context = memory_guard.redact_secrets(context)[0].strip()
+    solution = memory_guard.redact_secrets(solution)[0].strip()
+    tid = trace_id or str(uuid.uuid4())
+    tdir = paths.traces_dir(root)
+    os.makedirs(tdir, exist_ok=True)
+    date = datetime.date.today().isoformat()
+    suffix = _id_suffix(tid)
+    if trace_id:
+        for name in os.listdir(tdir):
+            if name.endswith(f"_{suffix}.md"):
+                return None
+    fm = templates.trace_frontmatter(
+        tid, title, agent_type or paths.store_agent_type(root),
+        [str(t).strip() for t in tags if str(t).strip()], "", outcome,
+    )
+    fm.update(extra or {})
+    instance = {**fm, "context_text": context, "solution_text": solution}
+    errors = validate.validate(instance, validate.load_schema("trace.schema.json"))
+    if errors:
+        raise ValueError("invalid trace: " + "; ".join(errors))
+    out_path = _free_path(os.path.join(tdir, f"{date}_{_slugify(title)}_{suffix}.md"), tid)
+    frontmatter_io.write(out_path, fm, templates.trace_body(context, solution))
+    return out_path

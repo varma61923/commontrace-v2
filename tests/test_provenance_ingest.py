@@ -1,9 +1,8 @@
-"""T2: provenance evidence + ingest hardening tests."""
 from __future__ import annotations
 
 import os
 
-from commontrace import canonical, graph, provenance
+from commontrace import graph, provenance
 from commontrace.ingest import (
     IngestionPipeline,
     ingest_fact_triples,
@@ -28,9 +27,7 @@ def test_provenance_append_list_roundtrip(tmp_path):
     assert len(out) == 1
     assert out[0]["run_id"] == "run-1"
     assert out[0]["source_path"] == "src.md"
-    # case-insensitive lookup
     assert len(provenance.list_provenance(root, "A->B:CAUSES")) == 1
-    # unknown target -> empty
     assert provenance.list_provenance(root, "nope") == []
 
 
@@ -49,27 +46,9 @@ def test_graph_call_records_provenance(tmp_path):
     assert len(edges) >= 1
     assert edges[0]["target_kind"] == "edge"
 
-    # backward compat: no provenance -> no record, no crash
     n_before = len(provenance.list_provenance(root, "service:plain"))
     graph.add_node(root, "service:plain", "service", "Plain")
     assert provenance.list_provenance(root, "service:plain") == []
-
-
-def test_canonicalizer_guard():
-    aliases = {"db": "database", "should": "must-do", "k8s": "kubernetes"}
-    canon, rw = canonical.canonicalize_alias("DB", aliases)
-    assert (canon, rw) == ("database", True)
-    # risky words never rewritten
-    for risky in ("should", "MUST", "shall", "will", "might"):
-        c, w = canonical.canonicalize_alias(risky, {risky.lower(): "x"})
-        assert c == risky and w is False
-        assert risky.lower() in canonical.DEFAULT_RISKY_WORDS
-    # unknown alias passes through
-    c, w = canonical.canonicalize_alias("unknown-thing", aliases)
-    assert (c, w) == ("unknown-thing", False)
-    # {canonical: [aliases]} shape
-    c, w = canonical.canonicalize_alias("K8s", {"kubernetes": ["k8s"]})
-    assert (c, w) == ("kubernetes", True)
 
 
 def test_triples_path(tmp_path):
@@ -83,14 +62,11 @@ def test_triples_path(tmp_path):
     assert res.facts_written == 2
     assert res.graph_edges_written == 2
     assert not res.errors
-    # graph nodes exist
     nodes = graph.load_nodes(root)
     assert "service:api" in nodes
-    # facts exist
     from commontrace import hierarchical
     facts = hierarchical.load_facts(root)
     assert len(facts) >= 2
-    # provenance recorded for edge
     prov = provenance.list_provenance(root, "service:api->service:db:depends_on")
     assert len(prov) >= 1
 
@@ -106,14 +82,12 @@ def test_preview_makes_no_writes(tmp_path):
     res = preview_ingest(str(src), "code")
     assert res.chunks_extracted >= 1
     assert res.graph_nodes_written >= 1
-    # zero writes: memory/graph must not exist or be empty
     graph_dir = os.path.join(root, "memory", "graph")
     if os.path.exists(graph_dir):
         files = os.listdir(graph_dir)
         assert files == [] or all(
             os.path.getsize(os.path.join(graph_dir, f)) == 0 for f in files
         ), f"preview wrote files: {files}"
-    # pipeline preview flag path also makes no writes
     pipe = IngestionPipeline()
     res2 = pipe.ingest_source(str(src), "code", dest_root=root, preview=True)
     assert res2.chunks_extracted >= 1

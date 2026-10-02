@@ -1,4 +1,3 @@
-"""Tests for the autonomous agent execution loop (M3)."""
 from __future__ import annotations
 
 import os
@@ -49,7 +48,6 @@ class TestAgentLoop:
         from commontrace import memory_blocks
         from commontrace.agent_loop import AgentLoop
 
-        # Pre-create a block
         memory_blocks.set_block(store, "persona", "You are a senior engineer.", actor="test")
 
         def block_updater(context, tool_calls):
@@ -101,7 +99,7 @@ class TestAgentLoop:
 
         def infinite_executor(context, tool_calls):
             turn_count["n"] += 1
-            return f"Still working, turn {turn_count['n']}.", []  # never done
+            return f"Still working, turn {turn_count['n']}.", []
 
         loop = AgentLoop(root=store, dream_every=0)
         result = loop.run(prompt="Infinite task", tool_executor=infinite_executor, max_turns=3)

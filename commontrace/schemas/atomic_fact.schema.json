@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://commontrace.dev/schemas/atomic_fact.schema.json",
   "title": "CommonTrace Atomic Fact",
-  "description": "A distilled, declarative atomic proposition of truth with bitemporal validity and scoped routing (EverOS + Mem0 pattern).",
+  "description": "A distilled, declarative atomic proposition of truth with bitemporal validity and scoped routing.",
   "type": "object",
   "required": [
     "id",
@@ -29,7 +29,8 @@
     "statement": {
       "type": "string",
       "description": "Atomic declarative proposition statement.",
-      "minLength": 1
+      "minLength": 1,
+      "maxLength": 2000
     },
     "category": {
       "type": "string",
@@ -40,6 +41,7 @@
         "bug_pattern",
         "tool_rule",
         "environment",
+        "reference",
         "general"
       ],
       "description": "Taxonomy category of the atomic fact."

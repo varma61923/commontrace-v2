@@ -9,8 +9,9 @@
     "target",
     "relation",
     "weight",
-    "valid_from",
-    "valid_until",
+    "valid_at",
+    "invalid_at",
+    "expired_at",
     "properties",
     "created_at"
   ],
@@ -37,7 +38,13 @@
         "scoped_to",
         "uses",
         "violates",
-        "relates_to"
+        "relates_to",
+        "contains",
+        "mentions",
+        "raises",
+        "updates",
+        "extends",
+        "derives"
       ]
     },
     "weight": {
@@ -46,13 +53,26 @@
       "minimum": 0.0,
       "maximum": 1.0
     },
-    "valid_from": {
-      "type": "string",
-      "description": "ISO-8601 UTC timestamp recording the beginning of this edge's temporal validity window."
+    "valid_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "ISO-8601 UTC timestamp from which this edge holds."
     },
-    "valid_until": {
-      "type": ["string", "null"],
-      "description": "ISO-8601 UTC timestamp recording the expiration or supersession of this edge, or null if active indefinitely."
+    "invalid_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "ISO-8601 UTC timestamp at which a later assertion or a forget closed this edge, or null while it holds."
+    },
+    "expired_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "ISO-8601 UTC timestamp after which this edge lapses, or null for no expiry."
     },
     "properties": {
       "type": "object",

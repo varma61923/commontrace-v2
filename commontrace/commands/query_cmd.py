@@ -151,7 +151,6 @@ def _iter_active_lessons(
 def _expired_hidden_notice(
     lessons: list[tuple[str, dict]], scope: str = "", as_of: str | None = None,
 ) -> str:
-    """Notice text for TTL-hidden lessons among scope-valid candidates."""
     in_scope = lesson_cache.filter_eligible(
         lessons, scope=scope, as_of=as_of, show_expired=True,
     )

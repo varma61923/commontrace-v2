@@ -1,27 +1,4 @@
-"""Persisted corpus index for CommonTrace lexical retrieval.
-
-`retrieval._build_index` reconstructs postings/doc-frequencies from the
-per-lesson token streams on every call. Inside one process that work is
-memoized, but every CLI invocation is a new process, so a 10k-lesson store
-pays ~0.2s of index rebuild per query. This module persists the *built*
-index to `.cache/corpus_<scorer>.bin` in a compact binary layout and loads
-it back in tens of milliseconds.
-
-Validity is exact, not heuristic: the file stores the ordered
-(path, mtime_ns, size) fingerprint it was built from, and a load only
-succeeds when the current corpus fingerprint matches entry-for-entry. Any
-mismatch (edit, add, delete, reorder, scorer change, version change)
-falls back to a rebuild. All floats are float64, so a loaded index scores
-bit-identically to a freshly built one.
-
-Version history:
-- v1: postings + doc frequencies + n_terms + length factors + tie breaks.
-- v2: same layout, with the doc-length array (`n_terms`, unique-term
-  count per doc) promoted to a load-bearing contract: the BM25 scorer
-  (`bm25-v1`) normalizes every term by `n_terms[i] / avg_field_len`, so a
-  persisted index without an exact doc-length array is unusable for it.
-  v1 blobs are rejected (callers rebuild + re-save as v2).
-"""
+"""Persisted corpus index for CommonTrace lexical retrieval."""
 from __future__ import annotations
 
 import os
@@ -47,6 +24,12 @@ def bin_path(cache_dir: str, scorer: str) -> str:
     return os.path.join(cache_dir, f"corpus_{safe}.bin")
 
 
+def _tag(scorer: str) -> bytes:
+    from commontrace import __version__
+
+    return f"{scorer}|{__version__}".encode("utf-8")
+
+
 def _fingerprint_entries(fingerprint) -> list[tuple[str, int, int]]:
     return [(str(p), int(m), int(s)) for p, (m, s) in fingerprint]
 
@@ -55,7 +38,7 @@ def save(cache_dir: str, scorer: str, fingerprint, index) -> bool:
     """Persist a built `_CorpusIndex`. Best-effort: False on any failure."""
     try:
         entries = _fingerprint_entries(fingerprint)
-        scorer_b = scorer.encode("utf-8")
+        scorer_b = _tag(scorer)
         if len(scorer_b) > 255:
             return False
         chunks: list[bytes] = [
@@ -106,12 +89,7 @@ def save(cache_dir: str, scorer: str, fingerprint, index) -> bool:
 
 
 def load(cache_dir: str, scorer: str, lessons, fingerprint):
-    """Load a persisted index, or None when it is missing/invalid/stale.
-
-    `lessons` is the current ordered (path, fm) list; `fingerprint` is the
-    ordered ((path, (mtime_ns, size)), ...) tuple from the term cache.
-    Returns a `retrieval._CorpusIndex` on an exact fingerprint match.
-    """
+    """Load a persisted index, or None when it is missing/invalid/stale."""
     from commontrace.retrieval import _CorpusIndex
 
     try:
@@ -124,12 +102,10 @@ def load(cache_dir: str, scorer: str, lessons, fingerprint):
         magic, ver, scorer_len = _HEADER.unpack_from(blob, off)
         off += _HEADER.size
         if magic != _MAGIC or ver != _VERSION:
-            # Wrong magic, or a v1 blob without the doc-length contract:
-            # reject so the caller rebuilds from the term streams.
             return None
-        stored_scorer = blob[off:off + scorer_len].decode("utf-8")
+        stored_tag = blob[off:off + scorer_len]
         off += scorer_len
-        if stored_scorer != scorer:
+        if stored_tag != _tag(scorer):
             return None
         (n_docs, avg, max_idf) = _META.unpack_from(blob, off)
         off += _META.size

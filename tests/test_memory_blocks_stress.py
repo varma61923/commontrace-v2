@@ -23,49 +23,36 @@ def _oracle_hash(name: str, content: str, prev_revision: str) -> str:
     return hashlib.sha256(payload).hexdigest()[:16]
 
 
-# ---------------------------------------------------------------------------
-# Dimension 1: Quota ceiling boundary conditions
-# ---------------------------------------------------------------------------
-
-
 def test_quota_ceiling_exact_boundaries(store):
     max_chars = 100
 
-    # 1. Exactly at quota (len == max_chars) -> MUST SUCCEED
     exact_content = "a" * max_chars
     b = memory_blocks.set_block(store, "quota_exact", exact_content, max_chars=max_chars)
     assert b.char_count == max_chars
     assert b.content == exact_content
 
-    # 2. Exactly 1 above quota (len == max_chars + 1) -> MUST FAIL with QuotaExceededError
     over_content = "a" * (max_chars + 1)
     with pytest.raises(memory_blocks.QuotaExceededError) as exc_info:
         memory_blocks.set_block(store, "quota_exact", over_content, max_chars=max_chars)
     assert f"Content length {max_chars + 1} exceeds quota of {max_chars}" in str(exc_info.value)
 
-    # Verify original content and revision were preserved after failed overwrite
     b_after = memory_blocks.get_block(store, "quota_exact")
     assert b_after.char_count == max_chars
     assert b_after.revision == b.revision
 
-    # 3. Whitespace stripping interaction:
-    # Content has trailing/leading whitespace that strips to exact quota -> MUST SUCCEED
     padded_exact = f"  \n{exact_content}\t  "
     b_stripped = memory_blocks.set_block(store, "quota_stripped", padded_exact, max_chars=max_chars)
     assert b_stripped.char_count == max_chars
 
-    # Content has whitespace that strips to max_chars + 1 -> MUST FAIL
     padded_over = f"  {over_content}\n"
     with pytest.raises(memory_blocks.QuotaExceededError):
         memory_blocks.set_block(store, "quota_stripped_fail", padded_over, max_chars=max_chars)
 
-    # 4. Zero quota boundary (max_chars == 0)
     b_zero = memory_blocks.set_block(store, "zero_block", "", max_chars=0)
     assert b_zero.char_count == 0
     with pytest.raises(memory_blocks.QuotaExceededError):
         memory_blocks.set_block(store, "zero_block", "x", max_chars=0)
 
-    # 5. Negative quota (max_chars < 0) -> always exceeds
     with pytest.raises(memory_blocks.QuotaExceededError):
         memory_blocks.set_block(store, "neg_block", "", max_chars=-1)
 
@@ -77,18 +64,14 @@ def test_append_quota_boundary_and_rollback(store):
     orig_rev = b.revision
     hist_len = len(memory_blocks.block_history(store, "append_quota"))
 
-    # append_block joins with '\n', so new length = len(base) + 1 + len(append_text)
-    # len(base) = 20, newline = 1 -> 21. Remaining quota = 50 - 21 = 29.
     fit_text = "y" * 29
     b2 = memory_blocks.append_block(store, "append_quota", fit_text)
     assert b2.char_count == max_chars
     assert len(b2.content) == max_chars
 
-    # Now block has 50 chars. Any append must fail.
     with pytest.raises(memory_blocks.QuotaExceededError):
         memory_blocks.append_block(store, "append_quota", "z")
 
-    # Assert rollback: block content, revision, and history are untouched
     b3 = memory_blocks.get_block(store, "append_quota")
     assert b3.char_count == max_chars
     assert b3.revision == b2.revision
@@ -97,29 +80,20 @@ def test_append_quota_boundary_and_rollback(store):
 
 def test_replace_quota_boundary_and_rollback(store):
     max_chars = 40
-    # Initial: 30 chars
     b = memory_blocks.set_block(store, "rep_quota", "hello " + ("a" * 24), max_chars=max_chars)
     orig_rev = b.revision
     hist_len = len(memory_blocks.block_history(store, "rep_quota"))
 
-    # Replace "hello" (5 chars) with 15 chars -> net change +10 -> total 40 (exact max_chars)
     b2 = memory_blocks.replace_block(store, "rep_quota", "hello", "x" * 15)
     assert b2.char_count == max_chars
 
-    # Replace "x" * 15 with 16 chars -> net change +1 -> total 41 (max_chars + 1) -> MUST FAIL
     with pytest.raises(memory_blocks.QuotaExceededError):
         memory_blocks.replace_block(store, "rep_quota", "x" * 15, "y" * 16)
 
-    # Verify state after failed replacement
     b3 = memory_blocks.get_block(store, "rep_quota")
     assert b3.char_count == max_chars
     assert b3.revision == b2.revision
     assert len(memory_blocks.block_history(store, "rep_quota")) == hist_len + 1
-
-
-# ---------------------------------------------------------------------------
-# Dimension 2: Ambiguous substring replace and missing substring errors
-# ---------------------------------------------------------------------------
 
 
 def test_substring_replace_edge_cases(store):
@@ -127,30 +101,25 @@ def test_substring_replace_edge_cases(store):
     b = memory_blocks.set_block(store, "rep_edge", content)
     orig_rev = b.revision
 
-    # 1. Missing substring -> SubstringNotFoundError
     with pytest.raises(memory_blocks.SubstringNotFoundError) as exc_info:
         memory_blocks.replace_block(store, "rep_edge", "cat", "tiger")
     assert "Target text not found" in str(exc_info.value)
     assert memory_blocks.get_block(store, "rep_edge").revision == orig_rev
 
-    # 2. Ambiguous substring (multiple occurrences) -> MemoryBlockError with count
     with pytest.raises(memory_blocks.MemoryBlockError) as exc_info:
         memory_blocks.replace_block(store, "rep_edge", "The quick brown fox", "A wolf")
     assert "Ambiguous replacement: target text occurs 2 times" in str(exc_info.value)
     assert memory_blocks.get_block(store, "rep_edge").revision == orig_rev
 
-    # 3. Overlapping occurrences: "aaaa", target "aa" has 2 non-overlapping count
     b_rep = memory_blocks.set_block(store, "overlap", "aaaa")
     with pytest.raises(memory_blocks.MemoryBlockError) as exc_info:
         memory_blocks.replace_block(store, "overlap", "aa", "bb")
     assert "Ambiguous replacement: target text occurs 2 times" in str(exc_info.value)
 
-    # 4. Empty substring target ("")
     with pytest.raises(memory_blocks.MemoryBlockError) as exc_info:
         memory_blocks.replace_block(store, "rep_edge", "", "injected")
     assert "Ambiguous replacement" in str(exc_info.value)
 
-    # 5. Regex / special characters target: literal replacement without regex evaluation
     special_text = r"Price is $10.00 (discount [50%]*? + \path\to\file^$). End."
     b_spec = memory_blocks.set_block(store, "spec_block", special_text)
     b_spec_rep = memory_blocks.replace_block(
@@ -159,38 +128,29 @@ def test_substring_replace_edge_cases(store):
     assert r"[25%]" in b_spec_rep.content
     assert r"\path\to\file" not in b_spec_rep.content
 
-    # 6. Unicode and emoji replacements
     uni_text = "Architecture status: 🔴 Failing. Need fix: 🚀."
     memory_blocks.set_block(store, "uni_block", uni_text)
     b_uni = memory_blocks.replace_block(store, "uni_block", "🔴 Failing", "🟢 Passing")
     assert "🟢 Passing" in b_uni.content
     assert "🔴 Failing" not in b_uni.content
 
-    # 7. No-op replacement (old_str == new_str): changes revision & logs audit entry
     hist_before = len(memory_blocks.block_history(store, "uni_block"))
     b_noop = memory_blocks.replace_block(store, "uni_block", "🟢 Passing", "🟢 Passing")
     assert b_noop.content == b_uni.content
-    assert b_noop.revision != b_uni.revision  # prev_revision changed so hash must change
+    assert b_noop.revision != b_uni.revision
     hist_after = len(memory_blocks.block_history(store, "uni_block"))
     assert hist_after == hist_before + 1
-
-
-# ---------------------------------------------------------------------------
-# Dimension 3: SHA-256 revision hash continuity across lifecycle
-# ---------------------------------------------------------------------------
 
 
 def test_sha256_revision_hash_continuity_oracle(store):
     name = "persona"
 
-    # Step 1: Initial set
     c1 = "Agent Persona v1"
     b1 = memory_blocks.set_block(store, name, c1, actor="lead", reason="init")
     expected_rev1 = _oracle_hash(name, c1, "")
     assert b1.revision == expected_rev1
     assert b1.revision == memory_blocks.get_block(store, name).revision
 
-    # Step 2: Append
     c2_append = "Rule 1: Always test."
     c2 = f"{c1}\n{c2_append}"
     b2 = memory_blocks.append_block(store, name, c2_append, actor="lead", reason="add rule")
@@ -198,7 +158,6 @@ def test_sha256_revision_hash_continuity_oracle(store):
     assert b2.revision == expected_rev2
     assert b2.revision == memory_blocks.get_block(store, name).revision
 
-    # Step 3: Replace
     c3 = c2.replace("Rule 1: Always test.", "Rule 1: Thoroughly test.")
     b3 = memory_blocks.replace_block(
         store, name, "Rule 1: Always test.", "Rule 1: Thoroughly test.", actor="lead", reason="clarify"
@@ -207,22 +166,18 @@ def test_sha256_revision_hash_continuity_oracle(store):
     assert b3.revision == expected_rev3
     assert b3.revision == memory_blocks.get_block(store, name).revision
 
-    # Step 4: Overwrite with set_block
     c4 = "Agent Persona v2 (Refactored)"
     b4 = memory_blocks.set_block(store, name, c4, actor="lead", reason="overhaul")
     expected_rev4 = _oracle_hash(name, c4, expected_rev3)
     assert b4.revision == expected_rev4
     assert b4.revision == memory_blocks.get_block(store, name).revision
 
-    # Step 5: Delete block
     assert memory_blocks.delete_block(store, name, actor="lead", reason="deprecate") is True
     expected_rev5 = _oracle_hash(name, "", expected_rev4)
 
-    # Verify full audit log chaining
     history = memory_blocks.block_history(store, name)
     assert len(history) == 5
 
-    # Check cryptographic chain links
     assert history[0]["prev_revision"] == ""
     assert history[0]["revision"] == expected_rev1
     assert history[0]["action"] == "set"
@@ -243,13 +198,11 @@ def test_sha256_revision_hash_continuity_oracle(store):
     assert history[3]["action"] == "set"
     assert history[3]["char_count"] == len(c4)
 
-    # Tombstone record verification
     assert history[4]["prev_revision"] == history[3]["revision"]
     assert history[4]["revision"] == expected_rev5
     assert history[4]["action"] == "delete"
     assert history[4]["char_count"] == 0
 
-    # Step 6: Recreate block after deletion
     c6 = "Agent Persona Reincarnated"
     b6 = memory_blocks.set_block(store, name, c6, actor="lead", reason="reborn")
     expected_rev6 = _oracle_hash(name, c6, "")
@@ -258,11 +211,6 @@ def test_sha256_revision_hash_continuity_oracle(store):
     assert len(history_after) == 6
     assert history_after[5]["prev_revision"] == ""
     assert history_after[5]["revision"] == expected_rev6
-
-
-# ---------------------------------------------------------------------------
-# Dimension 4: Concurrency, rapid writes, and atomic rollback
-# ---------------------------------------------------------------------------
 
 
 def test_rapid_sequential_writes(store):
@@ -276,21 +224,18 @@ def test_rapid_sequential_writes(store):
     b = memory_blocks.get_block(store, name)
     assert b.content == f"Content iteration {iterations - 1}"
 
-    # Verify audit history is fully contiguous
     history = memory_blocks.block_history(store, name)
     assert len(history) == iterations
 
     for i in range(1, iterations):
         assert history[i]["prev_revision"] == history[i - 1]["revision"]
 
-    # Verify no temp or backup files remain in blocks directory
     b_dir = os.path.join(store, "memory", "blocks")
     leftover = [f for f in os.listdir(b_dir) if f.endswith(".tmp") or f.endswith(".bak")]
     assert leftover == []
 
 
 def test_concurrent_writes_distinct_blocks(store):
-    # 10 workers each writing 10 times to their own block
     num_workers = 10
     writes_per_worker = 10
 
@@ -310,7 +255,6 @@ def test_concurrent_writes_distinct_blocks(store):
         for f in as_completed(futures):
             f.result()
 
-    # Verify all blocks exist and have intact chains
     all_blocks = memory_blocks.list_blocks(store)
     assert len(all_blocks) == num_workers
 
@@ -330,7 +274,6 @@ def test_rollback_on_metadata_write_failure(store, monkeypatch):
     hist_orig = memory_blocks.block_history(store, name)
     b_dir = os.path.join(store, "memory", "blocks")
 
-    # Simulate failure during json.dump to meta_tmp
     real_dump = json.dump
 
     def failing_dump(obj, f, **kwargs):
@@ -346,13 +289,11 @@ def test_rollback_on_metadata_write_failure(store, monkeypatch):
 
     monkeypatch.setattr(json, "dump", real_dump)
 
-    # Block content, metadata, and history must be completely untouched
     b_current = memory_blocks.get_block(store, name)
     assert b_current.content == "Original safe content."
     assert b_current.revision == b_orig.revision
     assert len(memory_blocks.block_history(store, name)) == len(hist_orig)
 
-    # No leftover .tmp or .bak files
     leftover = [f for f in os.listdir(b_dir) if f.endswith(".tmp") or f.endswith(".bak")]
     assert leftover == []
 
@@ -363,7 +304,6 @@ def test_rollback_on_meta_replace_failure(store, monkeypatch):
     b_orig = memory_blocks.get_block(store, name)
     b_dir = os.path.join(store, "memory", "blocks")
 
-    # Simulate failure on os.replace of meta_path
     original_replace = os.replace
 
     def replace_failing_meta(src, dst):
@@ -379,7 +319,6 @@ def test_rollback_on_meta_replace_failure(store, monkeypatch):
 
     monkeypatch.setattr(os, "replace", original_replace)
 
-    # Verification: markdown content was restored from .bak and meta untouched
     b_restored = memory_blocks.get_block(store, name)
     assert b_restored.content == "Initial persistent state."
     assert b_restored.revision == b_orig.revision
@@ -389,10 +328,6 @@ def test_rollback_on_meta_replace_failure(store, monkeypatch):
 
 
 def test_new_block_failure_cleans_up_orphaned_md(store, monkeypatch):
-    """Adversarial check: When creating a brand new block, if meta rename fails,
-
-    does the system leave an orphaned .md file on disk or clean it up?
-    """
     name = "new_orphan_test"
     b_dir = os.path.join(store, "memory", "blocks")
     content_file = os.path.join(b_dir, f"{name}.md")
@@ -412,18 +347,15 @@ def test_new_block_failure_cleans_up_orphaned_md(store, monkeypatch):
 
     monkeypatch.setattr(os, "replace", original_replace)
 
-    # Check whether the block can be retrieved or listed
     with pytest.raises(memory_blocks.BlockNotFoundError):
         memory_blocks.get_block(store, name)
 
-    # Check whether .md is an orphan
     md_exists = os.path.exists(content_file)
     meta_exists = os.path.exists(meta_file)
     print(f"\n[EMPIRICAL OBSERVATION] new block failure: md_exists={md_exists}, meta_exists={meta_exists}")
 
 
 def test_history_write_failure_behavior(store, monkeypatch):
-    """Adversarial check: What happens if os.replace succeeds but writing to history.jsonl fails?"""
     name = "hist_fail_test"
     memory_blocks.set_block(store, name, "Initial version.")
     orig_rev = memory_blocks.get_block(store, name).revision
@@ -442,7 +374,6 @@ def test_history_write_failure_behavior(store, monkeypatch):
 
     monkeypatch.setattr("builtins.open", original_open)
 
-    # Check current state of block on disk vs history
     curr = memory_blocks.get_block(store, name)
     hist = memory_blocks.block_history(store, name)
 
@@ -453,7 +384,6 @@ def test_history_write_failure_behavior(store, monkeypatch):
 
 
 def test_concurrent_race_condition_same_block(store):
-    """Adversarial stress test: Rapid concurrent writes to the SAME block from multiple threads."""
     name = "race_target"
     memory_blocks.set_block(store, name, "Initial")
     num_threads = 8

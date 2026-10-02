@@ -259,6 +259,8 @@ def _run_connector(args: argparse.Namespace) -> int:
     print(f"[commontrace] sync --connector {name}: {mode}{d.get('chunks_extracted', 0)} "
           f"chunk(s), {d.get('facts_written', 0)} fact(s), "
           f"{len(sync_result.result.errors) if sync_result.result else 0} error(s).")
+    if sync_result.pending:
+        print(f"  {sync_result.pending} more item(s) are waiting; run the sync again to continue.")
     print(f"  run_id={sync_result.run_id}")
     print(f"  new_state_token={sync_result.new_state_token}")
     for err in (sync_result.result.errors if sync_result.result else []):

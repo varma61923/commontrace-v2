@@ -1,29 +1,4 @@
-"""Discoverable skills: reusable procedures an agent can load on demand.
-
-Three sources, in priority order (first wins on name collision):
-
-1. project — ``<root>/skills/*/SKILL.md`` and ``<root>/skills/*.md``
-2. user — ``~/.commontrace/skills/*/SKILL.md`` and ``~/.commontrace/skills/*.md``
-3. bundled — the curated ``commontrace/kb_packs/*.jsonl`` packs
-
-Every file-backed skill is a Markdown file with YAML frontmatter::
-
-    ---
-    name: my-skill
-    description: What it does. Use when ...
-    when_to_use: optional trigger hint
-    user_invocable: false
-    ---
-
-    <instructions>
-
-Only ``name`` and ``description`` are required. ``when_to_use`` and
-``user_invocable`` are optional. Files whose frontmatter fails validation
-are skipped (rejected), never half-loaded.
-
-The agent loop injects only ``name`` + ``description`` into context;
-the full ``SKILL.md`` body loads on demand via :func:`load_body`.
-"""
+"""Discoverable skills: reusable procedures an agent can load on demand."""
 
 from __future__ import annotations
 
@@ -55,10 +30,6 @@ class Skill:
     def index_line(self) -> str:
         """The one-line ``name: description`` form injected into context."""
         return f"- **{self.name}**: {self.description}"
-
-
-class SkillError(ValueError):
-    """A skill file was readable but not usable."""
 
 
 def validate_skill_frontmatter(fm: object, path: str = "<skill>") -> list[str]:
@@ -101,7 +72,6 @@ def user_skills_dir() -> str:
 
 
 def _candidate_files(skills_dir: str) -> list[str]:
-    """SKILL.md files under *skills_dir* (``*/SKILL.md`` + flat ``*.md``)."""
     if not os.path.isdir(skills_dir):
         return []
     out: list[str] = []
@@ -117,7 +87,6 @@ def _candidate_files(skills_dir: str) -> list[str]:
             out.append(path)
     except OSError:
         pass
-    # Skip hidden dirs / template-ish files.
     kept = []
     for path in out:
         parts = os.path.relpath(path, skills_dir).split(os.sep)
@@ -128,7 +97,6 @@ def _candidate_files(skills_dir: str) -> list[str]:
 
 
 def _from_file(path: str, source: str) -> Skill | None:
-    """Parse one skill file; None when missing/unreadable/invalid (rejected)."""
     from commontrace import frontmatter
 
     try:
@@ -165,7 +133,6 @@ def _discover_in_dir(skills_dir: str, source: str) -> list[Skill]:
 
 
 def _bundled_skills() -> list[Skill]:
-    """The curated kb_packs exposed as skills (lowest priority)."""
     try:
         from commontrace import kb_packs
     except Exception:
@@ -204,11 +171,7 @@ def discover(
     user_dir: str | None = None,
     include_bundled: bool = True,
 ) -> list[Skill]:
-    """All skills visible from *root*, project-overrides-bundled.
-
-    Order is priority order: project, then user, then bundled. The first
-    skill with a given name wins; later duplicates are dropped.
-    """
+    """All skills visible from *root*, project-overrides-bundled."""
     project = _discover_in_dir(project_skills_dir(root), SOURCE_PROJECT)
     udir = os.path.abspath(user_dir) if user_dir is not None else user_skills_dir()
     user = _discover_in_dir(udir, SOURCE_USER)
@@ -259,85 +222,3 @@ def format_for_context(skills: list[Skill], *, limit: int = 20) -> str:
     if len(skills) > limit:
         lines.append(f"- ... and {len(skills) - limit} more")
     return "\n".join(lines) + "\n"
-
-
-# ---------------------------------------------------------------------------
-# mtime-polling watcher (commontrace/watch.py snapshot idiom)
-# ---------------------------------------------------------------------------
-
-def _watched_skill_files(root: str, user_dir: str | None) -> list[str]:
-    """Absolute skill-file paths watched for mtime/size changes."""
-    dirs = [project_skills_dir(root)]
-    udir = os.path.abspath(user_dir) if user_dir is not None else user_skills_dir()
-    dirs.append(udir)
-    out: list[str] = []
-    for skills_dir in dirs:
-        out.extend(_candidate_files(skills_dir))
-    return sorted(set(os.path.abspath(p) for p in out))
-
-
-def snapshot_skill_files(root: str, user_dir: str | None = None) -> dict[str, list[int]]:
-    """abspath -> [mtime_ns, size] for every skill file present on disk."""
-    snap: dict[str, list[int]] = {}
-    for path in _watched_skill_files(root, user_dir):
-        try:
-            st = os.stat(path)
-        except OSError:
-            continue
-        snap[os.path.abspath(path)] = [st.st_mtime_ns, st.st_size]
-    return snap
-
-
-class SkillWatcher:
-    """Poll for skill changes; reload the cached :func:`discover` list.
-
-    Mirrors ``commontrace/watch.py``: state is a snapshot mapping path ->
-    ``[mtime_ns, size]``. :meth:`poll` diffs the live tree against it and
-    refreshes the cache when anything changed (new + modified + deleted).
-    Bundled kb_packs are static and not part of the snapshot, but they are
-    included in the cached list when *include_bundled* is true.
-    """
-
-    def __init__(
-        self,
-        root: str,
-        *,
-        user_dir: str | None = None,
-        include_bundled: bool = True,
-    ) -> None:
-        self.root = os.path.abspath(root)
-        self.user_dir = os.path.abspath(user_dir) if user_dir is not None else user_skills_dir()
-        self.include_bundled = include_bundled
-        self._snapshot = snapshot_skill_files(self.root, self.user_dir)
-        self._skills: list[Skill] = discover(
-            self.root, user_dir=self.user_dir, include_bundled=self.include_bundled,
-        )
-
-    @property
-    def skills(self) -> list[Skill]:
-        return list(self._skills)
-
-    def snapshot(self) -> dict[str, list[int]]:
-        return dict(self._snapshot)
-
-    def poll(self) -> tuple[bool, list[Skill]]:
-        """Re-scan; return ``(changed, skills)`` (refreshes cache if changed)."""
-        current = snapshot_skill_files(self.root, self.user_dir)
-        if current == self._snapshot:
-            return False, list(self._skills)
-        self._snapshot = current
-        self._skills = discover(
-            self.root, user_dir=self.user_dir, include_bundled=self.include_bundled,
-        )
-        return True, list(self._skills)
-
-    def refresh_if_changed(self) -> bool:
-        """Reload the cache when skill files changed; True when reloaded."""
-        changed, _ = self.poll()
-        return changed
-
-    def get(self, name: str) -> Skill | None:
-        for skill in self._skills:
-            if skill.name == name:
-                return skill
-        return None

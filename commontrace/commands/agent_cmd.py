@@ -1,8 +1,4 @@
-"""`commontrace agent`: CLI interface for the autonomous agent execution loop.
-
-Provides `commontrace agent run` to execute multi-turn tasks with dynamic
-working memory assembly, execution trace logging, and dreaming consolidation.
-"""
+"""`commontrace agent`: CLI interface for the autonomous agent execution loop."""
 from __future__ import annotations
 
 import argparse
@@ -34,10 +30,10 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
 
 
 def run(args: argparse.Namespace) -> int:
-    from commontrace import paths
-    from commontrace.agent_loop import AgentLoop
+    from commontrace import llm, paths
+    from commontrace.agent_loop import AgentLoop, llm_executor
 
-    root = args.dest or paths.store_root()
+    root = paths.resolve_root(args.dest)
 
     prompt = (args.prompt_opt or args.prompt or "").strip()
     if args.prompt_file:
@@ -53,6 +49,13 @@ def run(args: argparse.Namespace) -> int:
               file=sys.stderr)
         return 1
 
+    try:
+        executor = llm_executor()
+    except llm.LLMUnavailable as exc:
+        print(f"[commontrace agent] no model configured: {exc}\n"
+              "  Set COMMONTRACE_LLM_PROVIDER / COMMONTRACE_LLM_API_KEY (or use `ollama`) to run an agent.",
+              file=sys.stderr)
+        return 2
     agent_type = args.agent_type
     loop = AgentLoop(root=root, agent_type=agent_type)
 
@@ -64,6 +67,7 @@ def run(args: argparse.Namespace) -> int:
 
     result = loop.run(
         prompt=prompt,
+        tool_executor=executor,
         max_turns=args.max_turns,
         dream_on_complete=args.dream,
     )

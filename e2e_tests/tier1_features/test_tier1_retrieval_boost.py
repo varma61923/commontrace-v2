@@ -7,7 +7,6 @@ from e2e_tests.harness.cli_runner import run_cli
 
 
 def test_t1_retrieval_graph_boost_ranking():
-    """E2E-T1-RB-1: Verify that graph_boost_lookup shifts ranking when graph_weight > 0."""
     lessons = [
         (
             "lessons/db-timeout.md",
@@ -33,11 +32,9 @@ def test_t1_retrieval_graph_boost_ranking():
 
     task = "Database queries"
 
-    # Base ranking without graph boost
     base_ranked = retrieval.rank_lessons(task, lessons, graph_boost_lookup=None, graph_weight=0.0)
     assert len(base_ranked) >= 2
 
-    # Boost redis-cache via graph lookup
     graph_boosts = {"redis-cache": 0.5, "db-timeout": 0.0}
     boosted_ranked = retrieval.rank_lessons(
         task, lessons,
@@ -51,7 +48,6 @@ def test_t1_retrieval_graph_boost_ranking():
 
 
 def test_t1_retrieval_score_formula_clamping():
-    """E2E-T1-RB-2: Verify integrated relevance and graph adjustment handling."""
     lessons = [
         (
             "lessons/extreme.md",
@@ -77,7 +73,6 @@ def test_t1_retrieval_score_formula_clamping():
 
 
 def test_t1_retrieval_adaptive_tail_precision():
-    """E2E-T1-RB-3: Adaptive tail scorer retains relevant candidates while cutting off tail noise."""
     lessons = [
         (
             "lessons/target.md",
@@ -106,7 +101,6 @@ def test_t1_retrieval_adaptive_tail_precision():
 
 
 def test_t1_retrieval_cli_query_execution(isolated_store: str):
-    """E2E-T1-RB-4: Create lessons in store and verify retrieval via CLI commontrace query."""
     lessons_dir = os.path.join(isolated_store, "memory", "lessons")
     os.makedirs(lessons_dir, exist_ok=True)
 
@@ -123,18 +117,15 @@ def test_t1_retrieval_cli_query_execution(isolated_store: str):
         "Configure PostgreSQL max connection pool to prevent pool starvation.",
     )
 
-    # Query CLI
     res_query = run_cli("query", "postgres connection pool exhaustion", "--lexical", dest=isolated_store)
     res_query.assert_success()
     assert ("postgres-pool" in res_query.stdout) or ("PostgreSQL" in res_query.stdout)
 
 
 def test_t1_retrieval_as_of_temporal_filter(isolated_store: str):
-    """E2E-T1-RB-5: Query lessons with --as-of date filters out lessons outside their valid window."""
     lessons_dir = os.path.join(isolated_store, "memory", "lessons")
     os.makedirs(lessons_dir, exist_ok=True)
 
-    # Lesson valid only in 2024
     lesson_2024 = os.path.join(lessons_dir, "legacy-auth.md")
     frontmatter.write(
         lesson_2024,
