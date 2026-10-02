@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Transcript compaction (`commontrace/compaction.py`)**: sliding-window summarizer with LLM + extractive fallback and entity-index lookup hints.
   - **Stdlib multimodal ingestion**: PDF/DOCX/HTML/image extractors, `ingest --type multimodal`.
   - **Interactive graph viz (`commontrace viz`)**: offline self-contained force-directed HTML with edge vocabulary, version chains, and inspect panel.
+- **Audio/subtitle ingestion**: WAV/MP3/OGG/FLAC metadata + WebVTT/SRT cue parsing into turn chunks.
+- **Vision captioning (opt-in)**: `vision.describe_image` via Anthropic/OpenAI-compatible image payloads, off by default; `ollama` provider alias; `graph_viz_html` MCP tool.
 - **Cognitive Memory Architecture (Letta + EverOS + Mem0 + Zep + Cognee + Supermemory)**:
   - **Stateful Working Memory Blocks (`commontrace block`)**: Bounded, named scratchpads (`persona`, `human`, `project`, custom) with character quotas, atomic set/append/replace primitives, and cryptographic revision audit logs (`history.jsonl`).
   - **Hierarchical Memory & Atomic Fact Lifecycle (`commontrace fact`)**: Distills noisy agent traces into atomic declarative facts with full lifecycle transitions (`ADD`, `UPDATE`, `SUPERSEDE`, `DELETE`, `NOOP` reinforcement), confidence weighting, and bitemporal validity.

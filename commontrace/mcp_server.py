@@ -1473,6 +1473,32 @@ def build_server(root: str, *, allow_approval: bool = True):
         except Exception as exc:  # noqa: BLE001
             return _err(f"could not retrieve neighbors: {type(exc).__name__}: {exc}")
 
+    @mcp.tool()
+    async def graph_viz_html(as_of: str = "") -> dict:
+        """Render the knowledge graph as a self-contained interactive HTML page.
+
+        Same offline force-directed page as `commontrace viz`, written to
+        `<store>/graph.html` so it can be opened in a browser. Returns the
+        file path plus `html_head`, a leading slice of the markup for an
+        agent that cannot open files -- enough to confirm the render worked
+        and quote node/edge counts without pulling the whole page over the
+        tool wire. Accepts the same point-in-time `as_of` filter as
+        `graph_query`, so the page shows the graph as it stood then.
+        """
+        try:
+            from commontrace import graph_viz
+            from commontrace import paths as paths_mod
+
+            html = graph_viz.render_html(root, as_of=as_of or None)
+            out_dir = paths_mod.memory_dir(root)
+            os.makedirs(out_dir, exist_ok=True)
+            out_path = os.path.join(out_dir, "graph.html")
+            with open(out_path, "w", encoding="utf-8") as fh:
+                fh.write(html)
+            return _ok(html_path=out_path, html_head=html[:2000], n_chars=len(html))
+        except Exception as exc:  # noqa: BLE001
+            return _err(f"could not render the knowledge graph: {type(exc).__name__}: {exc}")
+
     if hasattr(mcp, "resource"):
         @mcp.resource("commontrace://profile")
         def active_space_profile() -> str:

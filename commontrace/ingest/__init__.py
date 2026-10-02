@@ -770,7 +770,24 @@ def ingest_multimodal_document(
         parsed = multimodal.ingest_multimodal(fpath)
         result.chunks_extracted += parsed.chunks_extracted
         result.errors.extend(parsed.errors)
-        for chunk in getattr(parsed, "chunks", []) or []:
+        chunks = list(getattr(parsed, "chunks", []) or [])
+        # Opt-in vision captioning (default off, metadata-only otherwise).
+        try:
+            from commontrace import vision as _vision
+
+            caption = _vision.describe_image(fpath)
+        except Exception:
+            caption = None
+        if caption:
+            chunks = list(chunks) + [multimodal.Chunk(
+                content=caption,
+                source_path=fpath,
+                chunk_id=f"{multimodal._fingerprint(fpath)}_caption",
+                breadcrumb=os.path.basename(fpath),
+                chunk_type="image_caption",
+            )]
+            result.chunks_extracted += 1
+        for chunk in chunks:
             statement = sanitize_contextualizer_text(
                 f"{chunk.breadcrumb}: {chunk.content[:200]}".strip()
             )

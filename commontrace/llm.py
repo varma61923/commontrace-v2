@@ -12,8 +12,11 @@ _ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 _ANTHROPIC_VERSION = "2023-06-01"
 _ANTHROPIC_MAX_TOKENS = 1536
 _TIMEOUT_SECONDS = 60
-_SUPPORTED_PROVIDERS = ("anthropic", "openai-compatible", "bedrock", "vertex")
+_SUPPORTED_PROVIDERS = ("anthropic", "openai-compatible", "ollama", "bedrock", "vertex")
 _CLOUD_PROVIDERS = ("bedrock", "vertex")
+
+# `ollama` is an alias for `openai-compatible` pointing at a local server.
+_OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434/v1"
 
 REQUIRED_KEYS = ("rule", "applies_when", "do_not_apply_when", "evidence")
 
@@ -44,8 +47,14 @@ def load_config() -> Config:
             f"COMMONTRACE_LLM_PROVIDER={provider!r} is not supported "
             f"(use one of: {', '.join(_SUPPORTED_PROVIDERS)})."
         )
+    # `ollama` is an alias for `openai-compatible` against a local server:
+    # a missing BASE_URL defaults to localhost instead of refusing, and no
+    # API key is needed. An explicit BASE_URL still wins.
+    ollama_alias = provider == "ollama"
+    if ollama_alias:
+        provider = "openai-compatible"
     api_key = os.environ.get("COMMONTRACE_LLM_API_KEY", "").strip()
-    if not api_key and provider not in _CLOUD_PROVIDERS:
+    if not api_key and provider not in _CLOUD_PROVIDERS and not ollama_alias:
         raise LLMUnavailable(
             "COMMONTRACE_LLM_API_KEY is not set -- no LLM-assisted draft is possible."
         )
@@ -64,10 +73,13 @@ def load_config() -> Config:
         return Config(provider=provider, model=model, api_key="", region=region, project=project)
     base_url = os.environ.get("COMMONTRACE_LLM_BASE_URL", "").strip() or None
     if provider == "openai-compatible" and not base_url:
-        raise LLMUnavailable(
-            "COMMONTRACE_LLM_PROVIDER=openai-compatible requires COMMONTRACE_LLM_BASE_URL "
-            "(e.g. a local model server, or a provider's OpenAI-compatible endpoint)."
-        )
+        if ollama_alias:
+            base_url = _OLLAMA_DEFAULT_BASE_URL
+        else:
+            raise LLMUnavailable(
+                "COMMONTRACE_LLM_PROVIDER=openai-compatible requires COMMONTRACE_LLM_BASE_URL "
+                "(e.g. a local model server, or a provider's OpenAI-compatible endpoint)."
+            )
     if base_url and not _is_http_url(base_url):
         raise LLMUnavailable(
             f"COMMONTRACE_LLM_BASE_URL must be an http(s) URL, got {base_url!r}."
@@ -133,7 +145,13 @@ def _call_anthropic(config: Config, prompt: str) -> tuple[str, dict]:
 
 
 def _call_openai_compatible(config: Config, prompt: str) -> tuple[str, dict]:
-    url = config.base_url.rstrip("/") + "/chat/completions"
+    base = config.base_url or (_OLLAMA_DEFAULT_BASE_URL if config.provider == "ollama" else None)
+    if not base:
+        raise LLMUnavailable(
+            "COMMONTRACE_LLM_PROVIDER=openai-compatible requires COMMONTRACE_LLM_BASE_URL "
+            "(e.g. a local model server, or a provider's OpenAI-compatible endpoint)."
+        )
+    url = base.rstrip("/") + "/chat/completions"
     payload = {
         "model": config.model,
         "messages": [{"role": "user", "content": prompt}],
@@ -147,6 +165,77 @@ def _call_openai_compatible(config: Config, prompt: str) -> tuple[str, dict]:
         text = (choices[0].get("message") or {}).get("content") or ""
     usage = data.get("usage") or {}
     return text, {"input_tokens": usage.get("prompt_tokens"), "output_tokens": usage.get("completion_tokens")}
+
+
+def complete_with_image(
+    config: Config, prompt: str, image_bytes: bytes, mime: str,
+) -> tuple[str, dict]:
+    """Ask the model about an image, returning (text, usage).
+
+    Anthropic takes the image as a base64 source block; an
+    OpenAI-compatible endpoint (including the `ollama` alias) takes it as a
+    data-URI `image_url` part. Both go through `_post_json`, so the same
+    http(s)-only and error-to-`LLMUnavailable` rules apply.
+    """
+    import base64
+
+    provider = "openai-compatible" if config.provider == "ollama" else config.provider
+    data = base64.b64encode(bytes(image_bytes)).decode("ascii")
+    media = (mime or "application/octet-stream").strip() or "application/octet-stream"
+    if provider == "anthropic":
+        payload = {
+            "model": config.model,
+            "max_tokens": _ANTHROPIC_MAX_TOKENS,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image", "source": {
+                        "type": "base64", "media_type": media, "data": data,
+                    }},
+                ],
+            }],
+        }
+        headers = {
+            "x-api-key": config.api_key,
+            "anthropic-version": _ANTHROPIC_VERSION,
+            "content-type": "application/json",
+        }
+        result = _post_json(_ANTHROPIC_URL, headers, payload)
+        blocks = result.get("content") or []
+        text = "".join(b.get("text", "") for b in blocks if isinstance(b, dict))
+        usage = result.get("usage") or {}
+        return text, {"input_tokens": usage.get("input_tokens"),
+                      "output_tokens": usage.get("output_tokens")}
+    if provider == "openai-compatible":
+        base = config.base_url or _OLLAMA_DEFAULT_BASE_URL
+        url = base.rstrip("/") + "/chat/completions"
+        payload = {
+            "model": config.model,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {
+                        "url": f"data:{media};base64,{data}",
+                    }},
+                ],
+            }],
+            "temperature": 0,
+        }
+        headers = {"Authorization": f"Bearer {config.api_key}", "content-type": "application/json"}
+        result = _post_json(url, headers, payload)
+        choices = result.get("choices") or []
+        text = ""
+        if choices and isinstance(choices[0], dict):
+            text = (choices[0].get("message") or {}).get("content") or ""
+        usage = result.get("usage") or {}
+        return text, {"input_tokens": usage.get("prompt_tokens"),
+                      "output_tokens": usage.get("completion_tokens")}
+    raise LLMUnavailable(
+        f"provider {config.provider!r} does not support image input "
+        "(vision needs 'anthropic' or 'openai-compatible'/'ollama')."
+    )
 
 
 def _sdk_missing(provider: str, package: str) -> LLMUnavailable:
@@ -226,6 +315,7 @@ def draft(
 ) -> Draft:
     cfg = config or load_config()
     caller = {"anthropic": _call_anthropic, "openai-compatible": _call_openai_compatible,
+              "ollama": _call_openai_compatible,
               "bedrock": _call_bedrock, "vertex": _call_vertex}[cfg.provider]
     text, usage_raw = caller(cfg, prompt)
 
