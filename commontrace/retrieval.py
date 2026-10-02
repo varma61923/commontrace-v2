@@ -213,7 +213,8 @@ def _corpus_index(lessons, term_cache, scorer: str) -> _CorpusIndex:
     bin_dir = getattr(term_cache, "bin_dir", None)
     if bin_dir:
         try:
-            from commontrace import corpus_bin
+            import importlib
+            corpus_bin = importlib.import_module("commontrace.corpus_bin")
             persisted = corpus_bin.load(bin_dir, scorer, lessons, fingerprint)
         except Exception:
             persisted = None
@@ -225,7 +226,8 @@ def _corpus_index(lessons, term_cache, scorer: str) -> _CorpusIndex:
     index = _build_index(lessons, term_cache, scorer)
     if bin_dir:
         try:
-            from commontrace import corpus_bin
+            import importlib
+            corpus_bin = importlib.import_module("commontrace.corpus_bin")
             corpus_bin.save(bin_dir, scorer, fingerprint, index)
         except Exception:
             pass
@@ -745,6 +747,27 @@ def multi_channel_retrieval(
     return fused
 
 
+def _parse_moment(value: Any) -> Any:
+    import datetime
+    if isinstance(value, datetime.datetime):
+        parsed = value
+    elif isinstance(value, datetime.date):
+        parsed = datetime.datetime.combine(value, datetime.time.min)
+    else:
+        text = str(value or "").strip()
+        if not text:
+            raise ValueError("a date/time is required")
+        try:
+            parsed = datetime.datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError(
+                f"could not parse {value!r} as a date/time; use YYYY-MM-DD or ISO 8601"
+            ) from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed.astimezone(datetime.timezone.utc)
+
+
 @dataclass(frozen=True)
 class TruthEpoch:
     """A truth epoch for temporal consistency tracking."""
@@ -770,12 +793,10 @@ class TruthSubspace:
             return set()
 
         # Historical query: find epoch containing the timestamp
-        from commontrace import lesson_cache
-
-        moment = lesson_cache.parse_moment(as_of)
+        moment = _parse_moment(as_of)
         for epoch in self.epochs:
-            valid_at = lesson_cache.parse_moment(epoch.valid_at)
-            invalid_at = lesson_cache.parse_moment(epoch.invalid_at) if epoch.invalid_at else None
+            valid_at = _parse_moment(epoch.valid_at)
+            invalid_at = _parse_moment(epoch.invalid_at) if epoch.invalid_at else None
 
             if valid_at <= moment and (invalid_at is None or invalid_at > moment):
                 return set(epoch.facts)

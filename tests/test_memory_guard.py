@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from commontrace import memory_guard as mg
 
 
@@ -228,6 +230,7 @@ def test_import_stores_no_credential(tmp_path):
 
 
 def test_the_mcp_capture_tool_stores_no_credential(tmp_path):
+    pytest.importorskip("mcp")
     from commontrace import mcp_server
     from commontrace.cli import main
     from tests.test_mcp_server import call

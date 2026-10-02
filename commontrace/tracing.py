@@ -36,7 +36,12 @@ except ImportError:
     trace = None  # type: ignore
     TracerProvider = object  # type: ignore
     SpanExporter = object  # type: ignore
-    SpanExportResult = None  # type: ignore
+
+    from enum import Enum
+
+    class SpanExportResult(Enum):  # type: ignore
+        SUCCESS = 0
+        FAILURE = 1
 
 # ---------------------------------------------------------------------------
 # Semantic attribute constants (memory-semconv v0.1.0)
@@ -96,7 +101,7 @@ class InMemorySpanExporter:
     def export(self, spans: list) -> SpanExportResult:
         """Export spans to in-memory storage."""
         if not _OTEL_AVAILABLE:
-            return SpanExportResult.SUCCESS if SpanExportResult else None
+            return SpanExportResult.SUCCESS
 
         with self._lock:
             if self._stopped:
