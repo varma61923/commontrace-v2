@@ -181,6 +181,9 @@ def _to_wire(trace: Trace, votes: list[dict], related: list[dict], *, brief: boo
     optional = {
         "agent_id": trace.agent_id,
         "profile": trace.profile,
+        "scopes": list(trace.scopes or []),
+        "valid_from": _iso(trace.valid_from) if trace.valid_from else "",
+        "valid_until": _iso(trace.valid_until) if trace.valid_until else "",
         "extensions": dict(trace.extensions or {}),
         "watch_condition": trace.watch_condition,
         "review_after": trace.review_after,
@@ -475,6 +478,8 @@ async def search_traces(
     limit: int = DEFAULT_SEARCH_LIMIT,
     offset: int = 0,
     brief: bool = False,
+    scope: str = "",
+    as_of: str | datetime | None = None,
 ) -> dict:
     """Returns {"traces": [...], "limit", "offset", "has_more", "terms"}."""
     limit = _clamp_int(limit, 1, MAX_SEARCH_LIMIT, DEFAULT_SEARCH_LIMIT)
@@ -490,6 +495,20 @@ async def search_traces(
     stmt = select(Trace).where(
         Trace.org_id == org_id, Trace.quarantined.is_(False), Trace.superseded_at.is_(None)
     )
+    if scope:
+        stmt = stmt.where(or_(Trace.scopes.contains([scope]), Trace.scopes == []))
+    if as_of:
+        as_of_dt: datetime | None = None
+        if isinstance(as_of, str):
+            try:
+                as_of_dt = datetime.fromisoformat(as_of.replace("Z", "+00:00"))
+            except ValueError:
+                pass
+        elif isinstance(as_of, datetime):
+            as_of_dt = as_of
+        if as_of_dt:
+            stmt = stmt.where(or_(Trace.valid_from.is_(None), Trace.valid_from <= as_of_dt))
+            stmt = stmt.where(or_(Trace.valid_until.is_(None), Trace.valid_until > as_of_dt))
     chosen = hub_search.ChosenTerms((), (), ())
     failed_outcome = case((Trace.outcome["resolved"].astext == "false", 1), else_=0)
     if query:
@@ -768,8 +787,30 @@ async def contribute_trace(
     outcome: dict | None = None,
     actor: str = AUDIT_ACTOR_UNKNOWN,
     idempotency_key: str | None = None,
+    scopes: list[str] | None = None,
+    valid_from: str | datetime | None = None,
+    valid_until: str | datetime | None = None,
 ) -> dict:
     tags = tags or []
+    scopes = scopes or []
+
+    valid_from_dt: datetime | None = None
+    if isinstance(valid_from, str) and valid_from:
+        try:
+            valid_from_dt = datetime.fromisoformat(valid_from.replace("Z", "+00:00"))
+        except ValueError:
+            pass
+    elif isinstance(valid_from, datetime):
+        valid_from_dt = valid_from
+
+    valid_until_dt: datetime | None = None
+    if isinstance(valid_until, str) and valid_until:
+        try:
+            valid_until_dt = datetime.fromisoformat(valid_until.replace("Z", "+00:00"))
+        except ValueError:
+            pass
+    elif isinstance(valid_until, datetime):
+        valid_until_dt = valid_until
 
     if idempotency_key is not None:
         reject_unstorable_text(idempotency_key, "idempotency_key")
@@ -828,6 +869,9 @@ async def contribute_trace(
         agent_type=agent_type,
         agent_id=agent_id,
         profile=profile,
+        scopes=scopes,
+        valid_from=valid_from_dt,
+        valid_until=valid_until_dt,
         outcome=outcome,
         quarantined=reason is not None,
         quarantine_reason=reason or "",

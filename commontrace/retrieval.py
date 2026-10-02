@@ -68,6 +68,7 @@ class RankedLesson:
     scorer: str = SCORER_IDF
     reliability_adjustment: float = 0.0
     recency_adjustment: float = 0.0
+    graph_adjustment: float = 0.0
 
 
 def _lesson_text_weighted(fm: dict) -> list[tuple[str, float]]:
@@ -199,6 +200,8 @@ def rank_lessons(
     recency_lookup: dict[str, float] | None = None,
     recency_weight: float = 0.0,
     adaptive_tail: bool = True,
+    graph_boost_lookup: dict[str, float] | None = None,
+    graph_weight: float = 0.0,
 ) -> list[RankedLesson]:
     query_terms = _terms_for(scorer, _tokenize(task))
     if not query_terms:
@@ -250,14 +253,15 @@ def rank_lessons(
             slug = str(fm.get("name", ""))
             reliability_adj = reliability_lookup.get(slug, 0.0) if reliability_lookup else 0.0
             recency_adj = recency_lookup.get(slug, 0.0) if recency_lookup else 0.0
+            graph_adj = graph_boost_lookup.get(slug, 0.0) if graph_boost_lookup else 0.0
             adjusted = min(1.0, max(0.0,
-                rel + reliability_weight * reliability_adj + recency_weight * recency_adj,
+                rel + reliability_weight * reliability_adj + recency_weight * recency_adj + graph_weight * graph_adj,
             ))
             importance, uses = tie_breaks[i] if tie_breaks else (
                 _rank_int(fm.get("importance", 0)), _rank_int(fm.get("uses", 0)))
             scored.append((
                 adjusted, score, importance, uses,
-                path, fm, slug, matched, rel, reliability_adj, recency_adj,
+                path, fm, slug, matched, rel, reliability_adj, recency_adj, graph_adj,
             ))
 
     if scorer == SCORER_ADAPTIVE and adaptive_tail and scored:
@@ -279,9 +283,10 @@ def rank_lessons(
             scorer=scorer,
             reliability_adjustment=round(reliability_adj, 6) if reliability_lookup else 0.0,
             recency_adjustment=round(recency_adj, 6) if recency_lookup else 0.0,
+            graph_adjustment=round(graph_adj, 6) if graph_boost_lookup else 0.0,
         )
         for (_adj, score, _imp, _uses, path, fm, slug, matched, rel,
-             reliability_adj, recency_adj) in top
+             reliability_adj, recency_adj, graph_adj) in top
     ]
 
 

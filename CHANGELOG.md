@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Cognitive Memory Architecture (Letta + EverOS + Mem0 + Zep + Cognee + Supermemory)**:
+  - **Stateful Working Memory Blocks (`commontrace block`)**: Bounded, named scratchpads (`persona`, `human`, `project`, custom) with character quotas, atomic set/append/replace primitives, and cryptographic revision audit logs (`history.jsonl`).
+  - **Hierarchical Memory & Atomic Fact Lifecycle (`commontrace fact`)**: Distills noisy agent traces into atomic declarative facts with full lifecycle transitions (`ADD`, `UPDATE`, `SUPERSEDE`, `DELETE`, `NOOP` reinforcement), confidence weighting, and bitemporal validity.
+  - **Temporal Knowledge Graph & Multi-Hop Entity Reasoning (`commontrace graph`)**: Directed property graph linking services, tools, errors, concepts, and lessons with bitemporal edges, multi-hop traversal, entity extraction, Mermaid diagram rendering, and retrieval proximity boosting.
+  - **Dynamic Dreaming 2.0 (`commontrace dream`)**: Background consolidation that synthesizes active space profiles (`memory/profile.md`), mines relationship graphs from traces, and reconciles contradictory facts.
+  - **Enterprise Hub Parity**: First-class `scopes`, `valid_from`, and `valid_until` support in Hub PostgreSQL ORM models (`Trace`), GIN index, REST API (`/api/v1/traces`, `/api/v1/traces/search`), and CRUD search operations.
+  - **MCP 2.0 Cognitive Tools & Resources**: Exposes `memory_block_read`, `memory_block_update`, `memory_block_list`, `query_facts`, `record_fact`, `graph_query`, `graph_neighbors`, and resources `commontrace://profile`, `commontrace://graph`.
 - **Scoped, bi-temporal local lessons.** Optional project/team `scopes` and inclusive `valid_from` / exclusive `valid_until` fields flow through the schema, CLI and MCP retrieval; `query --as-of` can reproduce the valid-time view while the revision journal preserves recorded-time history.
 - **A redesigned customer console.** One shell for every `/app` page: grouped sidebar navigation with the organisation and plan, a command palette (Ctrl/⌘ K) and `g` + letter shortcuts, and a light, dark or system theme remembered per browser.
 - **The warm worker runs `commontrace query` whole.** It already held the models; the CLI process still imported the package, parsed the lesson cache and built the lexical index on every call.

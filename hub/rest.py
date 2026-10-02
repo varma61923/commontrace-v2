@@ -192,6 +192,9 @@ def add_rest_routes(
                     agent_id=_text(payload.get("agent_id")),
                     actor=ACTOR_REST_API,
                     idempotency_key=idempotency_key,
+                    scopes=_tags(payload.get("scopes")),
+                    valid_from=_text(payload.get("valid_from")) or None,
+                    valid_until=_text(payload.get("valid_until")) or None,
                 )
         except TraceRejected as exc:
             return _json_error(400, "rejected", str(exc))
@@ -228,10 +231,13 @@ def add_rest_routes(
         except (TypeError, ValueError, OverflowError):
             limit = _DEFAULT_SEARCH_LIMIT
         limit = max(1, min(limit, _MAX_SEARCH_LIMIT))
+        scope = _text(payload.get("scope"))
+        as_of = _text(payload.get("as_of")) or None
 
         async with session_scope(session_factory) as session:
             found = await crud.search_traces(
                 session, authenticated.org_id, query=query, limit=limit, brief=True,
+                scope=scope, as_of=as_of,
             )
         results = []
         for trace in found.get("traces", []):

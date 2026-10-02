@@ -812,6 +812,9 @@ The agent then has the whole protocol as tools:
 | `reject_lesson(slug, reason)` | Archive one that should not become a lesson. |
 | `list_lessons` / `get_lesson` / `store_status` | Read the store, and see which recurring patterns still have no lesson. |
 | `experiment_status()` | Is the randomized holdout you're feeding with `occasion_id` actually going to answer anything yet -- validity, power projections, and effects so far, so an agent can tell a running pilot from a spent one. |
+| `memory_block_read(name)` / `memory_block_update(...)` / `memory_block_list()` | Inspect and update stateful working memory blocks (persona, human, project, guidelines) with character limits, SHA-256 revision history, and atomic replace/append operations. |
+| `query_facts(query, scope?, category?, as_of?)` / `record_fact(...)` | Search and record atomic declarative facts with confidence weighting, bitemporal validity (`as_of`), and domain routing (`scope`). |
+| `graph_query(entity, hops?)` / `graph_neighbors(...)` | Traverse the causal knowledge graph across services, tools, error modes, concepts, and lessons with multi-hop neighbor expansion. |
 
 Two things about this are deliberate.
 
@@ -865,6 +868,104 @@ Nothing here reimplements ranking, holdout assignment, or the approval guard —
 it calls the same functions `commontrace query` and `commontrace lesson
 approve` do, so a fleet's shell-capable and shell-less agents read the same
 memory and land in the same experiment arms.
+
+---
+
+## Cognitive Memory Architecture
+
+CommonTrace unifies the strongest capabilities of modern agent memory frameworks (**Letta**, **EverOS**, **Mem0**, **Zep**, **Cognee**, and **Supermemory**) into a single, high-performance, causally governed platform:
+
+```
++----------------------------------------------------------------------------------------------------+
+|                                      COMMONTRACE PLATFORM 2.0                                      |
+|                                                                                                    |
+|  +---------------------+   +---------------------+   +---------------------+   +-----------------+ |
+|  |     TIER 1: CORE    |   |     TIER 2: GRAPH   |   |   TIER 3: ATOMIC    |   | TIER 4: TRACES  | |
+|  |    WORKING BLOCKS   |   |   KNOWLEDGE GRAPH   |   |   SEMANTIC FACTS    |   |   & OCCASIONS   | |
+|  | (Letta Core Memory) |   | (Zep / Cognee KG)   |   | (EverOS/Mem0 Facts) |   |  (Episodic Log) | |
+|  |                     |   |                     |   |                     |   |                 | |
+|  |  • persona block    |   |  • Entity Nodes     |   |  • Atomic truths    |   |  • Raw turns    | |
+|  |  • human block      |   |  • Directed Edges   |   |  • ADD/UPDATE/      |   |  • Stack traces | |
+|  |  • workspace block  |   |  • Temporal valid.  |   |    DELETE lifecycle |   |  • Tool calls   | |
+|  |  • Bounded quotas   |   |  • Multi-hop boost  |   |  • Scopes & conf.   |   |  • Outcomes     | |
+|  +----------+----------+   +----------+----------+   +----------+----------+   +--------+--------+ |
+|             |                         |                         |                       |          |
+|             +-------------------------+-------------------------+-----------------------+          |
+|                                       |                                                            |
+|              +------------------------v------------------------+                                   |
+|              |     GOVERNANCE, INTEGRITY & CAUSAL PROOF       |                                   |
+|              |                                                 |                                   |
+|              |  • Cryptographic revision hashing (SHA-256)     |                                   |
+|              |  • Dosage parity & deterministic holdouts       |                                   |
+|              |  • Causal win-rate tracking & regression gates  |                                   |
+|              |  • Bitemporal validity & audit trail            |                                   |
+|              +------------------------+------------------------+                                   |
+|                                       |                                                            |
+|       +-------------------------------+-------------------------------+                            |
+|       |                               |                               |                            |
+|  +----v--------------------+   +------v---------------------+   +-----v---------------------+      |
+|  |      CLI INTERFACE      |   |        MCP SERVER          |   |      HUB ENTERPRISE       |      |
+|  |                         |   |                            |   |                           |      |
+|  |  • commontrace block    |   |  • memory_block_read/write |   |  • Scopes & Temporal API  |      |
+|  |  • commontrace fact     |   |  • graph_query/neighbors   |   |  • Hub graph & facts API  |      |
+|  |  • commontrace graph    |   |  • commontrace://profile   |   |  • Multi-tenant isolation |      |
+|  |  • commontrace dream    |   |  • commontrace://graph     |   |  • SIEM & RBAC governance |      |
+|  +-------------------------+   +----------------------------+   +---------------------------+      |
++----------------------------------------------------------------------------------------------------+
+```
+
+### 1. Stateful Working Memory Blocks (`commontrace block`)
+Provides bounded, named memory blocks (`persona`, `human`, `project`, or custom) inspired by Letta's Core Memory:
+- **Character quotas**: Prevents prompt stuffing and token exhaustion (default 2000 chars, custom per block).
+- **Atomic Operations**: `set`, `append`, and exact substring `replace`.
+- **Revision Integrity**: Every write generates an immutable SHA-256 revision hash logged in `memory/blocks/history.jsonl`.
+- **MCP Integration**: `memory_block_read`, `memory_block_update`, and `memory_block_list`.
+
+```bash
+commontrace block set persona "You are a senior systems engineer. Always check idempotency."
+commontrace block append human "User prefers concise answers and TypeScript."
+commontrace block replace human --old "TypeScript" --new "TypeScript and Rust"
+commontrace block history persona
+```
+
+### 2. Hierarchical Memory & Atomic Fact Lifecycle (`commontrace fact`)
+Decomposes noisy episodic traces into atomic statements of truth inspired by EverOS and Mem0:
+- **Lifecycle Transitions**: `ADD` (new facts), `NOOP` (reinforcement and confidence increase for existing facts), `UPDATE`, `SUPERSEDE` (linking old facts to new ones and marking `valid_until = now`), and `DELETE`.
+- **Confidence Scoring & Scopes**: Each fact carries a confidence score (0.0 to 1.0) and routing scopes (`payments`, `infra`).
+- **MCP Tools**: `record_fact` and `query_facts`.
+
+```bash
+commontrace fact add "Stripe idempotency keys expire after 24 hours" --category constraint --scope payments
+commontrace fact supersede fact-1234 "Stripe idempotency keys expire after 48 hours"
+commontrace fact search "idempotency key expiration" --scope payments
+```
+
+### 3. Temporal Knowledge Graph & Multi-Hop Entity Reasoning (`commontrace graph`)
+Directed property graph linking services, tools, errors, concepts, and lessons inspired by Zep and Cognee:
+- **Graph Topology**: Nodes (`service`, `tool`, `error`, `concept`, `lesson`) and bitemporal directed edges (`depends_on`, `causes`, `resolves`, `affects`, `supersedes`).
+- **Multi-Hop Traversal**: Computes subgraphs and neighbor expansions up to 3 hops.
+- **Graph Proximity Retrieval Boost**: Queries extract entities and boost connected candidate lessons in both CLI `query` and MCP `retrieve`.
+- **Mermaid & JSON Visualization**: Render the graph directly to Mermaid markdown (`commontrace graph render`) or consume via MCP resource `commontrace://graph`.
+
+```bash
+commontrace graph node service:stripe --type service --name "Stripe Gateway"
+commontrace graph node error:429_rate_limit --type error --name "Rate Limit"
+commontrace graph edge service:stripe causes error:429_rate_limit
+commontrace graph edge lesson:exponential_backoff resolves error:429_rate_limit
+commontrace graph query stripe --hops 2
+commontrace graph render --format mermaid
+```
+
+### 4. Dynamic Dreaming 2.0 & Active Space Profile (`commontrace dream`)
+Autonomous consolidation pass inspired by Supermemory:
+- Mines entity relationships from unreviewed traces.
+- Reconciles contradictory facts and consolidates redundant observations.
+- Synthesizes the **Active Space Profile** (`memory/profile.md` and MCP resource `commontrace://profile`) providing instant context for coding agents.
+
+### 5. Enterprise Hub Parity
+Multi-tenant enterprise trace store with full parity for routing scopes and temporal validity:
+- PostgreSQL ORM models with GIN indexing for `scopes`.
+- Bitemporal filtering (`valid_from`, `valid_until`, `as_of`) in REST API endpoints (`/api/v1/traces`, `/api/v1/traces/search`) and CRUD operations.
 
 ---
 

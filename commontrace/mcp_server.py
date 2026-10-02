@@ -87,11 +87,13 @@ from commontrace import (
     evidence_io,
     frontmatter,
     harm,
+    hierarchical,
     holdout_io,
     injection_guard,
     lesson_cache,
     lesson_io,
     mcp_tools,
+    memory_blocks,
     memory_guard,
     paths,
     receipts,
@@ -108,6 +110,9 @@ from commontrace import (
     validate,
 )
 from commontrace import evidence as evidence_mod
+from commontrace import (
+    graph as graph_mod,
+)
 from commontrace.commands._format import read_or_warn
 from commontrace.commands._traces import load_trace_candidates
 from commontrace.commands._validators import REFUSE_CHARS, check_text_size
@@ -548,6 +553,8 @@ def build_server(root: str, *, allow_approval: bool = True):
                         want, retrieval_config.rerank,
                         retrieval_io.embedder_tag(semantic_arm.stored_model(root)))
             gated = retrieval_config.fusion == retrieval_io.FUSION_GATED and reranking
+            candidate_slugs = [str(fm.get("name", "")) for _, fm in active]
+            graph_boosts = graph_mod.graph_boost_for_lessons(root, task, candidate_slugs, as_of=as_of or None)
             ranked = retrieval.rank_lessons(
                 task, active,
                 top_k=depth + len(harmful),
@@ -559,6 +566,8 @@ def build_server(root: str, *, allow_approval: bool = True):
                 recency_lookup=recency_lookup,
                 recency_weight=retrieval_config.recency_weight,
                 adaptive_tail=not reranking,
+                graph_boost_lookup=graph_boosts,
+                graph_weight=1.0,
             )
         except Exception as exc:  # noqa: BLE001 - a malformed store is an answer, not a crash
             return _err(f"could not read the lesson store: {type(exc).__name__}: {exc}")
@@ -1312,6 +1321,178 @@ def build_server(root: str, *, allow_approval: bool = True):
             next_step=("Curate a gap: `propose_lessons`, then `draft_lesson`."
                        if gaps else "No uncovered recurring pattern right now."),
         )
+
+    @mcp.tool()
+    async def memory_block_read(name: str) -> dict:
+        """Read a stateful working memory block (such as persona, human, or project).
+
+        Returns the current markdown content, character usage, quota limits,
+        revision hash, and last update timestamp for the requested memory block.
+        Working memory blocks provide persistent scratchpads for instructions and user facts.
+        """
+        try:
+            block = memory_blocks.get_block(root, name)
+            return _ok(block=block.to_dict())
+        except memory_blocks.BlockNotFoundError as exc:
+            return _err(str(exc))
+
+    @mcp.tool()
+    async def memory_block_update(
+        name: str,
+        content: str,
+        mode: str = "set",
+        old_content: str = "",
+    ) -> dict:
+        """Update or append to a stateful working memory block with quota checking.
+
+        Supports three modes: 'set' (overwrite), 'append' (add text to the end),
+        and 'replace' (replace exact substring `old_content` with `content`).
+        Every change records an immutable SHA-256 revision hash and audit history.
+        Enforces character limit quotas to prevent prompt bloat and context stuffing.
+        """
+        try:
+            if mode == "append":
+                block = memory_blocks.append_block(root, name, content, actor="mcp")
+            elif mode == "replace":
+                block = memory_blocks.replace_block(root, name, old_content, content, actor="mcp")
+            else:
+                block = memory_blocks.set_block(root, name, content, actor="mcp")
+            return _ok(block=block.to_dict())
+        except memory_blocks.MemoryBlockError as exc:
+            return _err(str(exc))
+
+    @mcp.tool()
+    async def memory_block_list() -> dict:
+        """List all active working memory blocks currently configured in this store.
+
+        Shows each block name, character count, quota limit, revision hash, and
+        last modification timestamp. Useful for inspecting agent state and persona guidelines.
+        """
+        blocks = memory_blocks.list_blocks(root)
+        return _ok(blocks=[b.to_dict() for b in blocks], count=len(blocks))
+
+    @mcp.tool()
+    async def query_facts(
+        query: str,
+        scope: str = "",
+        category: str = "",
+        as_of: str = "",
+        limit: int = 10,
+    ) -> dict:
+        """Search distilled atomic facts with bitemporal validity and scoped routing.
+
+        Searches high-confidence atomic facts extracted from traces and episodes.
+        Results are scored by lexical overlap and confidence weighting. Supports
+        point-in-time filtering via `as_of` and team/domain routing via `scope`.
+        """
+        try:
+            results = hierarchical.search_facts(
+                root, query=query, scope=scope, category=category, as_of=as_of or None, limit=limit,
+            )
+            return _ok(
+                facts=[{"fact": f.to_dict(), "score": score} for f, score in results],
+                count=len(results),
+            )
+        except Exception as exc:  # noqa: BLE001
+            return _err(f"could not query facts: {type(exc).__name__}: {exc}")
+
+    @mcp.tool()
+    async def record_fact(
+        statement: str,
+        category: str = "general",
+        scope: str = "",
+        confidence: float = 0.8,
+    ) -> dict:
+        """Record an atomic fact discovered during execution or reinforce an existing fact.
+
+        If a matching fact exists, performs a NOOP reinforcement to bump confirmation
+        counts and confidence. Otherwise inserts a new atomic fact with full lifecycle tracking.
+        Facts represent atomic propositions of truth (e.g. constraints, patterns, preferences).
+        """
+        try:
+            scopes = [scope] if scope else None
+            fact, action = hierarchical.add_fact(
+                root, statement=statement, category=category, scopes=scopes, confidence=confidence,
+            )
+            return _ok(fact=fact.to_dict(), action=action)
+        except Exception as exc:  # noqa: BLE001
+            return _err(f"could not record fact: {type(exc).__name__}: {exc}")
+
+    @mcp.tool()
+    async def graph_query(entity: str, hops: int = 1, as_of: str = "") -> dict:
+        """Explore entity relationships and multi-hop connected concepts in the knowledge graph.
+
+        Finds connected nodes (tools, services, error modes, concepts, and lessons)
+        within `hops` degrees of distance from the specified entity.
+        Supports point-in-time temporal filtering to query the historical graph state.
+        """
+        try:
+            nodes = graph_mod.load_nodes(root)
+            entity_id = entity.strip().lower()
+            start_ids = [entity_id] if entity_id in nodes else graph_mod.extract_entities_from_text(root, entity)
+            if not start_ids:
+                return _ok(nodes=[], edges=[], hop_distances={}, note=f"no entity matching '{entity}' found")
+            sub = graph_mod.multi_hop_subgraph(root, start_ids, max_hops=hops, as_of=as_of or None)
+            return _ok(**sub)
+        except Exception as exc:  # noqa: BLE001
+            return _err(f"could not query knowledge graph: {type(exc).__name__}: {exc}")
+
+    @mcp.tool()
+    async def graph_neighbors(
+        entity: str,
+        direction: str = "both",
+        relation: str = "",
+        as_of: str = "",
+    ) -> dict:
+        """Inspect the immediate direct neighbors of an entity in the causal knowledge graph.
+
+        Returns outgoing and incoming relationship edges (e.g. depends_on, causes, resolves)
+        connected to the given entity node. Helps understand causes, dependencies, and fixes.
+        """
+        try:
+            neighbors = graph_mod.get_neighbors(
+                root, entity, direction=direction, relation=relation or None, as_of=as_of or None,
+            )
+            return _ok(entity=entity, neighbors=neighbors, count=len(neighbors))
+        except Exception as exc:  # noqa: BLE001
+            return _err(f"could not retrieve neighbors: {type(exc).__name__}: {exc}")
+
+    @mcp.resource("commontrace://profile")
+    def active_space_profile() -> str:
+        """Synthesized active space profile combining working memory blocks, high-confidence facts, and fleet status."""
+        blocks = memory_blocks.list_blocks(root)
+        facts = hierarchical.list_facts(root, status="active")[:10]
+        status = store_state.inspect(root)
+
+        lines = ["# CommonTrace Active Space Profile", ""]
+        lines.append("## Working Memory Blocks")
+        if blocks:
+            for b in blocks:
+                lines.append(f"### [{b.name}] ({b.char_count}/{b.max_chars} chars, rev: {b.revision})")
+                lines.append(b.content)
+                lines.append("")
+        else:
+            lines.append("_No working memory blocks configured._\n")
+
+        lines.append("## Active Atomic Facts")
+        if facts:
+            for f in facts:
+                scope_str = f" [{','.join(f.scopes)}]" if f.scopes else ""
+                lines.append(f"- **{f.statement}** (category: {f.category}, conf: {f.confidence:.2f}){scope_str}")
+            lines.append("")
+        else:
+            lines.append("_No atomic facts recorded yet._\n")
+
+        lines.append("## Fleet Memory Status")
+        lines.append(f"- Active Lessons: {status.active}")
+        lines.append(f"- Lessons Under Review: {status.review}")
+        lines.append(f"- Raw Traces: {status.traces}")
+        return "\n".join(lines)
+
+    @mcp.resource("commontrace://graph")
+    def active_knowledge_graph() -> str:
+        """Active knowledge graph rendered as Mermaid diagram and entity edges."""
+        return graph_mod.export_mermaid(root)
 
     return mcp
 

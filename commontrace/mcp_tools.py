@@ -6,6 +6,9 @@ LOCAL_TOOLS = (
     "retrieve", "capture", "propose_lessons", "list_lessons", "get_lesson",
     "draft_lesson", "approve_lesson", "reject_lesson", "store_status",
     "experiment_status",
+    "memory_block_read", "memory_block_update", "memory_block_list",
+    "query_facts", "record_fact",
+    "graph_query", "graph_neighbors",
 )
 
 APPROVAL_TOOLS = ("approve_lesson", "reject_lesson")

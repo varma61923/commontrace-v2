@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import io
+import json
 import os
 import sys
 from contextlib import redirect_stderr, redirect_stdout
@@ -94,6 +95,74 @@ def run(args: argparse.Namespace) -> int:
         cli(["consolidate", *(["--draft"] if draft else []), "--dest", root])
     lines += ["## Consolidation", "", "```", out.getvalue().strip(), "```", ""]
 
+    # Synthesize Active Space Profile & Consolidate Graph
+    from commontrace import graph as graph_mod
+    from commontrace import hierarchical, memory_blocks, store_state
+
+    # Graph relationship mining from traces
+    tdir = paths.traces_dir(root)
+    linked_edges = 0
+    if os.path.isdir(tdir):
+        for fname in os.listdir(tdir):
+            if fname.endswith(".json") and not fname.startswith("."):
+                try:
+                    with open(os.path.join(tdir, fname), "r", encoding="utf-8") as tf:
+                        tdata = json.load(tf)
+                        ttags = tdata.get("tags") or []
+                        tid = tdata.get("id") or fname[:-5]
+                        if ttags:
+                            for tag in ttags:
+                                graph_mod.add_node(root, f"concept:{tag}", "concept", name=tag)
+                                graph_mod.add_edge(root, f"concept:{tag}", f"trace:{tid}", "affects")
+                                linked_edges += 1
+                except Exception:
+                    continue
+
+    blocks = memory_blocks.list_blocks(root)
+    facts = hierarchical.list_facts(root, status="active")
+    status = store_state.inspect(root)
+
+    lines += ["## Knowledge Graph & Cognitive Consolidation", ""]
+    lines += [
+        f"- Working memory blocks: {len(blocks)} active",
+        f"- Atomic facts: {len(facts)} active",
+        f"- Mined graph edges: {linked_edges} updated",
+        "",
+    ]
+
+    # Synthesize memory/profile.md
+    profile_lines = [
+        f"# CommonTrace Active Space Profile ({now.strftime('%Y-%m-%d %H:%M')}Z)", "",
+        "## Working Memory Blocks",
+    ]
+    if blocks:
+        for b in blocks:
+            profile_lines.append(f"### [{b.name}] ({b.char_count}/{b.max_chars} chars, rev: {b.revision})")
+            profile_lines.append(b.content)
+            profile_lines.append("")
+    else:
+        profile_lines.append("_No working memory blocks configured._\n")
+
+    profile_lines.append("## Key Atomic Truths")
+    if facts:
+        for f in facts[:15]:
+            scope_str = f" [{','.join(f.scopes)}]" if f.scopes else ""
+            profile_lines.append(f"- **{f.statement}** (conf: {f.confidence:.2f}){scope_str}")
+        profile_lines.append("")
+    else:
+        profile_lines.append("_No atomic facts consolidated yet._\n")
+
+    profile_lines.append(
+        f"## Fleet Health\n- Active Lessons: {status.active}\n"
+        f"- In Review: {status.review}\n- Total Traces: {status.traces}\n"
+    )
+
+    profile_path = os.path.join(paths.memory_dir(root), "profile.md")
+    with open(profile_path, "w", encoding="utf-8", newline="\n") as pf:
+        pf.write("\n".join(profile_lines) + "\n")
+
+    lines += ["## Active Space Profile", f"- Synthesized to `{profile_path}`", ""]
+
     after = _review(root)
     new = sorted(set(after) - before)
     lines += [f"## Waiting for review ({len(after)}; {len(new)} new this pass)", ""]
@@ -104,8 +173,11 @@ def run(args: argparse.Namespace) -> int:
     report = os.path.join(report_dir, f"{now.strftime('%Y-%m-%d')}.md")
     with open(report, "w", encoding="utf-8", newline="\n") as fh:
         fh.write("\n".join(lines) + "\n")
-    print(f"[commontrace] dream: {len(signals)} signal(s), {len(new)} new draft(s), {len(after)} awaiting review. "
-          f"Report: {report}" + ("" if draft else " (no model: report only)"))
+    print(
+        f"[commontrace] dream: {len(signals)} signal(s), {len(new)} new draft(s), "
+        f"{len(after)} awaiting review, profile synthesized. "
+        f"Report: {report}" + ("" if draft else " (no model: report only)")
+    )
     return 0
 
 

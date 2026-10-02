@@ -122,6 +122,9 @@ class Trace(Base):
     contributor: Mapped[str] = mapped_column(String(128), default="", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
     outcome: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    scopes: Mapped[list[str]] = mapped_column(ARRAY(String(64)), default=list, nullable=False, server_default="{}")
+    valid_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     superseded_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
@@ -170,6 +173,7 @@ class Trace(Base):
     __table_args__ = (
         Index("ix_traces_org_quarantined", "org_id", "quarantined"),
         Index("ix_traces_tags_gin", "tags", postgresql_using="gin"),
+        Index("ix_traces_scopes_gin", "scopes", postgresql_using="gin"),
         Index("ix_traces_subject_ids_gin", "subject_ids", postgresql_using="gin"),
         Index("ix_traces_search_vector_gin", "search_vector", postgresql_using="gin"),
         Index("ix_traces_org_created_at", "org_id", "created_at"),
