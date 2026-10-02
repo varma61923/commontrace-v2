@@ -1,5 +1,3 @@
-# ClusterIP only -- this directory ships no Ingress (see the README for
-# why). Point your own Ingress/Gateway API resource at this Service.
 apiVersion: v1
 kind: Service
 metadata:

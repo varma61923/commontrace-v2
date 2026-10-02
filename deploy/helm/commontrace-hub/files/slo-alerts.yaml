@@ -1,9 +1,3 @@
-# Service level objectives for the Hub, as multi-window burn-rate alerts (the objectives are the
-# numbers in each `slo:` label; error budget = 1 - objective).
-#   availability  99.9% of requests are not 5xx           (30 days)
-#   latency       95%  of requests finish within 250 ms    (30 days)
-# 14.4x burn for 1h would spend 2% of a 30-day budget; 6x for 6h spends 5%. Each alert needs the long
-# AND the short window, so it fires fast on a real outage and clears fast once it is over.
 - name: commontrace-hub-slo
   rules:
     - record: commontrace_hub:error_ratio:rate5m

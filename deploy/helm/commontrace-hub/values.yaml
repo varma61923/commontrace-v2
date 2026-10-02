@@ -1,17 +1,11 @@
-# Required. Build with the repo-root Dockerfile and push to your registry.
 image:
   repository: ""
   tag: ""
   pullPolicy: IfNotPresent
 
-# The name of a Secret YOU create (External Secrets, Sealed Secrets, a CI step). The chart never
-# renders secret values. Keys: HUB_DATABASE_URL, HUB_LEDGER_SIGNING_KEY, HUB_ENCRYPTION_KEY,
-# HUB_API_KEY_PEPPER, HUB_CONSOLE_SECRET, HUB_ADMIN_TOKEN (see deploy/k8s/secret.example.yaml).
 existingSecret: ""
 
 replicaCount: 2
-# The rate limiter must be shared once there is more than one replica (hub/DEPLOYMENT.md §6);
-# the chart refuses replicas > 1 with the in-process backend.
 config:
   HUB_HOST: "0.0.0.0"
   HUB_PORT: "8420"
@@ -25,8 +19,6 @@ config:
   HUB_DATA_REGION: ""                    # e.g. eu or us; reported by /disclosure
   HUB_AUTH_CACHE_SECONDS: ""             # 0-60; revocations reach every replica by NOTIFY (hub/.env.example)
 
-# Postgres max_connections must exceed (HUB_DB_POOL_SIZE + HUB_DB_MAX_OVERFLOW) x (max replicas +
-# surge). Set it so the chart can check it at render time.
 postgres:
   maxConnections: 0
 
@@ -60,12 +52,10 @@ ingress:
 
 networkPolicy:
   enabled: false
-  # Namespaces allowed to reach the Hub (the ingress controller's, and your agents').
   allowedNamespaceLabels: []             # e.g. [{kubernetes.io/metadata.name: ingress-nginx}]
   postgresCIDR: ""                       # egress to the database; empty = allow all egress
 
 metrics:
-  # A Prometheus Operator ServiceMonitor and PrometheusRule carrying the SLO alerts (deploy/slo.yaml).
   serviceMonitor: false
   alerts: false
   tokenSecretKey: ""                     # a key in existingSecret holding HUB_METRICS_TOKEN, if set

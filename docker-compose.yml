@@ -1,82 +1,23 @@
-# Local / evaluation stack for the CommonTrace Hub.
-#
-# This is a *getting-started and evaluation* stack, not a production
-# deployment: the Postgres password below is a literal placeholder, the
-# database runs in the same compose project as the app, and there is no TLS
-# termination. For a real deployment see hub/DEPLOYMENT.md -- you want a
-# managed/backed-up Postgres and secrets from your platform's secret store,
-# not from this file.
-#
-#   docker compose up --build
-#   docker compose run --rm migrate            # once, before first use
-#   docker compose run --rm hub python -m hub.manage create-org "Acme"
-#   docker compose run --rm hub python -m hub.manage issue-key <org_id>
 
 services:
   db:
     image: postgres:18@sha256:5a5a84b19854a9ffaa54082c166ff4ec27473a361e496e5ea167f298f2da9722
     environment:
-      # This role becomes the cluster SUPERUSER (the Postgres image makes
-      # POSTGRES_USER one) and OWNS the schema. It is used for exactly two
-      # things -- initialisation and migrations -- and never to serve
-      # traffic, because Postgres skips every row-level-security policy for
-      # a superuser, silently, with no error. Serving as this role is what
-      # made migration d5c8b3a91e77's tenant-isolation policies INERT in
-      # this stack: installed, listed by pg_policies, doing nothing.
-      #
-      # The `hub` service below therefore connects as `commontrace_app`
-      # instead -- a login role that owns nothing, is NOSUPERUSER and
-      # NOBYPASSRLS, and holds only DML grants, created by
-      # hub/postgres-init/10-runtime-role.sql (mounted below and run once at
-      # first initialisation, before any migration). With that role the
-      # policies actually bite, and hub/db.py:check_row_level_security
-      # REFUSES TO START if they ever cannot.
       POSTGRES_USER: commontrace
-      # Overridable via the shell environment (`POSTGRES_PASSWORD=... docker
-      # compose up`); unset behaves identically to before. Production uses a
-      # managed Postgres + secret store per hub/DEPLOYMENT.md, not this file.
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-not-for-production}
       POSTGRES_DB: commontrace_hub
-      # Read by hub/postgres-init/10-runtime-role.sql for the non-superuser
-      # runtime role. Same placeholder discipline as POSTGRES_PASSWORD above:
-      # overridable from the shell, and not a value any real deployment keeps.
       POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD:-change-me-not-for-production}
     volumes:
-      # Postgres 18's image keeps data under /var/lib/postgresql/<major>/ and
-      # refuses to start with a volume mounted at the old .../data path. The
-      # volume is renamed (was hub_pgdata) so a stack created under 16 never
-      # mounts its old-format data here. To carry that data over:
-      # pg_dumpall against the old stack, then restore into this one.
       - hub_pgdata18:/var/lib/postgresql
-      # Run ONCE, at first initialisation of an empty data directory, before
-      # the migrate service creates any table -- which is what lets the
-      # script's ALTER DEFAULT PRIVILEGES cover every table alembic is about
-      # to create, and every table a future migration adds. Read-only: the
-      # database must never be able to rewrite its own bootstrap.
-      #
-      # NOTE for an existing stack: this runs only on a FRESH volume. To
-      # adopt the runtime role on a stack that already has data, either
-      # `docker compose down -v` (destroys the data) or run the script once
-      # by hand against the existing database, as the owner -- the script's
-      # own header has the statements for that case.
       - ./hub/postgres-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U commontrace -d commontrace_hub"]
       interval: 5s
       timeout: 5s
       retries: 10
-    # Not published to the host by default: nothing outside this compose
-    # network needs to reach the database. Uncomment to inspect it locally.
-    # ports:
-    #   - "5432:5432"
 
-  # Migrations run as their own one-shot service rather than on app start,
-  # so N replicas can never race the same migration during a deploy.
   migrate:
     build: .
-    # Same container hardening as deploy/k8s/deployment.yaml: the image's
-    # filesystem is read-only, no process can gain privileges, and no Linux
-    # capability is kept. The Hub writes only to the database (and /tmp).
     read_only: true
     tmpfs:
       - /tmp
@@ -94,9 +35,6 @@ services:
 
   hub:
     build: .
-    # Same container hardening as deploy/k8s/deployment.yaml: the image's
-    # filesystem is read-only, no process can gain privileges, and no Linux
-    # capability is kept. The Hub writes only to the database (and /tmp).
     read_only: true
     tmpfs:
       - /tmp
@@ -105,76 +43,25 @@ services:
     cap_drop:
       - ALL
     environment:
-      # commontrace_app, NOT commontrace: the runtime role owns nothing and
-      # cannot bypass row-level security, so migration d5c8b3a91e77's tenant
-      # isolation policies actually apply to every query this process makes.
-      # See the db service's comment above and
-      # hub/postgres-init/10-runtime-role.sql. Pointing this back at the
-      # owner/superuser role makes the Hub refuse to start unless
-      # HUB_ALLOW_RLS_BYPASS=true also says that is deliberate.
       HUB_DATABASE_URL: postgresql+asyncpg://commontrace_app:${POSTGRES_APP_PASSWORD:-change-me-not-for-production}@db:5432/commontrace_hub
       HUB_HOST: 0.0.0.0
       HUB_PORT: 8420
       HUB_LOG_LEVEL: INFO
-      # HUB_HOST=0.0.0.0 above is required for Docker's bridge networking
-      # (a loopback-only bind inside the container is unreachable through
-      # `docker run -p`/compose port publishing at all) -- it is not the
-      # same decision as exposing the Hub to the public internet. The `ports:`
-      # mapping below is what actually controls host-level reachability, and
-      # it publishes to 127.0.0.1 only. This flag is the explicit
-      # acknowledgment hub/config.py's startup check requires before serving
-      # plaintext HTTP (the API key travels as a Bearer token) on a
-      # non-loopback bind; put a TLS-terminating reverse proxy in front for
-      # anything beyond local evaluation, per hub/DEPLOYMENT.md.
       HUB_ALLOW_INSECURE_HTTP: "true"
-      # Overridable via the shell environment `docker compose up` is run
-      # from, defaulting to exactly the values hub/config.py itself ships
-      # with -- a plain `docker compose up` with nothing set behaves
-      # identically to before these lines existed. Exists so CI's
-      # docker-compose job can widen the auth-attempt/read-rate-limit
-      # headroom for its own smoke check's traffic (see .github/workflows/
-      # ci.yml) without changing what this file documents a real deployment
-      # gets by default.
       HUB_AUTH_ATTEMPTS_PER_MINUTE: ${HUB_AUTH_ATTEMPTS_PER_MINUTE:-60}
       HUB_AUTH_ATTEMPTS_BURST: ${HUB_AUTH_ATTEMPTS_BURST:-20}
       HUB_READ_RATE_LIMIT_PER_MINUTE: ${HUB_READ_RATE_LIMIT_PER_MINUTE:-300}
       HUB_READ_RATE_LIMIT_BURST: ${HUB_READ_RATE_LIMIT_BURST:-60}
-      # Same override pattern, same default-preserving guarantee: empty
-      # here means these routes do not exist, identical to a plain
-      # `docker compose up` today. CI's compose-stack job sets these to
-      # prove the customer console and self-serve signup actually work
-      # wired up in the real built image, over real HTTP through the
-      # published port -- not just in the in-process ASGI tests, which
-      # never exercise uvicorn, the real TCP/HTTP stack, or the
-      # middleware exactly as build_app() assembles them at startup.
       HUB_CONSOLE_SECRET: ${HUB_CONSOLE_SECRET:-}
       HUB_SIGNUP_ENABLED: ${HUB_SIGNUP_ENABLED:-false}
-      # ON for the reference stack, where the library default is off.
-      #
-      # The two are not in conflict; they answer different questions. The
-      # library default protects an operator who curated their own corpus
-      # from publishing it by accident. This stack's corpus is
-      # commons/seed/substrate-v1.jsonl, which is committed to this
-      # repository and therefore public already -- so defaulting it off
-      # here would protect nothing and would withhold the one path that
-      # lets a fleet measure its coverage without telling this Hub what it
-      # is failing at (hub/crud.py:export_commons).
       HUB_COMMONS_EXPORT_ENABLED: ${HUB_COMMONS_EXPORT_ENABLED:-true}
     ports:
-      # Loopback-only: nothing outside this host can reach the Hub directly.
-      # A reverse proxy on the same host (or same private network) is the
-      # supported way to expose it further -- see hub/DEPLOYMENT.md.
       - "127.0.0.1:8420:8420"
     depends_on:
       db:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-    # /readyz, not /healthz: readiness checks the database, which is what
-    # "can this container serve a request" actually depends on. Using the
-    # liveness endpoint here would report healthy while every call 500s.
-    # Python rather than curl: the runtime image has no curl, and adding one
-    # to a production image just for a probe widens its attack surface.
     healthcheck:
       test: ["CMD", "python", "-c",
              "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8420/readyz', timeout=5).status==200 else 1)"]
