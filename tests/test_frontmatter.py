@@ -677,3 +677,50 @@ class TestParsedFrontmatterIsMemoised:
         for i in range(6):
             frontmatter.read(self._lesson(tmp_path, description=f"d{i}", name=f"b{i}"))
         assert len(frontmatter._PARSED) == 3
+
+
+class TestTheStrictParseOnLibyaml:
+    """frontmatter.load_text runs the strict rules on libyaml's C parser where
+    it is installed (the PyYAML wheels ship it): same data, same errors, and
+    anchors still refused."""
+
+    SAMPLES = [
+        "name: on\ndomain: NO\ntags: [on, off, yes]\nlast_hit: 2026-07-01\nflag: true\nn: 3\nf: 1.5\nz: null\n",
+        "description: \"quoted: value\"\napplies_when: |\n  a block\n  of text\nlist:\n  - a\n  - b\n",
+        "desc: R&D costs 5*3\n",
+        "unicode: café — 日本語\n",
+        "",
+    ]
+
+    def test_strict_rules_hold(self):
+        from commontrace import frontmatter
+
+        fm = frontmatter.load_text(self.SAMPLES[0])
+        assert fm["name"] == "on" and fm["domain"] == "NO" and fm["tags"] == ["on", "off", "yes"]
+        assert fm["last_hit"] == "2026-07-01" and fm["flag"] is True
+
+    def test_anchors_are_refused_whichever_parser_is_installed(self):
+        import pytest
+        import yaml
+
+        from commontrace import frontmatter
+
+        with pytest.raises(yaml.YAMLError, match="anchors/aliases are not permitted"):
+            frontmatter.load_text("a: &x [1, 2]\nb: *x\n")
+
+    def test_same_data_and_errors_as_the_pure_python_loader(self):
+        import pytest
+        import yaml
+
+        from commontrace import frontmatter
+
+        if frontmatter._CStrictBoolLoader is None:
+            pytest.skip("PyYAML here was built without libyaml")
+        for text in self.SAMPLES:
+            assert frontmatter.load_text(text) == yaml.load(text, Loader=frontmatter._StrictBoolLoader)
+        bad = "bad: [unclosed\n"
+        with pytest.raises(yaml.YAMLError) as python_error:
+            yaml.load(bad, Loader=frontmatter._StrictBoolLoader)
+        with pytest.raises(yaml.YAMLError) as ours:
+            frontmatter.load_text(bad)
+        assert str(ours.value) == str(python_error.value)

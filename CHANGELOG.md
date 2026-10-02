@@ -127,6 +127,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Frontmatter parses on libyaml where it is installed.** The strict loader subclassed PyYAML's pure-Python
+  SafeLoader, so even installs whose PyYAML ships the C parser (the wheels for every mainstream platform) parsed
+  every lesson in Python: 1.20 ms per lesson against 0.16 ms on libyaml, the same data on 2,000 lessons. A block
+  with no `&` or `*` (so no anchor or alias) now goes through the same resolution rules on the C parser; anything
+  else, and any error, through the pure-Python one, so anchors are still refused and messages do not change.
 - **Unchanged lessons are not re-parsed, and the semantic arm's slugs are de-duplicated in linear time.** A
   long-lived process (MCP server, warm worker) re-read the same lessons' YAML on every retrieval, about 5 ms each
   with PyYAML's pure-Python loader; `frontmatter.read` now memoises the parse by the exact frontmatter text (a copy

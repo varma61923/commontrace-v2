@@ -205,8 +205,15 @@ def ranked_slugs(
 
         try:
             # The lesson cache's directory pass (one per retrieval inside a
-            # `lesson_cache.one_scan()` block), as getmtime floats.
-            mtimes = [(p, lesson_cache.mtime_seconds(ns)) for p, ns, _size in lesson_cache.listing(root)]
+            # `lesson_cache.one_scan()` block), as getmtime floats. Both of
+            # rank's uses look only at lessons newer than the index, so only
+            # those are passed: everything a millisecond or more older than it
+            # is certainly not newer, and rank makes the exact comparison.
+            index_ns = os.stat(ipath).st_mtime_ns
+            mtimes = [
+                (p, lesson_cache.mtime_seconds(ns)) for p, ns, _size in lesson_cache.listing(root)
+                if ns > index_ns - 1_000_000
+            ]
         except OSError:
             mtimes = None
         result = script.rank(

@@ -153,16 +153,12 @@ def _load_frontmatter(fm_text: str):
     installed, which is how it is documented to be usable.
     """
     try:
-        from commontrace.frontmatter import _StrictBoolLoader
+        from commontrace.frontmatter import load_text
     except Exception:  # noqa: BLE001 - standalone use, any import problem
         return yaml.safe_load(fm_text)
-    # bandit flags any yaml.load() call regardless of Loader, but
-    # _StrictBoolLoader IS a yaml.SafeLoader subclass (see its docstring in
-    # commontrace/frontmatter.py) that only narrows two implicit-conversion
-    # rules -- it accepts no more of the YAML spec than SafeLoader does, so
-    # this carries none of the arbitrary-object-instantiation risk B506
-    # exists to catch.
-    return yaml.load(fm_text, Loader=_StrictBoolLoader)  # nosec B506
+    # The package's strict parse (frontmatter.load_text): _StrictBoolLoader's
+    # rules, on libyaml's C parser where it is installed.
+    return load_text(fm_text)
 
 
 def build_query_text(frontmatter: dict, body: str) -> str:

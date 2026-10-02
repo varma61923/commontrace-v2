@@ -119,6 +119,40 @@ _StrictBoolLoader.add_implicit_resolver(
 )
 
 
+if getattr(yaml, "__with_libyaml__", False):
+    class _CStrictBoolLoader(yaml.CSafeLoader):  # type: ignore[name-defined, misc]
+        """_StrictBoolLoader's resolution rules on libyaml's C parser.
+
+        The pure-Python loader costs about 5 ms per lesson; the C one a tenth
+        of that, and the PyYAML wheels for every mainstream platform ship it.
+        It resolves through the same table (the parser calls back into
+        Resolver.resolve), so `yes`/`on`/dates stay strings exactly as above.
+        It cannot run compose_node's anchor check (composition happens in C),
+        so `load_text` hands it only text with no `&` or `*` in it: an anchor
+        needs the one, an alias the other.
+        """
+
+        yaml_implicit_resolvers = _StrictBoolLoader.yaml_implicit_resolvers
+else:  # pragma: no cover -- exercised where PyYAML was built without libyaml
+    _CStrictBoolLoader = None
+
+
+def load_text(fm_text: str) -> Any:
+    """A frontmatter block parsed with the strict rules (`_StrictBoolLoader`):
+    on libyaml when it is installed and the text cannot carry an anchor or
+    alias, else in pure Python. A malformed block raises the pure-Python
+    loader's own error either way, so messages do not depend on the install."""
+    # bandit flags any yaml.load() call regardless of Loader; both loaders
+    # here are SafeLoader-based with narrowed implicit resolution -- see
+    # _StrictBoolLoader's docstring -- so B506 does not apply.
+    if _CStrictBoolLoader is not None and "&" not in fm_text and "*" not in fm_text:
+        try:
+            return yaml.load(fm_text, Loader=_CStrictBoolLoader)  # nosec B506
+        except yaml.YAMLError:
+            pass
+    return yaml.load(fm_text, Loader=_StrictBoolLoader)  # nosec B506
+
+
 class FrontmatterError(ValueError):
     """Raised when a file's frontmatter block is present but not parseable YAML,
     does not decode to a mapping, or the file cannot be opened at all.
@@ -141,13 +175,7 @@ def _parse(fm_text: str) -> Any:
     caller that edits what it read (lesson approve, revise) changes only its own."""
     cached = _PARSED.get(fm_text)
     if cached is None:
-        # bandit flags any yaml.load() call regardless of Loader, but
-        # _StrictBoolLoader is a yaml.SafeLoader subclass (see its class
-        # docstring above) that only narrows two implicit-conversion
-        # rules -- it accepts no more of the YAML spec than SafeLoader
-        # does, so this carries none of the arbitrary-object-instantiation
-        # risk B506 exists to catch.
-        cached = yaml.load(fm_text, Loader=_StrictBoolLoader)  # nosec B506
+        cached = load_text(fm_text)
         _PARSED[fm_text] = cached
         while len(_PARSED) > _PARSED_MAX:
             _PARSED.popitem(last=False)

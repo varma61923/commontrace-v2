@@ -1031,10 +1031,11 @@ def _index_is_unusable(root: str) -> str:
         listing = lesson_cache.listing(root)
     except OSError:
         listing = ()
-    for path, mtime_ns, _size in listing:
-        mtime = lesson_cache.mtime_seconds(mtime_ns)
-        if mtime > newest_lesson:
-            newest_lesson, newest_name = mtime, os.path.basename(path)
+    if listing:
+        # The newest by its integer stamp, converted once: a float per lesson
+        # and a basename per lesson were most of this check at 10,000 lessons.
+        path, mtime_ns, _size = max(listing, key=lambda entry: entry[1])
+        newest_lesson, newest_name = lesson_cache.mtime_seconds(mtime_ns), os.path.basename(path)
     if newest_lesson == 0.0:
         # No lessons on disk but possibly a stale non-empty index (e.g. all
         # lessons deleted after a build): trusting it would rank ghosts.

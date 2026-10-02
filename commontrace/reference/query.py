@@ -124,14 +124,12 @@ def _load_frontmatter(fm_text: str):
     from a checkout without the package installed, same as build_index.py.
     """
     try:
-        from commontrace.frontmatter import _StrictBoolLoader
+        from commontrace.frontmatter import load_text
     except Exception:  # noqa: BLE001 - standalone use, any import problem
         return yaml.safe_load(fm_text)
-    # See build_index.py's identical comment: _StrictBoolLoader IS a
-    # yaml.SafeLoader subclass that only narrows two implicit-conversion
-    # rules, so this carries none of the arbitrary-object-instantiation
-    # risk bandit's B506 exists to catch.
-    return yaml.load(fm_text, Loader=_StrictBoolLoader)  # nosec B506
+    # The package's strict parse (frontmatter.load_text): _StrictBoolLoader's
+    # rules, on libyaml's C parser where it is installed.
+    return load_text(fm_text)
 
 
 class ImportancesResult(tuple):
@@ -345,10 +343,10 @@ def check_staleness(
                     except OSError:
                         continue
             for path, mtime in lesson_mtimes:
-                if os.path.basename(path) == "lesson_template.md":
-                    continue
                 if mtime <= index_mtime:
                     continue  # can't raise newest_active past index_mtime either way
+                if os.path.basename(path) == "lesson_template.md":
+                    continue
                 try:
                     with open(path, "r", encoding="utf-8-sig") as fh:
                         content = fh.read()
@@ -595,7 +593,7 @@ def rank(query, top_k=10, include_importance_floor=4, agent_type=None, *,
                 except OSError:
                     pass
         for path, mtime in lesson_mtimes:
-            if os.path.basename(path) == "lesson_template.md":
+            if path.endswith("lesson_template.md") and os.path.basename(path) == "lesson_template.md":
                 continue
             try:
                 if mtime > idx_mtime:
