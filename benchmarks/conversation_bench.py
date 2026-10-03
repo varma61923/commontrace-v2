@@ -132,7 +132,7 @@ def run(args) -> dict:
     opts = Options(budget=budgets[0], embedder=None if args.embedder == "none" else args.embedder,
                    rerank=None if args.rerank == "none" else args.rerank,
                    neighbours_before=args.neighbours, neighbours_after=args.neighbours,
-                   expand=not args.no_expand, profile_facts=args.profile_facts)
+                   profile_facts=args.profile_facts)
     cases = locomo_cases(args.data) if args.dataset == "locomo" else \
         longmemeval_cases(args.data, args.limit, args.seed)
     rows, ingest_s, recall_s, full_tokens = {b: [] for b in budgets}, 0.0, 0.0, []
@@ -185,7 +185,7 @@ def summarize(rows, args, budget, ingest_s, recall_s, full_tokens) -> dict:
     for r in rows:
         by_type[r["type"]].append(r)
     return {"dataset": args.dataset, "budget": budget, "embedder": args.embedder, "rerank": args.rerank,
-            "neighbours": args.neighbours, "expand": not args.no_expand, "overall": block(rows),
+            "neighbours": args.neighbours, "overall": block(rows),
             "by_type": {t: block(rs) for t, rs in sorted(by_type.items())},
             "full_history_tokens": _mean(full_tokens), "ingest_seconds": round(ingest_s, 1),
             "recall_ms": round(1000 * recall_s, 1), "rows": rows}
@@ -201,7 +201,6 @@ def main(argv=None) -> int:
     p.add_argument("--embedder", default="arctic-m", choices=("arctic-m", "minilm", "none"))
     p.add_argument("--rerank", default="auto", choices=("auto", "none", "cross-encoder", "cross-encoder-fast"))
     p.add_argument("--neighbours", type=int, default=1)
-    p.add_argument("--no-expand", action="store_true")
     p.add_argument("--profile-facts", type=int, default=4)
     p.add_argument("--limit", type=int, default=0)
     p.add_argument("--seed", type=int, default=0)

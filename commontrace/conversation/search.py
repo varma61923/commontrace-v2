@@ -29,7 +29,6 @@ class Options:
     lexical_weight: float = 0.5
     rerank: str | None = "auto"
     rerank_depth: int = 50
-    expand: bool = True
     profile_facts: int = 4
     embedder: str | None = "auto"
 
@@ -54,8 +53,6 @@ def tokens(text: str) -> int:
     return max(1, math.ceil(len(text) / 4)) if text else 0
 
 
-_CAPS = re.compile(r"(?<=[a-z0-9,;:] )[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b")
-_CALENDAR = frozenset(timeparse.WEEKDAYS) | frozenset(timeparse.MONTHS)
 _ADVICE = re.compile(r"\b(?:recommend|suggest|suggestions?|ideas?|tips?|advice|should I|what should|"
                      r"any (?:good|other)|help me (?:choose|pick|find|plan))\b", re.I)
 
@@ -86,17 +83,6 @@ def _embedder(store: Store, choice: str | None):
     if not embed.available():
         return None
     return embed.Embedder(store.root, tag)
-
-
-def _expansion_terms(turns: list[Turn], question: str, limit: int = 4) -> list[str]:
-    asked = {w.lower() for w in re.findall(r"[A-Za-z]+", question)}
-    seen: dict[str, int] = {}
-    for t in turns:
-        for name in _CAPS.findall(t.text):
-            low = name.lower()
-            if low not in asked and low not in profile.STOPWORDS and len(name) > 2 and low not in _CALENDAR:
-                seen[name] = seen.get(name, 0) + 1
-    return [n for n, _c in sorted(seen.items(), key=lambda x: -x[1])[:limit]]
 
 
 def _header(session: str, at: dt.datetime | None) -> str:
@@ -148,14 +134,6 @@ def recall(store: Store, question: str, *, now=None, options: Options | None = N
     queries = subqueries(question)
     scores = turn_scores(queries)
     explain: dict = {"subqueries": queries}
-    if opts.expand and scores:
-        head = sorted(scores, key=lambda t: -scores[t])[:5]
-        extra = _expansion_terms(list(store.turns(head).values()), question)
-        if extra:
-            expanded = f"{question} {' '.join(extra)}"
-            explain["expansion"] = extra
-            for turn, score in turn_scores([expanded]).items():
-                scores[turn] = max(scores.get(turn, 0.0), 0.5 * score)
     if window is not None:
         inside = store.in_window(window[0], window[1])
         explain["window_turns"] = len(inside)
