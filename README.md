@@ -987,8 +987,8 @@ Ben: Congrats, what is his name?
   attention extra, semantic search (`arctic-embed-m`) are fused by rank,
   keyword matches counting half; the accurate cross-encoder reorders the
   top 50. A question that names a time ("in May 2023", "last week") lifts
-  turns said in that window or about it. Each hit brings the turns either
-  side of it, and the page is filled best-first up to `--budget` tokens,
+  turns said in that window or about it. The best hits bring the two turns
+  either side of them, and the page is filled best-first up to `--budget` tokens,
   then shown session by session in the order things were said.
 - **Profile.** Self-descriptions the user makes ("I prefer boutique
   hotels", "as a Sony camera user", "I'm allergic to peanuts") are kept as
@@ -1011,15 +1011,15 @@ context costs. A whole conversation averages 20,676 tokens.
 
 | Context budget | Evidence in context | All evidence present | Single-hop | Multi-hop | Temporal | Open-domain |
 |---:|---:|---:|---:|---:|---:|---:|
-| 800 tokens | 75.8% | 69.0% | 84% | 51% | 85% | 48% |
-| 1,500 tokens (default) | 80.7% | 73.7% | 88% | 61% | 88% | 51% |
-| 4,000 tokens | 89.5% | 83.4% | 95% | 75% | 95% | 67% |
-| 7,000 tokens | 93.3% | 88.6% | 97% | 83% | 97% | 75% |
+| 800 tokens | 78.3% | 72.6% | 87% | 51% | 88% | 51% |
+| 1,500 tokens (default) | 84.3% | 78.8% | 91% | 64% | 92% | 57% |
+| 2,500 tokens | 89.0% | 84.1% | 94% | 75% | 94% | 66% |
+| 4,000 tokens | 92.6% | 88.3% | 97% | 81% | 97% | 72% |
+| 7,000 tokens | 95.7% | 92.4% | 98% | 89% | 98% | 83% |
 
 Recall takes about 630 ms per question on 4 CPU cores, most of it the
-cross-encoder; keyword-only recall takes 5 ms and reaches 77.2% at 1,500
-tokens. Published LoCoMo scores (for example 92.5 with ~7,000 tokens of
-context) are a model's answers graded by another model; they depend on the
+cross-encoder; keyword-only recall takes 5 ms. Published LoCoMo scores
+(for example 92.5 with ~7,000 tokens of context) are a model's answers graded by another model; they depend on the
 answering and grading models as much as on memory, and this harness does not
 claim them. With `COMMONTRACE_LLM_*` configured, `--answer` has a model
 answer from the recalled context and a judge grade it, so the same

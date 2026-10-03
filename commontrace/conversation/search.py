@@ -23,8 +23,9 @@ POOL = 200
 class Options:
     budget: int = DEFAULT_BUDGET
     pool: int = POOL
-    neighbours_before: int = 1
-    neighbours_after: int = 1
+    neighbours_before: int = 2
+    neighbours_after: int = 2
+    neighbour_hits: int | None = None
     window_boost: float = 1.0
     lexical_weight: float = 0.5
     rerank: str | None = "auto"
@@ -214,6 +215,8 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
         profile_block, spent = "", 0
     chosen: dict[int, Turn] = {}
     sessions_seen: set[str] = set()
+    with_context = opts.neighbour_hits if opts.neighbour_hits is not None else max(5, budget // 400)
+    hits = 0
     for start in range(0, len(ranked), 50):
         batch = ranked[start:start + 50]
         turns = store.turns(batch)
@@ -222,7 +225,9 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
             turn = turns.get(tid)
             if turn is None or tid in chosen:
                 continue
-            group = [tid] + store.neighbours(turn, opts.neighbours_before, opts.neighbours_after)
+            hits += 1
+            group = [tid] + (store.neighbours(turn, opts.neighbours_before, opts.neighbours_after)
+                             if hits <= with_context else [])
             group_turns = store.turns(group)
             for g in list(group):
                 if g in group_turns and _flagged(group_turns[g]):
