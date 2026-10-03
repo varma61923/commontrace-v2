@@ -2,6 +2,7 @@
 relative dates grounded as it is written, searchable with FTS5 BM25."""
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import hashlib
 import json
@@ -9,6 +10,7 @@ import os
 import re
 import sqlite3
 import threading
+import time
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
@@ -73,6 +75,51 @@ CREATE TABLE IF NOT EXISTS facts (
     kind TEXT NOT NULL, subject TEXT NOT NULL, statement TEXT NOT NULL, at TEXT);
 CREATE INDEX IF NOT EXISTS facts_kind ON facts (kind, subject);
 """
+
+
+BUSY_SECONDS = 30.0
+
+
+def _retry_locked(fn, deadline: float):
+    """Run fn, retrying while SQLite reports the file locked (journal-mode changes and
+    schema setup on a brand-new file do not always wait on the busy timeout)."""
+    delay = 0.01
+    while True:
+        try:
+            return fn()
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc) and "busy" not in str(exc) or time.monotonic() > deadline:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2, 0.25)
+
+
+def connect(path: str, setup: str = "") -> sqlite3.Connection:
+    """A WAL connection in autocommit mode; write through `write_txn`."""
+    db = sqlite3.connect(path, timeout=BUSY_SECONDS, check_same_thread=False, isolation_level=None)
+    deadline = time.monotonic() + BUSY_SECONDS
+    _retry_locked(lambda: db.execute("PRAGMA journal_mode=WAL"), deadline)
+    db.execute("PRAGMA synchronous=NORMAL")
+    if setup:
+        def _setup():
+            with write_txn(db):
+                for statement in filter(str.strip, setup.split(";")):
+                    db.execute(statement)
+        _retry_locked(_setup, deadline)
+    return db
+
+
+@contextlib.contextmanager
+def write_txn(db: sqlite3.Connection):
+    """One write transaction holding the write lock from its first statement, so a
+    read-then-write inside it cannot race another writer."""
+    db.execute("BEGIN IMMEDIATE")
+    try:
+        yield db
+    except BaseException:
+        db.execute("ROLLBACK")
+        raise
+    db.execute("COMMIT")
 
 
 @dataclass(frozen=True)
@@ -157,17 +204,12 @@ class Store:
             raise ConversationError(f"no conversations stored for space {space!r}")
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
         self._lock = threading.RLock()
-        self.db = sqlite3.connect(self.path, timeout=30, check_same_thread=False)
+        fts = ("CREATE VIRTUAL TABLE IF NOT EXISTS units_fts USING fts5(body, tokenize='porter unicode61');"
+               if FTS5 else "")
+        self.db = connect(self.path, _SCHEMA + fts +
+                          f"INSERT OR IGNORE INTO meta VALUES ('schema', '{SCHEMA_VERSION}')")
         self.db.row_factory = sqlite3.Row
-        self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA foreign_keys=ON")
-        self.db.execute("PRAGMA synchronous=NORMAL")
-        with self.db:
-            self.db.executescript(_SCHEMA)
-            if FTS5:
-                self.db.execute("CREATE VIRTUAL TABLE IF NOT EXISTS units_fts USING "
-                                "fts5(body, tokenize='porter unicode61')")
-            self.db.execute("INSERT OR IGNORE INTO meta VALUES ('schema', ?)", (str(SCHEMA_VERSION),))
         self._turn_cache: dict[int, Turn] = {}
 
     def close(self) -> None:
@@ -189,7 +231,7 @@ class Store:
         started = _moment(session_at)
         users = {s.lower() for s in user_speakers}
         added = skipped = redacted = 0
-        with self._lock, self.db:
+        with self._lock, write_txn(self.db):
             row = self.db.execute("SELECT started_at FROM sessions WHERE id=?", (session,)).fetchone()
             if row is None:
                 seq = self.db.execute("SELECT COALESCE(MAX(seq), 0) + 1 FROM sessions").fetchone()[0]
@@ -249,7 +291,7 @@ class Store:
                 "secrets_redacted": redacted}
 
     def delete_session(self, session: str) -> int:
-        with self._lock, self.db:
+        with self._lock, write_txn(self.db):
             ids = [r[0] for r in self.db.execute(
                 "SELECT u.id FROM units u JOIN turns t ON t.id = u.turn WHERE t.session=?", (session,))]
             if FTS5:

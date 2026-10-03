@@ -150,18 +150,23 @@ class TestStore:
         def write(n):
             try:
                 with Store(str(tmp_path), "shared") as store:
-                    store.add(f"s{n}", [{"text": f"message {n} {i}"} for i in range(20)],
-                              session_at="2023-01-01")
+                    for batch in range(3):
+                        store.add(f"s{n % 3}", [{"text": f"message {n} {batch} {i}"} for i in range(10)],
+                                  session_at="2023-01-01")
             except Exception as exc:  # noqa: BLE001
                 errors.append(exc)
 
-        threads = [threading.Thread(target=write, args=(n,)) for n in range(6)]
+        threads = [threading.Thread(target=write, args=(n,)) for n in range(12)]
         for t in threads:
             t.start()
         for t in threads:
             t.join()
         assert not errors
-        assert Store(str(tmp_path), "shared").stats()["turns"] == 120
+        store = Store(str(tmp_path), "shared")
+        assert store.stats()["turns"] == 360
+        for session in ("s0", "s1", "s2"):
+            idx = [r[0] for r in store.db.execute("SELECT idx FROM turns WHERE session=? ORDER BY idx", (session,))]
+            assert idx == list(range(120))
 
 
 class TestRecall:

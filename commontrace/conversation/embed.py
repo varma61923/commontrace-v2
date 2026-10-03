@@ -5,7 +5,6 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
-import sqlite3
 import threading
 
 from commontrace.conversation import store as _store
@@ -66,10 +65,8 @@ class Embedder:
         self.np, self.tag = np, tag
         directory = _store.conversations_dir(root)
         os.makedirs(directory, exist_ok=True)
-        self.db = sqlite3.connect(os.path.join(directory, f"embeddings-{tag}.db"), timeout=30,
-                                  check_same_thread=False)
-        self.db.execute("PRAGMA journal_mode=WAL")
-        self.db.execute("CREATE TABLE IF NOT EXISTS vec (hash TEXT PRIMARY KEY, v BLOB NOT NULL)")
+        self.db = _store.connect(os.path.join(directory, f"embeddings-{tag}.db"),
+                                 "CREATE TABLE IF NOT EXISTS vec (hash TEXT PRIMARY KEY, v BLOB NOT NULL)")
         self._lock = threading.Lock()
 
     def encode(self, texts: list[str], query: bool = False):
@@ -95,7 +92,7 @@ class Embedder:
                     batch = keys[start:start + 1024]
                     vecs = self.encode([todo[h] for h in batch]).astype(np.float16)
                     rows = [(h, v.tobytes()) for h, v in zip(batch, vecs)]
-                    with self.db:
+                    with _store.write_txn(self.db):
                         self.db.executemany("INSERT OR REPLACE INTO vec VALUES (?, ?)", rows)
                     found.update(rows)
         if not items:
