@@ -11,6 +11,7 @@ import re
 import sqlite3
 import threading
 import time
+import urllib.parse
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
@@ -19,10 +20,10 @@ from commontrace.conversation import profile, timeparse
 
 SPACE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 SESSION_RE = re.compile(r"^[^\x00-\x1f]{1,200}$")
-MAX_TURN_CHARS = 200_000
+MAX_TURN_CHARS = 1_000_000  # long pastes are split into retrieval units, not refused
 UNIT_CHARS = 700
 SCHEMA_VERSION = 2
-FACT_KINDS = ("preference", "dislike", "favorite", "identity", "habit", "plan", "possession",
+FACT_KINDS = ("instruction", "preference", "dislike", "favorite", "identity", "habit", "plan", "possession",
               "event", "fact", "relationship")
 
 
@@ -104,8 +105,16 @@ def _retry_locked(fn, deadline: float):
             delay = min(delay * 2, 0.25)
 
 
-def connect(path: str, setup: str = "") -> sqlite3.Connection:
-    """A WAL connection in autocommit mode; write through `write_txn`."""
+def connect(path: str, setup: str = "", *, read_only: bool = False) -> sqlite3.Connection:
+    """A WAL connection in autocommit mode; write through `write_txn`. A read-only
+    connection opens the file with mode=ro and query_only, so no statement can write."""
+    if read_only:
+        if not os.path.isfile(path):
+            raise ConversationError(f"no such store file: {path}")
+        uri = "file:" + urllib.parse.quote(os.path.abspath(path)) + "?mode=ro"
+        db = sqlite3.connect(uri, uri=True, timeout=BUSY_SECONDS, check_same_thread=False, isolation_level=None)
+        db.execute("PRAGMA query_only=ON")
+        return db
     db = sqlite3.connect(path, timeout=BUSY_SECONDS, check_same_thread=False, isolation_level=None)
     deadline = time.monotonic() + BUSY_SECONDS
     _retry_locked(lambda: db.execute("PRAGMA journal_mode=WAL"), deadline)
@@ -156,8 +165,7 @@ def _moment(value) -> dt.datetime | None:
     if value is None or value == "":
         return None
     if isinstance(value, dt.datetime):
-        return value.replace(tzinfo=None) if value.tzinfo is None else \
-            value.astimezone(dt.timezone.utc).replace(tzinfo=None)
+        return value.replace(tzinfo=None)  # the speaker's wall clock, as for parsed text
     if isinstance(value, dt.date):
         return dt.datetime(value.year, value.month, value.day)
     moment = timeparse.parse_moment(str(value))
@@ -207,13 +215,19 @@ def _fts_query(text: str) -> str:
 class Store:
     """One space's conversations. Thread-safe; one writer at a time per file."""
 
-    def __init__(self, root: str, space: str, *, create: bool = True):
-        self.root, self.space = root, space
+    def __init__(self, root: str, space: str, *, create: bool = True, read_only: bool = False):
+        self.root, self.space, self.read_only = root, space, read_only
         self.path = db_path(root, space)
-        if not create and not os.path.isfile(self.path):
+        if (not create or read_only) and not os.path.isfile(self.path):
             raise ConversationError(f"no conversations stored for space {space!r}")
-        os.makedirs(os.path.dirname(self.path), exist_ok=True)
         self._lock = threading.RLock()
+        self._turn_cache: dict[int, Turn] = {}
+        if read_only:
+            # frozen memory: recall works, every write raises sqlite3.OperationalError
+            self.db = connect(self.path, read_only=True)
+            self.db.row_factory = sqlite3.Row
+            return
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
         fts = ("CREATE VIRTUAL TABLE IF NOT EXISTS units_fts USING fts5(body, tokenize='porter unicode61');"
                if FTS5 else "")
         self.db = connect(self.path, _SCHEMA + fts +
@@ -221,7 +235,6 @@ class Store:
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA foreign_keys=ON")
         self._migrate()
-        self._turn_cache: dict[int, Turn] = {}
 
     def _migrate(self) -> None:
         """Bring a file written by an older version up to this schema, in place."""

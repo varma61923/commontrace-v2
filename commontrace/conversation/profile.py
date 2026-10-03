@@ -16,7 +16,25 @@ which while who whom why will with won would you your yours yourself yourselves 
 MAX_STATEMENT = 300
 
 _SENTENCES = re.compile(r"(?<=[.!?])\s+|\n+")
+_DIRECTIVE_VERBS = (r"(?:use|format|include|add|give|show|write|respond|reply|answer|explain|provide|keep|mention"
+                    r"|make|ask|suggest|recommend|list|start|end|put|wrap|label|highlight|cite|send|call|refer"
+                    r"|address|avoid|stick|limit|break|number|summari[sz]e|structure|present|check|remind)")
 _PATTERNS = [
+    # standing instructions to the assistant: kept and shown with every recall
+    ("instruction", re.compile(
+        r"(?:^|[.!?]\s+|\b(?:please|and|also)\s+)(?P<what>(?:always|never|don't ever|do not ever)\s+"
+        + _DIRECTIVE_VERBS + r"\b.+)", re.I)),
+    ("instruction", re.compile(
+        r"\b(?P<what>(?:from now on|going forward|in (?:all )?future (?:answers|responses|replies)|whenever I ask"
+        r"|every time I ask|each time I ask|when(?:ever)? you (?:answer|respond|reply|explain|suggest|write))\b.+)",
+        re.I)),
+    ("instruction", re.compile(
+        r"\b(?P<what>(?:I (?:want|need|would like|'d like) you to|make sure (?:to|you)|be sure to|remember to"
+        r"|please (?:don't|do not|avoid|stop|always|never|keep|make sure))\b.+)", re.I)),
+    ("preference", re.compile(
+        r"\bI(?:'d| would)\s+(?:much\s+|really\s+)?(?:prefer|rather|like it if|like to keep)\b(?P<what>.+)", re.I)),
+    ("preference", re.compile(
+        r"\bI(?:'m| am)\s+(?:more\s+)?(?:comfortable with|keen on|leaning towards?|partial to)\b(?P<what>.+)", re.I)),
     ("preference", re.compile(
         r"\bI(?:'m| am| do)?\s+(?:really\s+|absolutely\s+|also\s+|totally\s+|just\s+)?"
         r"(?:love|like|enjoy|prefer|adore|into|a (?:big |huge )?fan of|obsessed with|appreciate"

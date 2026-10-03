@@ -1132,6 +1132,32 @@ Ben: Congrats, what is his name?
   `answer` asks the model with the recalled context; `--rounds 2..4` lets it
   name what is missing first, and each follow-up search keeps its own best
   ranks. None of these run unless asked; recall needs no model.
+- **Standing instructions.** "Always format code with syntax highlighting",
+  "from now on keep answers short", "never suggest paid tools": rules the user
+  gives an assistant are recognised as they are written and shown at the top
+  of every recall, whatever the question, the ones touching its subject first
+  (a chat between two people has none). Preferences ("I'd rather", "I prefer")
+  are matched by stem and added whenever the question asks for help, a plan,
+  steps or a suggestion.
+- **Long messages and broad questions.** A pasted log or a long answer is cut to
+  the passages that bear on the question, with gaps marked, instead of crowding
+  out everything else. A question about a whole topic (a summary, the order
+  things were raised, "across our conversations") is answered breadth-first
+  from what the user raised over the whole history, with short excerpts; a
+  summary also gets the reply to each request. The best three hits are always
+  placed before any surrounding turns.
+- **Updates and doubt.** A question about how things stand now ("currently",
+  "latest", "still") lifts later statements over earlier ones. Every recall
+  reports `explain.confidence` (how much of the question the best turns cover)
+  and, with the cross-encoder, `explain.rerank_top`, so an answerer can say it
+  does not know. `conversation answer` instructs the model to follow standing
+  instructions, prefer the latest statement, flag contradictions instead of
+  picking one, abstain when memory is silent, compute dates and keep order.
+- **Time as the user lived it.** A timestamp with a UTC offset keeps its local
+  wall-clock time, so an evening message stays on its own day and "this
+  morning" means the user's morning.
+- **Frozen memory.** `Store(root, space, read_only=True)` opens a space so recall
+  works and every write fails, for evaluation runs and audited replays.
 - **Names.** People, places and quoted titles a message mentions are indexed
   as it is stored; a question that names one lifts the turns that mention it,
   damped by how common the name is, so a name in every turn adds nothing.

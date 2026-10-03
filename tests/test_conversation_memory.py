@@ -16,7 +16,7 @@ class TestMoments:
         ("10:43 am on 4 June, 2023", dt.datetime(2023, 6, 4, 10, 43)),
         ("2023/05/20 (Sat) 02:21", dt.datetime(2023, 5, 20, 2, 21)),
         ("2023-05-08", dt.datetime(2023, 5, 8)),
-        ("2023-05-08T13:56:00+02:00", dt.datetime(2023, 5, 8, 11, 56)),
+        ("2023-05-08T13:56:00+02:00", dt.datetime(2023, 5, 8, 13, 56)),
         ("May 8, 2023", dt.datetime(2023, 5, 8)),
         ("Monday, 8 May 2023", dt.datetime(2023, 5, 8)),
         ("8 May 2023 10:00", dt.datetime(2023, 5, 8, 10, 0)),
@@ -294,4 +294,4 @@ def test_long_pastes_are_stored_and_split(tmp_path):
     assert store.add("x", [{"text": text}], session_at="2023-01-01")["added"] == 1
     assert store.stats()["units"] > 40
     with pytest.raises(ConversationError):
-        store.add("x", [{"text": "y" * 200_001}])
+        store.add("x", [{"text": "y" * 1_000_001}])

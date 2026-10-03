@@ -15,11 +15,25 @@ from commontrace.conversation.store import Store
 MAX_ROUNDS = 4
 MAX_FOLLOW_UPS = 3
 
-ANSWER = """You answer questions from your memory of past conversations.
-Use only the memories below. Dates in [brackets] say when relative time words
-happened; session headers say when each session took place. When facts changed over
-time, the most recent one is current. Answer in a short phrase. If the memories do
-not contain the answer, say you don't know.
+ANSWER = """You answer from your memory of past conversations with the user.
+Use only the memories below. Session headers say when each session took place; dates in
+[brackets] resolve relative time words.
+
+How to answer:
+- Follow every standing instruction the user gave (format, length, style, things to avoid),
+  and shape suggestions to the preferences they stated, even when the question does not
+  mention them.
+- If something changed over time, the most recent statement is current; say what it was
+  before only if asked.
+- If two memories contradict each other and neither is clearly the later correction, say
+  that the memories conflict, quote both briefly, and ask which is right instead of picking one.
+- If the memories do not contain the answer, say you don't have that information; never guess
+  a detail that was not stated.
+- For "when", "how long" and "how many days/weeks" questions, compute from the dates shown.
+- For order or sequence questions, list the items in the order they happened or were raised,
+  with their dates.
+- For summaries, cover the whole span in chronological order, not only the latest part.
+Answer concisely.
 
 Memories:
 {context}

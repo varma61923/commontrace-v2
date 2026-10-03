@@ -60,7 +60,8 @@ _TRAILING_TIME = re.compile(r"^(.*?)[,\s]+(?:at\s+)?(\d{1,2}):(\d{2})(?:\s*([ap]
 
 
 def parse_moment(text: str | None) -> dt.datetime | None:
-    """A wall-clock moment from the formats conversations carry, or None."""
+    """A wall-clock moment from the formats conversations carry, or None. A UTC offset
+    is kept as local time, not converted, so dates stay the speaker's dates."""
     if not text:
         return None
     text = str(text)
@@ -71,10 +72,8 @@ def parse_moment(text: str | None) -> dt.datetime | None:
             moment = dt.datetime(int(y), int(mo), int(d), int(hh or 0), int(mm or 0), int(ss or 0))
         except ValueError:
             return None
-        if tz and tz != "Z":
-            sign = 1 if tz[0] == "+" else -1
-            digits = tz[1:].replace(":", "")
-            moment -= sign * dt.timedelta(hours=int(digits[:2]), minutes=int(digits[2:]))
+        # the speaker's wall clock is what "this morning" and "yesterday" refer to, so an
+        # offset is dropped rather than converted (19:00-08:00 stays the evening of that day)
         return moment
     m = _SLASHED.match(text)
     if m:

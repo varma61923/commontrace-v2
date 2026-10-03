@@ -10,6 +10,11 @@ and a judge grade the answer, as published results do.
     python benchmarks/conversation_bench.py --dataset locomo --data locomo10.json
     python benchmarks/conversation_bench.py --dataset longmemeval --data longmemeval_s.json \
         --limit 60 --budget 2000
+    python benchmarks/conversation_bench.py --dataset dolphin --data path/to/dolphinbench --budget 1500,4000
+
+For DolphinBench the evidence of a test is the history messages that establish its
+load-bearing facts; the query is the task request as the user typed it, asked on
+the test's anchor date.
 """
 from __future__ import annotations
 
@@ -83,6 +88,91 @@ def longmemeval_cases(path: str, limit: int, seed: int):
         yield q["question_id"], sessions, q["question_date"], [question]
 
 
+def dolphin_cases(path: str, personas: str = "", limit: int = 0):
+    import glob
+
+    import yaml
+
+    names = [p for p in (personas.split(",") if personas else ("alex", "morgan", "riley")) if p]
+    for persona in names:
+        base = os.path.join(path, "registry", "personas", persona)
+        history = yaml.safe_load(open(os.path.join(base, "life_sim.yaml"), encoding="utf-8"))["sessions"]
+        facts = {f["id"]: f for f in yaml.safe_load(open(os.path.join(base, "facts.yaml"), encoding="utf-8"))["facts"]}
+        by_day: dict[str, list] = defaultdict(list)
+        for s in history:
+            day = str(s["narrative_date"])[:10]
+            for j, text in enumerate(s["messages"]):
+                ref = s["id"] if len(s["messages"]) == 1 else f"{s['id']}#{j}"
+                by_day[day].append({"id": ref, "speaker": "user", "role": "user", "text": text,
+                                    "at": str(s["narrative_date"])})
+        sessions = [(day, msgs[0]["at"], msgs) for day, msgs in sorted(by_day.items())]
+        files = sorted(glob.glob(os.path.join(path, "tests", persona, "[0-9]*.yaml")))
+        questions, now = [], None
+        for f in files[:limit or None]:
+            t = yaml.safe_load(open(f, encoding="utf-8"))
+            now = str(t["narrative_anchor_date"])
+            evidence = {str(sid) for fid in t["load_bearing_facts"] for sid in facts[fid]["source_session_ids"]}
+            n = len(t["load_bearing_facts"])
+            questions.append({"id": f"{persona}-{t['id']}", "question": t["test"], "answer": "",
+                              "type": "1 fact" if n == 1 else ("2-3 facts" if n <= 3 else "4+ facts"),
+                              "evidence": evidence, "sessions": set()})
+        yield persona, sessions, now, questions
+
+
+BEAM_MARK = re.compile(r"\s*->->\s*[\d, ]+\s*$")
+
+
+def _ids(value) -> set[str]:
+    if value is None:
+        return set()
+    if isinstance(value, dict):
+        return set().union(*(_ids(v) for v in value.values())) if value else set()
+    if isinstance(value, (list, tuple)) or hasattr(value, "tolist"):
+        return {str(int(v)) for v in (value.tolist() if hasattr(value, "tolist") else value)
+                if str(v).strip().lstrip("-").isdigit()}
+    return {str(int(value))} if str(value).strip().isdigit() else set()
+
+
+def beam_cases(path: str, limit: int = 0):
+    """BEAM (Beyond a Million Tokens): each conversation's probing questions, ten abilities.
+    Evidence is the chat messages each question cites; abstention questions cite none."""
+    import ast
+    import datetime as dt
+
+    import pandas as pd
+
+    frame = pd.read_parquet(path)
+    for _, row in frame.iterrows():
+        sessions, last = [], None
+        for n, session in enumerate(row["chat"]):
+            anchor = next((m["time_anchor"] for m in session if m.get("time_anchor") not in (None, "None")), None)
+            when = None
+            if anchor:
+                try:
+                    when = dt.datetime.strptime(str(anchor), "%B-%d-%Y").date().isoformat()
+                except ValueError:
+                    when = None
+            last = when or last
+            messages = [{"id": str(m["id"]), "role": m["role"], "speaker": m["role"],
+                         "text": BEAM_MARK.sub("", str(m["content"] or ""))} for m in session]
+            sessions.append((f"session {n + 1}", when or last, messages))
+        refs = {m["id"] for _s, _d, ms in sessions for m in ms}
+        probing = ast.literal_eval(row["probing_questions"]) if isinstance(row["probing_questions"], str) \
+            else row["probing_questions"]
+        questions = []
+        for category, items in probing.items():
+            for i, q in enumerate(items):
+                answer = q.get("answer") or q.get("ideal_answer") or q.get("ideal_response") or \
+                    q.get("ideal_summary") or ""
+                questions.append({"id": f"beam{row['conversation_id']}-{category}-{i}", "question": q["question"],
+                                  "answer": str(answer), "type": category,
+                                  "evidence": _ids(q.get("source_chat_ids")) & refs, "sessions": set()})
+        yield f"beam{row['conversation_id']}", sessions, None, questions
+        limit -= 1
+        if limit == 0:
+            break
+
+
 def _norm(text: str) -> str:
     return " ".join(re.findall(r"[a-z0-9]+", text.lower()))
 
@@ -94,15 +184,7 @@ def answer_in(context: str, answer: str) -> bool | None:
     return f" {answer} " in f" {_norm(context)} "
 
 
-ANSWER_PROMPT = """You are answering a question from your memory of past conversations.
-Use only the memories below. Dates in [brackets] are when relative time words happened.
-Answer in a short phrase. If the memories do not contain the answer, say so.
-
-Memories:
-{context}
-
-Question (asked {now}): {question}
-Answer:"""
+from commontrace.conversation.answer import ANSWER as ANSWER_PROMPT  # noqa: E402  the product's own prompt
 
 JUDGE_PROMPT = """Grade an answer against a gold answer. Be generous: the answer is CORRECT if it
 contains the same information as the gold answer, even if phrased differently or longer.
@@ -133,8 +215,13 @@ def run(args) -> dict:
                    rerank=None if args.rerank == "none" else args.rerank,
                    neighbours_before=args.neighbours, neighbours_after=args.neighbours,
                    profile_facts=args.profile_facts)
-    cases = locomo_cases(args.data) if args.dataset == "locomo" else \
-        longmemeval_cases(args.data, args.limit, args.seed)
+    if args.dataset == "dolphin":
+        cases = dolphin_cases(args.data, args.personas, args.limit)
+    elif args.dataset == "beam":
+        cases = beam_cases(args.data, args.limit)
+    else:
+        cases = locomo_cases(args.data) if args.dataset == "locomo" else \
+            longmemeval_cases(args.data, args.limit, args.seed)
     rows, ingest_s, recall_s, full_tokens = {b: [] for b in budgets}, 0.0, 0.0, []
     for space, sessions, now, questions in cases:
         with Store(args.root, re.sub(r"[^A-Za-z0-9._-]", "_", space)) as store:
@@ -160,7 +247,8 @@ def run(args) -> dict:
                            "evidence": (len(q["evidence"] & refs) / len(q["evidence"])) if q["evidence"] else None,
                            "complete": q["evidence"] <= refs if q["evidence"] else None,
                            "session": (len(q["sessions"] & sess) / len(q["sessions"])) if q["sessions"] else None,
-                           "answer_in_context": answer_in(context, q["answer"])}
+                           "answer_in_context": answer_in(context, q["answer"]),
+                           "confidence": r.explain.get("confidence"), "rerank_top": r.explain.get("rerank_top")}
                     if args.answer:
                         row.update(llm_grade(q, context, now))
                     rows[budget].append(row)
@@ -193,7 +281,8 @@ def summarize(rows, args, budget, ingest_s, recall_s, full_tokens) -> dict:
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--dataset", choices=("locomo", "longmemeval"), required=True)
+    p.add_argument("--dataset", choices=("locomo", "longmemeval", "dolphin", "beam"), required=True)
+    p.add_argument("--personas", default="", help="dolphin: comma list (default: all three)")
     p.add_argument("--data", required=True)
     p.add_argument("--root", default=os.path.join("benchmarks", ".work"),
                    help="store root, reused between runs so ingestion and embeddings are cached")

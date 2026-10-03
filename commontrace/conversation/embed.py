@@ -59,14 +59,19 @@ def _model(tag: str):
 class Embedder:
     """Unit-normalised float32 vectors for texts, through the shared cache."""
 
-    def __init__(self, root: str, tag: str):
+    def __init__(self, root: str, tag: str, *, read_only: bool = False):
         import numpy as np
 
-        self.np, self.tag = np, tag
+        self.np, self.tag, self.read_only = np, tag, read_only
         directory = _store.conversations_dir(root)
-        os.makedirs(directory, exist_ok=True)
-        self.db = _store.connect(os.path.join(directory, f"embeddings-{tag}.db"),
-                                 "CREATE TABLE IF NOT EXISTS vec (hash TEXT PRIMARY KEY, v BLOB NOT NULL)")
+        path = os.path.join(directory, f"embeddings-{tag}.db")
+        if read_only:
+            # vectors missing from a frozen cache are computed but never written back
+            self.db = _store.connect(path, read_only=True) if os.path.isfile(path) else \
+                _store.connect(":memory:", "CREATE TABLE IF NOT EXISTS vec (hash TEXT PRIMARY KEY, v BLOB NOT NULL)")
+        else:
+            os.makedirs(directory, exist_ok=True)
+            self.db = _store.connect(path, "CREATE TABLE IF NOT EXISTS vec (hash TEXT PRIMARY KEY, v BLOB NOT NULL)")
         self._lock = threading.Lock()
 
     def encode(self, texts: list[str], query: bool = False):
@@ -92,8 +97,9 @@ class Embedder:
                     batch = keys[start:start + 1024]
                     vecs = self.encode([todo[h] for h in batch]).astype(np.float16)
                     rows = [(h, v.tobytes()) for h, v in zip(batch, vecs)]
-                    with _store.write_txn(self.db):
-                        self.db.executemany("INSERT OR REPLACE INTO vec VALUES (?, ?)", rows)
+                    if not self.read_only:
+                        with _store.write_txn(self.db):
+                            self.db.executemany("INSERT OR REPLACE INTO vec VALUES (?, ?)", rows)
                     found.update(rows)
         if not items:
             return np.zeros((0, 0), dtype=np.float32)

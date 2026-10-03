@@ -26,12 +26,18 @@ class Options:
     neighbours_before: int = 2
     neighbours_after: int = 2
     neighbour_hits: int | None = None
+    neighbour_minutes: float | None = 60.0
+    excerpt_tokens: int | None = None  # longest a single turn may show; default budget/5, at least 200
     window_boost: float = 1.0
     entity_boost: float = 0.1
     lexical_weight: float = 0.5
     rerank: str | None = "auto"
     rerank_depth: int = 50
     profile_facts: int = 4
+    instructions: int = 6
+    broad: bool | None = None  # None: detect summary / ordering / across-session questions
+    recency_boost: float = 0.3
+    primary_hits: int | None = None  # best hits placed before any neighbours (default 3)
     embedder: str | None = "auto"
     summaries: bool = True
     sessions: tuple[str, ...] = ()
@@ -60,8 +66,64 @@ def tokens(text: str) -> int:
     return max(1, math.ceil(len(text) / 4)) if text else 0
 
 
+_BROAD = re.compile(
+    r"\b(?:summar(?:y|ise|ize|ies)|overview|recap|progress(?:ed)?|evolv(?:e|ed)|over time|so far|timeline|"
+    r"in (?:what|which) order|order in which|sequence|chronolog\w*|throughout|across (?:our|my|all|the|these|"
+    r"different) (?:conversations?|sessions?|chats?|discussions?|requests?)|walk me through|history of|"
+    r"all (?:the )?(?:times|things|steps|changes|features|issues)|every (?:time|change|step)|how many (?:times|"
+    r"different))\b", re.I)
+
+
+_ABOUT_ASSISTANT = re.compile(r"\b(?:you (?:said|told|suggested|recommended|mentioned|gave|listed|provided|wrote|"
+                              r"explained|shared|described|came up with)|your (?:suggestion|recommendation|answer|"
+                              r"advice|list)|our (?:previous |last |earlier )?(?:chat|conversation))\b", re.I)
+_SUMMARY = re.compile(r"\b(?:summar(?:y|ise|ize|ies)|overview|recap)\b", re.I)
+
+
+_CURRENT = re.compile(r"\b(?:current(?:ly)?|now|latest|most recent(?:ly)?|these days|still|anymore|any more|"
+                      r"updated?|today|at the moment|right now|nowadays)\b", re.I)
+
+
+def asks_current(question: str) -> bool:
+    """A question about how things stand now: a later statement should outrank an older one."""
+    return bool(_CURRENT.search(question or ""))
+
+
+def confidence(store: Store, question: str, turn_ids: list[int]) -> float:
+    """How much of the question the best recalled turns cover (0..1): a low value means
+    memory probably does not hold the answer, so the answerer should say so."""
+    asked = {w for w in re.findall(r"[a-z0-9]+", question.lower()) if len(w) > 2 and w not in profile.STOPWORDS
+             and w not in _QUESTION_WORDS}
+    if not asked or not turn_ids:
+        return 0.0
+    turns = store.turns(turn_ids)
+    best = 0.0
+    for t in turns.values():
+        have = set(re.findall(r"[a-z0-9]+", t.text.lower()))
+        stems = {w[:5] for w in have}
+        hit = sum(1 for w in asked if w in have or w[:5] in stems)
+        best = max(best, hit / len(asked))
+    return round(best, 3)
+
+
+_QUESTION_WORDS = frozenset("what when where which who whom whose why how did does tell know remember mention "
+                            "mentioned said say ever".split())
+
+
+def is_broad(question: str) -> bool:
+    """A question about a whole topic across sessions (a summary, an order of events, a
+    count across conversations): it needs coverage more than the single best passage."""
+    return bool(_BROAD.search(question or ""))
+
+
 _ADVICE = re.compile(r"\b(?:recommend|suggest|suggestions?|ideas?|tips?|advice|should I|what should|"
-                     r"any (?:good|other)|help me (?:choose|pick|find|plan))\b", re.I)
+                     r"any (?:good|other)|help me|how (?:can|could|should|would|do) I|how to|walk me through|"
+                     r"can you (?:show|explain|help|give|write|create|make|plan)|explain|steps?|approach|"
+                     r"what (?:libraries|tools|options|places|ways)|best way|plan(?:ning)? (?:my|a|the))\b", re.I)
+
+
+def _stems(text: str) -> set[str]:
+    return {w[:5] for w in re.findall(r"[a-z0-9]+", text.lower()) if len(w) > 2 and w not in profile.STOPWORDS}
 
 
 def subqueries(question: str) -> list[str]:
@@ -89,7 +151,7 @@ def _embedder(store: Store, choice: str | None):
         return None
     if not embed.available():
         return None
-    return embed.Embedder(store.root, tag)
+    return embed.Embedder(store.root, tag, read_only=getattr(store, "read_only", False))
 
 
 def _header(session: str, at: dt.datetime | None) -> str:
@@ -107,6 +169,46 @@ def _summary_line(text: str) -> str:
 
 def _line(turn: Turn) -> str:
     return f"{turn.speaker}: {turn.annotated()}"
+
+
+_WINDOW = re.compile(r"(?<=[.!?\n])\s+")
+
+
+def _excerpt(turn: Turn, question: str, cap: int) -> str:
+    """A long turn cut to the passages that bear on the question (in their original
+    order, gaps marked), so one pasted log or long answer cannot crowd out the rest."""
+    full = _line(turn)
+    if tokens(full) <= cap:
+        return full
+    asked = {w for w in re.findall(r"[a-z0-9_]+", question.lower()) if len(w) > 2 and w not in profile.STOPWORDS}
+    pieces, buf = [], ""
+    for part in _WINDOW.split(turn.annotated()):
+        buf = f"{buf} {part}".strip()
+        if len(buf) >= 280:
+            pieces.append(buf)
+            buf = ""
+    if buf:
+        pieces.append(buf)
+    scored = sorted(range(len(pieces)), key=lambda i: (
+        -len(asked & set(re.findall(r"[a-z0-9_]+", pieces[i].lower()))), i))
+    keep, spent = set(), tokens(turn.speaker) + 4
+    for i in scored:
+        cost = tokens(pieces[i]) + 1
+        if spent + cost > cap and keep:
+            continue
+        keep.add(i)
+        spent += cost
+        if spent >= cap:
+            break
+    out, previous = [], -1
+    for i in sorted(keep):
+        if i != previous + 1:
+            out.append("…")
+        out.append(pieces[i][: cap * 4])
+        previous = i
+    if previous != len(pieces) - 1:
+        out.append("…")
+    return f"{turn.speaker}: " + " ".join(out)
 
 
 def recall(store: Store, question: str, *, now=None, options: Options | None = None,
@@ -185,13 +287,21 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
         for turn in inside:
             if turn in scores:
                 scores[turn] += opts.window_boost * top * 0.5
+    if opts.recency_boost and scores and asks_current(question):
+        # knowledge updates: among comparable matches the later statement wins
+        top = max(scores.values())
+        order = sorted(scores, key=lambda t: t)  # turn ids grow with time of writing
+        for position, turn in enumerate(order):
+            scores[turn] += opts.recency_boost * top * (position / max(1, len(order) - 1))
+        explain["recency"] = True
     ranked = sorted(scores, key=lambda t: (-scores[t], t))
     rerank = opts.rerank
     if rerank == "auto":
         rerank = "cross-encoder" if embedder is not None else None
     if rerank and ranked:
-        ranked = _rerank(store, question, ranked, rerank, opts.rerank_depth)
+        ranked = _rerank(store, question, ranked, rerank, opts.rerank_depth, explain)
         explain["rerank"] = rerank
+    explain["confidence"] = confidence(store, question, ranked[:5])
     withheld: list[int] = []
     context, used, n_tokens = assemble(store, question, ranked, opts, withheld, allowed)
     if withheld:
@@ -200,7 +310,8 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
                   (window[0].isoformat(), window[1].isoformat(), window[2]) if window else None, explain)
 
 
-def _rerank(store: Store, question: str, ranked: list[int], mode: str, depth: int) -> list[int]:
+def _rerank(store: Store, question: str, ranked: list[int], mode: str, depth: int,
+            explain: dict | None = None) -> list[int]:
     from commontrace import rerank_arm
 
     if rerank_arm.ready(mode):
@@ -210,20 +321,55 @@ def _rerank(store: Store, question: str, ranked: list[int], mode: str, depth: in
     text_of = {str(t): f"{turns[t].speaker}: {turns[t].annotated()}" for t in head if t in turns}
     page, _ = rerank_arm.rerank(question, list(text_of), text_of, len(text_of), mode=mode)
     order = [int(s) for s, _x in page]
+    if explain is not None and page:
+        explain["rerank_top"] = round(float(page[0][1]), 4)
     return order + [t for t in ranked if t not in set(order)]
 
 
-def _profile_lines(store: Store, question: str, limit: int) -> list[str]:
+_GLOBAL_RULE = re.compile(r"\b(?:format\w*|style|length|short|shorter|concise|brief|bullet\w*|list|language|units?|"
+                          r"metric|imperial|code|snippets?|syntax|tone|formal|casual|words?|examples?|step|steps|"
+                          r"explain\w*|answers?|responses?|repl(?:y|ies)|summar\w*|cite|sources?|emoji\w*)\b", re.I)
+
+
+def _instruction_lines(store: Store, limit: int, question: str = "") -> list[tuple[str, int]]:
+    """Standing instructions the user gave the assistant: they apply to every answer, so
+    they are shown whatever the question, the ones touching its subject and the rules
+    about how to answer (format, length, tone, units, code) first."""
     if limit <= 0:
         return []
-    facts = store.facts()
+    # instructions are addressed to an assistant: a chat between two people has none
+    addressed = store.db.execute("SELECT 1 FROM turns WHERE role='assistant' LIMIT 1").fetchone() is not None or \
+        store.db.execute("SELECT COUNT(DISTINCT speaker) FROM turns").fetchone()[0] <= 1
+    if not addressed:
+        return []
+    asked = _stems(question)
+    picked, seen = [], set()
+    for f in reversed(store.facts(["instruction"])):
+        key = f["subject"]
+        if key in seen:
+            continue
+        seen.add(key)
+        overlap = len(asked & _stems(f["statement"])) + (1 if _GLOBAL_RULE.search(f["statement"]) else 0)
+        picked.append((overlap, f))
+    picked.sort(key=lambda x: -x[0])  # most relevant first; newest first among equals
+    out = []
+    for _overlap, f in picked[:limit]:
+        day = f"({f['at'][:10]}) " if f["at"] else ""
+        out.append((f"- {day}{f['statement']}", f["turn"]))
+    return out
+
+
+def _profile_lines(store: Store, question: str, limit: int) -> list[tuple[str, int]]:
+    if limit <= 0:
+        return []
+    facts = [f for f in store.facts() if f["kind"] != "instruction"]
     if not facts:
         return []
-    asked = set(profile.subject_of(question, limit=20).split())
+    asked = _stems(question)
     advice = bool(_ADVICE.search(question))
     scored = []
     for f in facts:
-        overlap = len(asked & set(profile.subject_of(f["statement"], limit=30).split()))
+        overlap = len(asked & _stems(f["statement"]))
         if overlap or (advice and f["kind"] in ("preference", "dislike", "favorite", "identity")):
             scored.append((overlap + (0.5 if f["kind"] in ("preference", "dislike") else 0), f))
     scored.sort(key=lambda x: x[1]["at"] or "", reverse=True)
@@ -234,7 +380,7 @@ def _profile_lines(store: Store, question: str, limit: int) -> list[str]:
             continue
         seen.add(f["statement"])
         day = f"({f['at'][:10]}) " if f["at"] else ""
-        out.append(f"- {day}{f['statement']}")
+        out.append((f"- {day}{f['statement']}", f["turn"]))
         if len(out) >= limit:
             break
     return out
@@ -250,12 +396,21 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
     A turn the injection screen flags is never shown; its id goes to `withheld`."""
     withheld = [] if withheld is None else withheld
     budget = max(0, opts.budget)
+    instruction_lines = _instruction_lines(store, opts.instructions, question)
+    instruction_block = ("[Standing instructions from the user]\n" + "\n".join(t for t, _ in instruction_lines)
+                         + "\n\n") if instruction_lines else ""
+    while instruction_lines and tokens(instruction_block) > budget // 6:
+        instruction_lines.pop()
+        instruction_block = ("[Standing instructions from the user]\n" + "\n".join(t for t, _ in instruction_lines)
+                             + "\n\n") if instruction_lines else ""
     profile_lines = _profile_lines(store, question, opts.profile_facts)
-    profile_block = ("[What the user has said about themselves]\n" + "\n".join(profile_lines) + "\n\n") \
-        if profile_lines else ""
+    profile_block = ("[What the user has said about themselves]\n" + "\n".join(t for t, _ in profile_lines)
+                     + "\n\n") if profile_lines else ""
+    if tokens(profile_block) > budget // 4:
+        profile_block, profile_lines = "", []
+    profile_block = instruction_block + profile_block
+    pinned = [turn for _t, turn in instruction_lines + profile_lines]
     spent = tokens(profile_block)
-    if spent > budget // 3:
-        profile_block, spent = "", 0
     chosen: dict[int, Turn] = {}
     sessions_seen: set[str] = set()
     summaries = store.summaries() if opts.summaries else {}
@@ -266,7 +421,41 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
             cost += tokens(_summary_line(summaries[session]["text"])) + 1
         return cost
 
+    broad = is_broad(question) if opts.broad is None else opts.broad
+    cap = opts.excerpt_tokens or (max(60, budget // 16) if broad else max(200, budget // 5))
+    summary = broad and bool(_SUMMARY.search(question or ""))
+    user_turns_exist = broad and not _ABOUT_ASSISTANT.search(question or "") and \
+        store.db.execute("SELECT 1 FROM turns WHERE role='user' LIMIT 1").fetchone() is not None
+    rendered: dict[int, str] = {}
+
+    def line_of(turn: Turn) -> str:
+        if turn.id not in rendered:
+            rendered[turn.id] = _excerpt(turn, question, cap)
+        return rendered[turn.id]
+
     with_context = opts.neighbour_hits if opts.neighbour_hits is not None else max(5, budget // 400)
+    # the best hits go in first, on their own: context around one hit must never push a
+    # better-ranked hit out of the budget
+    primary: set[int] = set()
+    primary_hits = opts.primary_hits if opts.primary_hits is not None else 3
+    head = store.turns(ranked[:primary_hits * 3])
+    for tid in ranked[:primary_hits * 3]:
+        turn = head.get(tid)
+        if turn is None or len(primary) >= primary_hits:
+            continue
+        if broad and turn.role not in ("user", "") and user_turns_exist:
+            continue
+        if _flagged(turn):
+            if tid not in withheld:
+                withheld.append(tid)
+            continue
+        cost = tokens(line_of(turn)) + 1 + (0 if turn.session in sessions_seen else header_cost(turn.session, turn.at))
+        if spent + cost > budget:
+            continue
+        chosen[tid] = turn
+        primary.add(tid)
+        sessions_seen.add(turn.session)
+        spent += cost
     hits = 0
     for start in range(0, len(ranked), 50):
         batch = ranked[start:start + 50]
@@ -274,12 +463,27 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
         full = False
         for tid in batch:
             turn = turns.get(tid)
-            if turn is None or tid in chosen:
+            if turn is None or (tid in chosen and tid not in primary):
                 continue
+            first = tid in primary
+            primary.discard(tid)
+            if broad and turn.role not in ("user", "") and user_turns_exist:
+                continue  # what the user raised, across the whole history, before any single long answer
             hits += 1
-            group = [tid] + [n for n in (store.neighbours(turn, opts.neighbours_before, opts.neighbours_after)
-                                         if hits <= with_context else []) if allowed is None or n in allowed]
+            if broad:
+                # a summary also needs what was answered: the reply right after each request
+                near = store.neighbours(turn, 0, 1) if summary else []
+            else:
+                near = store.neighbours(turn, opts.neighbours_before, opts.neighbours_after) \
+                    if hits <= with_context else []
+            group = [tid] + [n for n in near if allowed is None or n in allowed]
             group_turns = store.turns(group)
+            if opts.neighbour_minutes is not None and turn.at is not None:
+                # a neighbour is context only when it was said close to the hit: turns of one
+                # dialogue share a moment, separate notes made hours apart on one day do not
+                gap = dt.timedelta(minutes=opts.neighbour_minutes)
+                group = [g for g in group if g == tid or g not in group_turns or group_turns[g].at is None
+                         or abs(group_turns[g].at - turn.at) <= gap]
             for g in list(group):
                 if g in group_turns and _flagged(group_turns[g]):
                     group.remove(g)
@@ -287,11 +491,13 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
                         withheld.append(g)
             if tid not in group:
                 continue
-            cost = sum(tokens(_line(group_turns[g])) + 1 for g in group if g not in chosen and g in group_turns)
+            cost = sum(tokens(line_of(group_turns[g])) + 1 for g in group if g not in chosen and g in group_turns)
             if turn.session not in sessions_seen:
                 cost += header_cost(turn.session, turn.at)
             if spent + cost > budget:
-                solo = tokens(_line(turn)) + 1 + (0 if turn.session in sessions_seen else
+                if first:
+                    continue  # already placed; its neighbours do not fit
+                solo = tokens(line_of(turn)) + 1 + (0 if turn.session in sessions_seen else
                                                   header_cost(turn.session, turn.at))
                 if spent + solo > budget:
                     full = spent >= budget * 0.97
@@ -316,8 +522,8 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
         for turn in sorted(turns, key=lambda t: t.idx):
             if previous is not None and turn.idx > previous + 1:
                 lines.append("…")
-            lines.append(_line(turn))
+            lines.append(line_of(turn))
             previous = turn.idx
         blocks.append("\n".join(lines))
     context = profile_block + "\n\n".join(blocks)
-    return context, list(chosen), tokens(context)
+    return context, list(chosen) + [t for t in dict.fromkeys(pinned) if t not in chosen], tokens(context)
