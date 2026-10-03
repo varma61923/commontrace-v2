@@ -211,3 +211,52 @@ class TestPortability:
         _seed(root)
         assert main(["conversation", "answer", "ana", "What is the cat called?", "--dest", root]) == 2
         assert "COMMONTRACE_LLM" in capsys.readouterr().err
+
+
+class TestEntitiesAndPromotion:
+    def test_entities_are_indexed_and_backfilled(self, tmp_path):
+        from commontrace.conversation import profile
+
+        assert profile.entities("Hey Mel! I read \"The Night Circus\" at the LGBTQ center.") == \
+            {"mel", "night circus", "lgbtq"}
+        store = _seed(str(tmp_path))
+        assert store.entity_turns(["Miso"])["miso"] == [3]
+        store.db.execute("DELETE FROM entities")
+        store.db.execute("DELETE FROM meta WHERE key='entities'")
+        store.close()
+        again = Store(str(tmp_path), "ana")
+        assert again.entity_turns(["miso"])["miso"] == [3]
+
+    def test_a_named_entity_lifts_the_turns_that_mention_it(self, tmp_path):
+        store = _seed(str(tmp_path))
+        r = recall(store, "Tell me about Miso", options=LEXICAL)
+        assert r.explain["entities"] == ["miso"] and "cat named Miso" in r.context
+
+    def test_promote_copies_the_current_profile_into_facts(self, tmp_path):
+        from commontrace import hierarchical
+
+        store = _seed(str(tmp_path))
+        out = store.promote()
+        assert out["promoted"] == len(store.facts()) and out["reinforced"] == 0
+        statements = {f.statement for f in hierarchical.list_facts(str(tmp_path))}
+        assert any("teacher" in s for s in statements) and not any("nurse" in s for s in statements)
+        assert store.promote()["promoted"] == 0
+
+    def test_mcp_forget_and_summarize(self, tmp_path):
+        pytest.importorskip("mcp")
+        import asyncio
+
+        from commontrace import mcp_server
+
+        _seed(str(tmp_path))
+        server = mcp_server.build_server(str(tmp_path))
+
+        def call(name, **arguments):
+            result = asyncio.run(server.call_tool(name, arguments))
+            sc = getattr(result, "structured_content", None)
+            return sc.get("result", sc) if sc else json.loads(result.content[0].text)
+
+        assert call("conversation_summarize", space="ana")["summarized"] == 2
+        assert not call("conversation_forget", space="ana")["ok"]
+        assert call("conversation_forget", space="ana", session="s2")["deleted"] == 2
+        assert Store(str(tmp_path), "ana").stats()["sessions"] == 1

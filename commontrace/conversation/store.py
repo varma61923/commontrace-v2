@@ -77,6 +77,10 @@ CREATE TABLE IF NOT EXISTS facts (
     kind TEXT NOT NULL, subject TEXT NOT NULL, statement TEXT NOT NULL, at TEXT,
     slot TEXT, source TEXT NOT NULL DEFAULT 'rule', superseded_by INTEGER);
 CREATE INDEX IF NOT EXISTS facts_kind ON facts (kind, subject);
+CREATE TABLE IF NOT EXISTS entities (
+    name TEXT NOT NULL, turn INTEGER NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
+    PRIMARY KEY (name, turn)) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS entities_turn ON entities (turn);
 CREATE TABLE IF NOT EXISTS summaries (
     session TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
     text TEXT NOT NULL, method TEXT NOT NULL, turns INTEGER NOT NULL, at TEXT NOT NULL);
@@ -226,6 +230,13 @@ class Store:
                             ("superseded_by", "INTEGER")]}
         missing = [(table, col, decl) for table, cols in wanted.items() for col, decl in cols
                    if col not in {r[1] for r in self.db.execute(f"PRAGMA table_info({table})")}]
+        if self.get_meta("entities") != "1":
+            with self._lock, write_txn(self.db):
+                if self.get_meta("entities") != "1":
+                    for tid, text in self.db.execute("SELECT id, text FROM turns").fetchall():
+                        self.db.executemany("INSERT OR IGNORE INTO entities VALUES (?, ?)",
+                                            [(e, tid) for e in profile.entities(text)])
+                    self.db.execute("INSERT OR REPLACE INTO meta VALUES ('entities', '1')")
         if not missing:
             return
         with self._lock, write_txn(self.db):
@@ -297,6 +308,8 @@ class Store:
                     (session, idx, _iso(at), speaker, role, text, dates,
                      lo.isoformat() if lo else None, hi.isoformat() if hi else None, ref, key, _iso(expires)))
                 turn_id = cur.lastrowid
+                self.db.executemany("INSERT OR IGNORE INTO entities VALUES (?, ?)",
+                                    [(e, turn_id) for e in profile.entities(text)])
                 annotated = timeparse.annotate(text, groundings)
                 for part, unit in enumerate(split_units(annotated)):
                     body = f"{speaker}: {unit}"
@@ -409,6 +422,7 @@ class Store:
                 "turns": one("SELECT COUNT(*) FROM turns"), "units": one("SELECT COUNT(*) FROM units"),
                 "facts": one("SELECT COUNT(*) FROM facts WHERE superseded_by IS NULL"),
                 "summaries": one("SELECT COUNT(*) FROM summaries"),
+                "entities": one("SELECT COUNT(DISTINCT name) FROM entities"),
                 "first": one("SELECT MIN(at) FROM turns"), "last": one("SELECT MAX(at) FROM turns")}
 
     def sessions(self) -> list[dict]:
@@ -478,6 +492,13 @@ class Store:
             "WHERE (? = '[]' OR f.kind IN (SELECT value FROM json_each(?))) AND (? OR f.superseded_by IS NULL) "
             "ORDER BY f.at, f.id", (json.dumps(kinds), json.dumps(kinds), int(history)))]
 
+    def entity_turns(self, names: Iterable[str]) -> dict[str, list[int]]:
+        """The turns mentioning each name."""
+        out: dict[str, list[int]] = {}
+        for name in dict.fromkeys(n.lower() for n in names):
+            out[name] = [r[0] for r in self.db.execute("SELECT turn FROM entities WHERE name=?", (name,))]
+        return out
+
     def summaries(self) -> dict[str, dict]:
         return {r["session"]: dict(r) for r in self.db.execute("SELECT * FROM summaries")}
 
@@ -512,6 +533,20 @@ class Store:
             return None
         return {r[0] for r in self.db.execute(
             "SELECT id FROM turns WHERE " + " AND ".join(clauses), args)}  # nosec B608 - fixed clauses
+
+    def promote(self, *, scope: str = "") -> dict:
+        """Copy the current profile into the store's atomic facts, so every surface that
+        reads facts (MCP query_facts, the agent loop) knows it. Restating is a no-op."""
+        from commontrace import hierarchical
+
+        category = {"preference": "preference", "dislike": "preference", "favorite": "preference"}
+        items = [{"statement": f["statement"], "category": category.get(f["kind"], "general"),
+                  "scopes": [scope] if scope else [f"conversation:{self.space}"],
+                  "valid_from": f["at"][:10] if f["at"] else None}
+                 for f in self.facts()]
+        results = hierarchical.add_facts(self.root, items) if items else []
+        return {"space": self.space, "promoted": sum(1 for _f, action in results if action == "ADD"),
+                "reinforced": sum(1 for _f, action in results if action != "ADD")}
 
     def export(self):
         """Every session as {session, started_at, summary, messages}, in order."""

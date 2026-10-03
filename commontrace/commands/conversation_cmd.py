@@ -78,6 +78,12 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     i.add_argument("--dest", default=None)
     i.set_defaults(func=run_import)
 
+    pr = sub.add_parser("promote", help="Copy the current profile into this store's atomic facts.")
+    pr.add_argument("space", help=SPACE_HELP)
+    pr.add_argument("--scope", default="", help="fact scope (default conversation:<space>)")
+    pr.add_argument("--dest", default=None)
+    pr.set_defaults(func=run_promote)
+
     g = sub.add_parser("forget", help="Delete messages past their expiry, or said before a date.")
     g.add_argument("space", help=SPACE_HELP)
     g.add_argument("--expired", action="store_true", help="messages whose `expires` has passed")
@@ -281,6 +287,19 @@ def run_import(args) -> int:
         print(f"[commontrace] {exc}", file=sys.stderr)
         return 2
     print(f"[commontrace] {added} message(s) in {sessions} session(s) imported into {args.space}.")
+    return 0
+
+
+def run_promote(args) -> int:
+    from commontrace.conversation import ConversationError
+
+    try:
+        with _store(args, create=False) as store:
+            out = store.promote(scope=args.scope)
+    except (ConversationError, ValueError) as exc:
+        print(f"[commontrace] {exc}", file=sys.stderr)
+        return 2
+    print(f"[commontrace] {out['promoted']} fact(s) added, {out['reinforced']} reinforced.")
     return 0
 
 

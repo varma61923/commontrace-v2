@@ -27,6 +27,7 @@ class Options:
     neighbours_after: int = 2
     neighbour_hits: int | None = None
     window_boost: float = 1.0
+    entity_boost: float = 0.1
     lexical_weight: float = 0.5
     rerank: str | None = "auto"
     rerank_depth: int = 50
@@ -154,6 +155,18 @@ def recall(store: Store, question: str, *, now=None, options: Options | None = N
     explain: dict = {"subqueries": queries}
     if allowed is not None:
         explain["filtered_to"] = len(allowed)
+    if opts.entity_boost and scores:
+        named = profile.entities(question)
+        if named:
+            top = max(scores.values())
+            boosted = 0
+            for name, turns in store.entity_turns(named).items():
+                weight = 1.0 / (1.0 + 0.001 * (len(turns) - 1) ** 2) if turns else 0.0
+                for turn in turns:
+                    if allowed is None or turn in allowed:
+                        scores[turn] = scores.get(turn, 0.0) + opts.entity_boost * top * weight
+                        boosted += 1
+            explain["entities"] = sorted(named)
     if window is not None:
         inside = store.in_window(window[0], window[1])
         inside = inside if allowed is None else inside & allowed

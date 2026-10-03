@@ -92,3 +92,41 @@ def extract(text: str) -> list[Fact]:
                 out.append(Fact(kind, subject, sentence[:MAX_STATEMENT], slot_of(kind, sentence, m.group("what"))))
             break
     return out
+
+
+_NAME = re.compile(r"\b[A-Z][a-z]+(?:[-'][A-Z]?[a-z]+)?(?:\s+(?:[A-Z][a-z]+|of|de|van|von))*(?:\s+[A-Z][a-z]+)?")
+_ACRONYM = re.compile(r"\b[A-Z]{2,6}\b")
+_QUOTED = re.compile(r"[\"“]([^\"”]{3,60})[\"”]")
+_NOT_NAMES = frozenset("""i im ive id ill hey hi hello oh ok okay yes no wow thanks thank sure yeah great nice cool well
+so also maybe sorry please congrats congratulations lol haha what when where who why how which that this
+these those there here it its my your our their his her mr mrs ms dr""".split())
+
+
+def entities(text: str) -> set[str]:
+    """Names and titles a message mentions, lower-cased: proper nouns (a capitalised word
+    that opens a sentence counts only when it is not an ordinary word) and quoted titles."""
+    out: set[str] = set()
+    for m in _NAME.finditer(text or ""):
+        name = re.sub(r"'s$", "", m.group(0)).strip()
+        words = name.lower().split()
+        while words and (words[0] in _NOT_NAMES or words[0] in STOPWORDS):
+            words = words[1:]
+        if not words or len(" ".join(words)) < 3:
+            continue
+        start = m.start()
+        opens_sentence = start == 0 or re.search(r"[.!?]\s*$", text[:start]) is not None
+        if opens_sentence and len(words) == 1 and words[0] in _COMMON:
+            continue
+        out.add(" ".join(words))
+    for m in _QUOTED.finditer(text or ""):
+        out.add(re.sub(r"^(?:the|a|an)\s+", "", m.group(1).strip().lower()))
+    out.update(a.lower() for a in _ACRONYM.findall(text or "") if a not in ("OK", "TV", "LOL", "OMG"))
+    return {e for e in out if e not in STOPWORDS}
+
+
+_COMMON = frozenset("""today yesterday tomorrow tonight just really actually honestly anyway everyone someone
+nothing something anything everything going got good bad love like thinking last next first one two three
+lately recently definitely absolutely totally speaking talking looking working planning trying hoping
+tell show give describe list name explain summarize summarise recommend suggest remind find help can could
+would will did does do have has had is are was were let please any some many much every each after before
+since during because although though while if then than""".split())

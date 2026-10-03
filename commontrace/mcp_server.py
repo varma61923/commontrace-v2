@@ -1592,6 +1592,41 @@ def build_server(root: str, *, allow_approval: bool = True):
                           for f in facts], count=len(facts))
 
     @mcp.tool()
+    async def conversation_forget(space: str, session: str = "", before: str = "", expired: bool = False) -> dict:
+        """Delete from a space: one `session`, messages said `before` a date, and/or messages
+        whose `expires` has passed. Profile statements they carried go with them.
+        """
+        import datetime as _dt
+
+        from commontrace.conversation import ConversationError, Store
+
+        if not (session or before or expired):
+            return _err("give session, before, or expired=true")
+        try:
+            with Store(root, space, create=False) as store:
+                deleted = store.delete_session(session) if session else 0
+                if before or expired:
+                    deleted += store.purge(before=before or None, expired_at=_dt.datetime.now(
+                        _dt.timezone.utc).replace(tzinfo=None) if expired else None)
+        except ConversationError as exc:
+            return _err(str(exc))
+        return _ok(space=space, deleted=deleted)
+
+    @mcp.tool()
+    async def conversation_summarize(space: str, session: str = "") -> dict:
+        """Write an extractive summary (the most central dated sentences) for each session
+        of a space, or one `session`; recall shows it under the session header.
+        """
+        from commontrace.conversation import ConversationError, Store
+        from commontrace.conversation.summary import summarize
+
+        try:
+            with Store(root, space, create=False) as store:
+                return _ok(**summarize(store, [session] if session else None))
+        except ConversationError as exc:
+            return _err(str(exc))
+
+    @mcp.tool()
     async def list_skills() -> dict:
         """List the reusable procedures (skills) available in this project, by name and description.
 

@@ -981,6 +981,7 @@ commontrace conversation answer ana "Where does Ana work now?" --rounds 2
 commontrace conversation profile ana --history        # include statements a newer one replaced
 commontrace conversation forget ana --expired         # messages past their "expires"
 commontrace conversation export ana --out ana.jsonl && commontrace conversation import ana-copy ana.jsonl
+commontrace conversation promote ana                  # the current profile becomes atomic facts
 ```
 
 ```
@@ -1018,6 +1019,11 @@ Ben: Congrats, what is his name?
   `answer` asks the model with the recalled context; `--rounds 2..4` lets it
   name what is missing first, and each follow-up search keeps its own best
   ranks. None of these run unless asked; recall needs no model.
+- **Names.** People, places and quoted titles a message mentions are indexed
+  as it is stored; a question that names one lifts the turns that mention it,
+  damped by how common the name is, so a name in every turn adds nothing.
+  `promote` copies the current profile into the store's atomic facts, where
+  MCP `query_facts` and the agent loop read it.
 - **Scope and lifetime.** Recall can be limited to sessions, speakers and a
   date range. A message can carry `expires`: it stops being recalled then,
   and `forget --expired` deletes it; `forget --before DATE` deletes by age.
@@ -1027,7 +1033,7 @@ Ben: Congrats, what is his name?
   `explain.withheld`. Re-adding a message (same `id`, or same speaker, time
   and text) is a no-op; concurrent writers are serialized per file.
 - **Everywhere.** MCP tools `conversation_add` / `conversation_recall` /
-  `conversation_profile`,
+  `conversation_profile` / `conversation_summarize` / `conversation_forget`,
   and gateway routes `POST /v1/conversation/add` and
   `/v1/conversation/recall` for agents in any language.
   `COMMONTRACE_CONVERSATION_EMBEDDER` picks `arctic-m` (default), `minilm`
