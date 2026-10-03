@@ -44,6 +44,8 @@ _PATTERNS = [
         r"\bI(?:'m| am| do)?\s+(?:really\s+)?(?:hate|dislike|can't stand|cannot stand|don't (?:really )?like"
         r"|not (?:really )?like|avoid|not a fan of|allergic to)\b(?P<what>.+)", re.I)),
     ("favorite", re.compile(r"\bmy (?:all-time )?fav(?:ou|o)rite (?P<what>.+)", re.I)),
+    ("identity", re.compile(  # a self-introduction: "I'm Craig, a 44-year-old colour technologist"
+        r"\b(?:I(?:'m| am)|my name is|this is) [A-Z][a-z]+(?: [A-Z][a-z]+)?,? (?:an?|the) (?P<what>[^,.;!?]{3,80})")),
     ("identity", re.compile(
         r"\b(?:I(?:'m| am)|as) (?:a|an) (?P<what>(?:[a-z-]+ ){0,3}(?:user|fan|lover|owner|parent|mom|dad"
         r"|student|teacher|engineer|developer|nurse|doctor|artist|writer|designer|vegetarian|vegan"

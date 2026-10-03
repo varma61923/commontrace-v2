@@ -122,17 +122,35 @@ _ADVICE = re.compile(r"\b(?:recommend|suggest|suggestions?|ideas?|tips?|advice|s
                      r"what (?:libraries|tools|options|places|ways)|best way|plan(?:ning)? (?:my|a|the))\b", re.I)
 
 
+_ABOUT_SELF = re.compile(r"\b(?:profession|occupation|job|career|for a living|my (?:work|role|background|name|age)|"
+                         r"who am I|where (?:do|did) I (?:live|work|grow up)|how old am I)\b", re.I)
+
+
 def _stems(text: str) -> set[str]:
     return {w[:5] for w in re.findall(r"[a-z0-9]+", text.lower()) if len(w) > 2 and w not in profile.STOPWORDS}
 
 
+_FRAME_WORDS = frozenset("summary summarise summarize summarizing comprehensive overview recap progress progressed "
+                         "evolved evolve provide give describe including include detailed brief please".split())
+
+
 def subqueries(question: str) -> list[str]:
-    """The question, plus each clause of a compound one."""
+    """The question, plus each clause of a compound one, plus each aspect of a list
+    ("a summary of X, including A, B and C" also searches "X A", "X B", "X C")."""
     out = [question]
     parts = re.split(r"\s*(?:;|,\s*and\b|\band then\b|\balso\b)\s*", question)
     if len(parts) > 1:
         out += [p for p in parts if len(re.findall(r"[A-Za-z]{3,}", p)) >= 2]
-    return list(dict.fromkeys(out))
+    if question.count(",") >= 2 or re.search(r"\bincluding\b|:", question):
+        head = re.split(r"\bincluding\b|:", question, maxsplit=1)[0]
+        rest = question[len(head):]
+        topic = [w for w in re.findall(r"[A-Za-z][A-Za-z'-]{2,}", head)
+                 if w.lower() not in profile.STOPWORDS and w.lower() not in _FRAME_WORDS][:4]
+        for aspect in re.split(r",\s*(?:and\s+)?|\band\b|\bincluding\b|:", rest):
+            words = [w for w in re.findall(r"[A-Za-z][A-Za-z'-]{2,}", aspect) if w.lower() not in profile.STOPWORDS]
+            if words:
+                out.append(" ".join(topic + words))
+    return list(dict.fromkeys(out))[:8]
 
 
 def _rrf(rankings: list[tuple[list[int], float]]) -> dict[int, float]:
@@ -318,7 +336,9 @@ def _rerank(store: Store, question: str, ranked: list[int], mode: str, depth: in
         return ranked
     head = ranked[:depth]
     turns = store.turns(head)
-    text_of = {str(t): f"{turns[t].speaker}: {turns[t].annotated()}" for t in head if t in turns}
+    # the cross-encoder reads ~512 tokens: give it the passages of a long turn that bear on
+    # the question rather than its opening, which is also several times faster
+    text_of = {str(t): _excerpt(turns[t], question, 300) for t in head if t in turns}
     page, _ = rerank_arm.rerank(question, list(text_of), text_of, len(text_of), mode=mode)
     order = [int(s) for s, _x in page]
     if explain is not None and page:
@@ -367,9 +387,10 @@ def _profile_lines(store: Store, question: str, limit: int) -> list[tuple[str, i
         return []
     asked = _stems(question)
     advice = bool(_ADVICE.search(question))
+    about_self = bool(_ABOUT_SELF.search(question))
     scored = []
     for f in facts:
-        overlap = len(asked & _stems(f["statement"]))
+        overlap = len(asked & _stems(f["statement"])) + (2 if about_self and f["kind"] == "identity" else 0)
         if overlap or (advice and f["kind"] in ("preference", "dislike", "favorite", "identity")):
             scored.append((overlap + (0.5 if f["kind"] in ("preference", "dislike") else 0), f))
     scored.sort(key=lambda x: x[1]["at"] or "", reverse=True)

@@ -137,3 +137,23 @@ def test_neighbours_are_time_gated(tmp_path):
         r = recall(s, "when is the dentist?", options=Options(budget=400, neighbours_before=2, neighbours_after=2,
                                                             profile_facts=0, **LEX))
         assert "dentist" in r.context and "offsite" not in r.context
+
+
+def test_list_questions_search_each_aspect():
+    from commontrace.conversation.search import subqueries
+
+    subs = subqueries("Can you give a comprehensive summary of my budget tracker project, including the key "
+                      "features implemented, security enhancements, and documentation efforts?")
+    assert "budget tracker project security enhancements" in subs
+    assert "budget tracker project documentation efforts" in subs
+    assert subqueries("Where did I go last week?") == ["Where did I go last week?"]
+
+
+def test_self_introductions_are_identity_and_answer_profession_questions(tmp_path):
+    facts = profile.extract("I'm Craig, a 44-year-old colour technologist, and I'm learning probability.")
+    assert [(f.kind, f.subject) for f in facts] == [("identity", "44-year-old colour technologist")]
+    with Store(str(tmp_path), "s") as s:
+        s.add("a", [{"role": "user", "text": "I'm Craig, a colour technologist, and I want help with charts."},
+                    {"role": "assistant", "text": "Happy to help with charts."}], session_at="2024-01-01")
+        r = recall(s, "What profession did I mention?", options=Options(budget=300, **LEX))
+        assert "colour technologist" in r.context

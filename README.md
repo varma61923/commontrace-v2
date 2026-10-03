@@ -1191,6 +1191,35 @@ context costs. A whole conversation averages 20,676 tokens.
 | 4,000 tokens | 92.6% | 88.3% | 97% | 81% | 97% | 72% |
 | 7,000 tokens | 95.7% | 92.4% | 98% | 89% | 98% | 83% |
 
+**Measured on BEAM** (the 100K split: 20 long user–assistant conversations,
+400 probing questions over ten memory abilities) and **LongMemEval** (120
+questions, 20 per type). Evidence in context, keyword-only / with `minilm`
+and the cross-encoder:
+
+| Ability (BEAM) | 1,500 tokens | 4,000 tokens |
+|---|---:|---:|
+| Instruction following | 85% / 88% | 88% / 92% |
+| Knowledge update | 74% / 88% | 88% / 91% |
+| Temporal reasoning | 82% / 86% | 95% / 91% |
+| Contradiction resolution | 85% / 84% | 89% / 88% |
+| Preference following | 67% / 76% | 73% / 78% |
+| Multi-session reasoning | 55% / 61% | 67% / 67% |
+| Information extraction | 52% / 60% | 55% / 66% |
+| Event ordering | 34% / 43% | 45% / 52% |
+| Summarization | 18% / 19% | 29% / 27% |
+| **All (abstention excluded: it has no evidence)** | **62% / 68%** | **70% / 73%** |
+
+LongMemEval, keyword-only: 77.4% at 1,500 tokens and 84.4% at 4,000
+(knowledge update 89% / 100%, single-session assistant 100% / 100%,
+single-session user 84% / 90%, multi-session 73% / 81%). Abstention is left
+to the answering model: BEAM's unanswerable questions reuse the topic's words,
+so neither `explain.confidence` nor the cross-encoder score separates them, and
+`conversation answer` tells the model to say when memory does not hold the answer.
+
+```bash
+python benchmarks/conversation_bench.py --dataset beam --data 100K-00000-of-00001.parquet --budget 1500,4000
+```
+
 Recall takes about 630 ms per question on 4 CPU cores, most of it the
 cross-encoder; keyword-only recall takes 5 ms. Published LoCoMo scores
 (for example 92.5 with ~7,000 tokens of context) are a model's answers graded by another model; they depend on the
