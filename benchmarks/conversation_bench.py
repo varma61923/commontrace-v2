@@ -26,7 +26,7 @@ from collections import defaultdict
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from commontrace.conversation import Options, Store, recall  # noqa: E402
-from commontrace.conversation.search import tokens  # noqa: E402
+from commontrace.conversation.search import assemble, tokens  # noqa: E402
 
 LOCOMO_CATEGORIES = {1: "multi-hop", 2: "temporal", 3: "open-domain", 4: "single-hop"}
 
@@ -128,13 +128,14 @@ def llm_grade(question: dict, context: str, now: str | None) -> dict:
 
 def run(args) -> dict:
     os.makedirs(args.root, exist_ok=True)
-    opts = Options(budget=args.budget, embedder=None if args.embedder == "none" else args.embedder,
+    budgets = [int(b) for b in str(args.budget).split(",")]
+    opts = Options(budget=budgets[0], embedder=None if args.embedder == "none" else args.embedder,
                    rerank=None if args.rerank == "none" else args.rerank,
                    neighbours_before=args.neighbours, neighbours_after=args.neighbours,
                    expand=not args.no_expand, profile_facts=args.profile_facts)
     cases = locomo_cases(args.data) if args.dataset == "locomo" else \
         longmemeval_cases(args.data, args.limit, args.seed)
-    rows, ingest_s, recall_s, full_tokens = [], 0.0, 0.0, []
+    rows, ingest_s, recall_s, full_tokens = {b: [] for b in budgets}, 0.0, 0.0, []
     for space, sessions, now, questions in cases:
         with Store(args.root, re.sub(r"[^A-Za-z0-9._-]", "_", space)) as store:
             t = time.time()
@@ -147,19 +148,26 @@ def run(args) -> dict:
                 t = time.time()
                 r = recall(store, q["question"], now=now, options=opts)
                 recall_s += time.time() - t
-                refs = {tt.ref for tt in store.turns(r.turns).values()}
-                sess = {tt.session for tt in store.turns(r.turns).values()}
-                row = {"id": q["id"], "type": q["type"], "tokens": r.tokens,
-                       "evidence": (len(q["evidence"] & refs) / len(q["evidence"])) if q["evidence"] else None,
-                       "complete": q["evidence"] <= refs if q["evidence"] else None,
-                       "session": (len(q["sessions"] & sess) / len(q["sessions"])) if q["sessions"] else None,
-                       "answer_in_context": answer_in(r.context, q["answer"])}
-                if args.answer:
-                    row.update(llm_grade(q, r.context, now))
-                rows.append(row)
-        if args.limit and args.dataset == "locomo" and len(rows) >= args.limit:
+                for budget in budgets:
+                    if budget != budgets[0]:
+                        opts_b = Options(**{**opts.__dict__, "budget": budget})
+                        context, used, n_tokens = assemble(store, q["question"], r.ranked, opts_b)
+                    else:
+                        context, used, n_tokens = r.context, r.turns, r.tokens
+                    kept = store.turns(used).values()
+                    refs, sess = {tt.ref for tt in kept}, {tt.session for tt in kept}
+                    row = {"id": q["id"], "type": q["type"], "tokens": n_tokens,
+                           "evidence": (len(q["evidence"] & refs) / len(q["evidence"])) if q["evidence"] else None,
+                           "complete": q["evidence"] <= refs if q["evidence"] else None,
+                           "session": (len(q["sessions"] & sess) / len(q["sessions"])) if q["sessions"] else None,
+                           "answer_in_context": answer_in(context, q["answer"])}
+                    if args.answer:
+                        row.update(llm_grade(q, context, now))
+                    rows[budget].append(row)
+        if args.limit and args.dataset == "locomo" and len(rows[budgets[0]]) >= args.limit:
             break
-    return summarize(rows, args, ingest_s, recall_s, full_tokens)
+    n = max(1, len(rows[budgets[0]]))
+    return {b: summarize(rs, args, b, ingest_s, recall_s / n, full_tokens) for b, rs in rows.items()}
 
 
 def _mean(values) -> float | None:
@@ -167,7 +175,7 @@ def _mean(values) -> float | None:
     return round(statistics.mean(values), 4) if values else None
 
 
-def summarize(rows, args, ingest_s, recall_s, full_tokens) -> dict:
+def summarize(rows, args, budget, ingest_s, recall_s, full_tokens) -> dict:
     def block(rs):
         return {"n": len(rs), "evidence": _mean(r["evidence"] for r in rs),
                 "complete": _mean(r["complete"] for r in rs), "session": _mean(r["session"] for r in rs),
@@ -176,11 +184,11 @@ def summarize(rows, args, ingest_s, recall_s, full_tokens) -> dict:
     by_type = defaultdict(list)
     for r in rows:
         by_type[r["type"]].append(r)
-    return {"dataset": args.dataset, "budget": args.budget, "embedder": args.embedder, "rerank": args.rerank,
+    return {"dataset": args.dataset, "budget": budget, "embedder": args.embedder, "rerank": args.rerank,
             "neighbours": args.neighbours, "expand": not args.no_expand, "overall": block(rows),
             "by_type": {t: block(rs) for t, rs in sorted(by_type.items())},
             "full_history_tokens": _mean(full_tokens), "ingest_seconds": round(ingest_s, 1),
-            "recall_ms": round(1000 * recall_s / max(1, len(rows)), 1), "rows": rows}
+            "recall_ms": round(1000 * recall_s, 1), "rows": rows}
 
 
 def main(argv=None) -> int:
@@ -189,9 +197,9 @@ def main(argv=None) -> int:
     p.add_argument("--data", required=True)
     p.add_argument("--root", default=os.path.join("benchmarks", ".work"),
                    help="store root, reused between runs so ingestion and embeddings are cached")
-    p.add_argument("--budget", type=int, default=1500)
+    p.add_argument("--budget", default="1500", help="tokens; a comma list assembles each ranking at every budget")
     p.add_argument("--embedder", default="arctic-m", choices=("arctic-m", "minilm", "none"))
-    p.add_argument("--rerank", default="none", choices=("none", "cross-encoder", "cross-encoder-fast"))
+    p.add_argument("--rerank", default="auto", choices=("auto", "none", "cross-encoder", "cross-encoder-fast"))
     p.add_argument("--neighbours", type=int, default=1)
     p.add_argument("--no-expand", action="store_true")
     p.add_argument("--profile-facts", type=int, default=4)
@@ -200,12 +208,13 @@ def main(argv=None) -> int:
     p.add_argument("--answer", action="store_true", help="answer and judge with COMMONTRACE_LLM_*")
     p.add_argument("--out")
     args = p.parse_args(argv)
-    result = run(args)
-    rows = result.pop("rows")
-    print(json.dumps(result, indent=2))
+    results = run(args)
+    for budget, result in results.items():
+        result.pop("rows") if not args.out else None
+    print(json.dumps({b: {k: v for k, v in r.items() if k != "rows"} for b, r in results.items()}, indent=2))
     if args.out:
         with open(args.out, "w") as fh:
-            json.dump({**result, "rows": rows}, fh, indent=1, default=list)
+            json.dump(results, fh, indent=1, default=list)
     return 0
 
 

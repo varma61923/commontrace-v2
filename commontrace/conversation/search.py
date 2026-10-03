@@ -27,8 +27,8 @@ class Options:
     neighbours_after: int = 1
     window_boost: float = 1.0
     lexical_weight: float = 0.5
-    rerank: str | None = None
-    rerank_depth: int = 60
+    rerank: str | None = "auto"
+    rerank_depth: int = 50
     expand: bool = True
     profile_facts: int = 4
     embedder: str | None = "auto"
@@ -164,8 +164,12 @@ def recall(store: Store, question: str, *, now=None, options: Options | None = N
             if turn in scores:
                 scores[turn] += opts.window_boost * top * 0.5
     ranked = sorted(scores, key=lambda t: (-scores[t], t))
-    if opts.rerank and ranked:
-        ranked = _rerank(store, question, ranked, opts)
+    rerank = opts.rerank
+    if rerank == "auto":
+        rerank = "cross-encoder" if embedder is not None else None
+    if rerank and ranked:
+        ranked = _rerank(store, question, ranked, rerank, opts.rerank_depth)
+        explain["rerank"] = rerank
     withheld: list[int] = []
     context, used, n_tokens = assemble(store, question, ranked, opts, withheld)
     if withheld:
@@ -174,15 +178,15 @@ def recall(store: Store, question: str, *, now=None, options: Options | None = N
                   (window[0].isoformat(), window[1].isoformat(), window[2]) if window else None, explain)
 
 
-def _rerank(store: Store, question: str, ranked: list[int], opts: Options) -> list[int]:
+def _rerank(store: Store, question: str, ranked: list[int], mode: str, depth: int) -> list[int]:
     from commontrace import rerank_arm
 
-    if rerank_arm.ready(opts.rerank):
+    if rerank_arm.ready(mode):
         return ranked
-    head = ranked[:opts.rerank_depth]
+    head = ranked[:depth]
     turns = store.turns(head)
     text_of = {str(t): f"{turns[t].speaker}: {turns[t].annotated()}" for t in head if t in turns}
-    page, _ = rerank_arm.rerank(question, list(text_of), text_of, len(text_of), mode=opts.rerank)
+    page, _ = rerank_arm.rerank(question, list(text_of), text_of, len(text_of), mode=mode)
     order = [int(s) for s, _x in page]
     return order + [t for t in ranked if t not in set(order)]
 

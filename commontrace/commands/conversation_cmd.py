@@ -32,7 +32,8 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     r.add_argument("question")
     r.add_argument("--budget", type=int, default=None, help="context size in tokens (default 1500)")
     r.add_argument("--now", default=None, help="when the question is asked (default: the latest message)")
-    r.add_argument("--rerank", choices=("cross-encoder", "cross-encoder-fast"), default=None)
+    r.add_argument("--rerank", choices=("auto", "none", "cross-encoder", "cross-encoder-fast"), default="auto",
+                   help="second-stage reranker (auto: the accurate one when the attention extra is installed)")
     r.add_argument("--lexical", action="store_true", help="keyword search only, no embedding model")
     r.add_argument("--json", action="store_true")
     r.add_argument("--dest", default=None)
@@ -102,7 +103,8 @@ def run_add(args) -> int:
 def run_recall(args) -> int:
     from commontrace.conversation import ConversationError, Options, recall
 
-    opts = Options(rerank=args.rerank, embedder=None if args.lexical else "auto")
+    opts = Options(rerank=None if args.rerank == "none" else args.rerank,
+                   embedder=None if args.lexical else "auto")
     if args.budget is not None:
         if args.budget < 50:
             print("[commontrace] --budget must be at least 50 tokens", file=sys.stderr)
