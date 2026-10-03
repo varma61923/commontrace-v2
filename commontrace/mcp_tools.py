@@ -8,10 +8,10 @@ LOCAL_TOOLS = (
     "experiment_status",
     "memory_block_read", "memory_block_update", "memory_block_list", "memory_block_delete",
     "query_facts", "record_fact",
-    "graph_query", "graph_neighbors", "graph_viz_html",
+    "graph_query", "graph_neighbors", "graph_viz_html", "graph_timeline",
     "list_skills", "load_skill",
     "conversation_add", "conversation_recall", "conversation_profile", "conversation_forget",
-    "conversation_summarize",
+    "conversation_summarize", "memory_recall",
 )
 
 APPROVAL_TOOLS = ("approve_lesson", "reject_lesson")

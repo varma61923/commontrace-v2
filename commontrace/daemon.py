@@ -203,6 +203,14 @@ def _invoke_hooks(root: str) -> dict:
         }
     except Exception as exc:  # noqa: BLE001
         results["consolidate"] = f"skipped: {exc}"
+    try:
+        from commontrace import jobs
+
+        if os.path.exists(jobs.db_path(root)):
+            budget = float(os.environ.get("COMMONTRACE_JOBS_SECONDS", "300") or 300)
+            results["jobs"] = jobs.run_pending(root, limit=100, time_budget=budget)
+    except Exception as exc:  # noqa: BLE001
+        results["jobs"] = f"error: {exc}"
     return results
 
 

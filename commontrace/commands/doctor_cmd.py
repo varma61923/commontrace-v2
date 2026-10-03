@@ -34,6 +34,10 @@ TROUBLESHOOTING: dict[str, tuple[str, str]] = {
                        "Install Python 3.10 or newer and reinstall: `python3 -m pip install commontrace`."),
     "PyYAML importable": ("Lessons and traces are Markdown with YAML frontmatter, read with PyYAML.",
                           "`python3 -m pip install 'PyYAML>=6,<7'` in the same environment as `commontrace`."),
+    "OpenTelemetry tracing": ("Tracing was turned on (COMMONTRACE_OTEL or OTEL_EXPORTER_OTLP_ENDPOINT) but spans "
+                              "cannot be exported.",
+                              "`python3 -m pip install opentelemetry-sdk opentelemetry-exporter-otlp-proto-http`, "
+                              "or unset COMMONTRACE_OTEL."),
     "git on PATH": ("Some commands read the repository's history.", "Install git, or ignore this if you do not use "
                                                                     "those commands."),
     "memory/ store present": ("Every command reads a store: a `memory/` directory.",
@@ -283,6 +287,15 @@ def run(args: argparse.Namespace) -> int:
     _check("Python >= 3.10", sys.version_info >= (3, 10), sys.version.split()[0], critical=True)
     _check("PyYAML importable", _installed("yaml"), critical=True)
     _check("git on PATH", shutil.which("git") is not None)
+    from commontrace import telemetry
+
+    tele = telemetry.status()
+    if tele["otel_enabled"]:
+        _check("OpenTelemetry tracing", tele["tracing"] and not tele["note"],
+               tele["note"] or f"exporting to {tele['endpoint'] or 'the default OTLP endpoint'}")
+    else:
+        print("  [info] telemetry: metrics in-process (gateway /v1/metrics); set COMMONTRACE_OTEL=1 or "
+              "OTEL_EXPORTER_OTLP_ENDPOINT to export traces")
 
     has_mem = os.path.isdir(paths.memory_dir(root))
     _check("memory/ store present", has_mem,

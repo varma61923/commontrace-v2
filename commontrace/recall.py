@@ -1,0 +1,319 @@
+"""Multi-channel recall: one question, every kind of memory, one token budget.
+
+Channels: approved lessons, atomic facts, knowledge-graph relations around the
+entities the question names, and conversation spaces. Each channel ranks on its own;
+the rankings are fused with weighted reciprocal-rank fusion, near-duplicates across
+channels are suppressed (maximal marginal relevance), and the result is packed into
+the budget: every channel that has something relevant gets a floor share, the rest
+goes in fused order, and an item that does not fit is cut at a sentence boundary
+rather than dropped when most of it fits.
+
+`as_of` is applied to every channel at once (a "truth subspace"): lessons, facts,
+graph edges and conversation turns are all read as they stood at that moment, so the
+context never mixes a past state of one store with the present state of another.
+
+Budgets can be set per agent in `memory/budgets.json`:
+    {"default": 1500, "agents": {"reviewer": {"budget": 800, "weights": {"lessons": 2}}}}"""
+from __future__ import annotations
+
+import json
+import os
+import re
+from dataclasses import dataclass, field
+
+from commontrace import paths, telemetry
+
+CHARS_PER_TOKEN = 4
+CHANNELS = ("lessons", "facts", "graph", "conversations")
+DEFAULT_WEIGHTS = {"lessons": 1.0, "facts": 0.8, "graph": 0.6, "conversations": 0.9}
+DEFAULT_BUDGET = 1500
+FLOOR_SHARE = 0.12
+RRF_K = 60
+MMR_LAMBDA = 0.75
+MIN_CUT_FRACTION = 0.4
+_WORDS = re.compile(r"[a-z0-9]+")
+_SENTENCE = re.compile(r"(?<=[.!?])\s+")
+
+
+def tokens(text: str) -> int:
+    return (len(text) + CHARS_PER_TOKEN - 1) // CHARS_PER_TOKEN
+
+
+@dataclass
+class Item:
+    channel: str
+    id: str
+    text: str
+    score: float = 0.0
+    at: str = ""
+    fused: float = 0.0
+    truncated: bool = False
+
+    def to_dict(self) -> dict:
+        return {"channel": self.channel, "id": self.id, "text": self.text, "score": round(self.score, 4),
+                "fused": round(self.fused, 5), "at": self.at, "tokens": tokens(self.text),
+                "truncated": self.truncated}
+
+
+@dataclass
+class Result:
+    question: str
+    as_of: str | None
+    budget: int
+    items: list[Item] = field(default_factory=list)
+    considered: dict = field(default_factory=dict)
+    errors: dict = field(default_factory=dict)
+
+    @property
+    def tokens(self) -> int:
+        return sum(tokens(i.text) for i in self.items)
+
+    @property
+    def context(self) -> str:
+        blocks: dict[str, list[str]] = {}
+        for item in self.items:
+            blocks.setdefault(item.channel, []).append(item.text)
+        titles = {"lessons": "Lessons", "facts": "Facts", "graph": "Relations", "conversations": "Conversations"}
+        out = []
+        for channel in CHANNELS:
+            if channel in blocks:
+                out.append(f"## {titles[channel]}\n" + "\n".join(f"- {t}" if channel != "conversations" else t
+                                                                 for t in blocks[channel]))
+        return "\n\n".join(out)
+
+    def to_dict(self) -> dict:
+        return {"question": self.question, "as_of": self.as_of, "budget": self.budget, "tokens": self.tokens,
+                "items": [i.to_dict() for i in self.items], "considered": self.considered,
+                "errors": self.errors, "context": self.context}
+
+
+# --- budgets ---------------------------------------------------------------------------
+
+def budget_config(root: str) -> dict:
+    path = os.path.join(paths.memory_dir(root), "budgets.json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"{path}: {exc}") from None
+    return data if isinstance(data, dict) else {}
+
+
+def resolve_budget(root: str, agent: str | None, budget: int | None,
+                   weights: dict[str, float] | None) -> tuple[int, dict[str, float]]:
+    cfg = budget_config(root)
+    spec = ((cfg.get("agents") or {}).get(agent) or {}) if agent else {}
+    total = budget or spec.get("budget") or cfg.get("default") or DEFAULT_BUDGET
+    merged = {**DEFAULT_WEIGHTS, **(cfg.get("weights") or {}), **(spec.get("weights") or {}), **(weights or {})}
+    return max(50, min(int(total), 200_000)), {k: float(v) for k, v in merged.items() if k in CHANNELS}
+
+
+# --- channels --------------------------------------------------------------------------
+
+def _rule(body: str) -> str:
+    m = re.search(r"^## Rule\s*\n(.*?)(?=^## |\Z)", body, re.S | re.M)
+    return " ".join((m.group(1) if m else body).split())
+
+
+def _lessons(root: str, question: str, as_of: str | None, k: int) -> list[Item]:
+    from commontrace import frontmatter, lesson_cache, retrieval, retrieval_io
+
+    active, term_cache = lesson_cache.load_active_with_terms(root, None)
+    active = lesson_cache.filter_eligible(active, as_of=as_of)
+    if not active:
+        return []
+    config = retrieval_io.load_config(root)
+    ranked = retrieval.rank_lessons(question, active, top_k=k, floor=config.floor, scorer=config.scorer,
+                                    term_cache=term_cache)
+    out = []
+    for r in ranked:
+        try:
+            _fm, body = frontmatter.read(r.path)
+        except Exception:  # noqa: BLE001 - an unreadable lesson is skipped, not fatal
+            continue
+        text = f"{r.slug}: {r.description}".strip(": ")
+        rule = _rule(body)
+        if rule:
+            text += f" Rule: {rule}"
+        out.append(Item("lessons", f"lesson:{r.slug}", text, r.score))
+    return out
+
+
+def _facts(root: str, question: str, as_of: str | None, k: int) -> list[Item]:
+    from commontrace import hierarchical
+
+    return [Item("facts", f"fact:{f.id}", f.statement, score, f.valid_from or "")
+            for f, score in hierarchical.search_facts(root, question, as_of=as_of, limit=k) if score > 0]
+
+
+def _graph(root: str, question: str, as_of: str | None, k: int) -> list[Item]:
+    from commontrace import graph
+
+    if not os.path.exists(os.path.join(paths.memory_dir(root), "graph")) and \
+            not graph.load_nodes(root):
+        return []
+    starts = [e for e in graph.extract_entities_from_text(root, question) if not e.startswith("lesson:")]
+    if not starts:
+        return []
+    sub = graph.multi_hop_subgraph(root, start_node_ids=starts, max_hops=1, as_of=as_of, max_edges=k * 4)
+    hops: dict[str, int] = sub.get("hop_distances", {})
+    out: list[Item] = []
+    for edge in sub.get("edges", []):
+        src, dst, rel = edge.get("source"), edge.get("target"), edge.get("relation")
+        if str(src).startswith("lesson:") or str(dst).startswith("lesson:"):
+            continue
+        since = (edge.get("valid_at") or "")[:10]
+        text = f"{src} {str(rel).replace('_', ' ')} {dst}" + (f" (since {since})" if since else "")
+        score = 1.0 / (1 + min(hops.get(src, 1), hops.get(dst, 1))) * float(edge.get("weight", 1.0) or 1.0)
+        out.append(Item("graph", f"edge:{src}->{dst}:{rel}", text, score, edge.get("valid_at") or ""))
+    return sorted(out, key=lambda i: -i.score)[:k]
+
+
+def _conversations(root: str, question: str, as_of: str | None, budget: int, spaces: list[str] | None,
+                   embedder: str) -> list[Item]:
+    from commontrace import conversation
+
+    names = spaces if spaces is not None else conversation.spaces(root)
+    out: list[Item] = []
+    for space in names:
+        with conversation.Store(root, space, create=False) as store:
+            opts = conversation.Options(budget=max(100, budget), until=as_of,
+                                        embedder=None if embedder in ("", "none") else embedder)
+            result = conversation.recall(store, question, now=as_of, options=opts)
+        if result.context.strip():
+            out.append(Item("conversations", f"space:{space}", f"[{space}]\n{result.context}",
+                            1.0 / (1 + len(out))))
+    return out
+
+
+# --- fusion, diversity, packing -----------------------------------------------------------
+
+def fuse(rankings: dict[str, list[Item]], weights: dict[str, float]) -> list[Item]:
+    """Weighted reciprocal-rank fusion across channels."""
+    pool = []
+    for channel, items in rankings.items():
+        w = weights.get(channel, 1.0)
+        for rank, item in enumerate(items):
+            item.fused = w / (RRF_K + rank + 1)
+            pool.append(item)
+    return sorted(pool, key=lambda i: -i.fused)
+
+
+def _terms(text: str) -> set[str]:
+    return {w for w in _WORDS.findall(text.lower()) if len(w) > 2}
+
+
+def diversify(items: list[Item], lam: float = MMR_LAMBDA) -> list[Item]:
+    """Maximal marginal relevance: each next item trades fused relevance against its
+    word overlap with what is already chosen; exact restatements are dropped."""
+    if not items:
+        return []
+    top = items[0].fused or 1.0
+    terms = [_terms(i.text) for i in items]
+    chosen: list[int] = []
+    left = list(range(len(items)))
+    while left:
+        best, best_score = None, None
+        for i in left:
+            overlap = max((len(terms[i] & terms[j]) / (len(terms[i] | terms[j]) or 1) for j in chosen), default=0.0)
+            if overlap >= 0.9:
+                continue
+            score = lam * (items[i].fused / top) - (1 - lam) * overlap
+            if best_score is None or score > best_score:
+                best, best_score = i, score
+        if best is None:
+            break
+        chosen.append(best)
+        left.remove(best)
+    return [items[i] for i in chosen]
+
+
+def truncate(text: str, max_tokens: int) -> str:
+    """Cut at the last sentence (or word) boundary that fits."""
+    limit = max_tokens * CHARS_PER_TOKEN
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    sentences = _SENTENCE.split(cut)
+    if len(sentences) > 1:
+        kept = cut[:len(cut) - len(sentences[-1])].rstrip()
+        if len(kept) >= limit * 0.5:
+            return kept + " ..."
+    return cut.rsplit(" ", 1)[0].rstrip() + " ..."
+
+
+def pack(items: list[Item], budget: int) -> list[Item]:
+    """Fill the budget: a floor share first for each channel's best item, then fused
+    order; an item that does not fit is cut when at least MIN_CUT_FRACTION of it (or a
+    quarter of the budget) fits."""
+    chosen: list[Item] = []
+    used = 0
+    channels = list(dict.fromkeys(i.channel for i in items))
+    floor = int(budget * FLOOR_SHARE)
+    seen: set[str] = set()
+
+    def take(item: Item, room: int) -> None:
+        nonlocal used
+        need = tokens(item.text)
+        if need <= room:
+            chosen.append(item)
+            used += need
+        elif room >= max(20, min(int(need * MIN_CUT_FRACTION), budget // 4)):
+            cut = Item(item.channel, item.id, truncate(item.text, room), item.score, item.at, item.fused, True)
+            chosen.append(cut)
+            used += tokens(cut.text)
+        seen.add(item.id)
+
+    for n, channel in enumerate(channels):
+        first = next(i for i in items if i.channel == channel)
+        reserved = floor * (len(channels) - n - 1)  # keep a floor for every channel still to come
+        take(first, max(0, min(budget - used - reserved, max(floor, tokens(first.text)))))
+    for item in items:
+        if item.id in seen or used >= budget:
+            continue
+        take(item, budget - used)
+    order = {i.id: n for n, i in enumerate(items)}
+    return sorted(chosen, key=lambda i: order[i.id])
+
+
+def recall(root: str, question: str, *, budget: int | None = None, agent: str | None = None,
+           channels: tuple[str, ...] = CHANNELS, as_of: str | None = None, weights: dict[str, float] | None = None,
+           spaces: list[str] | None = None, embedder: str = "none", per_channel: int = 12) -> Result:
+    """Recall across channels into one budgeted context."""
+    from commontrace import lesson_cache
+
+    question = (question or "").strip()
+    if as_of:
+        lesson_cache.parse_moment(as_of)  # refuse a bad moment before reading anything
+    total, weights = resolve_budget(root, agent, budget, weights)
+    result = Result(question, as_of, total)
+    if not question:
+        return result
+    bad = [c for c in channels if c not in CHANNELS]
+    if bad:
+        raise ValueError(f"unknown channel(s): {', '.join(bad)}; choose from {', '.join(CHANNELS)}")
+    rankings: dict[str, list[Item]] = {}
+    with telemetry.span("recall.multi", channels=",".join(channels), budget=total) as handle:
+        for channel in channels:
+            try:
+                with telemetry.span(f"recall.{channel}"):
+                    if channel == "lessons":
+                        found = _lessons(root, question, as_of, per_channel)
+                    elif channel == "facts":
+                        found = _facts(root, question, as_of, per_channel)
+                    elif channel == "graph":
+                        found = _graph(root, question, as_of, per_channel)
+                    else:
+                        found = _conversations(root, question, as_of, int(total * 0.6), spaces, embedder)
+            except Exception as exc:  # noqa: BLE001 - one broken channel does not sink the others
+                result.errors[channel] = f"{type(exc).__name__}: {exc}"
+                continue
+            result.considered[channel] = len(found)
+            if found:
+                rankings[channel] = found
+        result.items = pack(diversify(fuse(rankings, weights)), total)
+        handle.set(tokens=result.tokens, items=len(result.items))
+    telemetry.observe("commontrace_recall_tokens", float(result.tokens))
+    return result

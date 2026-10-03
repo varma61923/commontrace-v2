@@ -20,8 +20,9 @@
     },
     "entity_type": {
       "type": "string",
-      "description": "Classification category of the node entity.",
-      "enum": [
+      "description": "Classification category of the node entity. The store's ontology (memory/ontology.yaml) declares which entity types it uses; the examples are the built-in defaults.",
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "examples": [
         "service",
         "tool",
         "error",
@@ -32,7 +33,11 @@
         "file",
         "symbol",
         "memory",
-        "document"
+        "document",
+        "person",
+        "place",
+        "organization",
+        "event"
       ]
     },
     "name": {

@@ -284,6 +284,8 @@ class Gateway:
 
     def _register(self) -> None:
         self._route("GET", "/v1/health", self._health, summary="Liveness.", auth=False)
+        self._route("GET", "/v1/metrics", self._metrics,
+                    summary="Request, tool and operation counters and latencies (Prometheus text; ?format=json).")
         self._route("GET", "/v1/openapi.json", self._openapi, summary="This API's schema.", auth=False)
         self._route("POST", "/v1/recall", self._recall, request={
             "occasion_id": "string, your id for one episode/task/ticket",
@@ -331,7 +333,24 @@ class Gateway:
         self, method: str, target: str, headers: Mapping[str, str] | None = None,
         body: bytes | None = None, *, trusted: bool = False,
     ) -> Response:
+        from commontrace import telemetry
+
         headers = headers or {}
+        supplied = next((v for k, v in headers.items() if k.lower() == "x-request-id"), "")
+        request_id = supplied if re.fullmatch(r"[A-Za-z0-9._-]{1,64}", supplied or "") else \
+            telemetry.new_request_id()
+        path_label = urlsplit(target).path if (method, urlsplit(target).path) in self.routes else "other"
+        with telemetry.bind(request_id=request_id, surface="gateway"), \
+                telemetry.span(f"gateway {method} {path_label}") as handle:
+            response = self._handle(method, target, headers, body, trusted=trusted)
+            handle.set(status=response.status)
+        telemetry.count("commontrace_gateway_requests", method=method, path=path_label, status=response.status)
+        response.headers.setdefault("X-Request-Id", request_id)
+        return response
+
+    def _handle(
+        self, method: str, target: str, headers: Mapping[str, str], body: bytes | None, *, trusted: bool,
+    ) -> Response:
         try:
             split = urlsplit(target)
             path = split.path
@@ -448,6 +467,13 @@ class Gateway:
                 out.append(row)
         return out
 
+
+    def _metrics(self, _body, query) -> dict | Response:
+        from commontrace import telemetry
+
+        if (query.get("format") or [""])[0] == "json":
+            return telemetry.metrics()
+        return Response(200, telemetry.prometheus().encode("utf-8"), "text/plain; version=0.0.4")
 
     def _health(self, _body, _query) -> dict:
         return {"ok": True, "api": API_VERSION, "version": __version__}

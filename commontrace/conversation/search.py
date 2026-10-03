@@ -113,6 +113,16 @@ def recall(store: Store, question: str, *, now=None, options: Options | None = N
            extra_queries: list[str] = ()) -> Recall:
     """`extra_queries` are searched beside the question, each keeping its own best
     ranks (a follow-up search that finds a missing fact first is not diluted)."""
+    from commontrace import telemetry
+
+    with telemetry.span("conversation.recall", space=store.space, queries=1 + len(extra_queries)) as handle:
+        result = _recall(store, question, now=now, options=options, extra_queries=extra_queries)
+        handle.set(tokens=result.tokens, turns=len(result.turns))
+        return result
+
+
+def _recall(store: Store, question: str, *, now=None, options: Options | None = None,
+            extra_queries: list[str] = ()) -> Recall:
     opts = options or Options()
     question = (question or "").strip()
     if not question:

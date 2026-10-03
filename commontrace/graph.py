@@ -16,7 +16,7 @@ from commontrace import _jsonl, lesson_cache, paths
 
 ENTITY_TYPES = (
     "service", "tool", "error", "concept", "lesson", "scope", "user", "file",
-    "symbol", "memory", "document",
+    "symbol", "memory", "document", "person", "place", "organization", "event",
 )
 RELATIONS = (
     "depends_on",
@@ -153,8 +153,13 @@ class _Txn:
         self.nodes = load_nodes(root)
         self.edges = load_edges(root)
         self.by_key: dict[tuple[str, str, str], list[GraphEdge]] = {}
+        self.by_source_relation: dict[tuple[str, str], list[GraphEdge]] = {}
         for edge in self.edges:
             self.by_key.setdefault((edge.source, edge.target, edge.relation), []).append(edge)
+            self.by_source_relation.setdefault((edge.source, edge.relation), []).append(edge)
+        from commontrace import ontology
+
+        self.onto = ontology.load(root)
         self.nodes_dirty = False
         self.edges_dirty = False
         self.provenance: list[dict[str, Any]] = []
@@ -214,11 +219,10 @@ def _put_node(
     txn: _Txn, node_id: str, entity_type: str, name: str, properties: dict[str, Any] | None,
     provenance: dict[str, Any] | None,
 ) -> GraphNode:
-    clean_id = _clean_id(node_id)
+    clean_id = _clean_id(txn.onto.canonical_id(_clean_id(node_id)))
     if not clean_id:
         raise ValueError("Node ID cannot be empty")
-    if entity_type not in ENTITY_TYPES:
-        entity_type = "concept"
+    entity_type = txn.onto.entity_type(entity_type)
     now_iso = _now()
     node = txn.nodes.get(clean_id)
     if node is not None:
@@ -275,12 +279,11 @@ def add_edge(
     provenance: dict[str, Any] | None = None,
     valid_from: str | None = None,
 ) -> GraphEdge:
-    """Add a directed edge; the latest `valid_at` wins between equal edges."""
+    """Add a directed edge; the latest `valid_at` wins between equal edges, and for an
+    exclusive relation (one value at a time) between edges from the same source."""
     src, dst = _clean_id(source), _clean_id(target)
     if not src or not dst:
         raise ValueError("Source and target must be non-empty")
-    if relation not in RELATIONS:
-        relation = FALLBACK_RELATION
     now_iso = _now()
     explicit_valid_at = _moment_or_none(valid_at or valid_from, "valid_at")
     valid_at = explicit_valid_at or now_iso
@@ -291,9 +294,19 @@ def add_edge(
     weight = _clamp_weight(weight)
 
     with batch(root) as txn:
+        onto = txn.onto
+        rel = onto.relation(relation)
+        if onto.is_inverse(relation):
+            src, dst = dst, src
+        relation = rel.name if rel.name in RELATIONS or rel.name in onto.relations else FALLBACK_RELATION
+        src, dst = _clean_id(onto.canonical_id(src)), _clean_id(onto.canonical_id(dst))
         for node_id in (src, dst):
             if node_id not in txn.nodes:
-                _put_node(txn, node_id, "concept", "", None, provenance)
+                prefix = node_id.split(":", 1)[0] if ":" in node_id else ""
+                _put_node(txn, node_id, prefix if prefix in onto.entity_types else "concept", "", None, provenance)
+        problems = onto.check_edge(rel, txn.nodes[src].entity_type, txn.nodes[dst].entity_type)
+        if problems:
+            properties = {**(properties or {}), "ontology_warnings": problems}
         key = (src, dst, relation)
         matching = txn.by_key.get(key, [])
         edge_id = f"{src}->{dst}:{relation}"
@@ -314,7 +327,7 @@ def add_edge(
                 return latest
             for edge in matching:
                 if edge.invalid_at is None:
-                    edge.invalid_at = valid_at
+                    _close(edge, valid_at, now_iso, f"restated from {valid_at}")
         new_edge = GraphEdge(
             source=src,
             target=dst,
@@ -326,14 +339,46 @@ def add_edge(
             properties=dict(properties or {}),
             created_at=now_iso,
         )
+        if rel.exclusive:
+            _resolve_exclusive(txn, new_edge, now_iso)
         txn.edges.append(new_edge)
         txn.by_key.setdefault(key, []).append(new_edge)
+        txn.by_source_relation.setdefault((src, relation), []).append(new_edge)
         txn.edges_dirty = True
         _provenance(txn, "edge", edge_id, provenance)
         return new_edge
 
 
-def _is_active_edge(edge: GraphEdge, moment: datetime | None) -> bool:
+def _close(edge: GraphEdge, at: str, recorded: str, reason: str) -> None:
+    """End an edge's validity at `at`, noting when the store learned it and why."""
+    edge.invalid_at = at
+    edge.properties = {**edge.properties, "closed_recorded_at": recorded, "closed_reason": reason}
+
+
+def _resolve_exclusive(txn: _Txn, new_edge: GraphEdge, now_iso: str) -> None:
+    """An exclusive relation holds one target at a time: the latest valid_at wins. An
+    older value ends where the newer begins; an assertion older than the current
+    value is kept as history, ending where the current one begins."""
+    start = lesson_cache.parse_moment(new_edge.valid_at)
+    for edge in txn.by_source_relation.get((new_edge.source, new_edge.relation), []):
+        if edge.target == new_edge.target or edge is new_edge:
+            continue
+        other_start = lesson_cache.parse_moment(edge.valid_at or edge.created_at)
+        other_end = lesson_cache.parse_moment(edge.invalid_at) if edge.invalid_at else None
+        if other_start <= start and (other_end is None or other_end > start):
+            _close(edge, new_edge.valid_at, now_iso, f"superseded by {new_edge.target}")
+            txn.edges_dirty = True
+        elif other_start > start:
+            end = new_edge.invalid_at
+            if end is None or lesson_cache.parse_moment(end) > other_start:
+                new_edge.invalid_at = edge.valid_at
+                new_edge.properties = {**new_edge.properties, "closed_reason": f"superseded by {edge.target}",
+                                       "closed_recorded_at": now_iso}
+
+
+def _is_active_edge(edge: GraphEdge, moment: datetime | None, known_at: datetime | None = None) -> bool:
+    """Valid at `moment` (valid time), as the store knew it at `known_at` (record time):
+    an edge recorded later is unknown then, and a close recorded later had not happened."""
     def _at(value: str | None) -> datetime | None:
         if not value:
             return None
@@ -342,15 +387,23 @@ def _is_active_edge(edge: GraphEdge, moment: datetime | None) -> bool:
         except ValueError:
             return None
 
+    invalid_at = edge.invalid_at
+    if known_at is not None:
+        created = _at(edge.created_at)
+        if created is not None and created > known_at:
+            return False
+        closed = _at(edge.properties.get("closed_recorded_at")) if edge.properties else None
+        if closed is not None and closed > known_at:
+            invalid_at = None
     if moment is None:
-        if edge.invalid_at is not None:
+        if invalid_at is not None:
             return False
         expires = _at(edge.expired_at)
-        return expires is None or expires > datetime.now(timezone.utc)
+        return expires is None or expires > (known_at or datetime.now(timezone.utc))
     start = _at(edge.valid_at)
     if start is not None and start > moment:
         return False
-    for end in (_at(edge.invalid_at), _at(edge.expired_at)):
+    for end in (_at(invalid_at), _at(edge.expired_at)):
         if end is not None and end <= moment:
             return False
     return True
@@ -377,14 +430,15 @@ def _graph_files_stamp(root: str) -> tuple[int, int, int, int]:
     return tuple(stamps)  # type: ignore[return-value]
 
 
-def _cached_graph(root: str, as_of: str | None = None) -> tuple:
-    key = (os.path.abspath(str(root)), _graph_files_stamp(root), as_of or "")
+def _cached_graph(root: str, as_of: str | None = None, known_at: str | None = None) -> tuple:
+    key = (os.path.abspath(str(root)), _graph_files_stamp(root), as_of or "", known_at or "")
     hit = _GRAPH_ADJ_CACHE.get(key)
     if hit is not None:
         return hit
     nodes = load_nodes(root)
     moment = lesson_cache.parse_moment(as_of) if as_of else None
-    active = [e for e in load_edges(root) if _is_active_edge(e, moment)]
+    known = lesson_cache.parse_moment(known_at) if known_at else None
+    active = [e for e in load_edges(root) if _is_active_edge(e, moment, known)]
     adj: dict[str, list[GraphEdge]] = {}
     for e in active:
         adj.setdefault(e.source, []).append(e)
@@ -403,10 +457,11 @@ def get_neighbors(
     direction: str = "both",
     relation: str | None = None,
     as_of: str | None = None,
+    known_at: str | None = None,
 ) -> list[dict[str, Any]]:
     """Nodes one edge away from *node_id*, with the connecting relation."""
     clean_id = _clean_id(node_id)
-    nodes, _active, adj = _cached_graph(root, as_of)
+    nodes, _active, adj = _cached_graph(root, as_of, known_at)
     results: list[dict[str, Any]] = []
     for edge in adj.get(clean_id, []):
         if relation and edge.relation != relation:
@@ -435,9 +490,10 @@ def multi_hop_subgraph(
     max_hops: int = 2,
     as_of: str | None = None,
     max_edges: int | None = None,
+    known_at: str | None = None,
 ) -> dict[str, Any]:
     """Breadth-first subgraph within *max_hops* of the start nodes."""
-    nodes, _active, adj = _cached_graph(root, as_of)
+    nodes, _active, adj = _cached_graph(root, as_of, known_at)
     hops_limit = max(0, min(int(max_hops), MAX_HOPS))
     cap = None if max_edges is None else max(0, int(max_edges))
     visited: dict[str, int] = {}
@@ -480,6 +536,7 @@ _PHRASE_INDEX: dict[tuple, dict[str, list[tuple[tuple[str, ...], str]]]] = {}
 def _node_terms(nid: str, node: GraphNode) -> list[tuple[str, ...]]:
     name = node.name.lower()
     terms = [name, nid.split(":", 1)[-1]]
+    terms += [str(a).lower() for a in (node.properties or {}).get("aliases", [])[:20] if isinstance(a, str)]
     if "::" in name:
         leaf = name.rsplit("::", 1)[-1]
         terms += [leaf, leaf.rsplit(".", 1)[-1]]
@@ -565,6 +622,49 @@ def graph_boost_for_lessons(
         if hop is not None:
             boosts[slug] = round(0.25 / (1 + hop), 3)
     return boosts
+
+
+def edges_between(
+    root: str, start: str | None, end: str | None, *, relation: str | None = None, entity: str | None = None,
+) -> list[GraphEdge]:
+    """Edges valid at some moment in [start, end] (either may be open), oldest first."""
+    lo = lesson_cache.parse_moment(start) if start else None
+    hi = lesson_cache.parse_moment(end) if end else None
+    if lo and hi and hi < lo:
+        raise ValueError("the interval ends before it starts")
+    ent = _clean_id(entity) if entity else None
+    out = []
+    for edge in load_edges(root):
+        if relation and edge.relation != relation:
+            continue
+        if ent and ent not in (edge.source, edge.target):
+            continue
+        begins = lesson_cache.parse_moment(edge.valid_at or edge.created_at)
+        ends = lesson_cache.parse_moment(edge.invalid_at) if edge.invalid_at else None
+        if hi is not None and begins > hi:
+            continue
+        if lo is not None and ends is not None and ends <= lo:
+            continue
+        out.append(edge)
+    return sorted(out, key=lambda e: e.valid_at or e.created_at)
+
+
+def timeline(root: str, entity: str) -> list[dict[str, Any]]:
+    """Every change to an entity's relations in valid-time order: what began, what
+    ended, and why, so a fact's evolution reads top to bottom."""
+    ent = _clean_id(entity)
+    events: list[dict[str, Any]] = []
+    for edge in load_edges(root):
+        if ent not in (edge.source, edge.target):
+            continue
+        base = {"source": edge.source, "relation": edge.relation, "target": edge.target}
+        events.append({**base, "at": edge.valid_at or edge.created_at, "event": "began",
+                       "recorded_at": edge.created_at})
+        if edge.invalid_at:
+            events.append({**base, "at": edge.invalid_at, "event": "ended",
+                           "reason": (edge.properties or {}).get("closed_reason", ""),
+                           "recorded_at": (edge.properties or {}).get("closed_recorded_at", "")})
+    return sorted(events, key=lambda e: (lesson_cache.parse_moment(e["at"]), e["event"] == "began"))
 
 
 def _mermaid_label(text: str) -> str:

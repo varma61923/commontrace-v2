@@ -934,6 +934,119 @@ commontrace sync --connector local_dir --source ./runbooks   # re-syncs changed 
 commontrace sync --connector web_crawler --source https://example.com/guide
 ```
 
+**Ontology** (`commontrace graph ontology show|init|check`): the entity types
+and relations the graph uses, in `memory/ontology.yaml` (or `.json`, or an
+RDF/OWL file such as `ontology.ttl` when `rdflib` is installed). A relation
+can declare a domain and range, an inverse (`required_by` is stored as
+`depends_on` the other way round) and whether it is exclusive (one value at a
+time). Aliases resolve to one node (`service:pg` is `service:postgres`) and
+also canonicalise text at document ingestion. Unknown types and relations fall
+back to `concept` / `relates_to`, or are refused with `strict: true`.
+
+**Bi-temporal edges.** Every edge carries valid time (`valid_at` to
+`invalid_at`: when it was true) and record time (`created_at`, and when its
+close was recorded: when the store learned it). For an exclusive relation the
+latest `valid_at` wins: asserting a new employer closes the old one where the
+new one begins, and an older fact that arrives late is kept as history rather
+than overriding the present. `--as-of` reads valid time, `--known-at` reads
+what the store believed at a moment, `between` lists edges valid in an
+interval, and `timeline` shows an entity's changes and why.
+
+```bash
+commontrace graph edge person:ana works_at organization:acme --valid-at 2024-01-01
+commontrace graph edge person:ana works_at organization:globex --valid-at 2025-03-01
+commontrace graph query person:ana --as-of 2024-06-01                 # acme
+commontrace graph query person:ana --as-of 2025-04-01 --known-at 2025-02-01
+commontrace graph between --start 2023-01-01 --end 2025-12-31 --relation works_at
+commontrace graph timeline person:ana
+```
+
+**Entities** (`commontrace graph extract|link|entities|duplicates|merge`):
+people, organisations, places, services, tools, error classes, files,
+symbols and environment variables are found in text by patterns, and by spaCy
+as well when it and a model are installed (`COMMONTRACE_SPACY_MODEL`). Each
+resolves to one canonical node through the ontology's aliases. `link` records
+which entities each lesson names, so a query that names an entity boosts the
+lessons about it; re-running is idempotent and retires links a lesson no
+longer supports. `duplicates` proposes merges and `merge` folds one entity
+into another with its edges and history.
+
+**Document ingestion** (`commontrace ingest DIR --type docs`): Loader,
+transforms and submitter as separate stages. Files are chunked, screened for
+prompt injection, deduplicated, given a one-line context header (heuristic
+from the document's headings, or written by the configured model with
+`--contextualize model`, cached by chunk), canonicalised with the ontology's
+aliases, and written as facts attributed to their file (or to a conversation
+space with `--space`). A ledger in `memory/ingest_ledger.jsonl` skips files
+whose size and mtime are unchanged; files over 256 MB are fingerprinted by
+sampling and hashed in full only when another file has the same size.
+`--preview` shows the counts without writing.
+
+**One recall across every kind of memory** (`commontrace recall`): lessons,
+facts, graph relations around the entities the question names, and
+conversation spaces are each ranked, fused by weighted reciprocal rank,
+de-duplicated across channels, and packed into one token budget (4
+characters per token): each channel with something relevant gets a floor
+share, the rest goes in fused order, and an item that does not fit is cut at a
+sentence boundary. `--as-of` reads every channel as it stood at that moment.
+Budgets and channel weights per agent live in `memory/budgets.json`:
+
+```json
+{"default": 1500, "agents": {"reviewer": {"budget": 800, "weights": {"lessons": 2}}}}
+```
+
+```bash
+commontrace recall "postgres failed over, what now?" --budget 1200
+commontrace recall "where does postgres run?" --as-of 2025-01-01 --channel graph --channel facts
+commontrace recall "review this change" --agent reviewer --json
+```
+
+**Versioned memory** (`commontrace memory`): `memory init` makes the store its
+own git repository and installs a pre-commit hook that validates what is
+committed against limits in `memory/memfs.json` (file size and count, lesson
+length, parseable JSONL and frontmatter, no conflict markers, no
+credentials). `status`, `log`, `diff`, `commit` and `restore REV` (a new commit;
+history is kept). After a merge, `repair` takes the union of both sides of
+append-only JSONL files and, for anything else, keeps ours and parks theirs as
+`<file>.theirs`. `handoff create --to AGENT` signs a token naming the current
+commit and a digest of its files; `handoff verify` checks the signature,
+expiry and audience, that the commit's files are unchanged, and whether
+memory has moved on since. The key comes from `COMMONTRACE_HANDOFF_KEY` (32+
+characters) or `memory keygen` (a 0600 file that is never committed).
+
+```bash
+commontrace memory init
+commontrace memory commit -m "lessons from incident 42"
+commontrace memory keygen
+TOKEN=$(commontrace memory handoff create --to reviewer-agent --ttl 3600)
+commontrace memory handoff verify "$TOKEN" --audience reviewer-agent
+```
+
+**Background jobs** (`commontrace jobs add|list|show|run|retry|purge`): slow
+work (document ingestion, model extraction, summaries, index rebuilds,
+entity linking, memory commits) goes into a durable SQLite queue in
+`memory/jobs.db`. A worker leases a job; a job whose worker died is reclaimed
+when the lease ends; a failure is retried with exponential backoff, then
+parked as `dead` for `jobs retry`. A `--dedupe-key` keeps one pending job per
+key. `commontrace daemon` processes queued jobs on each pass, and
+`jobs run --watch` is a standalone worker.
+
+```bash
+commontrace jobs add ingest --payload '{"source": "./runbooks", "contextualize": "model"}' --dedupe-key runbooks
+commontrace jobs run --watch
+```
+
+**Observability.** Every CLI command, MCP tool, gateway request, recall,
+retrieval, ingestion run and job is timed into in-process metrics; the
+gateway serves them at `/v1/metrics` (Prometheus text, or `?format=json`)
+and stamps each response with an `X-Request-Id`. With
+`COMMONTRACE_OTEL=1` or `OTEL_EXPORTER_OTLP_ENDPOINT` set and
+`opentelemetry-sdk` installed, the same operations are exported as
+OpenTelemetry spans. `COMMONTRACE_LOG_FORMAT=json` writes one JSON object per
+log line carrying the request id, tool and command; anything that looks like
+a credential is redacted before it is written. `commontrace doctor` reports
+which of these are on.
+
 **Agent loop** (`commontrace agent run`): runs a task against the configured
 model (`COMMONTRACE_LLM_PROVIDER`), with relevant lessons, blocks, facts and
 project skills (`skills/<name>/SKILL.md`, MCP `list_skills` / `load_skill`)

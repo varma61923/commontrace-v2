@@ -451,6 +451,16 @@ def build_server(root: str, *, allow_approval: bool = True):
         ),
     )
 
+    from commontrace import telemetry
+
+    _register_tool = mcp.tool
+
+    def _traced_tool(*args, **kwargs):
+        decorate = _register_tool(*args, **kwargs)
+        return lambda func: decorate(telemetry.wrap_tool(func))
+
+    mcp.tool = _traced_tool
+
     @mcp.tool()
     async def retrieve(
         task: str, top_k: int = 5, occasion_id: str = "", agent_type: str = "",
@@ -1457,7 +1467,7 @@ def build_server(root: str, *, allow_approval: bool = True):
             return _err(f"could not record fact: {type(exc).__name__}: {exc}")
 
     @mcp.tool()
-    async def graph_query(entity: str, hops: int = 1, as_of: str = "") -> dict:
+    async def graph_query(entity: str, hops: int = 1, as_of: str = "", known_at: str = "") -> dict:
         """Explore entity relationships and multi-hop connected concepts in the knowledge graph.
 
         Finds connected nodes (tools, services, error modes, concepts, and lessons)
@@ -1472,7 +1482,7 @@ def build_server(root: str, *, allow_approval: bool = True):
                 return _ok(nodes=[], edges=[], hop_distances={}, note=f"no entity matching '{entity}' found")
             sub = graph_mod.multi_hop_subgraph(
                 root, start_ids, max_hops=max(1, min(int(hops), graph_mod.MAX_HOPS)),
-                as_of=as_of or None, max_edges=500,
+                as_of=as_of or None, max_edges=500, known_at=known_at or None,
             )
             return _ok(**sub)
         except Exception as exc:  # noqa: BLE001
@@ -1576,6 +1586,29 @@ def build_server(root: str, *, allow_approval: bool = True):
             return _err(str(exc))
 
     @mcp.tool()
+    async def memory_recall(question: str, budget: int = 1500, agent: str = "", as_of: str = "",
+                            channels: list[str] | None = None, spaces: list[str] | None = None) -> dict:
+        """One context from every kind of memory: approved lessons, atomic facts, graph
+        relations around the entities `question` names, and conversation spaces, fused,
+        de-duplicated and packed into `budget` tokens. `as_of` reads every channel as it
+        stood at that moment. `agent` applies that agent's budget and channel weights from
+        memory/budgets.json. `channels` narrows to lessons/facts/graph/conversations.
+        """
+        import asyncio
+
+        from commontrace import recall as recall_mod
+
+        def _run():
+            return recall_mod.recall(root, question, budget=budget or None, agent=agent or None,
+                                     as_of=as_of or None, channels=tuple(channels or recall_mod.CHANNELS),
+                                     spaces=spaces).to_dict()
+
+        try:
+            return _ok(**await asyncio.to_thread(_run))
+        except ValueError as exc:
+            return _err(str(exc))
+
+    @mcp.tool()
     async def conversation_profile(space: str, history: bool = False) -> dict:
         """What the user has said about themselves in a space (preferences, identity, plans,
         possessions) and what a model distilled with `conversation extract`, oldest first.
@@ -1624,6 +1657,17 @@ def build_server(root: str, *, allow_approval: bool = True):
             with Store(root, space, create=False) as store:
                 return _ok(**summarize(store, [session] if session else None))
         except ConversationError as exc:
+            return _err(str(exc))
+
+    @mcp.tool()
+    async def graph_timeline(entity: str) -> dict:
+        """How an entity's relations changed over time: each edge that began or ended, when
+        (valid time), when the store recorded it, and why it ended (e.g. superseded by a
+        newer value of an exclusive relation).
+        """
+        try:
+            return _ok(entity=entity, events=graph_mod.timeline(root, entity))
+        except (ValueError, OSError) as exc:
             return _err(str(exc))
 
     @mcp.tool()

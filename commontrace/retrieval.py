@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from commontrace import telemetry
 from commontrace._lexical import STOPWORDS as _STOPWORDS
 from commontrace._lexical import WORD_RE as _WORD_RE
 from commontrace._lexical import has_cjk as _has_cjk
@@ -228,6 +229,7 @@ def _corpus_index(lessons, term_cache, scorer: str) -> _CorpusIndex:
     return index
 
 
+@telemetry.traced("retrieval.rank_lessons")
 def rank_lessons(
     task: str,
     lessons: list[tuple[str, dict]],

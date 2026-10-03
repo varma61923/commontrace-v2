@@ -17,7 +17,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     choices = [
         "code", "markdown", "json-logs", "logs", "transcript",
         "fact-triples", "fact_triples", "triples", "multimodal",
-        "pipeline", "modular",
+        "pipeline", "modular", "docs",
     ]
     p.add_argument(
         "--type", dest="source_type",
@@ -42,7 +42,47 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
                    help="Output results as JSON.")
     p.add_argument("--preview", action="store_true",
                    help="Dry-run: parse/chunk with zero writes, report would-write counts.")
+    p.add_argument("--space", default=None,
+                   help="docs: write into this conversation space instead of atomic facts")
+    p.add_argument("--contextualize", choices=("none", "heuristic", "model"), default="heuristic",
+                   help="docs: prefix chunks with where they sit (model uses COMMONTRACE_LLM_*)")
+    p.add_argument("--force", action="store_true", help="docs: re-read files the ledger says are unchanged")
     p.set_defaults(func=run)
+
+
+def _run_docs(args: argparse.Namespace, root: str) -> int:
+    from commontrace import llm
+    from commontrace.ingest.pipeline import create_document_pipeline
+
+    try:
+        pipeline = create_document_pipeline(
+            args.source, root, scope=args.scope, space=args.space, contextualize=args.contextualize,
+            force=args.force, max_files=args.max_files)
+    except (ValueError, llm.LLMUnavailable) as exc:
+        print(f"[commontrace] {exc}", file=sys.stderr)
+        return 2
+    if args.preview:
+        report = pipeline.preview(limit=None)
+        payload = {"preview": True, **report.would_write, "warnings": report.warnings,
+                   "sample": [{"source": c.source_path, "chunk": c.chunk_id, "text": c.content[:160]}
+                              for c in report.chunks[:5]]}
+    else:
+        result = pipeline.run()
+        warnings = pipeline.last_warnings
+        payload = {**result.to_dict(), **pipeline.last_stats, "warnings": warnings,
+                   "errors": [e for e in result.errors if e not in warnings]}
+    if args.output_json:
+        print(json.dumps(payload, indent=2))
+    else:
+        title = "ingest preview (no writes)" if args.preview else "ingest complete"
+        print(f"[commontrace] {title}:")
+        for key in ("files", "unchanged", "chunks", "chunks_extracted", "facts_written", "duplicates",
+                    "screened", "headed", "model_calls"):
+            if key in payload:
+                print(f"  {key.replace('_', ' '):18s} {payload[key]}")
+        for problem in payload.get("warnings", []) + payload.get("errors", []):
+            print(f"    - {problem}", file=sys.stderr)
+    return 1 if payload.get("errors") else 0
 
 
 def run(args: argparse.Namespace) -> int:
@@ -55,6 +95,9 @@ def run(args: argparse.Namespace) -> int:
         source_type = "json_logs"
     elif source_type == "triples":
         source_type = "fact_triples"
+
+    if source_type == "docs":
+        return _run_docs(args, root)
 
     pipeline = IngestionPipeline()
     kwargs: dict = {}

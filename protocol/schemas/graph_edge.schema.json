@@ -28,8 +28,9 @@
     },
     "relation": {
       "type": "string",
-      "description": "Semantic relationship type connecting source to target.",
-      "enum": [
+      "description": "Semantic relationship type connecting source to target. The store's ontology (memory/ontology.yaml) declares which relations it uses; the examples are the built-in defaults.",
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "examples": [
         "depends_on",
         "causes",
         "resolves",
