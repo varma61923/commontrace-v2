@@ -33,6 +33,7 @@ class Options:
     lexical_weight: float = 0.5
     rerank: str | None = "auto"
     rerank_depth: int = 50
+    rerank_blend: float = 1.0  # the cross-encoder's weight beside the fused rank; 0 lets it replace that rank
     profile_facts: int = 4
     instructions: int = 6
     broad: bool | None = None  # None: detect summary / ordering / across-session questions
@@ -317,7 +318,7 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
     if rerank == "auto":
         rerank = "cross-encoder" if embedder is not None else None
     if rerank and ranked:
-        ranked = _rerank(store, question, ranked, rerank, opts.rerank_depth, explain)
+        ranked = _rerank(store, question, ranked, rerank, opts.rerank_depth, explain, opts.rerank_blend)
         explain["rerank"] = rerank
     explain["confidence"] = confidence(store, question, ranked[:5])
     withheld: list[int] = []
@@ -329,7 +330,7 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
 
 
 def _rerank(store: Store, question: str, ranked: list[int], mode: str, depth: int,
-            explain: dict | None = None) -> list[int]:
+            explain: dict | None = None, blend: float = 0.0) -> list[int]:
     from commontrace import rerank_arm
 
     if rerank_arm.ready(mode):
@@ -343,6 +344,13 @@ def _rerank(store: Store, question: str, ranked: list[int], mode: str, depth: in
     order = [int(s) for s, _x in page]
     if explain is not None and page:
         explain["rerank_top"] = round(float(page[0][1]), 4)
+    if blend:
+        # the cross-encoder votes beside the fused ranking instead of replacing it: it was
+        # trained on question -> passage search and misjudges task requests and diary notes
+        fused = {t: i for i, t in enumerate(head)}
+        scores = {t: 1.0 / (RRF_K + fused.get(t, len(head)) + 1) + blend / (RRF_K + i + 1)
+                  for i, t in enumerate(order)}
+        order = sorted(scores, key=lambda t: -scores[t])
     return order + [t for t in ranked if t not in set(order)]
 
 

@@ -157,3 +157,23 @@ def test_self_introductions_are_identity_and_answer_profession_questions(tmp_pat
                     {"role": "assistant", "text": "Happy to help with charts."}], session_at="2024-01-01")
         r = recall(s, "What profession did I mention?", options=Options(budget=300, **LEX))
         assert "colour technologist" in r.context
+
+
+def test_cross_encoder_blends_with_the_fused_rank(monkeypatch):
+    from commontrace import rerank_arm
+    from commontrace.conversation import search
+
+    class FakeStore:
+        def turns(self, ids):
+            from commontrace.conversation.store import Turn
+            return {i: Turn(i, "s", i, None, "user", "user", f"turn {i}", ()) for i in ids}
+
+    monkeypatch.setattr(rerank_arm, "ready", lambda mode: "")
+    # the cross-encoder puts the fused last first; blended, the fused first keeps a high place
+    monkeypatch.setattr(rerank_arm, "rerank", lambda q, ids, text, n, mode: ([(i, 10 - k) for k, i in
+                                                                               enumerate(reversed(ids))], []))
+    replaced = search._rerank(FakeStore(), "q", [1, 2, 3, 4], "cross-encoder", 4, None, 0.0)
+    blended = search._rerank(FakeStore(), "q", [1, 2, 3, 4], "cross-encoder", 4, None, 1.0)
+    assert replaced[0] == 4
+    assert set(blended[:2]) == {1, 4} and blended != replaced
+    assert search.Options().rerank_blend == 1.0

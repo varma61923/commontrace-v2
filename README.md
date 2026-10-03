@@ -1111,8 +1111,10 @@ Ben: Congrats, what is his name?
   what is recalled is what was said.
 - **Recall.** Keyword search (SQLite FTS5, BM25, stemmed) and, with the
   attention extra, semantic search (`arctic-embed-m`) are fused by rank,
-  keyword matches counting half; the accurate cross-encoder reorders the
-  top 50. A question that names a time ("in May 2023", "last week") lifts
+  keyword matches counting half; the accurate cross-encoder scores the top
+  50 (each long turn by its passages that bear on the question) and votes
+  beside the fused rank rather than replacing it, which keeps keyword evidence
+  for task-style requests the cross-encoder was not trained on. A question that names a time ("in May 2023", "last week") lifts
   turns said in that window or about it. The best hits bring the two turns
   either side of them, and the page is filled best-first up to `--budget` tokens,
   then shown session by session in the order things were said.
@@ -1198,16 +1200,16 @@ and the cross-encoder:
 
 | Ability (BEAM) | 1,500 tokens | 4,000 tokens |
 |---|---:|---:|
-| Instruction following | 85% / 88% | 88% / 92% |
-| Knowledge update | 74% / 88% | 88% / 91% |
-| Temporal reasoning | 82% / 86% | 95% / 91% |
-| Contradiction resolution | 85% / 84% | 89% / 88% |
-| Preference following | 67% / 76% | 73% / 78% |
-| Multi-session reasoning | 55% / 61% | 67% / 67% |
-| Information extraction | 52% / 60% | 55% / 66% |
-| Event ordering | 34% / 43% | 45% / 52% |
-| Summarization | 18% / 19% | 29% / 27% |
-| **All (abstention excluded: it has no evidence)** | **62% / 68%** | **70% / 73%** |
+| Instruction following | 85% / 89% | 88% / 90% |
+| Knowledge update | 74% / 89% | 88% / 92% |
+| Temporal reasoning | 82% / 82% | 95% / 94% |
+| Contradiction resolution | 85% / 83% | 89% / 88% |
+| Preference following | 67% / 73% | 73% / 81% |
+| Multi-session reasoning | 55% / 60% | 67% / 67% |
+| Information extraction | 52% / 64% | 55% / 66% |
+| Event ordering | 34% / 42% | 45% / 52% |
+| Summarization | 18% / 18% | 29% / 26% |
+| **All (abstention excluded: it has no evidence)** | **62% / 67%** | **70% / 73%** |
 
 LongMemEval, keyword-only: 77.4% at 1,500 tokens and 84.4% at 4,000
 (knowledge update 89% / 100%, single-session assistant 100% / 100%,

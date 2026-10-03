@@ -214,7 +214,7 @@ def run(args) -> dict:
     opts = Options(budget=budgets[0], embedder=None if args.embedder == "none" else args.embedder,
                    rerank=None if args.rerank == "none" else args.rerank,
                    neighbours_before=args.neighbours, neighbours_after=args.neighbours,
-                   profile_facts=args.profile_facts)
+                   profile_facts=args.profile_facts, rerank_blend=args.rerank_blend)
     if args.dataset == "dolphin":
         cases = dolphin_cases(args.data, args.personas, args.limit)
     elif args.dataset == "beam":
@@ -290,6 +290,8 @@ def main(argv=None) -> int:
     p.add_argument("--embedder", default="arctic-m", choices=("arctic-m", "minilm", "none"))
     p.add_argument("--rerank", default="auto", choices=("auto", "none", "cross-encoder", "cross-encoder-fast"))
     p.add_argument("--neighbours", type=int, default=1)
+    p.add_argument("--rerank-blend", type=float, default=1.0,
+                   help="cross-encoder weight beside the fused rank (0 lets it replace that rank)")
     p.add_argument("--profile-facts", type=int, default=4)
     p.add_argument("--limit", type=int, default=0)
     p.add_argument("--seed", type=int, default=0)
