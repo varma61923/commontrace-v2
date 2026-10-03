@@ -10,6 +10,7 @@ LOCAL_TOOLS = (
     "query_facts", "record_fact",
     "graph_query", "graph_neighbors", "graph_viz_html",
     "list_skills", "load_skill",
+    "conversation_add", "conversation_recall",
 )
 
 APPROVAL_TOOLS = ("approve_lesson", "reject_lesson")

@@ -22,7 +22,7 @@ _COMMANDS = (
     "overlap", "commons", "kb", "account", "query", "serve", "index", "bench", "reliability",
     "consolidate", "retrieval", "experiment", "source", "function", "proof", "gateway", "fleet", "signals", "export",
     "dream", "bill", "conformance", "gate", "prove", "taxonomy", "impact", "pilot", "sync", "redact", "doctor",
-    "block", "fact", "graph", "ingest", "agent", "watch", "daemon", "viz",
+    "block", "fact", "graph", "ingest", "agent", "watch", "daemon", "viz", "conversation",
 )
 
 

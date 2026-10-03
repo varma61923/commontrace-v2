@@ -1525,6 +1525,51 @@ def build_server(root: str, *, allow_approval: bool = True):
             return _err(f"could not render the knowledge graph: {type(exc).__name__}: {exc}")
 
     @mcp.tool()
+    async def conversation_add(space: str, session: str, messages: list[dict], session_at: str = "") -> dict:
+        """Remember messages from a conversation, in order, under a space (one user, agent or thread).
+
+        Each message is {"speaker" or "role", "text" or "content", optional "at" (when it
+        was said) and "id" (your message id; re-adding it is a no-op)}. `session_at` dates
+        the session. Relative time words ("yesterday", "last week") are resolved to dates
+        as they are stored; credentials are redacted. No model is called.
+        """
+        from commontrace.conversation import ConversationError, Store
+
+        if not isinstance(messages, list) or not all(isinstance(m, dict) for m in messages):
+            return _err("messages must be a list of objects with text (or content)")
+        try:
+            with Store(root, space) as store:
+                return _ok(**store.add(session, messages, session_at=session_at or None))
+        except (ConversationError, OSError) as exc:
+            return _err(str(exc))
+
+    @mcp.tool()
+    async def conversation_recall(space: str, question: str, budget: int = 1500, now: str = "") -> dict:
+        """What was said that answers `question`: the matching turns with their neighbours,
+        grouped by session with dates, within `budget` tokens, plus what the user has said
+        about themselves when it bears on the question. Pass `now` when the question is
+        asked at a different time than the last message. Turns the injection screen flags
+        are withheld and listed under explain.withheld.
+        """
+        import asyncio
+
+        from commontrace.conversation import ConversationError, Options, Store, recall
+
+        try:
+            budget = max(50, min(int(budget), 32_000))
+        except (TypeError, ValueError):
+            return _err("budget must be a number of tokens")
+
+        def _run():
+            with Store(root, space, create=False) as store:
+                return recall(store, question, now=now or None, options=Options(budget=budget)).as_dict()
+
+        try:
+            return _ok(**await asyncio.to_thread(_run))
+        except ConversationError as exc:
+            return _err(str(exc))
+
+    @mcp.tool()
     async def list_skills() -> dict:
         """List the reusable procedures (skills) available in this project, by name and description.
 

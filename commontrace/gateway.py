@@ -299,6 +299,17 @@ class Gateway:
             "signals": "list of {detector, args} evaluated three-valued; with `combine`: all|any",
             "agent_id": "optional string",
         }, summary="How the occasion went. Records nothing while the signals are undecided.")
+        self._route("POST", "/v1/conversation/add", self._conversation_add, request={
+            "space": "string: one user, agent or thread",
+            "session": "string: the session these messages belong to",
+            "messages": "list of {speaker|role, text|content, at?, id?}",
+            "session_at": "optional date the session took place",
+        }, summary="Remember messages; relative dates are resolved as they are stored.")
+        self._route("POST", "/v1/conversation/recall", self._conversation_recall, request={
+            "space": "string", "question": "string",
+            "budget": "optional integer: context size in tokens (default 1500)",
+            "now": "optional date the question is asked",
+        }, summary="The turns that answer a question, as a dated context within a token budget.")
         self._route("GET", "/v1/status", self._status, summary="Experiment and proof progress.")
         self._route("GET", "/v1/memories", self._memories, summary="Each memory's measured verdict.")
         self._route("GET", "/v1/occasions", self._occasions, summary="Recent recalls and outcomes (?limit=).")
@@ -480,6 +491,35 @@ class Gateway:
             out.append({"id": hit.slug, "text": body, "protected": bool(projected.get(hit.path, {}).get("core")),
                         "meta": {"description": hit.description, "relevance": round(hit.relevance, 4)}})
         return out
+
+    def _conversation_add(self, req: dict, _query) -> dict:
+        from commontrace.conversation import ConversationError, Store
+
+        messages = req.get("messages")
+        if not isinstance(messages, list) or not all(isinstance(m, dict) for m in messages):
+            raise _bad("messages must be a list of objects with text (or content)")
+        if len(messages) > 1000:
+            raise _bad("at most 1000 messages per request")
+        try:
+            with Store(self.root, _ident(req.get("space"), "space")) as store:
+                return store.add(_ident(req.get("session"), "session"), messages,
+                                 session_at=req.get("session_at") or None)
+        except ConversationError as exc:
+            raise _bad(str(exc)) from None
+
+    def _conversation_recall(self, req: dict, _query) -> dict:
+        from commontrace.conversation import ConversationError, Options, Store, recall
+
+        budget = req.get("budget", 1500)
+        if not isinstance(budget, int) or isinstance(budget, bool) or not 50 <= budget <= 32_000:
+            raise _bad("budget must be an integer number of tokens from 50 to 32000")
+        question = _text(req.get("question"), "question", limit=4000)
+        try:
+            with Store(self.root, _ident(req.get("space"), "space"), create=False) as store:
+                return recall(store, question, now=req.get("now") or None,
+                              options=Options(budget=budget)).as_dict()
+        except ConversationError as exc:
+            raise ApiError(404 if "no conversations" in str(exc) else 400, "conversation", str(exc)) from None
 
     def _recall(self, req: dict, _query) -> dict:
         occasion = _ident(req.get("occasion_id"), "occasion_id")
@@ -803,7 +843,8 @@ def serve_stdio(gateway: Gateway, stdin, stdout) -> int:
     shorthand = {"recall": ("POST", "/v1/recall"), "outcome": ("POST", "/v1/outcome"),
                  "status": ("GET", "/v1/status"), "memories": ("GET", "/v1/memories"),
                  "occasions": ("GET", "/v1/occasions"), "agents": ("GET", "/v1/agents"),
-                 "health": ("GET", "/v1/health")}
+                 "health": ("GET", "/v1/health"),
+                 "remember": ("POST", "/v1/conversation/add"), "converse": ("POST", "/v1/conversation/recall")}
     for line in stdin:
         line = line.strip()
         if not line:

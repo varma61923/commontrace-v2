@@ -1,0 +1,213 @@
+"""LoCoMo and LongMemEval through CommonTrace's conversation memory, end to end.
+
+Each conversation is written with `Store.add` exactly as an agent would write it,
+and each question is answered from `recall`'s context. Without a model it measures
+what a memory layer owns: how much of the gold evidence reaches the context, how
+many tokens that context costs, and whether the gold answer appears in it. With
+COMMONTRACE_LLM_* configured, `--answer` also has a model answer from the context
+and a judge grade the answer, as published results do.
+
+    python benchmarks/conversation_bench.py --dataset locomo --data locomo10.json
+    python benchmarks/conversation_bench.py --dataset longmemeval --data longmemeval_s.json \
+        --limit 60 --budget 2000
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import random
+import re
+import statistics
+import sys
+import time
+from collections import defaultdict
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from commontrace.conversation import Options, Store, recall  # noqa: E402
+from commontrace.conversation.search import tokens  # noqa: E402
+
+LOCOMO_CATEGORIES = {1: "multi-hop", 2: "temporal", 3: "open-domain", 4: "single-hop"}
+
+
+def locomo_cases(path: str):
+    for conv in json.load(open(path)):
+        c = conv["conversation"]
+        sessions = []
+        n = 1
+        while f"session_{n}" in c:
+            messages = []
+            for turn in c[f"session_{n}"]:
+                text = turn["text"]
+                if turn.get("blip_caption"):
+                    text += f" [shares a photo: {turn['blip_caption']}]"
+                messages.append({"id": turn["dia_id"], "speaker": turn["speaker"], "text": text})
+            sessions.append((f"session {n}", c.get(f"session_{n}_date_time"), messages))
+            n += 1
+        refs = {m["id"] for _s, _d, ms in sessions for m in ms}
+        questions = []
+        for i, qa in enumerate(conv["qa"]):
+            if qa.get("category") not in LOCOMO_CATEGORIES:
+                continue
+            gold = {e.strip() for e in qa.get("evidence", []) if e.strip() in refs}
+            questions.append({"id": f"{conv['sample_id']}-{i}", "question": qa["question"],
+                              "answer": str(qa.get("answer", "")), "type": LOCOMO_CATEGORIES[qa["category"]],
+                              "evidence": gold, "sessions": set()})
+        yield conv["sample_id"], sessions, None, questions
+
+
+def longmemeval_cases(path: str, limit: int, seed: int):
+    data = json.load(open(path))
+    if limit:
+        by_type = defaultdict(list)
+        for q in data:
+            by_type[q["question_type"]].append(q)
+        rng = random.Random(seed)
+        share = max(1, limit // len(by_type))
+        data = [q for t in sorted(by_type) for q in rng.sample(by_type[t], min(share, len(by_type[t])))]
+    for q in data:
+        sessions, evidence = [], set()
+        for sid, date, session in zip(q["haystack_session_ids"], q["haystack_dates"], q["haystack_sessions"]):
+            messages = []
+            for j, turn in enumerate(session):
+                ref = f"{sid}#{j}"
+                if turn.get("has_answer"):
+                    evidence.add(ref)
+                messages.append({"id": ref, "role": turn["role"], "speaker": turn["role"],
+                                 "text": turn["content"]})
+            sessions.append((sid, date, messages))
+        kind = q["question_type"] + ("-abstain" if q["question_id"].endswith("_abs") else "")
+        question = {"id": q["question_id"], "question": q["question"], "answer": str(q["answer"]),
+                    "type": kind, "evidence": evidence, "sessions": set(q["answer_session_ids"])}
+        yield q["question_id"], sessions, q["question_date"], [question]
+
+
+def _norm(text: str) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", text.lower()))
+
+
+def answer_in(context: str, answer: str) -> bool | None:
+    answer = _norm(answer)
+    if not answer or len(answer.split()) > 6:
+        return None
+    return f" {answer} " in f" {_norm(context)} "
+
+
+ANSWER_PROMPT = """You are answering a question from your memory of past conversations.
+Use only the memories below. Dates in [brackets] are when relative time words happened.
+Answer in a short phrase. If the memories do not contain the answer, say so.
+
+Memories:
+{context}
+
+Question (asked {now}): {question}
+Answer:"""
+
+JUDGE_PROMPT = """Grade an answer against a gold answer. Be generous: the answer is CORRECT if it
+contains the same information as the gold answer, even if phrased differently or longer.
+For time questions, the same date or period in another format is CORRECT.
+
+Question: {question}
+Gold answer: {gold}
+Answer: {answer}
+
+Reply with exactly one word: CORRECT or WRONG."""
+
+
+def llm_grade(question: dict, context: str, now: str | None) -> dict:
+    from commontrace import llm
+
+    answer, usage = llm.complete(ANSWER_PROMPT.format(context=context, question=question["question"],
+                                                      now=now or "now"))
+    verdict, _ = llm.complete(JUDGE_PROMPT.format(question=question["question"], gold=question["answer"],
+                                                  answer=answer.strip()))
+    return {"answer": answer.strip(), "correct": verdict.strip().upper().startswith("CORRECT"),
+            "answer_tokens_in": usage.get("input_tokens") or usage.get("prompt_tokens")}
+
+
+def run(args) -> dict:
+    os.makedirs(args.root, exist_ok=True)
+    opts = Options(budget=args.budget, embedder=None if args.embedder == "none" else args.embedder,
+                   rerank=None if args.rerank == "none" else args.rerank,
+                   neighbours_before=args.neighbours, neighbours_after=args.neighbours,
+                   expand=not args.no_expand, profile_facts=args.profile_facts)
+    cases = locomo_cases(args.data) if args.dataset == "locomo" else \
+        longmemeval_cases(args.data, args.limit, args.seed)
+    rows, ingest_s, recall_s, full_tokens = [], 0.0, 0.0, []
+    for space, sessions, now, questions in cases:
+        with Store(args.root, re.sub(r"[^A-Za-z0-9._-]", "_", space)) as store:
+            t = time.time()
+            if store.stats()["turns"] < sum(len(ms) for _s, _d, ms in sessions):
+                for session, date, messages in sessions:
+                    store.add(session, messages, session_at=date)
+            ingest_s += time.time() - t
+            full_tokens.append(sum(tokens(m["text"]) for _s, _d, ms in sessions for m in ms))
+            for q in questions:
+                t = time.time()
+                r = recall(store, q["question"], now=now, options=opts)
+                recall_s += time.time() - t
+                refs = {tt.ref for tt in store.turns(r.turns).values()}
+                sess = {tt.session for tt in store.turns(r.turns).values()}
+                row = {"id": q["id"], "type": q["type"], "tokens": r.tokens,
+                       "evidence": (len(q["evidence"] & refs) / len(q["evidence"])) if q["evidence"] else None,
+                       "complete": q["evidence"] <= refs if q["evidence"] else None,
+                       "session": (len(q["sessions"] & sess) / len(q["sessions"])) if q["sessions"] else None,
+                       "answer_in_context": answer_in(r.context, q["answer"])}
+                if args.answer:
+                    row.update(llm_grade(q, r.context, now))
+                rows.append(row)
+        if args.limit and args.dataset == "locomo" and len(rows) >= args.limit:
+            break
+    return summarize(rows, args, ingest_s, recall_s, full_tokens)
+
+
+def _mean(values) -> float | None:
+    values = [float(v) for v in values if v is not None]
+    return round(statistics.mean(values), 4) if values else None
+
+
+def summarize(rows, args, ingest_s, recall_s, full_tokens) -> dict:
+    def block(rs):
+        return {"n": len(rs), "evidence": _mean(r["evidence"] for r in rs),
+                "complete": _mean(r["complete"] for r in rs), "session": _mean(r["session"] for r in rs),
+                "answer_in_context": _mean(r["answer_in_context"] for r in rs),
+                "accuracy": _mean(r.get("correct") for r in rs), "tokens": _mean(r["tokens"] for r in rs)}
+    by_type = defaultdict(list)
+    for r in rows:
+        by_type[r["type"]].append(r)
+    return {"dataset": args.dataset, "budget": args.budget, "embedder": args.embedder, "rerank": args.rerank,
+            "neighbours": args.neighbours, "expand": not args.no_expand, "overall": block(rows),
+            "by_type": {t: block(rs) for t, rs in sorted(by_type.items())},
+            "full_history_tokens": _mean(full_tokens), "ingest_seconds": round(ingest_s, 1),
+            "recall_ms": round(1000 * recall_s / max(1, len(rows)), 1), "rows": rows}
+
+
+def main(argv=None) -> int:
+    p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    p.add_argument("--dataset", choices=("locomo", "longmemeval"), required=True)
+    p.add_argument("--data", required=True)
+    p.add_argument("--root", default=os.path.join("benchmarks", ".work"),
+                   help="store root, reused between runs so ingestion and embeddings are cached")
+    p.add_argument("--budget", type=int, default=1500)
+    p.add_argument("--embedder", default="arctic-m", choices=("arctic-m", "minilm", "none"))
+    p.add_argument("--rerank", default="none", choices=("none", "cross-encoder", "cross-encoder-fast"))
+    p.add_argument("--neighbours", type=int, default=1)
+    p.add_argument("--no-expand", action="store_true")
+    p.add_argument("--profile-facts", type=int, default=4)
+    p.add_argument("--limit", type=int, default=0)
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--answer", action="store_true", help="answer and judge with COMMONTRACE_LLM_*")
+    p.add_argument("--out")
+    args = p.parse_args(argv)
+    result = run(args)
+    rows = result.pop("rows")
+    print(json.dumps(result, indent=2))
+    if args.out:
+        with open(args.out, "w") as fh:
+            json.dump({**result, "rows": rows}, fh, indent=1, default=list)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

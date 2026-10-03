@@ -508,3 +508,20 @@ def test_concurrent_robots_each_get_a_consistent_answer_and_nothing_is_lost(serv
     assert len(holdout_io.read_outcomes(root)) == n_threads * per
     rows, corrupt = holdout_io.read_log(root)
     assert corrupt == 0 and len(rows) == n_threads * per * 2
+
+
+def test_conversation_routes_remember_and_recall(gw, monkeypatch):
+    monkeypatch.setenv("COMMONTRACE_CONVERSATION_EMBEDDER", "none")
+    status, added = call(gw, "POST", "/v1/conversation/add", {
+        "space": "robot-7", "session": "shift-1", "session_at": "2023-05-08 09:00",
+        "messages": [{"speaker": "operator", "text": "The conveyor jammed yesterday at bay 4."}]})
+    assert status == 200 and added["added"] == 1
+    status, got = call(gw, "POST", "/v1/conversation/recall",
+                       {"space": "robot-7", "question": "When did the conveyor jam?"})
+    assert status == 200 and "jammed yesterday [7 May 2023] at bay 4" in got["context"]
+    assert call(gw, "POST", "/v1/conversation/recall", {"space": "nobody", "question": "x"})[0] == 404
+    assert call(gw, "POST", "/v1/conversation/recall", {"space": "robot-7", "question": "x", "budget": 5})[0] == 400
+    assert call(gw, "POST", "/v1/conversation/add", {"space": "../x", "session": "s", "messages": []})[0] == 400
+    assert call(gw, "POST", "/v1/conversation/add", {"space": "a", "session": "s", "messages": "hi"})[0] == 400
+    assert call(gw, "POST", "/v1/conversation/add", {"space": "a", "session": "s",
+                                                     "messages": [{"text": "x"}]}, headers={})[0] == 401
