@@ -955,6 +955,83 @@ API), and `commontrace sync` forwards a lesson's scopes and window.
 
 ---
 
+## Conversation memory
+
+Agents that talk to people need to remember what was said, when, and by
+whom. `commontrace conversation` keeps that in one SQLite file per *space*
+(a user, an agent or a thread) and recalls it into a small dated context:
+
+```bash
+echo '[{"speaker": "Ana", "text": "I adopted a beagle yesterday!"},
+       {"speaker": "Ben", "text": "Congrats, what is his name?"}]' |
+  commontrace conversation add ana --session 2023-05-08 --at "8 May 2023 10:00"
+commontrace conversation recall ana "When did Ana adopt her dog?" --budget 1500
+commontrace conversation profile ana          # what Ana has said about herself
+commontrace conversation sessions ana
+commontrace conversation delete ana --session 2023-05-08
+```
+
+```
+[2023-05-08 · Monday 8 May 2023, 10:00]
+Ana: I adopted a beagle yesterday [7 May 2023]!
+Ben: Congrats, what is his name?
+```
+
+- **No model at write time.** Relative time words are resolved against when
+  they were said as each message is stored ("yesterday" becomes 7 May 2023,
+  "last summer" summer 2022, "on Saturday" the right Saturday by tense), so
+  a temporal question finds an absolute date in the context. Nothing calls
+  an LLM to extract or rewrite memories, so writing costs no tokens and
+  what is recalled is what was said.
+- **Recall.** Keyword search (SQLite FTS5, BM25, stemmed) and, with the
+  attention extra, semantic search (`arctic-embed-m`) are fused by rank,
+  keyword matches counting half; the accurate cross-encoder reorders the
+  top 50. A question that names a time ("in May 2023", "last week") lifts
+  turns said in that window or about it. Each hit brings the turns either
+  side of it, and the page is filled best-first up to `--budget` tokens,
+  then shown session by session in the order things were said.
+- **Profile.** Self-descriptions the user makes ("I prefer boutique
+  hotels", "as a Sony camera user", "I'm allergic to peanuts") are kept as
+  their own sentences and added when a question asks for advice or
+  recommendations, or touches the same subject.
+- **Safety.** Credentials are redacted before anything is stored; a turn
+  the injection screen flags is never shown, and recall lists it under
+  `explain.withheld`. Re-adding a message (same `id`, or same speaker, time
+  and text) is a no-op; concurrent writers are serialized per file.
+- **Everywhere.** MCP tools `conversation_add` / `conversation_recall`,
+  and gateway routes `POST /v1/conversation/add` and
+  `/v1/conversation/recall` for agents in any language.
+  `COMMONTRACE_CONVERSATION_EMBEDDER` picks `arctic-m` (default), `minilm`
+  (seven times faster to embed) or `none` (keyword only, no extra installed).
+
+**Measured on LoCoMo** (all 1,540 questions in its four answerable
+categories; `benchmarks/conversation_bench.py`). The question is how much of
+the evidence that answers each question reaches the context, and what that
+context costs. A whole conversation averages 20,676 tokens.
+
+| Context budget | Evidence in context | All evidence present | Single-hop | Multi-hop | Temporal | Open-domain |
+|---:|---:|---:|---:|---:|---:|---:|
+| 800 tokens | 75.8% | 69.0% | 84% | 51% | 85% | 48% |
+| 1,500 tokens (default) | 80.7% | 73.7% | 88% | 61% | 88% | 51% |
+| 4,000 tokens | 89.5% | 83.4% | 95% | 75% | 95% | 67% |
+| 7,000 tokens | 93.3% | 88.6% | 97% | 83% | 97% | 75% |
+
+Recall takes about 630 ms per question on 4 CPU cores, most of it the
+cross-encoder; keyword-only recall takes 5 ms and reaches 77.2% at 1,500
+tokens. Published LoCoMo scores (for example 92.5 with ~7,000 tokens of
+context) are a model's answers graded by another model; they depend on the
+answering and grading models as much as on memory, and this harness does not
+claim them. With `COMMONTRACE_LLM_*` configured, `--answer` has a model
+answer from the recalled context and a judge grade it, so the same
+comparison can be run against any answering model:
+
+```bash
+python benchmarks/conversation_bench.py --dataset locomo --data locomo10.json --budget 1500,7000
+python benchmarks/conversation_bench.py --dataset longmemeval --data longmemeval_s.json --limit 60
+```
+
+---
+
 ## Quick Start — Code Agent reference profile
 
 ### 1 — Install

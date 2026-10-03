@@ -56,6 +56,9 @@ _SPOKEN = re.compile(
     re.I)
 
 
+_TRAILING_TIME = re.compile(r"^(.*?)[,\s]+(?:at\s+)?(\d{1,2}):(\d{2})(?:\s*([ap])\.?m\.?)?\s*$", re.I)
+
+
 def parse_moment(text: str | None) -> dt.datetime | None:
     """A wall-clock moment from the formats conversations carry, or None."""
     if not text:
@@ -89,6 +92,13 @@ def parse_moment(text: str | None) -> dt.datetime | None:
                                int(d1 or d2), hour, int(mm or 0))
         except ValueError:
             return None
+    m = _TRAILING_TIME.match(text)
+    if m and _SPOKEN.match(m.group(1)):
+        day = parse_moment(m.group(1))
+        hour = int(m.group(2)) % 12 + (12 if (m.group(4) or "").lower() == "p" else 0) if m.group(4) \
+            else int(m.group(2))
+        if day and hour < 24 and int(m.group(3)) < 60:
+            return day.replace(hour=hour, minute=int(m.group(3)))
     return None
 
 

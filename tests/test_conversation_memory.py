@@ -19,6 +19,8 @@ class TestMoments:
         ("2023-05-08T13:56:00+02:00", dt.datetime(2023, 5, 8, 11, 56)),
         ("May 8, 2023", dt.datetime(2023, 5, 8)),
         ("Monday, 8 May 2023", dt.datetime(2023, 5, 8)),
+        ("8 May 2023 10:00", dt.datetime(2023, 5, 8, 10, 0)),
+        ("May 8, 2023 at 3:15 pm", dt.datetime(2023, 5, 8, 15, 15)),
     ])
     def test_formats(self, text, expected):
         assert timeparse.parse_moment(text) == expected
