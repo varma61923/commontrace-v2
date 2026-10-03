@@ -280,3 +280,12 @@ class TestInterfaces:
         assert got["ok"] and "Lisbon last month [April 2023]" in got["context"]
         assert not call("conversation_recall", space="missing", question="x")["ok"]
         assert not call("conversation_add", space="../x", session="s", messages=[{"text": "x"}])["ok"]
+
+
+def test_long_pastes_are_stored_and_split(tmp_path):
+    store = Store(str(tmp_path), "s")
+    text = "Here is my log. " + " ".join(f"line {i} of the deployment output" for i in range(1500))
+    assert store.add("x", [{"text": text}], session_at="2023-01-01")["added"] == 1
+    assert store.stats()["units"] > 40
+    with pytest.raises(ConversationError):
+        store.add("x", [{"text": "y" * 200_001}])

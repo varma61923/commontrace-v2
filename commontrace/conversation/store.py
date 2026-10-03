@@ -19,7 +19,7 @@ from commontrace.conversation import profile, timeparse
 
 SPACE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 SESSION_RE = re.compile(r"^[^\x00-\x1f]{1,200}$")
-MAX_TURN_CHARS = 32_000
+MAX_TURN_CHARS = 200_000
 UNIT_CHARS = 700
 SCHEMA_VERSION = 1
 
