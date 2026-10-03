@@ -25,6 +25,7 @@ commontrace/**
 !commontrace/retrieval.py
 !commontrace/_lexical.py
 !commontrace/_stem.py
+!commontrace/telemetry.py
 !commontrace/memory_guard.py
 !commontrace/prereg.py
 !commontrace/raw_export.py
