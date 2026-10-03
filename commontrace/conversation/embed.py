@@ -3,6 +3,7 @@ one file per model, shared by every space, so a message is embedded once."""
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import sqlite3
 import threading
@@ -84,10 +85,9 @@ class Embedder:
         found: dict[str, bytes] = {}
         hashes = list(dict.fromkeys(h for h, _t in items))
         with self._lock:
-            for start in range(0, len(hashes), 900):
-                chunk = hashes[start:start + 900]
+            if hashes:
                 found.update(self.db.execute(
-                    f"SELECT hash, v FROM vec WHERE hash IN ({','.join('?' * len(chunk))})", chunk))
+                    "SELECT hash, v FROM vec WHERE hash IN (SELECT value FROM json_each(?))", (json.dumps(hashes),)))
             todo = {h: t for h, t in items if h not in found}
             if todo:
                 keys = list(todo)

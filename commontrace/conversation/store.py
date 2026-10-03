@@ -286,9 +286,9 @@ class Store:
     def turns(self, ids: Iterable[int]) -> dict[int, Turn]:
         ids = list(dict.fromkeys(ids))
         missing = [i for i in ids if i not in self._turn_cache]
-        for start in range(0, len(missing), 500):
-            chunk = missing[start:start + 500]
-            for r in self.db.execute(f"SELECT * FROM turns WHERE id IN ({','.join('?' * len(chunk))})", chunk):
+        if missing:
+            for r in self.db.execute("SELECT * FROM turns WHERE id IN (SELECT value FROM json_each(?))",
+                                     (json.dumps(missing),)):
                 self._turn_cache[r["id"]] = self._row_turn(r)
         return {i: self._turn_cache[i] for i in ids if i in self._turn_cache}
 
@@ -303,12 +303,10 @@ class Store:
 
     def unit_turns(self, unit_ids: Iterable[int]) -> dict[int, int]:
         ids = list(unit_ids)
-        out: dict[int, int] = {}
-        for start in range(0, len(ids), 500):
-            chunk = ids[start:start + 500]
-            out.update(self.db.execute(
-                f"SELECT id, turn FROM units WHERE id IN ({','.join('?' * len(chunk))})", chunk).fetchall())
-        return out
+        if not ids:
+            return {}
+        return dict(self.db.execute("SELECT id, turn FROM units WHERE id IN (SELECT value FROM json_each(?))",
+                                    (json.dumps(ids),)).fetchall())
 
     def lexical(self, query: str, limit: int) -> list[tuple[int, float]]:
         """(unit id, score) by BM25, best first."""
@@ -330,10 +328,10 @@ class Store:
 
     def facts(self, kinds: Iterable[str] = ()) -> list[dict]:
         kinds = list(kinds)
-        sql = "SELECT f.*, t.session FROM facts f JOIN turns t ON t.id = f.turn"
-        if kinds:
-            sql += f" WHERE f.kind IN ({','.join('?' * len(kinds))})"
-        return [dict(r) for r in self.db.execute(sql + " ORDER BY f.at, f.id", kinds)]
+        return [dict(r) for r in self.db.execute(
+            "SELECT f.*, t.session FROM facts f JOIN turns t ON t.id = f.turn "
+            "WHERE ? = '[]' OR f.kind IN (SELECT value FROM json_each(?)) ORDER BY f.at, f.id",
+            (json.dumps(kinds), json.dumps(kinds)))]
 
 
 def _python_bm25(units, query: str, limit: int) -> list[tuple[int, float]]:
