@@ -94,6 +94,70 @@ def run(args: argparse.Namespace) -> int:
         cli(["consolidate", *(["--draft"] if draft else []), "--dest", root])
     lines += ["## Consolidation", "", "```", out.getvalue().strip(), "```", ""]
 
+    from commontrace import graph as graph_mod
+    from commontrace import hierarchical, memory_blocks, store_state
+    from commontrace.commands._traces import load_trace_instances
+
+    linked_edges = 0
+    with graph_mod.batch(root):
+        for trace in load_trace_instances(root):
+            tid = str(trace.get("id") or "").strip()
+            tags = trace.get("tags") if isinstance(trace.get("tags"), list) else []
+            if not tid or not tags:
+                continue
+            graph_mod.add_node(root, f"trace:{tid}", "memory", name=str(trace.get("title") or tid)[:200])
+            for tag in tags:
+                tag = str(tag).strip()
+                if not tag:
+                    continue
+                graph_mod.add_node(root, f"concept:{tag}", "concept", name=tag)
+                graph_mod.add_edge(root, f"concept:{tag}", f"trace:{tid}", "affects")
+                linked_edges += 1
+
+    blocks = memory_blocks.list_blocks(root)
+    facts = hierarchical.list_facts(root, status="active")
+    status = store_state.inspect(root)
+
+    lines += ["## Knowledge Graph & Cognitive Consolidation", ""]
+    lines += [
+        f"- Working memory blocks: {len(blocks)} active",
+        f"- Atomic facts: {len(facts)} active",
+        f"- Mined graph edges: {linked_edges} updated",
+        "",
+    ]
+
+    profile_lines = [
+        f"# CommonTrace Active Space Profile ({now.strftime('%Y-%m-%d %H:%M')}Z)", "",
+        "## Working Memory Blocks",
+    ]
+    if blocks:
+        for b in blocks:
+            profile_lines.append(f"### [{b.name}] ({b.char_count}/{b.max_chars} chars, rev: {b.revision})")
+            profile_lines.append(b.content)
+            profile_lines.append("")
+    else:
+        profile_lines.append("_No working memory blocks configured._\n")
+
+    profile_lines.append("## Key Atomic Truths")
+    if facts:
+        for f in facts[:15]:
+            scope_str = f" [{','.join(f.scopes)}]" if f.scopes else ""
+            profile_lines.append(f"- **{f.statement}** (conf: {f.confidence:.2f}){scope_str}")
+        profile_lines.append("")
+    else:
+        profile_lines.append("_No atomic facts consolidated yet._\n")
+
+    profile_lines.append(
+        f"## Fleet Health\n- Active Lessons: {status.active}\n"
+        f"- In Review: {status.review}\n- Total Traces: {status.traces}\n"
+    )
+
+    profile_path = os.path.join(paths.memory_dir(root), "profile.md")
+    with open(profile_path, "w", encoding="utf-8", newline="\n") as pf:
+        pf.write("\n".join(profile_lines) + "\n")
+
+    lines += ["## Active Space Profile", f"- Synthesized to `{profile_path}`", ""]
+
     after = _review(root)
     new = sorted(set(after) - before)
     lines += [f"## Waiting for review ({len(after)}; {len(new)} new this pass)", ""]
@@ -104,8 +168,11 @@ def run(args: argparse.Namespace) -> int:
     report = os.path.join(report_dir, f"{now.strftime('%Y-%m-%d')}.md")
     with open(report, "w", encoding="utf-8", newline="\n") as fh:
         fh.write("\n".join(lines) + "\n")
-    print(f"[commontrace] dream: {len(signals)} signal(s), {len(new)} new draft(s), {len(after)} awaiting review. "
-          f"Report: {report}" + ("" if draft else " (no model: report only)"))
+    print(
+        f"[commontrace] dream: {len(signals)} signal(s), {len(new)} new draft(s), "
+        f"{len(after)} awaiting review, profile synthesized. "
+        f"Report: {report}" + ("" if draft else " (no model: report only)")
+    )
     return 0
 
 
@@ -124,3 +191,16 @@ def _review(root: str) -> list[str]:
             if fm.get("status") == "review":
                 out.append(name.removesuffix(".md"))
     return out
+
+
+def main_dream(root: str, draft: bool = False) -> int:
+    """Run a dreaming pass programmatically (used by agent_loop and tests)."""
+    import argparse
+    args = argparse.Namespace(
+        recipe=None,
+        every="weekly",
+        dest=root,
+        no_draft=not draft,
+    )
+    return run(args)
+

@@ -43,11 +43,36 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
              "naming it here scaffolds that directory. Defaults to 'code-review' for "
              "--agent-type code, and to no profile otherwise.",
     )
+    p.add_argument(
+        "--git", action="store_true",
+        help="Make the store its own git repository, so forgetting or restoring a fact "
+             "is recorded as a commit. Refused when the store sits inside another repository.",
+    )
     p.add_argument("--dest", default=".", help="Directory to scaffold into (default: current directory)")
     p.set_defaults(func=run)
 
 
 EPISODE_PROFILES = frozenset({"code-review"})
+
+
+def _init_git(root: str) -> int:
+    from commontrace import memory_git
+
+    if memory_git.is_repo(root) and not memory_git.owns_repo(root):
+        print(
+            "[commontrace] --git refused: this store is inside another git repository, and "
+            "audit commits there would mix memory changes with that project's history. "
+            "Keep the store in its own directory to version it.",
+            file=sys.stderr,
+        )
+        return 2
+    status = memory_git.init_repo(root)
+    if not status.get("ok"):
+        print(f"[commontrace] --git failed: {status.get('error', 'unknown error')}", file=sys.stderr)
+        return 1
+    memory_git.commit_all(root, "commontrace: initialize store")
+    print(f"[commontrace] Store is versioned with git at {root}")
+    return 0
 
 
 def _profile_for(args: argparse.Namespace) -> str:
@@ -173,6 +198,11 @@ def run(args: argparse.Namespace) -> int:
                   f"Success: {kit.outcome.success}.")
             print(f"  `commontrace function forecast {kit.key} --daily <occasions per day>` "
                   "says how long a verdict takes at your volume.")
+
+    if getattr(args, "git", False):
+        rc = _init_git(root)
+        if rc:
+            return rc
 
     if has_attention_deps():
         print(

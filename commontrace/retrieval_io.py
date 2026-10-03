@@ -145,6 +145,7 @@ class RetrievalConfig:
     rrf_k: int = retrieval.DEFAULT_RRF_K
     reliability_weight: float = 0.0
     recency_weight: float = 0.0
+    graph_weight: float = 1.0
     harm_policy: str = harm.POLICY_INFORM
     rerank: str = RERANK_NONE
 
@@ -288,6 +289,7 @@ def load_config(root: str) -> RetrievalConfig:
                         raw.get("redundancy_threshold"), dosage.DEFAULT_REDUNDANCY_THRESHOLD),
                     reliability_weight=_unit_float_or(raw.get("reliability_weight"), 0.0),
                     recency_weight=_unit_float_or(raw.get("recency_weight"), 0.0),
+                    graph_weight=_float_or(raw.get("graph_weight"), 1.0),
                     fusion=(
                         str(raw["fusion"])
                         if raw.get("fusion") in FUSIONS
@@ -335,6 +337,7 @@ def configure(root: str, *, scorer: str | None = None, floor: float | None = Non
               fusion: str | None = None, max_lessons: int | None = None,
               max_chars: int | None = None, redundancy_threshold: float | None = None,
               reliability_weight: float | None = None, recency_weight: float | None = None,
+              graph_weight: float | None = None,
               harm_policy: str | None = None, rerank: str | None = None,
               note: str = "") -> RetrievalConfig:
     """Persist this store's retrieval settings. Returns the new settings."""
@@ -384,6 +387,11 @@ def configure(root: str, *, scorer: str | None = None, floor: float | None = Non
             f"recency weight must be in [0.0, 1.0] (0 disables it), "
             f"got {new_recency_weight}"
         )
+    new_graph_weight = (
+        current.graph_weight if graph_weight is None else float(graph_weight)
+    )
+    if new_graph_weight < 0.0:
+        raise ValueError(f"graph weight must be >= 0.0, got {new_graph_weight}")
     new_rerank = current.rerank if rerank is None else rerank
     if new_rerank not in RERANKS:
         raise ValueError(
@@ -409,6 +417,7 @@ def configure(root: str, *, scorer: str | None = None, floor: float | None = Non
         redundancy_threshold=new_redundancy,
         reliability_weight=new_reliability_weight,
         recency_weight=new_recency_weight,
+        graph_weight=new_graph_weight,
         harm_policy=new_harm_policy,
         rerank=new_rerank,
         configured_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -435,6 +444,7 @@ def configure(root: str, *, scorer: str | None = None, floor: float | None = Non
                         "redundancy_threshold": config.redundancy_threshold,
                         "reliability_weight": config.reliability_weight,
                         "recency_weight": config.recency_weight,
+                        "graph_weight": config.graph_weight,
                         "harm_policy": config.harm_policy,
                         "rerank": config.rerank,
                         "configured_at": config.configured_at,

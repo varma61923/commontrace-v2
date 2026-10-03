@@ -133,6 +133,16 @@ def read_body(path: str) -> str:
     return content[second.end():].lstrip("\n")
 
 
+def validate_expires(value: object) -> str:
+    """Validate an ``expires`` frontmatter value, returning normalized ISO 8601."""
+    from commontrace import ttl
+
+    try:
+        return ttl.parse_expiry(value).isoformat()  # type: ignore[arg-type]
+    except ValueError as exc:
+        raise FrontmatterError(f"invalid lesson `expires` value {value!r}: {exc}") from exc
+
+
 _DIR_MODE_CACHE: dict[str, int] = {}
 
 

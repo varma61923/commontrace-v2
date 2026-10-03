@@ -39,6 +39,13 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
              "(`commontrace export > backup.jsonl`).",
     )
     p.add_argument("--dest", default=None)
+    p.add_argument(
+        "--format", choices=("native", "cogx"), default="native",
+        help="native (default): one JSON row per lesson/trace (JSONL). "
+             "cogx: one portable cogx/v1 JSON document carrying lessons, "
+             "facts, graph nodes/edges, and memory blocks. "
+             "--kind traces has no cogx counterpart (use native for traces).",
+    )
     p.set_defaults(func=run)
 
 
@@ -97,6 +104,10 @@ def _trace_rows(root: str, agent_type: str | None):
 
 def run(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
+    fmt = getattr(args, "format", "native") or "native"
+
+    if fmt == "cogx":
+        return _run_cogx(args, root)
 
     rows = []
     if args.kind in (KIND_LESSONS, KIND_ALL):
@@ -135,4 +146,55 @@ def run(args: argparse.Namespace) -> int:
             "reads them back with no field-mapping flags needed.",
             file=sys.stderr,
         )
+    return 0
+
+
+def _run_cogx(args: argparse.Namespace, root: str) -> int:
+    from commontrace import interop
+
+    if args.kind == KIND_TRACES:
+        print(
+            "[commontrace] --kind traces has no cogx counterpart: traces only "
+            "travel in the native (JSONL) export. Re-run without --format cogx, "
+            "or use --kind lessons|all.",
+            file=sys.stderr,
+        )
+        return 1
+
+    kinds: list[str] | None = None
+    if args.kind == KIND_LESSONS:
+        kinds = [interop.KIND_LESSON]
+    try:
+        records = interop.collect_store(
+            root, kinds=kinds, status=args.status, agent_type=args.agent_type,
+        )
+    except ValueError as exc:
+        print(f"[commontrace] error: {exc}", file=sys.stderr)
+        return 1
+    envelope = interop.build_envelope(records)
+
+    out = sys.stdout
+    opened = None
+    if args.out:
+        try:
+            safe_out = paths.safe_prepare_output_path(args.out)
+            opened = open(safe_out, "w", encoding="utf-8", newline="\n")
+        except (OSError, ValueError) as exc:
+            print(f"[commontrace] could not write {args.out!r}: {exc}", file=sys.stderr)
+            return 1
+        out = opened
+
+    try:
+        out.write(json.dumps(envelope, ensure_ascii=False, indent=2) + "\n")
+    finally:
+        if opened is not None:
+            opened.close()
+
+    tallied: dict[str, int] = {}
+    for rec in records:
+        tallied[rec["kind"]] = tallied.get(rec["kind"], 0) + 1
+    breakdown = ", ".join(f"{k}: {tallied[k]}" for k in sorted(tallied)) or "no records"
+    dest_desc = args.out if args.out else "stdout"
+    print(f"[commontrace] exported {len(records)} cogx record(s) ({breakdown}) to {dest_desc}.",
+          file=sys.stderr)
     return 0

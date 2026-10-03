@@ -78,6 +78,24 @@
       "type": "string",
       "description": "YYYY-MM-DD of the last hit, or the literal string 'NEVER'."
     },
+    "scopes": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Optional project/team routing scopes. A scoped query includes matching lessons and unscoped global lessons.",
+      "default": []
+    },
+    "valid_from": {
+      "type": "string",
+      "description": "Optional inclusive valid-time start as YYYY-MM-DD or ISO 8601. Separate from the revision journal's recorded time."
+    },
+    "valid_until": {
+      "type": "string",
+      "description": "Optional exclusive valid-time end as YYYY-MM-DD or ISO 8601. Retrieval omits the lesson at and after this instant."
+    },
+    "expires": {
+      "type": "string",
+      "description": "Optional TTL as YYYY-MM-DD or ISO 8601. From this instant the lesson is hidden from retrieval unless --show-expired is given."
+    },
     "source_traces": {
       "type": "array",
       "items": { "type": "string" },

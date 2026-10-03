@@ -13,8 +13,8 @@ import measure_retrieval  # noqa: E402
 
 from commontrace import retrieval  # noqa: E402
 
-MAX_POLLUTION = 2.4
-MAX_SPREAD = 2.0
+MAX_POLLUTION = 1.06
+MAX_SPREAD = 1.06
 
 
 @pytest.fixture(scope="module")
@@ -60,9 +60,10 @@ class TestTheGate:
         )
 
     def test_quality_holds_in_every_field(self, report):
+        assert report["scorer"] == retrieval.SCORER_ADAPTIVE
         for f in report["fields"]:
             assert f["recall_at_k"] == 1.0, f"{f['field']} loses relevant lessons"
-            assert f["precision_at_1"] >= 0.85, f"{f['field']} ranks the wrong lesson first"
+            assert f["precision_at_1"] == 1.0, f"{f['field']} ranks the wrong lesson first"
 
 
 class TestTheGateActuallyCatchesTheRegressionItExistsFor:
@@ -82,6 +83,13 @@ class TestTheGateActuallyCatchesTheRegressionItExistsFor:
             FIXTURES)["fields"]}
         regressed = {k: (old[k], new[k]) for k in old if new[k] > old[k]}
         assert not regressed, f"fields regressed (old, new): {regressed}"
+
+    def test_adaptation_halves_the_previous_default_worst_pollution(self):
+        old = measure_retrieval.compute(FIXTURES, scorer=retrieval.SCORER_IDF_V2)
+        new = measure_retrieval.compute(FIXTURES)
+        old_worst = max(f["pollution_ratio"] for f in old["fields"])
+        new_worst = max(f["pollution_ratio"] for f in new["fields"])
+        assert new_worst <= old_worst / 2
 
 
 class TestItRunsAsACommand:

@@ -34,6 +34,10 @@ TROUBLESHOOTING: dict[str, tuple[str, str]] = {
                        "Install Python 3.10 or newer and reinstall: `python3 -m pip install commontrace`."),
     "PyYAML importable": ("Lessons and traces are Markdown with YAML frontmatter, read with PyYAML.",
                           "`python3 -m pip install 'PyYAML>=6,<7'` in the same environment as `commontrace`."),
+    "OpenTelemetry tracing": ("Tracing was turned on (COMMONTRACE_OTEL or OTEL_EXPORTER_OTLP_ENDPOINT) but spans "
+                              "cannot be exported.",
+                              "`python3 -m pip install opentelemetry-sdk opentelemetry-exporter-otlp-proto-http`, "
+                              "or unset COMMONTRACE_OTEL."),
     "git on PATH": ("Some commands read the repository's history.", "Install git, or ignore this if you do not use "
                                                                     "those commands."),
     "memory/ store present": ("Every command reads a store: a `memory/` directory.",
@@ -47,6 +51,10 @@ TROUBLESHOOTING: dict[str, tuple[str, str]] = {
                                              "`commontrace lesson approve <slug>`."),
     "trace filename collisions": ("Two traces whose file names collide overwrite each other.",
                                   "Re-capture the affected traces; recent versions suffix every name with an id."),
+    "expired lessons": ("A lesson past its `expires` date is hidden from retrieval, so its guidance silently stops.",
+                        "Renew the date if the lesson still holds, or archive it."),
+    "atomic facts": ("Facts feed agent context; forgotten and expired ones are kept for audit but not shown.",
+                     "`commontrace fact list --include-forgotten` to review them."),
     "credentials in stored traces": ("A trace holding a credential would be replayed to every later reader.",
                                      "Run `commontrace redact` on the store and rotate the credential."),
     "store agent_type": ("The declared kind of agent decides starter domains and defaults.",
@@ -218,6 +226,23 @@ def _model_cached(name: str) -> bool:
     return False
 
 
+def _report_memory_lifecycle(root: str) -> None:
+    from commontrace import frontmatter, hierarchical, lesson_cache, ttl
+
+    try:
+        lessons = lesson_cache.load_active(root, None, reader=frontmatter.read)
+        facts = list(hierarchical.load_facts(root).values())
+    except (OSError, ValueError):
+        return
+    counts = ttl.summarize(lessons, facts)
+    if counts["expired_lessons"]:
+        _info("expired lessons", f"{counts['expired_lessons']} active lesson(s) past `expires` are hidden "
+                                 "from retrieval; renew or archive them")
+    if counts["total_facts"]:
+        _info("atomic facts", f"{counts['total_facts']} stored, {counts['forgotten_facts']} forgotten, "
+                              f"{counts['expired_facts']} past `expires_at`")
+
+
 def _check_measurement(root: str) -> None:
     import stat
 
@@ -262,6 +287,15 @@ def run(args: argparse.Namespace) -> int:
     _check("Python >= 3.10", sys.version_info >= (3, 10), sys.version.split()[0], critical=True)
     _check("PyYAML importable", _installed("yaml"), critical=True)
     _check("git on PATH", shutil.which("git") is not None)
+    from commontrace import telemetry
+
+    tele = telemetry.status()
+    if tele["otel_enabled"]:
+        _check("OpenTelemetry tracing", tele["tracing"] and not tele["note"],
+               tele["note"] or f"exporting to {tele['endpoint'] or 'the default OTLP endpoint'}")
+    else:
+        print("  [info] telemetry: metrics in-process (gateway /v1/metrics); set COMMONTRACE_OTEL=1 or "
+              "OTEL_EXPORTER_OTLP_ENDPOINT to export traces")
 
     has_mem = os.path.isdir(paths.memory_dir(root))
     _check("memory/ store present", has_mem,
@@ -325,6 +359,8 @@ def run(args: argparse.Namespace) -> int:
             )
         else:
             _check("credentials in stored traces", True, "none found")
+
+        _report_memory_lifecycle(root)
 
         declared = _declared_agent_type(root)
         effective = paths.store_agent_type(root)

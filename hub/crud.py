@@ -181,6 +181,9 @@ def _to_wire(trace: Trace, votes: list[dict], related: list[dict], *, brief: boo
     optional = {
         "agent_id": trace.agent_id,
         "profile": trace.profile,
+        "scopes": list(trace.scopes or []),
+        "valid_from": _iso(trace.valid_from) if trace.valid_from else "",
+        "valid_until": _iso(trace.valid_until) if trace.valid_until else "",
         "extensions": dict(trace.extensions or {}),
         "watch_condition": trace.watch_condition,
         "review_after": trace.review_after,
@@ -467,6 +470,48 @@ async def entitlements(session: AsyncSession, org_id: str) -> dict:
     }
 
 
+MAX_SCOPES = 20
+MAX_SCOPE_CHARS = 64
+
+
+def _clean_scope(scope: object) -> str:
+    if not isinstance(scope, str):
+        raise ValueError(f"scope must be a string, got {type(scope).__name__}")
+    reject_unstorable_text(scope, "scope")
+    value = scope.strip()
+    if len(value) > MAX_SCOPE_CHARS:
+        raise ValueError(f"scope exceeds {MAX_SCOPE_CHARS} chars ({len(value)})")
+    return value
+
+
+def _clean_scopes(scopes: object) -> list[str]:
+    if scopes is None:
+        return []
+    if not isinstance(scopes, list):
+        raise ValueError(f"scopes must be a list of strings, got {type(scopes).__name__}")
+    cleaned = list(dict.fromkeys(v for v in (_clean_scope(s) for s in scopes) if v))
+    if len(cleaned) > MAX_SCOPES:
+        raise ValueError(f"at most {MAX_SCOPES} scopes are allowed, got {len(cleaned)}")
+    return cleaned
+
+
+def _parse_moment(value: object, field: str) -> datetime | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError(f"{field} must be an ISO 8601 date or date-time, got {value!r}") from exc
+    else:
+        raise ValueError(f"{field} must be a string, got {type(value).__name__}")
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 async def search_traces(
     session: AsyncSession,
     org_id: str,
@@ -475,6 +520,8 @@ async def search_traces(
     limit: int = DEFAULT_SEARCH_LIMIT,
     offset: int = 0,
     brief: bool = False,
+    scope: str = "",
+    as_of: str | datetime | None = None,
 ) -> dict:
     """Returns {"traces": [...], "limit", "offset", "has_more", "terms"}."""
     limit = _clamp_int(limit, 1, MAX_SEARCH_LIMIT, DEFAULT_SEARCH_LIMIT)
@@ -490,6 +537,13 @@ async def search_traces(
     stmt = select(Trace).where(
         Trace.org_id == org_id, Trace.quarantined.is_(False), Trace.superseded_at.is_(None)
     )
+    scope = _clean_scope(scope) if scope else ""
+    if scope:
+        stmt = stmt.where(or_(Trace.scopes.contains([scope]), Trace.scopes == []))
+    as_of_dt = _parse_moment(as_of, "as_of")
+    if as_of_dt is not None:
+        stmt = stmt.where(or_(Trace.valid_from.is_(None), Trace.valid_from <= as_of_dt))
+        stmt = stmt.where(or_(Trace.valid_until.is_(None), Trace.valid_until > as_of_dt))
     chosen = hub_search.ChosenTerms((), (), ())
     failed_outcome = case((Trace.outcome["resolved"].astext == "false", 1), else_=0)
     if query:
@@ -768,8 +822,19 @@ async def contribute_trace(
     outcome: dict | None = None,
     actor: str = AUDIT_ACTOR_UNKNOWN,
     idempotency_key: str | None = None,
+    scopes: list[str] | None = None,
+    valid_from: str | datetime | None = None,
+    valid_until: str | datetime | None = None,
 ) -> dict:
     tags = tags or []
+    try:
+        scopes = _clean_scopes(scopes)
+        valid_from_dt = _parse_moment(valid_from, "valid_from")
+        valid_until_dt = _parse_moment(valid_until, "valid_until")
+    except ValueError as exc:
+        raise TraceRejected(str(exc)) from exc
+    if valid_from_dt and valid_until_dt and valid_until_dt <= valid_from_dt:
+        raise TraceRejected("valid_until must be after valid_from")
 
     if idempotency_key is not None:
         reject_unstorable_text(idempotency_key, "idempotency_key")
@@ -828,6 +893,9 @@ async def contribute_trace(
         agent_type=agent_type,
         agent_id=agent_id,
         profile=profile,
+        scopes=scopes,
+        valid_from=valid_from_dt,
+        valid_until=valid_until_dt,
         outcome=outcome,
         quarantined=reason is not None,
         quarantine_reason=reason or "",
@@ -1555,6 +1623,9 @@ async def amend_trace(
             if idempotency_key is not None
             else None
         ),
+        scopes=list(original.scopes or []),
+        valid_from=original.valid_from,
+        valid_until=original.valid_until,
         **_carry_commons_forward(original, resolved_title, resolved_context, resolved_tags),
     )
     original.superseded_at = datetime.now(timezone.utc)

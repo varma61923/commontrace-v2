@@ -12,6 +12,7 @@ from commontrace import (
     evidence_io,
     frontmatter,
     holdout_io,
+    lesson_cache,
     lesson_io,
     memory_guard,
     paths,
@@ -53,6 +54,12 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     new.add_argument("--importance", type=int, default=3)
     new.add_argument("--importance-rationale", default="")
     new.add_argument("--source-traces", default="", help="Comma-separated trace ids/slugs")
+    new.add_argument(
+        "--scopes", default="",
+        help="Comma-separated project/team scopes. Unscoped lessons remain global.",
+    )
+    new.add_argument("--valid-from", default="", help="First valid instant (YYYY-MM-DD or ISO 8601).")
+    new.add_argument("--valid-until", default="", help="Exclusive expiry instant (YYYY-MM-DD or ISO 8601).")
     new.add_argument("--dest", default=None)
     new.set_defaults(func=run_new)
 
@@ -64,10 +71,11 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     ls = sub.add_parser("list", help="List lessons in the store.")
     ls.add_argument("--agent-type", default=None)
     ls.add_argument("--status", default=None)
+    ls.add_argument("--scope", default="", help="Include global lessons and lessons in this scope.")
     ls.add_argument(
         "--json", action="store_true",
         help="Print one JSON array of lessons (name, agent_type, importance, status, "
-             "description, domain, path) for scripts, instead of the aligned table.",
+             "description, domain, scopes, validity, path) for scripts.",
     )
     ls.add_argument("--dest", default=None)
     ls.set_defaults(func=run_list)
@@ -165,6 +173,18 @@ def run_new(args: argparse.Namespace) -> int:
         )
         return 1
 
+    valid_from_arg = getattr(args, "valid_from", "")
+    valid_until_arg = getattr(args, "valid_until", "")
+    try:
+        valid_from = lesson_cache.parse_moment(valid_from_arg) if valid_from_arg else None
+        valid_until = lesson_cache.parse_moment(valid_until_arg) if valid_until_arg else None
+    except ValueError as exc:
+        print(f"[commontrace] {exc}", file=sys.stderr)
+        return 1
+    if valid_from is not None and valid_until is not None and valid_from >= valid_until:
+        print("[commontrace] --valid-until must be later than --valid-from", file=sys.stderr)
+        return 1
+
     root = paths.resolve_root(args.dest)
     ldir = paths.lessons_dir(root)
     paths.warn_if_implicit_cwd_store(args.dest)
@@ -195,6 +215,9 @@ def run_new(args: argparse.Namespace) -> int:
             importance_rationale=args.importance_rationale,
             source_traces=[t.strip() for t in args.source_traces.split(",") if t.strip()],
             status="review",
+            scopes=[t.strip() for t in getattr(args, "scopes", "").split(",") if t.strip()],
+            valid_from=valid_from_arg,
+            valid_until=valid_until_arg,
         )
         lesson_io.write_lesson(out_path, fm, templates.lesson_body(), root=root,
                                actor=_actor(), reason="scaffolded by `lesson new`")
@@ -248,6 +271,19 @@ def run_validate(args: argparse.Namespace) -> int:
         try:
             fm, body = frontmatter.read(path)
             errors = validate.validate(fm, schema)
+            try:
+                valid_from = lesson_cache.parse_moment(fm["valid_from"]) if fm.get("valid_from") else None
+                valid_until = lesson_cache.parse_moment(fm["valid_until"]) if fm.get("valid_until") else None
+            except ValueError as exc:
+                errors = list(errors) + [str(exc)]
+                valid_from = valid_until = None
+            if valid_from is not None and valid_until is not None and valid_from >= valid_until:
+                errors = list(errors) + ["valid_until must be later than valid_from"]
+            if fm.get("expires") not in (None, ""):
+                try:
+                    frontmatter.validate_expires(fm["expires"])
+                except frontmatter.FrontmatterError as exc:
+                    errors = list(errors) + [str(exc)]
             if fm.get("status") == "active":
                 unfilled = templates.unfilled_placeholders(fm, body)
                 if unfilled:
@@ -619,6 +655,9 @@ def run_suggest_revision(args: argparse.Namespace) -> int:
             ),
             source_traces=[],
             status="review",
+            scopes=list(fm.get("scopes") or []),
+            valid_from=str(fm.get("valid_from") or ""),
+            valid_until=str(fm.get("valid_until") or ""),
         )
         draft_fm["revises"] = slug
         if llm_draft is not None:
@@ -727,6 +766,9 @@ def run_suggest_rewrite(args: argparse.Namespace) -> int:
             ),
             source_traces=[],
             status="review",
+            scopes=list(fm.get("scopes") or []),
+            valid_from=str(fm.get("valid_from") or ""),
+            valid_until=str(fm.get("valid_until") or ""),
         )
         draft_fm["revises"] = slug
         if llm_draft is not None:
@@ -783,11 +825,18 @@ def run_list(args: argparse.Namespace) -> int:
             continue
         if args.status and fm.get("status") != args.status:
             continue
+        scope = getattr(args, "scope", "").strip()
+        lesson_scopes = {str(item).strip() for item in fm.get("scopes") or [] if str(item).strip()}
+        if scope and lesson_scopes and scope not in lesson_scopes:
+            continue
         if as_json:
             rows.append({
                 "name": fm.get("name"), "agent_type": fm.get("agent_type"),
                 "importance": fm.get("importance"), "status": fm.get("status"),
                 "description": fm.get("description") or "", "domain": fm.get("domain"),
+                "scopes": fm.get("scopes") or [],
+                "valid_from": fm.get("valid_from") or "",
+                "valid_until": fm.get("valid_until") or "",
                 "path": path,
             })
             continue

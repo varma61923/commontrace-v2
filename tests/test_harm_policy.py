@@ -8,10 +8,6 @@ import pytest
 from commontrace import evidence, experiment, harm, holdout_io, receipts, retrieval_io
 from tests.test_mcp_server import _write_lesson, call, cli
 
-pytest.importorskip("mcp", reason="`commontrace serve` needs the MCP SDK: pip install 'commontrace[serve]'")
-
-from commontrace import mcp_server  # noqa: E402  (needs the SDK)
-
 TASK = "customer asks for a password reset email"
 BAD = "reset-link-in-chat"
 GOOD = "verify-account-owner"
@@ -21,6 +17,10 @@ FILLER = [
     ("backfill-in-batches", "run a database backfill in small batches off peak"),
     ("rotate-api-keys", "rotate api keys quarterly and revoke the old ones"),
 ]
+
+pytest.importorskip("mcp", reason="`commontrace serve` needs the MCP SDK: pip install 'commontrace[serve]'")
+
+from commontrace import mcp_server  # noqa: E402  (needs the SDK)
 
 
 @pytest.fixture(autouse=True)

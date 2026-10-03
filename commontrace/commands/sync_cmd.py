@@ -59,6 +59,28 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
              "to avoid process table exposure).",
     )
     p.add_argument("--dest", default=None)
+    p.add_argument("--connector", default=None,
+                   help="Auto-sync connector to run (local_dir, web_crawler). "
+                        "When given, Hub push/pull is skipped and the connector "
+                        "syncs into the local store instead.")
+    p.add_argument("--source", action="append", default=None,
+                   help="Connector source: directory path (local_dir) or URL "
+                        "(web_crawler). Repeatable; comma-separated also accepted.")
+    p.add_argument("--scope", default="",
+                   help="Routing scope for connector facts (e.g. payments).")
+    p.add_argument("--dry-run", action="store_true",
+                   help="Connector dry-run: fetch/chunk with zero writes "
+                        "(no facts, provenance, or state).")
+    p.add_argument("--run-id", default="",
+                   help="Provenance run identifier (default: generated).")
+    p.add_argument("--state-token", default=None,
+                   help="Explicit resume token (default: persisted state).")
+    p.add_argument("--max-files", type=int, default=200,
+                   help="Max changed files per local_dir sync.")
+    p.add_argument("--max-pages", type=int, default=20,
+                   help="Max pages per web_crawler sync.")
+    p.add_argument("--timeout", type=int, default=10,
+                   help="Fetch timeout (seconds) for web_crawler.")
     p.add_argument(
         "--fail-if-unconfigured", action="store_true",
         help="Exit 2 (instead of 0) when no Hub is configured. For scripts "
@@ -74,6 +96,8 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
 
 
 def run(args: argparse.Namespace) -> int:
+    if getattr(args, "connector", None):
+        return _run_connector(args)
     hub_url = args.hub_url or os.environ.get("COMMONTRACE_HUB_URL")
     hub_api_key = args.hub_api_key or os.environ.get("COMMONTRACE_HUB_API_KEY")
 
@@ -171,3 +195,76 @@ def run(args: argparse.Namespace) -> int:
         return 1
 
     return 0
+
+
+def _flatten_sources(raw: object) -> list[str]:
+    out: list[str] = []
+    items = raw if isinstance(raw, list) else ([raw] if raw else [])
+    for item in items:
+        for part in str(item).split(","):
+            part = part.strip()
+            if part:
+                out.append(part)
+    return out
+
+
+def _run_connector(args: argparse.Namespace) -> int:
+    root = paths.resolve_root(getattr(args, "dest", None))
+    name = str(getattr(args, "connector", "") or "").strip()
+    sources = _flatten_sources(getattr(args, "source", None))
+    scope = getattr(args, "scope", "") or ""
+    dry_run = bool(getattr(args, "dry_run", False))
+    run_id = getattr(args, "run_id", "") or ""
+    state_token = getattr(args, "state_token", None)
+    max_files = getattr(args, "max_files", 200) or 200
+    max_pages = getattr(args, "max_pages", 20) or 20
+    timeout = getattr(args, "timeout", 10) or 10
+
+    try:
+        if name == "local_dir":
+            from commontrace.connectors.local_dir import LocalDirConnector
+
+            if not sources:
+                print("[commontrace] sync --connector local_dir requires --source <dir>.",
+                      file=sys.stderr)
+                return 2
+            connector = LocalDirConnector()
+            sync_result = connector.sync(
+                root, state_token, scope=scope, run_id=run_id,
+                dry_run=dry_run, source_dir=sources[0], max_files=max_files,
+            )
+        elif name == "web_crawler":
+            from commontrace.connectors.web_crawler import WebCrawlerConnector
+
+            if not sources:
+                print("[commontrace] sync --connector web_crawler requires --source <url>.",
+                      file=sys.stderr)
+                return 2
+            connector = WebCrawlerConnector()
+            sync_result = connector.sync(
+                root, state_token, scope=scope, run_id=run_id,
+                dry_run=dry_run, urls=sources, max_pages=max_pages,
+                timeout=timeout,
+            )
+        else:
+            print(f"[commontrace] sync: unknown connector {name!r} "
+                  "(expected 'local_dir' or 'web_crawler').", file=sys.stderr)
+            return 2
+    except Exception as exc:
+        print(f"[commontrace] sync --connector {name} failed: {exc}", file=sys.stderr)
+        return 1
+
+    d = sync_result.result.to_dict() if sync_result.result is not None else {}
+    mode = "dry-run " if dry_run else ""
+    print(f"[commontrace] sync --connector {name}: {mode}{d.get('chunks_extracted', 0)} "
+          f"chunk(s), {d.get('facts_written', 0)} fact(s), "
+          f"{len(sync_result.result.errors) if sync_result.result else 0} error(s).")
+    if sync_result.pending:
+        print(f"  {sync_result.pending} more item(s) are waiting; run the sync again to continue.")
+    print(f"  run_id={sync_result.run_id}")
+    print(f"  new_state_token={sync_result.new_state_token}")
+    for err in (sync_result.result.errors if sync_result.result else []):
+        print(f"  [ERROR] {err}", file=sys.stderr)
+    if dry_run:
+        print("  dry-run: no facts, provenance, or state were written.")
+    return 1 if sync_result.result and sync_result.result.errors else 0

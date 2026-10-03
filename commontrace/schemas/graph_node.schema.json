@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://commontrace.dev/schemas/graph_node.schema.json",
+  "title": "CommonTrace Graph Node",
+  "description": "A node in the CommonTrace temporal property graph, representing an entity such as a service, tool, error, concept, lesson, scope, user, or file.",
+  "type": "object",
+  "required": [
+    "id",
+    "entity_type",
+    "name",
+    "properties",
+    "created_at",
+    "updated_at"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Unique node identifier, formatted with entity type prefix (e.g. 'service:billing', 'tool:jwt_validator', 'error:timeout').",
+      "minLength": 1
+    },
+    "entity_type": {
+      "type": "string",
+      "description": "Classification category of the node entity. The store's ontology (memory/ontology.yaml) declares which entity types it uses; the examples are the built-in defaults.",
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "examples": [
+        "service",
+        "tool",
+        "error",
+        "concept",
+        "lesson",
+        "scope",
+        "user",
+        "file",
+        "symbol",
+        "memory",
+        "document",
+        "person",
+        "place",
+        "organization",
+        "event"
+      ]
+    },
+    "name": {
+      "type": "string",
+      "description": "Human-readable display name for the entity.",
+      "minLength": 1
+    },
+    "properties": {
+      "type": "object",
+      "description": "Arbitrary key-value metadata and domain attributes associated with the entity.",
+      "additionalProperties": true
+    },
+    "created_at": {
+      "type": "string",
+      "description": "ISO-8601 UTC timestamp recording when this node was first created."
+    },
+    "updated_at": {
+      "type": "string",
+      "description": "ISO-8601 UTC timestamp recording the latest update to this node."
+    },
+    "parent_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Id of the previous version of this entity, if any."
+    },
+    "root_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Id of the first version of this entity, if any."
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Version number within the entity's chain."
+    },
+    "is_latest": {
+      "type": "boolean",
+      "description": "Whether this is the newest version of the entity."
+    },
+    "is_forgotten": {
+      "type": "boolean",
+      "description": "Whether the node has been forgotten."
+    }
+  }
+}

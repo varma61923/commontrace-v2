@@ -8,26 +8,37 @@ from typing import Any
 
 from commontrace._lexical import STOPWORDS as _STOPWORDS
 from commontrace._lexical import WORD_RE as _WORD_RE
+from commontrace._lexical import has_cjk as _has_cjk
+from commontrace._lexical import segment_cjk as _segment_cjk
 from commontrace._stem import stem as _stem
 
 IDF_V2_FLOOR = 0.04
 
+SCORER_ADAPTIVE = "adaptive-v1"
 SCORER_IDF_V3 = "idf-v3"
 SCORER_IDF_V2 = "idf-v2"
-SCORER_IDF = SCORER_IDF_V2
+SCORER_BM25 = "bm25-v1"
+SCORER_IDF = SCORER_ADAPTIVE
 SCORER_COUNT = "count-v1"
-LEXICAL_SCORERS = (SCORER_IDF_V3, SCORER_IDF_V2, SCORER_COUNT)
+LEXICAL_SCORERS = (SCORER_ADAPTIVE, SCORER_IDF_V3, SCORER_IDF_V2, SCORER_BM25, SCORER_COUNT)
+
+BM25_K1 = 1.2
+BM25_B = 0.75
 
 IDF_V3_FLOOR = 0.064
+ADAPTIVE_FLOOR = IDF_V2_FLOOR
+ADAPTIVE_MIN_TAIL_RATIO = 0.30
+ADAPTIVE_MAX_TAIL_RATIO = 0.60
+ADAPTIVE_TAIL_RATIO_STEP = 0.04
 
-DEFAULT_FLOOR = IDF_V2_FLOOR
+DEFAULT_FLOOR = ADAPTIVE_FLOOR
 
 
 def default_floor(scorer: str) -> float:
     """The floor a store gets for `scorer` when it has not set its own."""
     if scorer == SCORER_COUNT:
         return 0.0
-    if scorer == SCORER_IDF_V2:
+    if scorer in (SCORER_ADAPTIVE, SCORER_IDF_V2, SCORER_BM25):
         return IDF_V2_FLOOR
     return IDF_V3_FLOOR
 
@@ -36,13 +47,29 @@ _LENGTH_CLAMP = (0.5, 1.5)
 
 
 def _tokenize(text: str) -> list[str]:
-    return [w for w in _WORD_RE.findall(text.lower()) if w not in _STOPWORDS and len(w) > 1]
+    toks = [w for w in _WORD_RE.findall(text.lower()) if w not in _STOPWORDS and len(w) > 1]
+    if not any(_has_cjk(t) for t in toks):
+        return toks
+    out: list[str] = []
+    for tok in toks:
+        if _has_cjk(tok):
+            out.extend(_segment_cjk(tok))
+        else:
+            out.append(tok)
+    return out
 
 
 def _terms_for(scorer: str, terms) -> set[str]:
-    if scorer == SCORER_IDF_V3:
+    if scorer in (SCORER_ADAPTIVE, SCORER_IDF_V3, SCORER_BM25):
         return {_stem(t) for t in terms}
     return set(terms)
+
+
+def _adaptive_tail_ratio(n_terms: int) -> float:
+    return min(
+        ADAPTIVE_MAX_TAIL_RATIO,
+        ADAPTIVE_MIN_TAIL_RATIO + ADAPTIVE_TAIL_RATIO_STEP * max(0, n_terms),
+    )
 
 
 @dataclass(frozen=True)
@@ -56,6 +83,7 @@ class RankedLesson:
     scorer: str = SCORER_IDF
     reliability_adjustment: float = 0.0
     recency_adjustment: float = 0.0
+    graph_adjustment: float = 0.0
 
 
 def _lesson_text_weighted(fm: dict) -> list[tuple[str, float]]:
@@ -85,6 +113,11 @@ def _length_factor(n_terms: int, avg_terms: float) -> float:
     raw = 1.0 / (1.0 + _LENGTH_B * ((n_terms / avg_terms) - 1.0))
     low, high = _LENGTH_CLAMP
     return max(low, min(high, raw))
+
+
+def _bm25_term(tf: float, idf: float, doc_len: int, avg_len: float) -> float:
+    norm = (1.0 - BM25_B + BM25_B * (doc_len / avg_len)) if avg_len > 0 else 1.0
+    return idf * (tf * (BM25_K1 + 1.0)) / (tf + BM25_K1 * norm)
 
 
 def _rank_int(value: Any) -> int:
@@ -168,7 +201,27 @@ def _corpus_index(lessons, term_cache, scorer: str) -> _CorpusIndex:
     hit = _INDEX_CACHE.get(key)
     if hit is not None and (hit[0] is fingerprint or hit[0] == fingerprint):
         return hit[1]
+    bin_dir = getattr(term_cache, "bin_dir", None)
+    if bin_dir:
+        try:
+            import importlib
+            corpus_bin = importlib.import_module("commontrace.corpus_bin")
+            persisted = corpus_bin.load(bin_dir, scorer, lessons, fingerprint)
+        except Exception:
+            persisted = None
+        if persisted is not None:
+            if key not in _INDEX_CACHE and len(_INDEX_CACHE) >= _INDEX_CACHE_MAX:
+                _INDEX_CACHE.pop(next(iter(_INDEX_CACHE)))
+            _INDEX_CACHE[key] = (fingerprint, persisted)
+            return persisted
     index = _build_index(lessons, term_cache, scorer)
+    if bin_dir and fingerprint == getattr(term_cache, "fingerprint", None):
+        try:
+            import importlib
+            corpus_bin = importlib.import_module("commontrace.corpus_bin")
+            corpus_bin.save(bin_dir, scorer, fingerprint, index)
+        except Exception:
+            pass
     if key not in _INDEX_CACHE and len(_INDEX_CACHE) >= _INDEX_CACHE_MAX:
         _INDEX_CACHE.pop(next(iter(_INDEX_CACHE)))
     _INDEX_CACHE[key] = (fingerprint, index)
@@ -186,6 +239,9 @@ def rank_lessons(
     reliability_weight: float = 0.0,
     recency_lookup: dict[str, float] | None = None,
     recency_weight: float = 0.0,
+    adaptive_tail: bool = True,
+    graph_boost_lookup: dict[str, float] | None = None,
+    graph_weight: float = 0.0,
 ) -> list[RankedLesson]:
     query_terms = _terms_for(scorer, _tokenize(task))
     if not query_terms:
@@ -203,9 +259,11 @@ def rank_lessons(
     max_idf = index.max_idf
     total_query_idf = len(query_terms) * max_idf
 
-    scored: list[tuple[RankedLesson, int, int]] = []
+    scored: list[tuple] = []
     acc: dict[int, list] = {}
     acc_get = acc.get
+    is_bm25 = scorer == SCORER_BM25
+    avg_len = index.avg_field_len
     for term in sorted(query_terms):
         post = index.postings.get(term)
         if post is None:
@@ -213,6 +271,15 @@ def rank_lessons(
         term_idf = query_idf.get(term, 0.0)
         for i, weight_sum, best in zip(*post):
             a = acc_get(i)
+            if is_bm25:
+                contrib = _bm25_term(weight_sum, term_idf, index.n_terms[i], avg_len)
+                if a is None:
+                    acc[i] = [weight_sum, contrib, [term]]
+                    continue
+                a[0] += weight_sum
+                a[1] += contrib
+                a[2].append(term)
+                continue
             if a is None:
                 acc[i] = [weight_sum, term_idf * (best / _MAX_FIELD_WEIGHT), [term]]
                 continue
@@ -227,25 +294,39 @@ def rank_lessons(
 
         if scorer == SCORER_COUNT:
             rel = score
+        elif scorer == SCORER_BM25:
+            if total_query_idf > 0 and matched:
+                rel = min(1.0, covered / total_query_idf)
+            else:
+                rel = 0.0
         elif total_query_idf > 0 and matched:
             lam = length_factors[i] if length_factors else _length_factor(index.n_terms[i], index.avg_field_len)
             rel = min(1.0, (covered * lam) / total_query_idf)
         else:
             rel = 0.0
 
-        if score > 0 and rel >= floor:
+        if score > 0 and (scorer == SCORER_ADAPTIVE and adaptive_tail or rel >= floor):
             slug = str(fm.get("name", ""))
             reliability_adj = reliability_lookup.get(slug, 0.0) if reliability_lookup else 0.0
             recency_adj = recency_lookup.get(slug, 0.0) if recency_lookup else 0.0
+            graph_adj = graph_boost_lookup.get(slug, 0.0) if graph_boost_lookup else 0.0
             adjusted = min(1.0, max(0.0,
-                rel + reliability_weight * reliability_adj + recency_weight * recency_adj,
+                rel + reliability_weight * reliability_adj
+                + recency_weight * recency_adj + graph_weight * graph_adj,
             ))
             importance, uses = tie_breaks[i] if tie_breaks else (
                 _rank_int(fm.get("importance", 0)), _rank_int(fm.get("uses", 0)))
             scored.append((
                 adjusted, score, importance, uses,
-                path, fm, slug, matched, rel, reliability_adj, recency_adj,
+                path, fm, slug, matched, rel, reliability_adj, recency_adj, graph_adj,
             ))
+
+    if scorer == SCORER_ADAPTIVE and adaptive_tail and scored:
+        adaptive_floor = max(
+            floor,
+            max(item[8] for item in scored) * _adaptive_tail_ratio(len(query_terms)),
+        )
+        scored = [item for item in scored if item[8] >= adaptive_floor]
 
     top = heapq.nlargest(max(0, top_k), scored, key=lambda item: item[:4])
     return [
@@ -259,9 +340,10 @@ def rank_lessons(
             scorer=scorer,
             reliability_adjustment=round(reliability_adj, 6) if reliability_lookup else 0.0,
             recency_adjustment=round(recency_adj, 6) if recency_lookup else 0.0,
+            graph_adjustment=round(graph_adj, 6) if graph_boost_lookup else 0.0,
         )
         for (_adj, score, _imp, _uses, path, fm, slug, matched, rel,
-             reliability_adj, recency_adj) in top
+             reliability_adj, recency_adj, graph_adj) in top
     ]
 
 

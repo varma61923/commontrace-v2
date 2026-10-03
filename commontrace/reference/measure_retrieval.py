@@ -20,15 +20,13 @@ mean:
   question specifically: is retrieval materially worse in one field than
   another?
 
-Both are needed, and building this proved it. Against the historical scorer
-the eight fields pollute at 1.72x-2.50x; against the shipped scorer,
-1.72x-2.33x. Tuning the floor against THIS corpus alone would buy far more
-(1.00x-1.28x at floor=0.10), but a second corpus bounds how high the floor
-can go -- see DEFAULT_FLOOR in commontrace/retrieval.py and benchmark/
-The benchmark methodology, which records why it was lowered to 0.04 after shipping.
-The SPREAD barely moves either way (1.45x to 1.36x), because the old scorer
-was bad in every field roughly equally. A spread-only gate would have called
-that regression acceptable.
+Both are needed, and building this proved it. The historical count scorer
+pollutes at 1.72x-2.50x and the previous idf-v2 default at 1.72x-2.33x. The
+adaptive scorer keeps the 0.04 absolute floor but also rejects a candidate
+whose relevance is weak relative to the best match for that query. It reaches
+1.00x-1.06x while preserving 100% recall@3 and precision@1 in all eight
+fields. The spread shrinks to 1.06x; a spread-only gate would still have
+missed that both older scorers were noisy in every field roughly equally.
 Conversely a ceiling-only gate passes a change that fixes five fields and
 abandons the sixth, which is the failure this whole file exists for.
 

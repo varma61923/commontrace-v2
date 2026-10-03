@@ -21,12 +21,15 @@
 
 mcp==2.2.0                 # MCP server transport (streamable-http), also pulls starlette + uvicorn
 httpx==0.28.1               # official Encode HTTP client (was pinned to the unofficial "httpx2" repackaging)
+# 2.0.54 is the newest release that still supports Python 3.10, which this
+# project's CI matrix and ruff target-version both include. sqlalchemy >= 2.1.0
+# is Python >= 3.11 only, so pinning higher silently drops 3.10 support.
 sqlalchemy[asyncio]==2.0.54
 asyncpg==0.31.0            # async Postgres driver
 alembic==1.20.0
 argon2-cffi==25.1.0        # API key hashing
 jsonschema==4.26.0         # protocol/schemas/*.json validation
-PyJWT==2.15.0              # OIDC bearer-token verification (hub/sso.py) -- was
+PyJWT==2.15.1              # OIDC bearer-token verification (hub/sso.py) -- was
                            # only ever a transitive dependency before; now
                            # imported directly, so it is pinned directly too
 cryptography==50.0.1       # AES-256-GCM envelope encryption for WebhookEndpoint.url

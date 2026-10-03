@@ -105,6 +105,7 @@ def _draft_from_pair(root: str, by_slug: dict, a: str, b: str, kind: str) -> str
         importance=max(int(fm_.get("importance") or 3) for fm_ in lessons),
         importance_rationale=f"Drafted from {a} and {b}; calibrate before approving.",
         status="review",
+        scopes=sorted({str(scope) for fm_ in lessons for scope in fm_.get("scopes") or []}),
     )
     fm["merges" if kind == "merge" else "reconciles"] = [a, b]
     fm["llm_draft"] = dict(

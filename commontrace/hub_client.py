@@ -88,6 +88,18 @@ class PullResult:
     ignored_terms: list[str] = field(default_factory=list)
 
 
+def _routing_fields(fm: dict) -> dict:
+    out: dict = {}
+    raw = fm.get("scopes")
+    scopes = [str(s).strip() for s in raw if str(s).strip()] if isinstance(raw, list) else []
+    if scopes:
+        out["scopes"] = scopes
+    for key in ("valid_from", "valid_until"):
+        if fm.get(key):
+            out[key] = str(fm[key])
+    return out
+
+
 def _lesson_sections(body: str) -> dict[str, str]:
     out: dict[str, str] = {}
     for m in _SECTION_RE.finditer(body):
@@ -730,6 +742,7 @@ async def push_active_lessons(
                     "agent_type": fm.get("agent_type") or "",
                     "agent_id": fm.get("agent_id") or "",
                     "idempotency_key": f"lesson:{slug}",
+                    **_routing_fields(fm),
                 },
                 session=session,
             )

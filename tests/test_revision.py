@@ -42,6 +42,9 @@ class TestWhatCountsAsTheSameTreatment:
         ("importance", 1),
         ("domain", "storage"),
         ("tags", ["retry", "http", "backoff"]),
+        ("scopes", ["payments"]),
+        ("valid_from", "2026-01-01"),
+        ("valid_until", "2027-01-01"),
     ])
     def test_anything_the_agent_reads_counts(self, field, value):
         fm, body = lesson()
@@ -69,6 +72,12 @@ class TestWhatCountsAsTheSameTreatment:
         fm, body = lesson()
         before = revision.revision_of(fm, body)
         fm["tags"] = list(reversed(fm["tags"]))
+        assert revision.revision_of(fm, body) == before
+
+    def test_reordered_scopes_do_not_count(self):
+        fm, body = lesson(fm={"scopes": ["payments", "checkout"]})
+        before = revision.revision_of(fm, body)
+        fm["scopes"] = list(reversed(fm["scopes"]))
         assert revision.revision_of(fm, body) == before
 
     def test_yaml_key_order_does_not_count(self):

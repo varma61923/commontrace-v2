@@ -82,7 +82,7 @@ def start(
     root: str, kit: functions.FunctionKit, *, label: str, daily: float,
     value_per_occasion: float | None = None, baseline: float | None = None,
     effect: float | None = None, rate: float | None = None, max_days: int = MAX_DAYS,
-    force: bool = False, now: datetime.datetime | None = None,
+    force: bool = False, salt: str | None = None, now: datetime.datetime | None = None,
 ) -> tuple[dict, functions.Forecast]:
     """Forecast, refuse what cannot answer, start the holdout, register the design."""
     label = (label or "").strip()
@@ -107,7 +107,7 @@ def start(
             + functions.render_forecast(fc)
             + "\n\nRaise the volume, accept a larger effect (--effect), or pass --force.")
     config = holdout_io.configure(
-        root, rate=fc.rate, detect=fc.effect, note=f"Agent Learning Proof: {label}")
+        root, rate=fc.rate, detect=fc.effect, salt=salt, note=f"Agent Learning Proof: {label}")
     registration = prereg.register(
         primary_outcome=kit.outcome.success, minimum_practical_effect=fc.effect,
         holdout_rate=fc.rate, planned_occasions=fc.design.occasions_needed,

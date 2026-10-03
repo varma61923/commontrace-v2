@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://commontrace.dev/schemas/graph_edge.schema.json",
+  "title": "CommonTrace Graph Edge",
+  "description": "A directed property edge linking two entities in the CommonTrace temporal knowledge graph with bitemporal validity bounds and connection weight.",
+  "type": "object",
+  "required": [
+    "source",
+    "target",
+    "relation",
+    "weight",
+    "valid_at",
+    "invalid_at",
+    "expired_at",
+    "properties",
+    "created_at"
+  ],
+  "properties": {
+    "source": {
+      "type": "string",
+      "description": "Source node ID (origin of the directed relationship).",
+      "minLength": 1
+    },
+    "target": {
+      "type": "string",
+      "description": "Target node ID (destination of the directed relationship).",
+      "minLength": 1
+    },
+    "relation": {
+      "type": "string",
+      "description": "Semantic relationship type connecting source to target. The store's ontology (memory/ontology.yaml) declares which relations it uses; the examples are the built-in defaults.",
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "examples": [
+        "depends_on",
+        "causes",
+        "resolves",
+        "affects",
+        "supersedes",
+        "scoped_to",
+        "uses",
+        "violates",
+        "relates_to",
+        "contains",
+        "mentions",
+        "raises",
+        "updates",
+        "extends",
+        "derives"
+      ]
+    },
+    "weight": {
+      "type": "number",
+      "description": "Connection strength and confidence weight, bounded in [0.0, 1.0].",
+      "minimum": 0.0,
+      "maximum": 1.0
+    },
+    "valid_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "ISO-8601 UTC timestamp from which this edge holds."
+    },
+    "invalid_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "ISO-8601 UTC timestamp at which a later assertion or a forget closed this edge, or null while it holds."
+    },
+    "expired_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "ISO-8601 UTC timestamp after which this edge lapses, or null for no expiry."
+    },
+    "properties": {
+      "type": "object",
+      "description": "Arbitrary key-value metadata and edge attributes.",
+      "additionalProperties": true
+    },
+    "created_at": {
+      "type": "string",
+      "description": "ISO-8601 UTC timestamp recording when this edge was created."
+    }
+  }
+}

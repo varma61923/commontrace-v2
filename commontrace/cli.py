@@ -4,6 +4,7 @@ import argparse
 import csv
 import difflib
 import importlib
+import os
 import sys
 
 from commontrace import PROTOCOL_VERSION, __version__
@@ -21,12 +22,62 @@ _COMMANDS = (
     "overlap", "commons", "kb", "account", "query", "serve", "index", "bench", "reliability",
     "consolidate", "retrieval", "experiment", "source", "function", "proof", "gateway", "fleet", "signals", "export",
     "dream", "bill", "conformance", "gate", "prove", "taxonomy", "impact", "pilot", "sync", "redact", "doctor",
+    "block", "fact", "graph", "ingest", "agent", "watch", "daemon", "viz", "conversation", "memory", "recall", "jobs",
 )
 
 
 def _command_modules(only: str | None = None) -> list:
     names = (only,) if only in _COMMANDS else _COMMANDS
     return [importlib.import_module(f"commontrace.commands.{name}_cmd") for name in names]
+
+
+class _LazyCommandMap(dict):
+    def __init__(self, subparsers_action=None):
+        super().__init__()
+        self._subparsers_action = subparsers_action
+        self._loading: set[str] = set()
+
+    def __contains__(self, key):
+        if key in self._loading:
+            return False
+        return key in _COMMANDS or dict.__contains__(self, key)
+
+    def __iter__(self):
+        return iter(_COMMANDS)
+
+    def __len__(self):
+        return len(_COMMANDS)
+
+    def __getitem__(self, key):
+        if dict.__contains__(self, key):
+            return dict.__getitem__(self, key)
+        if key not in _COMMANDS:
+            raise KeyError(key)
+        module = importlib.import_module(f"commontrace.commands.{key}_cmd")
+        action = self._subparsers_action
+        if action is None:
+            raise KeyError(key)
+        action._choices_actions = [
+            a for a in action._choices_actions if a.dest != key
+        ]
+        self._loading.add(key)
+        try:
+            module.add_parser(action)
+        finally:
+            self._loading.discard(key)
+        return dict.__getitem__(self, key)
+
+    def __setitem__(self, key, value):
+        dict.__setitem__(self, key, value)
+
+    def get(self, key, default=None):
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
+    def keys(self):  # pragma: no cover - convenience, avoids accidental full import
+        return list(_COMMANDS)
 
 
 def build_parser(only: str | None = None) -> argparse.ArgumentParser:
@@ -41,8 +92,16 @@ def build_parser(only: str | None = None) -> argparse.ArgumentParser:
         version=f"commontrace {__version__} (protocol {PROTOCOL_VERSION})",
     )
     subparsers = parser.add_subparsers(dest="command", required=_MISSING_DEPENDENCY is None)
-    for module in _command_modules(only):
-        module.add_parser(subparsers)
+    if only in _COMMANDS:
+        importlib.import_module(f"commontrace.commands.{only}_cmd").add_parser(subparsers)
+        return parser
+    lazy: dict = _LazyCommandMap(subparsers)
+    subparsers._name_parser_map = lazy  # type: ignore[assignment]
+    subparsers.choices = lazy  # type: ignore[assignment]
+    for name in _COMMANDS:
+        subparsers._choices_actions.append(
+            subparsers._ChoicesPseudoAction(name, (), f"{name} command")
+        )
     return parser
 
 
@@ -107,7 +166,17 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     args = parser.parse_args(argv)
     try:
-        res = args.func(args)
+        if os.environ.get("COMMONTRACE_LOG_FORMAT") or os.environ.get("COMMONTRACE_LOG_LEVEL") or \
+                os.environ.get("COMMONTRACE_OTEL") or os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"):
+            from commontrace import telemetry
+
+            telemetry.configure_logging()
+            sub = getattr(args, "subcommand", None) or getattr(args, "action", None)
+            with telemetry.bind(request_id=telemetry.new_request_id(), command=argv[0]), \
+                    telemetry.span(f"cli.{argv[0]}" + (f".{sub}" if isinstance(sub, str) else "")):
+                res = args.func(args)
+        else:
+            res = args.func(args)
         return 0 if res is None else int(res)
     except FrontmatterError as exc:
         print(f"[commontrace] error: {exc}", file=sys.stderr)
@@ -118,6 +187,12 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("\n[commontrace] interrupted.", file=sys.stderr)
         return 130
+    except BrokenPipeError:
+        try:
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        except OSError:
+            pass
+        return 0
     except (
         OSError,
         ValueError,

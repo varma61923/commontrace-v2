@@ -432,6 +432,8 @@ see `commontrace/dosage.py` for that opt-in.
 ```bash
 commontrace query "customer is escalating about a delayed refund"
 commontrace query "..." --lexical        # force the dependency-free fallback
+commontrace query "..." --scope payments # matching scope + global lessons
+commontrace query "..." --as-of 2026-06-01  # valid-time view for audit/debugging
 ```
 
 Falls back automatically to a pure-Python lexical (word-overlap) ranker if
@@ -810,6 +812,9 @@ The agent then has the whole protocol as tools:
 | `reject_lesson(slug, reason)` | Archive one that should not become a lesson. |
 | `list_lessons` / `get_lesson` / `store_status` | Read the store, and see which recurring patterns still have no lesson. |
 | `experiment_status()` | Is the randomized holdout you're feeding with `occasion_id` actually going to answer anything yet -- validity, power projections, and effects so far, so an agent can tell a running pilot from a spent one. |
+| `memory_block_read(name)` / `memory_block_update(...)` / `memory_block_list()` | Inspect and update stateful working memory blocks (persona, human, project, guidelines) with character limits, SHA-256 revision history, and atomic replace/append operations. |
+| `query_facts(query, scope?, category?, as_of?)` / `record_fact(...)` | Search and record atomic declarative facts with confidence weighting, bitemporal validity (`as_of`), and domain routing (`scope`). |
+| `graph_query(entity, hops?)` / `graph_neighbors(...)` | Traverse the causal knowledge graph across services, tools, error modes, concepts, and lessons with multi-hop neighbor expansion. |
 
 Two things about this are deliberate.
 
@@ -863,6 +868,372 @@ Nothing here reimplements ranking, holdout assignment, or the approval guard —
 it calls the same functions `commontrace query` and `commontrace lesson
 approve` do, so a fleet's shell-capable and shell-less agents read the same
 memory and land in the same experiment arms.
+
+---
+
+## Working memory, facts, graph and ingestion
+
+Lessons are the governed, measured layer. Around them a store also keeps
+faster-moving memory that agents read and write directly. Everything below
+lives under `memory/` as plain files, is screened for credentials and
+prompt injection before it is stored, and is safe under concurrent writers.
+
+**Working-memory blocks** (`commontrace block`, MCP `memory_block_*`): named,
+character-bounded scratchpads such as `persona`, `human` or `project`.
+Every write is all-or-nothing and recorded in `memory/blocks/history.jsonl`
+with a chained revision hash.
+
+```bash
+commontrace block set persona "Senior systems engineer. Check idempotency first."
+commontrace block append human "Prefers concise answers."
+commontrace block replace human --old "concise" --new "short, concrete"
+commontrace block history persona
+```
+
+**Atomic facts** (`commontrace fact`, MCP `record_fact` / `query_facts`):
+single statements with a confidence, optional scopes and a validity window.
+Restating a fact reinforces it; `supersede` closes the old one and links the
+replacement; `delete` ends its validity; `forget` hides it reversibly.
+`--as-of` answers what was true at a moment.
+
+```bash
+commontrace fact add "Stripe idempotency keys expire after 24 hours" --category constraint --scope payments
+commontrace fact supersede <fact-id> "Stripe idempotency keys expire after 48 hours"
+commontrace fact search "idempotency key expiry" --scope payments
+commontrace fact list --as-of 2026-06-01
+```
+
+**Knowledge graph** (`commontrace graph`, MCP `graph_query` /
+`graph_neighbors`): typed nodes and dated edges. A newer dated assertion of
+an edge closes the old one; restating a live edge only reinforces it. Query
+text that names a graph entity boosts the lessons connected to it, by hop
+distance (`commontrace retrieval --graph-weight`, 0 turns it off).
+
+```bash
+commontrace graph edge service:stripe causes error:429_rate_limit
+commontrace graph edge lesson:exponential-backoff resolves error:429_rate_limit
+commontrace graph query stripe --hops 2
+commontrace graph revise service:stripe --name "Stripe (v2 API)"   # keeps the version chain
+commontrace graph provenance service:stripe                         # where it came from
+commontrace viz --out graph.html                                    # offline interactive view
+```
+
+**Ingestion** (`commontrace ingest`, `commontrace sync --connector`): code
+repositories become file and symbol nodes; Markdown, web pages and
+documents (PDF, DOCX, HTML, images, audio and subtitle metadata) become
+facts; JSON logs become error nodes, and errors that recur become traces;
+agent transcripts become a trace per failing step. Ingestion never writes a
+lesson: traces reach lessons through `distill` and review like any other
+experience. `--preview` reports what would be written without writing.
+
+```bash
+commontrace ingest ./src --type code
+commontrace ingest ./docs --type markdown --scope payments
+commontrace ingest app.log --type json-logs --service api
+commontrace sync --connector local_dir --source ./runbooks   # re-syncs changed files, retires stale facts
+commontrace sync --connector web_crawler --source https://example.com/guide
+```
+
+**Ontology** (`commontrace graph ontology show|init|check`): the entity types
+and relations the graph uses, in `memory/ontology.yaml` (or `.json`, or an
+RDF/OWL file such as `ontology.ttl` when `rdflib` is installed). A relation
+can declare a domain and range, an inverse (`required_by` is stored as
+`depends_on` the other way round) and whether it is exclusive (one value at a
+time). Aliases resolve to one node (`service:pg` is `service:postgres`) and
+also canonicalise text at document ingestion. Unknown types and relations fall
+back to `concept` / `relates_to`, or are refused with `strict: true`.
+
+**Bi-temporal edges.** Every edge carries valid time (`valid_at` to
+`invalid_at`: when it was true) and record time (`created_at`, and when its
+close was recorded: when the store learned it). For an exclusive relation the
+latest `valid_at` wins: asserting a new employer closes the old one where the
+new one begins, and an older fact that arrives late is kept as history rather
+than overriding the present. `--as-of` reads valid time, `--known-at` reads
+what the store believed at a moment, `between` lists edges valid in an
+interval, and `timeline` shows an entity's changes and why.
+
+```bash
+commontrace graph edge person:ana works_at organization:acme --valid-at 2024-01-01
+commontrace graph edge person:ana works_at organization:globex --valid-at 2025-03-01
+commontrace graph query person:ana --as-of 2024-06-01                 # acme
+commontrace graph query person:ana --as-of 2025-04-01 --known-at 2025-02-01
+commontrace graph between --start 2023-01-01 --end 2025-12-31 --relation works_at
+commontrace graph timeline person:ana
+```
+
+**Entities** (`commontrace graph extract|link|entities|duplicates|merge`):
+people, organisations, places, services, tools, error classes, files,
+symbols and environment variables are found in text by patterns, and by spaCy
+as well when it and a model are installed (`COMMONTRACE_SPACY_MODEL`). Each
+resolves to one canonical node through the ontology's aliases. `link` records
+which entities each lesson names, so a query that names an entity boosts the
+lessons about it; re-running is idempotent and retires links a lesson no
+longer supports. `duplicates` proposes merges and `merge` folds one entity
+into another with its edges and history.
+
+**Document ingestion** (`commontrace ingest DIR --type docs`): Loader,
+transforms and submitter as separate stages. Files are chunked, screened for
+prompt injection, deduplicated, given a one-line context header (heuristic
+from the document's headings, or written by the configured model with
+`--contextualize model`, cached by chunk), canonicalised with the ontology's
+aliases, and written as facts attributed to their file (or to a conversation
+space with `--space`). A ledger in `memory/ingest_ledger.jsonl` skips files
+whose size and mtime are unchanged; files over 256 MB are fingerprinted by
+sampling and hashed in full only when another file has the same size.
+`--preview` shows the counts without writing.
+
+**One recall across every kind of memory** (`commontrace recall`): lessons,
+facts, graph relations around the entities the question names, and
+conversation spaces are each ranked, fused by weighted reciprocal rank,
+de-duplicated across channels, and packed into one token budget (4
+characters per token): each channel with something relevant gets a floor
+share, the rest goes in fused order, and an item that does not fit is cut at a
+sentence boundary. `--as-of` reads every channel as it stood at that moment.
+Budgets and channel weights per agent live in `memory/budgets.json`:
+
+```json
+{"default": 1500, "agents": {"reviewer": {"budget": 800, "weights": {"lessons": 2}}}}
+```
+
+```bash
+commontrace recall "postgres failed over, what now?" --budget 1200
+commontrace recall "where does postgres run?" --as-of 2025-01-01 --channel graph --channel facts
+commontrace recall "review this change" --agent reviewer --json
+```
+
+**Versioned memory** (`commontrace memory`): `memory init` makes the store its
+own git repository and installs a pre-commit hook that validates what is
+committed against limits in `memory/memfs.json` (file size and count, lesson
+length, parseable JSONL and frontmatter, no conflict markers, no
+credentials). `status`, `log`, `diff`, `commit` and `restore REV` (a new commit;
+history is kept). After a merge, `repair` takes the union of both sides of
+append-only JSONL files and, for anything else, keeps ours and parks theirs as
+`<file>.theirs`. `handoff create --to AGENT` signs a token naming the current
+commit and a digest of its files; `handoff verify` checks the signature,
+expiry and audience, that the commit's files are unchanged, and whether
+memory has moved on since. The key comes from `COMMONTRACE_HANDOFF_KEY` (32+
+characters) or `memory keygen` (a 0600 file that is never committed).
+
+```bash
+commontrace memory init
+commontrace memory commit -m "lessons from incident 42"
+commontrace memory keygen
+TOKEN=$(commontrace memory handoff create --to reviewer-agent --ttl 3600)
+commontrace memory handoff verify "$TOKEN" --audience reviewer-agent
+```
+
+**Background jobs** (`commontrace jobs add|list|show|run|retry|purge`): slow
+work (document ingestion, model extraction, summaries, index rebuilds,
+entity linking, memory commits) goes into a durable SQLite queue in
+`memory/jobs.db`. A worker leases a job; a job whose worker died is reclaimed
+when the lease ends; a failure is retried with exponential backoff, then
+parked as `dead` for `jobs retry`. A `--dedupe-key` keeps one pending job per
+key. `commontrace daemon` processes queued jobs on each pass, and
+`jobs run --watch` is a standalone worker.
+
+```bash
+commontrace jobs add ingest --payload '{"source": "./runbooks", "contextualize": "model"}' --dedupe-key runbooks
+commontrace jobs run --watch
+```
+
+**Observability.** Every CLI command, MCP tool, gateway request, recall,
+retrieval, ingestion run and job is timed into in-process metrics; the
+gateway serves them at `/v1/metrics` (Prometheus text, or `?format=json`)
+and stamps each response with an `X-Request-Id`. With
+`COMMONTRACE_OTEL=1` or `OTEL_EXPORTER_OTLP_ENDPOINT` set and
+`opentelemetry-sdk` installed, the same operations are exported as
+OpenTelemetry spans. `COMMONTRACE_LOG_FORMAT=json` writes one JSON object per
+log line carrying the request id, tool and command; anything that looks like
+a credential is redacted before it is written. `commontrace doctor` reports
+which of these are on.
+
+**Agent loop** (`commontrace agent run`): runs a task against the configured
+model (`COMMONTRACE_LLM_PROVIDER`), with relevant lessons, blocks, facts and
+project skills (`skills/<name>/SKILL.md`, MCP `list_skills` / `load_skill`)
+in its context. Memory the model proposes goes through the same guarded
+writes, and the run is recorded as a trace that `distill` can learn from.
+Without a model configured it refuses rather than recording a run that did
+not happen.
+
+**Consolidation and audit.** `commontrace dream` links traces into the graph
+and writes `memory/profile.md`; `commontrace daemon --once` and
+`commontrace watch --once` run it and refresh caches from cron. A store
+created with `commontrace init --git` is its own git repository, and
+forgetting or restoring a fact is committed there; a store inside another
+repository is never committed to.
+
+The Hub accepts the same `scopes` and validity window on traces
+(`contribute_trace`, `search_traces` with `scope` and `as_of`, and the REST
+API), and `commontrace sync` forwards a lesson's scopes and window.
+
+---
+
+## Conversation memory
+
+Agents that talk to people need to remember what was said, when, and by
+whom. `commontrace conversation` keeps that in one SQLite file per *space*
+(a user, an agent or a thread) and recalls it into a small dated context:
+
+```bash
+echo '[{"speaker": "Ana", "text": "I adopted a beagle yesterday!"},
+       {"speaker": "Ben", "text": "Congrats, what is his name?"}]' |
+  commontrace conversation add ana --session 2023-05-08 --at "8 May 2023 10:00"
+commontrace conversation recall ana "When did Ana adopt her dog?" --budget 1500
+commontrace conversation profile ana          # what Ana has said about herself
+commontrace conversation sessions ana
+commontrace conversation delete ana --session 2023-05-08
+```
+
+More of it:
+
+```bash
+commontrace conversation recall ana "What did Ana say about work?" --session s2 --speaker Ana --since 2023-06-01
+commontrace conversation summarize ana                # a dated summary under each session header
+commontrace conversation extract ana                  # model-distilled, dated memories (COMMONTRACE_LLM_*)
+commontrace conversation answer ana "Where does Ana work now?" --rounds 2
+commontrace conversation profile ana --history        # include statements a newer one replaced
+commontrace conversation forget ana --expired         # messages past their "expires"
+commontrace conversation export ana --out ana.jsonl && commontrace conversation import ana-copy ana.jsonl
+commontrace conversation promote ana                  # the current profile becomes atomic facts
+```
+
+```
+[2023-05-08 · Monday 8 May 2023, 10:00]
+Ana: I adopted a beagle yesterday [7 May 2023]!
+Ben: Congrats, what is his name?
+```
+
+- **No model at write time.** Relative time words are resolved against when
+  they were said as each message is stored ("yesterday" becomes 7 May 2023,
+  "last summer" summer 2022, "on Saturday" the right Saturday by tense), so
+  a temporal question finds an absolute date in the context. Nothing calls
+  an LLM to extract or rewrite memories, so writing costs no tokens and
+  what is recalled is what was said.
+- **Recall.** Keyword search (SQLite FTS5, BM25, stemmed) and, with the
+  attention extra, semantic search (`arctic-embed-m`) are fused by rank,
+  keyword matches counting half; the accurate cross-encoder scores the top
+  50 (each long turn by its passages that bear on the question) and votes
+  beside the fused rank rather than replacing it, which keeps keyword evidence
+  for task-style requests the cross-encoder was not trained on. A question that names a time ("in May 2023", "last week") lifts
+  turns said in that window or about it. The best hits bring the two turns
+  either side of them, and the page is filled best-first up to `--budget` tokens,
+  then shown session by session in the order things were said.
+- **Profile.** Self-descriptions the user makes ("I prefer boutique
+  hotels", "as a Sony camera user", "I'm allergic to peanuts") are kept as
+  their own sentences and added when a question asks for advice or
+  recommendations, or touches the same subject.
+- **What changes.** A newer statement of something single-valued replaces the
+  older one: a new job, a new home, a new favourite colour. `profile` shows
+  what is current; `--history` shows what it replaced.
+- **Summaries, extraction and answers.** `summarize` writes each session's
+  most central sentences (or, with `--model`, a summary by the configured
+  model) and recall shows it under the session's header. `extract` has the
+  model distil dated, self-contained memories from new messages (adapted from
+  additive extraction: one call per batch, known memories passed in so nothing
+  is repeated, a changed fact replacing the old one); they join the profile.
+  `answer` asks the model with the recalled context; `--rounds 2..4` lets it
+  name what is missing first, and each follow-up search keeps its own best
+  ranks. None of these run unless asked; recall needs no model.
+- **Standing instructions.** "Always format code with syntax highlighting",
+  "from now on keep answers short", "never suggest paid tools": rules the user
+  gives an assistant are recognised as they are written and shown at the top
+  of every recall, whatever the question, the ones touching its subject first
+  (a chat between two people has none). Preferences ("I'd rather", "I prefer")
+  are matched by stem and added whenever the question asks for help, a plan,
+  steps or a suggestion.
+- **Long messages and broad questions.** A pasted log or a long answer is cut to
+  the passages that bear on the question, with gaps marked, instead of crowding
+  out everything else. A question about a whole topic (a summary, the order
+  things were raised, "across our conversations") is answered breadth-first
+  from what the user raised over the whole history, with short excerpts; a
+  summary also gets the reply to each request. The best three hits are always
+  placed before any surrounding turns.
+- **Updates and doubt.** A question about how things stand now ("currently",
+  "latest", "still") lifts later statements over earlier ones. Every recall
+  reports `explain.confidence` (how much of the question the best turns cover)
+  and, with the cross-encoder, `explain.rerank_top`, so an answerer can say it
+  does not know. `conversation answer` instructs the model to follow standing
+  instructions, prefer the latest statement, flag contradictions instead of
+  picking one, abstain when memory is silent, compute dates and keep order.
+- **Time as the user lived it.** A timestamp with a UTC offset keeps its local
+  wall-clock time, so an evening message stays on its own day and "this
+  morning" means the user's morning.
+- **Frozen memory.** `Store(root, space, read_only=True)` opens a space so recall
+  works and every write fails, for evaluation runs and audited replays.
+- **Names.** People, places and quoted titles a message mentions are indexed
+  as it is stored; a question that names one lifts the turns that mention it,
+  damped by how common the name is, so a name in every turn adds nothing.
+  `promote` copies the current profile into the store's atomic facts, where
+  MCP `query_facts` and the agent loop read it.
+- **Scope and lifetime.** Recall can be limited to sessions, speakers and a
+  date range. A message can carry `expires`: it stops being recalled then,
+  and `forget --expired` deletes it; `forget --before DATE` deletes by age.
+  `export` / `import` move a space as JSONL with its summaries.
+- **Safety.** Credentials are redacted before anything is stored; a turn
+  the injection screen flags is never shown, and recall lists it under
+  `explain.withheld`. Re-adding a message (same `id`, or same speaker, time
+  and text) is a no-op; concurrent writers are serialized per file.
+- **Everywhere.** MCP tools `conversation_add` / `conversation_recall` /
+  `conversation_profile` / `conversation_summarize` / `conversation_forget`,
+  and gateway routes `POST /v1/conversation/add` and
+  `/v1/conversation/recall` for agents in any language.
+  `COMMONTRACE_CONVERSATION_EMBEDDER` picks `arctic-m` (default), `minilm`
+  (seven times faster to embed) or `none` (keyword only, no extra installed).
+
+**Measured on LoCoMo** (all 1,540 questions in its four answerable
+categories; `benchmarks/conversation_bench.py`). The question is how much of
+the evidence that answers each question reaches the context, and what that
+context costs. A whole conversation averages 20,676 tokens.
+
+| Context budget | Evidence in context | All evidence present | Single-hop | Multi-hop | Temporal | Open-domain |
+|---:|---:|---:|---:|---:|---:|---:|
+| 800 tokens | 78.3% | 72.6% | 87% | 51% | 88% | 51% |
+| 1,500 tokens (default) | 84.3% | 78.8% | 91% | 64% | 92% | 57% |
+| 2,500 tokens | 89.0% | 84.1% | 94% | 75% | 94% | 66% |
+| 4,000 tokens | 92.6% | 88.3% | 97% | 81% | 97% | 72% |
+| 7,000 tokens | 95.7% | 92.4% | 98% | 89% | 98% | 83% |
+
+**Measured on BEAM** (the 100K split: 20 long user–assistant conversations,
+400 probing questions over ten memory abilities) and **LongMemEval** (120
+questions, 20 per type). Evidence in context, keyword-only / with `minilm`
+and the cross-encoder:
+
+| Ability (BEAM) | 1,500 tokens | 4,000 tokens |
+|---|---:|---:|
+| Instruction following | 85% / 89% | 88% / 90% |
+| Knowledge update | 74% / 89% | 88% / 92% |
+| Temporal reasoning | 82% / 82% | 95% / 94% |
+| Contradiction resolution | 85% / 83% | 89% / 88% |
+| Preference following | 67% / 73% | 73% / 81% |
+| Multi-session reasoning | 55% / 60% | 67% / 67% |
+| Information extraction | 52% / 64% | 55% / 66% |
+| Event ordering | 34% / 42% | 45% / 52% |
+| Summarization | 18% / 18% | 29% / 26% |
+| **All (abstention excluded: it has no evidence)** | **62% / 67%** | **70% / 73%** |
+
+LongMemEval, keyword-only: 77.4% at 1,500 tokens and 84.4% at 4,000
+(knowledge update 89% / 100%, single-session assistant 100% / 100%,
+single-session user 84% / 90%, multi-session 73% / 81%). Abstention is left
+to the answering model: BEAM's unanswerable questions reuse the topic's words,
+so neither `explain.confidence` nor the cross-encoder score separates them, and
+`conversation answer` tells the model to say when memory does not hold the answer.
+
+```bash
+python benchmarks/conversation_bench.py --dataset beam --data 100K-00000-of-00001.parquet --budget 1500,4000
+```
+
+Recall takes about 630 ms per question on 4 CPU cores, most of it the
+cross-encoder; keyword-only recall takes 5 ms. Published LoCoMo scores
+(for example 92.5 with ~7,000 tokens of context) are a model's answers graded by another model; they depend on the
+answering and grading models as much as on memory, and this harness does not
+claim them. With `COMMONTRACE_LLM_*` configured, `--answer` has a model
+answer from the recalled context and a judge grade it, so the same
+comparison can be run against any answering model:
+
+```bash
+python benchmarks/conversation_bench.py --dataset locomo --data locomo10.json --budget 1500,7000
+python benchmarks/conversation_bench.py --dataset longmemeval --data longmemeval_s.json --limit 60
+```
 
 ---
 
@@ -1093,7 +1464,7 @@ with the package (eight fields, 48 lessons, 144 queries):
 ```bash
 commontrace bench --retrieval                                  # per-field table
 commontrace bench --retrieval --json                           # machine-readable
-commontrace bench --retrieval --max-pollution 1.5 --max-spread 2   # CI gate
+commontrace bench --retrieval --max-pollution 1.1 --max-spread 1.1   # CI gate
 ```
 
 It exists because a single aggregate number cannot show the failure it is
@@ -1112,6 +1483,9 @@ significantly *hurting* outcomes when it was fine.
 The gate is deliberately two-sided (a ceiling on the worst field **and** the
 worst÷best spread): the historical scorer polluted at 1.89×–2.50× while its
 *spread* was 1.32×, so a spread-only gate would have called it acceptable.
+The previous `idf-v2` default still returned 1.72×–2.33× assignments per real
+match. The adaptive default returns 1.00×–1.06× on the same 144 queries while
+holding 100% recall@3 and 100% precision@1 in every field.
 
 ---
 
@@ -1153,7 +1527,7 @@ the same as running `commontrace index`.
 It is opt-in for a reason. Fusion changes which lessons are *eligible*, and
 eligibility is the denominator of every causal number this product reports —
 so the arm composition is recorded inside the label each holdout assignment
-carries (`rrf(idf-v2+semantic)`), and turning it on mid-experiment is
+carries (`rrf(adaptive-v1+semantic)`), and turning it on mid-experiment is
 reported as a compromised run rather than absorbed silently.
 
 **Reranking.** Both arms score the task and a lesson separately. A
@@ -1195,17 +1569,24 @@ On LoCoMo, fused retrieval with reranking puts an answering turn in the top
 `cross-encoder-fast` is `ms-marco-TinyBERT-L-2-v2` (4M). Both come
 with the attention extra and download on first use. Like fusion, it
 decides which lessons make the page, so assignments record it
-(`ce:minilm6(rrf(idf-v2+semantic))`) and turning it on starts a new
+(`ce:minilm6(rrf(adaptive-v1+semantic))`) and turning it on starts a new
 treatment. A store that cannot load the model ranks exactly as if it had
 not asked, and says so.
 
-**Stemming.** `commontrace retrieval --scorer idf-v3` makes "retrying" match
-"retry" and "uploads" match "upload". It lifts recall on free-text and
-conversational memory (LongMemEval session recall@5 0.852 → 0.926). It is
-not the default, because in one curated field of the fixture (clinical) it
-retrieves more collateral than `idf-v2`. It has its own floor, which the
-store takes automatically when switching, and like any eligibility change
-it starts a new randomization.
+**Adaptive lexical calibration, on by default.** `adaptive-v1` combines
+Porter stemming, field-weighted IDF and length normalization with a
+query-relative tail gate. The gate is deliberately gentler for short,
+ambiguous queries and rises from 0.30 to 0.60 of the best topical score as a
+query becomes more specific. A fixed floor alone admits incidental shared
+words; a fixed high floor loses difficult queries. Relative calibration keeps
+a near-tied runner-up while removing a weak tail before it consumes the
+agent's context. Candidate pools stay broad when a configured reranker will
+make the final decision.
+
+`idf-v3` keeps the same stemmed relevance with only its fixed floor;
+`idf-v2` removes stemming too. Both remain available because an experiment
+must finish on the scorer its existing assignments record. Switching any
+scorer starts a new randomization.
 
 **How much.** `top_k` bounds the count and says nothing about the size — ten
 terse lessons and ten pages of prose are the same `top_k=10`, and the second
@@ -1222,6 +1603,32 @@ chars (39%)"`) and names what did not fit under `not_injected`, with the
 reason. Nothing is silently truncated: an agent given nine of ten lessons and
 told it was given ten will act on the missing one's absence as though it were
 the fleet's position.
+
+**Which scope and point in time.** A shared local store can route lessons by
+project or team without copying the corpus. Optional `scopes` are container
+tags, not an authorization boundary: requesting one includes lessons carrying
+that scope plus unscoped fleet-wide lessons. Omitting the filter preserves the
+backward-compatible all-scopes view.
+
+```yaml
+scopes: [payments, checkout]
+valid_from: 2026-01-01
+valid_until: 2027-01-01T00:00:00Z  # exclusive
+```
+
+```bash
+commontrace lesson new ... --scopes payments,checkout \
+  --valid-from 2026-01-01 --valid-until 2027-01-01
+commontrace query "duplicate charge after retry" --scope payments
+commontrace query "which current rules were valid then?" --scope payments --as-of 2026-06-01
+```
+
+`valid_from` / `valid_until` are valid-time; `query --as-of` applies them to
+the currently active corpus. The append-only lesson revision journal records
+when CommonTrace learned or changed content (`lesson history --as-of`), keeping
+the two temporal axes separate rather than overwriting history. The MCP
+`retrieve` tool accepts the same `scope` and `as_of` fields and reports the
+applied slice in its response.
 
 **Which is unconditional.** Some rules are not "relevant to this task" — they
 are how the fleet operates. Mark one `core: true` in its frontmatter and it is

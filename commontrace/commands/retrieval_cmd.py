@@ -19,13 +19,16 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     p.add_argument(
         "--scorer", default=None, choices=list(retrieval.LEXICAL_SCORERS),
-        help=f"{retrieval.SCORER_IDF_V3}: IDF-weighted, length-normalized and "
-             "Porter-stemmed, comparable across fields (default). "
-             f"{retrieval.SCORER_IDF_V2}: the same without stemming. "
-             f"{retrieval.SCORER_COUNT}: the historical raw word-overlap sum. The "
-             "older two are kept so a store mid-experiment can stay on what its "
-             "existing assignments were made under; switching scorer takes that "
-             "scorer's default floor unless --floor is given.",
+        help=f"{retrieval.SCORER_ADAPTIVE}: stemmed, IDF-weighted relevance with a "
+             "query-calibrated tail gate that removes weak collateral matches (default). "
+             f"{retrieval.SCORER_IDF_V3}: the same stemmed relevance with only a fixed floor. "
+             f"{retrieval.SCORER_IDF_V2}: fixed-floor relevance without stemming. "
+             f"{retrieval.SCORER_BM25}: Okapi BM25 saturation (k1=1.2, b=0.75) over "
+             "the same postings, with CJK-aware bigram matching; repeated terms "
+             "give diminishing returns instead of linear ones. "
+             f"{retrieval.SCORER_COUNT}: the historical raw word-overlap sum. Older modes "
+             "remain available so a running experiment stays on its recorded treatment; "
+             "switching scorer takes that scorer's default floor unless --floor is given.",
     )
     p.add_argument(
         "--fusion", default=None, choices=list(retrieval_io.FUSIONS),
@@ -79,6 +82,10 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
              "disables this. Same non-eligibility-changing scope as --reliability-weight.",
     )
     p.add_argument(
+        "--graph-weight", type=float, default=None,
+        help="How much proximity in the knowledge graph boosts a lesson's rank (0 disables it, default: 1.0).",
+    )
+    p.add_argument(
         "--on-harm", dest="harm_policy", default=None, choices=list(harm.POLICIES),
         help=f"{harm.POLICY_INFORM}: a lesson the experiment measured making outcomes "
              "WORSE is still injected, with its verdict attached (default). "
@@ -109,6 +116,7 @@ def run(args: argparse.Namespace) -> int:
     setting = (
         args.floor, args.scorer, args.fusion, args.max_lessons, args.max_chars,
         args.redundancy_threshold, args.reliability_weight, args.recency_weight,
+        args.graph_weight,
         args.harm_policy, args.rerank,
     )
     if all(value is None for value in setting):
@@ -135,6 +143,10 @@ def run(args: argparse.Namespace) -> int:
         print(
             "  recency weight    : "
             + ("off" if config.recency_weight <= 0 else f"{config.recency_weight:.2f}")
+        )
+        print(
+            "  graph weight      : "
+            + ("off" if config.graph_weight <= 0 else f"{config.graph_weight:.2f}")
         )
         print(
             "  on harm           : "
@@ -169,6 +181,7 @@ def run(args: argparse.Namespace) -> int:
             redundancy_threshold=args.redundancy_threshold,
             reliability_weight=args.reliability_weight,
             recency_weight=args.recency_weight,
+            graph_weight=args.graph_weight,
             harm_policy=args.harm_policy,
             rerank=args.rerank,
             note=args.note,

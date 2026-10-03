@@ -38,7 +38,10 @@ class TestRelevanceIsComparable:
             tags=["contract", "provisions", "covenants", "obligations", "counterparty",
                   "notwithstanding", "foregoing", "aforementioned", "heretofore", "hereto"],
         )
-        ranked = retrieval.rank_lessons("timeout on export", [terse, verbose], floor=0.0)
+        ranked = retrieval.rank_lessons(
+            "timeout on export", [terse, verbose], floor=0.0,
+            scorer=retrieval.SCORER_IDF_V3,
+        )
         by_slug = {r.slug: r.relevance for r in ranked}
         assert by_slug["terse"] > by_slug["verbose"]
 
@@ -61,6 +64,51 @@ class TestRelevanceIsComparable:
         ranked = retrieval.rank_lessons("alpha", lessons, floor=0.0)
         assert ranked
         assert ranked[0].relevance <= 1.0
+
+
+class TestAdaptiveRetrieval:
+    def test_the_default_scorer_is_adaptive(self):
+        assert retrieval.SCORER_IDF == retrieval.SCORER_ADAPTIVE
+        assert retrieval.DEFAULT_FLOOR == retrieval.default_floor(retrieval.SCORER_ADAPTIVE)
+
+    def test_a_weak_tail_is_pruned_relative_to_the_best_match(self):
+        lessons = [
+            _lesson("target", description="payment webhook duplicate charge idempotency key"),
+            _lesson("tail", description="payment approval policy"),
+            _lesson("noise", description="database connection timeout"),
+        ]
+        ranked = retrieval.rank_lessons(
+            "customer payment webhook caused a duplicate charge without an idempotency key",
+            lessons,
+            floor=0.0,
+        )
+        assert [r.slug for r in ranked] == ["target"]
+
+    def test_a_genuine_near_tie_survives_the_relative_gate(self):
+        lessons = [
+            _lesson("cursor", description="paginated endpoint skips row on next page"),
+            _lesson("offset", description="list endpoint pagination skips records between pages"),
+            _lesson("cache", description="cache invalidation after a row update"),
+        ]
+        ranked = retrieval.rank_lessons(
+            "list endpoint pagination skips a row when moving to the next page",
+            lessons,
+            floor=0.0,
+        )
+        assert {r.slug for r in ranked} == {"cursor", "offset"}
+
+    def test_the_previous_stemmed_scorer_keeps_its_fixed_floor_contract(self):
+        lessons = [
+            _lesson("target", description="payment webhook duplicate charge idempotency key"),
+            _lesson("tail", description="payment approval policy"),
+        ]
+        ranked = retrieval.rank_lessons(
+            "customer payment webhook caused a duplicate charge without an idempotency key",
+            lessons,
+            floor=0.0,
+            scorer=retrieval.SCORER_IDF_V3,
+        )
+        assert [r.slug for r in ranked] == ["target", "tail"]
 
 
 class TestTheFloorRejectsMarginalMatches:
@@ -191,7 +239,7 @@ class TestConfigIsSharedByEverySurface:
                      '"rate": 0.5, "salt": "s", "scorer": "idf-v2", "floor": 0.1}\n')
             fh.write('{"occasion_id": "o2", "lesson": "a", "inject')
         config = retrieval_io.load_config(str(tmp_path))
-        assert config.scorer == retrieval.SCORER_IDF
+        assert config.scorer == retrieval.SCORER_IDF_V2
 
     def test_an_explicit_choice_beats_the_inferred_pin(self, tmp_path):
         from commontrace import holdout_io, retrieval_io

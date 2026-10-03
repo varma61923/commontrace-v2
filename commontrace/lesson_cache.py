@@ -4,22 +4,23 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import datetime
 import glob
 import json
 import os
 import tempfile
 
-from commontrace import frontmatter, paths
+from commontrace import frontmatter, paths, ttl
 
 CACHE_NAME = "lessons.json"
 CACHE_DIR = ".cache"
 
-FORMAT_VERSION = 2
+FORMAT_VERSION = 4
 
 PROJECTED_FIELDS = (
     "name", "description", "applies_when", "tags",
     "domain", "importance", "uses", "status", "agent_type",
-    "core",
+    "core", "scopes", "valid_from", "valid_until", "expires",
 )
 
 
@@ -45,6 +46,57 @@ def field_terms(fm: dict) -> list[list[str]]:
 def project(fm: dict) -> dict:
     """The subset of a lesson's frontmatter that retrieval actually reads."""
     return {k: _json_safe(fm[k]) for k in PROJECTED_FIELDS if k in fm}
+
+
+def parse_moment(value: str | datetime.date | datetime.datetime) -> datetime.datetime:
+    if isinstance(value, datetime.datetime):
+        parsed = value
+    elif isinstance(value, datetime.date):
+        parsed = datetime.datetime.combine(value, datetime.time.min)
+    else:
+        text = str(value or "").strip()
+        if not text:
+            raise ValueError("a date/time is required")
+        try:
+            parsed = datetime.datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError(
+                f"could not parse {value!r} as a date/time; use YYYY-MM-DD or ISO 8601"
+            ) from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed.astimezone(datetime.timezone.utc)
+
+
+def filter_eligible(
+    lessons: list[tuple[str, dict]], *, scope: str = "", as_of: str | datetime.datetime | None = None,
+    show_expired: bool = False,
+) -> list[tuple[str, dict]]:
+    moment = parse_moment(as_of) if as_of else datetime.datetime.now(datetime.timezone.utc)
+    requested_scope = str(scope or "").strip()
+    eligible = []
+    for path, fm in lessons:
+        raw_scopes = fm.get("scopes")
+        scopes = (
+            {str(item).strip() for item in raw_scopes if str(item).strip()}
+            if isinstance(raw_scopes, (list, tuple, set))
+            else {str(raw_scopes).strip()} if raw_scopes else set()
+        )
+        if requested_scope and scopes and requested_scope not in scopes:
+            continue
+        try:
+            valid_from = parse_moment(fm["valid_from"]) if fm.get("valid_from") else None
+            valid_until = parse_moment(fm["valid_until"]) if fm.get("valid_until") else None
+        except ValueError:
+            continue
+        if valid_from is not None and moment < valid_from:
+            continue
+        if valid_until is not None and moment >= valid_until:
+            continue
+        if not show_expired and ttl.lesson_is_expired(fm, moment):
+            continue
+        eligible.append((path, fm))
+    return eligible
 
 
 def _stat(path: str) -> tuple[int, int] | None:
@@ -291,6 +343,7 @@ class TermCache(dict):
         self.lessons: list | None = None
         self.fingerprint: tuple | None = None
         self.fingerprint_hash: int = 0
+        self.bin_dir: str | None = None
 
 
 _SNAPSHOTS: dict[tuple, tuple[tuple, list, TermCache]] = {}
@@ -321,6 +374,7 @@ def load_active_with_terms(
     term_cache.lessons = lessons
     term_cache.fingerprint = tuple((p, term_cache.stamps[p]) for p, _fm in lessons)
     term_cache.fingerprint_hash = hash(term_cache.fingerprint)
+    term_cache.bin_dir = os.path.join(paths.memory_dir(root), CACHE_DIR)
     _SNAPSHOTS[memo_key] = (snap_key, lessons, term_cache)
     return lessons, term_cache
 

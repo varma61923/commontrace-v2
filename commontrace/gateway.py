@@ -5,6 +5,7 @@ import dataclasses
 import datetime
 import hmac
 import json
+import logging
 import os
 import re
 import secrets
@@ -13,6 +14,7 @@ import threading
 import time
 from collections.abc import Callable, Mapping
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 from commontrace import (
@@ -38,6 +40,7 @@ MAX_ID_CHARS = 128
 MAX_SIGNALS = 16
 EVENTS_NAME = "gateway_events.jsonl"
 CONFIG_NAME = "gateway.json"
+logger = logging.getLogger("commontrace.gateway")
 TOKEN_NAME = "gateway.token"
 EVENT_LOG_ROTATE_BYTES = 10 * 1024 * 1024
 LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
@@ -119,8 +122,8 @@ def load_or_create_token(root: str) -> str:
             token = fh.read().strip()
         if len(token) >= 24:
             return token
-    except OSError:
-        pass
+    except OSError as exc:
+        logger.debug("No existing token found; creating a new one: %s", exc)
     token = secrets.token_urlsafe(32)
     os.makedirs(paths.memory_dir(root), exist_ok=True)
     fd = os.open(token_path(root), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -281,6 +284,8 @@ class Gateway:
 
     def _register(self) -> None:
         self._route("GET", "/v1/health", self._health, summary="Liveness.", auth=False)
+        self._route("GET", "/v1/metrics", self._metrics,
+                    summary="Request, tool and operation counters and latencies (Prometheus text; ?format=json).")
         self._route("GET", "/v1/openapi.json", self._openapi, summary="This API's schema.", auth=False)
         self._route("POST", "/v1/recall", self._recall, request={
             "occasion_id": "string, your id for one episode/task/ticket",
@@ -296,6 +301,19 @@ class Gateway:
             "signals": "list of {detector, args} evaluated three-valued; with `combine`: all|any",
             "agent_id": "optional string",
         }, summary="How the occasion went. Records nothing while the signals are undecided.")
+        self._route("POST", "/v1/conversation/add", self._conversation_add, request={
+            "space": "string: one user, agent or thread",
+            "session": "string: the session these messages belong to",
+            "messages": "list of {speaker|role, text|content, at?, id?}",
+            "session_at": "optional date the session took place",
+        }, summary="Remember messages; relative dates are resolved as they are stored.")
+        self._route("POST", "/v1/conversation/recall", self._conversation_recall, request={
+            "space": "string", "question": "string",
+            "budget": "optional integer: context size in tokens (default 1500)",
+            "now": "optional date the question is asked",
+            "sessions": "optional list of session ids", "speakers": "optional list of speakers",
+            "since": "optional date", "until": "optional date",
+        }, summary="The turns that answer a question, as a dated context within a token budget.")
         self._route("GET", "/v1/status", self._status, summary="Experiment and proof progress.")
         self._route("GET", "/v1/memories", self._memories, summary="Each memory's measured verdict.")
         self._route("GET", "/v1/occasions", self._occasions, summary="Recent recalls and outcomes (?limit=).")
@@ -315,7 +333,24 @@ class Gateway:
         self, method: str, target: str, headers: Mapping[str, str] | None = None,
         body: bytes | None = None, *, trusted: bool = False,
     ) -> Response:
+        from commontrace import telemetry
+
         headers = headers or {}
+        supplied = next((v for k, v in headers.items() if k.lower() == "x-request-id"), "")
+        request_id = supplied if re.fullmatch(r"[A-Za-z0-9._-]{1,64}", supplied or "") else \
+            telemetry.new_request_id()
+        path_label = urlsplit(target).path if (method, urlsplit(target).path) in self.routes else "other"
+        with telemetry.bind(request_id=request_id, surface="gateway"), \
+                telemetry.span(f"gateway {method} {path_label}") as handle:
+            response = self._handle(method, target, headers, body, trusted=trusted)
+            handle.set(status=response.status)
+        telemetry.count("commontrace_gateway_requests", method=method, path=path_label, status=response.status)
+        response.headers.setdefault("X-Request-Id", request_id)
+        return response
+
+    def _handle(
+        self, method: str, target: str, headers: Mapping[str, str], body: bytes | None, *, trusted: bool,
+    ) -> Response:
         try:
             split = urlsplit(target)
             path = split.path
@@ -407,8 +442,8 @@ class Gateway:
                 if os.path.isfile(path) and os.path.getsize(path) > EVENT_LOG_ROTATE_BYTES:
                     os.replace(path, path + ".1")
                 holdout_io._append_lines(path, [json.dumps(event, separators=(",", ":"))], durable=False)
-        except OSError:
-            pass
+        except OSError as exc:
+            logger.warning("Failed to log gateway event to %s: %s", path, exc)
 
     def _read_events(self, limit: int = 5000) -> list[dict]:
         path = self._events_path()
@@ -432,6 +467,13 @@ class Gateway:
                 out.append(row)
         return out
 
+
+    def _metrics(self, _body, query) -> dict | Response:
+        from commontrace import telemetry
+
+        if (query.get("format") or [""])[0] == "json":
+            return telemetry.metrics()
+        return Response(200, telemetry.prometheus().encode("utf-8"), "text/plain; version=0.0.4")
 
     def _health(self, _body, _query) -> dict:
         return {"ok": True, "api": API_VERSION, "version": __version__}
@@ -477,6 +519,41 @@ class Gateway:
             out.append({"id": hit.slug, "text": body, "protected": bool(projected.get(hit.path, {}).get("core")),
                         "meta": {"description": hit.description, "relevance": round(hit.relevance, 4)}})
         return out
+
+    def _conversation_add(self, req: dict, _query) -> dict:
+        from commontrace.conversation import ConversationError, Store
+
+        messages = req.get("messages")
+        if not isinstance(messages, list) or not all(isinstance(m, dict) for m in messages):
+            raise _bad("messages must be a list of objects with text (or content)")
+        if len(messages) > 1000:
+            raise _bad("at most 1000 messages per request")
+        try:
+            with Store(self.root, _ident(req.get("space"), "space")) as store:
+                return store.add(_ident(req.get("session"), "session"), messages,
+                                 session_at=req.get("session_at") or None)
+        except ConversationError as exc:
+            raise _bad(str(exc)) from None
+
+    def _conversation_recall(self, req: dict, _query) -> dict:
+        from commontrace.conversation import ConversationError, Options, Store, recall
+
+        budget = req.get("budget", 1500)
+        if not isinstance(budget, int) or isinstance(budget, bool) or not 50 <= budget <= 32_000:
+            raise _bad("budget must be an integer number of tokens from 50 to 32000")
+        question = _text(req.get("question"), "question", limit=4000)
+        lists = {}
+        for key in ("sessions", "speakers"):
+            value = req.get(key) or []
+            if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+                raise _bad(f"{key} must be a list of strings")
+            lists[key] = tuple(value)
+        opts = Options(budget=budget, since=req.get("since") or None, until=req.get("until") or None, **lists)
+        try:
+            with Store(self.root, _ident(req.get("space"), "space"), create=False) as store:
+                return recall(store, question, now=req.get("now") or None, options=opts).as_dict()
+        except ConversationError as exc:
+            raise ApiError(404 if "no conversations" in str(exc) else 400, "conversation", str(exc)) from None
 
     def _recall(self, req: dict, _query) -> dict:
         occasion = _ident(req.get("occasion_id"), "occasion_id")
@@ -610,8 +687,8 @@ class Gateway:
         if proof.load_state(self.root):
             try:
                 out["proof"] = self._memoized("proof", lambda: dataclasses.asdict(proof.status(self.root)))
-            except proof.ProofError:
-                pass
+            except proof.ProofError as exc:
+                logger.debug("Gateway proof status unavailable: %s", exc)
         return out
 
     def _memories(self, _body, _query) -> dict:
@@ -730,8 +807,8 @@ def make_http_server(gateway: Gateway, host: str, port: int, *, tls: tuple[str, 
         protocol_version = "HTTP/1.1"
         timeout = request_timeout
 
-        def log_message(self, *args, **kwargs):
-            pass
+        def log_message(self, format: str, *args: Any) -> None:
+            logger.debug("Gateway HTTP: %s", format % args)
 
         def handle(self):
             if isinstance(self.connection, ssl.SSLSocket):
@@ -800,7 +877,8 @@ def serve_stdio(gateway: Gateway, stdin, stdout) -> int:
     shorthand = {"recall": ("POST", "/v1/recall"), "outcome": ("POST", "/v1/outcome"),
                  "status": ("GET", "/v1/status"), "memories": ("GET", "/v1/memories"),
                  "occasions": ("GET", "/v1/occasions"), "agents": ("GET", "/v1/agents"),
-                 "health": ("GET", "/v1/health")}
+                 "health": ("GET", "/v1/health"),
+                 "remember": ("POST", "/v1/conversation/add"), "converse": ("POST", "/v1/conversation/recall")}
     for line in stdin:
         line = line.strip()
         if not line:

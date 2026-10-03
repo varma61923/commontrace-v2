@@ -9,12 +9,12 @@ from commontrace.commands import query_cmd
 from tests.test_hybrid_retrieval import _args
 from tests.test_mcp_server import _write_lesson, call, cli
 
+TASK = "password reset email suppression"
+SEMANTIC = ["refund-threshold", "suppression-list", "unsubscribe-sync"]
+
 pytest.importorskip("mcp", reason="`commontrace serve` needs the MCP SDK: pip install 'commontrace[serve]'")
 
 from commontrace import mcp_server  # noqa: E402
-
-TASK = "password reset email suppression"
-SEMANTIC = ["refund-threshold", "suppression-list", "unsubscribe-sync"]
 
 
 @pytest.fixture
@@ -82,7 +82,7 @@ def test_both_surfaces_make_the_same_eligibility_decision(store, monkeypatch):
     for slug in cli_rows:
         for field in ("scorer", "floor", "relevance"):
             assert cli_rows[slug][field] == mcp_rows[slug][field], (slug, field)
-    assert {r["scorer"] for r in mcp_rows.values()} == {"rrf(idf-v2+semantic)"}
+    assert {r["scorer"] for r in mcp_rows.values()} == {"rrf(adaptive-v1+semantic)"}
 
 
 def test_the_receipt_records_the_fused_label(store, monkeypatch):
@@ -91,7 +91,7 @@ def test_the_receipt_records_the_fused_label(store, monkeypatch):
     _stub_both(monkeypatch)
     call(mcp_server.build_server(store), "retrieve", task=TASK, occasion_id="rcpt-1")
     [receipt] = [r for r in receipts.read_all(store) if r.occasion_id == "rcpt-1"]
-    assert receipt.scorer == "rrf(idf-v2+semantic)"
+    assert receipt.scorer == "rrf(adaptive-v1+semantic)"
 
 
 @pytest.mark.parametrize("why,setup", [
@@ -109,7 +109,7 @@ def test_when_fusion_cannot_run_it_falls_back_to_lexical_and_says_why(
     out = call(mcp_server.build_server(store), "retrieve", task=TASK, occasion_id="fb-1")
     assert "unsubscribe-sync" not in _slugs(out, "lessons", "withheld")
     assert why in out["fusion_note"]
-    assert {r["scorer"] for r in _logged(store, "fb-1").values()} == {"idf-v2"}
+    assert {r["scorer"] for r in _logged(store, "fb-1").values()} == {"adaptive-v1"}
 
 
 def test_exclude_shown_applies_to_the_semantic_arm_too(store, monkeypatch):
@@ -195,7 +195,7 @@ def test_a_fused_experiment_is_not_called_marginal(store, monkeypatch):
     for i in range(40):
         call(server, "retrieve", task=TASK, occasion_id=f"o{i}")
     rows = evidence.analyse(store).rows
-    assert rows and {r.scorer for r in rows} == {"rrf(idf-v2+semantic)"}
+    assert rows and {r.scorer for r in rows} == {"rrf(adaptive-v1+semantic)"}
     finding = integrity.check_marginal_eligibility(rows)
     assert finding.severity == integrity.SEVERITY_OK
     assert finding.numbers["n_not_floor_gated"] == len(rows)
