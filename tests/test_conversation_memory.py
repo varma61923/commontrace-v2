@@ -279,6 +279,12 @@ class TestInterfaces:
         got = call("conversation_recall", space="u1", question="Where did we move?", budget=200)
         assert got["ok"] and "Lisbon last month [April 2023]" in got["context"]
         assert not call("conversation_recall", space="missing", question="x")["ok"]
+        call("conversation_add", space="u1", session="s2", session_at="2023-07-01",
+             messages=[{"role": "user", "content": "I work as a chef in Porto now."}])
+        only = call("conversation_recall", space="u1", question="Where did we move? chef", sessions=["s2"])
+        assert "Lisbon" not in only["context"] and "chef" in only["context"]
+        profile_out = call("conversation_profile", space="u1")
+        assert profile_out["ok"] and any("chef" in f["statement"] for f in profile_out["facts"])
         assert not call("conversation_add", space="../x", session="s", messages=[{"text": "x"}])["ok"]
 
 

@@ -35,9 +35,55 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     r.add_argument("--rerank", choices=("auto", "none", "cross-encoder", "cross-encoder-fast"), default="auto",
                    help="second-stage reranker (auto: the accurate one when the attention extra is installed)")
     r.add_argument("--lexical", action="store_true", help="keyword search only, no embedding model")
+    _filters(r)
     r.add_argument("--json", action="store_true")
     r.add_argument("--dest", default=None)
     r.set_defaults(func=run_recall)
+
+    q = sub.add_parser("answer", help="Answer a question from memory with the configured model (COMMONTRACE_LLM_*).")
+    q.add_argument("space", help=SPACE_HELP)
+    q.add_argument("question")
+    q.add_argument("--rounds", type=int, default=1,
+                   help="up to 4: the model may ask for follow-up searches before answering")
+    q.add_argument("--budget", type=int, default=None)
+    q.add_argument("--now", default=None)
+    _filters(q)
+    q.add_argument("--json", action="store_true")
+    q.add_argument("--dest", default=None)
+    q.set_defaults(func=run_answer)
+
+    m = sub.add_parser("summarize", help="Summarise sessions; recall shows a session's summary under its header.")
+    m.add_argument("space", help=SPACE_HELP)
+    m.add_argument("--session", action="append", default=[], help="only this session (repeatable)")
+    m.add_argument("--model", action="store_true", help="have the configured model write them (default: extractive)")
+    m.add_argument("--force", action="store_true", help="rewrite summaries that are already current")
+    m.add_argument("--dest", default=None)
+    m.set_defaults(func=run_summarize)
+
+    x = sub.add_parser("extract", help="Distil dated memories from new messages with the configured model.")
+    x.add_argument("space", help=SPACE_HELP)
+    x.add_argument("--session", action="append", default=[], help="only this session (repeatable)")
+    x.add_argument("--dest", default=None)
+    x.set_defaults(func=run_extract)
+
+    e = sub.add_parser("export", help="Write a space as JSONL (one session per line).")
+    e.add_argument("space", help=SPACE_HELP)
+    e.add_argument("--out", default="-", help="file to write, - for stdout (default)")
+    e.add_argument("--dest", default=None)
+    e.set_defaults(func=run_export)
+
+    i = sub.add_parser("import", help="Read sessions written by `conversation export` into a space.")
+    i.add_argument("space", help=SPACE_HELP)
+    i.add_argument("file", help="JSONL from `conversation export`, - for stdin")
+    i.add_argument("--dest", default=None)
+    i.set_defaults(func=run_import)
+
+    g = sub.add_parser("forget", help="Delete messages past their expiry, or said before a date.")
+    g.add_argument("space", help=SPACE_HELP)
+    g.add_argument("--expired", action="store_true", help="messages whose `expires` has passed")
+    g.add_argument("--before", default=None, help="messages said before this date")
+    g.add_argument("--dest", default=None)
+    g.set_defaults(func=run_forget)
 
     s = sub.add_parser("sessions", help="List a space's sessions.")
     s.add_argument("space", help=SPACE_HELP)
@@ -47,6 +93,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
 
     f = sub.add_parser("profile", help="What the user has said about themselves, oldest first.")
     f.add_argument("space", help=SPACE_HELP)
+    f.add_argument("--history", action="store_true", help="include statements a newer one replaced")
     f.add_argument("--json", action="store_true")
     f.add_argument("--dest", default=None)
     f.set_defaults(func=run_profile)
@@ -61,6 +108,26 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     ls = sub.add_parser("spaces", help="List spaces with stored conversations.")
     ls.add_argument("--dest", default=None)
     ls.set_defaults(func=run_spaces)
+
+
+def _filters(p) -> None:
+    p.add_argument("--session", action="append", default=[], help="only these sessions (repeatable)")
+    p.add_argument("--speaker", action="append", default=[], help="only these speakers (repeatable)")
+    p.add_argument("--since", default=None, help="only messages said at or after this date")
+    p.add_argument("--until", default=None, help="only messages said at or before this date")
+
+
+def _options(args):
+    from commontrace.conversation import Options
+
+    opts = Options(rerank=None if getattr(args, "rerank", "auto") == "none" else getattr(args, "rerank", "auto"),
+                   embedder=None if getattr(args, "lexical", False) else "auto",
+                   sessions=tuple(args.session), speakers=tuple(args.speaker), since=args.since, until=args.until)
+    if args.budget is not None:
+        if args.budget < 50:
+            raise ValueError("--budget must be at least 50 tokens")
+        opts.budget = args.budget
+    return opts
 
 
 def _store(args, create: bool = True):
@@ -101,19 +168,13 @@ def run_add(args) -> int:
 
 
 def run_recall(args) -> int:
-    from commontrace.conversation import ConversationError, Options, recall
+    from commontrace.conversation import ConversationError, recall
 
-    opts = Options(rerank=None if args.rerank == "none" else args.rerank,
-                   embedder=None if args.lexical else "auto")
-    if args.budget is not None:
-        if args.budget < 50:
-            print("[commontrace] --budget must be at least 50 tokens", file=sys.stderr)
-            return 2
-        opts.budget = args.budget
     try:
+        opts = _options(args)
         with _store(args, create=False) as store:
             result = recall(store, args.question, now=args.now, options=opts)
-    except ConversationError as exc:
+    except (ConversationError, ValueError) as exc:
         print(f"[commontrace] {exc}", file=sys.stderr)
         return 2
     if args.json:
@@ -123,6 +184,122 @@ def run_recall(args) -> int:
         withheld = result.explain.get("withheld")
         note = f"; {len(withheld)} turn(s) withheld by the injection screen" if withheld else ""
         print(f"\n[commontrace] {len(result.turns)} turn(s), ~{result.tokens} tokens{note}.", file=sys.stderr)
+    return 0
+
+
+def run_answer(args) -> int:
+    from commontrace import llm
+    from commontrace.conversation import ConversationError
+    from commontrace.conversation.answer import answer
+
+    try:
+        opts = _options(args)
+        with _store(args, create=False) as store:
+            out = answer(store, args.question, now=args.now, options=opts, rounds=args.rounds)
+    except (ConversationError, ValueError, llm.LLMUnavailable) as exc:
+        print(f"[commontrace] {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(out, indent=2, default=str))
+    else:
+        print(out["answer"])
+        extra = f", follow-ups: {'; '.join(out['follow_ups'])}" if out["follow_ups"] else ""
+        print(f"[commontrace] from {len(out['turns'])} turn(s), ~{out['tokens']} tokens of memory{extra}.",
+              file=sys.stderr)
+    return 0
+
+
+def run_summarize(args) -> int:
+    from commontrace import llm
+    from commontrace.conversation import ConversationError
+    from commontrace.conversation.summary import summarize
+
+    try:
+        with _store(args, create=False) as store:
+            out = summarize(store, args.session or None, method="model" if args.model else "extractive",
+                            force=args.force)
+    except (ConversationError, llm.LLMUnavailable) as exc:
+        print(f"[commontrace] {exc}", file=sys.stderr)
+        return 2
+    print(f"[commontrace] {out['summarized']} session(s) summarised ({out['method']}), "
+          f"{out['unchanged']} already current.")
+    return 0
+
+
+def run_extract(args) -> int:
+    from commontrace import llm
+    from commontrace.conversation import ConversationError
+    from commontrace.conversation.extract import extract
+
+    try:
+        with _store(args, create=False) as store:
+            out = extract(store, args.session or None)
+    except (ConversationError, llm.LLMUnavailable) as exc:
+        print(f"[commontrace] {exc}", file=sys.stderr)
+        return 2
+    note = f", {out['refused']} refused by the injection screen" if out["refused"] else ""
+    print(f"[commontrace] {out['memories']} memory(ies) from {out['calls']} model call(s){note}.")
+    return 0
+
+
+def run_export(args) -> int:
+    from commontrace.conversation import ConversationError
+
+    try:
+        with _store(args, create=False) as store:
+            lines = [json.dumps(row, ensure_ascii=False) for row in store.export()]
+    except ConversationError as exc:
+        print(f"[commontrace] {exc}", file=sys.stderr)
+        return 2
+    text = "\n".join(lines) + ("\n" if lines else "")
+    if args.out == "-":
+        sys.stdout.write(text)
+    else:
+        with open(args.out, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        print(f"[commontrace] {len(lines)} session(s) written to {args.out}.", file=sys.stderr)
+    return 0
+
+
+def run_import(args) -> int:
+    from commontrace.conversation import ConversationError
+
+    try:
+        raw = sys.stdin.read() if args.file == "-" else open(args.file, encoding="utf-8").read()
+        rows = [json.loads(line) for line in raw.splitlines() if line.strip()]
+        added = sessions = 0
+        with _store(args) as store:
+            for row in rows:
+                if not isinstance(row, dict) or not isinstance(row.get("messages"), list):
+                    raise ValueError("each line must be a session object with a messages list")
+                added += store.add(str(row.get("session") or ""), row["messages"],
+                                   session_at=row.get("started_at"))["added"]
+                if row.get("summary"):
+                    store.set_summary(str(row["session"]), str(row["summary"]), "imported")
+                sessions += 1
+    except (ConversationError, ValueError, OSError) as exc:
+        print(f"[commontrace] {exc}", file=sys.stderr)
+        return 2
+    print(f"[commontrace] {added} message(s) in {sessions} session(s) imported into {args.space}.")
+    return 0
+
+
+def run_forget(args) -> int:
+    import datetime as dt
+
+    from commontrace.conversation import ConversationError
+
+    if not args.expired and not args.before:
+        print("[commontrace] give --expired, --before DATE, or both", file=sys.stderr)
+        return 2
+    try:
+        with _store(args, create=False) as store:
+            n = store.purge(before=args.before,
+                            expired_at=dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) if args.expired else None)
+    except ConversationError as exc:
+        print(f"[commontrace] {exc}", file=sys.stderr)
+        return 2
+    print(f"[commontrace] {n} message(s) deleted from {args.space}.")
     return 0
 
 
@@ -150,7 +327,7 @@ def run_profile(args) -> int:
 
     try:
         with _store(args, create=False) as store:
-            facts = store.facts()
+            facts = store.facts(history=args.history)
     except ConversationError as exc:
         print(f"[commontrace] {exc}", file=sys.stderr)
         return 2
@@ -158,7 +335,8 @@ def run_profile(args) -> int:
         print(json.dumps(facts, indent=2))
         return 0
     for f in facts:
-        print(f"{(f['at'] or '')[:10]}\t{f['kind']}\t{f['statement']}")
+        replaced = "\t(replaced)" if f["superseded_by"] else ""
+        print(f"{(f['at'] or '')[:10]}\t{f['kind']}\t{f['statement']}{replaced}")
     return 0
 
 

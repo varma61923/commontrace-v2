@@ -1544,12 +1544,15 @@ def build_server(root: str, *, allow_approval: bool = True):
             return _err(str(exc))
 
     @mcp.tool()
-    async def conversation_recall(space: str, question: str, budget: int = 1500, now: str = "") -> dict:
+    async def conversation_recall(space: str, question: str, budget: int = 1500, now: str = "",
+                                  sessions: list[str] | None = None, speakers: list[str] | None = None,
+                                  since: str = "", until: str = "") -> dict:
         """What was said that answers `question`: the matching turns with their neighbours,
         grouped by session with dates, within `budget` tokens, plus what the user has said
         about themselves when it bears on the question. Pass `now` when the question is
-        asked at a different time than the last message. Turns the injection screen flags
-        are withheld and listed under explain.withheld.
+        asked at a different time than the last message. `sessions`, `speakers`, `since`
+        and `until` narrow what may be recalled. Turns the injection screen flags are
+        withheld and listed under explain.withheld.
         """
         import asyncio
 
@@ -1560,14 +1563,33 @@ def build_server(root: str, *, allow_approval: bool = True):
         except (TypeError, ValueError):
             return _err("budget must be a number of tokens")
 
+        opts = Options(budget=budget, sessions=tuple(sessions or ()), speakers=tuple(speakers or ()),
+                       since=since or None, until=until or None)
+
         def _run():
             with Store(root, space, create=False) as store:
-                return recall(store, question, now=now or None, options=Options(budget=budget)).as_dict()
+                return recall(store, question, now=now or None, options=opts).as_dict()
 
         try:
             return _ok(**await asyncio.to_thread(_run))
         except ConversationError as exc:
             return _err(str(exc))
+
+    @mcp.tool()
+    async def conversation_profile(space: str, history: bool = False) -> dict:
+        """What the user has said about themselves in a space (preferences, identity, plans,
+        possessions) and what a model distilled with `conversation extract`, oldest first.
+        A statement a newer one replaced (a new job, a new home) is left out unless `history`.
+        """
+        from commontrace.conversation import ConversationError, Store
+
+        try:
+            with Store(root, space, create=False) as store:
+                facts = store.facts(history=history)
+        except ConversationError as exc:
+            return _err(str(exc))
+        return _ok(facts=[{k: f[k] for k in ("kind", "statement", "at", "session", "source", "superseded_by")}
+                          for f in facts], count=len(facts))
 
     @mcp.tool()
     async def list_skills() -> dict:

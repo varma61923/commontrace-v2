@@ -32,6 +32,11 @@ class Options:
     rerank_depth: int = 50
     profile_facts: int = 4
     embedder: str | None = "auto"
+    summaries: bool = True
+    sessions: tuple[str, ...] = ()
+    speakers: tuple[str, ...] = ()
+    since: str | None = None
+    until: str | None = None
 
 
 @dataclass
@@ -95,11 +100,18 @@ def _header(session: str, at: dt.datetime | None) -> str:
     return f"[{session} · {when}]"
 
 
+def _summary_line(text: str) -> str:
+    return f"(session summary: {text})"
+
+
 def _line(turn: Turn) -> str:
     return f"{turn.speaker}: {turn.annotated()}"
 
 
-def recall(store: Store, question: str, *, now=None, options: Options | None = None) -> Recall:
+def recall(store: Store, question: str, *, now=None, options: Options | None = None,
+           extra_queries: list[str] = ()) -> Recall:
+    """`extra_queries` are searched beside the question, each keeping its own best
+    ranks (a follow-up search that finds a missing fact first is not diluted)."""
     opts = options or Options()
     question = (question or "").strip()
     if not question:
@@ -109,16 +121,19 @@ def recall(store: Store, question: str, *, now=None, options: Options | None = N
     window = timeparse.question_window(question, moment)
     embedder = _embedder(store, opts.embedder)
     qvec_cache: dict[str, object] = {}
+    allowed = store.allowed(sessions=opts.sessions, speakers=opts.speakers, since=opts.since,
+                            until=opts.until, now=moment)
+    pool = opts.pool if allowed is None else opts.pool * 10
 
     def arm_rankings(query: str) -> list[tuple[list[int], float]]:
-        lexical = [u for u, _s in store.lexical(query, opts.pool)]
+        lexical = [u for u, _s in store.lexical(query, pool)]
         if embedder is None:
             return [(lexical, 1.0)]
         from commontrace.conversation import embed
 
         if query not in qvec_cache:
             qvec_cache[query] = embedder.encode([query], query=True)[0]
-        dense = [u for u, _s in embed.search(store, embedder, qvec_cache[query], opts.pool)]
+        dense = [u for u, _s in embed.search(store, embedder, qvec_cache[query], pool)]
         return [(dense, 1.0), (lexical, opts.lexical_weight)]
 
     def turn_scores(queries: list[str]) -> dict[int, float]:
@@ -127,16 +142,21 @@ def recall(store: Store, question: str, *, now=None, options: Options | None = N
             ranked_turns = []
             for units, weight in arm_rankings(query):
                 unit_turn = store.unit_turns(units)
-                ranked_turns.append((list(dict.fromkeys(unit_turn[u] for u in units if u in unit_turn)), weight))
+                ranked_turns.append((list(dict.fromkeys(
+                    unit_turn[u] for u in units if u in unit_turn and (allowed is None or unit_turn[u] in allowed))),
+                    weight))
             for turn, score in _rrf(ranked_turns).items():
                 by_turn[turn] = max(by_turn.get(turn, 0.0), score)
         return by_turn
 
-    queries = subqueries(question)
+    queries = list(dict.fromkeys(subqueries(question) + [q.strip() for q in extra_queries if q and q.strip()]))
     scores = turn_scores(queries)
     explain: dict = {"subqueries": queries}
+    if allowed is not None:
+        explain["filtered_to"] = len(allowed)
     if window is not None:
         inside = store.in_window(window[0], window[1])
+        inside = inside if allowed is None else inside & allowed
         explain["window_turns"] = len(inside)
         top = max(scores.values(), default=0.0)
         for turn in inside:
@@ -150,7 +170,7 @@ def recall(store: Store, question: str, *, now=None, options: Options | None = N
         ranked = _rerank(store, question, ranked, rerank, opts.rerank_depth)
         explain["rerank"] = rerank
     withheld: list[int] = []
-    context, used, n_tokens = assemble(store, question, ranked, opts, withheld)
+    context, used, n_tokens = assemble(store, question, ranked, opts, withheld, allowed)
     if withheld:
         explain["withheld"] = withheld
     return Recall(question, context, n_tokens, used, ranked,
@@ -202,7 +222,7 @@ def _flagged(turn: Turn) -> bool:
 
 
 def assemble(store: Store, question: str, ranked: list[int], opts: Options,
-             withheld: list[int] | None = None) -> tuple[str, list[int], int]:
+             withheld: list[int] | None = None, allowed: set[int] | None = None) -> tuple[str, list[int], int]:
     """Fill the budget best-first, each hit with its neighbours, then render by time.
     A turn the injection screen flags is never shown; its id goes to `withheld`."""
     withheld = [] if withheld is None else withheld
@@ -215,6 +235,14 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
         profile_block, spent = "", 0
     chosen: dict[int, Turn] = {}
     sessions_seen: set[str] = set()
+    summaries = store.summaries() if opts.summaries else {}
+
+    def header_cost(session: str, at) -> int:
+        cost = tokens(_header(session, at)) + 1
+        if session in summaries:
+            cost += tokens(_summary_line(summaries[session]["text"])) + 1
+        return cost
+
     with_context = opts.neighbour_hits if opts.neighbour_hits is not None else max(5, budget // 400)
     hits = 0
     for start in range(0, len(ranked), 50):
@@ -226,8 +254,8 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
             if turn is None or tid in chosen:
                 continue
             hits += 1
-            group = [tid] + (store.neighbours(turn, opts.neighbours_before, opts.neighbours_after)
-                             if hits <= with_context else [])
+            group = [tid] + [n for n in (store.neighbours(turn, opts.neighbours_before, opts.neighbours_after)
+                                         if hits <= with_context else []) if allowed is None or n in allowed]
             group_turns = store.turns(group)
             for g in list(group):
                 if g in group_turns and _flagged(group_turns[g]):
@@ -238,10 +266,10 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
                 continue
             cost = sum(tokens(_line(group_turns[g])) + 1 for g in group if g not in chosen and g in group_turns)
             if turn.session not in sessions_seen:
-                cost += tokens(_header(turn.session, turn.at)) + 1
+                cost += header_cost(turn.session, turn.at)
             if spent + cost > budget:
                 solo = tokens(_line(turn)) + 1 + (0 if turn.session in sessions_seen else
-                                                  tokens(_header(turn.session, turn.at)) + 1)
+                                                  header_cost(turn.session, turn.at))
                 if spent + solo > budget:
                     full = spent >= budget * 0.97
                     continue
@@ -259,6 +287,8 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
     blocks = []
     for session, turns in sorted(by_session.items(), key=lambda kv: (kv[1][0].at or dt.datetime.min, kv[0])):
         lines = [_header(session, turns[0].at)]
+        if session in summaries:
+            lines.append(_summary_line(summaries[session]["text"]))
         previous = None
         for turn in sorted(turns, key=lambda t: t.idx):
             if previous is not None and turn.idx > previous + 1:

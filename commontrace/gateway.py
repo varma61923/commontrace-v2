@@ -309,6 +309,8 @@ class Gateway:
             "space": "string", "question": "string",
             "budget": "optional integer: context size in tokens (default 1500)",
             "now": "optional date the question is asked",
+            "sessions": "optional list of session ids", "speakers": "optional list of speakers",
+            "since": "optional date", "until": "optional date",
         }, summary="The turns that answer a question, as a dated context within a token budget.")
         self._route("GET", "/v1/status", self._status, summary="Experiment and proof progress.")
         self._route("GET", "/v1/memories", self._memories, summary="Each memory's measured verdict.")
@@ -514,10 +516,16 @@ class Gateway:
         if not isinstance(budget, int) or isinstance(budget, bool) or not 50 <= budget <= 32_000:
             raise _bad("budget must be an integer number of tokens from 50 to 32000")
         question = _text(req.get("question"), "question", limit=4000)
+        lists = {}
+        for key in ("sessions", "speakers"):
+            value = req.get(key) or []
+            if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+                raise _bad(f"{key} must be a list of strings")
+            lists[key] = tuple(value)
+        opts = Options(budget=budget, since=req.get("since") or None, until=req.get("until") or None, **lists)
         try:
             with Store(self.root, _ident(req.get("space"), "space"), create=False) as store:
-                return recall(store, question, now=req.get("now") or None,
-                              options=Options(budget=budget)).as_dict()
+                return recall(store, question, now=req.get("now") or None, options=opts).as_dict()
         except ConversationError as exc:
             raise ApiError(404 if "no conversations" in str(exc) else 400, "conversation", str(exc)) from None
 

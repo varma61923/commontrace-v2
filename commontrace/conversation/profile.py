@@ -25,14 +25,15 @@ _PATTERNS = [
     ("dislike", re.compile(
         r"\bI(?:'m| am| do)?\s+(?:really\s+)?(?:hate|dislike|can't stand|cannot stand|don't (?:really )?like"
         r"|not (?:really )?like|avoid|not a fan of|allergic to)\b(?P<what>.+)", re.I)),
-    ("favorite", re.compile(r"\bmy (?:all-time )?fav(?:ou)?rite (?P<what>.+)", re.I)),
+    ("favorite", re.compile(r"\bmy (?:all-time )?fav(?:ou|o)rite (?P<what>.+)", re.I)),
     ("identity", re.compile(
         r"\b(?:I(?:'m| am)|as) (?:a|an) (?P<what>(?:[a-z-]+ ){0,3}(?:user|fan|lover|owner|parent|mom|dad"
         r"|student|teacher|engineer|developer|nurse|doctor|artist|writer|designer|vegetarian|vegan"
         r"|comedian|photographer|runner|musician|player|scientist|researcher|manager|chef|cook|athlete"
         r"|beginner|enthusiast|professional|freelancer|volunteer)\b.*)", re.I)),
     ("identity", re.compile(
-        r"\bI(?:'m| am)? (?:work(?:ing)? (?:as|in|at|on|for)|live in|grew up in|study|studied|majored in"
+        r"\bI(?:'m| am|'ve| have| just)? (?:work(?:ing)? (?:as|in|at|on|for)|live in|moved to|grew up in|study"
+        r"|studied|majored in"
         r"|graduated (?:from|with))\b(?P<what>.+)", re.I)),
     ("habit", re.compile(r"\bI (?:usually|always|often|normally|typically|never|regularly)\b(?P<what>.+)", re.I)),
     ("plan", re.compile(
@@ -48,6 +49,26 @@ class Fact:
     kind: str
     subject: str
     statement: str
+    slot: str | None = None
+
+
+_SLOTS = [
+    (re.compile(r"\bwork(?:ing)? (?:as|at|for)\b", re.I), "job"),
+    (re.compile(r"\blive in\b|\bmoved to\b", re.I), "home"),
+    (re.compile(r"\b(?:study|studied|majored in)\b", re.I), "study"),
+]
+
+
+def slot_of(kind: str, sentence: str, what: str) -> str | None:
+    """What a newer statement of the same kind replaces: one job, one home, one favourite X."""
+    if kind == "favorite":
+        first = subject_of(what, limit=1)
+        return f"favorite:{first}" if first else None
+    if kind == "identity":
+        for pattern, slot in _SLOTS:
+            if pattern.search(sentence):
+                return slot
+    return None
 
 
 def subject_of(text: str, limit: int = 6) -> str:
@@ -68,6 +89,6 @@ def extract(text: str) -> list[Fact]:
                 continue
             subject = subject_of(m.group("what"))
             if subject:
-                out.append(Fact(kind, subject, sentence[:MAX_STATEMENT]))
+                out.append(Fact(kind, subject, sentence[:MAX_STATEMENT], slot_of(kind, sentence, m.group("what"))))
             break
     return out
