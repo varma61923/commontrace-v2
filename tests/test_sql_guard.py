@@ -64,8 +64,10 @@ def test_execute_guarded_sql(tmp_path):
     assert res["execution_time_ms"] >= 0
 
 
-@pytest.mark.asyncio
-async def test_mcp_sql_guarded_query(tmp_path):
+def test_mcp_sql_guarded_query(tmp_path):
+    pytest.importorskip("mcp")
+    import asyncio
+
     from commontrace import mcp_server
 
     root = str(tmp_path / "store")
@@ -79,9 +81,9 @@ async def test_mcp_sql_guarded_query(tmp_path):
     server = mcp_server.build_server(root)
     sql_tool = server._tool_manager.get_tool("sql_guarded_query")
 
-    res = await sql_tool.run({
+    res = asyncio.run(sql_tool.run({
         "db_path": db_file,
         "sql": "SELECT k, v FROM kv",
-    })
+    }))
     assert "columns" in str(res)
     assert "python" in str(res)

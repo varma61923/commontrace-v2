@@ -106,8 +106,10 @@ def test_format_procedural_memory_budget_constraint():
     assert "A" * 500 in constrained
 
 
-@pytest.mark.asyncio
-async def test_mcp_procedural_tools(tmp_path):
+def test_mcp_procedural_tools(tmp_path):
+    pytest.importorskip("mcp")
+    import asyncio
+
     from commontrace import mcp_server
 
     root = str(tmp_path / "store")
@@ -116,23 +118,27 @@ async def test_mcp_procedural_tools(tmp_path):
     create_fn = server._tool_manager.get_tool("procedural_memory_create")
     replay_fn = server._tool_manager.get_tool("procedural_memory_replay")
 
-    res = await create_fn.run(
-        {
-            "task_objective": "Database migration",
-            "progress_status": "Step 1 complete",
-            "steps": [
-                {"step_number": 1, "action": "Run alembic", "result": "Success"},
-            ],
-            "agent_id": "migration-bot",
-        }
+    res = asyncio.run(
+        create_fn.run(
+            {
+                "task_objective": "Database migration",
+                "progress_status": "Step 1 complete",
+                "steps": [
+                    {"step_number": 1, "action": "Run alembic", "result": "Success"},
+                ],
+                "agent_id": "migration-bot",
+            }
+        )
     )
     # FastMCP tools return string/json/dict
     assert "id" in str(res)
 
-    replay_res = await replay_fn.run(
-        {
-            "memory_id": list_procedural_memories(root)[0]["id"],
-            "token_budget": 1000,
-        }
+    replay_res = asyncio.run(
+        replay_fn.run(
+            {
+                "memory_id": list_procedural_memories(root)[0]["id"],
+                "token_budget": 1000,
+            }
+        )
     )
     assert "prompt_context" in str(replay_res)
