@@ -38,6 +38,8 @@ def test_ingest_job_lifecycle_stages(store):
     jobs = catalog.list_ingest_jobs(store)
     assert len(jobs) == 1
     assert jobs[0].id == job.id
+    with pytest.raises(ValueError, match="terminal"):
+        catalog.update_ingest_job(store, job.id, "extracting")
 
 
 def test_document_catalog_summary_vs_get(store):

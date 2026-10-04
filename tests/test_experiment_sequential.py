@@ -50,6 +50,17 @@ class TestUnifiedSequentialRule:
         lo, hi = ex.anytime_confidence_interval(90, 100, 50, 100, target_n_per_arm=target)
         assert (effect.ci_low, effect.ci_high) == (round(lo, 4), round(hi, 4))
 
+    def test_anytime_interval_remains_bounded_and_tunes_with_target_horizon(self):
+        narrow = ex.anytime_confidence_interval(90, 100, 50, 100, target_n_per_arm=100)
+        broad = ex.anytime_confidence_interval(90, 100, 50, 100, target_n_per_arm=4)
+        assert -1.0 <= narrow[0] <= narrow[1] <= 1.0
+        assert -1.0 <= broad[0] <= broad[1] <= 1.0
+        assert narrow != broad
+
+    def test_negative_arm_sizes_are_rejected(self):
+        with pytest.raises(ValueError, match="must not be negative"):
+            ex.two_proportion_test(0, -1, 0, 1)
+
     def test_a_clear_hurt_is_hurts(self):
         (effect,) = ex.analyze(_obs("l", 100, True, 0.40) + _obs("l", 100, False, 0.85), sequential=True)
         assert effect.verdict == ex.VERDICT_HURTS

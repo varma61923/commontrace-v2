@@ -80,6 +80,7 @@ import datetime
 import glob
 import importlib
 import io
+import json
 import logging
 import os
 import re
@@ -978,22 +979,40 @@ def build_server(root: str, *, allow_approval: bool = True):
                    next_step="Fill each one in with `draft_lesson`, then `approve_lesson`.")
 
     @mcp.tool()
-    async def list_lessons(status: str = "") -> dict:
-        """Every lesson in this store, newest first. Filter by `status`
-        ('active', 'review', 'archived'). Each carries `unfilled`: the parts
-        still left as scaffolding."""
-        out = []
-        for path in sorted(glob.glob(os.path.join(paths.lessons_dir(root), "lesson_*.md"))):
+    async def list_lessons(status: str = "", limit: int = 100, offset: int = 0) -> dict:
+        """List lightweight lesson summaries, newest first.
+
+        The response is paginated; call ``get_lesson`` for the full body of one
+        result. This keeps a large review queue from becoming an unbounded MCP
+        response or forcing every body through the tool wire.
+        """
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:
+            return _err("limit must be an integer from 1 to 1000")
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            return _err("offset must be a non-negative integer")
+        paths_to_scan = []
+        for path in glob.glob(os.path.join(paths.lessons_dir(root), "lesson_*.md")):
             if os.path.basename(path) == "lesson_template.md":
                 continue
+            try:
+                paths_to_scan.append((os.path.getmtime(path), path))
+            except OSError:
+                continue
+        paths_to_scan.sort(reverse=True)
+        paths_to_scan = [path for _mtime, path in paths_to_scan]
+        out = []
+        total = 0
+        for path in paths_to_scan:
             try:
                 fm, body = frontmatter.read(path)
             except Exception:  # noqa: BLE001 - one bad file must not hide the rest
                 continue
             if status and fm.get("status") != status:
                 continue
-            out.append(_lesson_wire(fm, body))
-        return _ok(lessons=out, count=len(out))
+            if total >= offset and len(out) < limit:
+                out.append(_lesson_wire(fm, body))
+            total += 1
+        return _ok(lessons=out, count=len(out), total=total, limit=limit, offset=offset)
 
     @mcp.tool()
     async def get_lesson(slug: str) -> dict:
@@ -2147,6 +2166,19 @@ def build_server(root: str, *, allow_approval: bool = True):
         """
         from commontrace import procedural
 
+        if not isinstance(steps, list) or len(steps) > 256 or not all(isinstance(step, dict) for step in steps):
+            return _err("steps must be a list of at most 256 objects")
+        refusal = _unsafe_write(
+            "procedural memory",
+            {
+                "task_objective": task_objective,
+                "progress_status": progress_status,
+                "steps": json.dumps(steps, ensure_ascii=False, default=str),
+                "metadata": json.dumps(metadata or {}, ensure_ascii=False, default=str),
+            },
+        )
+        if refusal is not None:
+            return refusal
         mem_id = uuid.uuid4().hex[:16]
         parsed_steps = [procedural.ProceduralStep.from_dict(s) for s in steps]
         mem = procedural.ProceduralMemory(
@@ -2187,8 +2219,15 @@ def build_server(root: str, *, allow_approval: bool = True):
         from commontrace import sql_guard
 
         try:
+            db_path_abs = os.path.realpath(os.path.expanduser(db_path))
+            root_abs = os.path.realpath(root)
+            if not (db_path_abs == root_abs or db_path_abs.startswith(root_abs + os.sep)):
+                return _err(
+                    "db_path must be inside the CommonTrace store root",
+                    code="scope_error",
+                )
             result = sql_guard.execute_guarded_sql(
-                db_path, sql, max_rows=max_rows, timeout_seconds=timeout_seconds,
+                db_path_abs, sql, max_rows=max_rows, timeout_seconds=timeout_seconds,
             )
             return _ok(**result)
         except Exception as exc:

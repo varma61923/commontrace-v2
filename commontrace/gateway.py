@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
+import hashlib
 import hmac
 import json
 import logging
@@ -384,6 +385,12 @@ class Gateway:
         self._route("GET", "/v1/metrics", self._metrics,
                     summary="Request, tool and operation counters and latencies (Prometheus text; ?format=json).")
         self._route("GET", "/v1/openapi.json", self._openapi, summary="This API's schema.", auth=False)
+        self._route("GET", "/v1/command-catalog", self._command_catalog,
+                    summary="CLI command catalog for the authenticated console.")
+        self._route("POST", "/v1/command", self._command, request={
+            "command": "one command name from /v1/command-catalog",
+            "args": "optional array of command arguments; the gateway store root is implicit",
+        }, summary="Run one store-scoped CommonTrace CLI command.")
         self._route("POST", "/v1/recall", self._recall, request={
             "occasion_id": "string, your id for one episode/task/ticket",
             "items": "optional list of {id, text, protected?, meta?}: your candidate memories",
@@ -466,6 +473,12 @@ class Gateway:
             handler, spec = entry
             if spec["auth"] and not trusted and not self._authorised(headers):
                 raise ApiError(401, "unauthorized", "a valid Authorization: Bearer token is required")
+            container_tag = next((
+                v for k, v in headers.items()
+                if k.lower() in ("x-container-tag", "container-tag")
+            ), "")
+            if container_tag:
+                self._validated_tag(container_tag)
             payload: dict = {}
             if method == "POST":
                 payload = self._parse_body(body)
@@ -614,6 +627,25 @@ class Gateway:
         return list(events), cached, self._events_truncated()
 
 
+    def _command_catalog(self, _body, _query) -> dict:
+        from commontrace import ui_commands
+
+        return {
+            "commands": ui_commands.catalog(),
+            "store": os.path.basename(self.root.rstrip(os.sep)) or "store",
+        }
+
+    def _command(self, req: dict, _query) -> dict:
+        from commontrace import ui_commands
+
+        command = req.get("command")
+        try:
+            return ui_commands.run(self.root, command, req.get("args"))
+        except ui_commands.UICommandError as exc:
+            code = "command_unavailable" if "terminal-only" in str(exc) else "bad_request"
+            status = 409 if code == "command_unavailable" else 400
+            raise ApiError(status, code, str(exc)) from None
+
     def _metrics(self, _body, query) -> dict | Response:
         from commontrace import telemetry
 
@@ -621,45 +653,61 @@ class Gateway:
             return telemetry.metrics()
         return Response(200, telemetry.prometheus().encode("utf-8"), "text/plain; version=0.0.4")
 
+    def _capability_matrix(self) -> dict[str, Any]:
+        retrieval_config = retrieval_io.load_config(self.root)
+        has_embed = bool(retrieval_io.parse_embedder(retrieval_config.fusion))
+        has_rerank = retrieval_config.rerank != retrieval_io.RERANK_NONE
+        provider = os.environ.get("COMMONTRACE_LLM_PROVIDER", "").strip().lower()
+        has_key = any(os.environ.get(name, "").strip() for name in (
+            "COMMONTRACE_LLM_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+            "GOOGLE_API_KEY", "GEMINI_API_KEY",
+        ))
+        local_provider = provider in {"ollama", "local", "llama.cpp", "llamacpp"}
+        has_llm = bool(has_key or local_provider)
+        if has_llm and has_embed:
+            tier = "full"
+        elif has_llm:
+            tier = "no_embed"
+        elif has_embed:
+            tier = "no_llm"
+        else:
+            tier = "lexical"
+        return {
+            "llm": has_llm,
+            "embeddings": has_embed,
+            "rerank": has_rerank,
+            "tier": tier,
+            "degraded_paths": [
+                name for name, enabled in (
+                    ("lexical_retrieval", True),
+                    ("llm_generation", has_llm),
+                    ("semantic_retrieval", has_embed),
+                    ("cross_encoder_rerank", has_rerank),
+                ) if not enabled
+            ],
+            "rbac": True,
+            "container_scoping": True,
+            "defense_screen": True,
+            "ssrf_guard": True,
+        }
+
     def _health(self, _body, _query) -> dict:
-        embedder = getattr(self.config, "embedder", None)
-        rerank = getattr(self.config, "rerank", None)
-        has_embed = bool(embedder and embedder != "none")
-        tier = "full" if has_embed else "no_embed"
+        capabilities = self._capability_matrix()
         return {
             "ok": True,
             "api": API_VERSION,
             "version": __version__,
-            "tier": tier,
-            "capabilities": {
-                "llm": True,
-                "embeddings": has_embed,
-                "rerank": bool(rerank and rerank != "none"),
-                "tier": tier,
-                "container_scoping": True,
-                "defense_screen": True,
-            },
+            "tier": capabilities["tier"],
+            "capabilities": capabilities,
         }
 
     def _capabilities(self, _body, _query) -> dict:
-        embedder = getattr(self.config, "embedder", None)
-        rerank = getattr(self.config, "rerank", None)
-        has_embed = bool(embedder and embedder != "none")
-        tier = "full" if has_embed else "no_embed"
+        capabilities = self._capability_matrix()
         return {
             "api": API_VERSION,
             "version": __version__,
-            "tier": tier,
-            "capabilities": {
-                "llm": True,
-                "embeddings": has_embed,
-                "rerank": bool(rerank and rerank != "none"),
-                "tier": tier,
-                "rbac": True,
-                "container_scoping": True,
-                "defense_screen": True,
-                "ssrf_guard": True,
-            },
+            "tier": capabilities["tier"],
+            "capabilities": capabilities,
         }
 
     def _whoami(self, _body, _query) -> dict:
@@ -674,13 +722,34 @@ class Gateway:
             "request_id": curr.get("request_id", ""),
         }
 
+    @staticmethod
+    def _validated_tag(tag: str) -> str:
+        clean_tag = tag.strip()
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,128}", clean_tag):
+            raise _bad("container_tag must contain only letters, numbers, '.', '_', or '-' (max 128 chars)")
+        return clean_tag
+
+    def _request_scope(self) -> str:
+        from commontrace import telemetry
+
+        tag = str(telemetry.current().get("container_tag") or "")
+        return f"container:{self._validated_tag(tag)}" if tag else ""
+
+    def _scoped_space(self, space: str) -> str:
+        scope = self._request_scope()
+        if not scope:
+            return space
+        scoped = f"{scope}:{space}"
+        if len(scoped) <= 128:
+            return scoped
+        digest = hashlib.sha256(f"{scope}\x1f{space}".encode("utf-8")).hexdigest()[:32]
+        return f"container-{digest}"
+
     def _resolve_tag(self, req: dict, _query) -> dict:
         tag = req.get("container_tag")
         if not tag or not isinstance(tag, str):
             raise _bad("container_tag must be a non-empty string")
-        clean_tag = tag.strip()
-        if not re.fullmatch(r"[A-Za-z0-9._-]{1,128}", clean_tag):
-            raise _bad("container_tag must contain only letters, numbers, '.', '_', or '-' (max 128 chars)")
+        clean_tag = self._validated_tag(tag)
         return {
             "container_tag": clean_tag,
             "scope": f"container:{clean_tag}",
@@ -702,7 +771,7 @@ class Gateway:
         return bool(item.get("protected")) or any(
             item["id"].startswith(prefix) for prefix in self.config.protected_prefixes)
 
-    def _store_candidates(self, req: dict) -> list[dict]:
+    def _store_candidates(self, req: dict, *, scope: str = "") -> list[dict]:
         query = _text(req.get("query"), "query", limit=2000)
         top_k = req.get("top_k", 5)
         if isinstance(top_k, bool) or not isinstance(top_k, int) or not 1 <= top_k <= 50:
@@ -715,6 +784,12 @@ class Gateway:
                 return None
 
         active, term_cache = _cached_active(self.root, read)
+        if scope:
+            from commontrace import lesson_cache
+
+            active = lesson_cache.filter_eligible(active, scope=scope)
+            allowed_paths = {path for path, _fm in active}
+            term_cache = {path: terms for path, terms in term_cache.items() if path in allowed_paths}
         ranked = retrieval.rank_lessons(query, active, top_k=top_k, term_cache=term_cache)
         projected = dict(active)
         out = []
@@ -736,7 +811,8 @@ class Gateway:
         if len(messages) > 1000:
             raise _bad("at most 1000 messages per request")
         try:
-            with Store(self.root, _ident(req.get("space"), "space")) as store:
+            space = self._scoped_space(_ident(req.get("space"), "space"))
+            with Store(self.root, space) as store:
                 return store.add(_ident(req.get("session"), "session"), messages,
                                  session_at=req.get("session_at") or None)
         except ConversationError as exc:
@@ -757,7 +833,8 @@ class Gateway:
             lists[key] = tuple(value)
         opts = Options(budget=budget, since=req.get("since") or None, until=req.get("until") or None, **lists)
         try:
-            with Store(self.root, _ident(req.get("space"), "space"), create=False) as store:
+            space = self._scoped_space(_ident(req.get("space"), "space"))
+            with Store(self.root, space, create=False) as store:
                 return recall(store, question, now=req.get("now") or None, options=opts).as_dict()
         except ConversationError as exc:
             raise ApiError(404 if "no conversations" in str(exc) else 400, "conversation", str(exc)) from None
@@ -767,7 +844,12 @@ class Gateway:
         agent = _agent(req)
         self._check_env(req)
         mode = "items" if req.get("items") is not None else "store"
-        candidates = _items(req["items"]) if mode == "items" else self._store_candidates(req)
+        scope = self._request_scope()
+        candidates = (
+            _items(req["items"])
+            if mode == "items"
+            else self._store_candidates(req, scope=scope)
+        )
 
         clean, quarantined = [], []
         for item in candidates:
@@ -949,36 +1031,42 @@ class Gateway:
         if offset < 0:
             raise _bad("offset must be a non-negative integer")
 
+        scope = self._request_scope()
+
         def fetch(w):
             if limit is None and not offset:
-                return w.list_lessons(self.root, status)
-            return w.list_lessons(self.root, status, limit=limit, offset=offset)
+                return w.list_lessons(self.root, status, scope=scope)
+            return w.list_lessons(self.root, status, limit=limit, offset=offset, scope=scope)
 
         lessons = self._workbench(fetch)
         if limit is None and not offset:
             total = len(lessons)
         else:
-            total = self._workbench(lambda w: w.count_lessons(self.root, status))
+            total = self._workbench(lambda w: w.count_lessons(self.root, status, scope=scope))
         return {"lessons": lessons, "approval_enabled": self.allow_approval,
                 "total": total, "limit": limit, "offset": offset}
 
     def _lesson(self, _body, query) -> dict:
         slug = (query.get("slug") or [""])[0]
-        return {**self._workbench(lambda w: w.detail(self.root, slug)), "approval_enabled": self.allow_approval}
+        scope = self._request_scope()
+        return {**self._workbench(lambda w: w.detail(self.root, slug, scope)), "approval_enabled": self.allow_approval}
 
     def _lesson_edit(self, body, _query) -> dict:
         self._acting()
         fields = {k: v for k, v in body.items() if k != "slug"}
-        return self._workbench(lambda w: w.edit(self.root, body.get("slug", ""), fields, "console"))
+        scope = self._request_scope()
+        return self._workbench(lambda w: w.edit(self.root, body.get("slug", ""), fields, "console", scope))
 
     def _lesson_approve(self, body, _query) -> dict:
         self._acting()
+        scope = self._request_scope()
         return self._workbench(lambda w: w.approve(self.root, body.get("slug", ""), body.get("rationale"),
-                                                   "console"))
+                                                   "console", scope))
 
     def _lesson_reject(self, body, _query) -> dict:
         self._acting()
-        return self._workbench(lambda w: w.reject(self.root, body.get("slug", ""), body.get("reason", "")))
+        scope = self._request_scope()
+        return self._workbench(lambda w: w.reject(self.root, body.get("slug", ""), body.get("reason", ""), scope))
 
     @staticmethod
     def _limit(query: dict, default: int, cap: int) -> int:

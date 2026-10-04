@@ -11,6 +11,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -150,10 +151,19 @@ def _procedural_dir(root: str) -> str:
     return path
 
 
+_MEMORY_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+
+
+def _memory_file(root: str, memory_id: str) -> str:
+    clean_id = str(memory_id or "").strip()
+    if not _MEMORY_ID_RE.fullmatch(clean_id):
+        raise ValueError("procedural memory id must contain only letters, numbers, '_' or '-'")
+    return os.path.join(_procedural_dir(root), f"{clean_id}.json")
+
+
 def save_procedural_memory(root: str, memory: ProceduralMemory) -> str:
     """Persist a procedural memory object to store disk."""
-    folder = _procedural_dir(root)
-    file_path = os.path.join(folder, f"{memory.id}.json")
+    file_path = _memory_file(root, memory.id)
     with open(file_path, "w", encoding="utf-8") as f:
         json.dump(memory.to_dict(), f, indent=2, ensure_ascii=False)
     return file_path
@@ -161,8 +171,10 @@ def save_procedural_memory(root: str, memory: ProceduralMemory) -> str:
 
 def load_procedural_memory(root: str, memory_id: str) -> ProceduralMemory | None:
     """Load a procedural memory by its ID from disk."""
-    folder = _procedural_dir(root)
-    file_path = os.path.join(folder, f"{memory_id}.json")
+    try:
+        file_path = _memory_file(root, memory_id)
+    except ValueError:
+        return None
     if not os.path.isfile(file_path):
         return None
     with open(file_path, encoding="utf-8") as f:

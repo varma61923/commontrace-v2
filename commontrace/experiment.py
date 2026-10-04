@@ -52,7 +52,9 @@ def is_held_out(
 
 
 def _norm_cdf(z: float) -> float:
-    return 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
+    # erfc avoids catastrophic cancellation in the tails where `1 - erf(...)`
+    # otherwise rounds tiny p-values to exactly zero.
+    return 0.5 * math.erfc(-z / math.sqrt(2.0))
 
 
 def _check_success_count(s: int, n: int, label: str) -> None:
@@ -63,11 +65,11 @@ def _check_success_count(s: int, n: int, label: str) -> None:
 
 
 def two_proportion_test(s1: int, n1: int, s2: int, n2: int) -> tuple[float, float]:
-    """Two-tailed z-test for a difference in proportions."""
-    if n1 <= 0 or n2 <= 0:
-        return 0.0, 1.0
+    """Two-tailed pooled z-test for a difference in independent proportions."""
     _check_success_count(s1, n1, "arm 1")
     _check_success_count(s2, n2, "arm 2")
+    if n1 == 0 or n2 == 0:
+        return 0.0, 1.0
     p1, p2 = s1 / n1, s2 / n2
     p_pool = (s1 + s2) / (n1 + n2)
     if p_pool in (0.0, 1.0):
@@ -100,6 +102,10 @@ def diff_confidence_interval(s1: int, n1: int, s2: int, n2: int, z: float = _Z_9
 
 def benjamini_hochberg(p_values: list[float], alpha: float = 0.05) -> list[bool]:
     """Which hypotheses survive at FDR <= alpha."""
+    if not math.isfinite(alpha) or not 0.0 < alpha < 1.0:
+        raise ValueError(f"alpha must be in (0, 1), got {alpha}")
+    if any(not math.isfinite(p) or not 0.0 <= p <= 1.0 for p in p_values):
+        raise ValueError("p-values must be finite and lie in [0, 1]")
     m = len(p_values)
     if m == 0:
         return []
@@ -201,34 +207,101 @@ def alpha_spent(
     return 2.0 * (1.0 - _norm_cdf(z_half / math.sqrt(t)))
 
 
+def _log_beta_binomial_bayes_factor(
+    p: float, successes: int, trials: int, prior: float,
+) -> float:
+    """Log Bayes factor of a symmetric beta-mixture against Bernoulli(p)."""
+    failures = trials - successes
+    if p <= 0.0 and successes:
+        return math.inf
+    if p >= 1.0 and failures:
+        return math.inf
+    log_likelihood = 0.0
+    if successes:
+        log_likelihood += successes * math.log(p)
+    if failures:
+        log_likelihood += failures * math.log1p(-p)
+    log_mixture = (
+        math.lgamma(successes + prior)
+        + math.lgamma(failures + prior)
+        - math.lgamma(trials + 2.0 * prior)
+        - 2.0 * math.lgamma(prior)
+        + math.lgamma(2.0 * prior)
+    )
+    return log_mixture - log_likelihood
+
+
+def _mixture_proportion_interval(
+    successes: int, trials: int, alpha: float, prior_strength: float,
+) -> tuple[float, float]:
+    """A beta-mixture confidence sequence for one Bernoulli proportion.
+
+    Inverting Ville's inequality for the beta-binomial likelihood-ratio
+    martingale gives time-uniform coverage. The two arm intervals are combined
+    with a Bonferroni split, so optional stopping and adaptive arm counts remain
+    valid for their difference.
+    """
+    if trials <= 0:
+        return 0.0, 1.0
+    prior = max(0.5, min(128.0, prior_strength / 2.0))
+    threshold = math.log(2.0 / alpha)
+
+    def outside(p: float) -> bool:
+        return _log_beta_binomial_bayes_factor(p, successes, trials, prior) > threshold
+
+    estimate = successes / trials
+    if not outside(0.0):
+        lower = 0.0
+    else:
+        lo, hi = 0.0, estimate
+        for _ in range(64):
+            mid = (lo + hi) / 2.0
+            if outside(mid):
+                lo = mid
+            else:
+                hi = mid
+        lower = hi
+
+    if not outside(1.0):
+        upper = 1.0
+    else:
+        lo, hi = estimate, 1.0
+        for _ in range(64):
+            mid = (lo + hi) / 2.0
+            if outside(mid):
+                hi = mid
+            else:
+                lo = mid
+        upper = lo
+    return lower, upper
+
+
 def anytime_confidence_interval(
     s1: int, n1: int, s2: int, n2: int,
     alpha: float = 0.05,
     target_n_per_arm: int = 0,
 ) -> tuple[float, float]:
+    """Anytime-valid confidence interval for the difference in proportions.
+
+    Each arm uses a beta-binomial mixture martingale and receives alpha/2;
+    Minkowski subtraction of the two confidence sequences gives a valid
+    interval for ``p_injected - p_withheld`` at every stopping time. The
+    target horizon controls the symmetric mixture's prior concentration, which
+    changes efficiency without changing the coverage guarantee.
+    """
     _check_success_count(s1, n1, "injected arm")
     _check_success_count(s2, n2, "withheld arm")
     if n1 <= 0 or n2 <= 0:
         return (-1.0, 1.0)
-    if not 0.0 < alpha < 1.0:
+    if not math.isfinite(alpha) or not 0.0 < alpha < 1.0:
         raise ValueError(f"alpha must be in (0, 1), got {alpha}")
-
-    rate1, rate2 = s1 / n1, s2 / n2
-    effect = rate1 - rate2
-    variance = rate1 * (1 - rate1) / n1 + rate2 * (1 - rate2) / n2
-    if variance <= 0.0:
-        variance = 0.25 / n1 + 0.25 / n2
-
-    n_effective = min(n1, n2)
-    target = target_n_per_arm if target_n_per_arm > 0 else n_effective
-    rho = 1.0 / max(target, 1)
-    inner = n_effective * rho + 1.0
-    radius = math.sqrt(
-        (2.0 * inner / (n_effective * n_effective * rho))
-        * math.log(math.sqrt(inner) / alpha)
-    )
-    half_width = radius * math.sqrt(variance * n_effective)
-    return (effect - half_width, effect + half_width)
+    if target_n_per_arm < 0:
+        raise ValueError(f"target_n_per_arm must be non-negative, got {target_n_per_arm}")
+    target = target_n_per_arm or min(n1, n2)
+    prior_strength = math.sqrt(max(1, target))
+    low1, high1 = _mixture_proportion_interval(s1, n1, alpha, prior_strength)
+    low2, high2 = _mixture_proportion_interval(s2, n2, alpha, prior_strength)
+    return (max(-1.0, low1 - high2), min(1.0, high1 - low2))
 
 
 def minimum_detectable_effect(n_per_arm: int, baseline: float, power: float = 0.80) -> float | None:
@@ -241,8 +314,9 @@ def minimum_detectable_effect(n_per_arm: int, baseline: float, power: float = 0.
 
 
 def required_n_per_arm(effect: float, baseline: float, power: float = 0.80) -> int:
-    if not (0 < baseline < 1) or effect <= 0:
-        raise ValueError("effect must be > 0 and baseline strictly between 0 and 1")
+    if (not math.isfinite(effect) or not math.isfinite(baseline)
+            or not (0 < baseline < 1) or effect <= 0):
+        raise ValueError("effect must be finite and > 0; baseline must be finite and strictly between 0 and 1")
     if not 0.5 <= power < 1.0:
         raise ValueError(f"power must be in [0.5, 1.0), got {power}")
     z = _Z_95 + _z_for_power(power)

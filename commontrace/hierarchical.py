@@ -65,14 +65,81 @@ _FACT_FIELDS = frozenset(AtomicFact.__dataclass_fields__)
 
 
 def _coerce_fact(data: dict[str, Any]) -> AtomicFact:
-    clean = {k: v for k, v in data.items() if k in _FACT_FIELDS}
-    if "forgotten" in clean:
-        clean["forgotten"] = bool(clean["forgotten"])
-    if clean.get("stability") not in STABILITY_VALUES:
-        clean["stability"] = ""
-    if clean.get("source_traces") is None:
-        clean["source_traces"] = []
-    return AtomicFact(**clean)
+    """Read current and pre-bitemporal rows without dropping valid legacy facts.
+
+    Fact files are durable user data, so adding fields must be a migration-by-read:
+    absent timestamps become a present valid-time instant (recorded time when
+    available, otherwise now), while malformed rows are still rejected by the
+    caller rather than partially entering the index.
+    """
+    if not isinstance(data, dict):
+        raise TypeError("fact row must be an object")
+    statement = str(data.get("statement") or "").strip()
+    if not statement:
+        raise TypeError("fact statement is required")
+    scopes = _clean_scopes(data.get("scopes"))
+    recorded_fallback = str(data.get("created_at") or "").strip()
+    try:
+        valid_from = _moment(data.get("valid_from") or recorded_fallback, "valid_from")
+    except ValueError:
+        valid_from = None
+    valid_from = valid_from or _now()
+    try:
+        valid_until = _moment(data.get("valid_until"), "valid_until")
+    except ValueError:
+        raise TypeError("invalid fact validity window") from None
+    _check_window(valid_from, valid_until)
+    try:
+        expires_at = _normalize_expires_at(data.get("expires_at"))
+    except ValueError:
+        raise TypeError("invalid fact expiry") from None
+    confidence = data.get("confidence", 0.8)
+    try:
+        confidence = float(confidence)
+    except (TypeError, ValueError, OverflowError):
+        confidence = 0.8
+    if confidence != confidence or confidence in (float("inf"), float("-inf")):
+        confidence = 0.8
+    confirmations = data.get("confirmations", 1)
+    try:
+        confirmations = max(1, int(confirmations))
+    except (TypeError, ValueError, OverflowError):
+        confirmations = 1
+    forgotten = data.get("forgotten", False)
+    if isinstance(forgotten, str):
+        forgotten = forgotten.strip().lower() in {"1", "true", "yes", "on"}
+    else:
+        forgotten = bool(forgotten)
+    raw_sources = data.get("source_traces")
+    source_values = (
+        raw_sources if isinstance(raw_sources, (list, tuple, set))
+        else ([raw_sources] if raw_sources else [])
+    )
+    clean = {
+        "id": str(data.get("id") or _fact_id(statement, scopes)),
+        "statement": statement,
+        "category": str(data.get("category") or DEFAULT_CATEGORY),
+        "scopes": scopes,
+        "confidence": min(1.0, max(0.0, round(confidence, 3))),
+        "confirmations": confirmations,
+        "valid_from": valid_from,
+        "valid_until": valid_until,
+        "expires_at": expires_at,
+        "forgotten": forgotten,
+        "source_traces": [str(s) for s in source_values if str(s)],
+        "status": str(data.get("status") or "active"),
+        "superseded_by": data.get("superseded_by"),
+        "revision": str(data.get("revision") or ""),
+        "created_at": recorded_fallback or valid_from,
+        "updated_at": str(data.get("updated_at") or recorded_fallback or valid_from),
+        "stability": data.get("stability") if data.get("stability") in STABILITY_VALUES else "",
+    }
+    if clean["category"] not in CATEGORIES:
+        clean["category"] = DEFAULT_CATEGORY
+    fact = AtomicFact(**{k: v for k, v in clean.items() if k in _FACT_FIELDS})
+    if not fact.revision:
+        fact.revision = _compute_revision(fact.to_dict())
+    return fact
 
 
 def _facts_dir(root: str) -> str:
@@ -174,10 +241,14 @@ def mutate_facts(root: str) -> Iterator[dict[str, AtomicFact]]:
 
 def _matching_active(facts: dict[str, AtomicFact], statement: str, scopes: list[str]) -> AtomicFact | None:
     norm = _normalize_statement(statement)
+    requested_scopes = frozenset(scopes)
     for existing in facts.values():
         if existing.status != "active" or _normalize_statement(existing.statement) != norm:
             continue
-        if not scopes or not existing.scopes or any(s in existing.scopes for s in scopes):
+        # Scope is an authorization boundary, not a relevance hint. A scoped
+        # write must never reinforce or re-scope a global fact (or another
+        # tenant's fact); only the exact same scope set is a duplicate.
+        if frozenset(existing.scopes) == requested_scopes:
             return existing
     return None
 
@@ -193,6 +264,7 @@ def _add_locked(
     confidence: float,
     source_trace_id: str,
     stability: str = "",
+    created_at: str | None = None,
 ) -> tuple[AtomicFact, str]:
     existing = _matching_active(facts, statement, scopes)
     if existing is not None:
@@ -207,6 +279,12 @@ def _add_locked(
         return existing, "NOOP"
 
     now_iso = _now()
+    recorded_at = now_iso
+    if created_at:
+        try:
+            recorded_at = _moment(created_at, "created_at") or now_iso
+        except ValueError:
+            raise ValueError(f"invalid fact `created_at` value {created_at!r}") from None
     fact = AtomicFact(
         id=_free_id(_fact_id(statement, scopes), facts),
         statement=statement,
@@ -218,7 +296,7 @@ def _add_locked(
         valid_until=valid_until,
         expires_at=expires_at,
         source_traces=[source_trace_id] if source_trace_id else [],
-        created_at=now_iso,
+        created_at=recorded_at,
         updated_at=now_iso,
         stability=_normalize_stability(stability),
     )
@@ -252,6 +330,7 @@ def add_fact(
     confidence: float = 0.8,
     source_trace_id: str = "",
     stability: str = "",
+    created_at: str | None = None,
 ) -> tuple[AtomicFact, str]:
     """Add a fact, or reinforce the matching active one. Returns (fact, 'ADD' | 'NOOP')."""
     statement, category, valid_from, valid_until, expires_at = prepare_fact(
@@ -259,7 +338,7 @@ def add_fact(
     with mutate_facts(root) as facts:
         fact, action = _add_locked(
             facts, statement, category, _clean_scopes(scopes), valid_from, valid_until,
-            expires_at, confidence, source_trace_id, _normalize_stability(stability),
+            expires_at, confidence, source_trace_id, _normalize_stability(stability), created_at,
         )
     _link_entities_best_effort(root, [(fact.id, fact.statement)])
     return fact, action
@@ -275,12 +354,13 @@ def add_facts(root: str, items: list[dict[str, Any]]) -> list[tuple[AtomicFact, 
         prepared.append((statement, category, _clean_scopes(item.get("scopes")), valid_from,
                          valid_until, expires_at, float(item.get("confidence", 0.8)),
                          str(item.get("source_trace_id", "") or ""),
-                         _normalize_stability(item.get("stability", ""))))
+                         _normalize_stability(item.get("stability", "")),
+                         item.get("created_at")))
     if not prepared:
         return []
     with mutate_facts(root) as facts:
-        results = [_add_locked(facts, s, c, sc, vf, vu, ea, conf, src, stab)
-                   for s, c, sc, vf, vu, ea, conf, src, stab in prepared]
+        results = [_add_locked(facts, s, c, sc, vf, vu, ea, conf, src, stab, created)
+                   for s, c, sc, vf, vu, ea, conf, src, stab, created in prepared]
     _link_entities_best_effort(root, [(fact.id, fact.statement) for fact, _ in results])
     return results
 
@@ -570,14 +650,23 @@ def retire_source(root: str, source_id: str, keep: set[str]) -> int:
 
 
 def _valid_at(fact: AtomicFact, moment: datetime) -> bool:
+    """Whether a fact was true at valid-time *moment*, including past revisions."""
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    else:
+        moment = moment.astimezone(timezone.utc)
     try:
-        if fact.valid_from and lesson_cache.parse_moment(fact.valid_from) > moment:
-            return False
-        if fact.valid_until:
-            return lesson_cache.parse_moment(fact.valid_until) > moment
+        valid_from = lesson_cache.parse_moment(fact.valid_from) if fact.valid_from else None
+        valid_until = lesson_cache.parse_moment(fact.valid_until) if fact.valid_until else None
     except ValueError:
         return False
-    return fact.status not in ("superseded", "deleted")
+    if valid_from is not None and valid_from > moment:
+        return False
+    if valid_until is not None and valid_until <= moment:
+        return False
+    # Superseded/deleted rows remain queryable through their historical window;
+    # status only controls the default present-time listing.
+    return True
 
 
 def _is_expired(fact: AtomicFact, moment: datetime) -> bool:
@@ -586,11 +675,13 @@ def _is_expired(fact: AtomicFact, moment: datetime) -> bool:
         return False
     try:
         expiry = lesson_cache.parse_moment(fact.expires_at)
-        if expiry is not None and expiry.tzinfo is not None and moment.tzinfo is None:
-            expiry = expiry.replace(tzinfo=None)
-        return expiry is not None and expiry <= moment
     except ValueError:
         return False
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    else:
+        moment = moment.astimezone(timezone.utc)
+    return expiry <= moment
 
 
 def list_facts(
@@ -615,7 +706,11 @@ def list_facts(
     if stability and stability not in STABILITY_TIERS:
         raise ValueError(f"unknown stability tier {stability!r} (expected 'stable' or 'dynamic')")
     moment = lesson_cache.parse_moment(as_of) if as_of else None
-    reference = now or datetime.now(timezone.utc).replace(tzinfo=None)
+    reference = now or datetime.now(timezone.utc)
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=timezone.utc)
+    else:
+        reference = reference.astimezone(timezone.utc)
     results: list[AtomicFact] = []
     for fact in load_facts(root).values():
         if fact.forgotten and not include_forgotten:

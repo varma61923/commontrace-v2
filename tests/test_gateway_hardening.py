@@ -1,4 +1,5 @@
 import json
+import os
 
 from commontrace import gateway
 from commontrace.gateway import TransientAuthError, is_transient_auth_error
@@ -98,3 +99,67 @@ def test_gateway_resolve_tag(tmp_path):
     )
     assert status == 400
     assert err_res["error"]["code"] == "bad_request"
+
+
+def test_container_tag_scopes_store_recall(tmp_path):
+    from commontrace import frontmatter, paths
+
+    store = str(tmp_path / "store")
+    os.makedirs(paths.lessons_dir(store), exist_ok=True)
+    base = {
+        "description": "tenant retrieval rule",
+        "applies_when": "tenant retrieval is requested",
+        "tags": ["tenant"], "domain": "other", "importance": 3,
+        "status": "active", "agent_type": "general", "uses": 0,
+    }
+    for slug, scopes in (("global", []), ("alpha", ["container:alpha"]),
+                         ("beta", ["container:beta"])):
+        frontmatter.write(
+            os.path.join(paths.lessons_dir(store), f"lesson_{slug}.md"),
+            {**base, "name": slug, "scopes": scopes},
+            "## Rule\nUse the tenant-safe rule.\n",
+        )
+    gw = gateway.Gateway(store, token="secret-token-12345")
+    headers = {
+        "Authorization": "Bearer secret-token-12345",
+        "X-Container-Tag": "alpha",
+    }
+    status, data, _ = _call(gw, "POST", "/v1/recall", {
+        "occasion_id": "alpha-1", "query": "tenant retrieval rule",
+    }, headers=headers)
+    assert status == 200
+    ids = {item["id"] for item in data["deliver"]}
+    assert ids == {"global", "alpha"}
+    assert "beta" not in ids
+
+    status, _data, _ = _call(gw, "GET", "/v1/status", headers={
+        "Authorization": "Bearer secret-token-12345", "X-Container-Tag": "bad tag",
+    })
+    assert status == 400
+
+
+def test_command_catalog_and_store_scoped_runner(tmp_path):
+    store = str(tmp_path / "store")
+    gw = gateway.Gateway(store, token="secret-token-12345")
+    auth = {"Authorization": "Bearer secret-token-12345"}
+
+    status, catalog, _ = _call(gw, "GET", "/v1/command-catalog", headers=auth)
+    assert status == 200
+    assert len(catalog["commands"]) == 59
+    assert any(item["name"] == "query" and item["runnable"] for item in catalog["commands"])
+    assert any(item["name"] == "gateway" and not item["runnable"] for item in catalog["commands"])
+
+    status, result, _ = _call(
+        gw, "POST", "/v1/command", {"command": "query", "args": ["--help"]}, headers=auth,
+    )
+    assert status == 200 and result["ok"] and "usage: commontrace query" in result["stdout"]
+
+    status, error, _ = _call(
+        gw, "POST", "/v1/command", {"command": "query", "args": ["--dest", "/tmp"]}, headers=auth,
+    )
+    assert status == 400 and error["error"]["code"] == "bad_request"
+
+    status, error, _ = _call(
+        gw, "POST", "/v1/command", {"command": "gateway", "args": []}, headers=auth,
+    )
+    assert status == 409 and error["error"]["code"] == "command_unavailable"

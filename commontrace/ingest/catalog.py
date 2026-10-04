@@ -111,6 +111,11 @@ def update_ingest_job(
             if isinstance(row, dict) and row.get("id") == job_id:
                 found = True
                 curr = IngestJob(**row)
+                if curr.stage in ("done", "failed") and stage != curr.stage:
+                    raise ValueError(
+                        f"ingest job {job_id!r} is terminal at {curr.stage!r}; "
+                        f"cannot transition to {stage!r}"
+                    )
                 curr.stage = stage
                 curr.updated_at = _now()
                 if progress is not None:

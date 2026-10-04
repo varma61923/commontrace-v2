@@ -75,12 +75,15 @@ def _fingerprint(text: str) -> str:
 
 @dataclass
 class Chunk:
-    """A bounded text chunk with origin metadata."""
+    """A bounded text chunk with origin and modality metadata."""
     content: str
     source_path: str
     chunk_id: str
     breadcrumb: str = ""
     chunk_type: str = "text"
+    modality: str = ""
+    source: str = ""
+    provenance: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

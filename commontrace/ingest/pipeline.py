@@ -92,6 +92,9 @@ class TextChunker(Transform):
                     chunk_id=f"{chunk.chunk_id}_chunk_{chunk_idx}",
                     breadcrumb=chunk.breadcrumb,
                     chunk_type=chunk.chunk_type,
+                    modality=chunk.modality,
+                    source=chunk.source,
+                    provenance=dict(chunk.provenance),
                 )
                 chunk_idx += 1
                 if self.overlap > 0 and len(current) > self.overlap:
@@ -108,6 +111,9 @@ class TextChunker(Transform):
                 chunk_id=f"{chunk.chunk_id}_chunk_{chunk_idx}",
                 breadcrumb=chunk.breadcrumb,
                 chunk_type=chunk.chunk_type,
+                modality=chunk.modality,
+                source=chunk.source,
+                provenance=dict(chunk.provenance),
             )
 
 
@@ -127,6 +133,9 @@ class LLMContextualizer(Transform):
                 chunk_id=f"{chunk.chunk_id}_ctx",
                 breadcrumb=chunk.breadcrumb,
                 chunk_type=f"{chunk.chunk_type}_contextualized",
+                modality=chunk.modality,
+                source=chunk.source,
+                provenance=dict(chunk.provenance),
             )
 
 
@@ -173,6 +182,9 @@ class AliasCanonicalizer(Transform):
             chunk_id=chunk_id,
             breadcrumb=chunk.breadcrumb,
             chunk_type=chunk.chunk_type,
+            modality=chunk.modality,
+            source=chunk.source,
+            provenance=dict(chunk.provenance),
         )
 
     def flush_warnings(self) -> list[str]:
@@ -200,6 +212,9 @@ class LimitGuard(Transform):
                     chunk_id=chunk.chunk_id,
                     breadcrumb=chunk.breadcrumb,
                     chunk_type=chunk.chunk_type,
+                    modality=chunk.modality,
+                    source=chunk.source,
+                    provenance=dict(chunk.provenance),
                 )
             else:
                 yield chunk
@@ -681,7 +696,8 @@ class ContextHeader(Transform):
             header = self._header(chunk)
             self.stats["headed"] += 1
             yield Chunk(content=f"[{header}] {chunk.content}", source_path=chunk.source_path,
-                        chunk_id=chunk.chunk_id, breadcrumb=chunk.breadcrumb, chunk_type=chunk.chunk_type)
+                        chunk_id=chunk.chunk_id, breadcrumb=chunk.breadcrumb, chunk_type=chunk.chunk_type,
+                        modality=chunk.modality, source=chunk.source, provenance=dict(chunk.provenance))
 
     def _title(self, chunk: Chunk) -> str:
         document = self._document(chunk.source_path)

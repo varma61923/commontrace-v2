@@ -66,8 +66,10 @@ async def _reject_private_target(
     hostname = parsed.hostname
     if not hostname:
         raise EventError(f"a webhook endpoint must have a resolvable host, got {url!r}")
-    if allowlist and allowlist.allows_host(hostname):
-        return [hostname]
+    # Even an allow-listed hostname is resolved and pinned for this request;
+    # the allowlist permits its address class but must not reintroduce DNS
+    # rebinding between validation and the actual socket connection.
+    allowlisted_host = bool(allowlist and allowlist.allows_host(hostname))
     resolve = resolve or _default_resolve
     try:
         addrinfo = await resolve(hostname)
@@ -82,7 +84,7 @@ async def _reject_private_target(
         if allowlist and allowlist.allows_ip(ip):
             validated_ips.append(raw_ip)
             continue
-        if (
+        if not allowlisted_host and (
             any(ip in net for net in _EXTRA_BLOCKED_NETWORKS)
             or ip.is_private or ip.is_loopback or ip.is_link_local
             or ip.is_reserved or ip.is_multicast or ip.is_unspecified
@@ -441,13 +443,42 @@ def http_transport(timeout: float = 10.0, allowlist: Allowlist | None = None):
 
     Hardened against SSRF (CWE-918):
     - Deny-by-default for private/loopback/link-local/metadata ranges.
+    - The validated DNS answers are pinned into the socket dialer, closing the
+      validation-to-connect DNS rebinding window.
     - follow_redirects=False (no redirects followed across egress).
     """
+    import httpcore
     import httpx
 
+    class _PinnedBackend(httpcore.AsyncNetworkBackend):
+        def __init__(self, addresses: list[str]) -> None:
+            self._addresses = tuple(addresses)
+            self._backend = httpcore.AnyIOBackend()
+
+        async def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
+            last_error: Exception | None = None
+            for address in self._addresses:
+                try:
+                    return await self._backend.connect_tcp(
+                        address, port, timeout=timeout,
+                        local_address=local_address, socket_options=socket_options,
+                    )
+                except Exception as exc:  # noqa: BLE001 - try the next validated address
+                    last_error = exc
+            if last_error is not None:
+                raise last_error
+            raise OSError("DNS returned no addresses for webhook host")
+
     async def send(url: str, body: str, headers: dict) -> None:
-        await _reject_private_target(url, allowlist=allowlist)
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+        addresses = await _reject_private_target(url, allowlist=allowlist)
+        transport = httpx.AsyncHTTPTransport(trust_env=False)
+        # httpx keeps the origin hostname for TLS SNI/certificate validation;
+        # replacing only httpcore's dialer connects that same origin to the
+        # already-validated address rather than resolving it again.
+        transport._pool._network_backend = _PinnedBackend(addresses)  # type: ignore[attr-defined]
+        async with httpx.AsyncClient(
+            timeout=timeout, follow_redirects=False, transport=transport,
+        ) as client:
             response = await client.post(url, content=body, headers=headers)
             response.raise_for_status()
 

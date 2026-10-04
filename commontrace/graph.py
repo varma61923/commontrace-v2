@@ -420,13 +420,15 @@ def _is_active_edge(edge: GraphEdge, moment: datetime | None, known_at: datetime
 _GRAPH_ADJ_CACHE: dict[tuple, tuple] = {}
 _GRAPH_ADJ_CACHE_MAX_ENTRIES = 64
 _GRAPH_INDEX_CACHE: dict[tuple, "_GraphFullIndex"] = {}
+_GRAPH_CACHE_LOCK = threading.RLock()
 
 
 def _clear_graph_cache() -> None:
-    _GRAPH_ADJ_CACHE.clear()
-    _GRAPH_INDEX_CACHE.clear()
-    _PHRASE_INDEX.clear()
-    _SCANNED_ONCE.clear()
+    with _GRAPH_CACHE_LOCK:
+        _GRAPH_ADJ_CACHE.clear()
+        _GRAPH_INDEX_CACHE.clear()
+        _PHRASE_INDEX.clear()
+        _SCANNED_ONCE.clear()
 
 
 def _graph_files_stamp(root: str) -> tuple[int, int, int, int]:
@@ -471,10 +473,15 @@ def _build_full_index(nodes: dict[str, GraphNode], all_edges: list[GraphEdge]) -
             begins.append(lesson_cache.parse_moment(edge.valid_at or edge.created_at))
         except ValueError:
             begins.append(None)
-        try:
-            ends.append(lesson_cache.parse_moment(edge.invalid_at) if edge.invalid_at else None)
-        except ValueError:
-            ends.append(None)
+        end_candidates = []
+        for value in (edge.invalid_at, edge.expired_at):
+            if not value:
+                continue
+            try:
+                end_candidates.append(lesson_cache.parse_moment(value))
+            except ValueError:
+                continue
+        ends.append(min(end_candidates) if end_candidates else None)
         by_entity.setdefault(edge.source, []).append(idx)
         if edge.target != edge.source:
             by_entity.setdefault(edge.target, []).append(idx)
@@ -499,11 +506,12 @@ def _cached_graph_full(
 ) -> tuple[dict[str, GraphNode], list[GraphEdge], dict[str, list[GraphEdge]], list[GraphEdge]]:
     """Cached (nodes, active, adj, all_edges); single load_nodes/load_edges per stamp."""
     key = (os.path.abspath(str(root)), _graph_files_stamp(root), as_of or "", known_at or "")
-    hit = _GRAPH_ADJ_CACHE.get(key)
-    if hit is not None:
-        if len(hit) == 4:
-            return hit[0], hit[1], hit[2], hit[3]
-        return hit[0], hit[1], hit[2], []
+    with _GRAPH_CACHE_LOCK:
+        hit = _GRAPH_ADJ_CACHE.get(key)
+        if hit is not None:
+            if len(hit) == 4:
+                return hit[0], hit[1], hit[2], hit[3]
+            return hit[0], hit[1], hit[2], []
     nodes = load_nodes(root)
     all_edges = load_edges(root)
     moment = lesson_cache.parse_moment(as_of) if as_of else None
@@ -515,9 +523,10 @@ def _cached_graph_full(
         if e.target != e.source:
             adj.setdefault(e.target, []).append(e)
     value = (nodes, active, adj, all_edges)
-    if len(_GRAPH_ADJ_CACHE) >= _GRAPH_ADJ_CACHE_MAX_ENTRIES:
-        _GRAPH_ADJ_CACHE.pop(next(iter(_GRAPH_ADJ_CACHE)))
-    _GRAPH_ADJ_CACHE[key] = value
+    with _GRAPH_CACHE_LOCK:
+        if len(_GRAPH_ADJ_CACHE) >= _GRAPH_ADJ_CACHE_MAX_ENTRIES:
+            _GRAPH_ADJ_CACHE.pop(next(iter(_GRAPH_ADJ_CACHE)))
+        _GRAPH_ADJ_CACHE[key] = value
     return nodes, active, adj, all_edges
 
 
@@ -530,19 +539,22 @@ def _full_index(root: str) -> _GraphFullIndex:
     """Stamp-keyed full index, built from _cached_graph's single load (no extra I/O)."""
     base = os.path.abspath(str(root))
     stamp = _graph_files_stamp(root)
-    hit = _GRAPH_INDEX_CACHE.get((base, stamp))
-    if hit is not None:
-        return hit
+    with _GRAPH_CACHE_LOCK:
+        hit = _GRAPH_INDEX_CACHE.get((base, stamp))
+        if hit is not None:
+            return hit
     nodes, _active, _adj, all_edges = _cached_graph_full(root)
     fresh = _graph_files_stamp(root)
     key = (base, fresh)
-    hit = _GRAPH_INDEX_CACHE.get(key)
-    if hit is not None:
-        return hit
+    with _GRAPH_CACHE_LOCK:
+        hit = _GRAPH_INDEX_CACHE.get(key)
+        if hit is not None:
+            return hit
     index = _build_full_index(nodes, all_edges)
-    if len(_GRAPH_INDEX_CACHE) >= _GRAPH_ADJ_CACHE_MAX_ENTRIES:
-        _GRAPH_INDEX_CACHE.pop(next(iter(_GRAPH_INDEX_CACHE)))
-    _GRAPH_INDEX_CACHE[key] = index
+    with _GRAPH_CACHE_LOCK:
+        if len(_GRAPH_INDEX_CACHE) >= _GRAPH_ADJ_CACHE_MAX_ENTRIES:
+            _GRAPH_INDEX_CACHE.pop(next(iter(_GRAPH_INDEX_CACHE)))
+        _GRAPH_INDEX_CACHE[key] = index
     return index
 
 
@@ -646,9 +658,10 @@ def _node_terms(nid: str, node: GraphNode) -> list[tuple[str, ...]]:
 def _phrase_index(root: str) -> dict[str, list[tuple[tuple[str, ...], str]]]:
     """First word -> [(phrase words, node id)] for every live node, cached per graph version."""
     key = (os.path.abspath(str(root)), _graph_files_stamp(root))
-    hit = _PHRASE_INDEX.get(key)
-    if hit is not None:
-        return hit
+    with _GRAPH_CACHE_LOCK:
+        hit = _PHRASE_INDEX.get(key)
+        if hit is not None:
+            return hit
     nodes, _active, _adj = _cached_graph(root)
     index: dict[str, list[tuple[tuple[str, ...], str]]] = {}
     for nid, node in nodes.items():
@@ -656,9 +669,10 @@ def _phrase_index(root: str) -> dict[str, list[tuple[tuple[str, ...], str]]]:
             continue
         for words in set(_node_terms(nid, node)):
             index.setdefault(words[0], []).append((words, nid))
-    if len(_PHRASE_INDEX) >= _GRAPH_ADJ_CACHE_MAX_ENTRIES:
-        _PHRASE_INDEX.pop(next(iter(_PHRASE_INDEX)))
-    _PHRASE_INDEX[key] = index
+    with _GRAPH_CACHE_LOCK:
+        if len(_PHRASE_INDEX) >= _GRAPH_ADJ_CACHE_MAX_ENTRIES:
+            _PHRASE_INDEX.pop(next(iter(_PHRASE_INDEX)))
+        _PHRASE_INDEX[key] = index
     return index
 
 
@@ -677,8 +691,11 @@ def extract_entities_from_text(root: str, text: str) -> list[str]:
     if not words:
         return []
     key = (os.path.abspath(str(root)), _graph_files_stamp(root))
-    if key not in _PHRASE_INDEX and key not in _SCANNED_ONCE:
-        _SCANNED_ONCE.add(key)
+    with _GRAPH_CACHE_LOCK:
+        first_scan = key not in _PHRASE_INDEX and key not in _SCANNED_ONCE
+        if first_scan:
+            _SCANNED_ONCE.add(key)
+    if first_scan:
         nodes, _active, _adj = _cached_graph(root)
         norm = " " + " ".join(words) + " "
         return sorted(
@@ -758,8 +775,15 @@ def edges_between(
         if hi is not None and begin > hi:
             continue
         finish = ends[i]
-        if finish is None and edge.invalid_at:
-            finish = lesson_cache.parse_moment(edge.invalid_at)
+        if finish is None:
+            candidates = []
+            for value in (edge.invalid_at, edge.expired_at):
+                if value:
+                    try:
+                        candidates.append(lesson_cache.parse_moment(value))
+                    except ValueError:
+                        continue
+            finish = min(candidates) if candidates else None
         if lo is not None and finish is not None and finish <= lo:
             continue
         out.append(edge)
@@ -773,7 +797,6 @@ def timeline(root: str, entity: str) -> list[dict[str, Any]]:
     index = _full_index(root)
     edges = index.edges
     begins = index.begins
-    ends = index.ends
     decorated: list[tuple[Any, bool, dict[str, Any]]] = []
     for i in index.by_entity.get(ent, []):
         edge = edges[i]
@@ -784,12 +807,15 @@ def timeline(root: str, entity: str) -> list[dict[str, Any]]:
         decorated.append((begin, True, {**base, "at": edge.valid_at or edge.created_at, "event": "began",
                                         "recorded_at": edge.created_at}))
         if edge.invalid_at:
-            finish = ends[i]
-            if finish is None:
-                finish = lesson_cache.parse_moment(edge.invalid_at)
+            finish = lesson_cache.parse_moment(edge.invalid_at)
             decorated.append((finish, False, {**base, "at": edge.invalid_at, "event": "ended",
                                               "reason": (edge.properties or {}).get("closed_reason", ""),
                                               "recorded_at": (edge.properties or {}).get("closed_recorded_at", "")}))
+        if edge.expired_at and edge.expired_at != edge.invalid_at:
+            finish = lesson_cache.parse_moment(edge.expired_at)
+            decorated.append((finish, False, {**base, "at": edge.expired_at, "event": "expired",
+                                              "reason": (edge.properties or {}).get("expired_reason", ""),
+                                              "recorded_at": edge.created_at}))
     decorated.sort(key=lambda t: (t[0], t[1]))
     return [event for _moment, _is_began, event in decorated]
 

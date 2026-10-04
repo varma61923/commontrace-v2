@@ -37,6 +37,16 @@ def _lessons(root: str) -> list[tuple[str, dict, str]]:
     return out
 
 
+def _scope_allowed(fm: dict, scope: str) -> bool:
+    if not scope:
+        return True
+    raw = fm.get("scopes")
+    if not raw:
+        return True
+    scopes = {str(item).strip() for item in raw} if isinstance(raw, (list, tuple, set)) else {str(raw).strip()}
+    return scope in scopes
+
+
 def _active_texts(rows, exclude: str) -> list[tuple[str, str]]:
     return [(slug, redundancy.comparable_text(fm, body)) for slug, fm, body in rows
             if str(fm.get("status")) == "active" and slug != exclude]
@@ -81,22 +91,26 @@ def _parse_pagination(limit, offset) -> tuple[int | None, int]:
     return parsed_limit, offset
 
 
-def count_lessons(root: str, status: str | None = None) -> int:
+def count_lessons(root: str, status: str | None = None, scope: str = "") -> int:
     """How many lessons match `status`, without running any gates (cheap, no redundancy checks)."""
     if status is not None and status not in STATUSES:
         raise WorkbenchError(400, "bad_request", f"status must be one of {', '.join(STATUSES)}")
-    return sum(1 for _slug, fm, _body in _lessons(root) if not status or str(fm.get("status")) == status)
+    return sum(
+        1 for _slug, fm, _body in _lessons(root)
+        if (not status or str(fm.get("status")) == status) and _scope_allowed(fm, scope)
+    )
 
 
 def list_lessons(root: str, status: str | None = None, limit: int | None = None,
-                 offset: int = 0) -> list[dict]:
+                 offset: int = 0, scope: str = "") -> list[dict]:
     if status is not None and status not in STATUSES:
         raise WorkbenchError(400, "bad_request", f"status must be one of {', '.join(STATUSES)}")
     parsed_limit, parsed_offset = _parse_pagination(limit, offset)
     rows = _lessons(root)
+    scoped_rows = [row for row in rows if _scope_allowed(row[1], scope)]
     # File reads happen once here; the active set is computed once and reused per item.
-    active_all = _active_texts_once(rows)
-    filtered = [(slug, fm, body) for slug, fm, body in rows
+    active_all = _active_texts_once(scoped_rows)
+    filtered = [(slug, fm, body) for slug, fm, body in scoped_rows
                 if not status or str(fm.get("status")) == status]
     page = filtered if parsed_limit is None and not parsed_offset else filtered[
         parsed_offset:None if parsed_limit is None else parsed_offset + parsed_limit]
@@ -109,13 +123,13 @@ def list_lessons(root: str, status: str | None = None, limit: int | None = None,
     return out
 
 
-def _find(root: str, slug: str):
+def _find(root: str, slug: str, scope: str = ""):
     if not isinstance(slug, str) or not lesson_io.SLUG_RE.match(slug):
         raise WorkbenchError(400, "bad_request", "slug must be letters, digits, '_' or '-'")
     want = lesson_io.canonical_slug(slug)
     rows = _lessons(root)
     for row in rows:
-        if lesson_io.canonical_slug(row[0]) == want:
+        if lesson_io.canonical_slug(row[0]) == want and _scope_allowed(row[1], scope):
             return row, rows
     raise WorkbenchError(404, "not_found", f"no lesson {slug!r}")
 
@@ -125,9 +139,10 @@ def _section(body: str, name: str) -> str:
     return m.group(1).strip() if m else ""
 
 
-def detail(root: str, slug: str) -> dict:
-    (name, fm, body), rows = _find(root, slug)
-    out = _summary(name, fm, body, _active_texts(rows, name) if fm.get("status") == "review" else [])
+def detail(root: str, slug: str, scope: str = "") -> dict:
+    (name, fm, body), rows = _find(root, slug, scope)
+    scoped_rows = [row for row in rows if _scope_allowed(row[1], scope)]
+    out = _summary(name, fm, body, _active_texts(scoped_rows, name) if fm.get("status") == "review" else [])
     out.update({
         "applies_when": str(fm.get("applies_when", "")), "do_not_apply_when": str(fm.get("do_not_apply_when", "")),
         "rule": _section(body, "Rule")[:MAX_FIELD_CHARS], "body": body[:MAX_BODY_CHARS],
@@ -155,8 +170,8 @@ def _clean(value, field: str) -> str:
     return value.strip()
 
 
-def edit(root: str, slug: str, fields: dict, actor: str) -> dict:
-    (name, fm, body), _rows = _find(root, slug)
+def edit(root: str, slug: str, fields: dict, actor: str, scope: str = "") -> dict:
+    (name, fm, body), _rows = _find(root, slug, scope)
     if fm.get("status") != "review":
         raise WorkbenchError(409, "not_in_review", "only a lesson in review can be edited here")
     allowed = {"rule", "applies_when", "do_not_apply_when", "description"}
@@ -176,7 +191,7 @@ def edit(root: str, slug: str, fields: dict, actor: str) -> dict:
     path = lesson_io.lesson_path(root, name)
     with frontmatter.locked(path):
         lesson_io.write_lesson(path, fm, body, root=root, actor=actor, reason="edited in the console")
-    return detail(root, name)
+    return detail(root, name, scope)
 
 
 def _replace_section(body: str, name: str, text: str) -> str:
@@ -193,20 +208,20 @@ def _run(fn, ns: argparse.Namespace) -> tuple[int, str]:
     return code, err.getvalue().strip()
 
 
-def approve(root: str, slug: str, rationale: str | None, actor: str) -> dict:
-    (name, fm, _body), _rows = _find(root, slug)
+def approve(root: str, slug: str, rationale: str | None, actor: str, scope: str = "") -> dict:
+    (name, fm, _body), _rows = _find(root, slug, scope)
     if fm.get("status") != "review":
         raise WorkbenchError(409, "not_in_review", "only a lesson in review can be approved")
     ns = argparse.Namespace(slug=name, dest=root, force=False, rationale=(rationale or "").strip() or None,
-                            approver=actor)
+                            approver=actor, scope=scope)
     code, message = _run(lesson_cmd.run_approve, ns)
     if code != 0:
         raise WorkbenchError(409, "refused", message or "the approval gates refused this lesson")
     return {"slug": name, "status": "active"}
 
 
-def reject(root: str, slug: str, reason: str) -> dict:
-    (name, fm, _body), _rows = _find(root, slug)
+def reject(root: str, slug: str, reason: str, scope: str = "") -> dict:
+    (name, fm, _body), _rows = _find(root, slug, scope)
     if fm.get("status") != "review":
         raise WorkbenchError(409, "not_in_review", "only a lesson in review can be rejected")
     ns = argparse.Namespace(slug=name, dest=root, reason=_clean(reason, "reason"))

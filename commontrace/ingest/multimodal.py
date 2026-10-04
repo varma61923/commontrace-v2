@@ -29,21 +29,20 @@ def _make_chunk(
     index: int,
 ) -> Chunk:
     redacted = _redact_secrets(content)
-    chunk = Chunk(
+    return Chunk(
         content=redacted,
         source_path=path,
         chunk_id=f"{_fingerprint(path + modality + breadcrumb)}_{index}",
         breadcrumb=breadcrumb,
         chunk_type=chunk_type,
+        modality=modality,
+        source=path,
+        provenance={
+            "source_path": path,
+            "modality": modality,
+            "extractor": _EXTRACTOR,
+        },
     )
-    chunk.modality = modality  # type: ignore[attr-defined]
-    chunk.source = path  # type: ignore[attr-defined]
-    chunk.provenance = {  # type: ignore[attr-defined]
-        "source_path": path,
-        "modality": modality,
-        "extractor": _EXTRACTOR,
-    }
-    return chunk
 
 
 def _split_bounded(
@@ -261,7 +260,7 @@ _SCRIPT_STYLE_RE = re.compile(
 )
 _COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 _TAG_RE = re.compile(r"<[^>]+>")
-_HEADING_RE = re.compile(r"<\s*h[1-3][^>]*>(.*?)</\s*h[1-3}\s]*>", re.IGNORECASE | re.DOTALL)
+_HEADING_RE = re.compile(r"<\s*h[1-3][^>]*>(.*?)</\s*h[1-3]\s*>", re.IGNORECASE | re.DOTALL)
 _TITLE_RE = re.compile(r"<\s*title[^>]*>(.*?)</\s*title\s*>", re.IGNORECASE | re.DOTALL)
 
 

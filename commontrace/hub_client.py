@@ -935,6 +935,7 @@ async def push_captured_traces(
                     "profile": profile,
                     "outcome": outcome,
                     "idempotency_key": f"trace:{slug}",
+                    **_routing_fields(instance),
                 },
                 session=session,
             )
@@ -1188,6 +1189,10 @@ async def pull_search_results(
             list(trace.get("tags") or []) if isinstance(trace.get("tags"), (list, tuple)) else [],
             str(trace.get("profile") or ""),
             trace.get("outcome") if isinstance(trace.get("outcome"), dict) else None,
+            scopes=list(trace.get("scopes") or []) if isinstance(trace.get("scopes"), (list, tuple)) else None,
+            valid_from=str(trace.get("valid_from") or ""),
+            valid_until=str(trace.get("valid_until") or ""),
+            expires_at=str(trace.get("expires_at") or ""),
         )
         fm["hub_trace_id"] = raw_trace_id
         body = templates.trace_body(trace.get("context_text") or "", trace.get("solution_text") or "")

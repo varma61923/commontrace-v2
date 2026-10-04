@@ -54,6 +54,18 @@ def test_per_agent_budget_and_weights(store, tmp_memory):
     assert small.items[0].channel == "lessons"
 
 
+def test_recall_exposes_conservative_abstention_assessment(store):
+    result = recall.recall(store, "postgres failover", budget=600)
+    assert 0.0 <= result.assessment.confidence <= 1.0
+    assert result.assessment.channels
+    assert result.assessment.matched_query_terms > 0
+    assert result.to_dict()["assessment"]["abstain"] is False
+
+    empty = recall.recall(store, "unrelated zebra moon", channels=("lessons",))
+    assert empty.assessment.abstain is True
+    assert empty.assessment.reason
+
+
 def test_unknown_channel_and_bad_moment(store):
     with pytest.raises(ValueError):
         recall.recall(store, "x", channels=("nope",))

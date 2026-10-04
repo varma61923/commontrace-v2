@@ -159,6 +159,14 @@ def test_scaling_timeline_neighbors_fast(tmp_path):
     assert elapsed < 1.0, f"indexed reads took {elapsed:.3f}s"
 
 
+def test_expired_edges_are_excluded_from_temporal_interval_reads(tmp_path):
+    root = str(tmp_path / "g-expiry")
+    graph.add_edge(root, "svc:a", "tool:a", "uses", valid_at="2024-01-01",
+                   expired_at="2024-06-01")
+    assert graph.edges_between(root, "2024-02-01", "2024-05-01")
+    assert graph.edges_between(root, "2024-07-01", None) == []
+
+
 def test_invalidation_write_read(tmp_path):
     root = str(tmp_path / "g6")
     _seed(root, n_edges=100)

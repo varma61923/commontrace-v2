@@ -48,6 +48,12 @@ def test_ensure_limit():
     assert ensure_limit("SELECT * FROM items LIMIT 10", max_rows=100) == "SELECT * FROM items LIMIT 10"
 
 
+def test_ensure_limit_ignores_string_literals():
+    assert ensure_limit("SELECT 'limit 999' AS note", max_rows=2) == (
+        "SELECT 'limit 999' AS note LIMIT 2"
+    )
+
+
 def test_execute_guarded_sql(tmp_path):
     db_file = str(tmp_path / "test.db")
     conn = sqlite3.connect(db_file)
@@ -70,8 +76,10 @@ def test_mcp_sql_guarded_query(tmp_path):
 
     from commontrace import mcp_server
 
-    root = str(tmp_path / "store")
-    db_file = str(tmp_path / "data.db")
+    root_path = tmp_path / "store"
+    root_path.mkdir()
+    root = str(root_path)
+    db_file = str(root_path / "data.db")
     conn = sqlite3.connect(db_file)
     conn.execute("CREATE TABLE kv (k TEXT, v TEXT)")
     conn.execute("INSERT INTO kv VALUES ('lang', 'python')")
@@ -92,4 +100,10 @@ def test_mcp_sql_guarded_query(tmp_path):
     res_text = res.content[0].text if hasattr(res, "content") else str(res)
     assert "columns" in res_text
     assert "python" in res_text
+
+    denied = asyncio.run(server.call_tool(
+        "sql_guarded_query", {"db_path": str(tmp_path / "outside.db"), "sql": "SELECT 1"}
+    ))
+    denied_text = denied.content[0].text if hasattr(denied, "content") else str(denied)
+    assert "scope_error" in denied_text
 

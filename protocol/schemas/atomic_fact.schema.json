@@ -73,6 +73,22 @@
       "description": "ISO 8601 timestamp when the fact expired or was superseded, or null if currently valid.",
       "default": null
     },
+    "expires_at": {
+      "type": ["string", "null"],
+      "description": "Optional TTL after which normal retrieval hides the fact.",
+      "default": null
+    },
+    "forgotten": {
+      "type": "boolean",
+      "description": "Reversible soft-forget marker; forgotten facts are hidden by default.",
+      "default": false
+    },
+    "stability": {
+      "type": "string",
+      "enum": ["", "stable", "dynamic"],
+      "description": "Optional static/dynamic retrieval tier.",
+      "default": ""
+    },
     "source_traces": {
       "type": "array",
       "items": { "type": "string" },

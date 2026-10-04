@@ -81,9 +81,16 @@ def parse_policy(raw: dict | None) -> DefensePolicy:
     """Parse a raw config dict into a frozen DefensePolicy."""
     if raw is None:
         return DefensePolicy()
+    if not isinstance(raw, dict):
+        raise ValueError("defense policy must be an object")
 
+    raw_rules = raw.get("rules", []) or []
+    if not isinstance(raw_rules, (list, tuple)):
+        raise ValueError("defense policy rules must be a list")
     rules: list[PolicyRule] = []
-    for item in raw.get("rules", []) or []:
+    for item in raw_rules:
+        if not isinstance(item, dict):
+            raise ValueError("each defense policy rule must be an object")
         on_raw = item.get("on")
         if not isinstance(on_raw, str) or not on_raw:
             raise ValueError(f"invalid on {on_raw!r}; must be a non-empty string")

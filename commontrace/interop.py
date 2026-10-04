@@ -321,6 +321,7 @@ def _apply_fact(root: str, data: dict[str, Any]) -> bool:
             valid_from=data.get("valid_from"),
             valid_until=data.get("valid_until"),
             expires_at=data.get("expires_at") or data.get("expiration_date"),
+            created_at=data.get("created_at") or data.get("createdAt"),
         )
     except ValueError:
         return False

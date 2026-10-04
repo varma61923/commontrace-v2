@@ -74,6 +74,9 @@ def test_procedural_memory_save_load_list(tmp_path):
     bot_a_items = list_procedural_memories(root, agent_id="bot-a")
     assert len(bot_a_items) == 1
     assert bot_a_items[0]["id"] == "p1"
+    assert load_procedural_memory(root, "../outside") is None
+    with pytest.raises(ValueError, match="memory id"):
+        save_procedural_memory(root, ProceduralMemory("../outside", "x", "x"))
 
 
 def test_format_procedural_memory_budget_constraint():

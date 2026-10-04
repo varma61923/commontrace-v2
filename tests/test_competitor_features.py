@@ -533,6 +533,41 @@ class TestExpiryEnforcement:
 
 # --- 14. contradiction resolution ------------------------------------------------------
 
+class TestFactCompatibilityAndHistory:
+    def test_legacy_rows_are_backfilled_instead_of_dropped(self, store):
+        from commontrace import hierarchical
+
+        path = os.path.join(store, "memory", "facts", "facts.jsonl")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({
+                "id": "legacy-1", "statement": "Legacy deployment rule",
+                "category": "general", "scopes": [], "confidence": 0.8,
+                "confirmations": 1,
+            }) + "\n")
+        facts = hierarchical.load_facts(store)
+        assert facts["legacy-1"].valid_from
+        assert hierarchical.search_facts(store, "legacy deployment")
+
+    def test_historical_lookup_keeps_superseded_fact_in_its_old_window(self, store):
+        from commontrace import hierarchical
+
+        old, _ = hierarchical.add_fact(store, "Deploy on Fridays", valid_from="2024-01-01")
+        new, _ = hierarchical.add_fact(store, "Never deploy on Fridays", valid_from="2024-06-01")
+        hierarchical.resolve_contradiction(store, old.id, new.id)
+        historical = hierarchical.list_facts(store, as_of="2024-03-01")
+        assert [fact.statement for fact in historical] == ["Deploy on Fridays"]
+
+    def test_scoped_write_never_reuses_global_fact(self, store):
+        from commontrace import hierarchical
+
+        global_fact, _ = hierarchical.add_fact(store, "Tenant-isolated rule")
+        scoped_fact, action = hierarchical.add_fact(store, "Tenant-isolated rule", scopes=["tenant-b"])
+        assert action == "ADD"
+        assert scoped_fact.id != global_fact.id
+        assert global_fact.scopes == [] and scoped_fact.scopes == ["tenant-b"]
+
+
 class TestResolveContradiction:
     def test_resolve_invalidates_with_guard(self, store):
         from commontrace import hierarchical
@@ -591,6 +626,16 @@ class TestInteropFidelity:
         assert interop.apply_store(store, recs)["fact"] == 1
         assert hierarchical.search_facts(store, "Old news") == []
         assert len(hierarchical.search_facts(store, "Old news", show_expired=True)) == 1
+
+    def test_mem0_recorded_timestamp_survives_fact_import(self, store):
+        from commontrace import hierarchical, interop
+
+        recs = interop.import_mem0_dump([{
+            "memory": "A dated fact", "created_at": "2022-02-03T04:05:06Z",
+        }])
+        assert interop.apply_store(store, recs)["fact"] == 1
+        fact = next(iter(hierarchical.load_facts(store).values()))
+        assert fact.created_at.startswith("2022-02-03T04:05:06")
 
     def test_zep_temporal_survives(self):
         from commontrace import interop
