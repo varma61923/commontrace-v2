@@ -501,6 +501,78 @@ class HubSession:
             self._hub_url, attempts, last_exc, status, retry_after
         ) from last_exc
 
+    async def search_traces(
+        self,
+        query: str,
+        *,
+        tags: list[str] | None = None,
+        limit: int = 10,
+        include_content: bool = True,
+    ) -> dict:
+        """Search published memory traces matching semantic or keyword query."""
+        args: dict[str, Any] = {"query": query, "limit": limit, "include_content": include_content}
+        if tags is not None:
+            args["tags"] = tags
+        return await self.call("search_traces", args)
+
+    async def contribute_trace(
+        self,
+        text: str,
+        *,
+        tags: list[str] | None = None,
+        agent_type: str = "agent",
+        rationale: str = "",
+    ) -> dict:
+        """Submit a new trace or memory to the Hub Knowledge Base."""
+        args: dict[str, Any] = {"text": text, "agent_type": agent_type, "rationale": rationale}
+        if tags is not None:
+            args["tags"] = tags
+        return await self.call("contribute_trace", args)
+
+    async def get_trace(self, trace_id: str) -> dict:
+        """Retrieve full details of a specific memory trace by ID."""
+        return await self.call("get_trace", {"id": trace_id})
+
+    async def delete_trace(self, trace_id: str) -> dict:
+        """Soft-delete or retract a memory trace from the Hub."""
+        return await self.call("delete_trace", {"id": trace_id})
+
+    async def vote_trace(self, trace_id: str, vote: str) -> dict:
+        """Cast an upvote or downvote on a published memory trace."""
+        return await self.call("vote_trace", {"id": trace_id, "vote": vote})
+
+    async def list_tags(self) -> dict:
+        """Retrieve all taxonomy tags and their associated trace counts."""
+        return await self.call("list_tags", {})
+
+    async def add_comment(self, trace_id: str, body: str) -> dict:
+        """Post a review comment or collaborative note on a trace."""
+        return await self.call("add_comment", {"trace_id": trace_id, "body": body})
+
+    async def list_comments(self, trace_id: str) -> dict:
+        """List all collaborative review comments on a trace."""
+        return await self.call("list_comments", {"trace_id": trace_id})
+
+    async def assign_trace(self, trace_id: str, user_id: str) -> dict:
+        """Assign trace review ownership to a specific collaborator."""
+        return await self.call("assign_trace", {"trace_id": trace_id, "user_id": user_id})
+
+    async def unassign_trace(self, trace_id: str) -> dict:
+        """Unassign trace review ownership."""
+        return await self.call("unassign_trace", {"trace_id": trace_id})
+
+    async def tag_trace_subjects(self, trace_id: str, subject_ids: list[str]) -> dict:
+        """Tag data subject IDs on a trace for privacy/GDPR compliance."""
+        return await self.call("tag_trace_subjects", {"id": trace_id, "subject_ids": subject_ids})
+
+    async def purge_subject_traces(self, subject_id: str) -> dict:
+        """Purge all traces associated with a specific data subject ID."""
+        return await self.call("purge_subject_traces", {"subject_id": subject_id})
+
+    async def commons_overlap(self, failures: list[str]) -> dict:
+        """Check known commons failures overlap."""
+        return await self.call("commons_overlap", {"failures": failures})
+
 
 def _backoff_delay(attempt: int, exc: BaseException, observed_retry_after: float | None = None) -> float:
     retry_after = _retry_after_seconds(exc)

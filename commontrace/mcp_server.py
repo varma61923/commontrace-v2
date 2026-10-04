@@ -85,6 +85,7 @@ import os
 import re
 import threading
 import time
+import uuid
 from typing import Any
 
 from commontrace import (
@@ -2132,6 +2133,95 @@ def build_server(root: str, *, allow_approval: bool = True):
 
         summary = session_ledger.overall_ledger_summary(root, since=since, until=until)
         return _ok(**summary)
+
+    @mcp.tool()
+    async def procedural_memory_create(
+        task_objective: str,
+        progress_status: str,
+        steps: list[dict],
+        agent_id: str = "",
+        metadata: dict | None = None,
+    ) -> dict:
+        """Create and persist a structured procedural memory trajectory recording sequential
+        agent actions and verbatim outputs.
+        """
+        from commontrace import procedural
+
+        mem_id = uuid.uuid4().hex[:16]
+        parsed_steps = [procedural.ProceduralStep.from_dict(s) for s in steps]
+        mem = procedural.ProceduralMemory(
+            id=mem_id,
+            task_objective=task_objective,
+            progress_status=progress_status,
+            steps=parsed_steps,
+            agent_id=agent_id,
+            metadata=metadata or {},
+        )
+        saved_path = procedural.save_procedural_memory(root, mem)
+        return _ok(id=mem.id, path=saved_path, steps_count=len(mem.steps), token_estimate=mem.token_count)
+
+    @mcp.tool()
+    async def procedural_memory_replay(
+        memory_id: str,
+        token_budget: int = 1500,
+    ) -> dict:
+        """Replay a procedural memory trajectory rendered into a structured markdown prompt context
+        within a token budget.
+        """
+        from commontrace import procedural
+
+        mem = procedural.load_procedural_memory(root, memory_id)
+        if mem is None:
+            return _err(f"Procedural memory {memory_id} not found", code="not_found")
+        formatted = procedural.format_procedural_memory(mem, token_budget=token_budget)
+        return _ok(id=mem.id, prompt_context=formatted, token_estimate=mem.token_count, budget=token_budget)
+
+    @mcp.tool()
+    async def sql_guarded_query(
+        db_path: str,
+        sql: str,
+        max_rows: int = 100,
+        timeout_seconds: float = 5.0,
+    ) -> dict:
+        """Validate, cap, and safely execute a read-only SELECT query against a SQLite database with guardrails."""
+        from commontrace import sql_guard
+
+        try:
+            result = sql_guard.execute_guarded_sql(
+                db_path, sql, max_rows=max_rows, timeout_seconds=timeout_seconds,
+            )
+            return _ok(**result)
+        except Exception as exc:
+            return _err(f"Guarded SQL execution failed: {exc}", code="sql_error")
+
+    @mcp.tool()
+    async def defense_screen_content(
+        content: str,
+        action: str = "redact",
+    ) -> dict:
+        """Screen content against known sensitive data, credentials, PII, and injection patterns
+        with fingerprinted previews.
+        """
+        from commontrace import defense
+
+        act = (
+            defense.DefenseAction(action.lower())
+            if action.lower() in ("allow", "redact", "block")
+            else defense.DefenseAction.REDACT
+        )
+        policy = defense.DefensePolicy(
+            enabled=True,
+            rules=(defense.PolicyRule(on="sensitive_data", action=act),),
+        )
+        decision = defense.screen_content(content, policy=policy)
+        return _ok(
+            action=decision.action.value,
+            detector=decision.detector,
+            message=decision.message,
+            redacted_content=decision.redacted_content,
+            matched_types=decision.matched_types,
+            hits=decision.hits,
+        )
 
 
 

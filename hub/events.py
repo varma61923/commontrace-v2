@@ -33,24 +33,58 @@ class EventError(Exception):
     """An event could not be emitted as described."""
 
 
+_EXTRA_BLOCKED_NETWORKS = (
+    ipaddress.ip_network("100.64.0.0/10"),  # RFC 6598 carrier-grade NAT / shared space
+    ipaddress.ip_network("169.254.0.0/16"),  # Link-local / AWS / GCP / Azure metadata service
+)
+
+
+@dataclass(frozen=True)
+class Allowlist:
+    """Operator-configured exceptions to the private-range block."""
+
+    hostnames: frozenset[str] = frozenset()
+    networks: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = ()
+
+    def allows_host(self, host: str) -> bool:
+        return host.lower() in self.hostnames
+
+    def allows_ip(self, ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+        return any(ip in net for net in self.networks)
+
+
 async def _default_resolve(hostname: str) -> list:
     return await asyncio.to_thread(socket.getaddrinfo, hostname, None)
 
 
-async def _reject_private_target(url: str, *, resolve=None) -> None:
-    hostname = urlsplit(url).hostname
+async def _reject_private_target(
+    url: str, *, resolve=None, allowlist: Allowlist | None = None,
+) -> list[str]:
+    parsed = urlsplit(url)
+    if parsed.scheme not in ("http", "https"):
+        raise EventError(f"webhook scheme must be http or https, got {parsed.scheme!r}")
+    hostname = parsed.hostname
     if not hostname:
         raise EventError(f"a webhook endpoint must have a resolvable host, got {url!r}")
+    if allowlist and allowlist.allows_host(hostname):
+        return [hostname]
     resolve = resolve or _default_resolve
     try:
         addrinfo = await resolve(hostname)
     except socket.gaierror as exc:
         raise EventError(f"could not resolve webhook host {hostname!r}: {exc}") from None
+    validated_ips: list[str] = []
     for family, _type, _proto, _canonname, sockaddr in addrinfo:
         raw_ip = sockaddr[0]
         ip = ipaddress.ip_address(raw_ip)
+        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+            ip = ip.ipv4_mapped
+        if allowlist and allowlist.allows_ip(ip):
+            validated_ips.append(raw_ip)
+            continue
         if (
-            ip.is_private or ip.is_loopback or ip.is_link_local
+            any(ip in net for net in _EXTRA_BLOCKED_NETWORKS)
+            or ip.is_private or ip.is_loopback or ip.is_link_local
             or ip.is_reserved or ip.is_multicast or ip.is_unspecified
             or not ip.is_global
         ):
@@ -60,6 +94,8 @@ async def _reject_private_target(url: str, *, resolve=None) -> None:
                 "infrastructure, never a way to reach this deployment's own "
                 "internal network."
             )
+        validated_ips.append(raw_ip)
+    return validated_ips
 
 
 @dataclass(frozen=True)
@@ -400,13 +436,18 @@ async def failed_deliveries(
     return list(rows.scalars())
 
 
-def http_transport(timeout: float = 10.0):
-    """The default transport: an HTTPS POST that raises on a bad status."""
+def http_transport(timeout: float = 10.0, allowlist: Allowlist | None = None):
+    """The default transport: an HTTPS POST that raises on a bad status.
+
+    Hardened against SSRF (CWE-918):
+    - Deny-by-default for private/loopback/link-local/metadata ranges.
+    - follow_redirects=False (no redirects followed across egress).
+    """
     import httpx
 
     async def send(url: str, body: str, headers: dict) -> None:
-        await _reject_private_target(url)
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        await _reject_private_target(url, allowlist=allowlist)
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
             response = await client.post(url, content=body, headers=headers)
             response.raise_for_status()
 

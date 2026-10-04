@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import secrets
+import socket
 import ssl
 import threading
 import time
@@ -110,6 +111,40 @@ class ApiError(Exception):
     def __init__(self, status: int, code: str, message: str) -> None:
         super().__init__(message)
         self.status, self.code, self.message = status, code, message
+
+
+class TransientAuthError(Exception):
+    """Raised when upstream authentication or network verification fails transiently (5xx, timeout)."""
+
+    def __init__(self, message: str, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+def is_transient_auth_error(exc: BaseException) -> bool:
+    """Classify transient upstream errors vs permanent invalid credentials.
+
+    5xx status codes, timeouts, connection blips are transient and should not nuke creds.
+    401/403 indicate bad credentials.
+    """
+    if isinstance(exc, TransientAuthError):
+        return True
+    status = getattr(exc, "status", None) or getattr(exc, "status_code", None)
+    if isinstance(status, int):
+        if status in (401, 403):
+            return False
+        if status in (408, 429) or 500 <= status <= 599:
+            return True
+    err_str = str(exc).lower()
+    transient_markers = (
+        "timeout", "timed out", "connection refused",
+        "econnreset", "temporarily unavailable", "try again",
+    )
+    if any(m in err_str for m in transient_markers):
+        return True
+    if isinstance(exc, (TimeoutError, socket.gaierror, ConnectionError, OSError)):
+        return True
+    return False
 
 
 def _bad(message: str, code: str = "bad_request") -> ApiError:
@@ -341,6 +376,11 @@ class Gateway:
 
     def _register(self) -> None:
         self._route("GET", "/v1/health", self._health, summary="Liveness.", auth=False)
+        self._route("GET", "/v1/capabilities", self._capabilities, summary="Tier and capability matrix.", auth=False)
+        self._route("GET", "/v1/whoami", self._whoami, summary="Caller identity and scope.")
+        self._route("POST", "/v1/resolve_tag", self._resolve_tag, request={
+            "container_tag": "string: container/tenant identifier (alphanumeric, -, _)"
+        }, summary="Resolve and validate a container isolation tag.")
         self._route("GET", "/v1/metrics", self._metrics,
                     summary="Request, tool and operation counters and latencies (Prometheus text; ?format=json).")
         self._route("GET", "/v1/openapi.json", self._openapi, summary="This API's schema.", auth=False)
@@ -396,13 +436,16 @@ class Gateway:
         supplied = next((v for k, v in headers.items() if k.lower() == "x-request-id"), "")
         request_id = supplied if re.fullmatch(r"[A-Za-z0-9._-]{1,64}", supplied or "") else \
             telemetry.new_request_id()
+        container_tag = next((v for k, v in headers.items() if k.lower() in ("x-container-tag", "container-tag")), "")
         path_label = urlsplit(target).path if (method, urlsplit(target).path) in self.routes else "other"
-        with telemetry.bind(request_id=request_id, surface="gateway"), \
+        with telemetry.bind(request_id=request_id, container_tag=container_tag, surface="gateway"), \
                 telemetry.span(f"gateway {method} {path_label}") as handle:
             response = self._handle(method, target, headers, body, trusted=trusted)
             handle.set(status=response.status)
         telemetry.count("commontrace_gateway_requests", method=method, path=path_label, status=response.status)
         response.headers.setdefault("X-Request-Id", request_id)
+        if container_tag:
+            response.headers.setdefault("X-Container-Tag", container_tag)
         return response
 
     def _handle(
@@ -430,6 +473,8 @@ class Gateway:
             if isinstance(result, Response):
                 return result
             return _json(200, result)
+        except TransientAuthError as exc:
+            return _json(503, {"error": {"code": "transient_auth_error", "message": str(exc)}})
         except ApiError as exc:
             return _json(exc.status, {"error": {"code": exc.code, "message": exc.message}})
         except Exception as exc:  # noqa: BLE001 - never leak a traceback to a client
@@ -577,7 +622,70 @@ class Gateway:
         return Response(200, telemetry.prometheus().encode("utf-8"), "text/plain; version=0.0.4")
 
     def _health(self, _body, _query) -> dict:
-        return {"ok": True, "api": API_VERSION, "version": __version__}
+        embedder = getattr(self.config, "embedder", None)
+        rerank = getattr(self.config, "rerank", None)
+        has_embed = bool(embedder and embedder != "none")
+        tier = "full" if has_embed else "no_embed"
+        return {
+            "ok": True,
+            "api": API_VERSION,
+            "version": __version__,
+            "tier": tier,
+            "capabilities": {
+                "llm": True,
+                "embeddings": has_embed,
+                "rerank": bool(rerank and rerank != "none"),
+                "tier": tier,
+                "container_scoping": True,
+                "defense_screen": True,
+            },
+        }
+
+    def _capabilities(self, _body, _query) -> dict:
+        embedder = getattr(self.config, "embedder", None)
+        rerank = getattr(self.config, "rerank", None)
+        has_embed = bool(embedder and embedder != "none")
+        tier = "full" if has_embed else "no_embed"
+        return {
+            "api": API_VERSION,
+            "version": __version__,
+            "tier": tier,
+            "capabilities": {
+                "llm": True,
+                "embeddings": has_embed,
+                "rerank": bool(rerank and rerank != "none"),
+                "tier": tier,
+                "rbac": True,
+                "container_scoping": True,
+                "defense_screen": True,
+                "ssrf_guard": True,
+            },
+        }
+
+    def _whoami(self, _body, _query) -> dict:
+        from commontrace import telemetry
+
+        curr = telemetry.current()
+        return {
+            "authenticated": bool(self.token is not None),
+            "role": "admin" if self.token else "anonymous",
+            "token_prefix": (self.token[:8] + "...") if self.token and len(self.token) >= 8 else "",
+            "container_tag": curr.get("container_tag", ""),
+            "request_id": curr.get("request_id", ""),
+        }
+
+    def _resolve_tag(self, req: dict, _query) -> dict:
+        tag = req.get("container_tag")
+        if not tag or not isinstance(tag, str):
+            raise _bad("container_tag must be a non-empty string")
+        clean_tag = tag.strip()
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,128}", clean_tag):
+            raise _bad("container_tag must contain only letters, numbers, '.', '_', or '-' (max 128 chars)")
+        return {
+            "container_tag": clean_tag,
+            "scope": f"container:{clean_tag}",
+            "valid": True,
+        }
 
     def _check_env(self, req: dict) -> None:
         asked = req.get("env")

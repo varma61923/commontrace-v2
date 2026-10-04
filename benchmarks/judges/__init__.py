@@ -5,15 +5,17 @@ from __future__ import annotations
 from typing import Union
 
 from .beam import BEAM_ABILITIES, BEAMJudge, event_ordering_score, kendall_tau_b
+from .dolphin import DolphinJudge
 from .generic import GenericJudge
 from .locomo import LoCoMoJudge, is_scorable_category
 from .longmemeval import LongMemEvalJudge, get_anscheck_prompt
 
-JudgeType = Union[GenericJudge, LongMemEvalJudge, LoCoMoJudge, BEAMJudge]
+JudgeType = Union[GenericJudge, LongMemEvalJudge, LoCoMoJudge, BEAMJudge, DolphinJudge]
 
 __all__ = [
     "BEAM_ABILITIES",
     "BEAMJudge",
+    "DolphinJudge",
     "GenericJudge",
     "JudgeType",
     "LoCoMoJudge",
@@ -33,6 +35,7 @@ JUDGE_CLASSES: dict[str, type] = {
     "longmemeval": LongMemEvalJudge,
     "locomo": LoCoMoJudge,
     "beam": BEAMJudge,
+    "dolphin": DolphinJudge,
 }
 
 DEFAULT_JUDGE_MODELS: dict[str, str] = {
@@ -40,6 +43,7 @@ DEFAULT_JUDGE_MODELS: dict[str, str] = {
     "longmemeval": "gpt-4o",
     "locomo": "gpt-4o",
     "beam": "gpt-4.1-mini",
+    "dolphin": "gpt-4o",
 }
 
 DATASET_DEFAULTS: dict[str, tuple[str, str]] = {
@@ -47,7 +51,7 @@ DATASET_DEFAULTS: dict[str, tuple[str, str]] = {
     "longmemeval": ("longmemeval", "gpt-4o"),
     "beam": ("beam", "gpt-4.1-mini"),
     "generic": ("generic", "claude-sonnet-5"),
-    "dolphin": ("generic", "claude-sonnet-5"),
+    "dolphin": ("dolphin", "gpt-4o"),
 }
 
 
@@ -67,6 +71,7 @@ def get_judge(name: str, model: str | None = None) -> JudgeType:
         "longmemeval": "longmemeval",
         "locomo": "locomo",
         "beam": "beam",
+        "dolphin": "dolphin",
     }
     canonical = lookup.get(key)
     if canonical is None:

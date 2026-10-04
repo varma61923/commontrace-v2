@@ -10,6 +10,7 @@ from commontrace import paths, session_ledger
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p = subparsers.add_parser(
         "session-ledger",
+        aliases=["session_ledger"],
         help="Track and inspect per-session token and cost ledger with model attribution.",
     )
     sub = p.add_subparsers(dest="subcommand", required=True)

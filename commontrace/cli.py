@@ -23,7 +23,8 @@ _COMMANDS = (
     "consolidate", "retrieval", "experiment", "source", "function", "proof", "gateway", "fleet", "signals", "export",
     "dream", "bill", "conformance", "gate", "prove", "taxonomy", "impact", "pilot", "sync", "redact", "doctor",
     "block", "fact", "graph", "ingest", "agent", "watch", "daemon", "viz", "conversation", "memory", "recall", "jobs",
-    "ontology", "community", "observation", "saga", "page", "session_ledger", "session-ledger",
+    "ontology", "community", "observation", "saga", "page", "session_ledger",
+    "procedural", "sql_query", "defense",
 )
 
 
@@ -31,7 +32,14 @@ _COMMANDS = (
 
 def _command_modules(only: str | None = None) -> list:
     names = (only,) if only in _COMMANDS else _COMMANDS
-    return [importlib.import_module(f"commontrace.commands.{name}_cmd") for name in names]
+    seen = set()
+    modules = []
+    for name in names:
+        mod_name = name.replace("-", "_")
+        if mod_name not in seen:
+            seen.add(mod_name)
+            modules.append(importlib.import_module(f"commontrace.commands.{mod_name}_cmd"))
+    return modules
 
 
 class _LazyCommandMap(dict):
@@ -99,9 +107,9 @@ def build_parser(only: str | None = None) -> argparse.ArgumentParser:
         version=f"commontrace {__version__} (protocol {PROTOCOL_VERSION})",
     )
     subparsers = parser.add_subparsers(dest="command", required=_MISSING_DEPENDENCY is None)
-    if only in _COMMANDS:
-        mod_name = only.replace("-", "_")
-        importlib.import_module(f"commontrace.commands.{mod_name}_cmd").add_parser(subparsers)
+    clean_only = only.replace("-", "_") if isinstance(only, str) else None
+    if clean_only in _COMMANDS:
+        importlib.import_module(f"commontrace.commands.{clean_only}_cmd").add_parser(subparsers)
         return parser
     lazy: dict = _LazyCommandMap(subparsers)
     subparsers._name_parser_map = lazy  # type: ignore[assignment]

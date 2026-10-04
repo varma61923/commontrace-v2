@@ -1103,3 +1103,246 @@ class TestMCPCompetitorTools:
         assert "Document body for catalog test" in res_get["document"]["content"]
 
 
+# --- 27. pluggable memory defense --------------------------------------------------------
+
+class TestMemoryDefense:
+    def test_catalog_redaction(self):
+        from commontrace import defense
+
+        text = "Anthropic: sk-ant-api03-abcdefghijklmnopqrstuvwxyz1234, AWS: AKIAIOSFODNN7EXAMPLE"
+        res = defense.apply_redaction(text)
+        assert "anthropic_key" in res.matched_types
+        assert "aws_access_key" in res.matched_types
+        assert "[REDACTED:anthropic_key]" in res.content
+        assert "[REDACTED:aws_access_key]" in res.content
+        for hit in res.hits:
+            assert "..." in hit["preview"]
+
+    def test_luhn_card_check(self):
+        from commontrace import defense
+
+        valid_res = defense.apply_redaction("Card 4111 1111 1111 1111")
+        assert "credit_card" in valid_res.matched_types
+        assert "[REDACTED:credit_card]" in valid_res.content
+
+        invalid_res = defense.apply_redaction("Card 4111 1111 1111 1112")
+        assert "credit_card" not in invalid_res.matched_types
+
+    def test_screen_policies(self):
+        from commontrace import defense
+
+        pol_block = defense.DefensePolicy(
+            enabled=True,
+            rules=(defense.PolicyRule(on="sensitive_data", action=defense.DefenseAction.BLOCK),),
+        )
+        dec = defense.screen_content("secret sk-ant-abcdefghijklmnopqrstuvwxyz1234", policy=pol_block)
+        assert dec.action == defense.DefenseAction.BLOCK
+
+
+# --- 28. gateway hardening & transient auth ---------------------------------------------
+
+class TestGatewayHardening:
+    def test_transient_classifier(self):
+        from commontrace.gateway import TransientAuthError, is_transient_auth_error
+
+        assert is_transient_auth_error(TransientAuthError("timeout", status=504))
+        assert is_transient_auth_error(TimeoutError())
+        assert is_transient_auth_error(ConnectionResetError())
+
+        class Permanent(Exception):
+            status = 401
+
+        assert not is_transient_auth_error(Permanent("bad key"))
+
+    def test_whoami_and_container_scoping(self, store):
+        import json
+
+        from commontrace import gateway
+
+        gw = gateway.Gateway(store, token="test-token-xyz")
+        resp = gw.handle(
+            "GET",
+            "/v1/whoami",
+            headers={"Authorization": "Bearer test-token-xyz", "X-Container-Tag": "tenant_1"},
+        )
+        data = json.loads(resp.body.decode("utf-8"))
+        assert resp.status == 200
+        assert data["authenticated"] is True
+        assert data["container_tag"] == "tenant_1"
+        assert resp.headers.get("X-Container-Tag") == "tenant_1"
+
+    def test_capabilities_tier(self, store):
+        import json
+
+        from commontrace import gateway
+
+        gw = gateway.Gateway(store)
+        resp = gw.handle("GET", "/v1/capabilities")
+        data = json.loads(resp.body.decode("utf-8"))
+        assert resp.status == 200
+        assert "tier" in data
+        assert data["capabilities"]["container_scoping"] is True
+        assert data["capabilities"]["defense_screen"] is True
+
+
+# --- 29. procedural memory -------------------------------------------------------------
+
+class TestProceduralMemory:
+    def test_create_and_budget_replay(self, store):
+        from commontrace import procedural
+
+        steps = [
+            procedural.ProceduralStep(1, "crawl page", "HTML content " * 100, key_findings="found target"),
+            procedural.ProceduralStep(2, "extract price", "$49.99", current_context="done"),
+        ]
+        mem = procedural.ProceduralMemory(
+            id="proc_1",
+            task_objective="Price check",
+            progress_status="100%",
+            steps=steps,
+        )
+        path = procedural.save_procedural_memory(store, mem)
+        assert path.endswith("proc_1.json")
+
+        loaded = procedural.load_procedural_memory(store, "proc_1")
+        assert loaded is not None
+        assert loaded.task_objective == "Price check"
+
+        formatted = procedural.format_procedural_memory(loaded, token_budget=50)
+        assert "Price check" in formatted
+        assert "(budget-constrained)" in formatted
+
+
+# --- 30. guarded text-to-sql -----------------------------------------------------------
+
+class TestGuardedSql:
+    def test_select_validation_and_clamp(self):
+        from commontrace import sql_guard
+
+        assert sql_guard.validate_select("SELECT * FROM users") == "SELECT * FROM users"
+        assert sql_guard.ensure_limit("SELECT * FROM users", 25) == "SELECT * FROM users LIMIT 25"
+
+        with pytest.raises(sql_guard.SqlGuardError):
+            sql_guard.validate_select("INSERT INTO users VALUES (1)")
+
+        with pytest.raises(sql_guard.SqlGuardError):
+            sql_guard.validate_select("SELECT * FROM (DROP TABLE users)")
+
+    def test_read_only_execution(self, tmp_path):
+        import sqlite3
+
+        from commontrace import sql_guard
+
+        db = str(tmp_path / "app.db")
+        conn = sqlite3.connect(db)
+        conn.execute("CREATE TABLE t (x INT)")
+        conn.execute("INSERT INTO t VALUES (1), (2), (3)")
+        conn.commit()
+        conn.close()
+
+        res = sql_guard.execute_guarded_sql(db, "SELECT * FROM t", max_rows=2)
+        assert res["row_count"] == 2
+        assert len(res["rows"]) == 2
+
+
+# --- 31. litellm wrapper ---------------------------------------------------------------
+
+class TestLiteLLMWrapper:
+    def test_message_augmentation(self, store):
+        from commontrace import litellm_wrapper
+
+        wrapper = litellm_wrapper.CommonTraceLiteLLM(root=store)
+        msgs = [{"role": "user", "content": "How do I test?"}]
+        augmented = wrapper._augment_messages(msgs, "Project uses pytest.")
+
+        assert len(augmented) == 2
+        assert augmented[0]["role"] == "system"
+        assert "Project uses pytest." in augmented[0]["content"]
+
+    def test_custom_completion(self, store):
+        from commontrace import litellm_wrapper
+
+        wrapper = litellm_wrapper.CommonTraceLiteLLM(root=store, auto_extract=False)
+
+        def mock_call(model, messages, **kwargs):
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+        res = wrapper.completion("gpt-4o", [{"role": "user", "content": "hi"}], completion_fn=mock_call)
+        assert res["choices"][0]["message"]["content"] == "ok"
+
+
+# --- 32. benchmark adapters & dolphin judge --------------------------------------------
+
+class TestBenchmarkAdaptersAndJudges:
+    def test_seeded_adapter_reproducibility(self):
+        from benchmarks import adapters
+
+        ad = adapters.get_adapter("hotpotqa")
+        run1 = ad.load(limit=4, seed=42)
+        run2 = ad.load(limit=4, seed=42)
+        assert [r.id for r in run1] == [r.id for r in run2]
+
+    def test_snapshot_cache(self, tmp_path):
+        from benchmarks import adapters
+
+        cache_dir = str(tmp_path / "bench_cache")
+        key = adapters.get_snapshot_cache_key("synthetic", 42, 2)
+        items = [adapters.BenchmarkItem("1", "q?", "a!")]
+        adapters.save_cached_snapshot(cache_dir, key, items)
+        loaded = adapters.load_cached_snapshot(cache_dir, key)
+        assert loaded is not None
+        assert loaded[0].id == "1"
+
+    def test_dolphin_judge(self):
+        from benchmarks.judges import get_judge
+
+        j = get_judge("dolphin")
+        assert j.name == "dolphin"
+        p = j.format_prompt("question?", "gold!", "candidate answer")
+        assert "DolphinBench" in p
+
+
+# --- 33. typed hub session methods -----------------------------------------------------
+
+class TestTypedHubMethods:
+    def test_typed_methods_exist_on_hub_session(self):
+        from commontrace.hub_client import HubSession
+
+        methods = [
+            "search_traces",
+            "contribute_trace",
+            "get_trace",
+            "delete_trace",
+            "vote_trace",
+            "list_tags",
+            "add_comment",
+            "list_comments",
+            "assign_trace",
+            "unassign_trace",
+            "tag_trace_subjects",
+            "purge_subject_traces",
+            "commons_overlap",
+        ]
+        for m in methods:
+            assert hasattr(HubSession, m), f"Missing typed method {m} on HubSession"
+
+
+# --- 34. CLI subcommands with hyphens and aliases --------------------------------------
+
+class TestCliSubcommands:
+    def test_cli_help_hyphen_and_underscore(self):
+        from commontrace import cli
+
+        for cmd in [
+            "sql-query", "sql_query",
+            "session-ledger", "session_ledger",
+            "procedural", "defense",
+        ]:
+            parser = cli.build_parser(cmd)
+            assert parser is not None
+            actions = [a.dest for a in parser._actions if hasattr(a, "dest")]
+            assert "command" in actions
+
+
+
+

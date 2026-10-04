@@ -20,6 +20,8 @@ LOCAL_TOOLS = (
     "saga_create", "saga_get", "saga_list", "saga_append_event", "saga_update_brief",
     "knowledge_page_list", "knowledge_page_get", "knowledge_page_update",
     "session_ledger_record", "session_ledger_get", "session_ledger_summary",
+    "procedural_memory_create", "procedural_memory_replay",
+    "sql_guarded_query", "defense_screen_content",
 )
 
 
