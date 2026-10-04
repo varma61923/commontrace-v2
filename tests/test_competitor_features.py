@@ -1027,10 +1027,8 @@ class TestSessionLedgerAttribution:
 # --- 17. MCP Competitor Tools Integration --------------------------------------------
 
 class TestMCPCompetitorTools:
-    def test_mcp_sagas_pages_ledger_and_catalog(self, store):
-        from commontrace import mcp_server
-
-        server = mcp_server.build_server(store)
+    def test_mcp_sagas_pages_ledger_and_catalog(self, mcp_server, store):
+        server = mcp_server
 
         # 1. Saga tools
         res_saga = _mcp_call(server, "saga_create",

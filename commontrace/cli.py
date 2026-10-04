@@ -171,6 +171,10 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     commands = next(
         (list(a.choices) for a in parser._actions if isinstance(a, argparse._SubParsersAction)), [])
+    if not argv[0].startswith("-"):
+        clean_cmd = argv[0].replace("-", "_")
+        if argv[0] not in commands and clean_cmd in commands:
+            argv = [clean_cmd, *argv[1:]]
     if not argv[0].startswith("-") and argv[0] not in commands:
         close = difflib.get_close_matches(argv[0], commands, n=3, cutoff=0.6)
         hint = f" Did you mean: {', '.join(close)}?" if close else ""

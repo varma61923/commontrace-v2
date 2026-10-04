@@ -10,8 +10,7 @@ from commontrace import sql_guard
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser(
-        "sql-query",
-        aliases=["sql_query"],
+        "sql_query",
         help="Safely execute guarded read-only SELECT queries on SQLite databases.",
         description="Run guarded SQL queries with forbidden keyword validation and row limits.",
     )

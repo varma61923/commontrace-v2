@@ -33,6 +33,7 @@ commontrace/**
 !commontrace/paths.py
 !commontrace/harm.py
 !commontrace/adapters.py
+!commontrace/fingerprints.py
 
 .env
 hub/.env

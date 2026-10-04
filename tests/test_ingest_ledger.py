@@ -59,6 +59,8 @@ class TestFingerprintEquivalence:
         assert pl.file_fingerprint(str(target)) == FILE_DIGEST
 
     def test_old_call_sites_agree_with_fingerprints(self):
+        pytest.importorskip("hub")
+        pytest.importorskip("sqlalchemy")
         import sys
 
         sys.path.insert(0, "hub")
