@@ -115,11 +115,9 @@ def test_mcp_procedural_tools(tmp_path):
     root = str(tmp_path / "store")
     server = mcp_server.build_server(root)
 
-    create_fn = server._tool_manager.get_tool("procedural_memory_create")
-    replay_fn = server._tool_manager.get_tool("procedural_memory_replay")
-
     res = asyncio.run(
-        create_fn.run(
+        server.call_tool(
+            "procedural_memory_create",
             {
                 "task_objective": "Database migration",
                 "progress_status": "Step 1 complete",
@@ -127,18 +125,22 @@ def test_mcp_procedural_tools(tmp_path):
                     {"step_number": 1, "action": "Run alembic", "result": "Success"},
                 ],
                 "agent_id": "migration-bot",
-            }
+            },
         )
     )
-    # FastMCP tools return string/json/dict
-    assert "id" in str(res)
+    # FastMCP tools return string/json/dict or CallToolResult
+    res_text = res.content[0].text if hasattr(res, "content") else str(res)
+    assert "id" in res_text
 
     replay_res = asyncio.run(
-        replay_fn.run(
+        server.call_tool(
+            "procedural_memory_replay",
             {
                 "memory_id": list_procedural_memories(root)[0]["id"],
                 "token_budget": 1000,
-            }
+            },
         )
     )
-    assert "prompt_context" in str(replay_res)
+    replay_text = replay_res.content[0].text if hasattr(replay_res, "content") else str(replay_res)
+    assert "prompt_context" in replay_text
+

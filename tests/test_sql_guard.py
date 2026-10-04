@@ -79,11 +79,17 @@ def test_mcp_sql_guarded_query(tmp_path):
     conn.close()
 
     server = mcp_server.build_server(root)
-    sql_tool = server._tool_manager.get_tool("sql_guarded_query")
 
-    res = asyncio.run(sql_tool.run({
-        "db_path": db_file,
-        "sql": "SELECT k, v FROM kv",
-    }))
-    assert "columns" in str(res)
-    assert "python" in str(res)
+    res = asyncio.run(
+        server.call_tool(
+            "sql_guarded_query",
+            {
+                "db_path": db_file,
+                "sql": "SELECT k, v FROM kv",
+            },
+        )
+    )
+    res_text = res.content[0].text if hasattr(res, "content") else str(res)
+    assert "columns" in res_text
+    assert "python" in res_text
+
