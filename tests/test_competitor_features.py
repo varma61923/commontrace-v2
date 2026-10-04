@@ -487,6 +487,26 @@ class TestConversationSearchDegraded:
         assert out["ok"] and out["degraded"] is True and "lexical-only" in out["note"]
 
 
+class TestCallToolCompat:
+    def test_two_and_three_arg_calls(self, mcp_server):
+        """Newer MCP SDKs call call_tool(name, arguments, context); older
+        ones pass (name, arguments). The compat shim must accept both."""
+
+        async def main():
+            two = await mcp_server.call_tool("store_status", {})
+            three = await mcp_server.call_tool("store_status", {}, object())
+            return two, three
+
+        two, three = asyncio.run(main())
+
+        def payload(result):
+            sc = getattr(result, "structured_content", None)
+            return sc.get("result", sc) if sc else json.loads(result.content[0].text)
+
+        assert payload(two)["ok"] is True
+        assert payload(three)["ok"] is True
+
+
 class TestSigmoidHome:
     def test_single_canonical_definition(self):
         from commontrace.conversation import search as search_mod

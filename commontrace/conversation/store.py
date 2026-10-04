@@ -221,7 +221,7 @@ def fact_hash(statement: str) -> str:
     Two turns stating the same fact with different casing/spacing share a hash.
     """
     norm = re.sub(r"\s+", " ", str(statement or "").strip().lower().strip(" .,;:!?\"'"))
-    return hashlib.md5(norm.encode("utf-8")).hexdigest()
+    return hashlib.md5(norm.encode("utf-8"), usedforsecurity=False).hexdigest()
 
 
 def sigmoid_bm25(raw: float, n_query_terms: int) -> float:

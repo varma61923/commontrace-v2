@@ -1892,7 +1892,12 @@ def build_server(root: str, *, allow_approval: bool = True):
     if hasattr(mcp, "call_tool"):
         _orig_call_tool = mcp.call_tool
 
-        async def _call_tool_compat(name: str, arguments: dict | None = None):
+        async def _call_tool_compat(name: str, arguments: dict | None = None,
+                                    *args: Any, **kwargs: Any):
+            # Newer MCP SDKs call call_tool(name, arguments, context) while
+            # older ones pass (name, arguments). Accept-and-drop the extras:
+            # this shim only reshapes the result, so the context is unused,
+            # and the underlying call stays version-proof in both directions.
             res = await _orig_call_tool(name, arguments or {})
             if isinstance(res, list):
                 class _ResultCompat:

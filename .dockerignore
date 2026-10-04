@@ -23,6 +23,7 @@ commontrace/**
 !commontrace/value.py
 !commontrace/decay.py
 !commontrace/retrieval.py
+!commontrace/corpus_bin.py
 !commontrace/_lexical.py
 !commontrace/_stem.py
 !commontrace/memory_guard.py

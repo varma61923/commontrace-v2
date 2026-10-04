@@ -35,7 +35,8 @@ def enabled() -> bool:
 
 
 def cache_key(model: str, prompt: str) -> str:
-    return hashlib.md5(f"{model}\x1f{prompt}".encode("utf-8")).hexdigest()
+    # Non-security use (cache lookup); bandit B324 would flag bare md5.
+    return hashlib.md5(f"{model}\x1f{prompt}".encode("utf-8"), usedforsecurity=False).hexdigest()
 
 
 class LLMCache:

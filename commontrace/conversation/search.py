@@ -522,7 +522,7 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
         top_candidates = list(scores.keys())[:100]
         dated_turns = set()
         for r in store.db.execute(
-            f"SELECT id FROM turns WHERE id IN ({','.join('?' for _ in top_candidates)}) AND dates != '[]'",
+            f"SELECT id FROM turns WHERE id IN ({','.join('?' for _ in top_candidates)}) AND dates != '[]'",  # nosec B608 - ?-placeholders only
             top_candidates,
         ):
             dated_turns.add(r[0])
