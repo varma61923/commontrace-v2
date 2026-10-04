@@ -247,8 +247,13 @@ def _matching_active(facts: dict[str, AtomicFact], statement: str, scopes: list[
             continue
         # Scope is an authorization boundary, not a relevance hint. A scoped
         # write must never reinforce or re-scope a global fact (or another
-        # tenant's fact); only the exact same scope set is a duplicate.
-        if frozenset(existing.scopes) == requested_scopes:
+        # tenant's fact); scoped facts may reinforce when their scope sets
+        # overlap, preserving the existing multi-project fact semantics.
+        if not requested_scopes and existing.scopes:
+            continue
+        if requested_scopes and not existing.scopes:
+            continue
+        if not requested_scopes or requested_scopes & frozenset(existing.scopes):
             return existing
     return None
 

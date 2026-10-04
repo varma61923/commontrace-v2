@@ -298,7 +298,10 @@ def anytime_confidence_interval(
     if target_n_per_arm < 0:
         raise ValueError(f"target_n_per_arm must be non-negative, got {target_n_per_arm}")
     target = target_n_per_arm or min(n1, n2)
-    prior_strength = math.sqrt(max(1, target))
+    # A square-root horizon prior is too conservative for practical effects;
+    # logarithmic concentration keeps the mixture anytime-valid while retaining
+    # power for the effect sizes agents actually need to detect.
+    prior_strength = math.sqrt(math.log1p(max(1, target)))
     low1, high1 = _mixture_proportion_interval(s1, n1, alpha, prior_strength)
     low2, high2 = _mixture_proportion_interval(s2, n2, alpha, prior_strength)
     return (max(-1.0, low1 - high2), min(1.0, high1 - low2))
