@@ -51,7 +51,7 @@ DATASET_DEFAULTS: dict[str, tuple[str, str]] = {
     "longmemeval": ("longmemeval", "gpt-4o"),
     "beam": ("beam", "gpt-4.1-mini"),
     "generic": ("generic", "claude-sonnet-5"),
-    "dolphin": ("dolphin", "gpt-4o"),
+    "dolphin": ("generic", "claude-sonnet-5"),
 }
 
 
