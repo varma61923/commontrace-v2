@@ -352,6 +352,7 @@ def evaluate_abstention(
 ) -> dict[str, Any]:
     """Evaluate abstention question: verifies appropriate refusal or abstention criteria."""
     items = [rubric] if isinstance(rubric, str) else list(rubric)
+    items = [item for item in items if str(item).strip()]
     if not items:
         # Check standard refusal signals
         refusal_patterns = [
@@ -375,6 +376,37 @@ def evaluate_abstention(
     return evaluate_rubric(items, response, question=question, complete_fn=complete_fn, model=model)
 
 
+def _extract_ordered_items(response: str) -> list[str]:
+    """Extract ordered items from response, supporting multi-line or inline numbered lists."""
+    if not response or not response.strip():
+        return []
+    lines = [line.strip() for line in response.split("\n") if line.strip()]
+    if len(lines) > 1:
+        cleaned = []
+        for line in lines:
+            c = re.sub(r"^(?:\d+(?:st|nd|rd|th)?[\.\):]?|[-*•])\s*", "", line).strip()
+            if c:
+                cleaned.append(c)
+        return cleaned if cleaned else lines
+
+    text = response.strip()
+    matches = re.findall(
+        r"(?:^|\s+)(?:\d+(?:st|nd|rd|th)?[\.\):]|[-*•])\s*(.+?)(?=(?:,\s*|\s+)(?:\d+(?:st|nd|rd|th)?[\.\):]|[-*•])|$)",
+        text,
+        re.DOTALL,
+    )
+    if matches:
+        cleaned = [m.strip(" ,.;") for m in matches if m.strip(" ,.;")]
+        if len(cleaned) > 1:
+            return cleaned
+
+    parts = [p.strip() for p in text.split(";") if p.strip()]
+    if len(parts) > 1:
+        return parts
+
+    return [text]
+
+
 def evaluate_ability(
     ability: str,
     rubric: list[str] | str,
@@ -388,7 +420,7 @@ def evaluate_ability(
 
     if ability_clean == "event_ordering":
         items = [rubric] if isinstance(rubric, str) else list(rubric)
-        sys_items = [line.strip() for line in response.split("\n") if line.strip()]
+        sys_items = _extract_ordered_items(response)
         return event_ordering_score(reference_list=items, system_list=sys_items)
     elif ability_clean == "abstention":
         return evaluate_abstention(rubric=rubric, response=response, question=question, complete_fn=complete_fn, model=model)
@@ -469,12 +501,25 @@ class BEAMJudge:
         """Grade a candidate answer against BEAM rubric."""
         if isinstance(question, dict):
             q_text = question.get("question", "")
-            q_type = ability or question.get("type", "information_extraction")
-            rubric_data = rubric or question.get("rubric", question.get("answer", ""))
+            q_type = ability or question.get("type", question.get("ability", "information_extraction"))
+            if rubric is not None:
+                rubric_data = rubric
+            elif "rubric" in question and question["rubric"] is not None:
+                rubric_data = question["rubric"]
+            else:
+                rubric_data = (
+                    question.get("ideal_response")
+                    or question.get("ideal_answer")
+                    or question.get("answer", "")
+                )
         else:
             q_text = str(question)
             q_type = ability or kwargs.get("type", "information_extraction")
-            rubric_data = rubric if rubric is not None else kwargs.get("rubric", kwargs.get("answer", ""))
+            rubric_data = (
+                rubric
+                if rubric is not None
+                else kwargs.get("rubric", kwargs.get("ideal_response", kwargs.get("answer", "")))
+            )
 
         res = self.evaluate_ability(
             ability=str(q_type),

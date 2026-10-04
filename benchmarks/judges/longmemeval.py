@@ -168,7 +168,8 @@ class LongMemEvalJudge:
             q_text = question.get("question", "")
             gold_text = str(question.get("answer", ""))
             task_type = task or question.get("type") or question.get("question_type", "multi-session")
-            is_abstention = "_abs" in str(question.get("id", "")) or str(task_type).endswith("-abstain")
+            q_id = str(question.get("id", question.get("question_id", "")))
+            is_abstention = "_abs" in q_id or str(task_type).endswith("-abstain") or str(task_type) == "abstention"
         else:
             q_text = str(question)
             gold_text = str(kwargs.get("gold", ""))

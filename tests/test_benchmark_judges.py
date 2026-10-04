@@ -415,3 +415,49 @@ class TestBEAMJudge:
         res_ie = judge.grade(q_ie, "Bob is around 30.", complete_fn=mock_complete_ie)
         assert res_ie["score"] == 0.5
         assert res_ie["correct"] is True
+
+    def test_beam_extract_ordered_items(self):
+        # Multi-line with numbers and bullets
+        multi = "1. First step\n2. Second step\n3. Third step"
+        assert beam_mod._extract_ordered_items(multi) == ["First step", "Second step", "Third step"]
+
+        bullets = "- Alpha\n- Beta\n- Gamma"
+        assert beam_mod._extract_ordered_items(bullets) == ["Alpha", "Beta", "Gamma"]
+
+        # Inline numbered list
+        inline = "You did them in this order: 1) First step, 2) Second step, 3) Third step."
+        assert beam_mod._extract_ordered_items(inline) == ["First step", "Second step", "Third step"]
+
+        # Inline ordinal list
+        ordinals = "1st: Planning, 2nd: Building, 3rd: Testing"
+        assert beam_mod._extract_ordered_items(ordinals) == ["Planning", "Building", "Testing"]
+
+    def test_beam_inline_event_ordering_grade(self):
+        judge = BEAMJudge()
+        q_order = {
+            "type": "event_ordering",
+            "rubric": ["Planning", "Building", "Testing"],
+            "question": "What order did things happen?",
+        }
+        res = judge.grade(q_order, "The sequence was: 1) Planning, 2) Building, and 3) Testing.")
+        assert res["score"] == 1.0
+        assert res["correct"] is True
+
+    def test_longmemeval_raw_hf_dict_format(self):
+        judge = LongMemEvalJudge()
+        raw_q = {
+            "question_id": "test_123_abs",
+            "question_type": "single-session-user",
+            "question": "What is my cat's name?",
+            "answer": "You did not mention this information.",
+        }
+
+        def mock_complete(prompt):
+            assert "unanswerable" in prompt
+            return ("yes", {})
+
+        res = judge.grade(raw_q, "I do not have that information.", complete_fn=mock_complete)
+        assert res["abstention"] is True
+        assert res["correct"] is True
+        assert res["score"] == 1.0
+
