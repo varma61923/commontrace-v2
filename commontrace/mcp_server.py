@@ -1820,6 +1820,74 @@ def build_server(root: str, *, allow_approval: bool = True):
             return _err(str(exc))
 
     @mcp.tool()
+    async def lessons_from_trace(trace_id: str) -> dict:
+        """Lessons that cite `trace_id` in their `source_traces` (trace -> lesson lookup).
+
+        The reverse moment of `traces_for_lesson`: given a captured trace, which
+        curated lessons trace their evidence back to it. Sorted lesson slugs.
+        """
+        import glob
+        import os as _os
+
+        hits = []
+        for path in sorted(glob.glob(_os.path.join(paths.lessons_dir(root), "lesson_*.md"))):
+            if _os.path.basename(path) == "lesson_template.md":
+                continue
+            try:
+                fm, _body = frontmatter.read(path)
+            except Exception:  # noqa: BLE001 - unreadable lessons are skipped
+                continue
+            if trace_id and trace_id in [str(t) for t in (fm.get("source_traces") or [])]:
+                hits.append(lesson_io.canonical_slug(_os.path.basename(path)))
+        return _ok(trace_id=trace_id, lessons=sorted(set(hits)), count=len(set(hits)))
+
+    @mcp.tool()
+    async def traces_for_lesson(slug: str) -> dict:
+        """The source trace ids a lesson cites in its frontmatter (lesson -> trace provenance lookup)."""
+        try:
+            path = lesson_io.lesson_path(root, slug)
+            if path is None:
+                return _err(f"no lesson found for slug {slug!r}")
+            fm, _body = frontmatter.read(path)
+        except Exception as exc:  # noqa: BLE001
+            return _err(f"could not read lesson {slug!r}: {type(exc).__name__}: {exc}")
+        traces = sorted({str(t) for t in (fm.get("source_traces") or []) if str(t).strip()})
+        return _ok(slug=lesson_io.canonical_slug(slug), traces=traces, count=len(traces))
+
+    @mcp.tool()
+    async def community_members(name: str) -> dict:
+        """Members of one topic community by name (from `commontrace community build`).
+
+        Returns the stored member list (lesson slugs and fact ids), size, and the
+        extractive summary; ok=false when the community is unknown -- build first.
+        """
+        from commontrace import communities
+
+        community = communities.get_community(root, name)
+        if community is None:
+            return _err(f"no community named {name!r}; run `commontrace community build` first")
+        return _ok(
+            name=str(community.get("name", name)),
+            members=list(community.get("members") or []),
+            size=int(community.get("size") or 0),
+            summary=str(community.get("summary") or ""),
+        )
+
+    @mcp.tool()
+    async def observation_evidence(id: str) -> dict:
+        """One consolidated observation with its cited evidence (quote + source_id).
+
+        The proof chain behind a distilled claim: statement, evidence entries,
+        proof_count, and density trend; ok=false when unknown -- consolidate first.
+        """
+        from commontrace import observations
+
+        observation = observations.get_observation(root, id)
+        if observation is None:
+            return _err(f"no observation {id!r}; run `commontrace observation consolidate` first")
+        return _ok(observation=observation.to_dict())
+
+    @mcp.tool()
     async def list_skills() -> dict:
         """List the reusable procedures (skills) available in this project, by name and description.
 
@@ -1852,7 +1920,223 @@ def build_server(root: str, *, allow_approval: bool = True):
         return _ok(name=skill.name, description=skill.description, body=body,
                    notice=injection_guard.NOTICE)
 
+    # --- Ingest Lifecycle & Document Catalog ---
+
+    @mcp.tool()
+    async def ingest_job_status(job_id: str) -> dict:
+        """Inspect the current stage and progress of an ingestion job.
+
+        Lifecycle stages: queued -> extracting -> transforming -> embedding -> submitting -> done | failed.
+        """
+        from commontrace.ingest import catalog
+
+        job = catalog.get_ingest_job(root, job_id)
+        if job is None:
+            return _err(f"No ingestion job with id {job_id!r}")
+        return _ok(job=job.to_dict())
+
+    @mcp.tool()
+    async def ingest_documents_list(query: str = "", limit: int = 50) -> dict:
+        """List lightweight document summaries in the catalog (NOT dumping full contents).
+
+        Returns short summary snippets (<=200 chars), titles, paths, tokens, and chunk counts.
+        Use `ingest_document_get` only when full document content is specifically required.
+        """
+        from commontrace.ingest import catalog
+
+        docs = catalog.list_documents(root, query=query, limit=limit)
+        return _ok(documents=docs, count=len(docs))
+
+    @mcp.tool()
+    async def ingest_document_get(doc_id_or_path: str, chunk_index: int | None = None) -> dict:
+        """Retrieve full document text or a specific numbered chunk on demand by document ID or source file path."""
+        from commontrace.ingest import catalog
+
+        doc = catalog.get_document(root, doc_id_or_path, chunk_index=chunk_index)
+        if doc is None:
+            return _err(f"Document {doc_id_or_path!r} not found in catalog or filesystem")
+        return _ok(document=doc)
+
+    # --- Sagas (Graphiti & Zep #5 M) ---
+
+    @mcp.tool()
+    async def saga_create(
+        saga_id: str,
+        title: str,
+        tags: list[str] | None = None,
+        brief: str = "",
+        status: str = "active",
+    ) -> dict:
+        """Create an ordered incident or migration narrative saga with a
+        watermarked running brief and tagged metadata.
+        """
+        from commontrace import sagas
+
+        try:
+            saga = sagas.create_saga(root, saga_id, title, tags=tags, brief=brief, status=status)
+            return _ok(saga=saga.to_dict())
+        except (sagas.SagaError, ValueError) as exc:
+            return _err(str(exc))
+
+    @mcp.tool()
+    async def saga_get(saga_id: str) -> dict:
+        """Fetch a saga narrative along with its complete chronological event timeline,
+        metadata, and watermarked running brief.
+        """
+        from commontrace import sagas
+
+        saga = sagas.get_saga(root, saga_id)
+        if saga is None:
+            return _err(f"Saga {saga_id!r} not found")
+        return _ok(saga=saga.to_dict())
+
+    @mcp.tool()
+    async def saga_list(status: str = "", tag: str = "", limit: int = 50) -> dict:
+        """List all recorded incident or migration sagas, optionally filtered
+        by status ('active'/'resolved'/'archived') or tag.
+        """
+        from commontrace import sagas
+
+        items = sagas.list_sagas(root, status=status, tag=tag, limit=limit)
+        return _ok(sagas=[s.to_dict() for s in items], count=len(items))
+
+    @mcp.tool()
+    async def saga_append_event(
+        saga_id: str,
+        title: str,
+        description: str = "",
+        actor: str = "agent",
+        new_brief: str = "",
+        watermark: str = "",
+    ) -> dict:
+        """Append a milestone, telemetry update, or incident response event to
+        the ordered narrative of a saga timeline.
+        """
+        from commontrace import sagas
+
+        try:
+            saga = sagas.append_saga_event(
+                root, saga_id, title, description=description, actor=actor,
+                new_brief=new_brief if new_brief else None,
+                watermark=watermark if watermark else None,
+            )
+            return _ok(saga=saga.to_dict())
+        except (sagas.SagaError, ValueError) as exc:
+            return _err(str(exc))
+
+    @mcp.tool()
+    async def saga_update_brief(saga_id: str, brief: str, watermark: str = "") -> dict:
+        """Update the rolling synthesis running brief of an ongoing saga narrative,
+        advancing its progress watermark.
+        """
+        from commontrace import sagas
+
+        try:
+            saga = sagas.update_running_brief(root, saga_id, brief, watermark=watermark)
+            return _ok(saga=saga.to_dict())
+        except (sagas.SagaError, ValueError) as exc:
+            return _err(str(exc))
+
+    # --- Knowledge Pages (Hindsight #2 L) ---
+
+    @mcp.tool()
+    async def knowledge_page_list(tag: str = "", limit: int = 50) -> dict:
+        """List all curated knowledge pages and mental model synthesis documents,
+        optionally filtered by category or tag.
+        """
+        from commontrace import knowledge_pages
+
+        pages = knowledge_pages.list_pages(root, tag=tag, limit=limit)
+        return _ok(pages=[p.to_dict() for p in pages], count=len(pages))
+
+    @mcp.tool()
+    async def knowledge_page_get(slug: str, version: int | None = None) -> dict:
+        """Fetch the latest or a specific historical revision of a curated knowledge page,
+        including content and version metadata.
+        """
+        from commontrace import knowledge_pages
+
+        page = knowledge_pages.get_page(root, slug, version=version)
+        if page is None:
+            return _err(f"Knowledge page {slug!r} not found" + (f" (v{version})" if version else ""))
+        return _ok(page=page.to_dict())
+
+    @mcp.tool()
+    async def knowledge_page_update(
+        slug: str,
+        content: str,
+        title: str = "",
+        tags: list[str] | None = None,
+        expected_version: int | None = None,
+        dry_run: bool = False,
+        comment: str = "",
+    ) -> dict:
+        """Update or create a curated knowledge page with dry-run diff preview.
+
+        Set `dry_run=True` to inspect line-by-line unified diffs before writing to disk.
+        Set `expected_version` for optimistic concurrency protection.
+        """
+        from commontrace import knowledge_pages
+
+        refusal = _unsafe_write("knowledge page", {"content": content})
+        if refusal is not None:
+            return refusal
+
+        try:
+            res = knowledge_pages.update_page(
+                root, slug, content, title=title, tags=tags,
+                expected_version=expected_version, dry_run=dry_run,
+                actor="mcp", comment=comment,
+            )
+            return _ok(**res)
+        except (knowledge_pages.KnowledgePageError, ValueError) as exc:
+            return _err(str(exc))
+
+    # --- Session Ledger (Cognee #3 L) ---
+
+    @mcp.tool()
+    async def session_ledger_record(
+        session_id: str,
+        model: str,
+        prompt_tokens: int,
+        completion_tokens: int,
+        provider: str = "",
+        cost_usd: float | None = None,
+        occasion: str = "",
+    ) -> dict:
+        """Record an LLM model call with prompt tokens, completion tokens, provider,
+        and dollar cost attribution for a session.
+        """
+        from commontrace import session_ledger
+
+        entry = session_ledger.record_usage(
+            root, session_id, model, prompt_tokens, completion_tokens,
+            provider=provider, cost_usd=cost_usd, occasion=occasion,
+        )
+        return _ok(entry=entry.to_dict())
+
+    @mcp.tool()
+    async def session_ledger_get(session_id: str) -> dict:
+        """Get aggregate token usage and estimated costs for a session with per-model breakdown."""
+        from commontrace import session_ledger
+
+        summary = session_ledger.session_summary(root, session_id)
+        return _ok(**summary)
+
+    @mcp.tool()
+    async def session_ledger_summary(since: str = "", until: str = "") -> dict:
+        """Get global token usage and cost expenditure aggregated across all sessions,
+        with per-model breakdown and optional date bounds.
+        """
+        from commontrace import session_ledger
+
+        summary = session_ledger.overall_ledger_summary(root, since=since, until=until)
+        return _ok(**summary)
+
+
+
     if hasattr(mcp, "resource"):
+
         @mcp.resource("commontrace://profile")
         def active_space_profile() -> str:
             """Synthesized active space profile combining working memory blocks,

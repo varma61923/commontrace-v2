@@ -920,6 +920,17 @@ class IngestionPipeline:
         return result
 
 
+from commontrace.ingest.catalog import (  # noqa: E402
+    INGEST_STAGES,
+    IngestJob,
+    create_ingest_job,
+    get_document,
+    get_ingest_job,
+    list_documents,
+    list_ingest_jobs,
+    record_document,
+    update_ingest_job,
+)
 from commontrace.ingest.pipeline import (  # noqa: E402
     AliasCanonicalizer,
     FileLoader,
@@ -958,4 +969,14 @@ __all__ = [
     "ingest_fact_triples",
     "ingest_multimodal_document",
     "preview_ingest",
+    "INGEST_STAGES",
+    "IngestJob",
+    "create_ingest_job",
+    "update_ingest_job",
+    "get_ingest_job",
+    "list_ingest_jobs",
+    "list_documents",
+    "get_document",
+    "record_document",
 ]
+

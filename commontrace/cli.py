@@ -23,8 +23,10 @@ _COMMANDS = (
     "consolidate", "retrieval", "experiment", "source", "function", "proof", "gateway", "fleet", "signals", "export",
     "dream", "bill", "conformance", "gate", "prove", "taxonomy", "impact", "pilot", "sync", "redact", "doctor",
     "block", "fact", "graph", "ingest", "agent", "watch", "daemon", "viz", "conversation", "memory", "recall", "jobs",
-    "ontology",
+    "ontology", "community", "observation", "saga", "page", "session_ledger", "session-ledger",
 )
+
+
 
 
 def _command_modules(only: str | None = None) -> list:
@@ -41,7 +43,8 @@ class _LazyCommandMap(dict):
     def __contains__(self, key):
         if key in self._loading:
             return False
-        return key in _COMMANDS or dict.__contains__(self, key)
+        clean = key.replace("-", "_") if isinstance(key, str) else key
+        return key in _COMMANDS or clean in _COMMANDS or dict.__contains__(self, key)
 
     def __iter__(self):
         return iter(_COMMANDS)
@@ -52,14 +55,16 @@ class _LazyCommandMap(dict):
     def __getitem__(self, key):
         if dict.__contains__(self, key):
             return dict.__getitem__(self, key)
-        if key not in _COMMANDS:
+        clean = key.replace("-", "_") if isinstance(key, str) else key
+        if key not in _COMMANDS and clean not in _COMMANDS:
             raise KeyError(key)
-        module = importlib.import_module(f"commontrace.commands.{key}_cmd")
+        target = clean if clean in _COMMANDS else key
+        module = importlib.import_module(f"commontrace.commands.{target}_cmd")
         action = self._subparsers_action
         if action is None:
             raise KeyError(key)
         action._choices_actions = [
-            a for a in action._choices_actions if a.dest != key
+            a for a in action._choices_actions if a.dest not in (key, clean)
         ]
         self._loading.add(key)
         try:
@@ -67,6 +72,7 @@ class _LazyCommandMap(dict):
         finally:
             self._loading.discard(key)
         return dict.__getitem__(self, key)
+
 
     def __setitem__(self, key, value):
         dict.__setitem__(self, key, value)
@@ -94,7 +100,8 @@ def build_parser(only: str | None = None) -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=_MISSING_DEPENDENCY is None)
     if only in _COMMANDS:
-        importlib.import_module(f"commontrace.commands.{only}_cmd").add_parser(subparsers)
+        mod_name = only.replace("-", "_")
+        importlib.import_module(f"commontrace.commands.{mod_name}_cmd").add_parser(subparsers)
         return parser
     lazy: dict = _LazyCommandMap(subparsers)
     subparsers._name_parser_map = lazy  # type: ignore[assignment]

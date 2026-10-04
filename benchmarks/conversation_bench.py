@@ -33,6 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from benchmarks.bootstrap import bootstrap_ci, compare_runs, format_comparison_markdown  # noqa: E402
 from benchmarks.cache import BenchmarkCache, CostGuard, compute_cost_usd  # noqa: E402
+from benchmarks.completeness import bucket_counts, grade_context_completeness  # noqa: E402
 from benchmarks.judges import (  # noqa: E402
     BEAM_ABILITIES,
     get_default_judge_for_dataset,
@@ -43,6 +44,144 @@ from commontrace.conversation import Options, Store, recall  # noqa: E402
 from commontrace.conversation.search import assemble, tokens  # noqa: E402
 
 LOCOMO_CATEGORIES = {1: "multi-hop", 2: "temporal", 3: "open-domain", 4: "single-hop"}
+
+
+# --------------------------------------------------------------------------
+# Chunk-set reuse: parsed evaluation cases cached under runs/chunk_sets/.
+#
+# Preparing cases means parsing the (possibly large) dataset files into
+# (space, sessions, now, questions) tuples. Sweeps vary budget/embedder/mode/
+# answer-model, not the inputs, so the parsed inputs are cached on disk:
+#
+#   <root>/runs/chunk_sets/<name>/
+#       manifest.json   snapshot of the parameters that define this chunk set
+#       chunks.jsonl    one normalized case per line (space/sessions/now/questions)
+#
+# <name> defaults to "<dataset>-<hash8>" where hash8 is a sha256 prefix of the
+# fingerprint (dataset, data path, file size+mtime, limit, seed, personas);
+# passing --chunk-set NAME overrides the directory name. A reused directory is
+# only trusted when its manifest fingerprint matches the current parameters.
+# --------------------------------------------------------------------------
+
+CHUNK_SET_LAYOUT = "<root>/runs/chunk_sets/<name>/{manifest.json,chunks.jsonl}"
+
+
+def chunk_fingerprint(dataset: str, data: str, limit: int, seed: int, personas: str) -> dict:
+    path = os.path.abspath(data)
+    try:
+        st = os.stat(path)
+        size, mtime = st.st_size, int(st.st_mtime)
+    except OSError:
+        size, mtime = -1, -1
+    return {"dataset": dataset, "data": path, "size": size, "mtime": mtime,
+            "limit": int(limit or 0), "seed": int(seed or 0), "personas": personas or ""}
+
+
+def _payload_from_cases(cases) -> list[dict]:
+    out = []
+    for space, sessions, now, questions in cases:
+        normalized_questions = []
+        for q in questions:
+            qn = dict(q)
+            for key in ("evidence", "sessions"):
+                if isinstance(qn.get(key), set):
+                    qn[key] = sorted(qn[key])
+            normalized_questions.append(qn)
+        out.append({"space": space, "now": now,
+                    "sessions": [[name, date, messages] for name, date, messages in sessions],
+                    "questions": normalized_questions})
+    return out
+
+
+def _cases_from_payload(payload) -> list:
+    out = []
+    for case in payload:
+        sessions = [(name, date, messages) for name, date, messages in case["sessions"]]
+        questions = []
+        for q in case["questions"]:
+            qn = dict(q)
+            for key in ("evidence", "sessions"):
+                qn[key] = set(qn.get(key) or [])
+            questions.append(qn)
+        out.append((case["space"], sessions, case.get("now"), questions))
+    return out
+
+
+def _load_cases(args) -> list:
+    if args.dataset == "dolphin":
+        return list(dolphin_cases(args.data, args.personas, args.limit))
+    if args.dataset == "beam":
+        return list(beam_cases(args.data, args.limit))
+    if args.dataset == "locomo":
+        return list(locomo_cases(args.data))
+    return list(longmemeval_cases(args.data, args.limit, args.seed))
+
+
+def prepare_chunk_set(args) -> tuple[list, dict]:
+    """Load or build the chunked evaluation inputs for this run.
+
+    Returns (cases, info): cases as (space, sessions, now, questions) tuples,
+    and info describing where the chunk set lives and whether it was reused.
+    """
+    import datetime as dt
+    import hashlib as _hashlib
+
+    fingerprint = chunk_fingerprint(args.dataset, args.data, args.limit, args.seed,
+                                    getattr(args, "personas", ""))
+    digest = _hashlib.sha256(json.dumps(fingerprint, sort_keys=True).encode("utf-8")).hexdigest()
+    name = getattr(args, "chunk_set", None) or f"{args.dataset}-{digest[:8]}"
+    name = re.sub(r"[^A-Za-z0-9._-]", "_", name)
+    fdir = os.path.join(args.root, "runs", "chunk_sets", name)
+    manifest_path = os.path.join(fdir, "manifest.json")
+    chunks_path = os.path.join(fdir, "chunks.jsonl")
+
+    if os.path.isfile(manifest_path) and os.path.isfile(chunks_path):
+        try:
+            manifest = json.load(open(manifest_path, encoding="utf-8"))
+        except (ValueError, OSError):
+            manifest = None
+        if manifest and manifest.get("fingerprint") == fingerprint:
+            with open(chunks_path, encoding="utf-8") as fh:
+                payload = [json.loads(line) for line in fh if line.strip()]
+            info = dict(manifest.get("info") or {})
+            info.update({"name": name, "path": fdir, "reused": True, "layout": CHUNK_SET_LAYOUT})
+            return _cases_from_payload(payload), info
+
+    cases = _load_cases(args)
+    payload = _payload_from_cases(cases)
+    cases = _cases_from_payload(payload)
+    os.makedirs(fdir, exist_ok=True)
+    with open(chunks_path, "w", encoding="utf-8") as fh:
+        for case in payload:
+            fh.write(json.dumps(case, ensure_ascii=False, default=str) + "\n")
+    info = {"name": name, "path": fdir, "reused": False, "layout": CHUNK_SET_LAYOUT,
+            "dataset": args.dataset, "cases": len(cases),
+            "questions": sum(len(qs) for _s, _sess, _n, qs in cases)}
+    manifest = {"fingerprint": fingerprint, "info": info, "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                "layout": CHUNK_SET_LAYOUT}
+    with open(manifest_path, "w", encoding="utf-8") as fh:
+        json.dump(manifest, fh, indent=2, sort_keys=True)
+    return cases, info
+
+
+def _evidence_texts(sessions, evidence_ids) -> dict[str, str]:
+    """Map each gold evidence id to the text that establishes it.
+
+    Exact turn-ref matches win; a trailing '#k' message fragment is accepted as
+    the same evidence session (DolphinBench-style session ids).
+    """
+    by_ref: dict[str, list[str]] = {}
+    for _s, _d, messages in sessions:
+        for m in messages:
+            by_ref.setdefault(str(m["id"]), []).append(m.get("text") or "")
+    out = {}
+    for eid in evidence_ids:
+        texts = by_ref.get(str(eid))
+        if texts is None:
+            texts = [t for rid, ts in by_ref.items() if rid.startswith(str(eid) + "#") for t in ts]
+        if texts:
+            out[str(eid)] = "\n".join(texts)
+    return out
 
 
 def locomo_cases(path: str):
@@ -407,13 +546,8 @@ def run(args) -> dict:
         rerank_blend=args.rerank_blend,
     )
 
-    if args.dataset == "dolphin":
-        cases = dolphin_cases(args.data, args.personas, args.limit)
-    elif args.dataset == "beam":
-        cases = beam_cases(args.data, args.limit)
-    else:
-        cases = locomo_cases(args.data) if args.dataset == "locomo" else \
-            longmemeval_cases(args.data, args.limit, args.seed)
+    # Cached prep: parse once, then every sweep with the same fingerprint reuses it.
+    cases, chunk_info = prepare_chunk_set(args)
 
     rows_by_mode = {m: {b: [] for b in budgets} for m in modes}
     ingest_s, recall_s, full_tokens = 0.0, 0.0, []
@@ -476,6 +610,11 @@ def run(args) -> dict:
                         else:
                             raise ValueError(f"Unknown mode: {mode}")
 
+                        # Lexical completeness grader: a second, model-free read on the
+                        # same retrieved context, alongside the evidence-id metric above.
+                        comp_lex = grade_context_completeness(
+                            ctx, _evidence_texts(sessions, q["evidence"]), answer=q["answer"])
+
                         row = {
                             "id": q["id"],
                             "type": q["type"],
@@ -487,6 +626,10 @@ def run(args) -> dict:
                             "confidence": conf,
                             "rerank_top": rtop,
                             "mode": mode,
+                            "completeness_bucket": comp_lex["bucket"],
+                            "completeness_score": comp_lex["score"],
+                            "completeness_present": comp_lex["present"],
+                            "completeness_missing": comp_lex["missing"],
                         }
                         if "rubric" in q:
                             row["rubric"] = q["rubric"]
@@ -522,6 +665,7 @@ def run(args) -> dict:
             results[b] = summarize(
                 rows_by_mode[m][b], args, b, ingest_s, recall_s / n, full_tokens, mode=m, judge_info=judge_info
             )
+            results[b]["chunk_set"] = chunk_info
         else:
             mode_summaries = {
                 m: summarize(
@@ -543,6 +687,7 @@ def run(args) -> dict:
                 "modes": {m: s["overall"] for m, s in mode_summaries.items()},
                 "modes_detail": mode_summaries,
                 "memory_lift": lift,
+                "chunk_set": chunk_info,
             }
     return results
 
@@ -561,6 +706,9 @@ def summarize(rows, args, budget, ingest_s, recall_s, full_tokens, mode="memory"
             "session": _mean(r["session"] for r in rs),
             "answer_in_context": _mean(r["answer_in_context"] for r in rs),
             "tokens": _mean(r["tokens"] for r in rs),
+            # Lexical completeness grader, alongside the evidence-id `complete` above.
+            "completeness_score": _mean(r.get("completeness_score") for r in rs),
+            "completeness": bucket_counts(r.get("completeness_bucket") for r in rs),
         }
         if args.answer:
             # LoCoMo protocol: category 5 (adversarial) is excluded from overall accuracy
@@ -579,6 +727,14 @@ def summarize(rows, args, budget, ingest_s, recall_s, full_tokens, mode="memory"
             )
             b_dict["answer_cost_usd"] = round(sum(r.get("answer_cost_usd", 0.0) for r in rs), 4)
             b_dict["judge_cost_usd"] = round(sum(r.get("judge_cost_usd", 0.0) for r in rs), 4)
+            # Completeness/answer correlation: answer accuracy conditioned on the
+            # retrieval context being lexically complete vs. not.
+            complete_rows = [r for r in scorable if r.get("completeness_bucket") == "COMPLETE"]
+            incomplete_rows = [r for r in scorable if r.get("completeness_bucket") in ("PARTIAL", "INSUFFICIENT")]
+            b_dict["accuracy_when_complete"] = _mean(
+                r["correct"] for r in complete_rows if r.get("correct") is not None)
+            b_dict["accuracy_when_incomplete"] = _mean(
+                r["correct"] for r in incomplete_rows if r.get("correct") is not None)
         else:
             b_dict["accuracy"] = None
 
@@ -597,6 +753,9 @@ def summarize(rows, args, budget, ingest_s, recall_s, full_tokens, mode="memory"
                 b_dict["bootstrap_95ci"]["mean_score"] = bootstrap_ci(
                     [r["score"] for r in scorable if r.get("score") is not None]
                 )
+            b_dict["bootstrap_95ci"]["completeness_score"] = bootstrap_ci(
+                [r["completeness_score"] for r in rs if r.get("completeness_score") is not None]
+            )
         return b_dict
 
     by_type = defaultdict(list)
@@ -672,6 +831,13 @@ def main(argv=None) -> int:
     p.add_argument("--limit", type=int, default=0)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--answer", action="store_true", help="answer and judge with COMMONTRACE_LLM_*")
+    p.add_argument(
+        "--chunk-set",
+        default=None,
+        help=("directory name under <root>/runs/chunk_sets/ for the parsed evaluation "
+              "inputs (default: <dataset>-<hash>). Reused across sweeps when the "
+              "dataset, limit, seed and data file are unchanged."),
+    )
     p.add_argument(
         "--judge",
         choices=("auto", "generic", "longmemeval", "locomo", "beam"),

@@ -272,29 +272,65 @@ class Pipeline:
                 out[key] = out.get(key, 0) + value
         return out
 
-    def run(self) -> IngestionResult:
+    def run(self, job_id: str | None = None, root: str | None = None) -> IngestionResult:
         """Run the full pipeline and submit to storage; the loader's ledger records
-        what was ingested only once the submitter has written it."""
+        what was ingested only once the submitter has written it.
+        If job_id is provided, lifecycle stages are tracked:
+        queued -> extracting -> transforming -> submitting -> done | failed.
+        """
         if self.submitter is None:
             raise ValueError("Pipeline cannot run without a submitter")
 
+        target_root = root or getattr(self.submitter, "root", None)
         from commontrace import telemetry
+        from commontrace.ingest import catalog
 
-        with telemetry.span("ingest.run", submitter=type(self.submitter).__name__) as handle:
-            result = self.submitter.submit(self._stream())
-            handle.set(chunks=result.chunks_extracted, facts=result.facts_written)
-        self.last_warnings = self._collect_warnings()
-        result.errors.extend(self.last_warnings)
-        stats = getattr(self.loader, "stats", None) or {}
-        result.skipped_unchanged += int(stats.get("unchanged", 0) or 0)
-        result.skipped_large += int(stats.get("skipped_large", 0) or 0)
-        result.skipped_unsupported += int(stats.get("unsupported", 0) or 0)
-        result.truncated += int(stats.get("truncated", 0) or 0)
-        commit = getattr(self.loader, "commit", None)
-        if commit is not None and not any(e.startswith("fact error") for e in result.errors):
-            commit()
-        self.last_stats = self._stats()
-        return result
+        if job_id and target_root:
+            catalog.update_ingest_job(target_root, job_id, "extracting", message="Extracting and reading source chunks")
+
+        try:
+            with telemetry.span("ingest.run", submitter=type(self.submitter).__name__) as handle:
+                if job_id and target_root:
+                    catalog.update_ingest_job(
+                        target_root, job_id, "transforming",
+                        message="Transforming and deduplicating chunks",
+                    )
+                chunks_stream = self._stream()
+
+                if job_id and target_root:
+                    catalog.update_ingest_job(
+                        target_root, job_id, "submitting",
+                        message="Submitting chunks to storage",
+                    )
+                result = self.submitter.submit(chunks_stream)
+
+                handle.set(chunks=result.chunks_extracted, facts=result.facts_written)
+
+            self.last_warnings = self._collect_warnings()
+            result.errors.extend(self.last_warnings)
+            stats = getattr(self.loader, "stats", None) or {}
+            result.skipped_unchanged += int(stats.get("unchanged", 0) or 0)
+            result.skipped_large += int(stats.get("skipped_large", 0) or 0)
+            result.skipped_unsupported += int(stats.get("unsupported", 0) or 0)
+            result.truncated += int(stats.get("truncated", 0) or 0)
+            commit = getattr(self.loader, "commit", None)
+            if commit is not None and not any(e.startswith("fact error") for e in result.errors):
+                commit()
+            self.last_stats = self._stats()
+
+            if job_id and target_root:
+                final_stage = "failed" if result.errors and not result.chunks_extracted else "done"
+                catalog.update_ingest_job(
+                    target_root, job_id, final_stage,
+                    message=f"Ingestion {final_stage}: {result.chunks_extracted} chunk(s) processed",
+                    stats={"chunks": result.chunks_extracted, "facts": result.facts_written},
+                )
+            return result
+        except Exception as exc:
+            if job_id and target_root:
+                catalog.update_ingest_job(target_root, job_id, "failed", error=str(exc))
+            raise
+
 
 
 @dataclass

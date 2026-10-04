@@ -15,6 +15,12 @@ LOCAL_TOOLS = (
     "list_skills", "load_skill",
     "conversation_add", "conversation_recall", "conversation_profile", "conversation_forget",
     "conversation_summarize", "memory_recall",
+    "lessons_from_trace", "traces_for_lesson", "community_members", "observation_evidence",
+    "ingest_job_status", "ingest_documents_list", "ingest_document_get",
+    "saga_create", "saga_get", "saga_list", "saga_append_event", "saga_update_brief",
+    "knowledge_page_list", "knowledge_page_get", "knowledge_page_update",
+    "session_ledger_record", "session_ledger_get", "session_ledger_summary",
 )
+
 
 APPROVAL_TOOLS = ("approve_lesson", "reject_lesson")

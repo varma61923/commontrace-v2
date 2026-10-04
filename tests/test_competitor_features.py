@@ -767,3 +767,339 @@ class TestFactTokenMemo:
         import commontrace.retrieval as ret
 
         assert ret.corpus_bin is not None  # top-level import, not per-query importlib
+
+
+# --- 13. Ingest Lifecycle & Document Catalog -----------------------------------------
+
+class TestIngestLifecycleAndCatalog:
+    def test_job_lifecycle_transitions(self, store):
+        from commontrace.ingest import catalog
+
+        job = catalog.create_ingest_job(store, "docs/architecture.md")
+        assert job.stage == "queued"
+        assert job.source == "docs/architecture.md"
+
+        # extracting
+        job = catalog.update_ingest_job(store, job.id, "extracting", message="Extracting chunks")
+        assert job.stage == "extracting"
+
+        # transforming
+        job = catalog.update_ingest_job(store, job.id, "transforming", message="Contextualizing")
+        assert job.stage == "transforming"
+
+        # submitting
+        job = catalog.update_ingest_job(store, job.id, "submitting", message="Submitting chunks")
+        assert job.stage == "submitting"
+
+        # done
+        job = catalog.update_ingest_job(store, job.id, "done", message="Finished", stats={"chunks": 10})
+        assert job.stage == "done"
+        assert job.stats.get("chunks") == 10
+
+        fetched = catalog.get_ingest_job(store, job.id)
+        assert fetched is not None
+        assert fetched.stage == "done"
+
+    def test_job_failure_visibility(self, store):
+        from commontrace.ingest import catalog
+
+        job = catalog.create_ingest_job(store, "corrupt.pdf")
+        catalog.update_ingest_job(store, job.id, "extracting")
+        job = catalog.update_ingest_job(store, job.id, "failed", error="Malformed PDF syntax")
+        assert job.stage == "failed"
+        assert job.error == "Malformed PDF syntax"
+
+    def test_summary_list_vs_full_content_get(self, store):
+        from commontrace.ingest import catalog
+
+        full_doc = "A" * 5000 + "\n\nImportant section about auth limits."
+        doc = catalog.record_document(
+            store,
+            source_path="/app/docs/auth.md",
+            content=full_doc,
+            title="Authentication Architecture",
+            chunks=["Chunk 1 content", "Chunk 2 content"],
+        )
+        assert doc.token_count > 1000
+
+        # Summary list MUST be lightweight (never dumping the full 5000 chars)
+        docs = catalog.list_documents(store)
+        assert len(docs) == 1
+        summary = docs[0]
+        assert summary["id"] == doc.id
+        assert summary["title"] == "Authentication Architecture"
+        assert len(summary["summary"]) <= 200
+        assert "content" not in summary  # Crucial: content not dumped into summary list
+
+        # Full content get returns the entire document
+        fetched = catalog.get_document(store, doc.id)
+        assert fetched is not None
+        assert fetched["content"] == full_doc
+        assert len(fetched["chunks"]) == 2
+
+        # Chunk-level get
+        chunk1 = catalog.get_document(store, doc.id, chunk_index=1)
+        assert chunk1["requested_chunk"] == "Chunk 2 content"
+
+
+# --- 14. Sagas: Ordered Incident / Migration Narratives ------------------------------
+
+class TestSagasNarratives:
+    def test_saga_lifecycle_and_events(self, store):
+        from commontrace import sagas
+
+        saga = sagas.create_saga(
+            store,
+            saga_id="inc-2026-auth",
+            title="P0 Auth Outage Incident",
+            tags=["auth", "incident", "p0"],
+            brief="Initial report: 502s on token exchange",
+        )
+        assert saga.id == "inc-2026-auth"
+        assert saga.status == "active"
+
+        assert "auth" in saga.tags
+
+        # Append chronological events
+        sagas.append_saga_event(
+            store,
+            saga_id="inc-2026-auth",
+            title="Redis failover initiated",
+            description="Replica promoted to primary in us-east-1",
+            actor="oncall_alice",
+            new_brief="Redis failover completed; 502s dropping",
+            watermark="2026-10-04T08:00:00Z",
+        )
+        sagas.append_saga_event(
+            store,
+            saga_id="inc-2026-auth",
+            title="Traffic normalized",
+            description="Error rate back to 0.01%",
+            actor="oncall_bob",
+        )
+
+        loaded = sagas.get_saga(store, "inc-2026-auth")
+        assert loaded is not None
+        assert len(loaded.events) == 2
+        assert loaded.events[0].title == "Redis failover initiated"
+        assert loaded.events[1].title == "Traffic normalized"
+        assert "Redis failover completed" in loaded.watermarked_running_brief
+        assert loaded.watermark == "2026-10-04T08:00:00Z"
+
+    def test_watermarked_running_brief_updates(self, store):
+        from commontrace import sagas
+
+        sagas.create_saga(store, "migration-pg", "Postgres 16 Migration")
+        sagas.update_running_brief(
+            store, "migration-pg",
+            brief="Schemas migrated, replication lagging by 4s",
+            watermark="step-3-schema-done",
+        )
+        saga = sagas.get_saga(store, "migration-pg")
+        assert saga.watermarked_running_brief == "Schemas migrated, replication lagging by 4s"
+        assert saga.watermark == "step-3-schema-done"
+
+    def test_saga_filtering_and_search(self, store):
+        from commontrace import sagas
+
+        sagas.create_saga(store, "s1", "Alpha Project", tags=["alpha", "infra"])
+        sagas.create_saga(store, "s2", "Beta Project", tags=["beta", "infra"], status="resolved")
+
+        active = sagas.list_sagas(store, status="active")
+        assert any(s.id == "s1" for s in active)
+        assert not any(s.id == "s2" for s in active)
+
+        infra = sagas.list_sagas(store, tag="infra")
+        assert len(infra) >= 2
+
+        hits = sagas.search_sagas(store, "Alpha")
+        assert hits and hits[0].id == "s1"
+
+
+# --- 15. Knowledge Pages with Dry-Run Diffs -----------------------------------------
+
+class TestKnowledgePagesCurated:
+    def test_create_and_dry_run_diff(self, store):
+        from commontrace import knowledge_pages
+
+        content_v1 = "# Auth Flow\n\n1. User enters credentials\n2. Gateway issues JWT"
+        res_v1 = knowledge_pages.update_page(
+            store, "architecture/auth", content_v1,
+            title="Authentication Architecture", tags=["auth", "security"],
+        )
+        assert res_v1["version"] == 1
+        assert res_v1["dry_run"] is False
+
+        # Dry run diff
+        content_v2 = "# Auth Flow\n\n1. User enters credentials\n2. Gateway issues OAuth token\n3. Refresh token rotated"
+        preview = knowledge_pages.update_page(
+            store, "architecture/auth", content_v2,
+            dry_run=True,
+        )
+        assert preview["dry_run"] is True
+        assert preview["changed"] is True
+        assert preview["current_version"] == 1
+        assert preview["proposed_version"] == 2
+        assert "+3. Refresh token rotated" in preview["diff"]
+        assert "-2. Gateway issues JWT" in preview["diff"]
+
+        # Ensure disk content remains v1
+        page = knowledge_pages.get_page(store, "architecture/auth")
+        assert page.version == 1
+        assert "JWT" in page.content
+
+    def test_version_concurrency_and_history(self, store):
+        from commontrace import knowledge_pages
+
+        knowledge_pages.update_page(store, "runbook/restart", "Initial body", title="Restart Guide")
+        # Conflicting version must fail
+        with pytest.raises(knowledge_pages.VersionConflictError):
+            knowledge_pages.update_page(
+                store, "runbook/restart", "Conflicting edit", expected_version=99,
+            )
+
+        # Successful update
+        knowledge_pages.update_page(
+            store, "runbook/restart", "Updated step 1", expected_version=1, comment="Add step 1 details",
+        )
+        page = knowledge_pages.get_page(store, "runbook/restart")
+        assert page.version == 2
+
+        history = knowledge_pages.page_history(store, "runbook/restart")
+        assert len(history) == 2
+        assert history[-1]["version"] == 2
+        assert history[-1]["comment"] == "Add step 1 details"
+
+
+# --- 16. Session Ledger: Per-Session Cost & Model Attribution ------------------------
+
+class TestSessionLedgerAttribution:
+    def test_record_usage_and_cost_estimation(self, store):
+        from commontrace import session_ledger
+
+        entry1 = session_ledger.record_usage(
+            store, session_id="sess_123", model="gpt-4o",
+            prompt_tokens=1000, completion_tokens=200, occasion="answer",
+        )
+        assert entry1.prompt_tokens == 1000
+        assert entry1.completion_tokens == 200
+        assert entry1.total_tokens == 1200
+        # gpt-4o: $2.50/M in, $10.00/M out -> 1000*2.5e-6 + 200*10e-6 = 0.0025 + 0.002 = 0.0045
+        assert round(entry1.cost_usd, 4) == 0.0045
+
+        entry2 = session_ledger.record_usage(
+            store, session_id="sess_123", model="claude-sonnet-5",
+            prompt_tokens=2000, completion_tokens=500, occasion="recall",
+        )
+        assert entry2.cost_usd > 0
+
+    def test_session_summary_breakdown(self, store):
+        from commontrace import session_ledger
+
+        sess = "sess_breakdown"
+        session_ledger.record_usage(store, sess, "gpt-4o", 1000, 100, occasion="answer")
+        session_ledger.record_usage(store, sess, "claude-sonnet-5", 3000, 200, occasion="extract")
+
+        summary = session_ledger.session_summary(store, sess)
+        assert summary["session_id"] == sess
+        assert summary["call_count"] == 2
+        assert summary["prompt_tokens"] == 4000
+        assert summary["completion_tokens"] == 300
+        assert summary["total_tokens"] == 4300
+        assert summary["total_cost_usd"] > 0
+        assert "gpt-4o" in summary["by_model"]
+        assert "claude-sonnet-5" in summary["by_model"]
+        assert "answer" in summary["by_occasion"]
+        assert "extract" in summary["by_occasion"]
+
+    def test_overall_ledger_summary(self, store):
+        from commontrace import session_ledger
+
+        session_ledger.record_usage(store, "sA", "gpt-4o", 500, 50)
+        session_ledger.record_usage(store, "sB", "gpt-4o-mini", 500, 50)
+
+        overall = session_ledger.overall_ledger_summary(store)
+        assert overall["call_count"] >= 2
+        assert overall["session_count"] >= 2
+        assert overall["total_tokens"] >= 1100
+
+
+# --- 17. MCP Competitor Tools Integration --------------------------------------------
+
+class TestMCPCompetitorTools:
+    def test_mcp_sagas_pages_ledger_and_catalog(self, store):
+        from commontrace import mcp_server
+
+        server = mcp_server.build_server(store)
+
+        # 1. Saga tools
+        res_saga = _mcp_call(server, "saga_create",
+            saga_id="mcp-test-saga",
+            title="MCP Test Incident",
+            tags=["test", "mcp"],
+            brief="Starting incident",
+        )
+        assert res_saga["ok"] is True
+        assert res_saga["saga"]["id"] == "mcp-test-saga"
+
+        res_ev = _mcp_call(server, "saga_append_event",
+            saga_id="mcp-test-saga",
+            title="Mitigation applied",
+            description="Restarted service",
+        )
+        assert res_ev["ok"] is True
+        assert len(res_ev["saga"]["events"]) == 1
+
+        # 2. Knowledge Page tools with dry-run
+        res_page = _mcp_call(server, "knowledge_page_update",
+            slug="mcp/runbook",
+            content="# Runbook\n\nStep 1: Check logs",
+            title="MCP Runbook",
+        )
+        assert res_page["ok"] is True
+        assert res_page["version"] == 1
+
+        res_diff = _mcp_call(server, "knowledge_page_update",
+            slug="mcp/runbook",
+            content="# Runbook\n\nStep 1: Check logs\nStep 2: Restart pod",
+            dry_run=True,
+        )
+        assert res_diff["ok"] is True
+        assert res_diff["dry_run"] is True
+        assert "+Step 2: Restart pod" in res_diff["diff"]
+
+        # 3. Session Ledger tools
+        res_ledg = _mcp_call(server, "session_ledger_record",
+            session_id="mcp_session_1",
+            model="gpt-4o",
+            prompt_tokens=1500,
+            completion_tokens=300,
+            occasion="mcp_test",
+        )
+        assert res_ledg["ok"] is True
+        assert res_ledg["entry"]["total_tokens"] == 1800
+
+        res_sum = _mcp_call(server, "session_ledger_get",
+            session_id="mcp_session_1",
+        )
+        assert res_sum["ok"] is True
+        assert res_sum["total_tokens"] == 1800
+
+        # 4. Ingest Document Catalog tools
+        from commontrace.ingest import catalog
+        catalog.record_document(
+            store, "/test/doc.md", "# Test Title\n\nDocument body for catalog test",
+        )
+
+        res_docs = _mcp_call(server, "ingest_documents_list")
+        assert res_docs["ok"] is True
+        assert res_docs["count"] >= 1
+        assert "content" not in res_docs["documents"][0]  # Verify lightweight summary
+
+        res_get = _mcp_call(server, "ingest_document_get",
+            doc_id_or_path=res_docs["documents"][0]["id"],
+        )
+        assert res_get["ok"] is True
+        assert "Document body for catalog test" in res_get["document"]["content"]
+
+
