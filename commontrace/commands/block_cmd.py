@@ -29,6 +29,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p_set.add_argument("--max-chars", type=int, default=memory_blocks.DEFAULT_MAX_CHARS)
     p_set.add_argument("--actor", default="cli", help="Actor responsible for the change.")
     p_set.add_argument("--reason", default="", help="Rationale for the update.")
+    p_set.add_argument("--read-only", action="store_true", help="Mark the block read-only (immutable).")
     p_set.add_argument("--dest", default=None)
     p_set.set_defaults(func=run_set)
 
@@ -53,6 +54,20 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p_hist.add_argument("name", nargs="?", default="", help="Optional block name to filter history.")
     p_hist.add_argument("--dest", default=None)
     p_hist.set_defaults(func=run_history)
+
+    p_ins = sub.add_parser("insert", help="Insert text at a line of a memory block.")
+    p_ins.add_argument("name", help="Name of the memory block.")
+    p_ins.add_argument("text", help="Text to insert.")
+    p_ins.add_argument("--line", type=int, default=-1,
+                       help="0=top, -1=bottom (default), N=after line N.")
+    p_ins.add_argument("--actor", default="cli")
+    p_ins.add_argument("--reason", default="")
+    p_ins.add_argument("--dest", default=None)
+    p_ins.set_defaults(func=run_insert)
+
+    p_render = sub.add_parser("render", help="Render blocks as XML for prompt injection.")
+    p_render.add_argument("--dest", default=None)
+    p_render.set_defaults(func=run_render)
 
     p_del = sub.add_parser("delete", help="Delete a memory block.")
     p_del.add_argument("name", help="Name of the memory block to delete.")
@@ -101,6 +116,7 @@ def run_set(args: argparse.Namespace) -> int:
             max_chars=args.max_chars,
             actor=args.actor,
             reason=args.reason,
+            read_only=bool(getattr(args, "read_only", False)),
         )
     except memory_blocks.MemoryBlockError as exc:
         print(f"[commontrace] {exc}", file=sys.stderr)
@@ -174,4 +190,29 @@ def run_delete(args: argparse.Namespace) -> int:
         print(f"Block '{args.name}' not found.", file=sys.stderr)
         return 1
     print(f"Deleted block '{args.name}'.")
+    return 0
+
+
+def run_insert(args: argparse.Namespace) -> int:
+    root = paths.resolve_root(args.dest)
+    try:
+        b = memory_blocks.insert_block(
+            root=root,
+            name=args.name,
+            text=args.text,
+            line_number=args.line,
+            actor=args.actor,
+            reason=args.reason,
+        )
+    except memory_blocks.MemoryBlockError as exc:
+        print(f"[commontrace] {exc}", file=sys.stderr)
+        return 1
+    print(f"Inserted into block '{b.name}' (rev: {b.revision}, {b.char_count}/{b.max_chars} chars).")
+    return 0
+
+
+def run_render(args: argparse.Namespace) -> int:
+    root = paths.resolve_root(args.dest)
+    blocks = memory_blocks.list_blocks(root)
+    print(memory_blocks.render_memory_blocks(blocks))
     return 0

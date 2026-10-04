@@ -6,6 +6,7 @@ import contextlib
 import datetime as dt
 import hashlib
 import json
+import math
 import os
 import re
 import sqlite3
@@ -16,6 +17,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
 from commontrace import memory_guard, paths
+from commontrace._stem import stem
 from commontrace.conversation import profile, timeparse
 
 SPACE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -119,6 +121,10 @@ def connect(path: str, setup: str = "", *, read_only: bool = False) -> sqlite3.C
     deadline = time.monotonic() + BUSY_SECONDS
     _retry_locked(lambda: db.execute("PRAGMA journal_mode=WAL"), deadline)
     db.execute("PRAGMA synchronous=NORMAL")
+    # EverOS engine pattern: scratch tables in memory, an 8MB page cache bound
+    # so one pathological session cannot balloon process RSS.
+    db.execute("PRAGMA temp_store=MEMORY")
+    db.execute("PRAGMA cache_size=-8192")
     if setup:
         def _setup():
             with write_txn(db):
@@ -205,6 +211,40 @@ def split_units(text: str, limit: int = UNIT_CHARS) -> list[str]:
 
 def _hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:32]
+
+
+def fact_hash(statement: str) -> str:
+    """MD5 of the normalized fact statement for cheap cross-turn dedup.
+
+    Normalization (adapted from Mem0's additive-extraction dedup): lowercase,
+    strip surrounding whitespace/punctuation, collapse internal whitespace.
+    Two turns stating the same fact with different casing/spacing share a hash.
+    """
+    norm = re.sub(r"\s+", " ", str(statement or "").strip().lower().strip(" .,;:!?\"'"))
+    return hashlib.md5(norm.encode("utf-8")).hexdigest()
+
+
+def sigmoid_bm25(raw: float, n_query_terms: int) -> float:
+    """Normalise a raw BM25 score to [0, 1] with a query-length adaptive sigmoid.
+
+    Adapts Mem0's ``normalize_bm25`` formula (mem0/utils/scoring.py) which maps
+    unbounded BM25 scores (typically 0–20+) to the same scale as cosine
+    similarity (0–1) so they can be combined additively without rank-only loss.
+
+    Lives here (not in ``search``) so the store can normalize scores without a
+    circular import: ``search`` imports this module.
+    """
+    if n_query_terms <= 3:
+        midpoint, steepness = 5.0, 0.7
+    elif n_query_terms <= 6:
+        midpoint, steepness = 7.0, 0.6
+    elif n_query_terms <= 9:
+        midpoint, steepness = 9.0, 0.5
+    elif n_query_terms <= 15:
+        midpoint, steepness = 10.0, 0.5
+    else:
+        midpoint, steepness = 12.0, 0.5
+    return 1.0 / (1.0 + math.exp(-steepness * (raw - midpoint)))
 
 
 def _fts_query(text: str) -> str:
@@ -297,6 +337,10 @@ class Store:
                     raise ConversationError(f"a message is {len(text)} characters; the limit is {MAX_TURN_CHARS}")
                 text, found = memory_guard.redact_secrets(text)
                 redacted += len(found)
+                pii_text, pii_found = memory_guard.redact_pii(text)
+                if pii_found:
+                    text = pii_text
+                    redacted += len(pii_found)
                 role = str(message.get("role") or "").strip().lower()
                 speaker = str(message.get("speaker") or message.get("name") or role or "user").strip()[:120]
                 if not role:
@@ -375,13 +419,23 @@ class Store:
                                   (session,)).fetchone()
             if row is None:
                 raise ConversationError(f"no session {session!r} in space {self.space!r}")
+            # One snapshot up front: exact statements + MD5 hashes of everything
+            # stored, so per-memory dedup is O(1) instead of a full-table scan
+            # per memory (cognee ingest_data / mem0 existing_hashes pattern).
+            seen_statements = {r[0] for r in self.db.execute("SELECT statement FROM facts")}
+            seen_hashes = {fact_hash(s) for s in seen_statements}
             for m in memories:
-                text, _found = memory_guard.redact_secrets(str(m.get("text") or "").strip()[:profile.MAX_STATEMENT])
+                raw = str(m.get("text") or "").strip()[:profile.MAX_STATEMENT]
+                text, _found = memory_guard.redact_secrets(raw)
+                pii_text, _pii = memory_guard.redact_pii(text)
+                text = pii_text
                 kind = str(m.get("kind") or "fact").strip().lower()
                 if not text or kind not in FACT_KINDS:
                     continue
-                if self.db.execute("SELECT 1 FROM facts WHERE statement=?", (text,)).fetchone():
+                if text in seen_statements or fact_hash(text) in seen_hashes:
                     continue
+                seen_statements.add(text)
+                seen_hashes.add(fact_hash(text))
                 slot = str(m["slot"]).strip().lower()[:80] if m.get("slot") else None
                 self._insert_fact(row["id"], kind, profile.subject_of(text), text,
                                   str(m.get("at") or row["at"] or "") or None, slot, source)
@@ -479,14 +533,21 @@ class Store:
                                     (json.dumps(ids),)).fetchall())
 
     def lexical(self, query: str, limit: int) -> list[tuple[int, float]]:
-        """(unit id, score) by BM25, best first."""
+        """(unit id, score) by BM25, best first.
+
+        Scores are sigmoid-normalized to [0, 1] (see :func:`sigmoid_bm25`,
+        adapted from Mem0's ``normalize_bm25``) so they share a scale with
+        cosine similarity instead of living on an unbounded 0–20+ range.
+        """
         match = _fts_query(query)
         if not match:
             return []
+        n_terms = len(match.split(" OR "))
         if FTS5:
-            return [(r[0], -r[1]) for r in self.db.execute(
+            rows = self.db.execute(
                 "SELECT rowid, bm25(units_fts) FROM units_fts WHERE units_fts MATCH ? "
-                "ORDER BY bm25(units_fts) LIMIT ?", (match, limit))]
+                "ORDER BY bm25(units_fts) LIMIT ?", (match, limit))
+            return [(r[0], sigmoid_bm25(-r[1], n_terms)) for r in rows]
         return _python_bm25(self.units(), query, limit)
 
     def in_window(self, lo: dt.date, hi: dt.date) -> set[int]:
@@ -506,11 +567,25 @@ class Store:
             "ORDER BY f.at, f.id", (json.dumps(kinds), json.dumps(kinds), int(history)))]
 
     def entity_turns(self, names: Iterable[str]) -> dict[str, list[int]]:
-        """The turns mentioning each name or spoken by them."""
-        out: dict[str, list[int]] = {}
-        for name in dict.fromkeys(n.lower() for n in names):
-            query = "SELECT turn FROM entities WHERE name=? UNION SELECT id FROM turns WHERE LOWER(speaker)=?"
-            out[name] = [r[0] for r in self.db.execute(query, (name, name))]
+        """The turns mentioning each name or spoken by them.
+
+        One batched query for all names (cognee single-WHERE-IN pattern),
+        not one UNION per name.
+        """
+        names = list(dict.fromkeys(n.lower() for n in names))
+        if not names:
+            return {}
+        out: dict[str, list[int]] = {name: [] for name in names}
+        placeholders = ",".join("?" for _ in names)
+        for found, turn in self.db.execute(
+                f"SELECT name, turn FROM entities WHERE name IN ({placeholders})",  # nosec B608 - placeholders only
+                names):
+            out[found].append(turn)
+        for speaker, turn in self.db.execute(
+                f"SELECT LOWER(speaker), id FROM turns WHERE LOWER(speaker) IN ({placeholders})",  # nosec B608
+                names):
+            if turn not in out[speaker]:
+                out[speaker].append(turn)
         return out
 
     def summaries(self) -> dict[str, dict]:
@@ -590,10 +665,6 @@ class Store:
 
 
 def _python_bm25(units, query: str, limit: int) -> list[tuple[int, float]]:
-    import math
-
-    from commontrace._stem import stem
-
     def terms(text):
         return [stem(t) for t in re.findall(r"[a-z0-9]+", text.lower()) if t not in profile.STOPWORDS]
 
@@ -612,5 +683,5 @@ def _python_bm25(units, query: str, limit: int) -> list[tuple[int, float]]:
                 idf = math.log(1 + (len(docs) - df[t] + 0.5) / (df[t] + 0.5))
                 score += idf * tf * 2.2 / (tf + 1.2 * (0.25 + 0.75 * len(d) / avg))
         if score > 0:
-            scored.append((uid, score))
+            scored.append((uid, sigmoid_bm25(score, len(q))))
     return sorted(scored, key=lambda x: -x[1])[:limit]

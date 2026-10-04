@@ -5,7 +5,6 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import datetime
-import glob
 import json
 import os
 import tempfile
@@ -155,14 +154,6 @@ def _listing(root: str) -> tuple:
 
 
 _FAST: dict[str, tuple[tuple, tuple | None, dict, list]] = {}
-
-
-def _lesson_paths(root: str) -> list[str]:
-    ldir = paths.lessons_dir(root)
-    return [
-        p for p in sorted(glob.glob(os.path.join(ldir, "lesson_*.md")))
-        if os.path.basename(p) != "lesson_template.md"
-    ]
 
 
 _MEMO: dict[str, tuple[tuple, dict, frozenset]] = {}

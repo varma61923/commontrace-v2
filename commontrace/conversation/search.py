@@ -8,11 +8,13 @@ from __future__ import annotations
 import datetime as dt
 import math
 import re
+import threading
+from collections import OrderedDict
 from dataclasses import dataclass, field
 
 from commontrace import injection_guard
 from commontrace.conversation import profile, timeparse
-from commontrace.conversation.store import Store, Turn
+from commontrace.conversation.store import Store, Turn, sigmoid_bm25  # noqa: F401 - re-exported (canonical home: store)
 
 DEFAULT_BUDGET = 1500
 RRF_K = 60
@@ -189,16 +191,29 @@ _QUERY_TRAILING = re.compile(
 )
 
 
+_CORE_STRIP_ARTICLE = re.compile(r"^(?:the\s+|about\s+|and\s+|my\s+|our\s+|how\s+)+", re.I)
+_CORE_STRIP_ASPECT = re.compile(
+    r"^(?:the\s+)?(?:order in which|sequence of|different aspects of|aspects of|timeline of|history of|"
+    r"all the times i|details about)\s+", re.I,
+)
+_CORE_STRIP_MENTION = re.compile(
+    r"^(?:i brought up|we talked about|we discussed|i mentioned)\s+", re.I)
+_CORE_STRIP_ASPECT2 = re.compile(r"^(?:different aspects of|aspects of)\s+", re.I)
+_CLAUSE_SPLIT = re.compile(r"\s*(?:;|,\s*and\b|\band then\b|\balso\b)\s*")
+_WORD3 = re.compile(r"[A-Za-z]{3,}")
+_COORD = re.compile(
+    r"\b([a-z0-9_-]+(?:\s+[a-z0-9_-]+)?)\s+(?:or|and)\s+([a-z0-9_-]+(?:\s+[a-z0-9_-]+)?)\b",
+    re.I,
+)
+
+
 def _core_topic(question: str) -> str:
     cleaned = _QUERY_FRAME.sub("", question.strip())
     cleaned = _QUERY_TRAILING.sub("", cleaned).strip(" ?,.:;")
-    cleaned = re.sub(r"^(?:the\s+|about\s+|and\s+|my\s+|our\s+|how\s+)+", "", cleaned, flags=re.I)
-    cleaned = re.sub(
-        r"^(?:the\s+)?(?:order in which|sequence of|different aspects of|aspects of|timeline of|history of|"
-        r"all the times i|details about)\s+", "", cleaned, flags=re.I,
-    )
-    cleaned = re.sub(r"^(?:i brought up|we talked about|we discussed|i mentioned)\s+", "", cleaned, flags=re.I)
-    cleaned = re.sub(r"^(?:different aspects of|aspects of)\s+", "", cleaned, flags=re.I)
+    cleaned = _CORE_STRIP_ARTICLE.sub("", cleaned)
+    cleaned = _CORE_STRIP_ASPECT.sub("", cleaned)
+    cleaned = _CORE_STRIP_MENTION.sub("", cleaned)
+    cleaned = _CORE_STRIP_ASPECT2.sub("", cleaned)
     return cleaned.strip(" ?,.:;")
 
 
@@ -210,13 +225,10 @@ def subqueries(question: str) -> list[str]:
     q_norm = question.rstrip(" ?,.:;").lower()
     if core and core.lower() != q_norm and len(core) >= 4:
         out.append(core)
-    parts = re.split(r"\s*(?:;|,\s*and\b|\band then\b|\balso\b)\s*", question)
+    parts = _CLAUSE_SPLIT.split(question)
     if len(parts) > 1:
-        out += [p for p in parts if len(re.findall(r"[A-Za-z]{3,}", p)) >= 2]
-    coord = re.search(
-        r"\b([a-z0-9_-]+(?:\s+[a-z0-9_-]+)?)\s+(?:or|and)\s+([a-z0-9_-]+(?:\s+[a-z0-9_-]+)?)\b",
-        core or question, re.I
-    )
+        out += [p for p in parts if len(_WORD3.findall(p)) >= 2]
+    coord = _COORD.search(core or question)
     if coord:
         w1, w2 = coord.group(1), coord.group(2)
         if w1.lower() not in profile.STOPWORDS and w2.lower() not in profile.STOPWORDS:
@@ -248,6 +260,46 @@ def _rrf(rankings: list[tuple[list[int], float]]) -> dict[int, float]:
     return scores
 
 
+def relative_time_delta(moment: dt.datetime, now: dt.datetime | None = None) -> str:
+    """Return a human-readable relative time string (Letta-style).
+
+    Examples: ``"12s ago"``, ``"4m ago"``, ``"2h ago"``, ``"5d ago"``.
+    """
+    ref = now or dt.datetime.utcnow()
+    delta = ref - moment
+    total_seconds = int(delta.total_seconds())
+    if total_seconds < 0:
+        return "in the future"
+    if total_seconds < 60:
+        return f"{total_seconds}s ago"
+    if total_seconds < 3600:
+        return f"{total_seconds // 60}m ago"
+    if total_seconds < 86400:
+        return f"{total_seconds // 3600}h ago"
+    return f"{total_seconds // 86400}d ago"
+
+
+def _normalize_text(text: str) -> str:
+    """Lowercased, punctuation-stripped, whitespace-collapsed form for equality checks."""
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9\s]", "", (text or "").lower())).strip()
+
+
+def filter_self_turns(store: Store, question: str, turn_ids: list[int]) -> tuple[list[int], int]:
+    """Drop turns that merely restate the question (anti-recursion filter).
+
+    A just-asked user question is stored as a turn; recalling it as its own
+    answer creates a self-loop where the context echoes the query instead of
+    answering it. Returns (kept ids, n_dropped).
+    """
+    norm_q = _normalize_text(question)
+    if not norm_q:
+        return list(turn_ids), 0
+    turns = store.turns(turn_ids)
+    kept = [tid for tid in turn_ids
+            if tid not in turns or _normalize_text(turns[tid].text) != norm_q]
+    return kept, len(turn_ids) - len(kept)
+
+
 def _embedder(store: Store, choice: str | None):
     from commontrace.conversation import embed
 
@@ -259,12 +311,14 @@ def _embedder(store: Store, choice: str | None):
     return embed.Embedder(store.root, tag, read_only=getattr(store, "read_only", False))
 
 
-def _header(session: str, at: dt.datetime | None) -> str:
+def _header(session: str, at: dt.datetime | None, now: dt.datetime | None = None) -> str:
     if at is None:
         return f"[{session}]"
     when = f"{timeparse.WEEKDAYS[at.weekday()].capitalize()} {timeparse.label(at.date())}"
     if at.hour or at.minute:
         when += at.strftime(", %H:%M")
+    if now is not None:
+        when += f" ({relative_time_delta(at, now)})"
     return f"[{session} · {when}]"
 
 
@@ -316,15 +370,68 @@ def _excerpt(turn: Turn, question: str, cap: int) -> str:
     return f"{turn.speaker}: " + " ".join(out)
 
 
+_RECALL_CACHE_MAX = 100
+_RECALL_CACHE: OrderedDict = OrderedDict()
+_RECALL_LOCK = threading.Lock()
+
+
+def _recall_key(store: Store, question: str, now, opts: Options,
+                extra_queries: list[str]) -> tuple | None:
+    """Cache key for a recall, or None when the call must not be cached.
+
+    Includes the store's max turn id (one indexed query): any write changes
+    it, so a cached context can never outlive the memory it was built from.
+    Calls with an explicit `now` are keyed on it too, since headers render
+    relative deltas against that moment.
+    """
+    try:
+        max_id = store.db.execute("SELECT MAX(id) FROM turns").fetchone()[0]
+    except Exception:  # noqa: BLE001 - no cache without a readable store
+        return None
+    moment = timeparse.parse_moment(now) if isinstance(now, str) else now
+    return (
+        store.space, _normalize_text(question), str(moment or ""),
+        opts.budget, opts.pool, opts.neighbours_before, opts.neighbours_after,
+        opts.neighbour_hits, opts.neighbour_minutes, opts.excerpt_tokens,
+        opts.window_boost, opts.entity_boost, opts.lexical_weight, opts.rerank,
+        opts.rerank_depth, opts.rerank_blend, opts.profile_facts, opts.instructions,
+        opts.broad, opts.recency_boost, opts.primary_hits, opts.embedder,
+        opts.summaries, opts.sessions, opts.speakers, opts.since, opts.until,
+        tuple(extra_queries), max_id,
+    )
+
+
 def recall(store: Store, question: str, *, now=None, options: Options | None = None,
            extra_queries: list[str] = ()) -> Recall:
     """`extra_queries` are searched beside the question, each keeping its own best
-    ranks (a follow-up search that finds a missing fact first is not diluted)."""
+    ranks (a follow-up search that finds a missing fact first is not diluted).
+
+    Repeat questions within a turn are served from a small LRU (supermemory's
+    turn-key pattern): the key includes the store's max turn id, so any write
+    invalidates it -- a hit never serves stale memory.
+    """
+    import dataclasses
+
     from commontrace import telemetry
 
     with telemetry.span("conversation.recall", space=store.space, queries=1 + len(extra_queries)) as handle:
+        opts = options or Options()
+        key = _recall_key(store, question, now, opts, extra_queries)
+        if key is not None:
+            with _RECALL_LOCK:
+                hit = _RECALL_CACHE.get(key)
+                if hit is not None:
+                    _RECALL_CACHE.move_to_end(key)
+                    handle.set(tokens=hit.tokens, turns=len(hit.turns), cached=True)
+                    return dataclasses.replace(hit)
         result = _recall(store, question, now=now, options=options, extra_queries=extra_queries)
         handle.set(tokens=result.tokens, turns=len(result.turns))
+        if key is not None:
+            with _RECALL_LOCK:
+                _RECALL_CACHE[key] = result
+                _RECALL_CACHE.move_to_end(key)
+                while len(_RECALL_CACHE) > _RECALL_CACHE_MAX:
+                    _RECALL_CACHE.popitem(last=False)
         return result
 
 
@@ -423,6 +530,9 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
             scores[turn] += 0.4 * top
         explain["asks_when"] = True
     ranked = sorted(scores, key=lambda t: (-scores[t], t))
+    ranked, n_self = filter_self_turns(store, question, ranked)
+    if n_self:
+        explain["self_filtered"] = n_self
     rerank = opts.rerank
     if rerank == "auto":
         rerank = "cross-encoder" if embedder is not None else None
@@ -434,7 +544,10 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
     if conf == 0.0:
         explain["abstain"] = True
     withheld: list[int] = []
-    context, used, n_tokens = assemble(store, question, ranked, opts, withheld, allowed)
+    # Relative deltas are shown only when the caller supplies a reference
+    # moment: defaulting to the latest turn would print "0s ago" noise.
+    show_now = moment if now is not None else None
+    context, used, n_tokens = assemble(store, question, ranked, opts, withheld, allowed, now=show_now)
     if withheld:
         explain["withheld"] = withheld
     return Recall(question, context, n_tokens, used, ranked,
@@ -538,7 +651,8 @@ def _flagged(turn: Turn) -> bool:
 
 
 def assemble(store: Store, question: str, ranked: list[int], opts: Options,
-             withheld: list[int] | None = None, allowed: set[int] | None = None) -> tuple[str, list[int], int]:
+             withheld: list[int] | None = None, allowed: set[int] | None = None,
+             now: dt.datetime | None = None) -> tuple[str, list[int], int]:
     """Fill the budget best-first, each hit with its neighbours, then render by time.
     A turn the injection screen flags is never shown; its id goes to `withheld`."""
     withheld = [] if withheld is None else withheld
@@ -563,7 +677,7 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
     summaries = store.summaries() if opts.summaries else {}
 
     def header_cost(session: str, at) -> int:
-        cost = tokens(_header(session, at)) + 1
+        cost = tokens(_header(session, at, now)) + 1
         if session in summaries:
             cost += tokens(_summary_line(summaries[session]["text"])) + 1
         return cost
@@ -575,6 +689,18 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
         r"\b(?:i (?:brought up|raised|mentioned|asked|said|wanted)|my questions?)\b", question or "", re.I
     ))
     rendered: dict[int, str] = {}
+    # One injection screen per turn per recall: neighbours re-fetch turns the
+    # primary pass already screened, so memoize by turn id (single-run scope,
+    # no staleness -- turns are immutable).
+    _flag_cache: dict[int, bool] = {}
+
+    def _is_flagged(turn: Turn) -> bool:
+        hit = _flag_cache.get(turn.id)
+        if hit is None:
+            hit = _flagged(turn)
+            if len(_flag_cache) < 4096:
+                _flag_cache[turn.id] = hit
+        return hit
 
     def line_of(turn: Turn) -> str:
         if turn.id not in rendered:
@@ -614,7 +740,7 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
             continue
         if about_user_only and turn.role not in ("user", ""):
             continue
-        if _flagged(turn):
+        if _is_flagged(turn):
             if tid not in withheld:
                 withheld.append(tid)
             continue
@@ -647,6 +773,12 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
                     if hits <= with_context else []
             group = [tid] + [n for n in near if allowed is None or n in allowed]
             group_turns = store.turns(group)
+            # anti-recursion holds for neighbours too: a turn restating the
+            # question is never context for its own answer, however adjacent.
+            question_norm = _normalize_text(question)
+            group = [g for g in group
+                     if g == tid or g not in group_turns
+                     or _normalize_text(group_turns[g].text) != question_norm]
             if opts.neighbour_minutes is not None and turn.at is not None:
                 # a neighbour is context only when it was said close to the hit: turns of one
                 # dialogue share a moment, separate notes made hours apart on one day do not
@@ -654,7 +786,7 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
                 group = [g for g in group if g == tid or g not in group_turns or group_turns[g].at is None
                          or abs(group_turns[g].at - turn.at) <= gap]
             for g in list(group):
-                if g in group_turns and _flagged(group_turns[g]):
+                if g in group_turns and _is_flagged(group_turns[g]):
                     group.remove(g)
                     if g not in withheld:
                         withheld.append(g)
@@ -684,7 +816,7 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
         by_session.setdefault(turn.session, []).append(turn)
     blocks = []
     for session, turns in sorted(by_session.items(), key=lambda kv: (kv[1][0].at or dt.datetime.min, kv[0])):
-        lines = [_header(session, turns[0].at)]
+        lines = [_header(session, turns[0].at, now)]
         if session in summaries:
             lines.append(_summary_line(summaries[session]["text"]))
         previous = None
@@ -695,4 +827,14 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
             previous = turn.idx
         blocks.append("\n".join(lines))
     context = profile_block + "\n\n".join(blocks)
+    if not chosen and ranked:
+        # Hindsight fact_budget floor: never answer empty when something
+        # matched -- the top hit is returned whole even over budget, instead
+        # of an empty context that reads as "memory holds nothing".
+        top = store.turns(ranked[:1])
+        if ranked[0] in top and not _is_flagged(top[ranked[0]]):
+            rendered[ranked[0]] = _excerpt(top[ranked[0]], question, max(cap, 200))
+            chosen[ranked[0]] = top[ranked[0]]
+            context = profile_block + _header(
+                top[ranked[0]].session, top[ranked[0]].at, now) + "\n" + rendered[ranked[0]]
     return context, list(chosen) + [t for t in dict.fromkeys(pinned) if t not in chosen], tokens(context)

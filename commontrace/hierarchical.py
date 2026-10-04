@@ -436,6 +436,24 @@ def list_facts(
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 
+_FACT_TOKENS: dict[tuple[str, str], frozenset] = {}
+
+
+def _fact_tokens(fact: AtomicFact) -> frozenset:
+    """Token set of a fact statement, memoized by ``(id, revision)``.
+
+    `search_facts` re-tokenized every fact on every query (mem0 precomputes
+    `text_lemmatized` at write time; same idea, lazy). Statements are
+    immutable per revision, so the memo is exact; capped to bound memory.
+    """
+    key = (fact.id, fact.revision)
+    toks = _FACT_TOKENS.get(key)
+    if toks is None:
+        toks = frozenset(_TOKEN_RE.findall(fact.statement.lower()))
+        if len(_FACT_TOKENS) < 4096:
+            _FACT_TOKENS[key] = toks
+    return toks
+
 
 def search_facts(
     root: str,
@@ -458,7 +476,7 @@ def search_facts(
         return [(c, c.confidence) for c in ranked[:limit]]
     scored: list[tuple[AtomicFact, float]] = []
     for fact in candidates:
-        statement_tokens = set(_TOKEN_RE.findall(fact.statement.lower()))
+        statement_tokens = _fact_tokens(fact)
         overlap = len(query_tokens & statement_tokens)
         if not overlap:
             continue

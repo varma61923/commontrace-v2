@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from commontrace import corpus_bin
 from commontrace._lexical import STOPWORDS as _STOPWORDS
 from commontrace._lexical import WORD_RE as _WORD_RE
 from commontrace._lexical import has_cjk as _has_cjk
@@ -204,8 +205,6 @@ def _corpus_index(lessons, term_cache, scorer: str) -> _CorpusIndex:
     bin_dir = getattr(term_cache, "bin_dir", None)
     if bin_dir:
         try:
-            import importlib
-            corpus_bin = importlib.import_module("commontrace.corpus_bin")
             persisted = corpus_bin.load(bin_dir, scorer, lessons, fingerprint)
         except Exception:
             persisted = None
@@ -217,8 +216,6 @@ def _corpus_index(lessons, term_cache, scorer: str) -> _CorpusIndex:
     index = _build_index(lessons, term_cache, scorer)
     if bin_dir and fingerprint == getattr(term_cache, "fingerprint", None):
         try:
-            import importlib
-            corpus_bin = importlib.import_module("commontrace.corpus_bin")
             corpus_bin.save(bin_dir, scorer, fingerprint, index)
         except Exception:
             pass

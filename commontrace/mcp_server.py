@@ -72,12 +72,19 @@ nothing new until someone opts in.
 
 from __future__ import annotations
 
+import argparse
+import asyncio
 import contextlib
+import dataclasses
 import datetime
 import glob
+import importlib
 import io
 import logging
 import os
+import re
+import threading
+import time
 from typing import Any
 
 from commontrace import (
@@ -165,9 +172,6 @@ def _run_cli(command: str, argv: list[str]) -> tuple[int, str, str]:
     `--frustration` binds to `frustration`, and a hand-built namespace spelled
     it `frustration_signal` -- accepted in silence, recorded nowhere.)
     """
-    import argparse
-    import importlib
-
     module = importlib.import_module(f"commontrace.commands.{command}_cmd")
     parser = argparse.ArgumentParser(prog="commontrace")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1264,8 +1268,6 @@ def build_server(root: str, *, allow_approval: bool = True):
         toward zero. Honour `withheld` from `retrieve` or the number is
         yours to have broken.
         """
-        import dataclasses
-
         try:
             with _quiet():
                 analysis = evidence_mod.analyse(root)
@@ -1373,16 +1375,18 @@ def build_server(root: str, *, allow_approval: bool = True):
         content: str,
         mode: str = "set",
         old_content: str = "",
+        line_number: int = -1,
     ) -> dict:
         """Update or append to a stateful working memory block with quota checking.
 
-        Supports three modes: 'set' (overwrite), 'append' (add text to the end),
-        and 'replace' (replace exact substring `old_content` with `content`).
+        Supports four modes: 'set' (overwrite), 'append' (add text to the end),
+        'replace' (replace exact substring `old_content` with `content`), and
+        'insert' (insert `content` at `line_number`: 0=top, -1=bottom, N=after line N).
         Every change records an immutable SHA-256 revision hash and audit history.
         Enforces character limit quotas to prevent prompt bloat and context stuffing.
         """
-        if mode not in ("set", "append", "replace"):
-            return _err(f"unknown mode {mode!r}; use set, append or replace")
+        if mode not in ("set", "append", "replace", "insert"):
+            return _err(f"unknown mode {mode!r}; use set, append, replace or insert")
         refusal = _unsafe_write("memory block", {"content": content})
         if refusal is not None:
             return refusal
@@ -1391,6 +1395,9 @@ def build_server(root: str, *, allow_approval: bool = True):
                 block = memory_blocks.append_block(root, name, content, actor="mcp")
             elif mode == "replace":
                 block = memory_blocks.replace_block(root, name, old_content, content, actor="mcp")
+            elif mode == "insert":
+                block = memory_blocks.insert_block(
+                    root, name, content, line_number=line_number, actor="mcp")
             else:
                 block = memory_blocks.set_block(root, name, content, actor="mcp")
             return _ok(block=block.to_dict())
@@ -1422,6 +1429,144 @@ def build_server(root: str, *, allow_approval: bool = True):
             return _ok(name=name, deleted=True)
         except Exception as exc:
             return _err(str(exc))
+
+    @mcp.tool()
+    async def core_memory_append(name: str, content: str) -> dict:
+        """Append to a core memory block (persona, human, or project).
+
+        Agent-tool alias over `memory_block_update(mode="append")` matching the
+        Letta core-memory surface: the block keeps its quota, revision hash,
+        and audit history. Read-only blocks refuse with ok=false.
+        """
+        refusal = _unsafe_write("memory block", {"content": content})
+        if refusal is not None:
+            return refusal
+        try:
+            block = memory_blocks.append_block(root, name, content, actor="mcp")
+            return _ok(block=block.to_dict())
+        except (memory_blocks.MemoryBlockError, OSError) as exc:
+            return _err(str(exc))
+
+    @mcp.tool()
+    async def core_memory_replace(name: str, old_content: str, new_content: str) -> dict:
+        """Replace one exact substring of a core memory block.
+
+        Agent-tool alias over `memory_block_update(mode="replace")`: the target
+        must occur exactly once (the error names every line when it does not),
+        tab-expanded and line-prefix-stripped before comparison. Read-only
+        blocks refuse with ok=false.
+        """
+        refusal = _unsafe_write("memory block", {"content": new_content})
+        if refusal is not None:
+            return refusal
+        try:
+            block = memory_blocks.replace_block(root, name, old_content, new_content, actor="mcp")
+            return _ok(block=block.to_dict())
+        except (memory_blocks.MemoryBlockError, OSError) as exc:
+            return _err(str(exc))
+
+    @mcp.tool()
+    async def archival_memory_insert(content: str, category: str = "general", scope: str = "") -> dict:
+        """Insert one passage into long-term archival memory.
+
+        Stored as an atomic fact (reinforcing an existing match instead of
+        duplicating it), with the same content-safety screen as `record_fact`.
+        Retrieve it later with `archival_memory_search`.
+        """
+        refusal = _unsafe_write("archival memory", {"statement": content})
+        if refusal is not None:
+            return refusal
+        try:
+            fact, action = hierarchical.add_fact(
+                root, statement=content, category=category or "general",
+                scopes=[scope] if scope else None,
+            )
+            return _ok(fact=fact.to_dict(), action=action)
+        except Exception as exc:  # noqa: BLE001
+            return _err(f"could not insert archival memory: {type(exc).__name__}: {exc}")
+
+    @mcp.tool()
+    async def archival_memory_search(query: str, scope: str = "", limit: int | str = 10) -> dict:
+        """Search long-term archival memory for passages matching `query`.
+
+        Scoped, confidence-weighted lexical search over the same atomic facts
+        `archival_memory_insert` writes. `limit` is clamped to 1..50.
+        """
+        try:
+            want = max(1, min(int(limit), 50))
+        except (TypeError, ValueError):
+            return _err("limit must be a number of facts")
+        try:
+            results = hierarchical.search_facts(
+                root, query=query, scope=scope, limit=want,
+            )
+            return _ok(
+                facts=[{"fact": f.to_dict(), "score": score} for f, score in results],
+                count=len(results),
+            )
+        except Exception as exc:  # noqa: BLE001
+            return _err(f"could not search archival memory: {type(exc).__name__}: {exc}")
+
+    @mcp.tool()
+    async def conversation_search(question: str, space: str = "", budget: int = 1500) -> dict:
+        """Search past conversation turns for what answers `question`.
+
+        Without `space`, every conversation space is searched in parallel and
+        the contexts are merged within `budget` tokens; with `space`, only
+        that space. Each space gets a lexical BM25 search with sub-query
+        fusion, self-echo turns are filtered, and injection-flagged turns are
+        withheld, not shown.
+
+        This fans out over spaces with the lexical arm only (no model load per
+        space), so `degraded` is true and names what was skipped; use
+        `conversation_recall` for the full per-space retrieval.
+        """
+        from commontrace.conversation import ConversationError, Options, Store, recall
+        from commontrace.conversation import store as store_mod
+
+        try:
+            budget = max(50, min(int(budget), 32_000))
+        except (TypeError, ValueError):
+            return _err("budget must be a number of tokens")
+
+        def _run():
+            from commontrace import parallel as parallel_mod
+
+            names = [space] if space else store_mod.spaces(root)
+            if not names:
+                return {"question": question, "context": "", "tokens": 0,
+                        "spaces": [], "note": "no conversation spaces stored yet"}
+            per = max(50, budget // max(1, len(names)))
+
+            def _one(name: str) -> tuple[str, str]:
+                # Own Store per worker: one SQLite connection each, safe
+                # across threads (WAL + check_same_thread=False).
+                with Store(root, name, create=False) as st:
+                    rec = recall(st, question,
+                                 options=Options(budget=per, embedder=None, rerank=None)).as_dict()
+                return name, rec["context"] if rec["context"] else ""
+
+            try:
+                found = parallel_mod.bounded_map(_one, names, max_workers=4)
+            except ConversationError as exc:
+                return {"error": str(exc)}
+            parts = [f"[space: {name}]\n{ctx}" for name, ctx in found if ctx]
+            seen_spaces = [name for name, ctx in found if ctx]
+            context = "\n\n".join(parts)
+            return {"question": question, "context": context,
+                    "tokens": sum(len(p) // 4 for p in parts),
+                    "spaces": seen_spaces, "degraded": True,
+                    "note": ("lexical-only fan-out: the semantic and rerank arms "
+                             "are skipped so one call does not load models per space; "
+                             "use conversation_recall for full per-space retrieval.")}
+
+        try:
+            out = await asyncio.to_thread(_run)
+        except ConversationError as exc:
+            return _err(str(exc))
+        if "error" in out:
+            return _err(out["error"])
+        return _ok(**out)
 
     @mcp.tool()
     async def query_facts(
@@ -1571,8 +1716,6 @@ def build_server(root: str, *, allow_approval: bool = True):
         and `until` narrow what may be recalled. Turns the injection screen flags are
         withheld and listed under explain.withheld.
         """
-        import asyncio
-
         from commontrace.conversation import ConversationError, Options, Store, recall
 
         try:
@@ -1601,8 +1744,6 @@ def build_server(root: str, *, allow_approval: bool = True):
         stood at that moment. `agent` applies that agent's budget and channel weights from
         memory/budgets.json. `channels` narrows to lessons/facts/graph/conversations.
         """
-        import asyncio
-
         from commontrace import recall as recall_mod
 
         def _run():
@@ -1636,8 +1777,6 @@ def build_server(root: str, *, allow_approval: bool = True):
         """Delete from a space: one `session`, messages said `before` a date, and/or messages
         whose `expires` has passed. Profile statements they carried go with them.
         """
-        import datetime as _dt
-
         from commontrace.conversation import ConversationError, Store
 
         if not (session or before or expired):
@@ -1646,8 +1785,8 @@ def build_server(root: str, *, allow_approval: bool = True):
             with Store(root, space, create=False) as store:
                 deleted = store.delete_session(session) if session else 0
                 if before or expired:
-                    deleted += store.purge(before=before or None, expired_at=_dt.datetime.now(
-                        _dt.timezone.utc).replace(tzinfo=None) if expired else None)
+                    deleted += store.purge(before=before or None, expired_at=datetime.datetime.now(
+                        datetime.timezone.utc).replace(tzinfo=None) if expired else None)
         except ConversationError as exc:
             return _err(str(exc))
         return _ok(space=space, deleted=deleted)
@@ -1768,14 +1907,25 @@ def build_server(root: str, *, allow_approval: bool = True):
     return mcp
 
 
+_SECTION_PATTERNS: dict[str, re.Pattern] = {}
+
+
+def _section_pattern(name: str) -> re.Pattern:
+    """Compiled `## <name>` matcher, cached: one compile per section name."""
+    pattern = _SECTION_PATTERNS.get(name)
+    if pattern is None:
+        pattern = re.compile(
+            rf"^(##\s*{re.escape(name)}\s*\n)(.*?)(?=\n##\s|\Z)",
+            re.DOTALL | re.MULTILINE | re.IGNORECASE,
+        )
+        if len(_SECTION_PATTERNS) < 64:
+            _SECTION_PATTERNS[name] = pattern
+    return pattern
+
+
 def _replace_section(body: str, name: str, text: str) -> str:
     """Replace one `## <name>` section, or append it if absent."""
-    import re
-
-    pattern = re.compile(
-        rf"^(##\s*{re.escape(name)}\s*\n)(.*?)(?=\n##\s|\Z)",
-        re.DOTALL | re.MULTILINE | re.IGNORECASE,
-    )
+    pattern = _section_pattern(name)
     replacement = f"## {name}\n{text.strip()}\n"
     if pattern.search(body):
         return pattern.sub(lambda _m: replacement, body, count=1)
@@ -1799,8 +1949,6 @@ def _warm_models(root: str, delay: float = 2.0) -> None:
     simply waits for the load it would have done anyway. Any failure is
     left for `retrieve` to meet and report as it always has.
     """
-    import time
-
     time.sleep(delay)
     try:
         active, _terms = lesson_cache.load_active_with_terms(root, None, reader=frontmatter.read)
@@ -1820,9 +1968,7 @@ def _warm_models(root: str, delay: float = 2.0) -> None:
 
 def serve(root: str, *, allow_approval: bool = True) -> int:
     """Run the server on stdio until the client disconnects."""
-    import threading
-
-    import anyio
+    import anyio  # optional: only needed to run the stdio transport
 
     mcp = build_server(root, allow_approval=allow_approval)
     if os.environ.get(WARM_ENV, "1").strip().lower() not in ("0", "false", "no", "off"):
