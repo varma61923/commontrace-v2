@@ -26,6 +26,16 @@ CATEGORIES = (
 )
 MAX_STATEMENT_CHARS = 2000
 
+# Stability tiers follow supermemory's static/dynamic split: "stable" facts are
+# long-lived (identity, standing constraints) and "dynamic" facts change often.
+# "" is unset: legacy behavior, ranking untouched.
+STABILITY_TIERS = ("stable", "dynamic")
+STABILITY_VALUES = ("", "stable", "dynamic")
+
+
+def _normalize_stability(value: object) -> str:
+    return value if value in STABILITY_TIERS else ""
+
 
 @dataclass
 class AtomicFact:
@@ -45,6 +55,7 @@ class AtomicFact:
     revision: str = ""
     created_at: str = ""
     updated_at: str = ""
+    stability: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -57,6 +68,8 @@ def _coerce_fact(data: dict[str, Any]) -> AtomicFact:
     clean = {k: v for k, v in data.items() if k in _FACT_FIELDS}
     if "forgotten" in clean:
         clean["forgotten"] = bool(clean["forgotten"])
+    if clean.get("stability") not in STABILITY_VALUES:
+        clean["stability"] = ""
     if clean.get("source_traces") is None:
         clean["source_traces"] = []
     return AtomicFact(**clean)
@@ -179,6 +192,7 @@ def _add_locked(
     expires_at: str | None,
     confidence: float,
     source_trace_id: str,
+    stability: str = "",
 ) -> tuple[AtomicFact, str]:
     existing = _matching_active(facts, statement, scopes)
     if existing is not None:
@@ -187,6 +201,8 @@ def _add_locked(
         if source_trace_id and source_trace_id not in existing.source_traces:
             existing.source_traces.append(source_trace_id)
         existing.scopes = _clean_scopes([*existing.scopes, *scopes])
+        if stability in STABILITY_TIERS:
+            existing.stability = stability
         _stamp(existing)
         return existing, "NOOP"
 
@@ -204,6 +220,7 @@ def _add_locked(
         source_traces=[source_trace_id] if source_trace_id else [],
         created_at=now_iso,
         updated_at=now_iso,
+        stability=_normalize_stability(stability),
     )
     fact.revision = _compute_revision(fact.to_dict())
     facts[fact.id] = fact
@@ -234,15 +251,18 @@ def add_fact(
     expires_at: str | None = None,
     confidence: float = 0.8,
     source_trace_id: str = "",
+    stability: str = "",
 ) -> tuple[AtomicFact, str]:
     """Add a fact, or reinforce the matching active one. Returns (fact, 'ADD' | 'NOOP')."""
     statement, category, valid_from, valid_until, expires_at = prepare_fact(
         statement, category, valid_from, valid_until, expires_at)
     with mutate_facts(root) as facts:
-        return _add_locked(
+        fact, action = _add_locked(
             facts, statement, category, _clean_scopes(scopes), valid_from, valid_until,
-            expires_at, confidence, source_trace_id,
+            expires_at, confidence, source_trace_id, _normalize_stability(stability),
         )
+    _link_entities_best_effort(root, [(fact.id, fact.statement)])
+    return fact, action
 
 
 def add_facts(root: str, items: list[dict[str, Any]]) -> list[tuple[AtomicFact, str]]:
@@ -254,12 +274,15 @@ def add_facts(root: str, items: list[dict[str, Any]]) -> list[tuple[AtomicFact, 
             item.get("valid_from"), item.get("valid_until"), item.get("expires_at"))
         prepared.append((statement, category, _clean_scopes(item.get("scopes")), valid_from,
                          valid_until, expires_at, float(item.get("confidence", 0.8)),
-                         str(item.get("source_trace_id", "") or "")))
+                         str(item.get("source_trace_id", "") or ""),
+                         _normalize_stability(item.get("stability", ""))))
     if not prepared:
         return []
     with mutate_facts(root) as facts:
-        return [_add_locked(facts, s, c, sc, vf, vu, ea, conf, src)
-                for s, c, sc, vf, vu, ea, conf, src in prepared]
+        results = [_add_locked(facts, s, c, sc, vf, vu, ea, conf, src, stab)
+                   for s, c, sc, vf, vu, ea, conf, src, stab in prepared]
+    _link_entities_best_effort(root, [(fact.id, fact.statement) for fact, _ in results])
+    return results
 
 
 _UNSET: Any = object()
@@ -274,6 +297,7 @@ def update_fact(
     confidence: float | None = None,
     valid_until: str | None = None,
     expires_at: Any = _UNSET,
+    stability: str | None = None,
 ) -> AtomicFact:
     """Change fields of an existing fact.
 
@@ -306,6 +330,10 @@ def update_fact(
             fact.valid_until = new_until
         if expires_at is not _UNSET:
             fact.expires_at = new_expiry
+        if stability is not None:
+            if stability not in STABILITY_VALUES:
+                raise ValueError(f"unknown stability tier {stability!r} (expected 'stable' or 'dynamic')")
+            fact.stability = stability
         _stamp(fact)
         return fact
 
@@ -349,6 +377,63 @@ def supersede_fact(
         old_fact.superseded_by = new_fact.id
         _stamp(old_fact)
         return old_fact, new_fact
+
+
+def _link_entities_best_effort(root: str, pairs: list[tuple[str, str]]) -> None:
+    """Fold fact statements into the entity index; failures never break the write."""
+    try:
+        from commontrace import entity_store
+
+        for memory_id, text in pairs:
+            try:
+                entity_store.link_memory(root, memory_id, text)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _unlink_entities_best_effort(root: str, memory_id: str) -> None:
+    """Drop a fact id from the entity index; failures never break the write."""
+    try:
+        from commontrace import entity_store
+
+        try:
+            entity_store.unlink_memory(root, memory_id)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+def _fact_line(fact: AtomicFact) -> str:
+    scope_str = f" [{','.join(fact.scopes)}]" if fact.scopes else ""
+    return f"- {fact.statement} (conf: {fact.confidence:.2f}){scope_str}"
+
+
+def format_fact_lines(scored: list[tuple[AtomicFact, float]], group_stability: bool = False) -> list[str]:
+    """Render ``search_facts`` pairs as injection prompt lines.
+
+    This is the retrieval prompt builder both fact consumers share: the agent
+    loop's "# Key facts" block and MCP ``query_facts`` output both start from
+    ``search_facts`` pairs. With ``group_stability=False`` (default) the lines
+    are byte-identical to the legacy flat rendering; opt in with
+    ``group_stability=True`` to group supermemory-style static facts under a
+    "## Stable" header and everything else (dynamic + untiered) under
+    "## Recent". Input order is kept within each group.
+    """
+    if not group_stability:
+        return [_fact_line(fact) for fact, _score in scored]
+    stable = [fact for fact, _score in scored if getattr(fact, "stability", "") == "stable"]
+    recent = [fact for fact, _score in scored if getattr(fact, "stability", "") != "stable"]
+    lines: list[str] = []
+    if stable:
+        lines.append("## Stable")
+        lines.extend(_fact_line(fact) for fact in stable)
+    if recent:
+        lines.append("## Recent")
+        lines.extend(_fact_line(fact) for fact in recent)
+    return lines
 
 
 def _audit_git(root: str, action: str, fact_id: str) -> None:
@@ -438,6 +523,10 @@ def forget_fact(root: str, fact_id: str, undo: bool = False) -> AtomicFact:
         fact = facts[fact_id]
         fact.forgotten = not undo
         _stamp(fact)
+    if undo:
+        _link_entities_best_effort(root, [(fact.id, fact.statement)])
+    else:
+        _unlink_entities_best_effort(root, fact.id)
     _audit_git(root, "restore" if undo else "forget", fact_id)
     return fact
 
@@ -453,7 +542,8 @@ def delete_fact(root: str, fact_id: str) -> bool:
         fact.status = "deleted"
         fact.valid_until = _now()
         _stamp(fact)
-        return True
+    _unlink_entities_best_effort(root, fact_id)
+    return True
 
 
 def retire_source(root: str, source_id: str, keep: set[str]) -> int:
@@ -461,6 +551,7 @@ def retire_source(root: str, source_id: str, keep: set[str]) -> int:
     if not source_id:
         return 0
     ended = 0
+    ended_ids: list[str] = []
     with mutate_facts(root) as facts:
         now_iso = _now()
         for fact in facts.values():
@@ -471,7 +562,10 @@ def retire_source(root: str, source_id: str, keep: set[str]) -> int:
                 fact.status = "deleted"
                 fact.valid_until = now_iso
                 ended += 1
+                ended_ids.append(fact.id)
             _stamp(fact)
+    for fact_id in ended_ids:
+        _unlink_entities_best_effort(root, fact_id)
     return ended
 
 
@@ -508,17 +602,25 @@ def list_facts(
     include_forgotten: bool = False,
     show_expired: bool = False,
     now: datetime | None = None,
+    stability: str = "",
 ) -> list[AtomicFact]:
     """Facts matching the filters; with `as_of`, the facts valid at that moment.
 
     Expired facts (TTL passed) are hidden unless `show_expired` — the read
     half of the expiry contract `add --expires-at` writes.
+
+    `stability` optionally keeps one supermemory tier ("stable" or "dynamic");
+    the default "" keeps every tier, exactly like before the field existed.
     """
+    if stability and stability not in STABILITY_TIERS:
+        raise ValueError(f"unknown stability tier {stability!r} (expected 'stable' or 'dynamic')")
     moment = lesson_cache.parse_moment(as_of) if as_of else None
     reference = now or datetime.now(timezone.utc).replace(tzinfo=None)
     results: list[AtomicFact] = []
     for fact in load_facts(root).values():
         if fact.forgotten and not include_forgotten:
+            continue
+        if stability and fact.stability != stability:
             continue
         if moment is None and status and fact.status != status:
             continue
@@ -564,14 +666,17 @@ def search_facts(
     limit: int = 10,
     include_forgotten: bool = False,
     show_expired: bool = False,
+    stability: str = "",
 ) -> list[tuple[AtomicFact, float]]:
     """Active facts ranked by token overlap with *query*, weighted by confidence.
 
     Expired facts are hidden unless `show_expired` (mem0 semantics).
+    `stability` optionally keeps one tier ("stable"/"dynamic"); "" keeps all,
+    with ranking untouched.
     """
     candidates = list_facts(
         root, status="active", scope=scope, category=category, as_of=as_of,
-        include_forgotten=include_forgotten, show_expired=show_expired,
+        include_forgotten=include_forgotten, show_expired=show_expired, stability=stability,
     )
     limit = max(0, int(limit))
     query_tokens = set(_TOKEN_RE.findall(query.lower()))

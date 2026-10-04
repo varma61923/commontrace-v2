@@ -1,6 +1,7 @@
 """Temporal knowledge graph: typed nodes, bitemporal edges, multi-hop traversal."""
 from __future__ import annotations
 
+import bisect
 import contextlib
 import logging
 import os
@@ -154,9 +155,13 @@ class _Txn:
         self.edges = load_edges(root)
         self.by_key: dict[tuple[str, str, str], list[GraphEdge]] = {}
         self.by_source_relation: dict[tuple[str, str], list[GraphEdge]] = {}
+        self.by_entity: dict[str, list[GraphEdge]] = {}
         for edge in self.edges:
             self.by_key.setdefault((edge.source, edge.target, edge.relation), []).append(edge)
             self.by_source_relation.setdefault((edge.source, edge.relation), []).append(edge)
+            self.by_entity.setdefault(edge.source, []).append(edge)
+            if edge.target != edge.source:
+                self.by_entity.setdefault(edge.target, []).append(edge)
         from commontrace import ontology
 
         self.onto = ontology.load(root)
@@ -344,6 +349,9 @@ def add_edge(
         txn.edges.append(new_edge)
         txn.by_key.setdefault(key, []).append(new_edge)
         txn.by_source_relation.setdefault((src, relation), []).append(new_edge)
+        txn.by_entity.setdefault(src, []).append(new_edge)
+        if dst != src:
+            txn.by_entity.setdefault(dst, []).append(new_edge)
         txn.edges_dirty = True
         _provenance(txn, "edge", edge_id, provenance)
         return new_edge
@@ -411,10 +419,12 @@ def _is_active_edge(edge: GraphEdge, moment: datetime | None, known_at: datetime
 
 _GRAPH_ADJ_CACHE: dict[tuple, tuple] = {}
 _GRAPH_ADJ_CACHE_MAX_ENTRIES = 64
+_GRAPH_INDEX_CACHE: dict[tuple, "_GraphFullIndex"] = {}
 
 
 def _clear_graph_cache() -> None:
     _GRAPH_ADJ_CACHE.clear()
+    _GRAPH_INDEX_CACHE.clear()
     _PHRASE_INDEX.clear()
     _SCANNED_ONCE.clear()
 
@@ -430,25 +440,110 @@ def _graph_files_stamp(root: str) -> tuple[int, int, int, int]:
     return tuple(stamps)  # type: ignore[return-value]
 
 
-def _cached_graph(root: str, as_of: str | None = None, known_at: str | None = None) -> tuple:
+@dataclass
+class _GraphFullIndex:
+    """Full-graph indexes built once per file stamp; timestamps parsed once."""
+
+    nodes: dict[str, GraphNode]
+    edges: list[GraphEdge]
+    begins: list[Any]
+    ends: list[Any]
+    by_entity: dict[str, list[int]]
+    by_relation: dict[str, list[int]]
+    by_source_relation: dict[tuple[str, str], list[int]]
+    order_by_valid: list[int]
+    sorted_begins: list[Any]
+    chains: dict[str, list[GraphNode]]
+
+
+_MIN_MOMENT = datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _build_full_index(nodes: dict[str, GraphNode], all_edges: list[GraphEdge]) -> _GraphFullIndex:
+    """Index all edges and version chains; each edge timestamp is parsed once."""
+    begins: list[Any] = []
+    ends: list[Any] = []
+    by_entity: dict[str, list[int]] = {}
+    by_relation: dict[str, list[int]] = {}
+    by_source_relation: dict[tuple[str, str], list[int]] = {}
+    for idx, edge in enumerate(all_edges):
+        try:
+            begins.append(lesson_cache.parse_moment(edge.valid_at or edge.created_at))
+        except ValueError:
+            begins.append(None)
+        try:
+            ends.append(lesson_cache.parse_moment(edge.invalid_at) if edge.invalid_at else None)
+        except ValueError:
+            ends.append(None)
+        by_entity.setdefault(edge.source, []).append(idx)
+        if edge.target != edge.source:
+            by_entity.setdefault(edge.target, []).append(idx)
+        by_relation.setdefault(edge.relation, []).append(idx)
+        by_source_relation.setdefault((edge.source, edge.relation), []).append(idx)
+    order = sorted(range(len(all_edges)), key=lambda i: begins[i] if begins[i] is not None else _MIN_MOMENT)
+    sorted_begins = [begins[i] if begins[i] is not None else _MIN_MOMENT for i in order]
+    chains: dict[str, list[GraphNode]] = {}
+    for node in nodes.values():
+        chains.setdefault(node.root_id or node.id, []).append(node)
+    for chain in chains.values():
+        chain.sort(key=lambda n: n.version)
+    return _GraphFullIndex(
+        nodes=nodes, edges=all_edges, begins=begins, ends=ends, by_entity=by_entity,
+        by_relation=by_relation, by_source_relation=by_source_relation,
+        order_by_valid=order, sorted_begins=sorted_begins, chains=chains,
+    )
+
+
+def _cached_graph_full(
+    root: str, as_of: str | None = None, known_at: str | None = None,
+) -> tuple[dict[str, GraphNode], list[GraphEdge], dict[str, list[GraphEdge]], list[GraphEdge]]:
+    """Cached (nodes, active, adj, all_edges); single load_nodes/load_edges per stamp."""
     key = (os.path.abspath(str(root)), _graph_files_stamp(root), as_of or "", known_at or "")
     hit = _GRAPH_ADJ_CACHE.get(key)
     if hit is not None:
-        return hit
+        if len(hit) == 4:
+            return hit[0], hit[1], hit[2], hit[3]
+        return hit[0], hit[1], hit[2], []
     nodes = load_nodes(root)
+    all_edges = load_edges(root)
     moment = lesson_cache.parse_moment(as_of) if as_of else None
     known = lesson_cache.parse_moment(known_at) if known_at else None
-    active = [e for e in load_edges(root) if _is_active_edge(e, moment, known)]
+    active = [e for e in all_edges if _is_active_edge(e, moment, known)]
     adj: dict[str, list[GraphEdge]] = {}
     for e in active:
         adj.setdefault(e.source, []).append(e)
         if e.target != e.source:
             adj.setdefault(e.target, []).append(e)
-    value = (nodes, active, adj)
+    value = (nodes, active, adj, all_edges)
     if len(_GRAPH_ADJ_CACHE) >= _GRAPH_ADJ_CACHE_MAX_ENTRIES:
         _GRAPH_ADJ_CACHE.pop(next(iter(_GRAPH_ADJ_CACHE)))
     _GRAPH_ADJ_CACHE[key] = value
-    return value
+    return nodes, active, adj, all_edges
+
+
+def _cached_graph(root: str, as_of: str | None = None, known_at: str | None = None) -> tuple:
+    nodes, active, adj, _all_edges = _cached_graph_full(root, as_of, known_at)
+    return nodes, active, adj
+
+
+def _full_index(root: str) -> _GraphFullIndex:
+    """Stamp-keyed full index, built from _cached_graph's single load (no extra I/O)."""
+    base = os.path.abspath(str(root))
+    stamp = _graph_files_stamp(root)
+    hit = _GRAPH_INDEX_CACHE.get((base, stamp))
+    if hit is not None:
+        return hit
+    nodes, _active, _adj, all_edges = _cached_graph_full(root)
+    fresh = _graph_files_stamp(root)
+    key = (base, fresh)
+    hit = _GRAPH_INDEX_CACHE.get(key)
+    if hit is not None:
+        return hit
+    index = _build_full_index(nodes, all_edges)
+    if len(_GRAPH_INDEX_CACHE) >= _GRAPH_ADJ_CACHE_MAX_ENTRIES:
+        _GRAPH_INDEX_CACHE.pop(next(iter(_GRAPH_INDEX_CACHE)))
+    _GRAPH_INDEX_CACHE[key] = index
+    return index
 
 
 def get_neighbors(
@@ -633,17 +728,39 @@ def edges_between(
     if lo and hi and hi < lo:
         raise ValueError("the interval ends before it starts")
     ent = _clean_id(entity) if entity else None
-    out = []
-    for edge in load_edges(root):
+    index = _full_index(root)
+    edges = index.edges
+    begins = index.begins
+    ends = index.ends
+    if ent is not None and relation is not None:
+        by_ent = index.by_entity.get(ent, [])
+        by_rel = index.by_relation.get(relation, [])
+        cand: Any = by_ent if len(by_ent) <= len(by_rel) else by_rel
+    elif ent is not None:
+        cand = index.by_entity.get(ent, [])
+    elif relation is not None:
+        cand = index.by_relation.get(relation, [])
+    elif hi is not None:
+        pos = bisect.bisect_right(index.sorted_begins, hi)
+        cand = index.order_by_valid[:pos]
+    else:
+        cand = range(len(edges))
+    out: list[GraphEdge] = []
+    for i in cand:
+        edge = edges[i]
         if relation and edge.relation != relation:
             continue
         if ent and ent not in (edge.source, edge.target):
             continue
-        begins = lesson_cache.parse_moment(edge.valid_at or edge.created_at)
-        ends = lesson_cache.parse_moment(edge.invalid_at) if edge.invalid_at else None
-        if hi is not None and begins > hi:
+        begin = begins[i]
+        if begin is None:
+            begin = lesson_cache.parse_moment(edge.valid_at or edge.created_at)
+        if hi is not None and begin > hi:
             continue
-        if lo is not None and ends is not None and ends <= lo:
+        finish = ends[i]
+        if finish is None and edge.invalid_at:
+            finish = lesson_cache.parse_moment(edge.invalid_at)
+        if lo is not None and finish is not None and finish <= lo:
             continue
         out.append(edge)
     return sorted(out, key=lambda e: e.valid_at or e.created_at)
@@ -653,18 +770,28 @@ def timeline(root: str, entity: str) -> list[dict[str, Any]]:
     """Every change to an entity's relations in valid-time order: what began, what
     ended, and why, so a fact's evolution reads top to bottom."""
     ent = _clean_id(entity)
-    events: list[dict[str, Any]] = []
-    for edge in load_edges(root):
-        if ent not in (edge.source, edge.target):
-            continue
+    index = _full_index(root)
+    edges = index.edges
+    begins = index.begins
+    ends = index.ends
+    decorated: list[tuple[Any, bool, dict[str, Any]]] = []
+    for i in index.by_entity.get(ent, []):
+        edge = edges[i]
         base = {"source": edge.source, "relation": edge.relation, "target": edge.target}
-        events.append({**base, "at": edge.valid_at or edge.created_at, "event": "began",
-                       "recorded_at": edge.created_at})
+        begin = begins[i]
+        if begin is None:
+            begin = lesson_cache.parse_moment(edge.valid_at or edge.created_at)
+        decorated.append((begin, True, {**base, "at": edge.valid_at or edge.created_at, "event": "began",
+                                        "recorded_at": edge.created_at}))
         if edge.invalid_at:
-            events.append({**base, "at": edge.invalid_at, "event": "ended",
-                           "reason": (edge.properties or {}).get("closed_reason", ""),
-                           "recorded_at": (edge.properties or {}).get("closed_recorded_at", "")})
-    return sorted(events, key=lambda e: (lesson_cache.parse_moment(e["at"]), e["event"] == "began"))
+            finish = ends[i]
+            if finish is None:
+                finish = lesson_cache.parse_moment(edge.invalid_at)
+            decorated.append((finish, False, {**base, "at": edge.invalid_at, "event": "ended",
+                                              "reason": (edge.properties or {}).get("closed_reason", ""),
+                                              "recorded_at": (edge.properties or {}).get("closed_recorded_at", "")}))
+    decorated.sort(key=lambda t: (t[0], t[1]))
+    return [event for _moment, _is_began, event in decorated]
 
 
 def _mermaid_label(text: str) -> str:
@@ -715,23 +842,18 @@ def export_json(root: str, as_of: str | None = None) -> dict[str, Any]:
 
 def get_version_chain(root: str, node_id: str) -> list[GraphNode]:
     """Every version of *node_id*'s entity, oldest first."""
-    nodes = load_nodes(root)
-    target = nodes.get(_clean_id(node_id))
+    index = _full_index(root)
+    target = index.nodes.get(_clean_id(node_id))
     if target is None:
         return []
     root_id = target.root_id or target.id
-    chain = [n for n in nodes.values() if n.root_id == root_id or n.id == root_id]
-    return sorted(chain, key=lambda n: n.version)
+    return list(index.chains.get(root_id, []))
 
 
 def list_version_chains(root: str) -> dict[str, list[GraphNode]]:
     """Nodes grouped by version-chain root, each chain oldest first."""
-    chains: dict[str, list[GraphNode]] = {}
-    for node in load_nodes(root).values():
-        chains.setdefault(node.root_id or node.id, []).append(node)
-    for chain in chains.values():
-        chain.sort(key=lambda n: n.version)
-    return chains
+    index = _full_index(root)
+    return {key: list(chain) for key, chain in index.chains.items()}
 
 
 def forget_node(
@@ -761,9 +883,7 @@ def forget_node(
             node.properties["forgotten_at"] = now_iso
         node.updated_at = now_iso
         txn.nodes_dirty = True
-        for edge in txn.edges:
-            if clean_id not in (edge.source, edge.target):
-                continue
+        for edge in txn.by_entity.get(clean_id, []):
             if undo and forgotten_at and edge.invalid_at == forgotten_at:
                 edge.invalid_at = None
                 txn.edges_dirty = True

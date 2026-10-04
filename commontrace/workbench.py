@@ -42,6 +42,12 @@ def _active_texts(rows, exclude: str) -> list[tuple[str, str]]:
             if str(fm.get("status")) == "active" and slug != exclude]
 
 
+def _active_texts_once(rows) -> list[tuple[str, str]]:
+    """Active texts, computed once per call (file reads happen once in `_lessons`)."""
+    comparable = {slug: redundancy.comparable_text(fm, body) for slug, fm, body in rows}
+    return [(slug, comparable[slug]) for slug, fm, _body in rows if str(fm.get("status")) == "active"]
+
+
 def _checks(slug: str, fm: dict, body: str, active: list[tuple[str, str]]) -> dict:
     failed = draft_quality.gate_failures(fm, body, active)
     near = redundancy.closest(redundancy.comparable_text(fm, body), active, threshold=0.3)
@@ -59,15 +65,47 @@ def _summary(slug: str, fm: dict, body: str, active) -> dict:
     return row
 
 
-def list_lessons(root: str, status: str | None = None) -> list[dict]:
+def _parse_pagination(limit, offset) -> tuple[int | None, int]:
+    if limit is None:
+        parsed_limit = None
+    elif isinstance(limit, bool) or not isinstance(limit, int):
+        raise WorkbenchError(400, "bad_request", "limit must be a positive integer")
+    elif not 1 <= limit <= 1000:
+        raise WorkbenchError(400, "bad_request", "limit must be between 1 and 1000")
+    else:
+        parsed_limit = limit
+    if offset is None:
+        return parsed_limit, 0
+    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+        raise WorkbenchError(400, "bad_request", "offset must be a non-negative integer")
+    return parsed_limit, offset
+
+
+def count_lessons(root: str, status: str | None = None) -> int:
+    """How many lessons match `status`, without running any gates (cheap, no redundancy checks)."""
     if status is not None and status not in STATUSES:
         raise WorkbenchError(400, "bad_request", f"status must be one of {', '.join(STATUSES)}")
+    return sum(1 for _slug, fm, _body in _lessons(root) if not status or str(fm.get("status")) == status)
+
+
+def list_lessons(root: str, status: str | None = None, limit: int | None = None,
+                 offset: int = 0) -> list[dict]:
+    if status is not None and status not in STATUSES:
+        raise WorkbenchError(400, "bad_request", f"status must be one of {', '.join(STATUSES)}")
+    parsed_limit, parsed_offset = _parse_pagination(limit, offset)
     rows = _lessons(root)
+    # File reads happen once here; the active set is computed once and reused per item.
+    active_all = _active_texts_once(rows)
+    filtered = [(slug, fm, body) for slug, fm, body in rows
+                if not status or str(fm.get("status")) == status]
+    page = filtered if parsed_limit is None and not parsed_offset else filtered[
+        parsed_offset:None if parsed_limit is None else parsed_offset + parsed_limit]
     out = []
-    for slug, fm, body in rows:
-        if status and str(fm.get("status")) != status:
-            continue
-        out.append(_summary(slug, fm, body, _active_texts(rows, slug) if fm.get("status") == "review" else []))
+    for slug, fm, body in page:
+        if str(fm.get("status")) == "review":
+            out.append(_summary(slug, fm, body, active_all))
+        else:
+            out.append(_summary(slug, fm, body, []))
     return out
 
 
@@ -121,10 +159,12 @@ def edit(root: str, slug: str, fields: dict, actor: str) -> dict:
     (name, fm, body), _rows = _find(root, slug)
     if fm.get("status") != "review":
         raise WorkbenchError(409, "not_in_review", "only a lesson in review can be edited here")
-    allowed = {"rule", "applies_when", "do_not_apply_when"}
+    allowed = {"rule", "applies_when", "do_not_apply_when", "description"}
     unknown = set(fields) - allowed
     if unknown or not fields:
         raise WorkbenchError(400, "bad_request", f"give one or more of: {', '.join(sorted(allowed))}")
+    if "description" in fields:
+        fm["description"] = _clean(fields["description"], "description")
     if "applies_when" in fields:
         fm["applies_when"] = _clean(fields["applies_when"], "applies_when")
         body = _replace_section(body, "How to apply", fm["applies_when"])

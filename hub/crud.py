@@ -45,6 +45,8 @@ from commontrace import (
     revision,
     value,
 )
+from commontrace.fingerprints import amend_request_hash as _amend_request_hash
+from commontrace.fingerprints import contribute_request_hash as _contribute_request_hash
 from hub import audit, commons, commons_cache, outcomes, plans
 from hub import search as hub_search
 from hub.abuse import (
@@ -79,41 +81,6 @@ logger = logging.getLogger("commontrace.hub.crud")
 
 class IdempotencyKeyConflict(ValueError):
     ...
-
-
-def _contribute_request_hash(
-    title: str,
-    context_text: str,
-    solution_text: str,
-    tags: list[str],
-    agent_type: str,
-    outcome: dict | None = None,
-    profile: str = "",
-) -> str:
-    parts = [title, context_text, solution_text, agent_type, "\x1f".join(sorted(tags))]
-    if outcome:
-        parts.append(json.dumps(outcome, sort_keys=True, ensure_ascii=False))
-    if profile:
-        parts.append(profile)
-    return hashlib.sha256("\x1e".join(parts).encode("utf-8")).hexdigest()
-
-
-def _amend_request_hash(
-    trace_id: str,
-    title: str | None,
-    context_text: str | None,
-    solution_text: str | None,
-    tags: list[str] | None,
-    outcome: dict | None = None,
-) -> str:
-    payload = [
-        trace_id, title, context_text, solution_text,
-        sorted(tags) if tags is not None else None,
-        outcome,
-    ]
-    return hashlib.sha256(
-        json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
-    ).hexdigest()
 
 
 def _iso(dt: datetime) -> str:

@@ -99,7 +99,8 @@ def test_conversation_submitter(tmp_path):
     with Store(store, "docs") as conv:
         sessions = [s["id"] for s in conv.sessions()]
     assert len(sessions) == 1  # the copy is a duplicate; the injection was screened out
-    assert {"doc:copy.md", "doc:runbook.md"} & set(sessions)
+    # session keys are basename+content-hash suffixed (doc:<base>-<12hex>)
+    assert any(s.startswith(("doc:copy.md-", "doc:runbook.md-")) for s in sessions)
 
 
 def test_ingest_docs_cli(tmp_path):

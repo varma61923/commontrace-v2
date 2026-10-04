@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from commontrace import redundancy, reliability, templates
+from commontrace import redundancy, reliability, revision, templates
+from commontrace.overlap import DEFAULT_NUM_PERM, minhash
 
 
 @dataclass(frozen=True)
@@ -34,6 +35,47 @@ def never_hit(fm: dict) -> bool:
     return uses_zero and last_hit == "NEVER"
 
 
+# --- Shared signature memo ---------------------------------------------------
+# `build_report` fans out to two O(n^2) detectors (redundancy + reliability),
+# each of which MinHashes lesson text. The token sets and signatures for one
+# lesson are computed once here and shared with both detectors instead of
+# once per detector. Memoized by (slug, revision): lesson text is immutable
+# per revision, so the memo is exact; capped to bound memory, following the
+# `hierarchical._FACT_TOKENS` pattern (when full, new entries are computed
+# fresh but not stored). The memo only ever holds default-`num_perm`
+# signatures, which is all `build_report` needs (it varies thresholds only).
+_SIGNATURE_MEMO_MAX = 4096
+_SIGNATURE_MEMO: dict[tuple[str, str], "_LessonSignatures"] = {}
+
+
+@dataclass(frozen=True)
+class _LessonSignatures:
+    tokens: frozenset[str]
+    redundancy_signature: tuple[int, ...]
+    activation_signature: tuple[int, ...]
+
+
+def _lesson_signatures(slug: str, fm: dict, body: str) -> _LessonSignatures:
+    """Token set + both detectors' MinHash signatures for one lesson, memoized."""
+    try:
+        key: tuple[str, str] | None = (slug, revision.revision_of(fm, body))
+    except Exception:  # noqa: BLE001 - an unhashable lesson simply skips the memo
+        key = None
+    if key is not None:
+        hit = _SIGNATURE_MEMO.get(key)
+        if hit is not None:
+            return hit
+    text = redundancy.comparable_text(fm, body)
+    bundle = _LessonSignatures(
+        tokens=redundancy.token_set(text),
+        redundancy_signature=tuple(minhash(text, num_perm=DEFAULT_NUM_PERM)),
+        activation_signature=tuple(minhash(reliability._activation_text(fm))),
+    )
+    if key is not None and len(_SIGNATURE_MEMO) < _SIGNATURE_MEMO_MAX:
+        _SIGNATURE_MEMO[key] = bundle
+    return bundle
+
+
 def build_report(
     lessons: list[dict],
     *,
@@ -42,15 +84,25 @@ def build_report(
 ) -> ConsolidationReport:
     active = [fm for fm in lessons if str(fm.get("status", "")) == "active"]
 
+    bundles: dict[str, _LessonSignatures] = {}
+    items: list[tuple[str, str]] = []
+    for fm in active:
+        slug = str(fm.get("name", ""))
+        body = str(fm.get(templates.BODY_KEY, "") or "")
+        bundles[slug] = _lesson_signatures(slug, fm, body)
+        items.append((slug, redundancy.comparable_text(fm, body)))
+
     fuse = redundancy.find_near_duplicates(
-        [
-            (str(fm.get("name", "")),
-             redundancy.comparable_text(fm, str(fm.get(templates.BODY_KEY, "") or "")))
-            for fm in active
-        ],
+        items,
         threshold=redundancy_threshold,
+        token_sets=[bundles[slug].tokens for slug, _ in items],
+        signatures=[bundles[slug].redundancy_signature for slug, _ in items],
     )
-    contradict = reliability.find_contradictions(active, activation_overlap=activation_overlap)
+    contradict = reliability.find_contradictions(
+        active,
+        activation_overlap=activation_overlap,
+        signatures={slug: bundles[slug].activation_signature for slug in bundles},
+    )
     archive = tuple(sorted(
         str(fm.get("name", "")) for fm in active if never_hit(fm)
     ))

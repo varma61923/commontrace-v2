@@ -38,20 +38,65 @@ class Taxonomy:
     n_unclustered: int
 
 
-def _best_covering_lesson(trace_ids: set[str], lessons: list[dict]) -> str | None:
-    best_slug = None
+def _eligible_lessons(lessons: list[dict]) -> list[dict]:
+    """Active, fully drafted lessons in deterministic (name-sorted) order.
+
+    Factoring the per-lesson eligibility checks out of the per-pattern loop:
+    `templates.unfilled_placeholders` is evaluated once per lesson per
+    `build_taxonomy` call instead of once per (pattern, lesson) pair.
+    """
+    return [
+        fm for fm in sorted(lessons, key=lambda lesson: str(lesson.get("name", "")))
+        if fm.get("status") == "active"
+        and not templates.unfilled_placeholders(fm, str(fm.get(templates.BODY_KEY) or ""))
+    ]
+
+
+def _coverage_index(eligible: list[dict]) -> dict[str, list[int]]:
+    """Inverted index: source trace id -> ordinals into `eligible`.
+
+    Postings reference lesson dicts (not names) so duplicate lesson names
+    score exactly as the old per-lesson scan did: one overlap value per dict,
+    first maximum in name order winning. `eligible` must be name-sorted, so
+    ascending ordinals reproduce that order.
+    """
+    index: dict[str, list[int]] = {}
+    for pos, fm in enumerate(eligible):
+        for trace_id in fm.get("source_traces") or []:
+            index.setdefault(str(trace_id), []).append(pos)
+    return index
+
+
+def _best_covering_lesson(
+    trace_ids: set[str],
+    lessons: list[dict],
+    _index: tuple[list[dict], dict[str, list[int]]] | None = None,
+) -> str | None:
+    """The active lesson covering most of `trace_ids`, or None.
+
+    Before: O(lessons) set intersections per pattern. With the `_index` built
+    once per `build_taxonomy` call (see `_coverage_index`), each pattern costs
+    O(|trace_ids| x avg postings). Called without `_index` (e.g. directly in
+    tests), the index is built for this single call -- same result, no saving.
+    """
+    if _index is None:
+        eligible = _eligible_lessons(lessons)
+        index = _coverage_index(eligible)
+    else:
+        eligible, index = _index
+    counts: dict[int, int] = {}
+    for trace_id in trace_ids:
+        for pos in index.get(trace_id, ()):
+            counts[pos] = counts.get(pos, 0) + 1
+    best_pos = None
     best_overlap = 0
-    for fm in sorted(lessons, key=lambda lesson: str(lesson.get("name", ""))):
-        if fm.get("status") != "active":
-            continue
-        if templates.unfilled_placeholders(fm, str(fm.get(templates.BODY_KEY) or "")):
-            continue
-        source = set(str(t) for t in (fm.get("source_traces") or []))
-        overlap = len(source & trace_ids)
-        if overlap > best_overlap:
-            best_overlap = overlap
-            best_slug = str(fm.get("name", "")) or None
-    return best_slug
+    for pos in sorted(counts):
+        if counts[pos] > best_overlap:
+            best_overlap = counts[pos]
+            best_pos = pos
+    if best_pos is None:
+        return None
+    return str(eligible[best_pos].get("name", "")) or None
 
 
 def build_taxonomy(
@@ -71,11 +116,14 @@ def build_taxonomy(
     n_covered = 0
     clustered_ids: set[str] = set()
 
+    eligible = _eligible_lessons(lessons)
+    coverage_index = (eligible, _coverage_index(eligible))
+
     for cluster in clusters:
         trace_ids = {t.id for t in cluster.traces}
         clustered_ids |= trace_ids
         agent_type = cluster.traces[0].agent_type or "custom"
-        lesson_slug = _best_covering_lesson(trace_ids, lessons)
+        lesson_slug = _best_covering_lesson(trace_ids, lessons, _index=coverage_index)
         covered = lesson_slug is not None
         fallback_domain = distill.propose_domain(cluster, agent_type)
         if covered:

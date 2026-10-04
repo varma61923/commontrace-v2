@@ -491,6 +491,14 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
                 ).fetchone()
                 if found:
                     named.add(w)
+        try:
+            from commontrace import entity_store as _entity_store
+
+            _root = getattr(store, "root", "")
+            if _root:
+                named |= _entity_store.confirmed_query_entities(_root, question)
+        except Exception:
+            pass
         if named:
             top = max(scores.values())
             boosted = 0

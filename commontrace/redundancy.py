@@ -15,6 +15,16 @@ DEFAULT_THRESHOLD = 0.30
 
 LSH_MIN_ITEMS = 200
 
+# Exact all-pairs Jaccard below `LSH_MIN_ITEMS` is O(n^2). The exact path is
+# kept, but it examines at most this many items: the first N in sorted
+# (label, text) order, deterministically. Inputs at or below the cap are
+# compared exhaustively, exactly as before; larger inputs below
+# `LSH_MIN_ITEMS` are sampled to bound the quadratic cost. (At or above
+# `LSH_MIN_ITEMS` the LSH path already bounds candidates.)
+# Must stay well below LSH_MIN_ITEMS and well above any existing corpus the
+# calibration test covers (48 field-fixture lessons).
+_EXACT_MAX_ITEMS = 150
+
 COMPARED_FIELDS = ("description", "applies_when", "do_not_apply_when")
 
 
@@ -88,8 +98,18 @@ def find_near_duplicates(
     threshold: float = DEFAULT_THRESHOLD,
     num_perm: int = DEFAULT_NUM_PERM,
     similarity: Callable[[str, str], float] | None = None,
+    token_sets: Sequence[frozenset[str] | set[str]] | None = None,
+    signatures: Sequence[Sequence[int]] | None = None,
 ) -> list[Pair]:
-    """Every pair in `items` whose similarity is at least `threshold`."""
+    """Every pair in `items` whose similarity is at least `threshold`.
+
+    Below `LSH_MIN_ITEMS` every pair is compared exactly, except that inputs
+    larger than `_EXACT_MAX_ITEMS` are deterministically sampled down to the
+    first `_EXACT_MAX_ITEMS` entries in sorted (label, text) order. `token_sets`
+    and `signatures` accept precomputed values aligned with `items` (the same
+    values this function would compute); they are a perf hook so
+    `consolidate.build_report` can share one computation across detectors.
+    """
     if threshold <= 0:
         raise ValueError("threshold must be positive; 0 would pair everything")
     labelled = [(str(label), text or "") for label, text in items]
@@ -105,7 +125,19 @@ def find_near_duplicates(
         ]
         return sorted(pairs, key=lambda p: (-p.similarity, p.a, p.b))
 
-    tokens = [token_set(text) for _, text in labelled]
+    if len(labelled) > _EXACT_MAX_ITEMS and len(labelled) < LSH_MIN_ITEMS:
+        keep = sorted(range(len(labelled)), key=lambda i: (labelled[i][0], labelled[i][1]))[:_EXACT_MAX_ITEMS]
+        if token_sets is not None and len(token_sets) == len(labelled):
+            token_sets = [token_sets[i] for i in keep]
+        if signatures is not None and len(signatures) == len(labelled):
+            signatures = [signatures[i] for i in keep]
+        labelled = [labelled[i] for i in keep]
+
+    tokens = (
+        list(token_sets)
+        if token_sets is not None and len(token_sets) == len(labelled)
+        else [token_set(text) for _, text in labelled]
+    )
 
     if len(labelled) < LSH_MIN_ITEMS:
         candidates: Iterable[tuple[int, int]] = (
@@ -113,9 +145,14 @@ def find_near_duplicates(
         )
     else:
         bands, rows = _bands_for(threshold, num_perm)
-        signatures = [minhash(text, num_perm=num_perm) for _, text in labelled]
+        sigs = (
+            [list(s) for s in signatures]
+            if signatures is not None and len(signatures) == len(labelled)
+            and all(len(s) == num_perm for s in signatures)
+            else [minhash(text, num_perm=num_perm) for _, text in labelled]
+        )
         buckets: dict[tuple[int, tuple[int, ...]], list[int]] = defaultdict(list)
-        for index, signature in enumerate(signatures):
+        for index, signature in enumerate(sigs):
             for band in range(bands):
                 key = (band, tuple(signature[band * rows:(band + 1) * rows]))
                 buckets[key].append(index)

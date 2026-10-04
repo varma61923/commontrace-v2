@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Iterable, TypeVar
 
 from commontrace import frontmatter, paths, templates, trace_io
+from commontrace.fingerprints import push_fingerprint as _push_fingerprint
+from commontrace.fingerprints import trace_push_fingerprint as _trace_push_fingerprint
 
 _T = TypeVar("_T")
 
@@ -583,11 +585,6 @@ async def _call_tool(
     raise _transport_failure(hub_url, attempts, last_exc) from last_exc
 
 
-def _push_fingerprint(title: str, context_text: str, solution_text: str, tags: list[str]) -> str:
-    parts = [title, context_text, solution_text, "\x1f".join(sorted(tags))]
-    return hashlib.sha256("\x1e".join(parts).encode("utf-8")).hexdigest()
-
-
 def _amend_idempotency_key(slug: str, fingerprint: str) -> str:
     return "lesson-amend:" + hashlib.sha256(f"{slug}\x1e{fingerprint}".encode("utf-8")).hexdigest()
 
@@ -771,16 +768,6 @@ async def push_active_lessons(
         concurrency=concurrency,
     )
     return [r for r in outcomes if r is not None]
-
-
-def _trace_push_fingerprint(
-    title: str, context_text: str, solution_text: str, tags: list[str], outcome: dict
-) -> str:
-    parts = [
-        title, context_text, solution_text, "\x1f".join(sorted(tags)),
-        json.dumps(outcome or {}, sort_keys=True, ensure_ascii=False),
-    ]
-    return hashlib.sha256("\x1e".join(parts).encode("utf-8")).hexdigest()
 
 
 def _trace_amend_idempotency_key(local_id: str, fingerprint: str) -> str:

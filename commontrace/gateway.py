@@ -15,7 +15,7 @@ import time
 from collections.abc import Callable, Mapping
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 from commontrace import (
     __version__,
@@ -47,6 +47,63 @@ LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _AGENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui")
+
+# Bounded event scan: newest-N events within a trailing byte cap.
+EVENTS_TAIL_BYTES = 1_500_000
+EVENTS_MAX_EVENTS = 5000
+EVENTS_STATUS_LIMIT = 2000
+
+# mtime-keyed active-lesson index cache (module-level, capped).
+_ACTIVE_CACHE_MAX = 8
+_ACTIVE_CACHE: dict[str, tuple[tuple, list, dict]] = {}
+_ACTIVE_CACHE_LOCK = threading.Lock()
+
+# Lesson-body cache keyed by (path, mtime_ns, size) (module-level, capped).
+_BODY_CACHE_MAX = 512
+_BODY_CACHE: dict[tuple[str, int, int], str] = {}
+_BODY_CACHE_LOCK = threading.Lock()
+
+
+def _cached_active(root: str, reader) -> tuple[list, dict]:
+    """Active lessons + term cache, re-parsed only when the listing changes."""
+    from commontrace import lesson_cache
+
+    try:
+        listing = lesson_cache.listing(root)
+    except OSError:
+        listing = ()
+    key = os.path.abspath(root)
+    with _ACTIVE_CACHE_LOCK:
+        hit = _ACTIVE_CACHE.get(key)
+        if hit is not None and hit[0] == listing:
+            _ACTIVE_CACHE[key] = _ACTIVE_CACHE.pop(key)
+            return hit[1], hit[2]
+    active, term_cache = lesson_cache.load_active_with_terms(root, None, reader=reader)
+    with _ACTIVE_CACHE_LOCK:
+        _ACTIVE_CACHE[key] = (listing, active, term_cache)
+        while len(_ACTIVE_CACHE) > _ACTIVE_CACHE_MAX:
+            _ACTIVE_CACHE.pop(next(iter(_ACTIVE_CACHE)))
+    return active, term_cache
+
+
+def _cached_body(path: str) -> str:
+    """One lesson body, re-read only when its mtime/size changes."""
+    try:
+        st = os.stat(path)
+        ident = (path, st.st_mtime_ns, st.st_size)
+    except OSError:
+        return frontmatter.read_body(path)
+    with _BODY_CACHE_LOCK:
+        hit = _BODY_CACHE.get(ident)
+        if hit is not None:
+            _BODY_CACHE[ident] = _BODY_CACHE.pop(ident)
+            return hit
+    body = frontmatter.read_body(path)
+    with _BODY_CACHE_LOCK:
+        _BODY_CACHE[ident] = body
+        while len(_BODY_CACHE) > _BODY_CACHE_MAX:
+            _BODY_CACHE.pop(next(iter(_BODY_CACHE)))
+    return body
 
 
 class ApiError(Exception):
@@ -446,16 +503,22 @@ class Gateway:
             logger.warning("Failed to log gateway event to %s: %s", path, exc)
 
     def _read_events(self, limit: int = 5000) -> list[dict]:
+        """Newest-N events within a trailing byte cap (bounded scan)."""
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError):
+            limit = EVENTS_MAX_EVENTS
+        limit = max(1, min(limit, EVENTS_MAX_EVENTS))
         path = self._events_path()
         try:
             size = os.path.getsize(path)
             with open(path, "rb") as fh:
-                fh.seek(max(0, size - 1_500_000))
+                fh.seek(max(0, size - EVENTS_TAIL_BYTES))
                 chunk = fh.read()
         except OSError:
             return []
         lines = chunk.splitlines()
-        if size > 1_500_000 and lines:
+        if size > EVENTS_TAIL_BYTES and lines:
             lines = lines[1:]
         out = []
         for line in lines[-limit:]:
@@ -466,6 +529,44 @@ class Gateway:
             if isinstance(row, dict):
                 out.append(row)
         return out
+
+    def _events_identity(self) -> tuple | None:
+        try:
+            st = os.stat(self._events_path())
+        except OSError:
+            return None
+        return (st.st_ino, st.st_size, st.st_mtime_ns)
+
+    def _events_truncated(self) -> bool:
+        try:
+            return os.path.getsize(self._events_path()) > EVENTS_TAIL_BYTES
+        except OSError:
+            return False
+
+    def _memoized_flag(self, name: str, compute, extra_key=None) -> tuple[Any, bool]:
+        """Like _memoized but also reports whether the value came from the memo."""
+        data_key = self._data_key()
+        key = data_key if extra_key is None else (data_key, extra_key)
+        now = time.monotonic()
+        with self._memo_lock:
+            hit = self._memo.get(name)
+            if hit is not None and (now - hit[1] < REPORT_MIN_INTERVAL
+                                    or (hit[0] == key and now - hit[1] < REPORT_MAX_AGE)):
+                return hit[2], True
+        value = compute()
+        with self._memo_lock:
+            self._memo[name] = (key, now, value)
+        return value, False
+
+    def _memoized_events(self, limit: int) -> tuple[list[dict], bool, bool]:
+        """Bounded event scan with 5-60s memo; returns (events, cached, truncated)."""
+        try:
+            want = max(1, min(int(limit), EVENTS_MAX_EVENTS))
+        except (TypeError, ValueError):
+            want = EVENTS_MAX_EVENTS
+        ident = self._events_identity()
+        events, cached = self._memoized_flag(f"events:{want}", lambda: self._read_events(want), extra_key=ident)
+        return list(events), cached, self._events_truncated()
 
 
     def _metrics(self, _body, query) -> dict | Response:
@@ -505,15 +606,13 @@ class Gateway:
             except Exception:  # noqa: BLE001 - one unreadable lesson must not stop retrieval
                 return None
 
-        from commontrace import lesson_cache
-
-        active, term_cache = lesson_cache.load_active_with_terms(self.root, None, reader=read)
+        active, term_cache = _cached_active(self.root, read)
         ranked = retrieval.rank_lessons(query, active, top_k=top_k, term_cache=term_cache)
         projected = dict(active)
         out = []
         for hit in ranked:
             try:
-                body = frontmatter.read_body(hit.path)
+                body = _cached_body(hit.path)
             except frontmatter.FrontmatterError:
                 continue
             out.append({"id": hit.slug, "text": body, "protected": bool(projected.get(hit.path, {}).get("core")),
@@ -671,7 +770,7 @@ class Gateway:
 
     def _status(self, _body, _query) -> dict:
         config = holdout_io.load_config(self.root)
-        events = self._read_events(2000)
+        events, activity_cached, truncated = self._memoized_events(EVENTS_STATUS_LIMIT)
         out: dict = {
             "gateway": {"api": API_VERSION, "version": __version__, "env": self.config.env,
                         "protected_prefixes": list(self.config.protected_prefixes),
@@ -681,14 +780,21 @@ class Gateway:
                            "rate": config.rate if config.started_at and config.running else 0.0},
             "activity": {"recalls": sum(1 for e in events if e.get("kind") == "recall"),
                          "outcomes": sum(1 for e in events if e.get("kind") == "outcome"),
-                         "window_events": len(events)},
+                         "window_events": len(events), "truncated": truncated,
+                         "cached": activity_cached, "limit": EVENTS_STATUS_LIMIT},
             "proof": None,
+            "cached": activity_cached,
         }
         if proof.load_state(self.root):
             try:
-                out["proof"] = self._memoized("proof", lambda: dataclasses.asdict(proof.status(self.root)))
+                payload, proof_cached = self._memoized_flag(
+                    "proof", lambda: dataclasses.asdict(proof.status(self.root)))
+                out["proof"] = payload
+                out["proof_cached"] = proof_cached
             except proof.ProofError as exc:
                 logger.debug("Gateway proof status unavailable: %s", exc)
+        else:
+            out["proof_cached"] = False
         return out
 
     def _memories(self, _body, _query) -> dict:
@@ -720,8 +826,33 @@ class Gateway:
 
     def _lessons(self, _body, query) -> dict:
         status = (query.get("status") or [None])[0]
-        return {"lessons": self._workbench(lambda w: w.list_lessons(self.root, status)),
-                "approval_enabled": self.allow_approval}
+        limit_raw = (query.get("limit") or [None])[0]
+        offset_raw = (query.get("offset") or [None])[0]
+        try:
+            limit = None if limit_raw is None else int(limit_raw)
+        except (TypeError, ValueError):
+            raise _bad("limit must be a positive integer") from None
+        try:
+            offset = 0 if offset_raw is None else int(offset_raw)
+        except (TypeError, ValueError):
+            raise _bad("offset must be a non-negative integer") from None
+        if limit is not None and (not 1 <= limit <= 1000):
+            raise _bad("limit must be between 1 and 1000")
+        if offset < 0:
+            raise _bad("offset must be a non-negative integer")
+
+        def fetch(w):
+            if limit is None and not offset:
+                return w.list_lessons(self.root, status)
+            return w.list_lessons(self.root, status, limit=limit, offset=offset)
+
+        lessons = self._workbench(fetch)
+        if limit is None and not offset:
+            total = len(lessons)
+        else:
+            total = self._workbench(lambda w: w.count_lessons(self.root, status))
+        return {"lessons": lessons, "approval_enabled": self.allow_approval,
+                "total": total, "limit": limit, "offset": offset}
 
     def _lesson(self, _body, query) -> dict:
         slug = (query.get("slug") or [""])[0]
@@ -750,35 +881,48 @@ class Gateway:
 
     def _occasions(self, _body, query) -> dict:
         limit = self._limit(query, 50, 500)
-        return {"events": list(reversed(self._read_events(limit)))}
+        events, cached, truncated = self._memoized_events(limit)
+        return {"events": list(reversed(events)), "cached": cached, "truncated": truncated,
+                "window_events": len(events), "limit": limit}
 
     def _agents(self, _body, _query) -> dict:
-        agents: dict[str, dict] = {}
-        now = time.time()
-        for e in self._read_events(5000):
-            who = e.get("agent_id") or "(unattributed)"
-            a = agents.setdefault(who, {"agent_id": who, "recalls": 0, "outcomes": 0, "succeeded": 0,
-                                        "withheld": 0, "protected": 0, "quarantined": 0, "last_seen": ""})
-            if e.get("kind") == "recall":
-                a["recalls"] += 1
-                a["withheld"] += int(e.get("withheld", 0))
-                a["protected"] += int(e.get("protected", 0))
-                a["quarantined"] += int(e.get("quarantined", 0))
-            elif e.get("kind") == "outcome":
-                a["outcomes"] += 1
-                a["succeeded"] += 1 if e.get("succeeded") else 0
-            a["last_seen"] = e.get("at", a["last_seen"])
-        rows = []
-        for a in agents.values():
-            a["success_rate"] = round(a["succeeded"] / a["outcomes"], 4) if a["outcomes"] else None
-            try:
-                age = now - datetime.datetime.fromisoformat(a["last_seen"]).timestamp()
-            except ValueError:
-                age = None
-            a["seconds_since_seen"] = None if age is None else round(max(age, 0.0), 1)
-            rows.append(a)
-        rows.sort(key=lambda r: r["last_seen"], reverse=True)
-        return {"agents": rows, "window": "last 5000 events"}
+        ident = self._events_identity()
+
+        def compute():
+            agents: dict[str, dict] = {}
+            now = time.time()
+            events = self._read_events(EVENTS_MAX_EVENTS)
+            truncated = self._events_truncated()
+            for e in events:
+                who = e.get("agent_id") or "(unattributed)"
+                a = agents.setdefault(who, {"agent_id": who, "recalls": 0, "outcomes": 0, "succeeded": 0,
+                                            "withheld": 0, "protected": 0, "quarantined": 0, "last_seen": ""})
+                if e.get("kind") == "recall":
+                    a["recalls"] += 1
+                    a["withheld"] += int(e.get("withheld", 0))
+                    a["protected"] += int(e.get("protected", 0))
+                    a["quarantined"] += int(e.get("quarantined", 0))
+                elif e.get("kind") == "outcome":
+                    a["outcomes"] += 1
+                    a["succeeded"] += 1 if e.get("succeeded") else 0
+                a["last_seen"] = e.get("at", a["last_seen"])
+            rows = []
+            for a in agents.values():
+                a["success_rate"] = round(a["succeeded"] / a["outcomes"], 4) if a["outcomes"] else None
+                try:
+                    age = now - datetime.datetime.fromisoformat(a["last_seen"]).timestamp()
+                except ValueError:
+                    age = None
+                a["seconds_since_seen"] = None if age is None else round(max(age, 0.0), 1)
+                rows.append(a)
+            rows.sort(key=lambda r: r["last_seen"], reverse=True)
+            return {"agents": rows, "window": "last 5000 events", "window_events": len(events),
+                    "truncated": truncated, "limit": EVENTS_MAX_EVENTS}
+
+        payload, cached = self._memoized_flag("agents", compute, extra_key=ident)
+        return {"agents": [dict(a) for a in payload["agents"]], "window": payload["window"],
+                "window_events": payload["window_events"], "truncated": payload["truncated"],
+                "limit": payload["limit"], "cached": cached}
 
     def _openapi(self, _body, _query) -> dict:
         paths_doc: dict = {}
@@ -878,7 +1022,22 @@ def serve_stdio(gateway: Gateway, stdin, stdout) -> int:
                  "status": ("GET", "/v1/status"), "memories": ("GET", "/v1/memories"),
                  "occasions": ("GET", "/v1/occasions"), "agents": ("GET", "/v1/agents"),
                  "health": ("GET", "/v1/health"),
-                 "remember": ("POST", "/v1/conversation/add"), "converse": ("POST", "/v1/conversation/recall")}
+                 "remember": ("POST", "/v1/conversation/add"), "converse": ("POST", "/v1/conversation/recall"),
+                 "conversation_add": ("POST", "/v1/conversation/add"),
+                 "conversation_recall": ("POST", "/v1/conversation/recall"),
+                 "lessons": ("GET", "/v1/lessons"), "lesson": ("GET", "/v1/lesson"),
+                 "lesson_edit": ("POST", "/v1/lesson/edit"), "edit": ("POST", "/v1/lesson/edit"),
+                 "lesson_approve": ("POST", "/v1/lesson/approve"), "approve": ("POST", "/v1/lesson/approve"),
+                 "lesson_reject": ("POST", "/v1/lesson/reject"), "reject": ("POST", "/v1/lesson/reject"),
+                 "proof": ("GET", "/v1/status"), "proof_status": ("GET", "/v1/status")}
+
+    def with_query(base: str, params: dict) -> str:
+        clean = {k: v for k, v in params.items() if v is not None}
+        if not clean:
+            return base
+        qs = urlencode(clean, doseq=True)
+        return base + ("&" if "?" in base else "?") + qs if qs else base
+
     for line in stdin:
         line = line.strip()
         if not line:
@@ -892,10 +1051,16 @@ def serve_stdio(gateway: Gateway, stdin, stdout) -> int:
             if "op" in req:
                 if req["op"] not in shorthand:
                     raise ValueError(f"unknown op {req['op']!r}")
-                method, path = shorthand[req["op"]]
-                body = {k: v for k, v in req.items() if k not in ("op", "id")}
+                method, base = shorthand[req["op"]]
+                params = {k: v for k, v in req.items() if k not in ("op", "id")}
+                if method == "GET":
+                    path, body = with_query(base, params), {}
+                else:
+                    path, body = base, params
             else:
                 method, path, body = req.get("method", "POST"), req["path"], req.get("body") or {}
+                if method == "GET" and isinstance(body, dict) and body:
+                    path, body = with_query(path, body), {}
             response = gateway.handle(
                 method, path, body=json.dumps(body).encode("utf-8") if method == "POST" else None,
                 trusted=True)
