@@ -71,8 +71,8 @@ _BROAD = re.compile(
     r"\b(?:summar(?:y|ise|ize|ies)|overview|recap|progress(?:ed)?|evolv(?:e|ed)|over time|so far|timeline|"
     r"in (?:what|which) order|order in which|sequence|chronolog\w*|throughout|across (?:our|my|all|the|these|"
     r"different) (?:conversations?|sessions?|chats?|discussions?|requests?)|walk me through|history of|"
-    r"all (?:the )?(?:times|things|steps|changes|features|issues)|every (?:time|change|step)|how many (?:times|"
-    r"different))\b", re.I)
+    r"all (?:the )?(?:times|things|steps|changes|features|issues)|every (?:time|change|step)|how many\b|"
+    r"total (?:number|count|amount)|list (?:all|every))\b", re.I)
 
 
 _ABOUT_ASSISTANT = re.compile(r"\b(?:you (?:said|told|suggested|recommended|mentioned|gave|listed|provided|wrote|"
@@ -81,13 +81,37 @@ _ABOUT_ASSISTANT = re.compile(r"\b(?:you (?:said|told|suggested|recommended|ment
 _SUMMARY = re.compile(r"\b(?:summar(?:y|ise|ize|ies)|overview|recap)\b", re.I)
 
 
-_CURRENT = re.compile(r"\b(?:current(?:ly)?|now|latest|most recent(?:ly)?|these days|still|anymore|any more|"
-                      r"updated?|today|at the moment|right now|nowadays)\b", re.I)
+_CURRENT = re.compile(
+    r"\b(?:current(?:ly)?|now|latest|most recent(?:ly)?|these days|still|anymore|any more|"
+    r"updated?|today|at the moment|right now|nowadays|"
+    r"where (?:do|does|am|is|are)\b|what (?:is|are)\b|who (?:is|are)\b)\b",
+    re.I,
+)
+
+_ASKS_WHEN = re.compile(
+    r"\b(?:when|what (?:time|date|day|month|year)|how (?:long|many (?:days|weeks|months|years))|how much time)\b",
+    re.I,
+)
+
+_PREFERENCE = re.compile(
+    r"\b(?:prefer|preference|like|favorite|favourite|enjoy|love|hate|dislike|usual|typically|normally|fond of|"
+    r"drink|eat|drive|use|cook|steak|coffee|seat|font|slide)\b",
+    re.I,
+)
 
 
 def asks_current(question: str) -> bool:
     """A question about how things stand now: a later statement should outrank an older one."""
     return bool(_CURRENT.search(question or ""))
+
+
+_QUESTION_WORDS = frozenset("what when where which who whom whose why how did does tell know remember mention "
+                            "mentioned said say ever".split())
+
+_ATTRIBUTE_WORDS = frozenset(
+    "name color colour type kind brand model date time day cost price age size height weight amount number title "
+    "phone email address city country state job car pet".split()
+)
 
 
 def confidence(store: Store, question: str, turn_ids: list[int]) -> float:
@@ -98,17 +122,24 @@ def confidence(store: Store, question: str, turn_ids: list[int]) -> float:
     if not asked or not turn_ids:
         return 0.0
     turns = store.turns(turn_ids)
+    if not turns:
+        return 0.0
+
+    salient = asked - _ATTRIBUTE_WORDS
+    if salient:
+        all_text = " ".join(f"{t.speaker} {t.annotated()} {t.at or ''}".lower() for t in turns.values())
+        salient_found = any(w in all_text or (len(w) >= 4 and w[:4] in all_text) for w in salient)
+        if not salient_found:
+            return 0.0
+
     best = 0.0
     for t in turns.values():
-        have = set(re.findall(r"[a-z0-9]+", t.text.lower()))
+        turn_str = f"{t.speaker} {t.annotated()} {t.at or ''}".lower()
+        have = set(re.findall(r"[a-z0-9]+", turn_str))
         stems = {w[:5] for w in have}
         hit = sum(1 for w in asked if w in have or w[:5] in stems)
         best = max(best, hit / len(asked))
     return round(best, 3)
-
-
-_QUESTION_WORDS = frozenset("what when where which who whom whose why how did does tell know remember mention "
-                            "mentioned said say ever".split())
 
 
 def is_broad(question: str) -> bool:
@@ -135,13 +166,65 @@ _FRAME_WORDS = frozenset("summary summarise summarize summarizing comprehensive 
                          "evolved evolve provide give describe including include detailed brief please".split())
 
 
+_QUERY_FRAME = re.compile(
+    r"^(?:(?:can|could|would)\s+you\s+(?:please\s+)?)?"
+    r"(?:give\s+me|tell\s+me|show\s+me|provide\s+me|provide|give|list|tell|show|describe|explain|recap|name|summarize|summarise)?\s*"
+    r"(?:a\s+|an\s+|the\s+)?(?:comprehensive\s+|detailed\s+|brief\s+|full\s+|complete\s+|clear\s+)?\s*"
+    r"(?:summary|overview|recap|breakdown|progression|evolution|timeline|history|account|details?|list)?\s*"
+    r"(?:of\s+)?\s*"
+    r"(?:how\s+(?:i|we|my|our)\s+(?:handled|progressed|developed|built|managed|worked\s+on|approached|dealt\s+with|solved|resolved|improved|understood)|"
+    r"what\s+(?:i|we)\s+(?:did|discussed|talked\s+about|learned)|"
+    r"how\s+(?:my|our)\s+(?:understanding|project|work|application)\s+(?:of\s+|and\s+|developed|progressed|evolved|improved)*|"
+    r"everything\s+(?:we\'ve|we\s+have|i\'ve|i\s+have)\s+(?:covered|discussed|worked\s+on|talked\s+about)\s+(?:about\s+)?|"
+    r"what (?:is|was|were|are)|list|order|how many|in what order|order in which|"
+    r"walk me through|do you remember|did i (?:ever )?mention|"
+    r"how\s+)?\s*",
+    re.I,
+)
+_QUERY_TRAILING = re.compile(
+    r"(?:,\s*in order|\bin order\b|\bthroughout our conversations?\b|\bacross all (?:our )?conversations?\b|"
+    r"\bacross our discussions?\b|\bfrom our discussions?\b|"
+    r"\bmention only\b.*|\bonly and only\b.*|\bso far\b|\bover time\b|\bfrom start to finish\b).*$",
+    re.I,
+)
+
+
+def _core_topic(question: str) -> str:
+    cleaned = _QUERY_FRAME.sub("", question.strip())
+    cleaned = _QUERY_TRAILING.sub("", cleaned).strip(" ?,.:;")
+    cleaned = re.sub(r"^(?:the\s+|about\s+|and\s+|my\s+|our\s+|how\s+)+", "", cleaned, flags=re.I)
+    cleaned = re.sub(
+        r"^(?:the\s+)?(?:order in which|sequence of|different aspects of|aspects of|timeline of|history of|"
+        r"all the times i|details about)\s+", "", cleaned, flags=re.I,
+    )
+    cleaned = re.sub(r"^(?:i brought up|we talked about|we discussed|i mentioned)\s+", "", cleaned, flags=re.I)
+    cleaned = re.sub(r"^(?:different aspects of|aspects of)\s+", "", cleaned, flags=re.I)
+    return cleaned.strip(" ?,.:;")
+
+
 def subqueries(question: str) -> list[str]:
     """The question, plus each clause of a compound one, plus each aspect of a list
     ("a summary of X, including A, B and C" also searches "X A", "X B", "X C")."""
     out = [question]
+    core = _core_topic(question)
+    q_norm = question.rstrip(" ?,.:;").lower()
+    if core and core.lower() != q_norm and len(core) >= 4:
+        out.append(core)
     parts = re.split(r"\s*(?:;|,\s*and\b|\band then\b|\balso\b)\s*", question)
     if len(parts) > 1:
         out += [p for p in parts if len(re.findall(r"[A-Za-z]{3,}", p)) >= 2]
+    coord = re.search(
+        r"\b([a-z0-9_-]+(?:\s+[a-z0-9_-]+)?)\s+(?:or|and)\s+([a-z0-9_-]+(?:\s+[a-z0-9_-]+)?)\b",
+        core or question, re.I
+    )
+    if coord:
+        w1, w2 = coord.group(1), coord.group(2)
+        if w1.lower() not in profile.STOPWORDS and w2.lower() not in profile.STOPWORDS:
+            out.append(question.replace(coord.group(0), w1))
+            out.append(question.replace(coord.group(0), w2))
+            if core:
+                out.append(core.replace(coord.group(0), w1))
+                out.append(core.replace(coord.group(0), w2))
     if question.count(",") >= 2 or re.search(r"\bincluding\b|:", question):
         head = re.split(r"\bincluding\b|:", question, maxsplit=1)[0]
         rest = question[len(head):]
@@ -150,8 +233,11 @@ def subqueries(question: str) -> list[str]:
         for aspect in re.split(r",\s*(?:and\s+)?|\band\b|\bincluding\b|:", rest):
             words = [w for w in re.findall(r"[A-Za-z][A-Za-z'-]{2,}", aspect) if w.lower() not in profile.STOPWORDS]
             if words:
-                out.append(" ".join(topic + words))
-    return list(dict.fromkeys(out))[:8]
+                if len(words) >= 2:
+                    out.append(" ".join(words))
+                if topic:
+                    out.append(" ".join(topic + words))
+    return list(dict.fromkeys(out))[:12]
 
 
 def _rrf(rankings: list[tuple[list[int], float]]) -> dict[int, float]:
@@ -287,7 +373,17 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
     if allowed is not None:
         explain["filtered_to"] = len(allowed)
     if opts.entity_boost and scores:
-        named = profile.entities(question)
+        named = set(profile.entities(question))
+        if not named:
+            q_words = {w for w in re.findall(r"[a-z0-9_-]+", question.lower())
+                       if len(w) >= 3 and w not in profile.STOPWORDS and w not in _QUESTION_WORDS}
+            for w in q_words:
+                found = store.db.execute(
+                    "SELECT 1 FROM entities WHERE name=? UNION SELECT 1 FROM turns WHERE LOWER(speaker)=? LIMIT 1",
+                    (w, w)
+                ).fetchone()
+                if found:
+                    named.add(w)
         if named:
             top = max(scores.values())
             boosted = 0
@@ -313,6 +409,19 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
         for position, turn in enumerate(order):
             scores[turn] += opts.recency_boost * top * (position / max(1, len(order) - 1))
         explain["recency"] = True
+    asks_when = bool(_ASKS_WHEN.search(question or ""))
+    if asks_when and scores:
+        top = max(scores.values())
+        top_candidates = list(scores.keys())[:100]
+        dated_turns = set()
+        for r in store.db.execute(
+            f"SELECT id FROM turns WHERE id IN ({','.join('?' for _ in top_candidates)}) AND dates != '[]'",
+            top_candidates,
+        ):
+            dated_turns.add(r[0])
+        for turn in dated_turns:
+            scores[turn] += 0.4 * top
+        explain["asks_when"] = True
     ranked = sorted(scores, key=lambda t: (-scores[t], t))
     rerank = opts.rerank
     if rerank == "auto":
@@ -320,7 +429,10 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
     if rerank and ranked:
         ranked = _rerank(store, question, ranked, rerank, opts.rerank_depth, explain, opts.rerank_blend)
         explain["rerank"] = rerank
-    explain["confidence"] = confidence(store, question, ranked[:5])
+    conf = confidence(store, question, ranked[:5])
+    explain["confidence"] = conf
+    if conf == 0.0:
+        explain["abstain"] = True
     withheld: list[int] = []
     context, used, n_tokens = assemble(store, question, ranked, opts, withheld, allowed)
     if withheld:
@@ -396,11 +508,17 @@ def _profile_lines(store: Store, question: str, limit: int) -> list[tuple[str, i
     asked = _stems(question)
     advice = bool(_ADVICE.search(question))
     about_self = bool(_ABOUT_SELF.search(question))
+    preference = bool(_PREFERENCE.search(question))
     scored = []
     for f in facts:
         overlap = len(asked & _stems(f["statement"])) + (2 if about_self and f["kind"] == "identity" else 0)
-        if overlap or (advice and f["kind"] in ("preference", "dislike", "favorite", "identity")):
-            scored.append((overlap + (0.5 if f["kind"] in ("preference", "dislike") else 0), f))
+        is_pref_fact = f["kind"] in ("preference", "dislike", "favorite", "habit")
+        matches_advice = advice and f["kind"] in ("preference", "dislike", "favorite", "identity")
+        if overlap or matches_advice or (preference and is_pref_fact):
+            pref_boost = 1.5 if (preference and is_pref_fact) else 0.0
+            bias = 0.5 if f["kind"] in ("preference", "dislike") else 0.0
+            score = overlap + pref_boost + bias
+            scored.append((score, f))
     scored.sort(key=lambda x: x[1]["at"] or "", reverse=True)
     scored.sort(key=lambda x: -x[0])
     out, seen = [], set()
@@ -451,10 +569,11 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
         return cost
 
     broad = is_broad(question) if opts.broad is None else opts.broad
-    cap = opts.excerpt_tokens or (max(60, budget // 16) if broad else max(200, budget // 5))
+    cap = opts.excerpt_tokens or (max(60, min(120, budget // 30)) if broad else max(200, budget // 5))
     summary = broad and bool(_SUMMARY.search(question or ""))
-    user_turns_exist = broad and not _ABOUT_ASSISTANT.search(question or "") and \
-        store.db.execute("SELECT 1 FROM turns WHERE role='user' LIMIT 1").fetchone() is not None
+    about_user_only = broad and bool(re.search(
+        r"\b(?:i (?:brought up|raised|mentioned|asked|said|wanted)|my questions?)\b", question or "", re.I
+    ))
     rendered: dict[int, str] = {}
 
     def line_of(turn: Turn) -> str:
@@ -462,17 +581,38 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
             rendered[turn.id] = _excerpt(turn, question, cap)
         return rendered[turn.id]
 
+    stream = list(ranked)
+    if broad and ranked:
+        from collections import defaultdict
+        session_to_tids: dict[str, list[int]] = defaultdict(list)
+        all_head = store.turns(ranked[:200])
+        for tid in ranked[:200]:
+            t = all_head.get(tid)
+            sess = t.session if t else str(tid)
+            session_to_tids[sess].append(tid)
+        for sess in session_to_tids:
+            session_to_tids[sess].sort(
+                key=lambda tid: (0 if all_head.get(tid) and all_head[tid].role in ("user", "") else 1)
+            )
+        diversified = []
+        max_depth = max((len(tids) for tids in session_to_tids.values()), default=0)
+        for d in range(max_depth):
+            for sess, tids in session_to_tids.items():
+                if d < len(tids):
+                    diversified.append(tids[d])
+        stream = diversified + [t for t in ranked if t not in set(diversified)]
+
     with_context = opts.neighbour_hits if opts.neighbour_hits is not None else max(5, budget // 400)
     # the best hits go in first, on their own: context around one hit must never push a
     # better-ranked hit out of the budget
     primary: set[int] = set()
     primary_hits = opts.primary_hits if opts.primary_hits is not None else 3
-    head = store.turns(ranked[:primary_hits * 3])
-    for tid in ranked[:primary_hits * 3]:
+    head = store.turns(stream[:primary_hits * 3])
+    for tid in stream[:primary_hits * 3]:
         turn = head.get(tid)
         if turn is None or len(primary) >= primary_hits:
             continue
-        if broad and turn.role not in ("user", "") and user_turns_exist:
+        if about_user_only and turn.role not in ("user", ""):
             continue
         if _flagged(turn):
             if tid not in withheld:
@@ -486,8 +626,8 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
         sessions_seen.add(turn.session)
         spent += cost
     hits = 0
-    for start in range(0, len(ranked), 50):
-        batch = ranked[start:start + 50]
+    for start in range(0, len(stream), 50):
+        batch = stream[start:start + 50]
         turns = store.turns(batch)
         full = False
         for tid in batch:
@@ -496,12 +636,12 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
                 continue
             first = tid in primary
             primary.discard(tid)
-            if broad and turn.role not in ("user", "") and user_turns_exist:
-                continue  # what the user raised, across the whole history, before any single long answer
+            if about_user_only and turn.role not in ("user", ""):
+                continue
             hits += 1
             if broad:
-                # a summary also needs what was answered: the reply right after each request
-                near = store.neighbours(turn, 0, 1) if summary else []
+                user_req = summary and turn.role in ("user", "") and hits <= with_context
+                near = store.neighbours(turn, 0, 1) if user_req else []
             else:
                 near = store.neighbours(turn, opts.neighbours_before, opts.neighbours_after) \
                     if hits <= with_context else []

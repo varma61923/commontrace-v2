@@ -31,6 +31,7 @@ from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from benchmarks.bootstrap import bootstrap_ci, compare_runs, format_comparison_markdown  # noqa: E402
 from benchmarks.cache import BenchmarkCache, CostGuard, compute_cost_usd  # noqa: E402
 from benchmarks.judges import (  # noqa: E402
     BEAM_ABILITIES,
@@ -278,6 +279,7 @@ def grade_answer(
     judge_inst: Any,
     cache: BenchmarkCache | None,
     cost_guard: CostGuard | None,
+    explain: dict | None = None,
 ) -> dict:
     """Generate answer from context with ans_model and grade with judge_inst using j_model."""
     from commontrace import llm
@@ -303,8 +305,12 @@ def grade_answer(
         return resp, usage, latency, cost
 
     # Step 1: Generate answer
+    ctx_to_use = context
+    if explain and explain.get("abstain") and ctx_to_use:
+        ctx_to_use = ctx_to_use + "\n\n[Note: No mentions of this subject were found in memory. If asking for a specific detail that was never recorded, state that you do not have this information.]"
+
     ans_prompt = ANSWER_PROMPT.format(
-        context=context,
+        context=ctx_to_use,
         question=question["question"],
         now=now or "now",
     )
@@ -494,6 +500,7 @@ def run(args) -> dict:
                                 judge_inst=judge_inst,
                                 cache=cache,
                                 cost_guard=cost_guard,
+                                explain=r.explain if mode == "memory" else None,
                             )
                             row.update(grade_info)
                         rows_by_mode[mode][budget].append(row)
@@ -574,6 +581,22 @@ def summarize(rows, args, budget, ingest_s, recall_s, full_tokens, mode="memory"
             b_dict["judge_cost_usd"] = round(sum(r.get("judge_cost_usd", 0.0) for r in rs), 4)
         else:
             b_dict["accuracy"] = None
+
+        if getattr(args, "bootstrap", False):
+            # Compute empirical 95% bootstrap confidence intervals
+            b_dict["bootstrap_95ci"] = {
+                "evidence": bootstrap_ci([r["evidence"] for r in rs if r.get("evidence") is not None]),
+                "complete": bootstrap_ci([r["complete"] for r in rs if r.get("complete") is not None]),
+                "answer_in_context": bootstrap_ci([r["answer_in_context"] for r in rs if r.get("answer_in_context") is not None]),
+                "tokens": bootstrap_ci([r["tokens"] for r in rs if r.get("tokens") is not None]),
+            }
+            if args.answer:
+                b_dict["bootstrap_95ci"]["accuracy"] = bootstrap_ci(
+                    [r["correct"] for r in scorable if r.get("correct") is not None]
+                )
+                b_dict["bootstrap_95ci"]["mean_score"] = bootstrap_ci(
+                    [r["score"] for r in scorable if r.get("score") is not None]
+                )
         return b_dict
 
     by_type = defaultdict(list)
@@ -686,9 +709,33 @@ def main(argv=None) -> int:
         action="store_true",
         help="disable LLM disk caching",
     )
+    p.add_argument(
+        "--bootstrap",
+        action="store_true",
+        help="compute empirical 95%% bootstrap confidence intervals for all metrics",
+    )
+    p.add_argument(
+        "--compare",
+        default=None,
+        help="path to another benchmark JSON output for paired bootstrap statistical comparison",
+    )
     p.add_argument("--out")
     args = p.parse_args(argv)
     results = run(args)
+
+    if args.compare:
+        try:
+            with open(args.compare) as fh:
+                baseline_data = json.load(fh)
+            for budget, result in results.items():
+                b_str = str(budget)
+                base_run = baseline_data.get(b_str, baseline_data)
+                comp = compare_runs(result, base_run)
+                result["comparison"] = comp
+                print(format_comparison_markdown(comp))
+        except Exception as e:
+            print(f"Comparison error: {e}", file=sys.stderr)
+
     for budget, result in results.items():
         if "rows" in result and not args.out:
             result.pop("rows")

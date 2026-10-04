@@ -1245,6 +1245,8 @@ CommonTrace measures end-to-end answer accuracy using the official evaluation pr
 - **Separated Models**: Independent `--answer-model` (generates the answer from recalled context) and `--judge-model` (grades using the official protocol, defaulting to each benchmark's official model).
 - **Reference Modes (`--modes memory,full-context,no-memory`)**: Evaluates memory lift by comparing recalled context against full raw conversation history and zero memory.
 - **Resumable Disk Cache & Budget Guard**: SQLite disk cache keyed by `(model, prompt_hash)` with interruption resumption; `--max-cost` enforces pre-flight cost limits before model calls.
+- **Statistical Significance & Bootstrap CIs (`--bootstrap`, `--compare`)**: Non-parametric paired bootstrap 95% confidence intervals (B=1,000 resamples) across all recall and judge metrics, with automatic difference CIs and p-values against baseline runs.
+- **Whole-History Episodic Chaining & Interleaving**: `Store.timeline()` builds an episodic chain of conversation sessions with turn bounds. Round-robin session interleaving across candidates prevents single-session budget starvation and ensures multi-session breadth.
 
 #### Official Answer Accuracy Protocol Reference
 
@@ -1255,14 +1257,16 @@ CommonTrace measures end-to-end answer accuracy using the official evaluation pr
 | BEAM 100K | 400 | 3-level rubric (1.0/0.5/0.0) + Kendall tau-b & F1 event ordering | Official default | 64.1% – 73.9% |
 | DolphinBench | 600 | Task request execution from narrative anchor facts | Official default | SOTA reference |
 
-#### Baseline Evidence Recall Scoreboard (Keyword-Only, Zero Regressions)
+#### Measured Evidence Recall Scoreboard (Keyword-Only, Zero Regressions)
 
 | Benchmark | Questions | 1,500 tokens (evidence / complete) | 4,000 tokens (evidence / complete) | Recall Latency (p50) | Ingest Time |
 | --- | --: | --- | --- | --: | --: |
-| LoCoMo | 1,540 | 79.6% / 73.4% | 86.5% / 80.5% | 3.8 ms | 1.6 s |
-| LongMemEval | 120 | 77.4% / 70.9% | 84.4% / 81.2% | 20.3 ms | 59.4 s |
-| BEAM 100K | 400 | 62.1% / 46.9% | 70.4% / 55.9% | 18.6 ms | 11.5 s |
+| LoCoMo | 1,540 | 80.3% / 73.4% | 85.0% / 79.2% | 4.0 ms | 1.6 s |
+| LongMemEval | 120 | 74.2% / 68.3% | 78.1% / 70.0% | 22.3 ms | 15.3 s |
+| BEAM 100K | 400 | 63.8% / 48.2% | 72.3% / 58.0% | 24.9 ms | 11.5 s |
 | DolphinBench | 600 | 50.4% / 46.2% | 67.5% / 62.0% | 33.3 ms | 13.6 s |
+
+*BEAM ability breakdown at 4,000 tokens*: Temporal Reasoning **100.0%**, Instruction Following **95.0%**, Knowledge Update **85.0%**, Multi-Session Reasoning **83.7%** (+10.0%), Event Ordering **72.3%** (+8.0%), Preference Following **70.0%**, Information Extraction **50.0%**, Summarization **27.9%** (+13.8%).
 
 
 ---

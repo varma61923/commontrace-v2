@@ -260,3 +260,14 @@ class TestEntitiesAndPromotion:
         assert not call("conversation_forget", space="ana")["ok"]
         assert call("conversation_forget", space="ana", session="s2")["deleted"] == 2
         assert Store(str(tmp_path), "ana").stats()["sessions"] == 1
+
+    def test_store_timeline(self, tmp_path):
+        store = _seed(str(tmp_path))
+        timeline = store.timeline()
+        assert len(timeline) == 2
+        assert timeline[0]["session"] == "s1"
+        assert timeline[1]["session"] == "s2"
+        assert timeline[0]["turns"] == 3
+        assert timeline[1]["turns"] == 2
+        assert timeline[0]["first_turn"] == 1
+        assert timeline[1]["last_turn"] == 5

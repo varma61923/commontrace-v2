@@ -427,29 +427,36 @@ def _unsafe_write(what: str, fields: dict) -> dict | None:
 
 def build_server(root: str, *, allow_approval: bool = True):
     """Build the MCP server for the store at `root`. See module docstring."""
-    try:
-        from mcp.server.mcpserver import MCPServer
-    except ModuleNotFoundError as exc:  # pragma: no cover - environment-dependent
-        raise LocalStoreError(
-            "`commontrace serve` needs the MCP SDK, which the base install does "
-            "not include. Install it with:  pip install 'commontrace[serve]'"
-        ) from exc
-
     from commontrace import __version__
 
-    mcp = MCPServer(
-        name="commontrace-local",
-        version=__version__,
-        instructions=(
-            "Your own fleet's memory, on this machine. Retrieve before you act "
-            "(`retrieve`), record what happened afterwards (`capture`), and let "
-            "repeated failures become lessons (`propose_lessons` -> `draft_lesson` "
-            "-> `approve_lesson`). Nothing here leaves this machine; a Hub, if one "
-            "is configured, is a separate server. "
-            "Retrieval is the step that pays for the rest: call it with the task "
-            "in your own words, not with keywords."
-        ),
+    instructions = (
+        "Your own fleet's memory, on this machine. Retrieve before you act "
+        "(`retrieve`), record what happened afterwards (`capture`), and let "
+        "repeated failures become lessons (`propose_lessons` -> `draft_lesson` "
+        "-> `approve_lesson`). Nothing here leaves this machine; a Hub, if one "
+        "is configured, is a separate server. "
+        "Retrieval is the step that pays for the rest: call it with the task "
+        "in your own words, not with keywords."
     )
+    try:
+        from mcp.server.mcpserver import MCPServer
+        mcp = MCPServer(
+            name="commontrace-local",
+            version=__version__,
+            instructions=instructions,
+        )
+    except (ModuleNotFoundError, ImportError):
+        try:
+            from mcp.server.fastmcp import FastMCP
+            mcp = FastMCP(
+                name="commontrace-local",
+                instructions=instructions,
+            )
+        except (ModuleNotFoundError, ImportError) as exc:  # pragma: no cover - environment-dependent
+            raise LocalStoreError(
+                "`commontrace serve` needs the MCP SDK, which the base install does "
+                "not include. Install it with:  pip install 'commontrace[serve]'"
+            ) from exc
 
     from commontrace import telemetry
 
@@ -1742,6 +1749,21 @@ def build_server(root: str, *, allow_approval: bool = True):
         def active_knowledge_graph() -> str:
             """Active knowledge graph rendered as Mermaid diagram and entity edges."""
             return graph_mod.export_mermaid(root)
+
+    if hasattr(mcp, "call_tool"):
+        _orig_call_tool = mcp.call_tool
+
+        async def _call_tool_compat(name: str, arguments: dict | None = None):
+            res = await _orig_call_tool(name, arguments or {})
+            if isinstance(res, list):
+                class _ResultCompat:
+                    def __init__(self, content):
+                        self.content = content
+                        self.structured_content = None
+                return _ResultCompat(res)
+            return res
+
+        mcp.call_tool = _call_tool_compat
 
     return mcp
 

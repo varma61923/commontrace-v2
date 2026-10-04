@@ -292,6 +292,14 @@ def annotate(text: str, groundings: list[Grounding]) -> str:
 _Q_EXACT = re.compile(
     rf"\b(?:on\s+)?(?:(\d{{1,2}})(?:st|nd|rd|th)?\s+({_MONTH_RE})|({_MONTH_RE})\s+(\d{{1,2}})(?:st|nd|rd|th)?),?"
     rf"\s+(\d{{4}})\b", re.I)
+_Q_RANGE = re.compile(
+    rf"\b(?:between|from)\s+({_MONTH_RE})(?:\s+of)?,?\s+(\d{{4}})\s+(?:and|to|-)\s+({_MONTH_RE})(?:\s+of)?,?\s+(\d{{4}})\b",
+    re.I,
+)
+_Q_YEAR_RANGE = re.compile(
+    r"\b(?:between|from)\s+((?:19|20)\d{2})\s+(?:and|to|-)\s+((?:19|20)\d{2})\b",
+    re.I,
+)
 _Q_MONTH = re.compile(rf"\b(?:in\s+|during\s+)?({_MONTH_RE})(?:\s+of)?,?\s+(\d{{4}})\b", re.I)
 _Q_YEAR = re.compile(r"\b(?:in|during|of|since|before|after)\s+((?:19|20)\d{2})\b", re.I)
 _Q_PAST = re.compile(rf"\b(?:in|over|during)\s+the\s+(?:past|last)\s+(?:({_NUM_RE})\s+)?(day|week|month|year)s?\b",
@@ -313,6 +321,18 @@ def question_window(question: str, now: dt.date | dt.datetime | None) -> tuple[d
             day = None
         if day:
             return day, day, label(day)
+    m = _Q_RANGE.search(question)
+    if m:
+        mon1, y1, mon2, y2 = m.groups()
+        lo, _ = _month_bounds(int(y1), MONTH_NUMBER[mon1.lower()])
+        _, hi = _month_bounds(int(y2), MONTH_NUMBER[mon2.lower()])
+        lbl1 = month_label(int(y1), MONTH_NUMBER[mon1.lower()])
+        lbl2 = month_label(int(y2), MONTH_NUMBER[mon2.lower()])
+        return lo, hi, f"{lbl1} to {lbl2}"
+    m = _Q_YEAR_RANGE.search(question)
+    if m:
+        y1, y2 = int(m.group(1)), int(m.group(2))
+        return dt.date(y1, 1, 1), dt.date(y2, 12, 31), f"{y1} to {y2}"
     m = _Q_MONTH.search(question)
     may_verb = m and m.group(1).lower() == "may" and not re.search(
         r"\b(?:in|during|of)\s+may\b|\bmay\s+(?:of\s+)?\d{4}", question, re.I)

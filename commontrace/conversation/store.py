@@ -506,14 +506,30 @@ class Store:
             "ORDER BY f.at, f.id", (json.dumps(kinds), json.dumps(kinds), int(history)))]
 
     def entity_turns(self, names: Iterable[str]) -> dict[str, list[int]]:
-        """The turns mentioning each name."""
+        """The turns mentioning each name or spoken by them."""
         out: dict[str, list[int]] = {}
         for name in dict.fromkeys(n.lower() for n in names):
-            out[name] = [r[0] for r in self.db.execute("SELECT turn FROM entities WHERE name=?", (name,))]
+            query = "SELECT turn FROM entities WHERE name=? UNION SELECT id FROM turns WHERE LOWER(speaker)=?"
+            out[name] = [r[0] for r in self.db.execute(query, (name, name))]
         return out
 
     def summaries(self) -> dict[str, dict]:
         return {r["session"]: dict(r) for r in self.db.execute("SELECT * FROM summaries")}
+
+    def timeline(self, limit: int = 500) -> list[dict]:
+        """Chronological episodic chain of sessions with their summaries, dates, and turn bounds."""
+        query = """
+        SELECT s.id as session, s.started_at, s.seq, sm.text as summary, COUNT(t.id) as turns,
+               MIN(t.id) as first_turn, MAX(t.id) as last_turn
+        FROM sessions s
+        LEFT JOIN summaries sm ON sm.session = s.id
+        LEFT JOIN turns t ON t.session = s.id
+        GROUP BY s.id
+        ORDER BY s.seq ASC
+        LIMIT ?
+        """
+        rows = self.db.execute(query, (limit,)).fetchall()
+        return [dict(r) for r in rows]
 
     def session_turns(self, session: str) -> list[Turn]:
         rows = self.db.execute("SELECT * FROM turns WHERE session=? ORDER BY idx", (session,)).fetchall()

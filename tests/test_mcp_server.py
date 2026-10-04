@@ -653,7 +653,8 @@ def test_stdio_transport_end_to_end(store):
         async with stdio_client(params) as (read, write):
             async with ClientSession(read, write) as session:
                 init = await session.initialize()
-                assert init.server_info.name == "commontrace-local"
+                sinfo = getattr(init, "server_info", None) or getattr(init, "serverInfo", None)
+                assert sinfo.name == "commontrace-local"
                 names = {t.name for t in (await session.list_tools()).tools}
                 assert names == set(mcp_server.LOCAL_TOOLS)
 
