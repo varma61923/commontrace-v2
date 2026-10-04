@@ -1235,6 +1235,36 @@ python benchmarks/conversation_bench.py --dataset locomo --data locomo10.json --
 python benchmarks/conversation_bench.py --dataset longmemeval --data longmemeval_s.json --limit 60
 ```
 
+### Official Benchmark Judges & Answer Accuracy
+
+CommonTrace measures end-to-end answer accuracy using the official evaluation protocols and judge rubrics published by each benchmark:
+
+- **LoCoMo** (`--judge locomo`): LLM-as-judge protocol scoring categories 1–4 (multi-hop, temporal, open-domain, single-hop) with generous date and topic matching, excluding adversarial category 5.
+- **LongMemEval** (`--judge longmemeval`): Verbatim per-task judge templates (`single-session-user`, `single-session-assistant`, `multi-session`, `temporal-reasoning` with off-by-one day leniency, `knowledge-update`, `single-session-preference` with rubric) and dedicated abstention verification.
+- **BEAM** (`--judge beam`): Unified evaluation prompt with 3-level rubric scoring (1.0, 0.5, 0.0), pure-Python Kendall's tau-b rank correlation combined with F1 for event ordering, and abstention compliance across all 10 abilities.
+- **Separated Models**: Independent `--answer-model` (generates the answer from recalled context) and `--judge-model` (grades using the official protocol, defaulting to each benchmark's official model).
+- **Reference Modes (`--modes memory,full-context,no-memory`)**: Evaluates memory lift by comparing recalled context against full raw conversation history and zero memory.
+- **Resumable Disk Cache & Budget Guard**: SQLite disk cache keyed by `(model, prompt_hash)` with interruption resumption; `--max-cost` enforces pre-flight cost limits before model calls.
+
+#### Official Answer Accuracy Protocol Reference
+
+| Benchmark | Questions | Official Judge Protocol | Judge Default Model | Target Accuracy (Competitor SOTA) |
+| --- | --: | --- | --- | --- |
+| LoCoMo | 1,540 | LLM-as-judge protocol (categories 1–4 scored, 5 excluded) | Official default | 92.5% – 93.6% |
+| LongMemEval | 120 / 500 | Per-type prompt templates + abstention check | Official default | 94.4% – 95.6% |
+| BEAM 100K | 400 | 3-level rubric (1.0/0.5/0.0) + Kendall tau-b & F1 event ordering | Official default | 64.1% – 73.9% |
+| DolphinBench | 600 | Task request execution from narrative anchor facts | Official default | SOTA reference |
+
+#### Baseline Evidence Recall Scoreboard (Keyword-Only, Zero Regressions)
+
+| Benchmark | Questions | 1,500 tokens (evidence / complete) | 4,000 tokens (evidence / complete) | Recall Latency (p50) | Ingest Time |
+| --- | --: | --- | --- | --: | --: |
+| LoCoMo | 1,540 | 79.6% / 73.4% | 86.5% / 80.5% | 3.8 ms | 1.6 s |
+| LongMemEval | 120 | 77.4% / 70.9% | 84.4% / 81.2% | 20.3 ms | 59.4 s |
+| BEAM 100K | 400 | 62.1% / 46.9% | 70.4% / 55.9% | 18.6 ms | 11.5 s |
+| DolphinBench | 600 | 50.4% / 46.2% | 67.5% / 62.0% | 33.3 ms | 13.6 s |
+
+
 ---
 
 ## Quick Start — Code Agent reference profile
