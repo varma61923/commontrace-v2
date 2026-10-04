@@ -507,6 +507,124 @@ class TestCallToolCompat:
         assert payload(three)["ok"] is True
 
 
+# --- 13. TTL expiry enforcement ------------------------------------------------------
+
+class TestExpiryEnforcement:
+    def test_expired_hidden_by_default(self, store):
+        from commontrace import hierarchical
+
+        hierarchical.add_fact(store, "Old API key works", expires_at="2020-01-01")
+        hierarchical.add_fact(store, "New API key works")
+        assert [f.statement for f, _ in hierarchical.search_facts(store, "API key works")] == [
+            "New API key works"]
+        assert len(hierarchical.search_facts(store, "API key works", show_expired=True)) == 2
+        assert len(hierarchical.list_facts(store)) == 1
+        assert len(hierarchical.list_facts(store, show_expired=True)) == 2
+
+    def test_cli_search_show_expired(self, store):
+        from commontrace import hierarchical
+
+        hierarchical.add_fact(store, "Old API key works", expires_at="2020-01-01")
+        res = cli("fact", "search", "API key", "--dest", store)
+        assert res.returncode == 0 and "Old API" not in res.stdout
+        res = cli("fact", "search", "API key", "--dest", store, "--show-expired")
+        assert res.returncode == 0 and "Old API" in res.stdout
+
+
+# --- 14. contradiction resolution ------------------------------------------------------
+
+class TestResolveContradiction:
+    def test_resolve_invalidates_with_guard(self, store):
+        from commontrace import hierarchical
+
+        old, _ = hierarchical.add_fact(store, "Deploy on Fridays", valid_from="2024-01-01")
+        new, _ = hierarchical.add_fact(store, "Never deploy on Fridays", valid_from="2024-06-01")
+        o, n = hierarchical.resolve_contradiction(store, old.id, new.id)
+        assert o.status == "superseded" and o.superseded_by == new.id
+
+    def test_older_replacement_refused(self, store):
+        from commontrace import hierarchical
+
+        future, _ = hierarchical.add_fact(store, "Future policy", valid_from="2027-01-01")
+        with pytest.raises(ValueError, match="predates"):
+            hierarchical.resolve_contradiction(store, future.id, "Current policy")
+
+    def test_disjoint_windows_refused(self, store):
+        from commontrace import hierarchical
+
+        a, _ = hierarchical.add_fact(store, "X is red", valid_from="2020-01-01",
+                                     valid_until="2020-06-01")
+        b, _ = hierarchical.add_fact(store, "X is blue", valid_from="2021-01-01")
+        with pytest.raises(ValueError, match="different windows"):
+            hierarchical.resolve_contradiction(store, a.id, b.id)
+
+    def test_cli_resolve(self, store):
+        from commontrace import hierarchical
+
+        old, _ = hierarchical.add_fact(store, "Deploy on Fridays", valid_from="2024-01-01")
+        new, _ = hierarchical.add_fact(store, "Never deploy on Fridays", valid_from="2024-06-01")
+        res = cli("fact", "resolve", old.id, new.id, "--dest", store)
+        assert res.returncode == 0 and "invalidated" in res.stdout
+
+
+# --- 15. scope immutability --------------------------------------------------------------
+
+class TestScopeImmutability:
+    def test_update_scopes_refused(self, store):
+        from commontrace import hierarchical
+
+        fact, _ = hierarchical.add_fact(store, "Tenant secret", scopes=["acme"])
+        with pytest.raises(ValueError, match="immutable"):
+            hierarchical.update_fact(store, fact.id, scopes=["other"])
+        # same scopes are a no-op success
+        assert hierarchical.update_fact(store, fact.id, scopes=["acme"]).scopes == ["acme"]
+        assert hierarchical.update_fact(store, fact.id, confidence=0.5).confidence == 0.5
+
+
+# --- 16. interop fidelity ------------------------------------------------------------------
+
+class TestInteropFidelity:
+    def test_mem0_expiration_survives(self, store):
+        from commontrace import hierarchical, interop
+
+        recs = interop.import_mem0_dump([{"memory": "Old news", "expiration_date": "2020-01-01"}])
+        assert interop.apply_store(store, recs)["fact"] == 1
+        assert hierarchical.search_facts(store, "Old news") == []
+        assert len(hierarchical.search_facts(store, "Old news", show_expired=True)) == 1
+
+    def test_zep_temporal_survives(self):
+        from commontrace import interop
+
+        recs = interop.import_zep_episodes(
+            [{"content": "Friday rule", "valid_at": "2024-01-01", "invalid_at": "2024-06-01"}])
+        fm = recs[0]["data"]["frontmatter"]
+        assert fm["valid_from"] == "2024-01-01" and fm["valid_until"] == "2024-06-01"
+
+    def test_letta_passages_become_facts(self, store):
+        from commontrace import interop
+
+        recs = interop.import_letta_blocks(
+            {"blocks": [{"label": "persona", "value": "Be brief"}],
+             "passages": [{"text": "User likes tea", "id": "p1"}]})
+        assert sorted(r["kind"] for r in recs) == ["block", "fact"]
+        counts = interop.apply_store(store, recs)
+        assert counts == {**counts, "block": 1, "fact": 1}
+
+
+# --- 17. ontology CLI --------------------------------------------------------------------------
+
+class TestOntologyCLI:
+    def test_show_and_set_starter(self, store):
+        res = cli("ontology", "show", "--dest", store)
+        assert res.returncode == 0 and "built-in defaults" in res.stdout
+        res = cli("ontology", "set-starter", "--dest", store)
+        assert res.returncode == 0 and "ontology.yaml" in res.stdout
+        res = cli("ontology", "set-starter", "--dest", store)
+        assert res.returncode == 1 and "already set" in res.stderr
+        res = cli("ontology", "show", "--dest", store)
+        assert res.returncode == 0 and "ontology.yaml" in res.stdout
+
+
 class TestSigmoidHome:
     def test_single_canonical_definition(self):
         from commontrace.conversation import search as search_mod

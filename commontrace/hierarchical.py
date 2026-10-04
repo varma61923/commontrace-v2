@@ -275,7 +275,13 @@ def update_fact(
     valid_until: str | None = None,
     expires_at: Any = _UNSET,
 ) -> AtomicFact:
-    """Change fields of an existing fact."""
+    """Change fields of an existing fact.
+
+    Scopes are immutable here (mem0 tenant-isolation discipline): a scope
+    identifies *whose* fact this is, and silently re-scoping it would move one
+    tenant's memory into another's view. To change scope, supersede the fact
+    with explicit new scopes instead — the old scope stays on record.
+    """
     new_until = _moment(valid_until, "valid_until") if valid_until is not None else None
     new_expiry = _normalize_expires_at(expires_at) if expires_at is not _UNSET else None
     if statement is not None and len(statement.strip()) > MAX_STATEMENT_CHARS:
@@ -288,8 +294,11 @@ def update_fact(
             fact.statement = statement.strip()
         if category is not None and category in CATEGORIES:
             fact.category = category
-        if scopes is not None:
-            fact.scopes = _clean_scopes(scopes)
+        if scopes is not None and _clean_scopes(scopes) != list(fact.scopes):
+            raise ValueError(
+                f"fact '{fact_id}' scopes are immutable via update "
+                f"(currently {list(fact.scopes)}); supersede the fact with explicit "
+                "scopes to move it, so the old scope stays on record")
         if confidence is not None:
             fact.confidence = min(1.0, max(0.0, round(float(confidence), 3)))
         if new_until is not None:
@@ -352,6 +361,75 @@ def _audit_git(root: str, action: str, fact_id: str) -> None:
         pass
 
 
+def resolve_contradiction(
+    root: str,
+    old_fact_id: str,
+    new_fact_id_or_statement: str,
+    *,
+    as_of: str | None = None,
+    category: str | None = None,
+    scopes: list[str] | None = None,
+) -> tuple[AtomicFact, AtomicFact]:
+    """Resolve a contradiction by invalidating the older fact in favor of newer evidence.
+
+    Graphiti's deterministic temporal guard, without the LLM: the replacement
+    must not be *older* than the fact it invalidates (compared on
+    ``valid_from``) and their validity windows must overlap — otherwise this
+    refuses instead of expiring a fact that was true in a different window.
+    Delegates the state change to :func:`supersede_fact`.
+    """
+    with mutate_facts(root) as facts:
+        if old_fact_id not in facts:
+            raise KeyError(f"Old fact '{old_fact_id}' not found")
+        old = facts[old_fact_id]
+        if old.status != "active":
+            raise ValueError(
+                f"fact '{old_fact_id}' is {old.status}, not active; only an active fact can be invalidated")
+        target = new_fact_id_or_statement
+        new_from: str | None = None
+        if target in facts:
+            new = facts[target]
+            if new.status != "active":
+                raise ValueError(f"replacement fact '{target}' is {new.status}, not active")
+            if new.id == old.id:
+                raise ValueError(f"fact '{old_fact_id}' cannot invalidate itself")
+            new_from = new.valid_from
+        else:
+            statement, _cat, vf, _vu, _ea = prepare_fact(
+                target, category or old.category, None, None, None)
+            if not statement:
+                raise ValueError("replacement statement must not be empty")
+            same = _matching_active(facts, statement, _clean_scopes(
+                scopes if scopes is not None else old.scopes))
+            if same is not None and same.id == old.id:
+                raise ValueError(
+                    f"the replacement restates fact '{old_fact_id}' itself; "
+                    "resolve it with a statement that differs")
+            # A fresh statement is present evidence: it takes effect now.
+            new_from = _now()
+    try:
+        old_from = lesson_cache.parse_moment(old.valid_from) if old.valid_from else None
+        new_from_m = lesson_cache.parse_moment(new_from) if new_from else None
+        old_until = lesson_cache.parse_moment(old.valid_until) if old.valid_until else None
+    except ValueError as exc:
+        raise ValueError(f"cannot compare validity windows: {exc}") from exc
+    if old_from is not None and new_from_m is not None:
+        old_naive = old_from.replace(tzinfo=None)
+        new_naive = new_from_m.replace(tzinfo=None)
+        if new_naive < old_naive:
+            raise ValueError(
+                f"refusing to invalidate '{old_fact_id}': the replacement (valid from "
+                f"{new_from}) predates it (valid from {old.valid_from}). "
+                "Close the old fact's window explicitly instead.")
+        if old_until is not None and old_until.replace(tzinfo=None) <= new_naive:
+            raise ValueError(
+                f"refusing to invalidate '{old_fact_id}': its validity already ends "
+                f"({old.valid_until}) before the replacement begins ({new_from}). "
+                "These cover different windows, not a contradiction.")
+    return supersede_fact(root, old_fact_id, new_fact_id_or_statement,
+                          scopes=scopes, category=category, as_of=as_of)
+
+
 def forget_fact(root: str, fact_id: str, undo: bool = False) -> AtomicFact:
     """Hide a fact from default listings, or restore it with ``undo=True``."""
     with mutate_facts(root) as facts:
@@ -408,6 +486,19 @@ def _valid_at(fact: AtomicFact, moment: datetime) -> bool:
     return fact.status not in ("superseded", "deleted")
 
 
+def _is_expired(fact: AtomicFact, moment: datetime) -> bool:
+    """True when the fact's TTL has passed at *moment* (mem0 hide-expired semantics)."""
+    if not fact.expires_at:
+        return False
+    try:
+        expiry = lesson_cache.parse_moment(fact.expires_at)
+        if expiry is not None and expiry.tzinfo is not None and moment.tzinfo is None:
+            expiry = expiry.replace(tzinfo=None)
+        return expiry is not None and expiry <= moment
+    except ValueError:
+        return False
+
+
 def list_facts(
     root: str,
     status: str = "active",
@@ -415,9 +506,16 @@ def list_facts(
     category: str = "",
     as_of: str | None = None,
     include_forgotten: bool = False,
+    show_expired: bool = False,
+    now: datetime | None = None,
 ) -> list[AtomicFact]:
-    """Facts matching the filters; with `as_of`, the facts valid at that moment."""
+    """Facts matching the filters; with `as_of`, the facts valid at that moment.
+
+    Expired facts (TTL passed) are hidden unless `show_expired` — the read
+    half of the expiry contract `add --expires-at` writes.
+    """
     moment = lesson_cache.parse_moment(as_of) if as_of else None
+    reference = now or datetime.now(timezone.utc).replace(tzinfo=None)
     results: list[AtomicFact] = []
     for fact in load_facts(root).values():
         if fact.forgotten and not include_forgotten:
@@ -429,6 +527,8 @@ def list_facts(
         if scope and fact.scopes and scope not in fact.scopes:
             continue
         if moment is not None and not _valid_at(fact, moment):
+            continue
+        if not show_expired and _is_expired(fact, moment or reference):
             continue
         results.append(fact)
     return sorted(results, key=lambda f: (f.category, -f.confidence, f.id))
@@ -463,11 +563,15 @@ def search_facts(
     as_of: str | None = None,
     limit: int = 10,
     include_forgotten: bool = False,
+    show_expired: bool = False,
 ) -> list[tuple[AtomicFact, float]]:
-    """Active facts ranked by token overlap with *query*, weighted by confidence."""
+    """Active facts ranked by token overlap with *query*, weighted by confidence.
+
+    Expired facts are hidden unless `show_expired` (mem0 semantics).
+    """
     candidates = list_facts(
         root, status="active", scope=scope, category=category, as_of=as_of,
-        include_forgotten=include_forgotten,
+        include_forgotten=include_forgotten, show_expired=show_expired,
     )
     limit = max(0, int(limit))
     query_tokens = set(_TOKEN_RE.findall(query.lower()))

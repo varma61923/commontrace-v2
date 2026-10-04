@@ -23,6 +23,10 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         "--include-forgotten", action="store_true",
         help="Include forgotten facts (hidden by default); shown with a [forgotten] marker.",
     )
+    p_list.add_argument(
+        "--show-expired", action="store_true",
+        help="Include TTL-expired facts (hidden by default).",
+    )
     p_list.add_argument("--dest", default=None)
     p_list.set_defaults(func=run_list)
 
@@ -44,6 +48,10 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p_srch.add_argument("--category", default="", choices=("", *hierarchical.CATEGORIES))
     p_srch.add_argument("--limit", type=int, default=10)
     p_srch.add_argument("--as-of", default="", help="Point-in-time date.")
+    p_srch.add_argument(
+        "--show-expired", action="store_true",
+        help="Include TTL-expired facts (hidden by default).",
+    )
     p_srch.add_argument("--dest", default=None)
     p_srch.set_defaults(func=run_search)
 
@@ -52,6 +60,13 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p_sup.add_argument("new_statement", help="New replacement fact statement or fact ID.")
     p_sup.add_argument("--dest", default=None)
     p_sup.set_defaults(func=run_supersede)
+
+    p_res = sub.add_parser(
+        "resolve", help="Resolve a contradiction: invalidate an older fact in favor of newer evidence.")
+    p_res.add_argument("old_id", help="ID of the contradicted (older) fact.")
+    p_res.add_argument("new_statement", help="Newer replacement fact statement or fact ID.")
+    p_res.add_argument("--dest", default=None)
+    p_res.set_defaults(func=run_resolve)
 
     p_del = sub.add_parser("delete", help="Soft-delete a fact.")
     p_del.add_argument("fact_id", help="ID of the fact to delete.")
@@ -81,6 +96,7 @@ def run_list(args: argparse.Namespace) -> int:
         category=args.category,
         as_of=args.as_of or None,
         include_forgotten=bool(getattr(args, "include_forgotten", False)),
+        show_expired=bool(getattr(args, "show_expired", False)),
     )
     if not facts:
         print("No matching facts found.")
@@ -131,6 +147,7 @@ def run_search(args: argparse.Namespace) -> int:
         category=args.category,
         as_of=args.as_of or None,
         limit=args.limit,
+        show_expired=bool(getattr(args, "show_expired", False)),
     )
     if not scored:
         print(f"No facts found matching '{args.query}'.")
@@ -156,6 +173,22 @@ def run_supersede(args: argparse.Namespace) -> int:
         return 1
 
     print(f"Superseded fact '{old.id}' with '{new.id}'.")
+    return 0
+
+
+def run_resolve(args: argparse.Namespace) -> int:
+    root = paths.resolve_root(args.dest)
+    try:
+        old, new = hierarchical.resolve_contradiction(
+            root=root,
+            old_fact_id=args.old_id,
+            new_fact_id_or_statement=args.new_statement,
+        )
+    except Exception as exc:
+        print(f"[commontrace] {exc}", file=sys.stderr)
+        return 1
+
+    print(f"Resolved contradiction: invalidated '{old.id}' in favor of '{new.id}'.")
     return 0
 
 

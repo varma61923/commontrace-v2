@@ -1575,16 +1575,19 @@ def build_server(root: str, *, allow_approval: bool = True):
         category: str = "",
         as_of: str = "",
         limit: int = 10,
+        show_expired: bool = False,
     ) -> dict:
         """Search distilled atomic facts with bitemporal validity and scoped routing.
 
         Searches high-confidence atomic facts extracted from traces and episodes.
         Results are scored by lexical overlap and confidence weighting. Supports
         point-in-time filtering via `as_of` and team/domain routing via `scope`.
+        TTL-expired facts are hidden unless `show_expired`.
         """
         try:
             results = hierarchical.search_facts(
                 root, query=query, scope=scope, category=category, as_of=as_of or None, limit=limit,
+                show_expired=bool(show_expired),
             )
             return _ok(
                 facts=[{"fact": f.to_dict(), "score": score} for f, score in results],
