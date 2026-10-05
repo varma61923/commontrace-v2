@@ -149,13 +149,18 @@ def connect(path: str, setup: str = "", *, read_only: bool = False) -> sqlite3.C
 def write_txn(db: sqlite3.Connection):
     """One write transaction holding the write lock from its first statement, so a
     read-then-write inside it cannot race another writer."""
-    db.execute("BEGIN IMMEDIATE")
+    nested = db.in_transaction
+    db.execute("SAVEPOINT commontrace_write" if nested else "BEGIN IMMEDIATE")
     try:
         yield db
     except BaseException:
-        db.execute("ROLLBACK")
+        if nested:
+            db.execute("ROLLBACK TO commontrace_write")
+            db.execute("RELEASE commontrace_write")
+        else:
+            db.execute("ROLLBACK")
         raise
-    db.execute("COMMIT")
+    db.execute("RELEASE commontrace_write" if nested else "COMMIT")
 
 
 @dataclass(frozen=True)
@@ -416,7 +421,7 @@ class Store:
     # --- writing -----------------------------------------------------------------
 
     def add(self, session: str, messages: Iterable[Mapping], *, session_at=None,
-            user_speakers: Iterable[str] = ()) -> dict:
+            user_speakers: Iterable[str] = (), extract_profile: bool = True) -> dict:
         """Append messages to a session. Re-adding a message already stored is a no-op."""
         if not SESSION_RE.match(session or ""):
             raise ConversationError("session id must be 1-200 printable characters")
@@ -480,7 +485,7 @@ class Store:
                                           (turn_id, part, body, _hash(body))).lastrowid
                     if FTS5:
                         self.db.execute("INSERT INTO units_fts (rowid, body) VALUES (?, ?)", (uid, body))
-                if role == "user":
+                if role == "user" and extract_profile:
                     for fact in profile.extract(text):
                         self._insert_fact(turn_id, fact.kind, fact.subject, fact.statement, _iso(at),
                                           fact.slot, "rule", speaker)
@@ -973,15 +978,16 @@ class Store:
                 "reinforced": sum(1 for _f, action in results if action != "ADD")}
 
     def export(self):
-        """Every session as {session, started_at, summary, messages}, in order."""
-        summaries = self.summaries()
-        for row in self.sessions():
-            yield {"session": row["id"], "started_at": row["started_at"],
-                   "summary": (summaries.get(row["id"]) or {}).get("text"),
-                   "messages": [{"id": r["ref"], "speaker": r["speaker"], "role": r["role"], "text": r["text"],
-                                 "at": r["at"], "expires": r["expires"]}
-                                for r in self.db.execute("SELECT * FROM turns WHERE session=? ORDER BY idx",
-                                                         (row["id"],))]}
+        """Versioned JSONL sessions including beliefs, provenance and checkpoints."""
+        from commontrace.conversation.portable import export
+
+        yield from export(self)
+
+    def import_sessions(self, rows: Iterable[Mapping]) -> dict:
+        """Atomically merge exported sessions; legacy message-only exports remain readable."""
+        from commontrace.conversation.portable import restore
+
+        return restore(self, rows)
 
 
 def _python_bm25(units, query: str, limit: int) -> list[tuple[int, float]]:

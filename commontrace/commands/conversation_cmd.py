@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import sys
+import tempfile
 
 from commontrace import paths
 
@@ -26,6 +28,15 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     a.add_argument("--speaker", default="user", help="speaker of --text (default user)")
     a.add_argument("--dest", default=None)
     a.set_defaults(func=run_add)
+
+    ix = sub.add_parser("index", help="Prepare local semantic vectors before serving questions.")
+    ix.add_argument("space", help=SPACE_HELP)
+    ix.add_argument("--model", choices=("arctic-m", "minilm"), default=None,
+                    help="local embedding model (default: COMMONTRACE_CONVERSATION_EMBEDDER)")
+    ix.add_argument("--session", action="append", default=[], help="only these sessions (repeatable)")
+    ix.add_argument("--json", action="store_true")
+    ix.add_argument("--dest", default=None)
+    ix.set_defaults(func=run_index)
 
     r = sub.add_parser("recall", help="The turns that answer a question, as a dated, budgeted context.")
     r.add_argument("space", help=SPACE_HELP)
@@ -195,6 +206,31 @@ def run_recall(args) -> int:
     return 0
 
 
+def run_index(args) -> int:
+    from commontrace.conversation import ConversationError, embed
+
+    encoder = None
+    try:
+        tag = args.model or embed.configured()
+        if not tag or not embed.available():
+            raise ConversationError("local semantic indexing requires the attention extra and an enabled embedder")
+        with _store(args, create=False) as store:
+            encoder = embed.Embedder(store.root, tag)
+            result = embed.prepare(store, encoder, sessions=args.session)
+    except (ConversationError, OSError) as exc:
+        print(f"[commontrace] {exc}", file=sys.stderr)
+        return 2
+    finally:
+        if encoder is not None:
+            encoder.close()
+    if args.json:
+        print(json.dumps(result))
+    else:
+        print(f"[commontrace] {result['units']} passage(s) prepared with {result['model']} "
+              f"in {result['elapsed_seconds']:.3f}s.")
+    return 0
+
+
 def run_answer(args) -> int:
     from commontrace import llm
     from commontrace.conversation import ConversationError
@@ -253,19 +289,29 @@ def run_extract(args) -> int:
 def run_export(args) -> int:
     from commontrace.conversation import ConversationError
 
+    staged = None
+    count = 0
     try:
         with _store(args, create=False) as store:
-            lines = [json.dumps(row, ensure_ascii=False) for row in store.export()]
-    except ConversationError as exc:
+            output = contextlib.nullcontext(sys.stdout) if args.out == "-" else tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=os.path.dirname(os.path.abspath(args.out)),
+                prefix=".commontrace-export-", delete=False)
+            with output as stream:
+                staged = stream.name if args.out != "-" else None
+                for row in store.export():
+                    stream.write(json.dumps(row, ensure_ascii=False) + "\n")
+                    count += 1
+        if staged:
+            os.replace(staged, args.out)
+            staged = None
+    except (ConversationError, OSError) as exc:
         print(f"[commontrace] {exc}", file=sys.stderr)
         return 2
-    text = "\n".join(lines) + ("\n" if lines else "")
-    if args.out == "-":
-        sys.stdout.write(text)
-    else:
-        with open(args.out, "w", encoding="utf-8") as fh:
-            fh.write(text)
-        print(f"[commontrace] {len(lines)} session(s) written to {args.out}.", file=sys.stderr)
+    finally:
+        if staged:
+            os.unlink(staged)
+    if args.out != "-":
+        print(f"[commontrace] {count} session(s) written to {args.out}.", file=sys.stderr)
     return 0
 
 
@@ -273,22 +319,14 @@ def run_import(args) -> int:
     from commontrace.conversation import ConversationError
 
     try:
-        raw = sys.stdin.read() if args.file == "-" else open(args.file, encoding="utf-8").read()
-        rows = [json.loads(line) for line in raw.splitlines() if line.strip()]
-        added = sessions = 0
-        with _store(args) as store:
-            for row in rows:
-                if not isinstance(row, dict) or not isinstance(row.get("messages"), list):
-                    raise ValueError("each line must be a session object with a messages list")
-                added += store.add(str(row.get("session") or ""), row["messages"],
-                                   session_at=row.get("started_at"))["added"]
-                if row.get("summary"):
-                    store.set_summary(str(row["session"]), str(row["summary"]), "imported")
-                sessions += 1
+        source = contextlib.nullcontext(sys.stdin) if args.file == "-" else open(args.file, encoding="utf-8")
+        with source as stream, _store(args) as store:
+            result = store.import_sessions(json.loads(line) for line in stream if line.strip())
     except (ConversationError, ValueError, OSError) as exc:
         print(f"[commontrace] {exc}", file=sys.stderr)
         return 2
-    print(f"[commontrace] {added} message(s) in {sessions} session(s) imported into {args.space}.")
+    print(f"[commontrace] {result['added']} message(s) in {result['sessions']} session(s) imported into {args.space}; "
+          f"{result['memories']} archived memory/memories restored.")
     return 0
 
 

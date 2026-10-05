@@ -1088,6 +1088,7 @@ More of it:
 
 ```bash
 commontrace conversation recall ana "What did Ana say about work?" --session s2 --speaker Ana --since 2023-06-01
+commontrace conversation index ana --model minilm      # prepare local vectors before serving questions
 commontrace conversation summarize ana                # a dated summary under each session header
 commontrace conversation extract ana                  # model-distilled, dated memories (COMMONTRACE_LLM_*)
 commontrace conversation answer ana "Where does Ana work now?" --rounds 2
@@ -1097,6 +1098,22 @@ commontrace conversation forget ana --expired         # messages past their "exp
 commontrace conversation export ana --out ana.jsonl && commontrace conversation import ana-copy ana.jsonl
 commontrace conversation promote ana                  # the current profile becomes atomic facts
 ```
+
+`conversation index` streams passages through the shared, content-addressed local
+embedding cache. Repeating it prepares only missing content; interrupted runs
+resume from completed batches. Use `--session` to prepare selected sessions.
+Concurrent requests share encoding and index construction within one process.
+The attention extra is required; inference stays on the host. Model weights may
+download once when absent from the local cache.
+
+Exports include exact extracted and manual memories, their source-message
+references, historical belief changes, summary metadata, and extraction progress.
+Import remaps references to destination message ids and commits the complete
+archive atomically. Reimporting an unchanged archive adds no duplicates. Legacy
+message-only exports remain supported. Import into a longer existing session
+does not certify a partial summary or advance its extraction checkpoint.
+JSONL is streamed by session; file export replaces the destination only after
+the complete backup has been written successfully.
 
 ```
 [2023-05-08 · Monday 8 May 2023, 10:00]

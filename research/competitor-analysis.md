@@ -152,6 +152,15 @@ LLM speculative reasoning, unbounded graph expansion, irreversible summary-only
 storage, fake calibrated confidence or benchmark-answer-specific rules. These
 would require demonstrated gains and operational justification.
 
+The subsequent production changes are detailed in
+[Preparation, evidence chains and portable memory](memory-preparation.md):
+explicit incremental local indexing, coalesced concurrent cache misses, complete
+bounded graph candidates and budgeted support chains, and atomic versioned
+archives preserving derived-memory provenance and history. The four-request
+local workload reduces duplicated encoding from 8,192 to 2,048 rows. A cached
+Arctic CPU check shifts a 9.31-second first query to 101 ms after 9.34 seconds of
+preparation. This moves work to ingestion; it does not reduce total encoding cost.
+
 ## Remaining limits
 
 Dense retrieval remains an exact O(Nd) scan. Batching bounds working memory but

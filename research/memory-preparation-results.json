@@ -1,0 +1,224 @@
+{
+  "baseline_sha": "de1c2878ab5700e84c9ca60ed2e0fd964881540a",
+  "environment": {
+    "python": "3.12.14",
+    "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+    "sqlite": "3.53.1"
+  },
+  "thread_settings": {
+    "OPENBLAS_NUM_THREADS": 1,
+    "OMP_NUM_THREADS": 1
+  },
+  "concurrency": {
+    "before": {
+      "workers": 4,
+      "passages": 2048,
+      "dimensions": 32,
+      "model": "deterministic synthetic encoder; 20ms artificial latency per batch",
+      "encoder_calls": 8,
+      "encoded_rows": 8192,
+      "queries": [
+        {
+          "ms": 68.675,
+          "ids": [
+            2048,
+            2047,
+            2046,
+            2045,
+            2044,
+            2043,
+            2042,
+            2041,
+            2040,
+            2039
+          ]
+        },
+        {
+          "ms": 51.104,
+          "ids": [
+            2048,
+            2047,
+            2046,
+            2045,
+            2044,
+            2043,
+            2042,
+            2041,
+            2040,
+            2039
+          ]
+        },
+        {
+          "ms": 58.577,
+          "ids": [
+            2048,
+            2047,
+            2046,
+            2045,
+            2044,
+            2043,
+            2042,
+            2041,
+            2040,
+            2039
+          ]
+        },
+        {
+          "ms": 64.477,
+          "ids": [
+            2048,
+            2047,
+            2046,
+            2045,
+            2044,
+            2043,
+            2042,
+            2041,
+            2040,
+            2039
+          ]
+        }
+      ]
+    },
+    "after": {
+      "workers": 4,
+      "passages": 2048,
+      "dimensions": 32,
+      "model": "deterministic synthetic encoder; 20ms artificial latency per batch",
+      "encoder_calls": 2,
+      "encoded_rows": 2048,
+      "queries": [
+        {
+          "ms": 54.19,
+          "ids": [
+            2048,
+            2047,
+            2046,
+            2045,
+            2044,
+            2043,
+            2042,
+            2041,
+            2040,
+            2039
+          ]
+        },
+        {
+          "ms": 54.182,
+          "ids": [
+            2048,
+            2047,
+            2046,
+            2045,
+            2044,
+            2043,
+            2042,
+            2041,
+            2040,
+            2039
+          ]
+        },
+        {
+          "ms": 53.085,
+          "ids": [
+            2048,
+            2047,
+            2046,
+            2045,
+            2044,
+            2043,
+            2042,
+            2041,
+            2040,
+            2039
+          ]
+        },
+        {
+          "ms": 53.318,
+          "ids": [
+            2048,
+            2047,
+            2046,
+            2045,
+            2044,
+            2043,
+            2042,
+            2041,
+            2040,
+            2039
+          ]
+        }
+      ]
+    }
+  },
+  "real_local_model": {
+    "before": {
+      "model": "Snowflake/snowflake-arctic-embed-m-v1.5",
+      "inference": "local CPU, offline",
+      "model_load_seconds": 28.983106734998728,
+      "prepared": null,
+      "first_recall_ms": 9308.981186000892,
+      "tokens": 1404,
+      "bridge_found": true,
+      "historical_found": true
+    },
+    "after": {
+      "model": "Snowflake/snowflake-arctic-embed-m-v1.5",
+      "inference": "local CPU, offline",
+      "model_load_seconds": 5.887529478999568,
+      "prepared": {
+        "space": "local",
+        "model": "arctic-m",
+        "units": 260,
+        "revision": [
+          "260"
+        ],
+        "elapsed_seconds": 9.340129
+      },
+      "first_recall_ms": 101.35271200124407,
+      "tokens": 1404,
+      "bridge_found": true,
+      "historical_found": true
+    }
+  },
+  "limitations": [
+    "Synthetic latency includes an artificial 20ms encoder delay; use encoded rows/calls to assess duplicate work.",
+    "One real-model run per version on a small 260-passage corpus; no matched competitor quality measurement.",
+    "Preparation shifts corpus embedding off the query path; total work and model-load time remain.",
+    "Coordination is within a process; separate service workers share persistent vectors but can encode overlapping misses."
+  ],
+  "archives": {
+    "before": {
+      "sessions": 300,
+      "messages": 6000,
+      "archive_bytes": 3873990,
+      "measurement": "tracemalloc Python allocation peak; excludes SQLite/native allocations",
+      "measurements": {
+        "export": {
+          "seconds": 0.14963462100058678,
+          "peak_python_bytes": 12932511
+        },
+        "import": {
+          "seconds": 2.8451324269990437,
+          "peak_python_bytes": 13841396
+        }
+      }
+    },
+    "after": {
+      "sessions": 300,
+      "messages": 6000,
+      "archive_bytes": 4013283,
+      "measurement": "tracemalloc Python allocation peak; excludes SQLite/native allocations",
+      "measurements": {
+        "export": {
+          "seconds": 0.19438373699995282,
+          "peak_python_bytes": 1423197
+        },
+        "import": {
+          "seconds": 3.117669750001369,
+          "peak_python_bytes": 268534
+        }
+      }
+    }
+  }
+}

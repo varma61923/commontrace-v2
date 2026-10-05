@@ -7,6 +7,8 @@ import importlib.util
 import json
 import os
 import threading
+import time
+import weakref
 from collections import OrderedDict
 from dataclasses import dataclass
 
@@ -23,6 +25,18 @@ BATCH = 64
 
 _LOCK = threading.Lock()
 _MODELS: dict[str, object] = {}
+_WORK_LOCKS = weakref.WeakValueDictionary()
+_WORK_LOCKS_GUARD = threading.Lock()
+
+
+def _work_lock(key):
+    """Coalesce reusable work across request-scoped connections, without leaking locks."""
+    with _WORK_LOCKS_GUARD:
+        lock = _WORK_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _WORK_LOCKS[key] = lock
+        return lock
 
 
 def available() -> bool:
@@ -75,10 +89,14 @@ class Embedder:
         else:
             os.makedirs(directory, exist_ok=True)
             self.db = _store.connect(path, "CREATE TABLE IF NOT EXISTS vec (hash TEXT PRIMARY KEY, v BLOB NOT NULL)")
-        self._lock = threading.Lock()
+        # Separate connections share the same content-hash cache. Serialise the
+        # read/miss/encode/write sequence, so concurrent requests encode a hash
+        # once in this process. A SQLite writer lock is never held during encode.
+        self._lock = _work_lock(("vectors", os.path.realpath(path)))
 
     def close(self) -> None:
-        self.db.close()
+        with self._lock:
+            self.db.close()
 
     def encode(self, texts: list[str], query: bool = False):
         prefix = MODELS[self.tag][1] if query else ""
@@ -145,6 +163,27 @@ def release_store(store: _store.Store) -> None:
 SCAN_BATCH = 1024
 
 
+def prepare(store: _store.Store, embedder: Embedder, *, sessions=()) -> dict:
+    """Persist local passage vectors before serving queries, in bounded batches.
+
+    Incremental and restartable: already cached content is reused, and a failed
+    batch cannot mark the space prepared. Raw messages and sparse recall remain
+    available throughout. The caller owns the embedder and its lifetime.
+    """
+    if embedder.read_only:
+        raise _store.ConversationError("index preparation requires a writable embedding cache")
+    start = time.perf_counter()
+    units = 0
+    with store.read_snapshot():
+        allowed = store.allowed(sessions=tuple(sessions))
+        for batch in store.unit_batches(SCAN_BATCH, allowed=allowed):
+            embedder.vectors([(h, body) for _u, _t, body, h in batch])
+            units += len(batch)
+        revision = store.unit_stamp()
+    return {"space": store.space, "model": embedder.tag, "units": units,
+            "revision": list(revision), "elapsed_seconds": round(time.perf_counter() - start, 6)}
+
+
 def search(store: _store.Store, embedder: Embedder, query_vec, limit: int, *,
            allowed: set[int] | None = None) -> list[tuple[int, float]]:
     with store.read_snapshot():
@@ -152,7 +191,7 @@ def search(store: _store.Store, embedder: Embedder, query_vec, limit: int, *,
 
 
 def _search(store: _store.Store, embedder: Embedder, query_vec, limit: int, *,
-            allowed: set[int] | None = None) -> list[tuple[int, float]]:
+            allowed: set[int] | None = None, _building: bool = False) -> list[tuple[int, float]]:
     """Exact top-k over compact vectors, with bounded working memory.
 
     Persistent vectors already have float16 precision. Keep that representation
@@ -168,6 +207,11 @@ def _search(store: _store.Store, embedder: Embedder, query_vec, limit: int, *,
         cached = _INDEX.get(key)
         if cached is not None:
             _INDEX.move_to_end(key)
+    if allowed is None and not _building and (cached is None or cached.stamp != stamp):
+        # Build one matrix per space/model at a time. Waiters recheck the cache
+        # under their own consistent source snapshot. Warm scoring stays parallel.
+        with _work_lock(("index", key)):
+            return _search(store, embedder, query_vec, limit, allowed=allowed, _building=True)
     best: list[tuple[float, int]] = []
 
     def score(ids, matrix):
@@ -215,6 +259,10 @@ def _search(store: _store.Store, embedder: Embedder, query_vec, limit: int, *,
                 turns.extend(t for _u, t, _b, _h in batch)
                 hashes.extend(h for _u, _t, _b, h in batch)
         with _INDEX_LOCK:
+            current = _INDEX.get(key)
+            if store._units_identity and current is not None and int(current.stamp[0]) > int(stamp[0]):
+                # An older source snapshot must not replace a newer generation.
+                return [(-uid, value) for value, uid in sorted(best, reverse=True)]
             _INDEX.pop(key, None)
             if matrix is not None and cacheable:
                 while _INDEX and (len(_INDEX) >= MAX_CACHED_SPACES

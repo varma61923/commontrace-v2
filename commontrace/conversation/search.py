@@ -643,8 +643,13 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
         graph, _ = filter_self_turns(store, question, graph)
         # Reserve a small discovery quota so graph-only evidence is not drowned
         # by hundreds of near-identical lexical/dense matches.
-        novel = [t for t in graph if t not in ranked[:6]][:4]
+        novel = [t for t in graph if t not in ranked[:6]]
+        # Every discovered turn remains a candidate, including later two-hop
+        # evidence. Previously only the first four discoveries reached recall.
+        ranked.extend(t for t in novel if t not in ranked)
         for i, turn in enumerate(novel):
+            if i >= 4:
+                break
             ranked = [t for t in ranked if t != turn]
             ranked.insert(min(2 + 2 * i, len(ranked)), turn)
         explain["graph_paths"] = paths
@@ -663,7 +668,12 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
         belief_at = dt.datetime.combine(window[1], dt.time(23, 59, 59))
         explain["belief_as_of"] = belief_at.isoformat()
     context, used, n_tokens = assemble(store, question, ranked, opts, withheld, allowed, now=show_now,
-                                     as_of=belief_at, current_instructions=now is None and belief_at is not None)
+                                     as_of=belief_at, current_instructions=now is None and belief_at is not None,
+                                     evidence_paths=explain.get("graph_paths", ()))
+    if explain.get("graph_paths"):
+        chosen = set(used)
+        explain["selected_graph_paths"] = [p for p in explain["graph_paths"]
+                                           if p["source"] in chosen and p["turn"] in chosen]
     conf = confidence(store, question, used[:5]) if context else 0.0
     explain["confidence"] = conf
     if conf == 0.0:
@@ -780,7 +790,7 @@ def _flagged(turn: Turn) -> bool:
 def assemble(store: Store, question: str, ranked: list[int], opts: Options,
              withheld: list[int] | None = None, allowed: set[int] | None = None,
              now: dt.datetime | None = None, as_of=None,
-             current_instructions: bool = False) -> tuple[str, list[int], int]:
+             current_instructions: bool = False, evidence_paths=()) -> tuple[str, list[int], int]:
     """Fill the budget best-first, each hit with its neighbours, then render by time.
     A turn the injection screen flags is never shown; its id goes to `withheld`."""
     withheld = [] if withheld is None else withheld
@@ -857,6 +867,40 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
             rendered[turn.id] = _excerpt(turn, question, cap)
         return rendered[turn.id]
 
+    parents = {p["turn"]: p["source"] for p in evidence_paths}
+
+    def evidence_group(tid):
+        # A graph answer and its connecting passages are one evidence unit.
+        # Keep at most the two traversed ancestors, with cycle protection.
+        ids = [tid]
+        for _ in range(2):
+            parent = parents.get(ids[-1])
+            if parent is None or parent in ids:
+                break
+            ids.append(parent)
+        turns = store.turns(ids)
+        norm = _normalize_text(question)
+        for i in ids:
+            t = turns.get(i)
+            if t is None or (allowed is not None and i not in allowed) or _normalize_text(t.text) == norm:
+                return {}
+            if _is_flagged(t):
+                if i not in withheld:
+                    withheld.append(i)
+                return {}
+        return turns
+
+    def evidence_cost(turns):
+        cost, new_sessions = 0, set()
+        for tid, turn in turns.items():
+            if tid in chosen:
+                continue
+            cost += tokens(line_of(turn)) + 1
+            if turn.session not in sessions_seen and turn.session not in new_sessions:
+                cost += header_cost(turn.session, turn.at)
+                new_sessions.add(turn.session)
+        return cost
+
     stream = list(ranked)
     if broad and ranked:
         from collections import defaultdict
@@ -894,12 +938,15 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
             if tid not in withheld:
                 withheld.append(tid)
             continue
-        cost = tokens(line_of(turn)) + 1 + (0 if turn.session in sessions_seen else header_cost(turn.session, turn.at))
+        evidence = evidence_group(tid)
+        if not evidence:
+            continue
+        cost = evidence_cost(evidence)
         if spent + cost > budget:
             continue
-        chosen[tid] = turn
+        chosen.update(evidence)
         primary.add(tid)
-        sessions_seen.add(turn.session)
+        sessions_seen.update(t.session for t in evidence.values())
         spent += cost
     hits = 0
     for start in range(0, len(stream), 50):
@@ -914,6 +961,16 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
             primary.discard(tid)
             if about_user_only and turn.role not in ("user", ""):
                 continue
+            if tid in parents and tid not in chosen:
+                evidence = evidence_group(tid)
+                cost = evidence_cost(evidence)
+                if not evidence or spent + cost > budget:
+                    continue
+                chosen.update(evidence)
+                sessions_seen.update(t.session for t in evidence.values())
+                spent += cost
+                # Neighbours are optional; supporting graph evidence is not.
+                continue
             hits += 1
             if broad:
                 user_req = summary and turn.role in ("user", "") and hits <= with_context
@@ -922,6 +979,9 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
                 near = store.neighbours(turn, opts.neighbours_before, opts.neighbours_after) \
                     if hits <= with_context else []
             group = [tid] + [n for n in near if allowed is None or n in allowed]
+            # A graph discovery enters through its complete evidence group,
+            # rather than as an incidental neighbour with missing ancestors.
+            group = [g for g in group if g == tid or g not in parents or g in chosen]
             group_turns = store.turns(group)
             # anti-recursion holds for neighbours too: a turn restating the
             # question is never context for its own answer, however adjacent.
@@ -977,7 +1037,7 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
             previous = turn.idx
         blocks.append("\n".join(lines))
     context = profile_block + "\n\n".join(blocks)
-    if not chosen and ranked and budget > 0:
+    if not chosen and ranked and budget > 0 and ranked[0] not in parents:
         # A tiny allowance can omit a header, but never exceed the budget.
         top = store.turns(ranked[:1])
         if ranked[0] in top and (allowed is None or ranked[0] in allowed) and not _is_flagged(top[ranked[0]]):
