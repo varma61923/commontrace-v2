@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import copy
 import datetime as dt
+import json
 import math
 import re
 import threading
@@ -53,6 +54,7 @@ class Options:
     speakers: tuple[str, ...] = ()
     since: str | None = None
     until: str | None = None
+    graph_hops: int | None = None  # None: adapt to relational clauses; 0 disables; maximum 2
 
 
 @dataclass
@@ -106,6 +108,57 @@ _PREFERENCE = re.compile(
     r"drink|eat|drive|use|cook|steak|coffee|seat|font|slide)\b",
     re.I,
 )
+
+_RELATIONAL = re.compile(r"\b(?:whose|(?:my|the) (?:person|friend|colleague|company|project|team) (?:who|that)|"
+                         r"(?:friend|colleague|manager|partner|owner|author|founder)(?:'s| of)|"
+                         r"(?:connected|related|associated) (?:to|with))\b", re.I)
+
+
+def _graph_candidates(store: Store, question: str, ranked: list[int], allowed: set[int] | None,
+                      hops: int) -> tuple[list[int], list[dict]]:
+    """Bounded evidence traversal over indexed entity co-occurrences.
+
+    This discovers candidates, not inferred facts. Exact source turns must still
+    pass the ordinary evidence screen, reranker and context budget.
+    """
+    seeds = ranked[:6]
+    visited = set(seeds)
+    seen_entities = set(profile.entities(question))
+    candidates, paths = [], []
+    for depth in range(min(2, max(0, hops))):
+        source_turns = store.turns(seeds)
+        seeds = [t for t in seeds if t in source_turns and not _flagged(source_turns[t])]
+        if not seeds:
+            break
+        entities = list(store.db.execute(
+            "SELECT name, turn FROM entities WHERE turn IN (SELECT value FROM json_each(?)) "
+            "ORDER BY name, turn LIMIT 96",
+            (json.dumps(seeds),)))
+        origins = {}
+        for name, turn in entities:
+            if name not in seen_entities and len(origins) < 16:
+                origins.setdefault(name, turn)
+        seen_entities.update(origins)
+        links = store.entity_turns(origins, max_matches=32)
+        next_seeds = []
+        for name, turns in links.items():
+            for turn in sorted(turns):
+                if turn in visited or (allowed is not None and turn not in allowed):
+                    continue
+                visited.add(turn)
+                next_seeds.append(turn)
+                paths.append({"source": origins[name], "entity": name, "turn": turn, "hop": depth + 1})
+                if len(paths) >= 64:
+                    break
+            if len(paths) >= 64:
+                break
+        fetched = store.turns(next_seeds)
+        seeds = [t for t in next_seeds if t in fetched and not _flagged(fetched[t])]
+        candidates.extend(seeds)
+        if len(paths) >= 64:
+            break
+    safe = set(candidates)
+    return candidates, [p for p in paths if p["turn"] in safe]
 
 
 def asks_current(question: str) -> bool:
@@ -424,7 +477,7 @@ def _recall_key(store: Store, question: str, now, opts: Options,
         opts.window_boost, opts.entity_boost, opts.lexical_weight, opts.rerank,
         opts.rerank_depth, opts.rerank_blend, opts.profile_facts, opts.instructions,
         opts.broad, opts.recency_boost, opts.primary_hits, opts.embedder,
-        opts.summaries, opts.sessions, opts.speakers, opts.since, opts.until,
+        opts.summaries, opts.sessions, opts.speakers, opts.since, opts.until, opts.graph_hops,
         tuple(extra_queries), stamp,
     )
 
@@ -584,6 +637,17 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
     ranked, n_self = filter_self_turns(store, question, ranked)
     if n_self:
         explain["self_filtered"] = n_self
+    hops = opts.graph_hops if opts.graph_hops is not None else min(2, len(_RELATIONAL.findall(question)))
+    if hops and ranked:
+        graph, paths = _graph_candidates(store, question, ranked, allowed, hops)
+        graph, _ = filter_self_turns(store, question, graph)
+        # Reserve a small discovery quota so graph-only evidence is not drowned
+        # by hundreds of near-identical lexical/dense matches.
+        novel = [t for t in graph if t not in ranked[:6]][:4]
+        for i, turn in enumerate(novel):
+            ranked = [t for t in ranked if t != turn]
+            ranked.insert(min(2 + 2 * i, len(ranked)), turn)
+        explain["graph_paths"] = paths
     rerank = opts.rerank
     if rerank == "auto":
         rerank = "cross-encoder" if embedder is not None else None
@@ -594,8 +658,12 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
     # Relative deltas are shown only when the caller supplies a reference
     # moment: defaulting to the latest turn would print "0s ago" noise.
     show_now = moment if now is not None else None
+    belief_at = moment if now is not None else None
+    if belief_at is None and window is not None and moment is not None and window[1] < moment.date():
+        belief_at = dt.datetime.combine(window[1], dt.time(23, 59, 59))
+        explain["belief_as_of"] = belief_at.isoformat()
     context, used, n_tokens = assemble(store, question, ranked, opts, withheld, allowed, now=show_now,
-                                     as_of=moment if now is not None else None)
+                                     as_of=belief_at, current_instructions=now is None and belief_at is not None)
     conf = confidence(store, question, used[:5]) if context else 0.0
     explain["confidence"] = conf
     if conf == 0.0:
@@ -711,7 +779,8 @@ def _flagged(turn: Turn) -> bool:
 
 def assemble(store: Store, question: str, ranked: list[int], opts: Options,
              withheld: list[int] | None = None, allowed: set[int] | None = None,
-             now: dt.datetime | None = None, as_of=None) -> tuple[str, list[int], int]:
+             now: dt.datetime | None = None, as_of=None,
+             current_instructions: bool = False) -> tuple[str, list[int], int]:
     """Fill the budget best-first, each hit with its neighbours, then render by time.
     A turn the injection screen flags is never shown; its id goes to `withheld`."""
     withheld = [] if withheld is None else withheld
@@ -719,6 +788,10 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
     facts = store.recall_facts(question, as_of=as_of, allowed=allowed,
                               instructions=bool(opts.instructions), profile_facts=bool(opts.profile_facts)) \
         if opts.instructions or opts.profile_facts else []
+    if current_instructions and opts.instructions:
+        facts = [f for f in facts if f["kind"] != "instruction"] + [
+            f for f in store.recall_facts(question, allowed=allowed, profile_facts=False)
+            if f["kind"] == "instruction"]
     # The same eligibility and injection checks apply to every memory layer.
     sources = store.fact_source_ids(f["id"] for f in facts)
     fact_turns = store.turns(t for ids in sources.values() for t in ids)
@@ -735,7 +808,10 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
         instruction_block = ("[Standing instructions from the user]\n" + "\n".join(t for t, _ in instruction_lines)
                              + "\n\n") if instruction_lines else ""
     profile_lines = _profile_lines(store, question, opts.profile_facts, facts=facts)
-    profile_block = ("[What the user has said about themselves]\n" + "\n".join(t for t, _ in profile_lines)
+    profile_title = "What the user has said about themselves"
+    if as_of is not None:
+        profile_title += f"; beliefs as of {timeparse.parse_moment(as_of).isoformat()}"
+    profile_block = (f"[{profile_title}]\n" + "\n".join(t for t, _ in profile_lines)
                      + "\n\n") if profile_lines else ""
     if tokens(profile_block) > budget // 4:
         profile_block, profile_lines = "", []
@@ -748,7 +824,7 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
     # restricted view use exact eligible evidence rather than a wider summary.
     summaries = {s: f for s, f in store.summaries().items()
                  if not injection_guard.injection_labels({"text": f["text"]})} \
-        if opts.summaries and allowed is None else {}
+        if opts.summaries and allowed is None and as_of is None else {}
 
     def header_cost(session: str, at) -> int:
         cost = tokens(_header(session, at, now)) + 1

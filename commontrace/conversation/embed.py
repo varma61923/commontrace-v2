@@ -2,6 +2,7 @@
 one file per model, shared by every space, so a message is embedded once."""
 from __future__ import annotations
 
+import heapq
 import importlib.util
 import json
 import os
@@ -141,9 +142,23 @@ def release_store(store: _store.Store) -> None:
         forget_store(store)
 
 
+SCAN_BATCH = 1024
+
+
 def search(store: _store.Store, embedder: Embedder, query_vec, limit: int, *,
            allowed: set[int] | None = None) -> list[tuple[int, float]]:
-    """(unit id, cosine) for the store's units nearest the query, best first."""
+    with store.read_snapshot():
+        return _search(store, embedder, query_vec, limit, allowed=allowed)
+
+
+def _search(store: _store.Store, embedder: Embedder, query_vec, limit: int, *,
+            allowed: set[int] | None = None) -> list[tuple[int, float]]:
+    """Exact top-k over compact vectors, with bounded working memory.
+
+    Persistent vectors already have float16 precision. Keep that representation
+    in RAM and convert only a scoring batch to float32. Oversized indexes stream
+    from SQLite; filtered cold queries embed only eligible passages.
+    """
     np = embedder.np
     if limit <= 0 or allowed == set():
         return []
@@ -153,37 +168,57 @@ def search(store: _store.Store, embedder: Embedder, query_vec, limit: int, *,
         cached = _INDEX.get(key)
         if cached is not None:
             _INDEX.move_to_end(key)
-    if cached is None or cached.stamp != stamp:
-        units = store.units()
-        # SQLite can reuse a unit id after deletion. Only the content hash is
-        # evidence that an old vector still describes the current passage.
+    best: list[tuple[float, int]] = []
+
+    def score(ids, matrix):
+        values = matrix.astype(np.float32) @ query_vec
+        count = min(limit, len(ids))
+        if not count:
+            return
+        # Stable ties across streaming batches and cached indexes.
+        order = np.lexsort((np.asarray(ids), -values))[:count]
+        for i in order:
+            item = (float(values[i]), -int(ids[i]))
+            if len(best) < limit:
+                heapq.heappush(best, item)
+            elif item > best[0]:
+                heapq.heapreplace(best, item)
+
+    if cached is not None and cached.stamp == stamp:
+        for start in range(0, len(cached.ids), SCAN_BATCH):
+            end = start + SCAN_BATCH
+            positions = [i for i in range(start, min(end, len(cached.ids)))
+                         if allowed is None or cached.turns[i] in allowed]
+            if positions:
+                score([cached.ids[i] for i in positions], cached.matrix[positions])
+    else:
+        # Reuse unchanged content, never an id which SQLite may recycle.
         known = {} if cached is None else dict(zip(cached.hashes, cached.matrix))
-        missing = [(h, body) for _uid, _t, body, h in units if h not in known]
-        fresh = dict(zip([h for _uid, _t, _body, h in units if h not in known],
-                         embedder.vectors(missing) if missing else []))
-        ids = [uid for uid, *_ in units]
-        hashes = [h for _uid, _t, _body, h in units]
-        matrix = np.stack([known[h] if h in known else fresh[h] for h in hashes]) if ids else \
-            np.zeros((0, 1), dtype=np.float32)
-        cached = _Index(stamp, ids, hashes, [t for _u, t, _b, _h in units], matrix)
+        count = store.db.execute("SELECT COUNT(*) FROM units").fetchone()[0]
+        ids, hashes, turns, matrix = [], [], [], None
+        cacheable = allowed is None
+        offset = 0
+        for batch in store.unit_batches(SCAN_BATCH, allowed=allowed):
+            missing = list(dict.fromkeys((h, body) for _u, _t, body, h in batch if h not in known))
+            fresh = dict(zip([h for h, _b in missing], embedder.vectors(missing) if missing else []))
+            vectors = np.stack([known[h] if h in known else fresh[h] for _u, _t, _b, h in batch]).astype(np.float16)
+            batch_ids = [u for u, _t, _b, _h in batch]
+            score(batch_ids, vectors)
+            if cacheable and matrix is None:
+                cacheable = count * vectors.shape[1] * np.dtype(np.float16).itemsize <= MAX_INDEX_BYTES
+                if cacheable:
+                    matrix = np.empty((count, vectors.shape[1]), dtype=np.float16)
+            if cacheable:
+                matrix[offset:offset + len(batch)] = vectors
+                offset += len(batch)
+                ids.extend(batch_ids)
+                turns.extend(t for _u, t, _b, _h in batch)
+                hashes.extend(h for _u, _t, _b, h in batch)
         with _INDEX_LOCK:
             _INDEX.pop(key, None)
-            if matrix.nbytes <= MAX_INDEX_BYTES:
+            if matrix is not None and cacheable:
                 while _INDEX and (len(_INDEX) >= MAX_CACHED_SPACES
                                   or sum(v.matrix.nbytes for v in _INDEX.values()) + matrix.nbytes > MAX_INDEX_BYTES):
                     _INDEX.popitem(last=False)
-                _INDEX[key] = cached
-    ids, matrix = cached.ids, cached.matrix
-    if not ids:
-        return []
-    eligible = np.arange(len(ids)) if allowed is None else np.array(
-        [i for i, turn in enumerate(cached.turns) if turn in allowed], dtype=np.int64)
-    if not len(eligible):
-        return []
-    scores = matrix @ query_vec if allowed is None else matrix[eligible] @ query_vec
-    limit = min(limit, len(eligible))
-    # Restrict BEFORE top-k: unrelated spaces/sessions cannot starve the
-    # filtered view, even if there are thousands of stronger global hits.
-    best = np.argpartition(-scores, limit - 1)[:limit]
-    best = best[np.argsort(-scores[best])]
-    return [(ids[eligible[i]], float(scores[i])) for i in best]
+                _INDEX[key] = _Index(stamp, ids, hashes, turns, matrix[:offset])
+    return [(-uid, value) for value, uid in sorted(best, reverse=True)]

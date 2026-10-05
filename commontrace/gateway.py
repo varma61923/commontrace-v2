@@ -463,7 +463,8 @@ class Gateway:
             path = split.path
             if not trusted and not self._host_ok(headers):
                 raise ApiError(403, "bad_host", "the Host header is not allowed")
-            if path in ("/", "/index.html", "/ui/app.js", "/ui/app.css", "/ui/favicon.svg") and method == "GET":
+            if path in ("/", "/index.html", "/ui/app.js", "/ui/app.css", "/ui/tokens.css",
+                        "/ui/favicon.svg") and method == "GET":
                 return self._static(path)
             entry = self.routes.get((method, path))
             if entry is None:
@@ -529,7 +530,7 @@ class Gateway:
 
     def _static(self, path: str) -> Response:
         name = {"/": "index.html", "/index.html": "index.html", "/ui/app.js": "app.js",
-                "/ui/app.css": "app.css", "/ui/favicon.svg": "favicon.svg"}[path]
+                "/ui/app.css": "app.css", "/ui/tokens.css": "tokens.css", "/ui/favicon.svg": "favicon.svg"}[path]
         types = {"html": "text/html; charset=utf-8", "js": "text/javascript; charset=utf-8",
                  "css": "text/css; charset=utf-8", "svg": "image/svg+xml"}
         try:
@@ -1267,4 +1268,3 @@ def serve_stdio(gateway: Gateway, stdin, stdout) -> int:
         stdout.write(json.dumps(reply, separators=(",", ":")) + "\n")
         stdout.flush()
     return 0
-

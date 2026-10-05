@@ -745,7 +745,18 @@
     document.title = route.title + " · CommonTrace";
     var focusId = document.activeElement && main.contains(document.activeElement) ? document.activeElement.id : "";
     main.textContent = "";
-    main.appendChild(VIEWS[route.id]());
+    var view = VIEWS[route.id]();
+    if (!view.querySelector(".page-heading")) {
+      var title = view.querySelector("h1"), lede = view.querySelector(".lede");
+      if (title) {
+        var heading = h("div", { class: "page-heading" });
+        var copy = h("div", {}, h("p", { class: "eyebrow", text: "MEMORY OPERATIONS" }));
+        copy.appendChild(title);
+        if (lede) copy.appendChild(lede);
+        heading.appendChild(copy); view.insertBefore(heading, view.firstChild);
+      }
+    }
+    main.appendChild(view);
     if (focusId) { var again = document.getElementById(focusId); if (again) again.focus(); }
     if (notice && (route.id === "review" || route.id === "lesson")) {
       var shown = notice; setTimeout(function () { if (notice === shown) { notice = null; } }, 8000);

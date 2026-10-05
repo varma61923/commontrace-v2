@@ -6,7 +6,7 @@ import pytest
 from commontrace import gateway, holdout_io
 
 UI_DIR = os.path.join(os.path.dirname(gateway.__file__), "ui")
-FILES = ("index.html", "app.js", "app.css", "favicon.svg")
+FILES = ("index.html", "app.js", "app.css", "tokens.css", "favicon.svg")
 
 
 def _read(name):
@@ -23,7 +23,7 @@ def gw(tmp_path):
 
 @pytest.mark.parametrize("path,ctype", [
     ("/", "text/html"), ("/index.html", "text/html"), ("/ui/app.js", "text/javascript"),
-    ("/ui/app.css", "text/css"), ("/ui/favicon.svg", "image/svg+xml")])
+    ("/ui/app.css", "text/css"), ("/ui/tokens.css", "text/css"), ("/ui/favicon.svg", "image/svg+xml")])
 def test_the_console_loads_without_a_token_and_carries_a_strict_csp(gw, path, ctype):
     r = gw.handle("GET", path, {"Host": "localhost:8787"})
     assert r.status == 200 and r.content_type.startswith(ctype)
@@ -84,8 +84,8 @@ def test_the_console_ships_in_the_package():
 
 
 def test_the_colours_are_defined_for_light_dark_and_forced_colours():
-    css = _read("app.css")
-    assert "prefers-color-scheme: dark" in css and "forced-colors" in css and 'data-theme="dark"' in css
+    css = _read("tokens.css") + _read("app.css")
+    assert "prefers-color-scheme:dark" in css and "forced-colors" in css and 'data-theme=dark' in css
     assert "min-height: 44px" in css
 
 

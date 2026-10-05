@@ -1119,6 +1119,16 @@ Ben: Congrats, what is his name?
   turns said in that window or about it. The best hits bring the two turns
   either side of them, and the page is filled best-first up to `--budget` tokens,
   then shown session by session in the order things were said.
+- **Linked evidence.** Relational questions also explore indexed entity mentions
+  from the best eligible turns, finding cross-session evidence that names an
+  intermediate person or project. Traversal has strict seed, degree, candidate
+  and depth limits; nested relation clauses can activate a second hop. It adds
+  no model calls. `Recall.explain["graph_paths"]` records the source links;
+  Python callers can set `Options(graph_hops=0)` to disable discovery.
+- **Large dense indexes.** Cached vectors retain their existing float16 storage
+  precision and scoring converts only a batch to float32. Indexes over the
+  cache budget stream from SQLite; filtered cold queries embed only eligible
+  passages. Dense search remains exact and linear in corpus size.
 - **Profile.** Self-descriptions the user makes ("I prefer boutique
   hotels", "as a Sony camera user", "I'm allergic to peanuts") are kept as
   their own sentences and added when a question asks for advice or
@@ -1129,6 +1139,9 @@ Ben: Congrats, what is his name?
   order. Different speakers keep separate beliefs. `profile` shows what is
   current; `--history` includes replaced statements and their `valid_until`;
   `--as-of DATE` shows beliefs supported by evidence available at that moment.
+  Past-date recall questions select historical profile beliefs automatically,
+  while current standing instructions still govern the answer. Historical
+  recall omits session summaries that could include later evidence.
 - **Summaries, extraction and answers.** `summarize` writes each session's
   most central sentences (or, with `--model`, a summary by the configured
   model) and recall shows it under the session's header. `extract` has the

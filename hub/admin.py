@@ -67,6 +67,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, Response
 
+from commontrace.ui_style import THEME_CSS
 from hub import audit as audit_module
 from hub import auth, crud, events, manage, plans, rbac, retention, scopes
 from hub.abuse import RateLimiter, make_named_limiter, rate_limit_key
@@ -82,6 +83,7 @@ from hub.models import (
     User,
     Vote,
 )
+from hub.ui_kit import THEME_SCRIPT
 
 logger = logging.getLogger("commontrace.hub.admin")
 
@@ -112,22 +114,12 @@ def _limit(value: object) -> str:
     return "unlimited" if value == plans.UNLIMITED else _num(value)
 
 
-_CSS = """
-:root{
-  --paper:#F6F7F8; --surface:#FFF; --ink:#111820; --muted:#5A6672;
-  --rule:#DDE2E7; --rule-soft:#EAEEF1; --accent:#23506B;
-  --ok:#1D6B45; --warn:#8A5D12; --bad:#A33C2B; --code:#EEF2F5;
-}
-@media (prefers-color-scheme:dark){:root{
-  --paper:#0C1216; --surface:#131B21; --ink:#E5EAEE; --muted:#93A1AC;
-  --rule:#25313A; --rule-soft:#1B242B; --accent:#79B0CD;
-  --ok:#4EA878; --warn:#D2A149; --bad:#D86F5B; --code:#101820;
-}}
+_CSS = THEME_CSS + """
 *{box-sizing:border-box}
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
   clip:rect(0,0,0,0);white-space:nowrap;border:0}
 body{margin:0;background:var(--paper);color:var(--ink);
-  font:15px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif}
+  font:14.5px/1.55 var(--sans)}
 a{color:var(--accent)}
 code,.m{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.86em}
 header.bar{border-bottom:1px solid var(--rule);background:var(--surface)}
@@ -136,10 +128,10 @@ header.bar .in{max-width:1100px;margin:0 auto;padding:.85rem 1.25rem;
 header.bar b{font-size:.95rem;letter-spacing:.01em}
 header.bar .ro{font-family:ui-monospace,monospace;font-size:.66rem;letter-spacing:.12em;
   text-transform:uppercase;color:var(--muted);border:1px solid var(--rule);
-  padding:.15rem .45rem;border-radius:2px}
+  padding:.15rem .45rem;border-radius:var(--radius-sm)}
 header.bar nav{margin-left:auto;display:flex;flex-wrap:wrap;gap:.35rem 1rem;font-size:.9rem}
 .live-toggle{font:inherit;font-size:.72rem;padding:.1rem .45rem;border:1px solid var(--rule);
-  border-radius:2px;background:var(--surface);color:var(--muted);cursor:pointer}
+  border-radius:var(--radius-sm);background:var(--surface);color:var(--muted);cursor:pointer}
 .live-toggle[aria-pressed=true]{color:var(--ink);border-color:var(--ink)}
 header.bar nav a[aria-current=page]{color:var(--ink);font-weight:600;text-decoration:none}
 header.bar nav form{margin:0;display:inline}
@@ -160,7 +152,7 @@ h1{font-size:1.5rem;margin:0 0 .2rem;letter-spacing:-.01em}
 h2{font-size:1.05rem;margin:0 0 .75rem;padding-bottom:.4rem;border-bottom:1px solid var(--rule)}
 .sub{color:var(--muted);font-size:.9rem;margin:0}
 section{display:flex;flex-direction:column}
-.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:1px;
+.tiles{border-radius:var(--radius);overflow:hidden;display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:1px;
   background:var(--rule);border:1px solid var(--rule)}
 .tile{background:var(--surface);padding:.85rem 1rem}
 .tile .k{font-family:ui-monospace,monospace;font-size:.63rem;letter-spacing:.11em;
@@ -176,21 +168,22 @@ td{padding:.55rem .8rem .55rem 0;border-bottom:1px solid var(--rule-soft);vertic
 td.n{font-variant-numeric:tabular-nums;white-space:nowrap}
 tr:last-child td{border-bottom:1px solid var(--rule)}
 .pill{display:inline-block;font-family:ui-monospace,monospace;font-size:.66rem;
-  letter-spacing:.04em;padding:.1rem .4rem;border-radius:2px;border:1px solid currentColor}
+  letter-spacing:.04em;padding:.1rem .4rem;border-radius:var(--radius-sm);border:1px solid currentColor}
 .pill.ok{color:var(--ok)} .pill.warn{color:var(--warn)} .pill.bad{color:var(--bad)}
 .pill.mute{color:var(--muted)}
 .concerns{margin-top:.3rem;display:flex;flex-wrap:wrap;gap:.25rem}
 .cmds{display:flex;flex-direction:column;gap:.5rem}
 .cmd{display:grid;grid-template-columns:minmax(11rem,auto) 1fr;gap:.3rem 1rem;align-items:baseline}
 .cmd .what{color:var(--muted);font-size:.88rem}
-.cmd code{background:var(--code);padding:.25rem .5rem;border-radius:2px;
+.cmd code{background:var(--code);padding:.25rem .5rem;border-radius:var(--radius-sm);
   display:block;overflow-x:auto;white-space:pre}
 .note{background:var(--surface);border:1px solid var(--rule);border-left:3px solid var(--accent);
   padding:.9rem 1.1rem;font-size:.9rem;color:var(--muted)}
 .note b{color:var(--ink)}
 .empty{color:var(--muted);font-size:.9rem;padding:.6rem 0}
 .cards{display:flex;flex-direction:column;gap:1rem}
-.card{background:var(--surface);border:1px solid var(--rule);padding:1.1rem 1.25rem;
+.card{border-radius:var(--radius);box-shadow:var(--shadow);background:var(--surface);
+  border:1px solid var(--rule);padding:1.1rem 1.25rem;
   display:flex;flex-direction:column;gap:.7rem}
 .card h3{font-size:1.02rem;margin:0}
 .card .meta{color:var(--muted);font-size:.82rem;margin:0}
@@ -203,10 +196,10 @@ tr:last-child td{border-bottom:1px solid var(--rule)}
   border-top:1px solid var(--rule-soft);padding-top:.75rem}
 form.act{display:flex;gap:.4rem;align-items:center;margin:0}
 form.act input[type=text]{font:inherit;font-size:.85rem;padding:.3rem .45rem;
-  border:1px solid var(--rule);border-radius:2px;background:var(--paper);color:var(--ink);
+  border:1px solid var(--rule);border-radius:var(--radius-sm);background:var(--paper);color:var(--ink);
   min-width:12rem}
-.btn{font:inherit;font-size:.85rem;font-weight:600;padding:.35rem .8rem;cursor:pointer;
-  border:1px solid var(--muted);border-radius:2px;background:var(--paper);color:var(--ink)}
+.btn{min-height:44px;font:inherit;font-size:.85rem;font-weight:600;padding:.35rem .8rem;cursor:pointer;
+  border:1px solid var(--muted);border-radius:var(--radius-sm);background:var(--paper);color:var(--ink)}
 .btn:hover{border-color:var(--ink)}
 .btn.ok{border-color:var(--ok);color:var(--ok)}
 .btn.warn{border-color:var(--warn);color:var(--warn)}
@@ -218,7 +211,7 @@ form.stack{display:flex;flex-direction:column;gap:.7rem;margin:0;max-width:40rem
 form.stack label{font-family:ui-monospace,monospace;font-size:.62rem;letter-spacing:.11em;
   text-transform:uppercase;color:var(--muted);display:block;margin-bottom:.2rem}
 form.stack input[type=text],form.stack textarea{font:inherit;font-size:.9rem;
-  padding:.4rem .55rem;border:1px solid var(--rule);border-radius:2px;
+  padding:.4rem .55rem;border:1px solid var(--rule);border-radius:var(--radius-sm);
   background:var(--paper);color:var(--ink);width:100%}
 form.stack textarea{min-height:5rem;resize:vertical;font-family:inherit}
 form.stack input:focus-visible,form.stack textarea:focus-visible{
@@ -226,6 +219,8 @@ form.stack input:focus-visible,form.stack textarea:focus-visible{
 @media (max-width:640px){.cmd{grid-template-columns:1fr}
   form.act{flex-wrap:wrap}form.act input:not([type=hidden]):not([type=checkbox]),
   form.act select{min-width:0;flex:1 1 9rem}}
+header.bar nav a{display:inline-flex;align-items:center;min-height:44px}
+form.stack input:not([type=hidden]),form.act input[type=text],.live-toggle{min-height:44px}
 """
 
 
@@ -390,7 +385,7 @@ def _page(title: str, body: str, *, auto_refresh_seconds: int = 0) -> HTMLRespon
     return HTMLResponse(
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
         "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-        f"<title>{h(title)} · CommonTrace Hub</title><style>{_CSS}</style></head><body>"
+        f"<title>{h(title)} · CommonTrace Hub</title>{THEME_SCRIPT}<style>{_CSS}</style></head><body>"
         "<header class=\"bar\"><div class=\"in\"><b>CommonTrace Hub</b>"
         "<span class=\"ro\">operator console</span>"
         f"{badge}"
@@ -398,7 +393,7 @@ def _page(title: str, body: str, *, auto_refresh_seconds: int = 0) -> HTMLRespon
         f"<a href=\"{ADMIN_PATH}/kb\">Knowledge Base</a>"
         "<a href=\"/metrics\">Metrics</a></nav></div></header>"
         f"<main>{body}</main>{refresh_script}{_FORM_GUARD_SCRIPT}</body></html>",
-        headers=html_headers(refresh_script, _FORM_GUARD_SCRIPT),
+        headers=html_headers(THEME_SCRIPT, refresh_script, _FORM_GUARD_SCRIPT),
     )
 
 

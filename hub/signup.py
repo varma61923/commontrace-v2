@@ -11,6 +11,7 @@ from hub.admin import _CSS, _FORM_GUARD_SCRIPT, h, html_headers, refuse_cross_or
 from hub.auth import issue_api_key
 from hub.db import session_scope
 from hub.models import Organization
+from hub.ui_kit import THEME_SCRIPT
 
 logger = logging.getLogger("commontrace.hub.signup")
 
@@ -21,17 +22,18 @@ MIN_NAME_CHARS = 2
 MAX_NAME_CHARS = 200
 
 _EXTRA_CSS = """
-.signin{max-width:34rem;margin:3rem auto}
+.signin{width:100%;max-width:28rem;margin:3rem auto;padding:2rem;background:var(--surface);
+  border:1px solid var(--rule);border-radius:var(--radius);box-shadow:var(--shadow-lg)}
 .signin input{width:100%;padding:.6rem .7rem;font:inherit;border:1px solid var(--rule);
-  border-radius:8px;margin:.5rem 0 .8rem}
-.signin button{padding:.55rem 1.1rem;font:inherit;border-radius:8px;border:1px solid var(--ink);
-  background:var(--ink);color:var(--paper);cursor:pointer}
+  border-radius:var(--radius-sm);min-height:44px;background:var(--surface);color:var(--ink);margin:.5rem 0 .8rem}
+.signin button{padding:.55rem 1.1rem;font:inherit;border-radius:var(--radius-sm);border:1px solid var(--accent);
+  min-height:44px;background:var(--accent);color:var(--accent-ink);cursor:pointer}
 .err{color:var(--bad);font-size:.9rem;margin:.4rem 0}
-.share-box{background:var(--surface);border:1px solid var(--rule);border-radius:10px;
+.share-box{background:var(--surface);border:1px solid var(--rule);border-radius:var(--radius);
   padding:.9rem 1.1rem;margin:0 0 1.25rem}
 .share-box input{width:100%;padding:.5rem .6rem;font:inherit;font-size:.85rem;
   font-family:ui-monospace,SFMono-Regular,Menlo,monospace;border:1px solid var(--rule);
-  border-radius:8px;margin:.4rem 0;background:var(--paper)}
+  border-radius:var(--radius-sm);margin:.4rem 0;background:var(--surface)}
 .rev{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.82rem;color:var(--muted)}
 .hp{position:absolute;left:-9999px;top:-9999px}
 """
@@ -70,10 +72,10 @@ def _page(title: str, body: str) -> HTMLResponse:
     return HTMLResponse(
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
-        f"<title>{h(title)} · CommonTrace</title><style>{_CSS}{_EXTRA_CSS}</style></head><body>"
+        f"<title>{h(title)} · CommonTrace</title>{THEME_SCRIPT}<style>{_CSS}{_EXTRA_CSS}</style></head><body>"
         '<header class="bar"><div class="in"><b>CommonTrace</b></div></header>'
         f"<main>{body}</main>{_FORM_GUARD_SCRIPT}</body></html>",
-        headers=html_headers(_FORM_GUARD_SCRIPT),
+        headers=html_headers(THEME_SCRIPT, _FORM_GUARD_SCRIPT),
     )
 
 

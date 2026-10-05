@@ -339,7 +339,7 @@ class Store:
             self.db.execute("INSERT OR IGNORE INTO meta VALUES ('units_identity', ?)", (os.urandom(16).hex(),))
             self.db.execute("INSERT OR IGNORE INTO meta VALUES ('units_revision', '0')")
             for operation in ("INSERT", "UPDATE", "DELETE"):
-                self.db.execute(f"CREATE TRIGGER IF NOT EXISTS units_revision_{operation.lower()} "
+                self.db.execute(f"CREATE TRIGGER IF NOT EXISTS units_revision_{operation.lower()} "  # nosec B608 - fixed operations
                                 f"AFTER {operation} ON units BEGIN UPDATE meta SET value=CAST(value AS INTEGER)+1 "
                                 "WHERE key='units_revision'; END")
             self.db.execute("INSERT OR IGNORE INTO fact_sources SELECT id, turn FROM facts")
@@ -704,6 +704,19 @@ class Store:
         """Every retrieval unit: (unit id, turn id, body, content hash)."""
         return [tuple(r) for r in self.db.execute("SELECT id, turn, body, hash FROM units ORDER BY id")]
 
+    def unit_batches(self, size: int = 1024, *, allowed: set[int] | None = None):
+        """Stream eligible passages without materialising the interaction log."""
+        if size <= 0:
+            raise ValueError("batch size must be positive")
+        query = "SELECT id, turn, body, hash FROM units"
+        params = ()
+        if allowed is not None:
+            query += " WHERE turn IN (SELECT value FROM json_each(?))"
+            params = (json.dumps(sorted(allowed)),)
+        cursor = self.db.execute(query + " ORDER BY id", params)
+        while rows := cursor.fetchmany(size):
+            yield [tuple(r) for r in rows]
+
     def unit_turns(self, unit_ids: Iterable[int]) -> dict[int, int]:
         ids = list(unit_ids)
         if not ids:
@@ -727,7 +740,7 @@ class Store:
                         "(SELECT value FROM json_each(?)))") if allowed is not None else ""
             params = (match, json.dumps(sorted(allowed)), limit) if allowed is not None else (match, limit)
             rows = self.db.execute(
-                "SELECT rowid, bm25(units_fts) FROM units_fts WHERE units_fts MATCH ? "
+                "SELECT rowid, bm25(units_fts) FROM units_fts WHERE units_fts MATCH ? "  # nosec B608 - fixed eligibility SQL
                 + eligible + " ORDER BY bm25(units_fts) LIMIT ?", params)
             return [(r[0], sigmoid_bm25(-r[1], n_terms)) for r in rows]
         units = self.units()
@@ -758,7 +771,7 @@ class Store:
                 conditions.append(f"({t}.at IS NULL OR {t}.at <= ?)")
                 values.append(moment)
             if allowed is not None:
-                conditions.append(f"{t}.id IN (SELECT value FROM json_each(?))")
+                conditions.append(f"{t}.id IN (SELECT value FROM json_each(?))")  # nosec B608 - fixed alias, bound ids
                 values.append(json.dumps(sorted(allowed)))
             excluded, source_values = [], []
             if moment is not None:
@@ -768,7 +781,7 @@ class Store:
                 excluded.append("st.id NOT IN (SELECT value FROM json_each(?))")
                 source_values.append(json.dumps(sorted(allowed)))
             if excluded and self._has_sources:
-                conditions.append(f"NOT EXISTS (SELECT 1 FROM fact_sources fs JOIN turns st ON st.id=fs.turn "
+                conditions.append(f"NOT EXISTS (SELECT 1 FROM fact_sources fs JOIN turns st ON st.id=fs.turn "  # nosec B608 - fixed aliases
                                   f"WHERE fs.fact={f}.id AND (" + " OR ".join(excluded) + "))")
                 values.extend(source_values)
             return conditions, values
@@ -786,7 +799,7 @@ class Store:
             newer, values = eligible("g", "u")
             same_owner = "g.owner=f.owner" if "owner" in self._fact_columns else "LOWER(u.speaker)=LOWER(t.speaker)"
             clauses.append(
-                "(f.slot IS NULL OR NOT EXISTS (SELECT 1 FROM facts g JOIN turns u ON u.id=g.turn "
+                "(f.slot IS NULL OR NOT EXISTS (SELECT 1 FROM facts g JOIN turns u ON u.id=g.turn "  # nosec B608 - fixed clauses
                 "WHERE g.slot=f.slot AND " + same_owner + " "
                 "AND (COALESCE(g.at, ''), g.id) > (COALESCE(f.at, ''), f.id)"
                 + (" AND " + " AND ".join(newer) if newer else "") + "))")
@@ -806,7 +819,7 @@ class Store:
         successor = " LEFT JOIN facts n ON n.id=f.superseded_by" if "superseded_by" in self._fact_columns else ""
         validity = "n.at" if successor else "NULL"
         return [dict(r) for r in self.db.execute(
-            "SELECT f.*, t.session, t.speaker, " + validity + " AS valid_until" + legacy + " FROM facts f "
+            "SELECT f.*, t.session, t.speaker, " + validity + " AS valid_until" + legacy + " FROM facts f "  # nosec B608 - fixed schema expressions
             "JOIN turns t ON t.id=f.turn" + successor + " WHERE "
             + where + " ORDER BY f.at, f.id", params)]
 
@@ -826,7 +839,7 @@ class Store:
         suffix = " AND " + condition
         if profile_facts and match:
             ids.update(r[0] for r in self.db.execute(
-                "SELECT f.id FROM facts_fts JOIN facts f ON f.id=facts_fts.rowid JOIN turns t ON t.id=f.turn "
+                "SELECT f.id FROM facts_fts JOIN facts f ON f.id=facts_fts.rowid JOIN turns t ON t.id=f.turn "  # nosec B608 - fixed conditions
                 "WHERE facts_fts MATCH ?" + suffix + " ORDER BY bm25(facts_fts) LIMIT ?",
                 [match, *params, limit]))
         # Rules about answer format can be unrelated to the query. The kind
@@ -835,7 +848,7 @@ class Store:
             ["preference", "dislike", "favorite", "identity", "habit"] if profile_facts else [])
         for kind in kinds:
             ids.update(r[0] for r in self.db.execute(
-                "SELECT f.id FROM facts f JOIN turns t ON t.id=f.turn WHERE f.kind=?"
+                "SELECT f.id FROM facts f JOIN turns t ON t.id=f.turn WHERE f.kind=?"  # nosec B608 - bound kind and metadata
                 + suffix + " ORDER BY f.at DESC, f.id DESC LIMIT ?",
                 [kind, *params, limit if kind == "instruction" else 16]))
         return self.facts(as_of=as_of, allowed=allowed, candidates=ids)
@@ -853,8 +866,9 @@ class Store:
             # A ubiquitous speaker/entity contributes almost no information.
             # Count using indexes instead of materialising its whole history.
             names = [n for n in names if self.db.execute(
-                "SELECT (SELECT COUNT(*) FROM entities WHERE name=?) "
-                "+ (SELECT COUNT(*) FROM turns WHERE LOWER(speaker)=?)", (n, n)).fetchone()[0] <= max_matches]
+                "SELECT (SELECT COUNT(*) FROM (SELECT 1 FROM entities WHERE name=? LIMIT ?)) "
+                "+ (SELECT COUNT(*) FROM (SELECT 1 FROM turns WHERE LOWER(speaker)=? LIMIT ?))",
+                (n, max_matches + 1, n, max_matches + 1)).fetchone()[0] <= max_matches]
             if not names:
                 return {}
         out: dict[str, list[int]] = {name: [] for name in names}
@@ -891,7 +905,7 @@ class Store:
         table, fact, turn = ("fact_sources", "fact", "turn") if self._has_sources else ("facts", "id", "turn")
         out: dict[int, list[int]] = {}
         for fid, tid in self.db.execute(
-                f"SELECT {fact}, {turn} FROM {table} WHERE {fact} IN (SELECT value FROM json_each(?))",
+                f"SELECT {fact}, {turn} FROM {table} WHERE {fact} IN (SELECT value FROM json_each(?))",  # nosec B608 - fixed schema names
                 (json.dumps(ids),)):
             out.setdefault(fid, []).append(tid)
         return out
