@@ -774,10 +774,30 @@
     } else if (tierChip) tierChip.hidden = true;
   }
 
+  var refreshGeneration = 0, capabilitiesAt = 0, capabilitiesToken = "", stateToken = null;
+  function clearCredentialState() {
+    var replacing = stateToken !== null;
+    Object.keys(state).forEach(function (key) { state[key] = null; });
+    selected = {}; notice = null; lastPaint = ""; lastOk = 0;
+    capabilitiesAt = 0; capabilitiesToken = ""; stateToken = token;
+    // Remove the previous credential's data from the visible page immediately,
+    // including while the replacement connection is still awaiting a response.
+    if (replacing) { paintHeader(); paint(true); }
+  }
   function refresh() {
+    var generation = ++refreshGeneration, requestedToken = token, requestedHash = location.hash;
+    function current() {
+      return generation === refreshGeneration && token === requestedToken && location.hash === requestedHash;
+    }
+    if (stateToken !== token) clearCredentialState();
     if (!token) { main.textContent = ""; main.appendChild(viewAuth()); setConn("bad", "Not connected"); return Promise.resolve(); }
     var route = currentRoute().id;
-    var wants = ["status", "capabilities", "memories", "agents"];
+    var wants = ["status"];
+    // Capability discovery changes infrequently. Fetch it on first connection
+    // and once a minute; every live page still refreshes its own source data.
+    if (capabilitiesToken !== token || !state.capabilities || Date.now() - capabilitiesAt >= 60000) wants.push("capabilities");
+    if (route === "overview" || route === "memories" || route === "lesson") wants.push("memories");
+    if (route === "overview" || route === "fleet" || route === "safety") wants.push("agents");
     if (route === "live") wants.push("occasions");
     if (route === "review") wants.push("lessons?status=review");
     if (route === "lesson") wants.push("lesson?slug=" + encodeURIComponent(hashQuery("slug")));
@@ -788,14 +808,19 @@
     };
     return Promise.all(wants.map(function (w) { return api("/v1/" + w).then(function (d) { return [w, d]; }); }))
       .then(function (pairs) {
+        // A slow poll from an earlier page or credential must never replace
+        // newer results, or turn a valid new connection into a signed-out one.
+        if (!current()) return;
         pairs.forEach(function (p) { state[keys[p[0]] || (p[0].indexOf("lesson?") === 0 ? "lesson" : p[0])] = p[1]; });
+        if (wants.indexOf("capabilities") !== -1) { capabilitiesAt = Date.now(); capabilitiesToken = requestedToken; }
         lastOk = Date.now();
         setConn("ok", "Live · updated " + ago(new Date(lastOk).toISOString()));
         paintHeader();
         render();
       })
       .catch(function (e) {
-        if (e && e.auth) { token = ""; try { sessionStorage.removeItem("ct-token"); } catch (x) { /* ignore */ } main.textContent = ""; main.appendChild(viewAuth("That token was not accepted.")); setConn("bad", "Not connected"); return; }
+        if (!current()) return;
+        if (e && e.auth) { token = ""; clearCredentialState(); try { sessionStorage.removeItem("ct-token"); } catch (x) { /* ignore */ } main.textContent = ""; main.appendChild(viewAuth("That token was not accepted.")); setConn("bad", "Not connected"); return; }
         if (e && !e.auth) console.error(e);
         setConn("bad", lastOk ? "Disconnected · last update " + ago(new Date(lastOk).toISOString()) : "Cannot reach the gateway");
       });

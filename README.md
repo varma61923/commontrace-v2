@@ -1112,6 +1112,26 @@ cache reuses recent encodings for up to five minutes, capped at 512 entries and
 8 MiB of vector data. Each recall reads the current filtered memory snapshot;
 updates, deletion, session restrictions and historical cutoffs still apply.
 
+Large vector corpora use generation-validated, read-only disk mappings instead
+of decoding the SQLite vector cache on every query. Completed mapped snapshots
+are bounded to 16 files / 4 GiB per cache directory; heap matrices retain their
+128 MiB cap. Operating-system mapped pages can add resident memory. Frozen
+stores only read existing snapshots, and unavailable disk caching falls back to
+bounded streaming. Raw SQLite evidence remains authoritative.
+
+Extraction reads checkpointed message batches and revalidates their exact source
+content before publishing memories. Retention repairs only affected belief
+histories. Valid summaries skip raw-message hydration; model summaries read
+bounded pages and reject publication after source changes. Console polling also
+reuses fresh parsed lessons, requests only each page's sources, and clears retained
+data when credentials change. Measured gains and reproduction commands are in
+[production performance](research/production-performance.md).
+
+MCP clients that request progress receive standard request-correlated phase
+notifications during conversation ingestion, retrieval and summarization. These
+operations run in worker threads; default clients retain the same tool results.
+See [MCP progress](research/mcp-progress.md) for the protocol and tested behavior.
+
 Exports include exact extracted and manual memories, their source-message
 references, historical belief changes, summary metadata, and extraction progress.
 Import remaps references to destination message ids and commits the complete

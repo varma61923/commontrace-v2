@@ -1,0 +1,378 @@
+{
+  "environment": {
+    "python": "3.12.14",
+    "numpy": "2.2.6",
+    "openblas_threads": 1
+  },
+  "original_sha": "4b555b0e3e88223b3556dab4430a2f75904f6a8f",
+  "baseline_sha": "8846feaccf94f6ad9dc37787c3c1f8fb63acdcca",
+  "candidate": "working tree changes described in retrieval-scale.md",
+  "workload": {
+    "passages": 200000,
+    "dimensions": 768,
+    "queries": 8,
+    "limit": 10,
+    "seed": 2026,
+    "persistent_sqlite_vector_cache": true,
+    "synthetic_encoding": true,
+    "preparation_outside_timing": true
+  },
+  "original": {
+    "python": "3.12.14",
+    "numpy": "2.2.6",
+    "passages": 200000,
+    "dimensions": 768,
+    "queries": 8,
+    "search_ms": [
+      43061.595,
+      36511.375,
+      37601.31
+    ],
+    "vectors_encoded": 200000,
+    "persistent_cache": true,
+    "top_ids": [
+      [
+        136137,
+        193169,
+        178186,
+        149670,
+        8540,
+        37056,
+        79105,
+        164653,
+        107621,
+        50589
+      ],
+      [
+        110148,
+        138664,
+        167180,
+        39583,
+        153647,
+        68099,
+        11067,
+        195696,
+        96615,
+        81632
+      ],
+      [
+        195230,
+        82616,
+        138198,
+        124665,
+        25584,
+        111132,
+        67633,
+        54100,
+        39117,
+        180247
+      ],
+      [
+        140081,
+        83049,
+        168597,
+        167147,
+        12484,
+        54533,
+        26017,
+        98032,
+        96582,
+        41000
+      ],
+      [
+        168087,
+        181620,
+        69006,
+        111055,
+        55473,
+        26957,
+        83989,
+        40490,
+        153104,
+        139571
+      ],
+      [
+        124064,
+        166113,
+        181096,
+        95548,
+        82015,
+        137597,
+        122614,
+        24983,
+        68482,
+        11450
+      ],
+      [
+        133515,
+        175564,
+        91466,
+        62950,
+        34434,
+        5918,
+        76483,
+        47967,
+        20901,
+        49417
+      ],
+      [
+        199224,
+        86610,
+        172158,
+        101593,
+        115126,
+        143642,
+        185691,
+        44561,
+        128659,
+        158625
+      ]
+    ],
+    "model": "deterministic normalized sine vectors, seed 2026"
+  },
+  "baseline": {
+    "python": "3.12.14",
+    "numpy": "2.2.6",
+    "passages": 200000,
+    "dimensions": 768,
+    "queries": 8,
+    "search_ms": [
+      3048.144,
+      3159.772,
+      3063.126,
+      3104.567,
+      3657.378
+    ],
+    "vectors_encoded": 200000,
+    "persistent_cache": true,
+    "top_ids": [
+      [
+        136137,
+        193169,
+        178186,
+        149670,
+        8540,
+        37056,
+        79105,
+        164653,
+        107621,
+        50589
+      ],
+      [
+        110148,
+        138664,
+        167180,
+        39583,
+        153647,
+        68099,
+        11067,
+        195696,
+        96615,
+        81632
+      ],
+      [
+        195230,
+        82616,
+        138198,
+        124665,
+        25584,
+        111132,
+        67633,
+        54100,
+        39117,
+        180247
+      ],
+      [
+        140081,
+        83049,
+        168597,
+        167147,
+        12484,
+        54533,
+        26017,
+        98032,
+        96582,
+        41000
+      ],
+      [
+        168087,
+        181620,
+        69006,
+        111055,
+        55473,
+        26957,
+        83989,
+        40490,
+        153104,
+        139571
+      ],
+      [
+        124064,
+        166113,
+        181096,
+        95548,
+        82015,
+        137597,
+        122614,
+        24983,
+        68482,
+        11450
+      ],
+      [
+        133515,
+        175564,
+        91466,
+        62950,
+        34434,
+        5918,
+        76483,
+        47967,
+        20901,
+        49417
+      ],
+      [
+        199224,
+        86610,
+        172158,
+        101593,
+        115126,
+        143642,
+        185691,
+        44561,
+        128659,
+        158625
+      ]
+    ],
+    "model": "deterministic normalized sine vectors, seed 2026"
+  },
+  "candidate_measurement": {
+    "python": "3.12.14",
+    "numpy": "2.2.6",
+    "passages": 200000,
+    "dimensions": 768,
+    "queries": 8,
+    "search_ms": [
+      593.044,
+      573.884,
+      570.731,
+      559.885,
+      732.219
+    ],
+    "vectors_encoded": 200000,
+    "persistent_cache": true,
+    "top_ids": [
+      [
+        136137,
+        193169,
+        178186,
+        149670,
+        8540,
+        37056,
+        79105,
+        164653,
+        107621,
+        50589
+      ],
+      [
+        110148,
+        138664,
+        167180,
+        39583,
+        153647,
+        68099,
+        11067,
+        195696,
+        96615,
+        81632
+      ],
+      [
+        195230,
+        82616,
+        138198,
+        124665,
+        25584,
+        111132,
+        67633,
+        54100,
+        39117,
+        180247
+      ],
+      [
+        140081,
+        83049,
+        168597,
+        167147,
+        12484,
+        54533,
+        26017,
+        98032,
+        96582,
+        41000
+      ],
+      [
+        168087,
+        181620,
+        69006,
+        111055,
+        55473,
+        26957,
+        83989,
+        40490,
+        153104,
+        139571
+      ],
+      [
+        124064,
+        166113,
+        181096,
+        95548,
+        82015,
+        137597,
+        122614,
+        24983,
+        68482,
+        11450
+      ],
+      [
+        133515,
+        175564,
+        91466,
+        62950,
+        34434,
+        5918,
+        76483,
+        47967,
+        20901,
+        49417
+      ],
+      [
+        199224,
+        86610,
+        172158,
+        101593,
+        115126,
+        143642,
+        185691,
+        44561,
+        128659,
+        158625
+      ]
+    ],
+    "model": "deterministic normalized sine vectors, seed 2026"
+  },
+  "medians_ms": {
+    "original": 37601.31,
+    "baseline": 3104.567,
+    "candidate": 573.884
+  },
+  "identical_top10_ids": true,
+  "incremental_speedup": 5.409746568993037,
+  "original_speedup": 65.52074983794634,
+  "limitations": [
+    "Synthetic local vector-search workload, not official answer-quality or generation latency.",
+    "Each revision measured sequentially in a shared workspace; unrelated work may affect latency.",
+    "Prior original-profile median22,527.588ms was lower than this session37,601.310ms; timing variability is not additional architectural improvement.",
+    "Mapped pages can exceed128MiB resident memory through operating system page cache.",
+    "Disk stores an additional copy of compact vectors plus48bytes metadata per row; exact scoring remains linear."
+  ]
+}

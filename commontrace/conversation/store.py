@@ -178,6 +178,13 @@ class Turn:
     def annotated(self) -> str:
         return timeparse.annotate(self.text, list(self.dates))
 
+    def evidence_hash(self) -> str:
+        """Stable source identity, including content when SQLite recycles a turn id."""
+        evidence = [self.id, self.session, self.idx, _iso(self.at), self.speaker,
+                    self.role, self.text, self.ref,
+                    [[g.start, g.end, g.label, g.lo.isoformat(), g.hi.isoformat()] for g in self.dates]]
+        return hashlib.sha256(json.dumps(evidence, ensure_ascii=False).encode("utf-8")).hexdigest()
+
 
 def _iso(moment: dt.datetime | None) -> str | None:
     return moment.isoformat(timespec="minutes") if moment else None
@@ -498,23 +505,47 @@ class Store:
 
     def delete_session(self, session: str) -> int:
         with self._lock, write_txn(self.db):
+            chains = self._chains_for_turns("t.session=?", (session,))
             ids = [r[0] for r in self.db.execute(
                 "SELECT u.id FROM units u JOIN turns t ON t.id = u.turn WHERE t.session=?", (session,))]
             if FTS5:
                 self.db.executemany("DELETE FROM units_fts WHERE rowid=?", [(i,) for i in ids])
             n = self.db.execute("DELETE FROM turns WHERE session=?", (session,)).rowcount
             self.db.execute("DELETE FROM sessions WHERE id=?", (session,))
-            self._reinstate()
+            self.db.execute("DELETE FROM meta WHERE key=?", (f"extracted:{session}",))
+            self._reinstate(chains)
         self._turn_cache.clear()
         return n
 
-    def _reinstate(self) -> None:
-        """Rebuild belief chains after deletion or migration, by owner and valid time."""
+    def _chains_for_turns(self, where: str, params: Iterable) -> list[tuple[str, str]]:
+        """Beliefs losing any premise, including a source other than their anchor."""
+        return [tuple(r) for r in self.db.execute(
+            "SELECT DISTINCT f.owner, f.slot FROM fact_sources s JOIN facts f ON f.id=s.fact "
+            "WHERE f.slot IS NOT NULL AND s.turn IN (SELECT id FROM turns t WHERE "
+            + where + ")", params)]  # nosec B608 - internal bound predicates
+
+    def _reinstate(self, chains: Iterable[tuple[str, str]] | None = None) -> None:
+        """Repair affected chronological beliefs; migration rebuilds every chain.
+
+        A deleted message invalidates its derived facts, but does not change an
+        unrelated owner's history. Restricting repair also avoids writing every
+        fact (and growing the WAL) when a retention job deletes a small session.
+        """
+        scope, params = "", ()
+        if chains is not None:
+            pairs = list(dict.fromkeys(chains))
+            if not pairs:
+                return
+            scope = ("WITH scope AS (SELECT json_extract(value, '$[0]') AS owner, "
+                     "json_extract(value, '$[1]') AS slot FROM json_each(?)) ")
+            params = (json.dumps(pairs),)
+        join = " JOIN scope ON scope.owner=f.owner AND scope.slot=f.slot" if scope else ""
         rows = self.db.execute(
-            "SELECT f.id, LEAD(f.id) OVER (PARTITION BY f.slot, f.owner "
+            scope + "SELECT f.id, LEAD(f.id) OVER (PARTITION BY f.slot, f.owner "  # nosec B608 - fixed scope query
             "ORDER BY COALESCE(f.at, ''), f.id) AS successor FROM facts f "
-            "JOIN turns t ON t.id=f.turn WHERE f.slot IS NOT NULL").fetchall()
-        self.db.executemany("UPDATE facts SET superseded_by=? WHERE id=?", [(r[1], r[0]) for r in rows])
+            "JOIN turns t ON t.id=f.turn" + join + " WHERE f.slot IS NOT NULL", params).fetchall()
+        self.db.executemany("UPDATE facts SET superseded_by=? WHERE id=? AND superseded_by IS NOT ?",
+                            [(r[1], r[0], r[1]) for r in rows])
 
     def _insert_fact(self, turn: int, kind: str, subject: str, statement: str, at: str | None,
                      slot: str | None, source: str, owner: str | None = None) -> int:
@@ -545,14 +576,28 @@ class Store:
         return fid
 
     def add_memories(self, session: str, memories: Iterable[Mapping], *, source: str,
-                     extracted_through: int | None = None) -> int:
+                     extracted_through: int | None = None,
+                     expected_sources: Mapping[int, str] | None = None) -> int:
         """Store derived memories with optional owner and exact source_turn_ids.
 
         Omitted sources default to the latest user turn. Deleting any supporting
         message also deletes the derived memory, retaining no unsupported fact.
+        Model extraction can supply expected_sources to validate the exact read
+        evidence before publishing either derived memories or its checkpoint.
         """
         added = 0
         with self._lock, write_txn(self.db):
+            if expected_sources is not None:
+                if not isinstance(expected_sources, Mapping) or not expected_sources or any(
+                        not isinstance(tid, int) or isinstance(tid, bool) or not isinstance(proof, str)
+                        for tid, proof in expected_sources.items()):
+                    raise ConversationError("expected_sources must map turn ids to evidence hashes")
+                rows = self.db.execute(
+                    "SELECT * FROM turns WHERE session=? AND id IN (SELECT value FROM json_each(?))",
+                    (session, json.dumps(list(expected_sources)))).fetchall()
+                if len(rows) != len(expected_sources) or any(
+                        self._row_turn(r).evidence_hash() != expected_sources[r["id"]] for r in rows):
+                    raise ConversationError("source evidence changed during extraction; retry")
             if extracted_through is not None:
                 checkpoint = f"extracted:{session}"
                 done = self.get_meta(checkpoint)
@@ -609,10 +654,12 @@ class Store:
                                 (checkpoint, str(extracted_through)))
         return added
 
-    def set_summary(self, session: str, text: str, method: str) -> None:
+    def set_summary(self, session: str, text: str, method: str, *, expected_revision=None) -> None:
         text, _ = memory_guard.redact_secrets(text)
         text, _ = memory_guard.redact_pii(text)
         with self._lock, write_txn(self.db):
+            if expected_revision is not None and self.unit_stamp() != expected_revision:
+                raise ConversationError("session evidence changed during summarization; retry")
             n = self.db.execute("SELECT COUNT(*) FROM turns WHERE session=?", (session,)).fetchone()[0]
             if not n:
                 raise ConversationError(f"no session {session!r} in space {self.space!r}")
@@ -640,13 +687,26 @@ class Store:
             return 0
         where = " OR ".join(clauses)
         with self._lock, write_txn(self.db):
+            chains = self._chains_for_turns("(" + where + ")", args)
+            affected_sessions = [r[0] for r in self.db.execute(
+                "SELECT DISTINCT session FROM turns WHERE " + where, args)]  # nosec B608 - fixed clauses
             ids = [r[0] for r in self.db.execute(
                 f"SELECT u.id FROM units u JOIN turns t ON t.id = u.turn WHERE {where}", args)]  # nosec B608
             if FTS5:
                 self.db.executemany("DELETE FROM units_fts WHERE rowid=?", [(i,) for i in ids])
             n = self.db.execute(f"DELETE FROM turns WHERE {where}", args).rowcount  # nosec B608
+            self.db.execute("DELETE FROM meta WHERE key IN (SELECT 'extracted:' || id FROM sessions "
+                            "WHERE id NOT IN (SELECT DISTINCT session FROM turns))")
+            # Purging a session's tail allows later appends to reuse its turn
+            # indices. Rewind only past the surviving high-water mark, so the
+            # next extraction cannot skip those newly appended messages.
+            self.db.executemany(
+                "UPDATE meta SET value=CAST(MIN(CAST(value AS INTEGER), "
+                "(SELECT MAX(idx) FROM turns WHERE session=?)) AS TEXT) WHERE key=? "
+                "AND CAST(value AS INTEGER)>(SELECT MAX(idx) FROM turns WHERE session=?)",
+                [(session, f"extracted:{session}", session) for session in affected_sessions])
             self.db.execute("DELETE FROM sessions WHERE id NOT IN (SELECT DISTINCT session FROM turns)")
-            self._reinstate()
+            self._reinstate(chains)
         self._turn_cache.clear()
         return n
 
@@ -931,8 +991,20 @@ class Store:
         rows = self.db.execute(query, (limit,)).fetchall()
         return [dict(r) for r in rows]
 
-    def session_turns(self, session: str) -> list[Turn]:
-        rows = self.db.execute("SELECT * FROM turns WHERE session=? ORDER BY idx", (session,)).fetchall()
+    def session_turns(self, session: str, *, after_idx: int = -1,
+                      through_idx: int | None = None, limit: int | None = None) -> list[Turn]:
+        """Ordered source messages, optionally a bounded checkpoint batch."""
+        query, params = "SELECT * FROM turns WHERE session=? AND idx>?", [session, after_idx]
+        if through_idx is not None:
+            query += " AND idx<=?"
+            params.append(through_idx)
+        query += " ORDER BY idx"
+        if limit is not None:
+            if limit < 0:
+                raise ValueError("turn limit must be non-negative")
+            query += " LIMIT ?"
+            params.append(limit)
+        rows = self.db.execute(query, params).fetchall()
         return [self._row_turn(r) for r in rows]
 
     def allowed(self, *, sessions: Iterable[str] = (), speakers: Iterable[str] = (), since=None, until=None,

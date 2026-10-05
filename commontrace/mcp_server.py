@@ -87,6 +87,7 @@ import re
 import threading
 import time
 import uuid
+from collections.abc import Mapping
 from typing import Any
 
 from commontrace import (
@@ -154,6 +155,29 @@ def _err(message: str, **extra: Any) -> dict:
     exception escaping into the MCP framework is not.
     """
     return {"ok": False, "error": message, **extra}
+
+
+async def _progress(ctx, value: int, message: str) -> None:
+    """Opt-in MCP progress using the SDK's request-correlated transport.
+
+    No response, memory text or exception detail is carried in these messages.
+    Direct in-process calls have no request context and retain their old result.
+    Progress delivery is optional; it must not turn a successful write into a
+    failed tool result. Cancellation still propagates normally.
+    """
+    if ctx is None:
+        return
+    try:
+        meta = ctx.request_context.meta
+        if isinstance(meta, Mapping):
+            token = meta.get("progress_token", meta.get("progressToken"))
+        else:
+            token = getattr(meta, "progressToken", getattr(meta, "progress_token", None))
+        if isinstance(token, bool) or not isinstance(token, (str, int)):
+            return
+        await ctx.report_progress(value, total=1, message=message)
+    except Exception:  # noqa: BLE001 - an optional notification cannot change a tool result
+        logger.debug("MCP progress notification unavailable")
 
 
 @contextlib.contextmanager
@@ -433,6 +457,8 @@ def _unsafe_write(what: str, fields: dict) -> dict | None:
 
 def build_server(root: str, *, allow_approval: bool = True):
     """Build the MCP server for the store at `root`. See module docstring."""
+    import inspect
+
     from commontrace import __version__
 
     instructions = (
@@ -446,6 +472,7 @@ def build_server(root: str, *, allow_approval: bool = True):
     )
     try:
         from mcp.server.mcpserver import MCPServer
+        MCPContext = getattr(importlib.import_module("mcp.server.mcpserver"), "Context", None)
         mcp = MCPServer(
             name="commontrace-local",
             version=__version__,
@@ -454,6 +481,7 @@ def build_server(root: str, *, allow_approval: bool = True):
     except (ModuleNotFoundError, ImportError):
         try:
             from mcp.server.fastmcp import FastMCP
+            MCPContext = getattr(importlib.import_module("mcp.server.fastmcp"), "Context", None)
             mcp = FastMCP(
                 name="commontrace-local",
                 instructions=instructions,
@@ -470,7 +498,25 @@ def build_server(root: str, *, allow_approval: bool = True):
 
     def _traced_tool(*args, **kwargs):
         decorate = _register_tool(*args, **kwargs)
-        return lambda func: decorate(telemetry.wrap_tool(func))
+
+        def register(func):
+            # Resolve the optional SDK's Context class only while constructing
+            # the server. Its annotation tells the SDK to inject request state
+            # and omit ctx from the public tool argument schema.
+            if "ctx" in func.__annotations__:
+                if MCPContext is None:
+                    # Minimal/older server adapters can register the existing
+                    # tools without exposing request context. Keep progress
+                    # disabled and hide the optional internal argument there.
+                    wrapped = telemetry.wrap_tool(func)
+                    signature = inspect.signature(func)
+                    wrapped.__signature__ = signature.replace(
+                        parameters=[p for name, p in signature.parameters.items() if name != "ctx"])
+                    return decorate(wrapped)
+                func.__annotations__["ctx"] = MCPContext
+            return decorate(telemetry.wrap_tool(func))
+
+        return register
 
     mcp.tool = _traced_tool
 
@@ -1528,7 +1574,7 @@ def build_server(root: str, *, allow_approval: bool = True):
             return _err(f"could not search archival memory: {type(exc).__name__}: {exc}")
 
     @mcp.tool()
-    async def conversation_search(question: str, space: str = "", budget: int = 1500) -> dict:
+    async def conversation_search(question: str, space: str = "", budget: int = 1500, ctx: Any = None) -> dict:
         """Search past conversation turns for what answers `question`.
 
         Without `space`, every conversation space is searched in parallel and
@@ -1581,11 +1627,13 @@ def build_server(root: str, *, allow_approval: bool = True):
                              "use conversation_recall for full per-space retrieval.")}
 
         try:
+            await _progress(ctx, 0, "Searching conversation memory")
             out = await asyncio.to_thread(_run)
         except ConversationError as exc:
             return _err(str(exc))
         if "error" in out:
             return _err(out["error"])
+        await _progress(ctx, 1, "Conversation search complete")
         return _ok(**out)
 
     @mcp.tool()
@@ -1710,7 +1758,8 @@ def build_server(root: str, *, allow_approval: bool = True):
             return _err(f"could not render the knowledge graph: {type(exc).__name__}: {exc}")
 
     @mcp.tool()
-    async def conversation_add(space: str, session: str, messages: list[dict], session_at: str = "") -> dict:
+    async def conversation_add(space: str, session: str, messages: list[dict], session_at: str = "",
+                               ctx: Any = None) -> dict:
         """Remember messages from a conversation, in order, under a space (one user, agent or thread).
 
         Each message is {"speaker" or "role", "text" or "content", optional "at" (when it
@@ -1722,16 +1771,22 @@ def build_server(root: str, *, allow_approval: bool = True):
 
         if not isinstance(messages, list) or not all(isinstance(m, dict) for m in messages):
             return _err("messages must be a list of objects with text (or content)")
-        try:
+        def _run():
             with Store(root, space) as store:
-                return _ok(**store.add(session, messages, session_at=session_at or None))
+                return store.add(session, messages, session_at=session_at or None)
+
+        try:
+            await _progress(ctx, 0, "Storing conversation messages")
+            out = await asyncio.to_thread(_run)
         except (ConversationError, OSError) as exc:
             return _err(str(exc))
+        await _progress(ctx, 1, "Conversation messages stored")
+        return _ok(**out)
 
     @mcp.tool()
     async def conversation_recall(space: str, question: str, budget: int = 1500, now: str = "",
                                   sessions: list[str] | None = None, speakers: list[str] | None = None,
-                                  since: str = "", until: str = "") -> dict:
+                                  since: str = "", until: str = "", ctx: Any = None) -> dict:
         """What was said that answers `question`: the matching turns with their neighbours,
         grouped by session with dates, within `budget` tokens, plus what the user has said
         about themselves when it bears on the question. Pass `now` when the question is
@@ -1754,13 +1809,17 @@ def build_server(root: str, *, allow_approval: bool = True):
                 return recall(store, question, now=now or None, options=opts).as_dict()
 
         try:
-            return _ok(**await asyncio.to_thread(_run))
+            await _progress(ctx, 0, "Retrieving conversation evidence")
+            out = await asyncio.to_thread(_run)
         except ConversationError as exc:
             return _err(str(exc))
+        await _progress(ctx, 1, "Conversation retrieval complete")
+        return _ok(**out)
 
     @mcp.tool()
     async def memory_recall(question: str, budget: int = 1500, agent: str = "", as_of: str = "",
-                            channels: list[str] | None = None, spaces: list[str] | None = None) -> dict:
+                            channels: list[str] | None = None, spaces: list[str] | None = None,
+                            ctx: Any = None) -> dict:
         """One context from every kind of memory: approved lessons, atomic facts, graph
         relations around the entities `question` names, and conversation spaces, fused,
         de-duplicated and packed into `budget` tokens. `as_of` reads every channel as it
@@ -1775,9 +1834,12 @@ def build_server(root: str, *, allow_approval: bool = True):
                                      spaces=spaces).to_dict()
 
         try:
-            return _ok(**await asyncio.to_thread(_run))
+            await _progress(ctx, 0, "Retrieving memory evidence")
+            out = await asyncio.to_thread(_run)
         except ValueError as exc:
             return _err(str(exc))
+        await _progress(ctx, 1, "Memory retrieval complete")
+        return _ok(**out)
 
     @mcp.tool()
     async def conversation_profile(space: str, history: bool = False) -> dict:
@@ -1815,18 +1877,24 @@ def build_server(root: str, *, allow_approval: bool = True):
         return _ok(space=space, deleted=deleted)
 
     @mcp.tool()
-    async def conversation_summarize(space: str, session: str = "") -> dict:
+    async def conversation_summarize(space: str, session: str = "", ctx: Any = None) -> dict:
         """Write an extractive summary (the most central dated sentences) for each session
         of a space, or one `session`; recall shows it under the session header.
         """
         from commontrace.conversation import ConversationError, Store
         from commontrace.conversation.summary import summarize
 
-        try:
+        def _run():
             with Store(root, space, create=False) as store:
-                return _ok(**summarize(store, [session] if session else None))
+                return summarize(store, [session] if session else None)
+
+        try:
+            await _progress(ctx, 0, "Summarizing conversation sessions")
+            out = await asyncio.to_thread(_run)
         except ConversationError as exc:
             return _err(str(exc))
+        await _progress(ctx, 1, "Conversation summaries complete")
+        return _ok(**out)
 
     @mcp.tool()
     async def graph_timeline(entity: str) -> dict:
@@ -2307,14 +2375,17 @@ def build_server(root: str, *, allow_approval: bool = True):
 
     if hasattr(mcp, "call_tool"):
         _orig_call_tool = mcp.call_tool
+        _accepts_context = "context" in inspect.signature(_orig_call_tool).parameters
 
         async def _call_tool_compat(name: str, arguments: dict | None = None,
                                     *args: Any, **kwargs: Any):
-            # Newer MCP SDKs call call_tool(name, arguments, context) while
-            # older ones pass (name, arguments). Accept-and-drop the extras:
-            # this shim only reshapes the result, so the context is unused,
-            # and the underlying call stays version-proof in both directions.
-            res = await _orig_call_tool(name, arguments or {})
+            # SDK v2 passes a request-scoped Context; forwarding it preserves
+            # progress correlation. Older SDKs resolve context internally.
+            if _accepts_context:
+                ctx = args[0] if args else kwargs.get("context")
+                res = await _orig_call_tool(name, arguments or {}, context=ctx)
+            else:
+                res = await _orig_call_tool(name, arguments or {})
             if isinstance(res, list):
                 class _ResultCompat:
                     def __init__(self, content):

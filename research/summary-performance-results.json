@@ -1,0 +1,263 @@
+{
+  "baseline_sha": "8846feaccf94f6ad9dc37787c3c1f8fb63acdcca",
+  "candidate_summary_sha256": "e8e6684d6de9e5dc56295069a65a61d12a71d2659f4997e695740443ad9c0f31",
+  "environment": {
+    "python": "3.12.14",
+    "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+    "sqlite": "3.53.1",
+    "cpu_quota": "200000 100000"
+  },
+  "before": {
+    "turns": 10000,
+    "runs": 5,
+    "measurements": {
+      "unchanged": {
+        "samples": [
+          {
+            "ms": 84.57850299964775,
+            "hydrated_turns": 10000,
+            "result": {
+              "space": "summary-profile",
+              "summarized": 0,
+              "unchanged": 1,
+              "method": "extractive"
+            }
+          },
+          {
+            "ms": 71.40953299676767,
+            "hydrated_turns": 10000,
+            "result": {
+              "space": "summary-profile",
+              "summarized": 0,
+              "unchanged": 1,
+              "method": "extractive"
+            }
+          },
+          {
+            "ms": 101.1581219972868,
+            "hydrated_turns": 10000,
+            "result": {
+              "space": "summary-profile",
+              "summarized": 0,
+              "unchanged": 1,
+              "method": "extractive"
+            }
+          },
+          {
+            "ms": 64.22361099976115,
+            "hydrated_turns": 10000,
+            "result": {
+              "space": "summary-profile",
+              "summarized": 0,
+              "unchanged": 1,
+              "method": "extractive"
+            }
+          },
+          {
+            "ms": 64.93536699781544,
+            "hydrated_turns": 10000,
+            "result": {
+              "space": "summary-profile",
+              "summarized": 0,
+              "unchanged": 1,
+              "method": "extractive"
+            }
+          }
+        ],
+        "median_ms": 71.40953299676767,
+        "separate_peak_python_bytes": 15757879,
+        "peak_run_hydrated_turns": 10000
+      },
+      "forced_model_prompt": {
+        "samples": [
+          {
+            "ms": 103.14778400061186,
+            "hydrated_turns": 10000,
+            "result": {
+              "space": "summary-profile",
+              "summarized": 1,
+              "unchanged": 0,
+              "method": "model"
+            }
+          },
+          {
+            "ms": 84.1983270001947,
+            "hydrated_turns": 10000,
+            "result": {
+              "space": "summary-profile",
+              "summarized": 1,
+              "unchanged": 0,
+              "method": "model"
+            }
+          },
+          {
+            "ms": 59.0863299985358,
+            "hydrated_turns": 10000,
+            "result": {
+              "space": "summary-profile",
+              "summarized": 1,
+              "unchanged": 0,
+              "method": "model"
+            }
+          },
+          {
+            "ms": 77.43321200177888,
+            "hydrated_turns": 10000,
+            "result": {
+              "space": "summary-profile",
+              "summarized": 1,
+              "unchanged": 0,
+              "method": "model"
+            }
+          },
+          {
+            "ms": 90.24752899858868,
+            "hydrated_turns": 10000,
+            "result": {
+              "space": "summary-profile",
+              "summarized": 1,
+              "unchanged": 0,
+              "method": "model"
+            }
+          }
+        ],
+        "median_ms": 84.1983270001947,
+        "separate_peak_python_bytes": 32629672,
+        "peak_run_hydrated_turns": 10000
+      }
+    },
+    "model_prompt_sha256": [
+      "b3de1c40bbbe4b6f73b9c71eba7faaab1e504a099d049cabb7105d3fb4163f36"
+    ],
+    "limits": "Measures summary orchestration and prompt construction; no model inference. Python allocation peak is measured in separate runs, not RSS."
+  },
+  "after": {
+    "turns": 10000,
+    "runs": 5,
+    "measurements": {
+      "unchanged": {
+        "samples": [
+          {
+            "ms": 0.6778289971407503,
+            "hydrated_turns": 0,
+            "result": {
+              "space": "summary-profile",
+              "summarized": 0,
+              "unchanged": 1,
+              "method": "extractive"
+            }
+          },
+          {
+            "ms": 0.4962069979228545,
+            "hydrated_turns": 0,
+            "result": {
+              "space": "summary-profile",
+              "summarized": 0,
+              "unchanged": 1,
+              "method": "extractive"
+            }
+          },
+          {
+            "ms": 0.5089349979243707,
+            "hydrated_turns": 0,
+            "result": {
+              "space": "summary-profile",
+              "summarized": 0,
+              "unchanged": 1,
+              "method": "extractive"
+            }
+          },
+          {
+            "ms": 0.5483649983943906,
+            "hydrated_turns": 0,
+            "result": {
+              "space": "summary-profile",
+              "summarized": 0,
+              "unchanged": 1,
+              "method": "extractive"
+            }
+          },
+          {
+            "ms": 0.49591599963605404,
+            "hydrated_turns": 0,
+            "result": {
+              "space": "summary-profile",
+              "summarized": 0,
+              "unchanged": 1,
+              "method": "extractive"
+            }
+          }
+        ],
+        "median_ms": 0.5089349979243707,
+        "separate_peak_python_bytes": 879,
+        "peak_run_hydrated_turns": 0
+      },
+      "forced_model_prompt": {
+        "samples": [
+          {
+            "ms": 15.805621002073167,
+            "hydrated_turns": 32,
+            "result": {
+              "space": "summary-profile",
+              "summarized": 1,
+              "unchanged": 0,
+              "method": "model"
+            }
+          },
+          {
+            "ms": 1.3430289982352406,
+            "hydrated_turns": 32,
+            "result": {
+              "space": "summary-profile",
+              "summarized": 1,
+              "unchanged": 0,
+              "method": "model"
+            }
+          },
+          {
+            "ms": 1.349759997538058,
+            "hydrated_turns": 32,
+            "result": {
+              "space": "summary-profile",
+              "summarized": 1,
+              "unchanged": 0,
+              "method": "model"
+            }
+          },
+          {
+            "ms": 1.3928649968875106,
+            "hydrated_turns": 32,
+            "result": {
+              "space": "summary-profile",
+              "summarized": 1,
+              "unchanged": 0,
+              "method": "model"
+            }
+          },
+          {
+            "ms": 1.3400059979176149,
+            "hydrated_turns": 32,
+            "result": {
+              "space": "summary-profile",
+              "summarized": 1,
+              "unchanged": 0,
+              "method": "model"
+            }
+          }
+        ],
+        "median_ms": 1.349759997538058,
+        "separate_peak_python_bytes": 121691,
+        "peak_run_hydrated_turns": 32
+      }
+    },
+    "model_prompt_sha256": [
+      "b3de1c40bbbe4b6f73b9c71eba7faaab1e504a099d049cabb7105d3fb4163f36"
+    ],
+    "limits": "Measures summary orchestration and prompt construction; no model inference. Python allocation peak is measured in separate runs, not RSS."
+  },
+  "speedups": {
+    "unchanged": 140.311696558505,
+    "forced_model_prompt": 62.380221042089836
+  },
+  "limitations": "Sequential commands on shared two-CPU environment; completion stub measures orchestration and prompt construction, not model inference or answer quality. Allocation peaks are separately traced Python allocations, not RSS."
+}

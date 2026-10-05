@@ -520,6 +520,11 @@ def test_historical_query_pins_historical_belief_and_current_answer_instructions
 
 def test_dense_streaming_matches_cached_quantized_topk_and_embeds_only_eligible(tmp_path, monkeypatch):
     np = pytest.importorskip("numpy")
+    from commontrace.conversation import vector_index
+
+    # Exercise the bounded fallback when neither resident nor disk snapshots
+    # fit; generation-safe mmap reuse is covered independently.
+    monkeypatch.setattr(vector_index, "MAX_BYTES", 1)
 
     class FakeEmbedder:
         tag = "stream-test"

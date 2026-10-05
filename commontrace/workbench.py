@@ -2,8 +2,14 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import copy
+import hashlib
 import io
+import json
+import os
 import re
+import threading
+from collections import OrderedDict
 
 from commontrace import approval, draft_quality, frontmatter, lesson_io, paths, redundancy
 from commontrace.commands import lesson_cmd
@@ -12,6 +18,71 @@ MAX_BODY_CHARS = 20_000
 MAX_FIELD_CHARS = 2_000
 STATUSES = ("review", "active", "archived", "draft")
 
+# Full frontmatter and bodies are needed for review gates and provenance. The
+# retrieval cache intentionally projects those fields away, so keep this cache
+# independent and validate every entry against the source on each request.
+LESSON_CACHE_ENTRIES = 4096
+LESSON_CACHE_BYTES = 16 * 1024 * 1024
+_LESSON_CACHE: OrderedDict[str, tuple[tuple, dict, str, int]] = OrderedDict()
+_LESSON_CACHE_BYTES = 0
+_LESSON_CACHE_LOCK = threading.Lock()
+REVIEW_CACHE_ENTRIES = 512
+_REVIEW_CACHE: OrderedDict[tuple, dict] = OrderedDict()
+_REVIEW_CACHE_LOCK = threading.Lock()
+
+
+class _ActiveTexts(list):
+    """One content fingerprint for the scoped active corpus used by the gates."""
+
+    def __init__(self, rows):
+        super().__init__(rows)
+        self.fingerprint = hashlib.sha256(json.dumps(self, ensure_ascii=False).encode("utf-8")).digest()
+
+
+def _identity(st: os.stat_result) -> tuple:
+    return (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_ctime_ns, st.st_size)
+
+
+def _cached_lesson(path: str, stamp: tuple, *, isolated: bool = True) -> tuple[dict, str]:
+    global _LESSON_CACHE_BYTES
+
+    with _LESSON_CACHE_LOCK:
+        cached = _LESSON_CACHE.get(path)
+        if cached is not None and cached[0] == stamp:
+            _LESSON_CACHE.move_to_end(path)
+        else:
+            if cached is not None:
+                _LESSON_CACHE_BYTES -= _LESSON_CACHE.pop(path)[3]
+            cached = None
+    if cached is not None:
+        # Editing a lesson changes its frontmatter in place. Never expose the
+        # shared dictionary, including nested extraction/provenance fields.
+        return (copy.deepcopy(cached[1]) if isolated else cached[1]), cached[2]
+
+    fm, body = frontmatter.read(path)
+    try:
+        if _identity(os.stat(path)) != stamp:
+            return fm, body  # A concurrent writer changed it while we read.
+        size = len(body.encode("utf-8")) + len(json.dumps(fm, default=str).encode("utf-8"))
+    except (OSError, ValueError, TypeError):
+        return fm, body
+    if size > LESSON_CACHE_BYTES or LESSON_CACHE_ENTRIES < 1:
+        return fm, body
+    # Parsing happens outside the lock; unrelated warm requests are not blocked
+    # behind disk IO or YAML decoding. Revalidate before publishing the result.
+    stored = copy.deepcopy(fm)
+    with _LESSON_CACHE_LOCK:
+        if _identity(os.stat(path)) != stamp:
+            return fm, body
+        prior = _LESSON_CACHE.pop(path, None)
+        if prior is not None:
+            _LESSON_CACHE_BYTES -= prior[3]
+        _LESSON_CACHE[path] = (stamp, stored, body, size)
+        _LESSON_CACHE_BYTES += size
+        while len(_LESSON_CACHE) > LESSON_CACHE_ENTRIES or _LESSON_CACHE_BYTES > LESSON_CACHE_BYTES:
+            _LESSON_CACHE_BYTES -= _LESSON_CACHE.popitem(last=False)[1][3]
+    return fm, body
+
 
 class WorkbenchError(Exception):
     def __init__(self, status: int, code: str, message: str):
@@ -19,18 +90,27 @@ class WorkbenchError(Exception):
         self.status, self.code, self.message = status, code, message
 
 
-def _lessons(root: str) -> list[tuple[str, dict, str]]:
-    import os
-
+def _lessons(root: str, *, isolated: bool = True) -> list[tuple[str, dict, str]]:
     ldir = paths.lessons_dir(root)
     out = []
-    if not os.path.isdir(ldir):
+    try:
+        with os.scandir(ldir) as entries:
+            files = []
+            for entry in entries:
+                if not (entry.name.startswith("lesson_") and entry.name.endswith(".md")):
+                    continue
+                if entry.name == "lesson_template.md":
+                    continue
+                try:
+                    files.append((entry.name, entry.path, _identity(entry.stat())))
+                except OSError:
+                    continue
+            files.sort()
+    except OSError:
         return out
-    for name in sorted(os.listdir(ldir)):
-        if not (name.startswith("lesson_") and name.endswith(".md")) or name == "lesson_template.md":
-            continue
+    for name, path, stamp in files:
         try:
-            fm, body = frontmatter.read(os.path.join(ldir, name))
+            fm, body = _cached_lesson(os.path.abspath(path), stamp, isolated=isolated)
         except Exception:  # noqa: BLE001 - an unreadable lesson is skipped, not fatal to the queue
             continue
         out.append((str(fm.get("name") or name.removesuffix(".md")), fm, body))
@@ -48,28 +128,46 @@ def _scope_allowed(fm: dict, scope: str) -> bool:
 
 
 def _active_texts(rows, exclude: str) -> list[tuple[str, str]]:
-    return [(slug, redundancy.comparable_text(fm, body)) for slug, fm, body in rows
-            if str(fm.get("status")) == "active" and slug != exclude]
+    return _ActiveTexts((slug, redundancy.comparable_text(fm, body)) for slug, fm, body in rows
+                        if str(fm.get("status")) == "active" and slug != exclude)
 
 
 def _active_texts_once(rows) -> list[tuple[str, str]]:
     """Active texts, computed once per call (file reads happen once in `_lessons`)."""
-    comparable = {slug: redundancy.comparable_text(fm, body) for slug, fm, body in rows}
-    return [(slug, comparable[slug]) for slug, fm, _body in rows if str(fm.get("status")) == "active"]
+    return _ActiveTexts((slug, redundancy.comparable_text(fm, body)) for slug, fm, body in rows
+                        if str(fm.get("status")) == "active")
 
 
 def _checks(slug: str, fm: dict, body: str, active: list[tuple[str, str]]) -> dict:
+    # Only reusable gate diagnostics are memoized, never authorization or an
+    # approval decision. CLI approval still runs every production gate itself.
+    key = None
+    if isinstance(active, _ActiveTexts):
+        key = (slug, hashlib.sha256(repr(fm).encode("utf-8")).digest(),
+               hashlib.sha256(body.encode("utf-8")).digest(), active.fingerprint)
+        with _REVIEW_CACHE_LOCK:
+            cached = _REVIEW_CACHE.get(key)
+            if cached is not None:
+                _REVIEW_CACHE.move_to_end(key)
+                return copy.deepcopy(cached)
     failed = draft_quality.gate_failures(fm, body, active)
     near = redundancy.closest(redundancy.comparable_text(fm, body), active, threshold=0.3)
-    return {"failed": failed, "passes": not failed,
-            "nearest_active": {"slug": near.a, "similarity": round(near.similarity, 3)} if near else None}
+    result = {"failed": failed, "passes": not failed,
+              "nearest_active": {"slug": near.a, "similarity": round(near.similarity, 3)} if near else None}
+    if key is not None:
+        with _REVIEW_CACHE_LOCK:
+            _REVIEW_CACHE[key] = copy.deepcopy(result)
+            _REVIEW_CACHE.move_to_end(key)
+            while len(_REVIEW_CACHE) > REVIEW_CACHE_ENTRIES:
+                _REVIEW_CACHE.popitem(last=False)
+    return result
 
 
 def _summary(slug: str, fm: dict, body: str, active) -> dict:
     row = {"slug": slug, "status": str(fm.get("status", "")), "description": str(fm.get("description", ""))[:300],
-           "domain": str(fm.get("domain", "")), "importance": fm.get("importance"),
+           "domain": str(fm.get("domain", "")), "importance": copy.deepcopy(fm.get("importance")),
            "drafted_by_model": isinstance(fm.get("llm_draft"), dict),
-           "source_traces": len(fm.get("source_traces") or []), "revises": fm.get("revises") or None}
+           "source_traces": len(fm.get("source_traces") or []), "revises": copy.deepcopy(fm.get("revises")) or None}
     if row["status"] == "review":
         row["checks"] = _checks(slug, fm, body, active)
     return row
@@ -96,31 +194,38 @@ def count_lessons(root: str, status: str | None = None, scope: str = "") -> int:
     if status is not None and status not in STATUSES:
         raise WorkbenchError(400, "bad_request", f"status must be one of {', '.join(STATUSES)}")
     return sum(
-        1 for _slug, fm, _body in _lessons(root)
+        1 for _slug, fm, _body in _lessons(root, isolated=False)
         if (not status or str(fm.get("status")) == status) and _scope_allowed(fm, scope)
     )
 
 
 def list_lessons(root: str, status: str | None = None, limit: int | None = None,
                  offset: int = 0, scope: str = "") -> list[dict]:
+    return lesson_page(root, status, limit, offset, scope)[0]
+
+
+def lesson_page(root: str, status: str | None = None, limit: int | None = None,
+                offset: int = 0, scope: str = "") -> tuple[list[dict], int]:
+    """Return a page and its count from the same scoped source listing."""
     if status is not None and status not in STATUSES:
         raise WorkbenchError(400, "bad_request", f"status must be one of {', '.join(STATUSES)}")
     parsed_limit, parsed_offset = _parse_pagination(limit, offset)
-    rows = _lessons(root)
+    # These dictionaries remain internal read-only views; _summary copies every
+    # mutable value it returns. Detail and edit use isolated metadata instead.
+    rows = _lessons(root, isolated=False)
     scoped_rows = [row for row in rows if _scope_allowed(row[1], scope)]
-    # File reads happen once here; the active set is computed once and reused per item.
-    active_all = _active_texts_once(scoped_rows)
     filtered = [(slug, fm, body) for slug, fm, body in scoped_rows
                 if not status or str(fm.get("status")) == status]
     page = filtered if parsed_limit is None and not parsed_offset else filtered[
         parsed_offset:None if parsed_limit is None else parsed_offset + parsed_limit]
+    active_all = _active_texts_once(scoped_rows) if any(fm.get("status") == "review" for _, fm, _ in page) else []
     out = []
     for slug, fm, body in page:
         if str(fm.get("status")) == "review":
             out.append(_summary(slug, fm, body, active_all))
         else:
             out.append(_summary(slug, fm, body, []))
-    return out
+    return out, len(filtered)
 
 
 def _find(root: str, slug: str, scope: str = ""):

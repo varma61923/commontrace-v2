@@ -2887,80 +2887,84 @@ async def restore_kb_entry(
 URGENT_FEEDBACK_TAGS = ("security_concern",)
 
 
+def _kb_review_queue_statement(now: datetime) -> Select:
+    """Narrow live candidates; leave filtering and priority ordering in Postgres.
+
+    Security reports count regardless of voter standing, exactly as the original
+    human-review queue did. No trace bodies, signatures or ORM instances cross
+    the database boundary, including for the uncapped count.
+    """
+    flagged = (
+        select(Vote.trace_id, func.count().label("security_flags"))
+        .where(Vote.feedback_tag.in_(URGENT_FEEDBACK_TAGS))
+        .group_by(Vote.trace_id)
+        .subquery()
+    )
+    n_flags = func.coalesce(flagged.c.security_flags, 0)
+    disputed = and_(
+        Trace.commons_votes >= commons.MIN_VOTES_FOR_STANDING,
+        Trace.trust < commons.DISPUTED_TRUST_CEILING,
+    )
+    stale = Trace.commons_review_after <= now
+    priority = case((n_flags > 0, 0), (disputed, 1), (stale, 2), else_=3)
+    return (
+        select(
+            Trace.id, Trace.title, Trace.commons_hits, Trace.commons_votes,
+            Trace.trust, Trace.commons_review_after,
+            n_flags.label("security_flags"), priority.label("priority"),
+        )
+        .outerjoin(flagged, flagged.c.trace_id == Trace.id)
+        .where(*commons_visible(), or_(n_flags > 0, disputed, stale, Trace.commons_hits == 0))
+    )
+
+
+def _kb_review_queue_wire(row, now: datetime) -> dict:
+    standing = commons.entry_standing(
+        trust=row.trust, votes=row.commons_votes, review_after=row.commons_review_after, now=now
+    )
+    bucket = ("urgent", "disputed", "stale", "never_hit")[row.priority]
+    if bucket == "urgent":
+        why = f"{row.security_flags} security concern report(s)"
+    elif bucket == "disputed":
+        why = f"{row.commons_votes} votes, trust {row.trust:.2f}"
+    elif bucket == "stale":
+        why = f"review due {_iso(row.commons_review_after)}"
+    else:
+        why = "has never matched a real failure"
+    return {
+        "id": row.id, "title": row.title, "bucket": bucket, "why": why,
+        "standing": standing, "commons_hits": row.commons_hits,
+        "vote_count": row.commons_votes, "trust": row.trust, "security_flags": row.security_flags,
+    }
+
+
 async def kb_review_queue(session: AsyncSession, limit: int = 50) -> list[dict]:
     """Which Knowledge Base entries need a human, worst first."""
-    limit = _clamp_int(limit, 1, 500, 50)
-    queue = await _kb_review_queue_full(session)
-    return queue[:limit]
+    now = datetime.now(timezone.utc)
+    candidates = _kb_review_queue_statement(now).subquery()
+    rows = (await session.execute(
+        select(candidates)
+        .order_by(candidates.c.priority, candidates.c.commons_hits.desc(), candidates.c.id)
+        .limit(_clamp_int(limit, 1, 500, 50))
+    )).all()
+    return [_kb_review_queue_wire(row, now) for row in rows]
 
 
 async def count_kb_review_queue(session: AsyncSession) -> int:
-    return len(await _kb_review_queue_full(session))
+    candidates = _kb_review_queue_statement(datetime.now(timezone.utc)).subquery()
+    return int((await session.execute(select(func.count()).select_from(candidates))).scalar_one())
 
 
 async def kb_review_queue_and_total(session: AsyncSession, limit: int = 50) -> tuple[list[dict], int]:
-    limit = _clamp_int(limit, 1, 500, 50)
-    queue = await _kb_review_queue_full(session)
-    return queue[:limit], len(queue)
-
-
-async def _kb_review_queue_full(session: AsyncSession) -> list[dict]:
-    rows = (
-        await session.execute(
-            select(Trace).where(*commons_visible()).order_by(Trace.commons_hits.desc())
-        )
-    ).scalars().all()
-    if not rows:
-        return []
-
-    flagged = dict(
-        (
-            await session.execute(
-                select(Vote.trace_id, func.count())
-                .where(
-                    Vote.trace_id.in_([r.id for r in rows]),
-                    Vote.feedback_tag.in_(URGENT_FEEDBACK_TAGS),
-                )
-                .group_by(Vote.trace_id)
-            )
-        ).all()
-    )
-
+    """One statement snapshot supplies both the bounded page and the true total."""
     now = datetime.now(timezone.utc)
-    order = {"urgent": 0, "disputed": 1, "stale": 2, "never_hit": 3}
-    queue: list[dict] = []
-    for trace in rows:
-        standing = standing_of(trace, now)
-        n_flags = flagged.get(trace.id, 0)
-        if n_flags:
-            bucket, why = "urgent", f"{n_flags} security concern report(s)"
-        elif standing == commons.STANDING_DISPUTED:
-            bucket, why = (
-                "disputed",
-                f"{trace.commons_votes} votes, trust {trace.trust:.2f}",
-            )
-        elif standing == commons.STANDING_STALE:
-            bucket, why = "stale", f"review due {_iso(trace.commons_review_after)}"
-        elif trace.commons_hits == 0:
-            bucket, why = "never_hit", "has never matched a real failure"
-        else:
-            continue
-        queue.append(
-            {
-                "id": trace.id,
-                "title": trace.title,
-                "bucket": bucket,
-                "why": why,
-                "standing": standing,
-                "commons_hits": trace.commons_hits,
-                "vote_count": trace.commons_votes,
-                "trust": trace.trust,
-                "security_flags": n_flags,
-            }
-        )
-
-    queue.sort(key=lambda item: order[item["bucket"]])
-    return queue
+    candidates = _kb_review_queue_statement(now).subquery()
+    rows = (await session.execute(
+        select(candidates, func.count().over().label("total"))
+        .order_by(candidates.c.priority, candidates.c.commons_hits.desc(), candidates.c.id)
+        .limit(_clamp_int(limit, 1, 500, 50))
+    )).all()
+    return [_kb_review_queue_wire(row, now) for row in rows], int(rows[0].total) if rows else 0
 
 
 async def commons_overlap(

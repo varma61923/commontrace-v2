@@ -1034,16 +1034,8 @@ class Gateway:
 
         scope = self._request_scope()
 
-        def fetch(w):
-            if limit is None and not offset:
-                return w.list_lessons(self.root, status, scope=scope)
-            return w.list_lessons(self.root, status, limit=limit, offset=offset, scope=scope)
-
-        lessons = self._workbench(fetch)
-        if limit is None and not offset:
-            total = len(lessons)
-        else:
-            total = self._workbench(lambda w: w.count_lessons(self.root, status, scope=scope))
+        lessons, total = self._workbench(
+            lambda w: w.lesson_page(self.root, status, limit=limit, offset=offset, scope=scope))
         return {"lessons": lessons, "approval_enabled": self.allow_approval,
                 "total": total, "limit": limit, "offset": offset}
 

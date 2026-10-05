@@ -190,6 +190,7 @@ class _Index:
     hashes: list[str]
     turns: list[int]
     matrix: object
+    mapped: bool = False
 
 
 _INDEX: OrderedDict = OrderedDict()
@@ -268,8 +269,9 @@ def _search_many(store: _store.Store, embedder: Embedder, query_vecs, limit: int
     """Exact top-k over compact vectors, with bounded working memory.
 
     Persistent vectors already have float16 precision. Keep that representation
-    in RAM and convert only a scoring batch to float32. Oversized indexes stream
-    from SQLite; filtered cold queries embed only eligible passages.
+    in RAM and convert only a scoring batch to float32. Oversized indexes use
+    generation-validated mapped files, falling back to SQLite streaming where
+    persistence is unavailable. Filtered cold queries embed only eligible passages.
     """
     np = embedder.np
     if limit <= 0 or allowed == set():
@@ -280,6 +282,19 @@ def _search_many(store: _store.Store, embedder: Embedder, query_vecs, limit: int
         cached = _INDEX.get(key)
         if cached is not None:
             _INDEX.move_to_end(key)
+    if cached is None or cached.stamp != stamp:
+        from commontrace.conversation import vector_index
+
+        records = vector_index.load(store, embedder.tag, np, stamp[0], query_vecs.shape[1])
+        if records is not None:
+            cached = _Index(stamp, records["id"][1:], records["hash"][1:], records["turn"][1:],
+                            records["vector"][1:], mapped=True)
+            with _INDEX_LOCK:
+                current = _INDEX.get(key)
+                if current is None or int(current.stamp[0]) <= int(stamp[0]):
+                    while len(_INDEX) >= MAX_CACHED_SPACES:
+                        _INDEX.popitem(last=False)
+                    _INDEX[key] = cached
     if allowed is None and not _building and (cached is None or cached.stamp != stamp):
         # Build one matrix per space/model at a time. Waiters recheck the cache
         # under their own consistent source snapshot. Warm scoring stays parallel.
@@ -321,48 +336,77 @@ def _search_many(store: _store.Store, embedder: Embedder, query_vecs, limit: int
                     heapq.heapreplace(page, item)
 
     if cached is not None and cached.stamp == stamp:
-        for start in range(0, len(cached.ids), SCAN_BATCH):
-            end = min(start + SCAN_BATCH, len(cached.ids))
-            if allowed is None:
+        if allowed is None:
+            for start in range(0, len(cached.ids), SCAN_BATCH):
+                end = min(start + SCAN_BATCH, len(cached.ids))
                 # A contiguous view avoids copying the float16 corpus and
                 # constructing per-row eligibility/selection lists.
                 score(cached.ids[start:end], cached.matrix[start:end])
-                continue
-            positions = [i for i in range(start, end) if cached.turns[i] in allowed]
-            if positions:
-                score([cached.ids[i] for i in positions], cached.matrix[positions])
+        else:
+            # The indexed source lookup can find a small eligible scope without
+            # visiting every vector/turn. Resolve its sorted ids into the exact
+            # current snapshot; selection still happens before top-k scoring.
+            identifiers = np.asarray(cached.ids)
+            cursor = store.db.execute("SELECT id FROM units WHERE turn IN "
+                                      "(SELECT value FROM json_each(?)) ORDER BY id", (json.dumps(sorted(allowed)),))
+            while rows := cursor.fetchmany(SCAN_BATCH):
+                ids = np.array([row[0] for row in rows], dtype=np.int64)
+                positions = np.searchsorted(identifiers, ids)
+                score(ids, cached.matrix[positions])
     else:
         # Reuse unchanged content, never an id which SQLite may recycle.
-        known = {} if cached is None else dict(zip(cached.hashes, cached.matrix))
+        # A stale mapped generation may contain millions of rows. Reuse its
+        # vectors through the bounded persistent hash cache, rather than
+        # materializing a corpus-sized dictionary of NumPy row objects.
+        known = {} if cached is None or cached.mapped else {
+            h.decode("ascii") if isinstance(h, bytes) else h: v for h, v in zip(cached.hashes, cached.matrix)}
         count = store.db.execute("SELECT COUNT(*) FROM units").fetchone()[0]
         ids, hashes, turns, matrix = [], [], [], None
         cacheable = allowed is None
-        offset = 0
-        for batch in store.unit_batches(SCAN_BATCH, allowed=allowed):
-            missing = list(dict.fromkeys((h, body) for _u, _t, body, h in batch if h not in known))
-            fresh = dict(zip([h for h, _b in missing], embedder.vectors(missing) if missing else []))
-            vectors = np.stack([known[h] if h in known else fresh[h] for _u, _t, _b, h in batch]).astype(np.float16)
-            batch_ids = [u for u, _t, _b, _h in batch]
-            score(batch_ids, vectors)
-            if cacheable and matrix is None:
-                cacheable = count * vectors.shape[1] * np.dtype(np.float16).itemsize <= MAX_INDEX_BYTES
+        offset, builder, mapped = 0, None, None
+        try:
+            for batch in store.unit_batches(SCAN_BATCH, allowed=allowed):
+                missing = list(dict.fromkeys((h, body) for _u, _t, body, h in batch if h not in known))
+                fresh = dict(zip([h for h, _b in missing], embedder.vectors(missing) if missing else []))
+                vectors = np.stack([known[h] if h in known else fresh[h] for _u, _t, _b, h in batch]).astype(np.float16)
+                batch_ids = [u for u, _t, _b, _h in batch]
+                score(batch_ids, vectors)
+                if allowed is None and matrix is None and builder is None:
+                    cacheable = count * vectors.shape[1] * np.dtype(np.float16).itemsize <= MAX_INDEX_BYTES
+                    if cacheable:
+                        matrix = np.empty((count, vectors.shape[1]), dtype=np.float16)
+                    else:
+                        from commontrace.conversation import vector_index
+
+                        builder = vector_index.Build(store, embedder.tag, np, stamp[0], count, vectors.shape[1])
                 if cacheable:
-                    matrix = np.empty((count, vectors.shape[1]), dtype=np.float16)
-            if cacheable:
-                matrix[offset:offset + len(batch)] = vectors
+                    matrix[offset:offset + len(batch)] = vectors
+                    ids.extend(batch_ids)
+                    turns.extend(t for _u, t, _b, _h in batch)
+                    hashes.extend(h for _u, _t, _b, h in batch)
+                if builder is not None:
+                    builder.write(offset, batch, vectors)
                 offset += len(batch)
-                ids.extend(batch_ids)
-                turns.extend(t for _u, t, _b, _h in batch)
-                hashes.extend(h for _u, _t, _b, h in batch)
+            if builder is not None:
+                mapped = builder.publish()
+        finally:
+            if builder is not None:
+                builder.close()
         with _INDEX_LOCK:
             current = _INDEX.get(key)
             if store._units_identity and current is not None and int(current.stamp[0]) > int(stamp[0]):
                 # An older source snapshot must not replace a newer generation.
                 return results()
             _INDEX.pop(key, None)
-            if matrix is not None and cacheable:
+            if mapped is not None:
+                while len(_INDEX) >= MAX_CACHED_SPACES:
+                    _INDEX.popitem(last=False)
+                _INDEX[key] = _Index(stamp, mapped["id"][1:], mapped["hash"][1:], mapped["turn"][1:],
+                                    mapped["vector"][1:], mapped=True)
+            elif matrix is not None and cacheable:
                 while _INDEX and (len(_INDEX) >= MAX_CACHED_SPACES
-                                  or sum(v.matrix.nbytes for v in _INDEX.values()) + matrix.nbytes > MAX_INDEX_BYTES):
+                                  or sum(v.matrix.nbytes for v in _INDEX.values() if not v.mapped)
+                                  + matrix.nbytes > MAX_INDEX_BYTES):
                     _INDEX.popitem(last=False)
                 _INDEX[key] = _Index(stamp, ids, hashes, turns, matrix[:offset])
     return results()

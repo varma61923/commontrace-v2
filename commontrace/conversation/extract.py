@@ -65,13 +65,17 @@ def extract(store: Store, sessions: list[str] | None = None, *, complete=None) -
     targets = sessions or [s["id"] for s in store.sessions()]
     added = calls = refused = 0
     for session in targets:
-        turns = store.session_turns(session)
-        if not turns:
+        last = store.db.execute("SELECT MAX(idx) FROM turns WHERE session=?", (session,)).fetchone()[0]
+        if last is None:
             raise ConversationError(f"no session {session!r} in space {store.space!r}")
         done = int(store.get_meta(f"extracted:{session}") or -1)
-        todo = [t for t in turns if t.idx > done]
-        for start in range(0, len(todo), BATCH):
-            batch = todo[start:start + BATCH]
+        # Capture the upper checkpoint once. New writes during a model call are
+        # handled on the next extraction; each call reads only its source batch.
+        while done < last:
+            batch = store.session_turns(session, after_idx=done, through_idx=last, limit=BATCH)
+            if not batch:
+                break
+            expected_sources = {t.id: t.evidence_hash() for t in batch}
             observed = (batch[0].at or batch[-1].at)
             relevant = store.recall_facts(" ".join(t.text[:256] for t in batch), limit=KNOWN)
             known = "\n".join(f"- [{f['owner']}:{f['slot'] or '-'}] {f['statement']}"
@@ -97,5 +101,7 @@ def extract(store: Store, sessions: list[str] | None = None, *, complete=None) -
                 memories.append({**m, "source_turn_ids": source_ids,
                                  "owner": m.get("owner") or default_owner,
                                  "at": observed_at.isoformat(timespec="minutes") if observed_at else None})
-            added += store.add_memories(session, memories, source="model", extracted_through=batch[-1].idx)
+            added += store.add_memories(session, memories, source="model", extracted_through=batch[-1].idx,
+                                        expected_sources=expected_sources)
+            done = batch[-1].idx
     return {"space": store.space, "memories": added, "calls": calls, "refused": refused}
