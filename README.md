@@ -1106,6 +1106,12 @@ Concurrent requests share encoding and index construction within one process.
 The attention extra is required; inference stays on the host. Model weights may
 download once when absent from the local cache.
 
+Compound questions encode and search their facets in bounded batches, preserving
+an independent ranking for each facet before hybrid fusion. A shared query-vector
+cache reuses recent encodings for up to five minutes, capped at 512 entries and
+8 MiB of vector data. Each recall reads the current filtered memory snapshot;
+updates, deletion, session restrictions and historical cutoffs still apply.
+
 Exports include exact extracted and manual memories, their source-message
 references, historical belief changes, summary metadata, and extraction progress.
 Import remaps references to destination message ids and commits the complete

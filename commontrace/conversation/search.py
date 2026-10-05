@@ -534,7 +534,6 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
     moment = moment or store.latest_moment()
     window = timeparse.question_window(question, moment)
     embedder = _embedder(store, opts.embedder)
-    qvec_cache: dict[str, object] = {}
     until = opts.until
     if now is not None and moment is not None:
         parsed_until = timeparse.parse_moment(until) if until else moment
@@ -544,17 +543,23 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
     allowed = store.allowed(sessions=opts.sessions, speakers=opts.speakers, since=opts.since,
                             until=until, now=moment if now is not None else None)
     pool = opts.pool
+    queries = list(dict.fromkeys(subqueries(question) + [q.strip() for q in extra_queries if q and q.strip()]))
+    dense_rankings: dict[str, list[int]] = {}
+    if embedder is not None and allowed != set() and pool > 0:
+        from commontrace.conversation import embed
+
+        # Encode related facets together and scan each bounded query batch once.
+        for start in range(0, len(queries), embed.QUERY_BATCH):
+            batch = queries[start:start + embed.QUERY_BATCH]
+            vectors = embedder.encode(batch, query=True)
+            pages = embed.search_many(store, embedder, vectors, pool, allowed=allowed)
+            dense_rankings.update((q, [u for u, _s in hits]) for q, hits in zip(batch, pages))
 
     def arm_rankings(query: str) -> list[tuple[list[int], float]]:
         lexical = [u for u, _s in store.lexical(query, pool, allowed=allowed)]
         if embedder is None:
             return [(lexical, 1.0)]
-        from commontrace.conversation import embed
-
-        if query not in qvec_cache:
-            qvec_cache[query] = embedder.encode([query], query=True)[0]
-        dense = [u for u, _s in embed.search(store, embedder, qvec_cache[query], pool, allowed=allowed)]
-        return [(dense, 1.0), (lexical, opts.lexical_weight)]
+        return [(dense_rankings.get(query, []), 1.0), (lexical, opts.lexical_weight)]
 
     def turn_scores(queries: list[str]) -> dict[int, float]:
         by_turn: dict[int, float] = {}
@@ -569,7 +574,6 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
                 by_turn[turn] = max(by_turn.get(turn, 0.0), score)
         return by_turn
 
-    queries = list(dict.fromkeys(subqueries(question) + [q.strip() for q in extra_queries if q and q.strip()]))
     scores = turn_scores(queries)
     explain: dict = {"subqueries": queries}
     if allowed is not None:

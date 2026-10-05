@@ -161,6 +161,14 @@ local workload reduces duplicated encoding from 8,192 to 2,048 rows. A cached
 Arctic CPU check shifts a 9.31-second first query to 101 ms after 9.34 seconds of
 preparation. This moves work to ingestion; it does not reduce total encoding cost.
 
+[Batched exact retrieval and local serving](batched-retrieval.md) extends that
+work with independent facet rankings sharing bounded corpus scans, fixed-order
+tie handling and bounded process-local query-vector reuse. The retained local
+profiles improve eight-facet dense retrieval by 5.06× with a retained 50,000-row
+matrix and 7.13× while streaming 200,000 rows from the real SQLite vector cache.
+These are implementation-overhead measurements; comparable competitor accuracy
+and billion-scale latency remain unverified.
+
 ## Remaining limits
 
 Dense retrieval remains an exact O(Nd) scan. Batching bounds working memory but

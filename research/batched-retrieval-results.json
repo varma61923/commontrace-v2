@@ -1,0 +1,678 @@
+{
+  "baseline_sha": "4b555b0e3e88223b3556dab4430a2f75904f6a8f",
+  "environment": {
+    "python": "3.12.14",
+    "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+    "sqlite": "3.53.1"
+  },
+  "settings": {
+    "OPENBLAS_NUM_THREADS": 1,
+    "OMP_NUM_THREADS": 1,
+    "HF_HUB_OFFLINE": 1,
+    "TRANSFORMERS_OFFLINE": 1
+  },
+  "workloads": {
+    "cached_eight_facets": {
+      "before": {
+        "python": "3.12.14",
+        "numpy": "2.2.6",
+        "passages": 50000,
+        "dimensions": 768,
+        "queries": 8,
+        "search_ms": [
+          813.883,
+          762.892,
+          761.405
+        ],
+        "vectors_encoded": 50000,
+        "top_ids": [
+          [
+            8540,
+            37056,
+            22073,
+            23523,
+            35606,
+            9990,
+            7090,
+            38506,
+            49139,
+            20623
+          ],
+          [
+            39583,
+            11067,
+            26050,
+            12517,
+            24600,
+            41033,
+            38133,
+            27500,
+            9617,
+            23150
+          ],
+          [
+            25584,
+            39117,
+            12051,
+            10601,
+            40567,
+            27034,
+            24134,
+            32674,
+            37667,
+            19141
+          ],
+          [
+            12484,
+            26017,
+            41000,
+            39550,
+            27467,
+            11034,
+            13934,
+            24567,
+            42450,
+            401
+          ],
+          [
+            26957,
+            40490,
+            11974,
+            13424,
+            41940,
+            25507,
+            28407,
+            39040,
+            10524,
+            14874
+          ],
+          [
+            24983,
+            11450,
+            38516,
+            39966,
+            10000,
+            26433,
+            23533,
+            22967,
+            12900,
+            7984
+          ],
+          [
+            34434,
+            5918,
+            47967,
+            20901,
+            49417,
+            19451,
+            7368,
+            35884,
+            32984,
+            4468
+          ],
+          [
+            44561,
+            2512,
+            17495,
+            31028,
+            16045,
+            29578,
+            46011,
+            3962,
+            1062,
+            32478
+          ]
+        ],
+        "model": "deterministic normalized sine vectors, seed 2026"
+      },
+      "after": {
+        "python": "3.12.14",
+        "numpy": "2.2.6",
+        "passages": 50000,
+        "dimensions": 768,
+        "queries": 8,
+        "search_ms": [
+          151.104,
+          150.826,
+          147.452
+        ],
+        "vectors_encoded": 50000,
+        "top_ids": [
+          [
+            8540,
+            37056,
+            22073,
+            23523,
+            35606,
+            9990,
+            7090,
+            38506,
+            49139,
+            20623
+          ],
+          [
+            39583,
+            11067,
+            26050,
+            12517,
+            24600,
+            41033,
+            38133,
+            27500,
+            9617,
+            23150
+          ],
+          [
+            25584,
+            39117,
+            12051,
+            10601,
+            40567,
+            27034,
+            24134,
+            32674,
+            37667,
+            19141
+          ],
+          [
+            12484,
+            26017,
+            41000,
+            39550,
+            27467,
+            11034,
+            13934,
+            24567,
+            42450,
+            401
+          ],
+          [
+            26957,
+            40490,
+            11974,
+            13424,
+            41940,
+            25507,
+            28407,
+            39040,
+            10524,
+            14874
+          ],
+          [
+            24983,
+            11450,
+            38516,
+            39966,
+            10000,
+            26433,
+            23533,
+            22967,
+            12900,
+            7984
+          ],
+          [
+            34434,
+            5918,
+            47967,
+            20901,
+            49417,
+            19451,
+            7368,
+            35884,
+            32984,
+            4468
+          ],
+          [
+            44561,
+            2512,
+            17495,
+            31028,
+            16045,
+            29578,
+            46011,
+            3962,
+            1062,
+            32478
+          ]
+        ],
+        "model": "deterministic normalized sine vectors, seed 2026"
+      },
+      "median_ms": {
+        "before": 762.892,
+        "after": 150.826
+      }
+    },
+    "cached_single_query": {
+      "before": {
+        "python": "3.12.14",
+        "numpy": "2.2.6",
+        "passages": 50000,
+        "dimensions": 768,
+        "queries": 1,
+        "search_ms": [
+          93.885,
+          92.676,
+          92.036
+        ],
+        "vectors_encoded": 50000,
+        "top_ids": [
+          [
+            8540,
+            37056,
+            22073,
+            23523,
+            35606,
+            9990,
+            7090,
+            38506,
+            49139,
+            20623
+          ]
+        ],
+        "model": "deterministic normalized sine vectors, seed 2026"
+      },
+      "after": {
+        "python": "3.12.14",
+        "numpy": "2.2.6",
+        "passages": 50000,
+        "dimensions": 768,
+        "queries": 1,
+        "search_ms": [
+          89.43,
+          87.621,
+          93.685
+        ],
+        "vectors_encoded": 50000,
+        "top_ids": [
+          [
+            8540,
+            37056,
+            22073,
+            23523,
+            35606,
+            9990,
+            7090,
+            38506,
+            49139,
+            20623
+          ]
+        ],
+        "model": "deterministic normalized sine vectors, seed 2026"
+      },
+      "median_ms": {
+        "before": 92.676,
+        "after": 89.43
+      }
+    },
+    "streaming_eight_facets": {
+      "before": {
+        "python": "3.12.14",
+        "numpy": "2.2.6",
+        "passages": 200000,
+        "dimensions": 768,
+        "queries": 8,
+        "search_ms": [
+          23296.276,
+          21758.899
+        ],
+        "vectors_encoded": 200000,
+        "persistent_cache": true,
+        "top_ids": [
+          [
+            136137,
+            193169,
+            178186,
+            149670,
+            8540,
+            37056,
+            79105,
+            164653,
+            107621,
+            50589
+          ],
+          [
+            110148,
+            138664,
+            167180,
+            39583,
+            153647,
+            68099,
+            11067,
+            195696,
+            96615,
+            81632
+          ],
+          [
+            195230,
+            82616,
+            138198,
+            124665,
+            25584,
+            111132,
+            67633,
+            54100,
+            39117,
+            180247
+          ],
+          [
+            140081,
+            83049,
+            168597,
+            167147,
+            12484,
+            54533,
+            26017,
+            98032,
+            96582,
+            41000
+          ],
+          [
+            168087,
+            181620,
+            69006,
+            111055,
+            55473,
+            26957,
+            83989,
+            40490,
+            153104,
+            139571
+          ],
+          [
+            124064,
+            166113,
+            181096,
+            95548,
+            82015,
+            137597,
+            122614,
+            24983,
+            68482,
+            11450
+          ],
+          [
+            133515,
+            175564,
+            91466,
+            62950,
+            34434,
+            5918,
+            76483,
+            47967,
+            20901,
+            49417
+          ],
+          [
+            199224,
+            86610,
+            172158,
+            101593,
+            115126,
+            143642,
+            185691,
+            44561,
+            128659,
+            158625
+          ]
+        ],
+        "model": "deterministic normalized sine vectors, seed 2026"
+      },
+      "after": {
+        "python": "3.12.14",
+        "numpy": "2.2.6",
+        "passages": 200000,
+        "dimensions": 768,
+        "queries": 8,
+        "search_ms": [
+          2879.941,
+          3437.577
+        ],
+        "vectors_encoded": 200000,
+        "persistent_cache": true,
+        "top_ids": [
+          [
+            136137,
+            193169,
+            178186,
+            149670,
+            8540,
+            37056,
+            79105,
+            164653,
+            107621,
+            50589
+          ],
+          [
+            110148,
+            138664,
+            167180,
+            39583,
+            153647,
+            68099,
+            11067,
+            195696,
+            96615,
+            81632
+          ],
+          [
+            195230,
+            82616,
+            138198,
+            124665,
+            25584,
+            111132,
+            67633,
+            54100,
+            39117,
+            180247
+          ],
+          [
+            140081,
+            83049,
+            168597,
+            167147,
+            12484,
+            54533,
+            26017,
+            98032,
+            96582,
+            41000
+          ],
+          [
+            168087,
+            181620,
+            69006,
+            111055,
+            55473,
+            26957,
+            83989,
+            40490,
+            153104,
+            139571
+          ],
+          [
+            124064,
+            166113,
+            181096,
+            95548,
+            82015,
+            137597,
+            122614,
+            24983,
+            68482,
+            11450
+          ],
+          [
+            133515,
+            175564,
+            91466,
+            62950,
+            34434,
+            5918,
+            76483,
+            47967,
+            20901,
+            49417
+          ],
+          [
+            199224,
+            86610,
+            172158,
+            101593,
+            115126,
+            143642,
+            185691,
+            44561,
+            128659,
+            158625
+          ]
+        ],
+        "model": "deterministic normalized sine vectors, seed 2026"
+      },
+      "median_ms": {
+        "before": 22527.5875,
+        "after": 3158.759
+      }
+    },
+    "local_model_serving": {
+      "before": {
+        "model": "Snowflake/snowflake-arctic-embed-m-v1.5",
+        "inference": "local CPU, offline",
+        "prepared": {
+          "space": "serving",
+          "model": "arctic-m",
+          "units": 260,
+          "revision": [
+            "260"
+          ],
+          "elapsed_seconds": 8.04346
+        },
+        "request_scoped_recall": [
+          {
+            "ms": 851.3841819985828,
+            "encoder_calls": 10,
+            "facets": 10,
+            "tokens": 1405,
+            "coverage": true
+          },
+          {
+            "ms": 847.4838889997045,
+            "encoder_calls": 10,
+            "facets": 10,
+            "tokens": 1405,
+            "coverage": true
+          },
+          {
+            "ms": 848.3560500026215,
+            "encoder_calls": 10,
+            "facets": 10,
+            "tokens": 1405,
+            "coverage": true
+          },
+          {
+            "ms": 849.5051869977033,
+            "encoder_calls": 10,
+            "facets": 10,
+            "tokens": 1405,
+            "coverage": true
+          }
+        ],
+        "encoder_batch_sizes": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "after": {
+        "model": "Snowflake/snowflake-arctic-embed-m-v1.5",
+        "inference": "local CPU, offline",
+        "prepared": {
+          "space": "serving",
+          "model": "arctic-m",
+          "units": 260,
+          "revision": [
+            "260"
+          ],
+          "elapsed_seconds": 10.166464
+        },
+        "request_scoped_recall": [
+          {
+            "ms": 833.5127169993939,
+            "encoder_calls": 1,
+            "facets": 10,
+            "tokens": 1405,
+            "coverage": true
+          },
+          {
+            "ms": 46.947992999776034,
+            "encoder_calls": 0,
+            "facets": 10,
+            "tokens": 1405,
+            "coverage": true
+          },
+          {
+            "ms": 14.715274999616668,
+            "encoder_calls": 0,
+            "facets": 10,
+            "tokens": 1405,
+            "coverage": true
+          },
+          {
+            "ms": 14.624137998907827,
+            "encoder_calls": 0,
+            "facets": 10,
+            "tokens": 1405,
+            "coverage": true
+          }
+        ],
+        "encoder_batch_sizes": [
+          10
+        ]
+      }
+    }
+  },
+  "limitations": [
+    "Synthetic vector workloads measure retrieval overhead; no generation or answer judge is used.",
+    "The real local-model check uses 260 passages and four request-scoped connections asking the same question.",
+    "Cached model loading and corpus preparation are excluded from the request timings.",
+    "The cache reuses query vectors for up to five minutes in one process; retrieval evidence remains snapshot-scoped.",
+    "Exact dense retrieval remains O(Nd); this does not establish billion-scale latency or competitor accuracy superiority."
+  ]
+}

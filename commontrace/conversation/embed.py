@@ -27,6 +27,12 @@ _LOCK = threading.Lock()
 _MODELS: dict[str, object] = {}
 _WORK_LOCKS = weakref.WeakValueDictionary()
 _WORK_LOCKS_GUARD = threading.Lock()
+_QUERY_CACHE: OrderedDict = OrderedDict()
+_QUERY_LOCK = threading.Lock()
+_QUERY_IDENTITIES = weakref.WeakKeyDictionary()
+QUERY_CACHE_ENTRIES = 512
+QUERY_CACHE_BYTES = 8 * 1024 * 1024
+QUERY_CACHE_SECONDS = 300
 
 
 def _work_lock(key):
@@ -100,10 +106,57 @@ class Embedder:
 
     def encode(self, texts: list[str], query: bool = False):
         prefix = MODELS[self.tag][1] if query else ""
-        vecs = _model(self.tag).encode([prefix + t for t in texts], batch_size=BATCH,
-                                       normalize_embeddings=True, convert_to_numpy=True,
-                                       show_progress_bar=False)
-        return vecs.astype(self.np.float32)
+        model = _model(self.tag)
+
+        def compute(items):
+            return model.encode([prefix + t for t in items], batch_size=BATCH,
+                                normalize_embeddings=True, convert_to_numpy=True,
+                                show_progress_bar=False).astype(self.np.float32)
+
+        if not query or not texts:
+            return compute(texts)
+        with _QUERY_LOCK:
+            identity = _QUERY_IDENTITIES.get(model)
+            if identity is None:
+                identity = object()
+                _QUERY_IDENTITIES[model] = identity
+        keys = [(self.tag, identity, _store._hash(prefix + text)) for text in texts]
+
+        def cached():
+            found = {}
+            with _QUERY_LOCK:
+                now = time.monotonic()
+                for key in list(_QUERY_CACHE):
+                    if _QUERY_CACHE[key][0] <= now:
+                        del _QUERY_CACHE[key]
+                for key in keys:
+                    if key in _QUERY_CACHE:
+                        _QUERY_CACHE.move_to_end(key)
+                        found[key] = _QUERY_CACHE[key][1]
+            return found
+
+        found = cached()
+        if len(found) < len(set(keys)):
+            # Identical facet batches coalesce even when callers order them
+            # differently. Cache hits never wait for unrelated model inference.
+            with _work_lock(("query", self.tag, identity, tuple(sorted(k[2] for k in set(keys))))):
+                found = cached()
+                missing = {key: text for key, text in zip(keys, texts) if key not in found}
+                if missing:
+                    vecs = compute(list(missing.values()))
+                    with _QUERY_LOCK:
+                        expires = time.monotonic() + QUERY_CACHE_SECONDS
+                        for key, vector in zip(missing, vecs):
+                            vector = vector.copy()
+                            vector.flags.writeable = False
+                            _QUERY_CACHE[key] = (expires, vector)
+                            found[key] = vector
+                        while _QUERY_CACHE and (len(_QUERY_CACHE) > QUERY_CACHE_ENTRIES or sum(
+                                v[1].nbytes for v in _QUERY_CACHE.values()) > QUERY_CACHE_BYTES):
+                            _QUERY_CACHE.popitem(last=False)
+        # Only hashes and immutable vectors are shared, never raw query text or
+        # retrieved evidence. Stacking gives each caller an independent array.
+        return self.np.stack([found[key] for key in keys])
 
     def vectors(self, items: list[tuple[str, str]]):
         """Vectors for (content hash, text) pairs, embedding only what is not cached."""
@@ -161,6 +214,7 @@ def release_store(store: _store.Store) -> None:
 
 
 SCAN_BATCH = 1024
+QUERY_BATCH = 16
 
 
 def prepare(store: _store.Store, embedder: Embedder, *, sessions=()) -> dict:
@@ -186,12 +240,31 @@ def prepare(store: _store.Store, embedder: Embedder, *, sessions=()) -> dict:
 
 def search(store: _store.Store, embedder: Embedder, query_vec, limit: int, *,
            allowed: set[int] | None = None) -> list[tuple[int, float]]:
+    """Exact search for one query, using the same filtered engine as batched recall."""
+    return search_many(store, embedder, embedder.np.asarray(query_vec)[None, :], limit, allowed=allowed)[0]
+
+
+def search_many(store: _store.Store, embedder: Embedder, query_vecs, limit: int, *,
+                allowed: set[int] | None = None) -> list[list[tuple[int, float]]]:
+    """Exact independent top-k rankings, sharing a scan across query facets.
+
+    Both corpus rows and query columns are bounded. No approximate candidate
+    index or cross-query fusion changes the retrieval objective.
+    """
+    queries = embedder.np.asarray(query_vecs)
+    if queries.size == 0:
+        return [] if len(queries) == 0 else [[] for _ in queries]
+    if queries.ndim != 2 or not embedder.np.isfinite(queries).all():
+        raise _store.ConversationError("query vectors must be a finite two-dimensional matrix")
     with store.read_snapshot():
-        return _search(store, embedder, query_vec, limit, allowed=allowed)
+        results = []
+        for start in range(0, len(queries), QUERY_BATCH):
+            results.extend(_search_many(store, embedder, queries[start:start + QUERY_BATCH], limit, allowed=allowed))
+        return results
 
 
-def _search(store: _store.Store, embedder: Embedder, query_vec, limit: int, *,
-            allowed: set[int] | None = None, _building: bool = False) -> list[tuple[int, float]]:
+def _search_many(store: _store.Store, embedder: Embedder, query_vecs, limit: int, *,
+                 allowed: set[int] | None = None, _building: bool = False) -> list[list[tuple[int, float]]]:
     """Exact top-k over compact vectors, with bounded working memory.
 
     Persistent vectors already have float16 precision. Keep that representation
@@ -200,7 +273,7 @@ def _search(store: _store.Store, embedder: Embedder, query_vec, limit: int, *,
     """
     np = embedder.np
     if limit <= 0 or allowed == set():
-        return []
+        return [[] for _ in query_vecs]
     key = (store.path, store._units_identity or store.cache_identity, embedder.tag)
     stamp = store.unit_stamp()
     with _INDEX_LOCK:
@@ -211,28 +284,51 @@ def _search(store: _store.Store, embedder: Embedder, query_vec, limit: int, *,
         # Build one matrix per space/model at a time. Waiters recheck the cache
         # under their own consistent source snapshot. Warm scoring stays parallel.
         with _work_lock(("index", key)):
-            return _search(store, embedder, query_vec, limit, allowed=allowed, _building=True)
-    best: list[tuple[float, int]] = []
+            return _search_many(store, embedder, query_vecs, limit, allowed=allowed, _building=True)
+    best: list[list[tuple[float, int]]] = [[] for _ in query_vecs]
+
+    def results():
+        return [[(-uid, value) for value, uid in sorted(page, reverse=True)] for page in best]
 
     def score(ids, matrix):
-        values = matrix.astype(np.float32) @ query_vec
+        # Convert each compact corpus batch once, then score all facets together.
+        # A fixed reduction order also gives identical passages identical scores
+        # across row/column batch boundaries. BLAS GEMV/GEMM can otherwise differ
+        # enough in float32 rounding to break boundary ties in different ways.
+        values = np.einsum("ij,kj->ik", matrix.astype(np.float32), query_vecs, optimize=False)
         count = min(limit, len(ids))
         if not count:
             return
-        # Stable ties across streaming batches and cached indexes.
-        order = np.lexsort((np.asarray(ids), -values))[:count]
-        for i in order:
-            item = (float(values[i]), -int(ids[i]))
-            if len(best) < limit:
-                heapq.heappush(best, item)
-            elif item > best[0]:
-                heapq.heapreplace(best, item)
+        identifiers = np.asarray(ids)
+        for column, page in enumerate(best):
+            scores = values[:, column]
+            if count < len(ids):
+                # Partition in linear time; fully sort only the winning rows.
+                # Include boundary ties explicitly so low ids always win ties.
+                threshold = np.partition(scores, len(ids) - count)[len(ids) - count]
+                above = np.flatnonzero(scores > threshold)
+                ties = np.flatnonzero(scores == threshold)
+                ties = ties[np.argsort(identifiers[ties], kind="stable")[:count - len(above)]]
+                selected = np.concatenate((above, ties))
+            else:
+                selected = np.arange(len(ids))
+            order = selected[np.lexsort((identifiers[selected], -scores[selected]))]
+            for i in order:
+                item = (float(scores[i]), -int(ids[i]))
+                if len(page) < limit:
+                    heapq.heappush(page, item)
+                elif item > page[0]:
+                    heapq.heapreplace(page, item)
 
     if cached is not None and cached.stamp == stamp:
         for start in range(0, len(cached.ids), SCAN_BATCH):
-            end = start + SCAN_BATCH
-            positions = [i for i in range(start, min(end, len(cached.ids)))
-                         if allowed is None or cached.turns[i] in allowed]
+            end = min(start + SCAN_BATCH, len(cached.ids))
+            if allowed is None:
+                # A contiguous view avoids copying the float16 corpus and
+                # constructing per-row eligibility/selection lists.
+                score(cached.ids[start:end], cached.matrix[start:end])
+                continue
+            positions = [i for i in range(start, end) if cached.turns[i] in allowed]
             if positions:
                 score([cached.ids[i] for i in positions], cached.matrix[positions])
     else:
@@ -262,11 +358,11 @@ def _search(store: _store.Store, embedder: Embedder, query_vec, limit: int, *,
             current = _INDEX.get(key)
             if store._units_identity and current is not None and int(current.stamp[0]) > int(stamp[0]):
                 # An older source snapshot must not replace a newer generation.
-                return [(-uid, value) for value, uid in sorted(best, reverse=True)]
+                return results()
             _INDEX.pop(key, None)
             if matrix is not None and cacheable:
                 while _INDEX and (len(_INDEX) >= MAX_CACHED_SPACES
                                   or sum(v.matrix.nbytes for v in _INDEX.values()) + matrix.nbytes > MAX_INDEX_BYTES):
                     _INDEX.popitem(last=False)
                 _INDEX[key] = _Index(stamp, ids, hashes, turns, matrix[:offset])
-    return [(-uid, value) for value, uid in sorted(best, reverse=True)]
+    return results()
