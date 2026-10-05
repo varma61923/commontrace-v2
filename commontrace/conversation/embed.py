@@ -265,7 +265,8 @@ def search_many(store: _store.Store, embedder: Embedder, query_vecs, limit: int,
 
 
 def _search_many(store: _store.Store, embedder: Embedder, query_vecs, limit: int, *,
-                 allowed: set[int] | None = None, _building: bool = False) -> list[list[tuple[int, float]]]:
+                 allowed: set[int] | None = None, _building: bool = False,
+                 _skip_disk: bool = False) -> list[list[tuple[int, float]]]:
     """Exact top-k over compact vectors, with bounded working memory.
 
     Persistent vectors already have float16 precision. Keep that representation
@@ -282,16 +283,21 @@ def _search_many(store: _store.Store, embedder: Embedder, query_vecs, limit: int
         cached = _INDEX.get(key)
         if cached is not None:
             _INDEX.move_to_end(key)
-    if cached is None or cached.stamp != stamp:
+    scoped = False
+    if not _skip_disk and (cached is None or cached.stamp != stamp):
         from commontrace.conversation import vector_index
 
-        records = vector_index.load(store, embedder.tag, np, stamp[0], query_vecs.shape[1])
+        records = vector_index.load(store, embedder.tag, np, stamp[0], query_vecs.shape[1], check_ids=allowed is None)
         if records is not None:
+            scoped = allowed is not None
             cached = _Index(stamp, records["id"][1:], records["hash"][1:], records["turn"][1:],
                             records["vector"][1:], mapped=True)
             with _INDEX_LOCK:
                 current = _INDEX.get(key)
-                if current is None or int(current.stamp[0]) <= int(stamp[0]):
+                # A scoped view validates every selected id/turn/hash against
+                # SQLite below, not unselected file rows. Never share it as a
+                # fully validated index with broader recalls.
+                if not scoped and (current is None or int(current.stamp[0]) <= int(stamp[0])):
                     while len(_INDEX) >= MAX_CACHED_SPACES:
                         _INDEX.popitem(last=False)
                     _INDEX[key] = cached
@@ -347,11 +353,20 @@ def _search_many(store: _store.Store, embedder: Embedder, query_vecs, limit: int
             # visiting every vector/turn. Resolve its sorted ids into the exact
             # current snapshot; selection still happens before top-k scoring.
             identifiers = np.asarray(cached.ids)
-            cursor = store.db.execute("SELECT id FROM units WHERE turn IN "
+            cursor = store.db.execute("SELECT id, turn, hash FROM units WHERE turn IN "
                                       "(SELECT value FROM json_each(?)) ORDER BY id", (json.dumps(sorted(allowed)),))
             while rows := cursor.fetchmany(SCAN_BATCH):
                 ids = np.array([row[0] for row in rows], dtype=np.int64)
                 positions = np.searchsorted(identifiers, ids)
+                if scoped and (np.any(positions >= len(identifiers))
+                               or not np.array_equal(identifiers[positions], ids)
+                               or not np.array_equal(cached.turns[positions], [row[1] for row in rows])
+                               or not np.array_equal(cached.hashes[positions],
+                                                     np.array([row[2].encode("ascii") for row in rows], dtype="S32"))):
+                    # Corrupt ordering, missing ids or mismatched provenance is
+                    # a cache miss. Restart all facets through the source/vector
+                    # cache so partial rankings can never escape.
+                    return _search_many(store, embedder, query_vecs, limit, allowed=allowed, _skip_disk=True)
                 score(ids, cached.matrix[positions])
     else:
         # Reuse unchanged content, never an id which SQLite may recycle.

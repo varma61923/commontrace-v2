@@ -469,7 +469,7 @@ def http_transport(timeout: float = 10.0, allowlist: Allowlist | None = None):
                 raise last_error
             raise OSError("DNS returned no addresses for webhook host")
 
-    async def send(url: str, body: str, headers: dict) -> None:
+    async def _send(url: str, body: str, headers: dict) -> None:
         addresses = await _reject_private_target(url, allowlist=allowlist)
         transport = httpx.AsyncHTTPTransport(trust_env=False)
         # httpx keeps the origin hostname for TLS SNI/certificate validation;
@@ -479,7 +479,14 @@ def http_transport(timeout: float = 10.0, allowlist: Allowlist | None = None):
         async with httpx.AsyncClient(
             timeout=timeout, follow_redirects=False, transport=transport,
         ) as client:
-            response = await client.post(url, content=body, headers=headers)
-            response.raise_for_status()
+            # Only the status is used. Buffering an endpoint-controlled body
+            # lets a recipient consume arbitrary memory (including via gzip).
+            async with client.stream("POST", url, content=body, headers=headers) as response:
+                response.raise_for_status()
+
+    async def send(url: str, body: str, headers: dict) -> None:
+        # HTTPX timeouts apply separately to individual socket operations;
+        # DNS and repeated pinned-address attempts also need one total budget.
+        await asyncio.wait_for(_send(url, body, headers), timeout=timeout)
 
     return send

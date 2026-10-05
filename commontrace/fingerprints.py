@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from typing import BinaryIO
 
 LAZY_HASH_BYTES = 256 * 1024 * 1024
 SAMPLE_BYTES = 1024 * 1024
@@ -43,17 +44,40 @@ def file_fingerprint(
 ) -> str:
     """sha256 of a file's bytes; a file over *lazy_hash_bytes* is sampled (size, head,
     tail) unless another file of the same size is known, when it is hashed in full."""
-    size = os.path.getsize(path)
-    digest = hashlib.sha256()
     with open(path, "rb") as fh:
-        if size <= lazy_hash_bytes or size in known_sizes:
-            for block in iter(lambda: fh.read(1 << 20), b""):
-                digest.update(block)
-            return "sha256:" + digest.hexdigest()
-        digest.update(str(size).encode())
-        digest.update(fh.read(sample_bytes))
-        fh.seek(max(0, size - sample_bytes))
-        digest.update(fh.read(sample_bytes))
+        return stream_fingerprint(fh, os.fstat(fh.fileno()).st_size, known_sizes=known_sizes,
+                                  lazy_hash_bytes=lazy_hash_bytes, sample_bytes=sample_bytes)
+
+
+def stream_fingerprint(
+    fh: BinaryIO,
+    size: int,
+    *,
+    known_sizes: frozenset[int] = frozenset(),
+    lazy_hash_bytes: int = LAZY_HASH_BYTES,
+    sample_bytes: int = SAMPLE_BYTES,
+) -> str:
+    """Hash a pinned file stream with the same full/sample formulas.
+
+    Bound a full read to its opened size: a file growing during hashing must
+    not keep an ingestion worker reading forever.
+    """
+    digest = hashlib.sha256()
+    if size <= lazy_hash_bytes or size in known_sizes:
+        remaining = size
+        while remaining:
+            block = fh.read(min(1 << 20, remaining))
+            if not block:
+                raise ValueError("file changed size during fingerprinting")
+            digest.update(block)
+            remaining -= len(block)
+        if fh.read(1):
+            raise ValueError("file grew during fingerprinting")
+        return "sha256:" + digest.hexdigest()
+    digest.update(str(size).encode())
+    digest.update(fh.read(sample_bytes))
+    fh.seek(max(0, size - sample_bytes))
+    digest.update(fh.read(sample_bytes))
     return "sample:" + digest.hexdigest()
 
 

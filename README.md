@@ -978,9 +978,18 @@ from the document's headings, or written by the configured model with
 `--contextualize model`, cached by chunk), canonicalised with the ontology's
 aliases, and written as facts attributed to their file (or to a conversation
 space with `--space`). A ledger in `memory/ingest_ledger.jsonl` skips files
-whose size and mtime are unchanged; files over 256 MB are fingerprinted by
+whose device/inode, size, modification time and change time are unchanged;
+legacy ledger rows are revalidated. Files over 256 MB are fingerprinted by
 sampling and hashed in full only when another file has the same size.
 `--preview` shows the counts without writing.
+
+Catalog retrieval returns registered snapshots by document ID or registered
+source path; it never opens an uncataloged source file. Ingestion pins regular
+file descriptors, rejects symlink components, and bounds source reads, archive
+inflation and XML depth. Guarded SQL uses SQLite read-only authorization,
+outer-result limits, a maximum of 10,000 requested rows and bounded cell payloads;
+Python 3.10 uses a conservative analytical-function allowlist. Document and SQL
+MCP reads run in worker threads so other requests remain responsive.
 
 **One recall across every kind of memory** (`commontrace recall`): lessons,
 facts, graph relations around the entities the question names, and
@@ -1118,6 +1127,25 @@ are bounded to 16 files / 4 GiB per cache directory; heap matrices retain their
 128 MiB cap. Operating-system mapped pages can add resident memory. Frozen
 stores only read existing snapshots, and unavailable disk caching falls back to
 bounded streaming. Raw SQLite evidence remains authoritative.
+
+Cold session-filtered mapped retrieval validates only selected source IDs,
+turns and content hashes, and keeps partial views out of the shared index.
+On a prepared 200,000-vector corpus with ten eligible passages, measured latency
+fell from 24.836 to 0.703 ms (35.3×), with identical IDs and scores. Long-message
+chunking and repeated-clause weekday grounding remove quadratic copying/scanning:
+the documented workloads improved 45.2× and 201.1×. These are specific local
+workloads, not overall latency or answer-accuracy multipliers. See
+[scoped retrieval measurements](research/retrieval-acceleration.md) and
+[conversation preprocessing](research/conversation-hotpath-performance.md).
+
+Historical graph queries share a generation-validated incident-edge index;
+scheduled updates preserve the current relation until its effective change date.
+Scoped observations retain source fact IDs, and current fact search and gateway
+recall exclude future or ended evidence. Lesson caches validate inode/change time
+as well as size/modification time, including their persisted lexical indexes.
+Console report requests share bounded event decoding and coalesce concurrent
+calculations. See [graph improvements](research/graph-phase6.md) and
+[serving measurements](research/serving-phase6-performance.md).
 
 Extraction reads checkpointed message batches and revalidates their exact source
 content before publishing memories. Retention repairs only affected belief
@@ -2590,6 +2618,13 @@ tests, not left to convention:
 | Data retention | Per-org policies by object type and status, a purge plan you read before anything happens, and legal holds that outrank every policy. `manage.py set-retention` / `retention-plan` / `retention-apply` / `legal-hold`. |
 | Event export | Signed, at-least-once webhooks carrying ids, counts and verdicts — **never trace content**, enforced by a per-event-type field whitelist. `manage.py webhook-add`. See `hub/README.md` "Event export". |
 | Rate limiting | Per-org token bucket. **Known limitation:** it is process-local, so N replicas allow roughly N× the configured rate — see `hub/DEPLOYMENT.md` §6 for the mitigations. |
+
+Linked OIDC users and API keys share the same regional residency check. REST and
+OTLP transactions bind the authenticated organization to the configured RLS
+backstop. Webhook delivery checks response status without buffering recipient
+bodies and applies one total deadline covering DNS, address fallbacks and headers.
+Security regressions and measurement limits are documented in
+[the Hub review](research/security-phase6-hub.md).
 
 **What this does *not* have** is as important as the table above, and is
 written down rather than left to be discovered: no legal entity, no SOC 2,

@@ -6,13 +6,13 @@ import struct
 import tempfile
 
 _MAGIC = b"CTCI"
-_VERSION = 2
+_VERSION = 3
 
 _HEADER = struct.Struct("<4sBB")
 _SCORER_PREFIX = struct.Struct("<B")
 _META = struct.Struct("<Idd")
 _COUNT = struct.Struct("<I")
-_PATH_STAMP = struct.Struct("<Hqq")
+_PATH_STAMP = struct.Struct("<HQQqqQ")
 _TERM_HEAD = struct.Struct("<HII")
 _DOC = struct.Struct("<I")
 _F64 = struct.Struct("<d")
@@ -30,8 +30,8 @@ def _tag(scorer: str) -> bytes:
     return f"{scorer}|{__version__}".encode("utf-8")
 
 
-def _fingerprint_entries(fingerprint) -> list[tuple[str, int, int]]:
-    return [(str(p), int(m), int(s)) for p, (m, s) in fingerprint]
+def _fingerprint_entries(fingerprint) -> list[tuple]:
+    return [(str(p), *(int(value) for value in identity)) for p, identity in fingerprint]
 
 
 def save(cache_dir: str, scorer: str, fingerprint, index) -> bool:
@@ -47,9 +47,9 @@ def save(cache_dir: str, scorer: str, fingerprint, index) -> bool:
             _META.pack(len(entries), index.avg_field_len, index.max_idf),
             _COUNT.pack(len(entries)),
         ]
-        for path, mtime_ns, size in entries:
+        for path, device, inode, mtime_ns, ctime_ns, size in entries:
             pb = path.encode("utf-8")
-            chunks.append(_PATH_STAMP.pack(len(pb), mtime_ns, size))
+            chunks.append(_PATH_STAMP.pack(len(pb), device, inode, mtime_ns, ctime_ns, size))
             chunks.append(pb)
         vocab = sorted(index.postings)
         chunks.append(_COUNT.pack(len(vocab)))
@@ -116,12 +116,12 @@ def load(cache_dir: str, scorer: str, lessons, fingerprint):
         if n_paths != n_docs:
             return None
         for i in range(n_docs):
-            (plen, mtime_ns, size) = _PATH_STAMP.unpack_from(blob, off)
+            (plen, device, inode, mtime_ns, ctime_ns, size) = _PATH_STAMP.unpack_from(blob, off)
             off += _PATH_STAMP.size
             path = blob[off:off + plen].decode("utf-8")
             off += plen
-            fpath, (fm, fs) = fingerprint[i]
-            if path != fpath or mtime_ns != int(fm) or size != int(fs):
+            fpath, identity = fingerprint[i]
+            if path != fpath or (device, inode, mtime_ns, ctime_ns, size) != tuple(map(int, identity)):
                 return None
             if path != lessons[i][0]:
                 return None

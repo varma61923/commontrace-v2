@@ -1,0 +1,175 @@
+{
+  "baseline_git_sha": "c8ce5c792916c10e23b0618c59259960294b7bcc",
+  "candidate": "Phase 6 gateway/lesson_cache/corpus_bin working tree; integrated commit recorded by parent",
+  "environment": {
+    "python": "3.12.14",
+    "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+    "models": "none",
+    "embedding_calls": 0,
+    "generation_calls": 0
+  },
+  "measurement": "Actual Gateway.handle handlers; TCP/TLS excluded; deterministic fixture construction excluded; five runs; wall-time seconds_since_seen field normalized only",
+  "workloads": {
+    "reports_100": {
+      "baseline": {
+        "events": 5000,
+        "pages": 100,
+        "requests": 102,
+        "elapsed_ms": [
+          130.231,
+          125.053,
+          121.18,
+          138.159,
+          112.756
+        ],
+        "median_ms": 125.053,
+        "decoded_json_rows": [
+          12050,
+          12050,
+          12050,
+          12050,
+          12050
+        ],
+        "memo_entries": [
+          102,
+          102,
+          102,
+          102,
+          102
+        ]
+      },
+      "candidate": {
+        "events": 5000,
+        "pages": 100,
+        "requests": 102,
+        "elapsed_ms": [
+          50.626,
+          49.87,
+          52.216,
+          52.742,
+          50.211
+        ],
+        "median_ms": 50.626,
+        "decoded_json_rows": [
+          5000,
+          5000,
+          5000,
+          5000,
+          5000
+        ],
+        "memo_entries": [
+          102,
+          102,
+          102,
+          102,
+          102
+        ]
+      },
+      "median_speedup": 2.47,
+      "responses_equal": true,
+      "normalized_response_sha256": "f462aee71bdcc943ad067caacc4f5e41b69903a9e8399872f7e12ff03794c8f2"
+    },
+    "reports_500": {
+      "baseline": {
+        "events": 5000,
+        "pages": 500,
+        "requests": 502,
+        "elapsed_ms": [
+          817.647,
+          1009.397,
+          955.743,
+          958.842,
+          830.799
+        ],
+        "median_ms": 955.743,
+        "decoded_json_rows": [
+          132250,
+          132250,
+          132250,
+          132250,
+          132250
+        ],
+        "memo_entries": [
+          502,
+          502,
+          502,
+          502,
+          502
+        ]
+      },
+      "candidate": {
+        "events": 5000,
+        "pages": 500,
+        "requests": 502,
+        "elapsed_ms": [
+          266.429,
+          193.268,
+          167.673,
+          159.564,
+          172.266
+        ],
+        "median_ms": 172.266,
+        "decoded_json_rows": [
+          5000,
+          5000,
+          5000,
+          5000,
+          5000
+        ],
+        "memo_entries": [
+          128,
+          128,
+          128,
+          128,
+          128
+        ]
+      },
+      "median_speedup": 5.548,
+      "responses_equal": true,
+      "normalized_response_sha256": "c2c4023d467d505b8d1619abcb55d47a3ef97481be232c74bfb5b09209b8934e"
+    },
+    "scoped_recall": {
+      "baseline": {
+        "lessons": 1000,
+        "requests_per_run": 100,
+        "elapsed_ms": [
+          733.091,
+          781.732,
+          643.539,
+          754.82,
+          745.138
+        ],
+        "median_ms": 745.138,
+        "lexical_index_builds": [
+          100,
+          100,
+          100,
+          100,
+          100
+        ]
+      },
+      "candidate": {
+        "lessons": 1000,
+        "requests_per_run": 100,
+        "elapsed_ms": [
+          327.93,
+          334.338,
+          331.37,
+          332.719,
+          356.729
+        ],
+        "median_ms": 332.719,
+        "lexical_index_builds": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "median_speedup": 2.24,
+      "responses_equal": true,
+      "normalized_response_sha256": "0f584247dbd65ec18fcbb3f4bd3cf3dcaee79f4d5804dd450c6671603de2def3"
+    }
+  }
+}

@@ -1,6 +1,7 @@
 """A language-neutral door into the causal loop, for any agent, including robots."""
 from __future__ import annotations
 
+import copy
 import dataclasses
 import datetime
 import hashlib
@@ -14,6 +15,8 @@ import socket
 import ssl
 import threading
 import time
+import weakref
+from collections import OrderedDict
 from collections.abc import Callable, Mapping
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -35,6 +38,7 @@ from commontrace.measure import CausalMemory, HarmWatch
 API_VERSION = "1"
 REPORT_MIN_INTERVAL = 5.0
 REPORT_MAX_AGE = 60.0
+REPORT_CACHE_MAX = 128
 MAX_BODY_BYTES = 1 << 20
 MAX_ITEMS = 200
 MAX_TEXT_CHARS = 20_000
@@ -60,9 +64,11 @@ _ACTIVE_CACHE_MAX = 8
 _ACTIVE_CACHE: dict[str, tuple[tuple, list, dict]] = {}
 _ACTIVE_CACHE_LOCK = threading.Lock()
 
-# Lesson-body cache keyed by (path, mtime_ns, size) (module-level, capped).
+# Lesson-body cache keyed by strong file identity (module-level, capped).
 _BODY_CACHE_MAX = 512
-_BODY_CACHE: dict[tuple[str, int, int], str] = {}
+_BODY_CACHE_BYTES_MAX = 16 * 1024 * 1024
+_BODY_CACHE_BYTES = 0
+_BODY_CACHE: dict[tuple, str] = {}
 _BODY_CACHE_LOCK = threading.Lock()
 
 
@@ -71,7 +77,7 @@ def _cached_active(root: str, reader) -> tuple[list, dict]:
     from commontrace import lesson_cache
 
     try:
-        listing = lesson_cache.listing(root)
+        listing = lesson_cache.source_fingerprint(root)
     except OSError:
         listing = ()
     key = os.path.abspath(root)
@@ -88,23 +94,48 @@ def _cached_active(root: str, reader) -> tuple[list, dict]:
     return active, term_cache
 
 
-def _cached_body(path: str) -> str:
-    """One lesson body, re-read only when its mtime/size changes."""
+def _cached_body(path: str, *, expected_identity: tuple | None = None) -> str:
+    """One lesson body, fresh on replacement or restored-mtime edits."""
+    global _BODY_CACHE_BYTES
+
     try:
         st = os.stat(path)
-        ident = (path, st.st_mtime_ns, st.st_size)
+        ident = (path, st.st_dev, st.st_ino, st.st_mtime_ns, st.st_ctime_ns, st.st_size)
     except OSError:
+        if expected_identity is not None:
+            raise frontmatter.FrontmatterError("lesson source changed during retrieval") from None
         return frontmatter.read_body(path)
+    if expected_identity is not None and ident[1:] != expected_identity:
+        raise frontmatter.FrontmatterError("lesson source changed during retrieval")
     with _BODY_CACHE_LOCK:
         hit = _BODY_CACHE.get(ident)
         if hit is not None:
             _BODY_CACHE[ident] = _BODY_CACHE.pop(ident)
             return hit
     body = frontmatter.read_body(path)
+    size = len(body.encode("utf-8"))
     with _BODY_CACHE_LOCK:
+        try:
+            st = os.stat(path)
+        except OSError:
+            if expected_identity is not None:
+                raise frontmatter.FrontmatterError("lesson source changed during retrieval") from None
+            return body
+        current = (path, st.st_dev, st.st_ino, st.st_mtime_ns, st.st_ctime_ns, st.st_size)
+        if current != ident:
+            if expected_identity is not None:
+                raise frontmatter.FrontmatterError("lesson source changed during retrieval")
+            return body
+        # Retain one generation per path, including when its new body is too
+        # large to cache. An older reader cannot evict a newer source entry.
+        for key in [key for key in _BODY_CACHE if key[0] == path]:
+            _BODY_CACHE_BYTES -= len(_BODY_CACHE.pop(key).encode("utf-8"))
+        if size > _BODY_CACHE_BYTES_MAX:
+            return body
         _BODY_CACHE[ident] = body
-        while len(_BODY_CACHE) > _BODY_CACHE_MAX:
-            _BODY_CACHE.pop(next(iter(_BODY_CACHE)))
+        _BODY_CACHE_BYTES += size
+        while len(_BODY_CACHE) > _BODY_CACHE_MAX or _BODY_CACHE_BYTES > _BODY_CACHE_BYTES_MAX:
+            _BODY_CACHE_BYTES -= len(_BODY_CACHE.pop(next(iter(_BODY_CACHE))).encode("utf-8"))
     return body
 
 
@@ -365,7 +396,10 @@ class Gateway:
         self._watch = HarmWatch(self.root, on_harm, check_every)
         self._events_lock = threading.Lock()
         self._memo_lock = threading.Lock()
-        self._memo: dict[str, tuple] = {}
+        self._memo: OrderedDict[str, tuple] = OrderedDict()
+        self._memo_work: weakref.WeakValueDictionary[str, threading.Lock] = weakref.WeakValueDictionary()
+        self._event_tail_lock = threading.Lock()
+        self._event_tail = None
         self.routes: dict[tuple[str, str], tuple[Callable, dict]] = {}
         self._register()
 
@@ -561,40 +595,58 @@ class Gateway:
         except OSError as exc:
             logger.warning("Failed to log gateway event to %s: %s", path, exc)
 
-    def _read_events(self, limit: int = 5000) -> list[dict]:
-        """Newest-N events within a trailing byte cap (bounded scan)."""
+    def _read_events(self, limit: int = 5000, *, isolated: bool = True) -> list[dict]:
+        """Newest-N lines with incremental decoding of one bounded source tail.
+
+        The line positions include malformed/non-object JSON, preserving the
+        original newest-N-line contract. Internal report code borrows read-only
+        rows; direct callers receive independent nested values.
+        """
         try:
             limit = int(limit)
         except (TypeError, ValueError):
             limit = EVENTS_MAX_EVENTS
         limit = max(1, min(limit, EVENTS_MAX_EVENTS))
-        path = self._events_path()
-        try:
-            size = os.path.getsize(path)
-            with open(path, "rb") as fh:
-                fh.seek(max(0, size - EVENTS_TAIL_BYTES))
-                chunk = fh.read()
-        except OSError:
-            return []
-        lines = chunk.splitlines()
-        if size > EVENTS_TAIL_BYTES and lines:
-            lines = lines[1:]
-        out = []
-        for line in lines[-limit:]:
-            try:
-                row = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(row, dict):
-                out.append(row)
-        return out
+        with self._event_tail_lock:
+            ident = self._events_identity()
+            tail = self._event_tail
+            if tail is None or tail[0] != ident:
+                try:
+                    with open(self._events_path(), "rb") as fh:
+                        st = os.fstat(fh.fileno())
+                        source = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+                        fh.seek(max(0, st.st_size - EVENTS_TAIL_BYTES))
+                        chunk = fh.read(EVENTS_TAIL_BYTES)
+                except OSError:
+                    self._event_tail = None
+                    return []
+                lines = chunk.splitlines()
+                if st.st_size > EVENTS_TAIL_BYTES and lines:
+                    lines = lines[1:]
+                lines = lines[-EVENTS_MAX_EVENTS:]
+                # Each entry remains absent until a requested page needs it.
+                tail = (source, lines, {})
+                self._event_tail = tail
+            lines, decoded = tail[1], tail[2]
+            out = []
+            for position in range(max(0, len(lines) - limit), len(lines)):
+                if position not in decoded:
+                    try:
+                        row = json.loads(lines[position])
+                    except (ValueError, RecursionError):
+                        row = None
+                    decoded[position] = row if isinstance(row, dict) else None
+                row = decoded[position]
+                if row is not None:
+                    out.append(row)
+            return copy.deepcopy(out) if isolated else out
 
     def _events_identity(self) -> tuple | None:
         try:
             st = os.stat(self._events_path())
         except OSError:
             return None
-        return (st.st_ino, st.st_size, st.st_mtime_ns)
+        return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
 
     def _events_truncated(self) -> bool:
         try:
@@ -604,18 +656,39 @@ class Gateway:
 
     def _memoized_flag(self, name: str, compute, extra_key=None) -> tuple[Any, bool]:
         """Like _memoized but also reports whether the value came from the memo."""
-        data_key = self._data_key()
-        key = data_key if extra_key is None else (data_key, extra_key)
-        now = time.monotonic()
+        def lookup():
+            data_key = self._data_key()
+            key = data_key if extra_key is None else (data_key, extra_key)
+            now = time.monotonic()
+            with self._memo_lock:
+                hit = self._memo.get(name)
+                if hit is not None and (now - hit[1] < REPORT_MIN_INTERVAL
+                                        or (hit[0] == key and now - hit[1] < REPORT_MAX_AGE)):
+                    self._memo.move_to_end(name)
+                    return key, now, hit
+            return key, now, None
+
+        key, now, hit = lookup()
+        if hit is not None:
+            return hit[2], True
         with self._memo_lock:
-            hit = self._memo.get(name)
-            if hit is not None and (now - hit[1] < REPORT_MIN_INTERVAL
-                                    or (hit[0] == key and now - hit[1] < REPORT_MAX_AGE)):
+            work = self._memo_work.get(name)
+            if work is None:
+                work = threading.Lock()
+                self._memo_work[name] = work
+        # Identical cold/expired report requests share one calculation. Other
+        # report names and warm hits do not wait behind that calculation.
+        with work:
+            key, now, hit = lookup()
+            if hit is not None:
                 return hit[2], True
-        value = compute()
-        with self._memo_lock:
-            self._memo[name] = (key, now, value)
-        return value, False
+            value = compute()
+            with self._memo_lock:
+                self._memo[name] = (key, now, value)
+                self._memo.move_to_end(name)
+                while len(self._memo) > REPORT_CACHE_MAX:
+                    self._memo.popitem(last=False)
+            return value, False
 
     def _memoized_events(self, limit: int) -> tuple[list[dict], bool, bool]:
         """Bounded event scan with 5-60s memo; returns (events, cached, truncated)."""
@@ -624,7 +697,8 @@ class Gateway:
         except (TypeError, ValueError):
             want = EVENTS_MAX_EVENTS
         ident = self._events_identity()
-        events, cached = self._memoized_flag(f"events:{want}", lambda: self._read_events(want), extra_key=ident)
+        events, cached = self._memoized_flag(
+            f"events:{want}", lambda: self._read_events(want, isolated=False), extra_key=ident)
         return list(events), cached, self._events_truncated()
 
 
@@ -785,18 +859,18 @@ class Gateway:
                 return None
 
         active, term_cache = _cached_active(self.root, read)
-        if scope:
-            from commontrace import lesson_cache
+        from commontrace import lesson_cache
 
-            active = lesson_cache.filter_eligible(active, scope=scope)
-            allowed_paths = {path for path, _fm in active}
-            term_cache = {path: terms for path, terms in term_cache.items() if path in allowed_paths}
+        eligible = lesson_cache.filter_eligible(active, scope=scope)
+        if len(eligible) != len(active):
+            active = eligible
+            term_cache = term_cache.restrict(active)
         ranked = retrieval.rank_lessons(query, active, top_k=top_k, term_cache=term_cache)
         projected = dict(active)
         out = []
         for hit in ranked:
             try:
-                body = _cached_body(hit.path)
+                body = _cached_body(hit.path, expected_identity=term_cache.stamps.get(hit.path))
             except frontmatter.FrontmatterError:
                 continue
             out.append({"id": hit.slug, "text": body, "protected": bool(projected.get(hit.path, {}).get("core")),
@@ -929,22 +1003,13 @@ class Gateway:
                      paths.traces_dir(self.root)):
             try:
                 st = os.stat(path)
-                key.append((st.st_ino, st.st_size, st.st_mtime_ns))
+                key.append((st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns))
             except OSError:
                 key.append(None)
         return tuple(key)
 
     def _memoized(self, name: str, compute):
-        key, now = self._data_key(), time.monotonic()
-        with self._memo_lock:
-            hit = self._memo.get(name)
-            if hit is not None and (now - hit[1] < REPORT_MIN_INTERVAL
-                                    or (hit[0] == key and now - hit[1] < REPORT_MAX_AGE)):
-                return hit[2]
-        value = compute()
-        with self._memo_lock:
-            self._memo[name] = (key, now, value)
-        return value
+        return self._memoized_flag(name, compute)[0]
 
     def _analysis(self):
         return self._memoized("analysis", self._compute_analysis)
@@ -1080,7 +1145,7 @@ class Gateway:
         def compute():
             agents: dict[str, dict] = {}
             now = time.time()
-            events = self._read_events(EVENTS_MAX_EVENTS)
+            events = self._read_events(EVENTS_MAX_EVENTS, isolated=False)
             truncated = self._events_truncated()
             for e in events:
                 who = e.get("agent_id") or "(unattributed)"

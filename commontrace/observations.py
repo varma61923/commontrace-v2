@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import glob
 import hashlib
+import json
 import os
 import re
 from dataclasses import asdict, dataclass, field
@@ -57,7 +58,7 @@ def observation_boost(proof_count: int | float | str) -> float:
     """Bounded retrieval bonus: ``min(0.3, 0.05 * proof_count)``; 0 for junk."""
     try:
         n = int(proof_count)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0.0
     return round(min(BOOST_CAP, BOOST_STEP * max(0, n)), 4)
 
@@ -71,6 +72,8 @@ class Observation:
     trend: str = "new"
     created_at: str = ""
     updated_at: str = ""
+    scopes: list[str] = field(default_factory=list)
+    source_fact_ids: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -80,6 +83,13 @@ class Observation:
         clean = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
         clean["evidence"] = [e for e in (clean.get("evidence") or []) if isinstance(e, dict)]
         clean["proof_count"] = int(clean.get("proof_count") or 0)
+        for name in ("scopes", "source_fact_ids"):
+            values = clean.get(name) or []
+            if isinstance(values, str):
+                values = [values]
+            if not isinstance(values, (list, tuple)):
+                raise TypeError(f"observation {name} must be a list")
+            clean[name] = sorted({str(value).strip() for value in values if str(value).strip()})
         if clean.get("trend") not in TRENDS:
             clean["trend"] = "new"
         return cls(**clean)
@@ -89,13 +99,15 @@ def _observations_file(root: str) -> str:
     return os.path.join(paths.memory_dir(root), "observations", "observations.jsonl")
 
 
-def load_observations(root: str) -> dict[str, Observation]:
+def load_observations(root: str, *, scope: str | None = None) -> dict[str, Observation]:
     """Every observation on disk, keyed by id; unreadable rows are skipped."""
     out: dict[str, Observation] = {}
     for row in _jsonl.read_rows(_observations_file(root)):
         try:
             observation = Observation.from_dict(row)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if scope is not None and observation.scopes and scope not in observation.scopes:
             continue
         if observation.id:
             out[observation.id] = observation
@@ -109,8 +121,8 @@ def save_observations(root: str, observations: dict[str, Observation]) -> None:
         _jsonl.write_rows(path, (observations[key].to_dict() for key in sorted(observations)))
 
 
-def get_observation(root: str, observation_id: str) -> Observation | None:
-    return load_observations(root).get(str(observation_id))
+def get_observation(root: str, observation_id: str, *, scope: str | None = None) -> Observation | None:
+    return load_observations(root, scope=scope).get(str(observation_id))
 
 
 def _trace_dates(root: str) -> dict[str, str]:
@@ -149,8 +161,12 @@ def _trend(evidence_times: list[str], *, now: datetime, created_at: str = "") ->
     return "stable"
 
 
-def _observation_id(statement: str) -> str:
+def _observation_id(statement: str, scopes: list[str] | None = None) -> str:
     norm = re.sub(r"\s+", " ", statement.strip().lower())
+    if scopes:
+        payload = json.dumps({"statement": norm, "scopes": sorted(set(scopes))},
+                             sort_keys=True, separators=(",", ":"))
+        return "obs-scoped-" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
     return "obs-" + hashlib.sha256(norm.encode("utf-8")).hexdigest()[:12]
 
 
@@ -169,7 +185,8 @@ def consolidate_facts(root: str, now: str | None = None) -> list[Observation]:
     out: dict[str, Observation] = {}
     for fact_id in sorted(facts):
         fact = facts[fact_id]
-        if fact.status != "active" or fact.forgotten or fact.confirmations < 2:
+        if fact.status != "active" or fact.forgotten or fact.confirmations < 2 \
+                or not hierarchical._valid_at(fact, now_dt) or hierarchical._is_expired(fact, now_dt):
             continue
         evidence: list[dict[str, Any]] = []
         for trace_id in sorted({str(t) for t in fact.source_traces if str(t).strip()}):
@@ -181,7 +198,7 @@ def consolidate_facts(root: str, now: str | None = None) -> list[Observation]:
         if not evidence:
             evidence.append({"quote": fact.statement, "source_id": "", "at": fact.created_at or ""})
         trend = _trend([str(e.get("at", "")) for e in evidence], now=now_dt, created_at=fact.created_at)
-        observation_id = _observation_id(fact.statement)
+        observation_id = _observation_id(fact.statement, fact.scopes)
         previous = existing.get(observation_id)
         out[observation_id] = Observation(
             id=observation_id,
@@ -191,6 +208,8 @@ def consolidate_facts(root: str, now: str | None = None) -> list[Observation]:
             trend=trend,
             created_at=previous.created_at if previous is not None else now_iso,
             updated_at=now_iso,
+            scopes=list(fact.scopes),
+            source_fact_ids=[fact.id],
         )
     save_observations(root, out)
     return [out[key] for key in sorted(out)]

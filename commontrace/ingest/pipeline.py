@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import sys
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -59,6 +60,12 @@ class TextChunker(Transform):
     max_chars: int = 2000
     overlap: int = 50
 
+    def __post_init__(self) -> None:
+        if isinstance(self.max_chars, bool) or not isinstance(self.max_chars, int) or self.max_chars < 1:
+            raise ValueError("max_chars must be a positive integer")
+        if isinstance(self.overlap, bool) or not isinstance(self.overlap, int) or self.overlap < 0:
+            raise ValueError("overlap must be a nonnegative integer")
+
     def apply(self, chunks: Iterable[Chunk]) -> Iterable[Chunk]:
         for chunk in chunks:
             yield from self._chunk_text(chunk)
@@ -69,18 +76,25 @@ class TextChunker(Transform):
             yield chunk
             return
 
-        paragraphs: list[str] = []
-        for para in text.split("\n\n"):
-            while len(para) > self.max_chars:
-                cut = para.rfind(" ", 0, self.max_chars)
-                cut = cut if cut > self.max_chars // 2 else self.max_chars
-                paragraphs.append(para[:cut])
-                para = para[cut:]
-            paragraphs.append(para)
+        def paragraphs() -> Iterator[str]:
+            # Advance offsets in the original text. Slicing the remaining
+            # paragraph on each iteration copies O(n**2) bytes for long lines.
+            start = 0
+            while start <= len(text):
+                end = text.find("\n\n", start)
+                if end < 0:
+                    end = len(text)
+                while end - start > self.max_chars:
+                    cut = text.rfind(" ", start, start + self.max_chars)
+                    cut = cut if cut - start > self.max_chars // 2 else start + self.max_chars
+                    yield text[start:cut]
+                    start = cut
+                yield text[start:end]
+                start = end + 2
         current = ""
         chunk_idx = 0
 
-        for para in paragraphs:
+        for para in paragraphs():
             para = para.strip()
             if not para:
                 continue
@@ -417,8 +431,12 @@ def file_fingerprint(path: str, *, known_sizes: frozenset[int] = frozenset()) ->
     """sha256 of a file's bytes (see commontrace.fingerprints.file_fingerprint).
 
     LAZY_HASH_BYTES/SAMPLE_BYTES stay module-level so existing callers can tune them."""
-    return _fingerprints.file_fingerprint(
-        path, known_sizes=known_sizes, lazy_hash_bytes=LAZY_HASH_BYTES, sample_bytes=SAMPLE_BYTES)
+    from commontrace.ingest import _open_regular
+
+    with _open_regular(path, sys.maxsize) as fh:
+        size = os.fstat(fh.fileno()).st_size
+        return _fingerprints.stream_fingerprint(
+            fh, size, known_sizes=known_sizes, lazy_hash_bytes=LAZY_HASH_BYTES, sample_bytes=SAMPLE_BYTES)
 
 
 class Ledger:
@@ -443,17 +461,23 @@ class Ledger:
     def sizes(self) -> frozenset[int]:
         return frozenset(r.get("size", -1) for r in self.rows.values())
 
-    def changed(self, path: str) -> bool:
+    def changed(self, path: str, *, max_bytes: int = sys.maxsize) -> bool:
         """Whether `path` must be read again; remembers its new fingerprint if so."""
         key = os.path.abspath(path)
-        st = os.stat(path)
-        known = self.rows.get(key)
-        if (known and known.get("size") == st.st_size and known.get("mtime_ns") == st.st_mtime_ns
-                and known.get("status") != "error"):
-            return False
-        was_error = bool(known and known.get("status") == "error")
-        fingerprint = _fingerprints.file_fingerprint(path, known_sizes=self.sizes())
+        from commontrace.ingest import _open_regular
+
+        with _open_regular(path, max_bytes) as fh:
+            st = os.fstat(fh.fileno())
+            known = self.rows.get(key)
+            if (known and known.get("size") == st.st_size and known.get("mtime_ns") == st.st_mtime_ns
+                    and known.get("dev") == st.st_dev and known.get("inode") == st.st_ino
+                    and known.get("ctime_ns") == st.st_ctime_ns
+                    and known.get("status") != "error"):
+                return False
+            was_error = bool(known and known.get("status") == "error")
+            fingerprint = _fingerprints.stream_fingerprint(fh, st.st_size, known_sizes=self.sizes())
         row = {"path": key, "size": st.st_size, "mtime_ns": st.st_mtime_ns, "fingerprint": fingerprint,
+               "dev": st.st_dev, "inode": st.st_ino, "ctime_ns": st.st_ctime_ns,
                "status": (known.get("status") if known else "pending"),
                "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
         if known and known.get("fingerprint") == fingerprint and not was_error:
@@ -466,19 +490,39 @@ class Ledger:
         """Stage an explicit per-file outcome: ingested, unchanged, skipped_large,
         skipped_unsupported or error. Overwrites any row staged by changed()."""
         key = os.path.abspath(path)
+        prev = self.pending.get(key) or self.rows.get(key) or {}
+        staged = self.pending.get(key)
+        if status == "ingested" and staged and staged.get("fingerprint"):
+            # The staged fingerprint describes the source generation that was
+            # loaded. A later replacement must be detected on the next run,
+            # not paired with the older fingerprint and marked ingested here.
+            row = {**staged, "status": status,
+                   "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+            if detail:
+                row["detail"] = dict(detail)
+            self.pending[key] = row
+            return
         try:
             st = os.stat(path)
             size, mtime_ns = st.st_size, st.st_mtime_ns
+            identity = {"dev": st.st_dev, "inode": st.st_ino, "ctime_ns": st.st_ctime_ns}
         except OSError:
             size, mtime_ns = -1, -1
-        prev = self.pending.get(key) or self.rows.get(key) or {}
+            identity = {}
         fingerprint = prev.get("fingerprint", "")
-        if status == "ingested" and not fingerprint and size >= 0:
+        if status == "ingested" and size >= 0:
             try:
-                fingerprint = _fingerprints.file_fingerprint(path, known_sizes=self.sizes())
-            except OSError:
+                from commontrace.ingest import _open_regular
+
+                with _open_regular(path, sys.maxsize) as fh:
+                    st = os.fstat(fh.fileno())
+                    size, mtime_ns = st.st_size, st.st_mtime_ns
+                    identity = {"dev": st.st_dev, "inode": st.st_ino, "ctime_ns": st.st_ctime_ns}
+                    fingerprint = _fingerprints.stream_fingerprint(fh, size, known_sizes=self.sizes())
+            except (OSError, ValueError):
                 fingerprint = ""
         row: dict = {"path": key, "size": size, "mtime_ns": mtime_ns, "fingerprint": fingerprint,
+                     **identity,
                      "status": status, "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
         if detail:
             row["detail"] = dict(detail)
@@ -548,10 +592,10 @@ class DirectoryLoader(Loader):
                 if self.ledger is not None:
                     self.ledger.note(path, "skipped_large", detail={"limit": MAX_TEXT_FILE_BYTES})
                 continue
-            if self.ledger is not None and not self.ledger.changed(path):
-                self.stats["unchanged"] += 1
-                continue
             try:
+                if self.ledger is not None and not self.ledger.changed(path, max_bytes=MAX_TEXT_FILE_BYTES):
+                    self.stats["unchanged"] += 1
+                    continue
                 content = _read_text(path)
             except (OSError, ValueError):
                 self.stats["unreadable"] += 1
@@ -578,8 +622,13 @@ class DirectoryLoader(Loader):
             if self.ledger is not None:
                 self.ledger.note(path, "skipped_large", detail={"bytes": size, "limit": mm.MAX_FILE_BYTES})
             return
-        if self.ledger is not None and not self.ledger.changed(path):
-            self.stats["unchanged"] += 1
+        try:
+            if self.ledger is not None and not self.ledger.changed(path, max_bytes=mm.MAX_FILE_BYTES):
+                self.stats["unchanged"] += 1
+                return
+        except (OSError, ValueError):
+            self.stats["unreadable"] += 1
+            self.ledger.note(path, "error", detail={"stage": "fingerprint"})
             return
         fn = mm.INGEST_FNS.get(ext)
         if fn is None:

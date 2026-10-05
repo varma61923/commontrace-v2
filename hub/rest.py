@@ -178,7 +178,7 @@ def add_rest_routes(
 
         idempotency_key = _text(payload.get("idempotency_key")) or None
         try:
-            async with session_scope(session_factory) as session:
+            async with session_scope(session_factory, org_id=authenticated.org_id) as session:
                 result = await crud.contribute_trace(
                     session,
                     authenticated.org_id,
@@ -235,7 +235,7 @@ def add_rest_routes(
         as_of = _text(payload.get("as_of")) or None
 
         try:
-            async with session_scope(session_factory) as session:
+            async with session_scope(session_factory, org_id=authenticated.org_id) as session:
                 found = await crud.search_traces(
                     session, authenticated.org_id, query=query, limit=limit, brief=True,
                     scope=scope, as_of=as_of,

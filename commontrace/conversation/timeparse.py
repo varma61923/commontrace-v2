@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import re
+from bisect import bisect_left
 from dataclasses import dataclass
 
 MONTHS = ("january", "february", "march", "april", "may", "june", "july", "august",
@@ -163,11 +164,28 @@ _PAST = re.compile(r"\b(?:was|were|went|had|did|got|made|saw|took|came|ran|ate|b
                    r"|[a-z]+ed)\b", re.I)
 
 
+class _ClauseTense:
+    """Index sentence boundaries once and evaluate each relevant clause once."""
+
+    def __init__(self, text: str):
+        self.text = text
+        self.boundaries = [m.start() for m in re.finditer(r"[.!?]", text)]
+        self.cache: dict[tuple[int, int], bool] = {}
+
+    def future(self, start: int, end: int) -> bool:
+        left = bisect_left(self.boundaries, start)
+        right = bisect_left(self.boundaries, end)
+        lo = self.boundaries[left - 1] + 1 if left else 0
+        hi = self.boundaries[right] if right < len(self.boundaries) else len(self.text)
+        key = (lo, hi)
+        if key not in self.cache:
+            clause = self.text[lo:hi]
+            self.cache[key] = bool(_FUTURE.search(clause)) and not _PAST.search(clause)
+        return self.cache[key]
+
+
 def _future_tense(text: str, start: int, end: int) -> bool:
-    lo = max(text.rfind(".", 0, start), text.rfind("!", 0, start), text.rfind("?", 0, start)) + 1
-    hi = min([i for i in (text.find(".", end), text.find("!", end), text.find("?", end)) if i >= 0] or [len(text)])
-    clause = text[lo:hi]
-    return bool(_FUTURE.search(clause)) and not _PAST.search(clause)
+    return _ClauseTense(text).future(start, end)
 
 
 def ground(text: str, anchor: dt.date | dt.datetime | None) -> list[Grounding]:
@@ -177,6 +195,7 @@ def ground(text: str, anchor: dt.date | dt.datetime | None) -> list[Grounding]:
     if isinstance(anchor, dt.datetime):
         anchor = anchor.date()
     out: list[Grounding] = []
+    clauses = None
     for m in _RELATIVE.finditer(text):
         g = m.groupdict()
         lo = hi = None
@@ -246,8 +265,10 @@ def ground(text: str, anchor: dt.date | dt.datetime | None) -> list[Grounding]:
                 text_label = str(year)
         elif g["wrel"]:
             which, weekday = g["wrel"].lower(), WEEKDAYS.index(g["wday"].lower())
+            if which in ("this", "on") and clauses is None:
+                clauses = _ClauseTense(text)
             ahead = which in ("next", "this coming") or (
-                which in ("this", "on") and _future_tense(text, m.start(), m.end()))
+                which in ("this", "on") and clauses.future(m.start(), m.end()))
             if ahead:
                 day = anchor + dt.timedelta(days=(weekday - anchor.weekday()) % 7 or 7)
             else:

@@ -1,0 +1,88 @@
+{
+  "baseline_commit": "c8ce5c792916c10e23b0618c59259960294b7bcc",
+  "baseline_tree": "c9d2dcca049505b76e005894a626bd7651a760bc",
+  "candidate": "Frozen phase6 production sources; published commit and CI recorded in Git/PR history",
+  "environment": {
+    "python": "3.12.14",
+    "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+    "database": "Disposable PostgreSQL16, loopback55432",
+    "measured_profiles_model_calls": 0,
+    "measured_profiles_embedding_calls": 0,
+    "external_inference_calls": 0
+  },
+  "checks": {
+    "core_e2e": {
+      "command": "python -m pytest tests/ e2e_tests/ -q",
+      "passed": 4457,
+      "skipped": 34,
+      "seconds": 437.4
+    },
+    "hub": {
+      "command": "HUB_TEST_DATABASE_URL=<disposable-postgres-url> python -m pytest hub/tests/ -q",
+      "passed": 2464,
+      "skipped": 1,
+      "seconds": 520.38
+    },
+    "ruff": {
+      "command": "python -m ruff check .",
+      "status": "passed"
+    },
+    "bandit": {
+      "command": "python -m bandit -r commontrace/ hub/ memory/ -x '*/tests/*,*/test_*' -ll",
+      "status": "passed",
+      "medium_findings": 0,
+      "high_findings": 0
+    },
+    "javascript": {
+      "command": "node --check commontrace/ui/app.js",
+      "status": "passed"
+    },
+    "whitespace": {
+      "command": "git diff --check",
+      "status": "passed"
+    },
+    "local_latency": {
+      "command": "python -m commontrace.reference.measure_local_latency --sizes 100,400,1600,6400 --runs 3 --max-total-ms 500 --max-alpha 1.5",
+      "status": "passed",
+      "max_size_total_median_ms": 88.4,
+      "total_fitted_alpha": 1.22,
+      "shared_cpu_load": true
+    }
+  },
+  "production_source_sha256": {
+    "commontrace/communities.py": "f347d861d0cd6efd3acc99c970f626c9566bc26fbafea93ab0b166e78c5b52f4",
+    "commontrace/conversation/embed.py": "175b81f027023653cb305f5f45349f368a548fe3537065d09e1182131e6993aa",
+    "commontrace/conversation/store.py": "90cbb1aa234b3534015547b73b643a597fc9a6c248ecf4341acc37a2df6cfd35",
+    "commontrace/conversation/timeparse.py": "a315557530f1ae46eab21e72634ca2ea959561ffb593a12ffd6d65f1db598abd",
+    "commontrace/conversation/vector_index.py": "2fbcd226898e5532042f8268784785bbbf7115233493224b3f07ba075d33f1ee",
+    "commontrace/corpus_bin.py": "8879e6e19da07eeb9c7ee2dfadec01763c8d7704f48ec5ecadb164d3f75b40c8",
+    "commontrace/fingerprints.py": "49b307b438caf757d68ceed2561a81b8046e404b078d075a53d78ea0cadf0c10",
+    "commontrace/gateway.py": "fa7043df863871b4b3c4637f8fc1a8aad2d57d2a530a3a94eb59a41513b2b6ec",
+    "commontrace/graph.py": "0a518a57e94f9a5aa9272f70592d344c696eeab997d2a2685e703a5258cc3baa",
+    "commontrace/hierarchical.py": "9e8d9d1ed596dbb0c7786e0e6104945754776ae724dd4a8652bf3a5098658fd8",
+    "commontrace/ingest/__init__.py": "f7d5106167df83d8e259c62b9c4a64b2e593e10b1d021b318e1ee2d57565439c",
+    "commontrace/ingest/catalog.py": "3c3476af2b5e676183fdad39ac496a489df05b9676616fa48c649d6ae64ed901",
+    "commontrace/ingest/multimodal.py": "a531b4c84c602992c67a55a9756869e1b34bf4f03fba8b6cb8789c2d61d0a51c",
+    "commontrace/ingest/pipeline.py": "166701a5ea1fb3432e67b1121ce9d56c5f2636428337f65ea04d95cc315c61b8",
+    "commontrace/lesson_cache.py": "3d06aa5e43e53f8ec93d7262fc1bdc37e84bf7ae6f6a87b7c02bb390dab1abe5",
+    "commontrace/mcp_server.py": "4aa54ee05e59fabfa0d58f97ee9976183f9d1c62e07367011ad4ff4b6be0ca68",
+    "commontrace/observations.py": "2244c70a2a8b1fc63e1411740e9b0946c4baae5147270b494a6cd45f20fd73b8",
+    "commontrace/sql_guard.py": "27974b7343884f9079e1afef0a51067661b7a4251f6ac301f62454fded752bf2",
+    "hub/auth.py": "af3363dcf554cc23363f60df747d063107238105ccfa6de728a60abdec954a4e",
+    "hub/db.py": "2ae85ea3e5fd4eba62fa55c7c5cc913f7dadd7ec5fce9ec08edfe7cdd394fb9e",
+    "hub/events.py": "c5ffb37dc4610a467d84a4d17ee221b41f8392077500349d3d11cb1e0199f107",
+    "hub/otlp.py": "5f9b305a85438226b5d086b24783ca82ff16b0a4e91a147f8051caa07e4af058",
+    "hub/rest.py": "23dd1e2f9c98fc456a748bb224154787d1c34bb047f2de28b307fe62a3bc3108"
+  },
+  "evidence": [
+    "research/conversation-hotpath-performance.json",
+    "research/retrieval-acceleration-results.json",
+    "research/graph-phase6-results.json",
+    "research/serving-phase6-results.json",
+    "research/ingestion-security-phase6-results.json"
+  ],
+  "independent_review": "No remaining blockers. Separate agent reviewed security/concurrency/scopes, verified focused tests and cache fixture migration; no production edits by reviewer.",
+  "official_judges_changed": false,
+  "dependencies_changed": false,
+  "quality_claim": "No official accuracy or competitor superiority claim from these component measurements."
+}

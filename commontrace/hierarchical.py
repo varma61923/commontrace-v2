@@ -218,7 +218,7 @@ def load_facts(root: str) -> dict[str, AtomicFact]:
     for row in _jsonl.read_rows(_facts_file(root)):
         try:
             fact = _coerce_fact(row)
-        except TypeError:
+        except (TypeError, ValueError):
             continue
         facts[fact.id] = fact
     return facts
@@ -738,17 +738,19 @@ def list_facts(
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 
-_FACT_TOKENS: dict[tuple[str, str], frozenset] = {}
+_FACT_TOKENS: dict[tuple[str, str, str], frozenset] = {}
 
 
 def _fact_tokens(fact: AtomicFact) -> frozenset:
-    """Token set of a fact statement, memoized by ``(id, revision)``.
+    """Token set memoized with the actual statement as well as id/revision.
 
     `search_facts` re-tokenized every fact on every query (mem0 precomputes
-    `text_lemmatized` at write time; same idea, lazy). Statements are
-    immutable per revision, so the memo is exact; capped to bound memory.
+    `text_lemmatized` at write time; same idea, lazy). Imported ids/revisions
+    can collide across stores or be stale. Actual text
+    identity prevents one store's token set from changing another's rankings.
+    The memo is capped to bound memory.
     """
-    key = (fact.id, fact.revision)
+    key = (fact.id, fact.revision, fact.statement)
     toks = _FACT_TOKENS.get(key)
     if toks is None:
         toks = frozenset(_TOKEN_RE.findall(fact.statement.lower()))
@@ -778,6 +780,9 @@ def search_facts(
         root, status="active", scope=scope, category=category, as_of=as_of,
         include_forgotten=include_forgotten, show_expired=show_expired, stability=stability,
     )
+    if not as_of:
+        moment = datetime.now(timezone.utc)
+        candidates = [fact for fact in candidates if _valid_at(fact, moment)]
     limit = max(0, int(limit))
     query_tokens = set(_TOKEN_RE.findall(query.lower()))
     if not candidates or not query_tokens:

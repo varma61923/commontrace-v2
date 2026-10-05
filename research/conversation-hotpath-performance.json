@@ -1,0 +1,128 @@
+{
+  "baseline_commit": "c8ce5c792916c10e23b0618c59259960294b7bcc",
+  "environment": {
+    "python": "3.12.14",
+    "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+    "machine": "x86_64",
+    "models": "none",
+    "network_calls": 0,
+    "timing_note": "Shared development machine; synthetic preprocessing workloads, not end-to-end latency."
+  },
+  "baseline_initial": {
+    "python": "3.12.14",
+    "checkout": "/workspace/references/commontrace-phase6-baseline",
+    "characters": 1000000,
+    "weekday_phrases": 2000,
+    "runs": 5,
+    "results": {
+      "split_units": {
+        "milliseconds": [
+          58.64312800258631,
+          55.98519100021804,
+          56.49058199924184,
+          56.69306599884294,
+          56.4113120053662
+        ],
+        "median_ms": 56.49058199924184,
+        "items": 1438,
+        "output_sha256": "72756915ea8eaa9508fecc66aba9182b59e12634254d80f1684d04a8c6d8f2dc"
+      },
+      "ground_weekdays": {
+        "milliseconds": [
+          3876.065115997335,
+          4013.036763004493,
+          3956.408061996626,
+          4076.870349003002,
+          3926.9740390009247
+        ],
+        "median_ms": 3956.408061996626,
+        "items": 2000,
+        "output_sha256": "bbae4242d2acb333ca66433f0f95bfd67038cbd3680aea6ab29ad18269c7e001"
+      }
+    }
+  },
+  "baseline_repeat": {
+    "python": "3.12.14",
+    "checkout": "/workspace/references/commontrace-phase6-baseline",
+    "characters": 1000000,
+    "weekday_phrases": 2000,
+    "runs": 5,
+    "results": {
+      "split_units": {
+        "milliseconds": [
+          80.80509899446042,
+          83.77353399555432,
+          58.71255900274264,
+          91.27873799297959,
+          58.92110299464548
+        ],
+        "median_ms": 80.80509899446042,
+        "items": 1438,
+        "output_sha256": "72756915ea8eaa9508fecc66aba9182b59e12634254d80f1684d04a8c6d8f2dc"
+      },
+      "ground_weekdays": {
+        "milliseconds": [
+          4249.095742998179,
+          3933.227765999618,
+          3822.107299005438,
+          3674.103675999504,
+          4106.522984999174
+        ],
+        "median_ms": 3933.227765999618,
+        "items": 2000,
+        "output_sha256": "bbae4242d2acb333ca66433f0f95bfd67038cbd3680aea6ab29ad18269c7e001"
+      }
+    }
+  },
+  "candidate": {
+    "python": "3.12.14",
+    "checkout": "/workspace/commontrace-v2",
+    "characters": 1000000,
+    "weekday_phrases": 2000,
+    "runs": 5,
+    "results": {
+      "split_units": {
+        "milliseconds": [
+          1.707047995296307,
+          1.578766001330223,
+          1.2489399960031733,
+          1.1319230034132488,
+          1.1310120025882497
+        ],
+        "median_ms": 1.2489399960031733,
+        "items": 1438,
+        "output_sha256": "72756915ea8eaa9508fecc66aba9182b59e12634254d80f1684d04a8c6d8f2dc"
+      },
+      "ground_weekdays": {
+        "milliseconds": [
+          19.467054997221567,
+          19.677141994179692,
+          20.28153099672636,
+          19.821829002466984,
+          19.251521000114735
+        ],
+        "median_ms": 19.677141994179692,
+        "items": 2000,
+        "output_sha256": "bbae4242d2acb333ca66433f0f95bfd67038cbd3680aea6ab29ad18269c7e001"
+      }
+    }
+  },
+  "source_sha256": {
+    "commontrace/conversation/store.py": "90cbb1aa234b3534015547b73b643a597fc9a6c248ecf4341acc37a2df6cfd35",
+    "commontrace/conversation/timeparse.py": "a315557530f1ae46eab21e72634ca2ea959561ffb593a12ffd6d65f1db598abd"
+  },
+  "comparison": {
+    "split_units": {
+      "baseline_median_ms": 56.49058199924184,
+      "candidate_median_ms": 1.2489399960031733,
+      "speedup": 45.230821480632855,
+      "identical_output": true
+    },
+    "ground_weekdays": {
+      "baseline_median_ms": 3956.408061996626,
+      "candidate_median_ms": 19.677141994179692,
+      "speedup": 201.06619463166416,
+      "identical_output": true
+    }
+  }
+}

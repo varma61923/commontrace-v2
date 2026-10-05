@@ -419,6 +419,8 @@ async def verify_user_token(
     ).scalar_one_or_none()
     if row is None or row.disabled_at is not None:
         return None
+    if not await _region_ok(session, row.org_id):
+        return None
 
     row.last_login_at = datetime.now(timezone.utc)
     return AuthenticatedUser(id=row.id, org_id=row.org_id, role=row.role, email=row.email)

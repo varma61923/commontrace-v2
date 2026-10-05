@@ -205,23 +205,34 @@ def _moment(value) -> dt.datetime | None:
 
 def split_units(text: str, limit: int = UNIT_CHARS) -> list[str]:
     """Retrieval units: the turn itself, or sentence-aligned windows of a long one."""
+    if limit <= 0:
+        raise ValueError("unit size must be positive")
     text = text.strip()
     if len(text) <= limit:
         return [text]
-    sentences = re.split(r"(?<=[.!?])\s+|\n{2,}|\n(?=[-*\d])", text)
+    # A cheap forward-character search avoids the lookbehind/alternation scan
+    # for flat paragraphs and machine-generated pastes with no separator.
+    sentences = re.split(r"(?<=[.!?])\s+|\n{2,}|\n(?=[-*\d])", text) \
+        if any(marker in text for marker in (".", "!", "?", "\n")) else [text]
     units, current = [], ""
     for sentence in sentences:
         sentence = sentence.strip()
         if not sentence:
             continue
-        while len(sentence) > limit:
-            cut = sentence.rfind(" ", 0, limit)
-            cut = cut if cut > limit // 2 else limit
+        start, end = 0, len(sentence)
+        # Keep offsets into the original sentence. Copying and stripping the
+        # entire remaining suffix for every unit is quadratic on long pastes.
+        while end - start > limit:
+            cut = sentence.rfind(" ", start, start + limit)
+            cut = cut if cut > start + limit // 2 else start + limit
             if current:
                 units.append(current)
                 current = ""
-            units.append(sentence[:cut].strip())
-            sentence = sentence[cut:].strip()
+            units.append(sentence[start:cut].strip())
+            start = cut
+            while start < end and sentence[start].isspace():
+                start += 1
+        sentence = sentence[start:]
         if current and len(current) + 1 + len(sentence) > limit:
             units.append(current)
             current = sentence

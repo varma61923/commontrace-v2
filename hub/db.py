@@ -40,15 +40,27 @@ def make_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession
 @asynccontextmanager
 async def session_scope(
     session_factory: async_sessionmaker[AsyncSession],
+    *, org_id: str | None = None,
 ) -> AsyncIterator[AsyncSession]:
-    async with session_factory() as session:
-        try:
-            await _scope_to_current_org(session)
-            yield session
-            await session.commit()
-        except BaseException:
-            await session.rollback()
-            raise
+    """Commit one transaction, optionally binding it to an authenticated org.
+
+    Explicit bindings also scope nested sessions and are restored on every
+    exit. Calls without an explicit org retain the request context (or the
+    intentional unscoped context of operator/background work).
+    """
+    token = auth.current_org_id.set(org_id) if org_id is not None else None
+    try:
+        async with session_factory() as session:
+            try:
+                await _scope_to_current_org(session)
+                yield session
+                await session.commit()
+            except BaseException:
+                await session.rollback()
+                raise
+    finally:
+        if token is not None:
+            auth.current_org_id.reset(token)
 
 
 async def _scope_to_current_org(session: AsyncSession) -> None:

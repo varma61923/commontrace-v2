@@ -5,7 +5,9 @@ import ast
 import json
 import os
 import re
+import stat
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -42,12 +44,8 @@ def _redact_secrets(text: str) -> str:
 
 _MAX_CONTEXT_LEN = 2000
 
-_PAIRED_TAG_RE = re.compile(
-    r"<\s*(system|prompt|instruction|context|developer|assistant)\b[^>]*>.*?<\s*/\s*\1\s*>",
-    re.IGNORECASE | re.DOTALL,
-)
-_BARE_TAG_RE = re.compile(
-    r"<\s*/?\s*(system|prompt|instruction|context|developer|assistant)\b[^>]*>",
+_ROLE_TAG_START_RE = re.compile(
+    r"<\s*(/?)\s*(system|prompt|instruction|context|developer|assistant)\b",
     re.IGNORECASE,
 )
 
@@ -56,8 +54,42 @@ def sanitize_contextualizer_text(text: str, max_len: int = _MAX_CONTEXT_LEN) -> 
     """Strip role-tag blocks, collapse whitespace and cap the length."""
     if not isinstance(text, str):
         text = str(text)
-    cleaned = _PAIRED_TAG_RE.sub(" ", text)
-    cleaned = _BARE_TAG_RE.sub(" ", cleaned)
+    intervals: list[tuple[int, int]] = []
+    opened: dict[str, tuple[int, int]] = {}
+    position = 0
+    while True:
+        match = _ROLE_TAG_START_RE.search(text, position)
+        if match is None:
+            break
+        end = text.find(">", match.end())
+        if end < 0:
+            break
+        end += 1
+        name = match.group(2).lower()
+        intervals.append((match.start(), end))
+        if match.group(1):
+            pending = opened.get(name)
+            if pending is not None:
+                start, depth = pending
+                intervals.append((start, end))
+                if depth == 1:
+                    del opened[name]
+                else:
+                    opened[name] = (start, depth - 1)
+        else:
+            start, depth = opened.get(name, (match.start(), 0))
+            opened[name] = (start, depth + 1)
+        position = end
+    # Merge overlapping block/tag spans without retrying an unterminated role
+    # block at every opening tag (quadratic on attacker-supplied text).
+    pieces: list[str] = []
+    position = 0
+    for start, end in sorted(intervals):
+        if start >= position:
+            pieces.extend((text[position:start], " "))
+        position = max(position, end)
+    pieces.append(text[position:])
+    cleaned = "".join(pieces)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     if max_len > 0 and len(cleaned) > max_len:
         cleaned = cleaned[:max_len].rstrip()
@@ -158,11 +190,59 @@ def _walk_files(source: str, extensions: tuple[str, ...] | None, max_files: int 
             yield path
 
 
+@contextmanager
+def _open_directory(path: str):
+    """Pin a directory without following symlinks in any path component."""
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    absolute = os.path.abspath(path)
+    fd = os.open(os.path.sep, flags)
+    try:
+        for part in absolute.split(os.path.sep):
+            if not part:
+                continue
+            next_fd = os.open(part, flags, dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+        yield fd
+    finally:
+        os.close(fd)
+
+
+@contextmanager
+def _open_regular(path: str, max_bytes: int):
+    """Bound the opened regular file, including replacements after enumeration.
+
+    O_NONBLOCK prevents a FIFO substituted for a source file from hanging the
+    reader. Directory descriptors keep ancestor renames from redirecting opens.
+    """
+    absolute = os.path.abspath(path)
+    with _open_directory(os.path.dirname(absolute)) as parent_fd:
+        fd = os.open(os.path.basename(absolute), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                     | getattr(os, "O_NONBLOCK", 0), dir_fd=parent_fd)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError(f"{path!r} is not a regular file")
+        if info.st_size > max_bytes:
+            raise ValueError(f"{path!r} is larger than {max_bytes} bytes; skipped")
+        with os.fdopen(fd, "rb") as fh:
+            fd = -1
+            yield fh
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
+def _read_bytes(path: str, max_bytes: int) -> bytes:
+    with _open_regular(path, max_bytes) as fh:
+        data = fh.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise ValueError(f"{path!r} is larger than {max_bytes} bytes; skipped")
+    return data
+
+
 def _read_text(path: str) -> str:
-    if os.path.getsize(path) > MAX_TEXT_FILE_BYTES:
-        raise ValueError(f"{path!r} is larger than {MAX_TEXT_FILE_BYTES} bytes; skipped")
-    with open(path, encoding="utf-8", errors="replace") as fh:
-        return fh.read()
+    return _read_bytes(path, MAX_TEXT_FILE_BYTES).decode("utf-8", errors="replace")
 
 
 def _screened_statement(text: str, result: IngestionResult) -> str | None:
@@ -204,13 +284,14 @@ def _ledger_for(root: str, force: bool):
     return Ledger(root)
 
 
-def _skip_if_unchanged(ledger, fpath: str, result: IngestionResult) -> bool:
+def _skip_if_unchanged(ledger, fpath: str, result: IngestionResult,
+                       *, max_bytes: int = MAX_TEXT_FILE_BYTES) -> bool:
     """True when the ledger shows *fpath* was already ingested unchanged."""
     if ledger is None:
         return False
     try:
-        unchanged = not ledger.changed(fpath)
-    except OSError:
+        unchanged = not ledger.changed(fpath, max_bytes=max_bytes)
+    except (OSError, ValueError):
         return False
     if unchanged:
         result.skipped_unchanged += 1
@@ -437,25 +518,24 @@ _LOG_LEVELS = ("ERROR", "CRITICAL", "FATAL", "WARNING")
 
 def _log_buckets(log_path: str, result: IngestionResult) -> dict[str, dict[str, Any]]:
     buckets: dict[str, dict[str, Any]] = {}
-    with open(log_path, encoding="utf-8", errors="replace") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entry = json.loads(line)
-            except ValueError:
-                continue
-            if not isinstance(entry, dict):
-                continue
-            result.chunks_extracted += 1
-            level = str(entry.get("level", entry.get("severity", ""))).upper()
-            msg = str(entry.get("message", entry.get("msg", entry.get("error", ""))))
-            if not msg or level not in _LOG_LEVELS:
-                continue
-            fp = _fingerprint(re.sub(r"\b\d+\b", "N", msg))
-            bucket = buckets.setdefault(fp, {"count": 0, "message": msg[:2000]})
-            bucket["count"] += 1
+    for line in _read_text(log_path).splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except (ValueError, RecursionError):
+            continue
+        if not isinstance(entry, dict):
+            continue
+        result.chunks_extracted += 1
+        level = str(entry.get("level", entry.get("severity", ""))).upper()
+        msg = str(entry.get("message", entry.get("msg", entry.get("error", ""))))
+        if not msg or level not in _LOG_LEVELS:
+            continue
+        fp = _fingerprint(re.sub(r"\b\d+\b", "N", msg))
+        bucket = buckets.setdefault(fp, {"count": 0, "message": msg[:2000]})
+        bucket["count"] += 1
     return buckets
 
 
@@ -483,7 +563,7 @@ def ingest_json_logs(
         return result
     try:
         buckets = _log_buckets(log_path, result)
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         result.errors.append(f"log parse error: {exc}")
         return result
     service = service_name or os.path.basename(log_path)
@@ -526,17 +606,16 @@ def ingest_json_logs(
 
 def _failure_turns(transcript_path: str, result: IngestionResult) -> list[dict[str, Any]]:
     turns: list[dict[str, Any]] = []
-    with open(transcript_path, encoding="utf-8", errors="replace") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                turn = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(turn, dict):
-                turns.append(turn)
+    for line in _read_text(transcript_path).splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            turn = json.loads(line)
+        except (ValueError, RecursionError):
+            continue
+        if isinstance(turn, dict):
+            turns.append(turn)
     result.chunks_extracted = len(turns)
     return [
         t for t in turns
@@ -567,7 +646,7 @@ def ingest_failure_transcript(
         return result
     try:
         failures = _failure_turns(transcript_path, result)
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         result.errors.append(f"transcript parse error: {exc}")
         return result
     for turn in failures[:50]:
@@ -607,12 +686,12 @@ def _load_triples(path_or_list: Any) -> list[dict[str, Any]]:
             for line in raw.splitlines():
                 try:
                     items.append(json.loads(line))
-                except ValueError:
+                except (ValueError, RecursionError):
                     continue
         else:
             try:
                 parsed = json.loads(raw)
-            except ValueError:
+            except (ValueError, RecursionError):
                 parsed = []
             items = [parsed] if isinstance(parsed, dict) else parsed if isinstance(parsed, list) else []
     else:
@@ -839,7 +918,7 @@ def ingest_multimodal_document(
     facts: list[dict[str, Any]] = []
     walk_stats: dict[str, int] = {}
     for fpath in _multimodal_targets(source, max_files, stats=walk_stats):
-        if _skip_if_unchanged(ledger, fpath, result):
+        if _skip_if_unchanged(ledger, fpath, result, max_bytes=multimodal.MAX_FILE_BYTES):
             continue
         if _skip_if_large(fpath, multimodal.MAX_FILE_BYTES, ledger, result):
             result.errors.append(f"{fpath!r} is over the {multimodal.MAX_FILE_BYTES}-byte limit; skipped")
@@ -982,4 +1061,3 @@ __all__ = [
     "get_document",
     "record_document",
 ]
-

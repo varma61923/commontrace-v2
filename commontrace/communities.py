@@ -81,8 +81,9 @@ def _load_nodes(root: str) -> dict[str, dict[str, Any]]:
             "source_traces": traces,
             "text": f"{description} {fm.get('domain') or ''} {' '.join(tags)}",
         }
-    for fact in sorted(hierarchical.load_facts(root).values(), key=lambda f: f.id):
-        if fact.status != "active" or fact.forgotten:
+    now = datetime.now(timezone.utc)
+    for fact in sorted(hierarchical.list_facts(root, now=now), key=lambda f: f.id):
+        if not hierarchical._valid_at(fact, now):
             continue
         nodes[fact.id] = {
             "id": fact.id,
@@ -104,30 +105,33 @@ def _build_adjacency(root: str, nodes: dict[str, dict[str, Any]]) -> dict[str, l
             by_trace[trace_id].append(nid)
         for tag in node["tags"]:
             by_tag[tag].append(nid)
-    shared: dict[tuple[str, str], set[str]] = collections.defaultdict(set)
+    adj: dict[str, set[str]] = {nid: set() for nid in nodes}
+    seen_groups: set[tuple[str, ...]] = set()
 
-    def _link(groups: dict[str, list[str]], signal: str) -> None:
-        for members in groups.values():
-            unique = sorted(set(members))
-            for i in range(len(unique)):
-                for j in range(i + 1, len(unique)):
-                    shared[(unique[i], unique[j])].add(signal)
+    def _link(members: list[str]) -> None:
+        # Signals only establish an unweighted edge. Identical membership
+        # groups establish exactly the same clique regardless of their label.
+        # Keep every distinct group; never truncate a high-degree community.
+        unique = tuple(sorted(set(members)))
+        if len(unique) < 2 or unique in seen_groups:
+            return
+        seen_groups.add(unique)
+        for i, source in enumerate(unique):
+            for target in unique[i + 1:]:
+                adj[source].add(target)
+                adj[target].add(source)
 
-    _link(by_trace, "trace")
-    _link(by_tag, "tag")
+    for members in by_trace.values():
+        _link(members)
+    for members in by_tag.values():
+        _link(members)
     try:
         entities = entity_store.load_entities(root)
     except OSError:
         entities = {}
     for entry in entities.values():
         members = sorted({str(m) for m in entry.get("memory_ids", []) if str(m) in nodes})
-        for i in range(len(members)):
-            for j in range(i + 1, len(members)):
-                shared[(members[i], members[j])].add("entity")
-    adj: dict[str, set[str]] = {nid: set() for nid in nodes}
-    for a, b in shared:
-        adj[a].add(b)
-        adj[b].add(a)
+        _link(members)
     return {nid: sorted(neighbours) for nid, neighbours in adj.items()}
 
 

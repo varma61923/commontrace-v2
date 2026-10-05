@@ -9,13 +9,17 @@ Provides:
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import math
 import os
 import re
+import threading
 import uuid
+from collections import OrderedDict
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+from types import MappingProxyType
 from typing import Any
 
 from commontrace import _jsonl, paths
@@ -29,6 +33,81 @@ INGEST_STAGES = (
     "done",
     "failed",
 )
+MAX_DOCUMENT_BYTES = 128 * 1024 * 1024
+_DOCUMENT_ID_RE = re.compile(r"[0-9a-f]{16}\Z")
+_MANIFEST_CACHE: OrderedDict = OrderedDict()
+_MANIFEST_CACHE_LOCK = threading.RLock()
+_MAX_CACHED_DOCUMENTS = 50_000
+_MAX_MANIFEST_CACHE_BYTES = 16 * 1024 * 1024
+_MANIFEST_LOADING: OrderedDict = OrderedDict()
+_MANIFEST_GENERATIONS = itertools.count()
+
+
+def _manifest_signature(info) -> tuple[int, ...]:
+    return (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns, info.st_size)
+
+
+def _registered_documents(root: str):
+    """Immutable, bounded registry cache validated against a pinned manifest."""
+    from commontrace.ingest import _open_regular
+
+    path = os.path.abspath(_docs_file(root))
+    for _ in range(2):
+        with _open_regular(path, MAX_DOCUMENT_BYTES) as fh:
+            signature = _manifest_signature(os.fstat(fh.fileno()))
+            with _MANIFEST_CACHE_LOCK:
+                cached = _MANIFEST_CACHE.get(path)
+                if cached is not None and cached[0] == signature:
+                    _MANIFEST_CACHE.move_to_end(path)
+                    return cached[1], cached[2]
+                generation = next(_MANIFEST_GENERATIONS)
+                _MANIFEST_LOADING[path] = generation
+                _MANIFEST_LOADING.move_to_end(path)
+                while len(_MANIFEST_LOADING) > 64:
+                    _MANIFEST_LOADING.popitem(last=False)
+            payload = fh.read(MAX_DOCUMENT_BYTES + 1)
+            if len(payload) > MAX_DOCUMENT_BYTES:
+                raise ValueError("document manifest exceeds byte budget")
+            if _manifest_signature(os.fstat(fh.fileno())) != signature:
+                continue
+        ids: set[str] = set()
+        sources: dict[str, str] = {}
+        for line in payload.splitlines():
+            try:
+                doc = json.loads(line)
+            except (ValueError, RecursionError):
+                continue
+            if not isinstance(doc, dict):
+                continue
+            candidate = doc.get("id")
+            if not isinstance(candidate, str) or not _DOCUMENT_ID_RE.fullmatch(candidate):
+                continue
+            ids.add(candidate)
+            source = doc.get("source_path")
+            if isinstance(source, str):
+                sources[source] = candidate
+        frozen_ids, frozen_sources = frozenset(ids), MappingProxyType(sources)
+        cache_bytes = sum(len(value.encode("utf-8")) for value in ids)
+        cache_bytes += sum(len(key.encode("utf-8")) + len(value) for key, value in sources.items())
+        # A raced parse is never published as a newer generation. Every next
+        # reader checks full identity, so atomic replacements invalidate it.
+        with _open_regular(path, MAX_DOCUMENT_BYTES) as current:
+            if _manifest_signature(os.fstat(current.fileno())) != signature:
+                continue
+            with _MANIFEST_CACHE_LOCK:
+                if _MANIFEST_LOADING.get(path) == generation:
+                    _MANIFEST_LOADING.pop(path, None)
+                    _MANIFEST_CACHE.pop(path, None)
+                    if (len(ids) + len(sources) <= _MAX_CACHED_DOCUMENTS
+                            and cache_bytes <= _MAX_MANIFEST_CACHE_BYTES):
+                        _MANIFEST_CACHE[path] = (signature, frozen_ids, frozen_sources, cache_bytes)
+                        while (len(_MANIFEST_CACHE) > 8 or
+                               sum(len(entry[1]) + len(entry[2]) for entry in _MANIFEST_CACHE.values())
+                               > _MAX_CACHED_DOCUMENTS or
+                               sum(entry[3] for entry in _MANIFEST_CACHE.values()) > _MAX_MANIFEST_CACHE_BYTES):
+                            _MANIFEST_CACHE.popitem(last=False)
+        return frozen_ids, frozen_sources
+    raise ValueError("document manifest changed during read; retry retrieval")
 
 
 def _now() -> str:
@@ -231,19 +310,13 @@ def record_document(
         updated_at=_now(),
     )
 
-    # 1. Update documents catalog manifest
-    path = _docs_file(root)
-    with _jsonl.locked(path):
-        rows = [r for r in _jsonl.read_rows(path) if isinstance(r, dict) and r.get("id") != doc_id]
-        rows.append(doc.to_dict())
-        _jsonl.write_rows(path, rows)
+    # Store the payload atomically before publishing its manifest entry. Pin
+    # the directory and replace the leaf rather than following an existing link.
+    from commontrace.ingest import _open_directory
 
-    # 2. Store full content payload in dedicated document storage
     d_dir = _docs_dir(root)
     os.makedirs(d_dir, exist_ok=True)
-    body_path = os.path.join(d_dir, f"{doc_id}.json")
-    with open(body_path, "w", encoding="utf-8") as f:
-        json.dump({
+    payload = json.dumps({
             "id": doc_id,
             "source_path": clean_path,
             "title": doc_title,
@@ -252,7 +325,29 @@ def record_document(
             "token_count": est_tokens,
             "fingerprint": fp,
             "updated_at": doc.updated_at,
-        }, f, indent=2)
+        }, ensure_ascii=False).encode("utf-8")
+    if len(payload) > MAX_DOCUMENT_BYTES:
+        raise ValueError(f"document payload exceeds {MAX_DOCUMENT_BYTES} bytes")
+    with _open_directory(d_dir) as directory_fd:
+        temp_name = f".{doc_id}.{uuid.uuid4().hex}.tmp"
+        fd = os.open(temp_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                     | getattr(os, "O_NOFOLLOW", 0), 0o600, dir_fd=directory_fd)
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(payload)
+                f.flush()
+                os.fsync(f.fileno())
+            path = _docs_file(root)
+            with _jsonl.locked(path):
+                os.replace(temp_name, f"{doc_id}.json", src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+                rows = [r for r in _jsonl.read_rows(path) if isinstance(r, dict) and r.get("id") != doc_id]
+                rows.append(doc.to_dict())
+                _jsonl.write_rows(path, rows)
+        finally:
+            try:
+                os.unlink(temp_name, dir_fd=directory_fd)
+            except FileNotFoundError:
+                pass
 
     return doc
 
@@ -294,50 +389,33 @@ def get_document(
     doc_id_or_path: str,
     chunk_index: int | None = None,
 ) -> dict[str, Any] | None:
-    """Fetch full document content or a specific chunk on demand."""
+    """Fetch a registered payload by ID or source path, without rereading sources."""
     target = doc_id_or_path.strip()
     if not target:
         return None
 
-    # Determine doc_id
+    # Source paths are identifiers only: explicit prior ingestion authorized
+    # their content, but retrieval never opens the source again.
     if os.path.isabs(target) or "/" in target or "\\" in target:
         doc_id = hashlib.sha256(os.path.abspath(target).encode("utf-8")).hexdigest()[:16]
-    else:
+    elif _DOCUMENT_ID_RE.fullmatch(target):
         doc_id = target
+    else:
+        doc_id = ""
 
-    d_dir = _docs_dir(root)
-    body_path = os.path.join(d_dir, f"{doc_id}.json")
-    if not os.path.exists(body_path):
-        # Look up in manifest
-        for doc in list_documents(root, limit=1000):
-            if doc.get("id") == target or doc.get("source_path") == target:
-                doc_id = str(doc["id"])
-                body_path = os.path.join(d_dir, f"{doc_id}.json")
-                break
-
-    if not os.path.exists(body_path):
-        # If file on disk exists directly, load on demand
-        if os.path.isfile(target):
-            try:
-                from commontrace.ingest import _read_text
-                content = _read_text(target)
-                return {
-                    "id": doc_id,
-                    "source_path": os.path.abspath(target),
-                    "title": os.path.basename(target),
-                    "content": content,
-                    "chunks": [content],
-                    "token_count": max(1, math.ceil(len(content) / 4)),
-                    "requested_chunk": content if chunk_index == 0 else None,
-                }
-            except Exception:
-                return None
-        return None
-
+    from commontrace.ingest import _read_bytes
     try:
-        with open(body_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError):
+        ids, sources = _registered_documents(root)
+        if doc_id not in ids:
+            doc_id = sources.get(target, "")
+        if doc_id not in ids:
+            return None
+        body_path = os.path.join(_docs_dir(root), f"{doc_id}.json")
+        data = json.loads(_read_bytes(body_path, MAX_DOCUMENT_BYTES))
+    except (OSError, ValueError, RecursionError):
+        return None
+    if (not isinstance(data, dict) or data.get("id") != doc_id
+            or not isinstance(data.get("content"), str) or not isinstance(data.get("chunks"), list)):
         return None
 
     if chunk_index is not None:

@@ -2037,12 +2037,17 @@ def build_server(root: str, *, allow_approval: bool = True):
 
     @mcp.tool()
     async def ingest_document_get(doc_id_or_path: str, chunk_index: int | None = None) -> dict:
-        """Retrieve full document text or a specific numbered chunk on demand by document ID or source file path."""
+        """Retrieve a registered document snapshot or chunk by ID or registered source path."""
         from commontrace.ingest import catalog
 
-        doc = catalog.get_document(root, doc_id_or_path, chunk_index=chunk_index)
+        try:
+            doc = await asyncio.to_thread(
+                catalog.get_document, root, doc_id_or_path, chunk_index=chunk_index,
+            )
+        except (ValueError, OSError) as exc:
+            return _err(f"Cannot read registered document: {exc}", code="document_error")
         if doc is None:
-            return _err(f"Document {doc_id_or_path!r} not found in catalog or filesystem")
+            return _err(f"Document {doc_id_or_path!r} not found in catalog")
         return _ok(document=doc)
 
     # --- Sagas (Graphiti & Zep #5 M) ---
@@ -2294,8 +2299,9 @@ def build_server(root: str, *, allow_approval: bool = True):
                     "db_path must be inside the CommonTrace store root",
                     code="scope_error",
                 )
-            result = sql_guard.execute_guarded_sql(
-                db_path_abs, sql, max_rows=max_rows, timeout_seconds=timeout_seconds,
+            result = await asyncio.to_thread(
+                sql_guard.execute_guarded_sql, db_path_abs, sql,
+                max_rows=max_rows, timeout_seconds=timeout_seconds,
             )
             return _ok(**result)
         except Exception as exc:

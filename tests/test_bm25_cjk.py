@@ -202,7 +202,8 @@ def _save_load_roundtrip(tmp_path, scorer):
     ]
     index = retrieval._build_index(lessons, None, scorer)
     cache_dir = str(tmp_path)
-    fingerprint = tuple((p, (100 + i, 200 + i)) for i, (p, _fm) in enumerate(lessons))
+    fingerprint = tuple((p, (1, 10 + i, 100 + i, 150 + i, 200 + i))
+                        for i, (p, _fm) in enumerate(lessons))
     assert corpus_bin.save(cache_dir, scorer, fingerprint, index) is True
     loaded = corpus_bin.load(cache_dir, scorer, lessons, fingerprint)
     assert loaded is not None
@@ -220,12 +221,12 @@ def _save_load_roundtrip(tmp_path, scorer):
     return lessons, fingerprint
 
 
-class TestCorpusBinV2:
-    def test_version_is_2(self):
-        assert corpus_bin._VERSION == 2
+class TestCorpusBinV3:
+    def test_version_is_3(self):
+        assert corpus_bin._VERSION == 3
 
     @pytest.mark.parametrize("scorer", list(retrieval.LEXICAL_SCORERS))
-    def test_v2_roundtrip_for_every_scorer(self, tmp_path, scorer):
+    def test_v3_roundtrip_for_every_scorer(self, tmp_path, scorer):
         lessons, _fp = _save_load_roundtrip(tmp_path, scorer)
         for query in ("payment refund", "深度学习"):
             want = retrieval.rank_lessons(query, lessons, scorer=scorer, floor=0.0)
@@ -233,14 +234,26 @@ class TestCorpusBinV2:
                 r.__dict__ for r in retrieval.rank_lessons(
                     query, lessons, scorer=scorer, floor=0.0)]
 
-    def test_v1_blob_falls_back_to_rebuild(self, tmp_path):
+    @pytest.mark.parametrize("version", [1, 2])
+    def test_legacy_blob_falls_back_to_rebuild(self, tmp_path, version):
         scorer = "bm25-v1"
         lessons, fingerprint = _save_load_roundtrip(tmp_path, scorer)
         path = corpus_bin.bin_path(str(tmp_path), scorer)
         blob = bytearray(open(path, "rb").read())
-        blob[4] = 1
+        blob[4] = version
         open(path, "wb").write(bytes(blob))
         assert corpus_bin.load(str(tmp_path), scorer, lessons, fingerprint) is None
         ranked = retrieval.rank_lessons(
             "payment refund", lessons, scorer=scorer, floor=0.0)
         assert ranked[0].slug == "a"
+
+    @pytest.mark.parametrize("identity_field", range(5))
+    def test_every_source_identity_field_invalidates_disk_cache(self, tmp_path, identity_field):
+        scorer = "bm25-v1"
+        lessons, fingerprint = _save_load_roundtrip(tmp_path, scorer)
+        changed = list(fingerprint)
+        path, identity = changed[0]
+        identity = list(identity)
+        identity[identity_field] += 1
+        changed[0] = (path, tuple(identity))
+        assert corpus_bin.load(str(tmp_path), scorer, lessons, tuple(changed)) is None

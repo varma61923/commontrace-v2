@@ -1,0 +1,160 @@
+{
+  "baseline_revision": "c8ce5c792916c10e23b0618c59259960294b7bcc",
+  "candidate_state": "baseline plus phase6 uncommitted owned source changes (source digests recorded)",
+  "environment": {
+    "python": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+    "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+    "shared_cpu_load": true,
+    "paid_api_calls": 0,
+    "llm_calls": 0,
+    "embedding_calls": 0
+  },
+  "source_sha256": {
+    "commontrace/graph.py": "0a518a57e94f9a5aa9272f70592d344c696eeab997d2a2685e703a5258cc3baa",
+    "commontrace/communities.py": "f347d861d0cd6efd3acc99c970f626c9566bc26fbafea93ab0b166e78c5b52f4",
+    "commontrace/hierarchical.py": "9e8d9d1ed596dbb0c7786e0e6104945754776ae724dd4a8652bf3a5098658fd8",
+    "commontrace/observations.py": "2244c70a2a8b1fc63e1411740e9b0946c4baae5147270b494a6cd45f20fd73b8"
+  },
+  "historical_graph": {
+    "baseline": {
+      "revision": "c8ce5c792916c10e23b0618c59259960294b7bcc",
+      "edges": 20000,
+      "target_degree": 8,
+      "dates": 20,
+      "runs": 5,
+      "samples_ms": [
+        4492.009877998498,
+        4285.3407629954745,
+        4366.9914880010765,
+        5277.690112001437,
+        5464.469015998475
+      ],
+      "cold_samples_ms": [
+        90.01877599803265,
+        84.55180000601104,
+        94.85024299647193,
+        92.15413799392991,
+        95.78801700263284
+      ],
+      "output_hashes": [
+        "933c9dbc2957b917459864a159eaf2fe15e15697f881dc09dd35900a7fc5fd54",
+        "933c9dbc2957b917459864a159eaf2fe15e15697f881dc09dd35900a7fc5fd54",
+        "933c9dbc2957b917459864a159eaf2fe15e15697f881dc09dd35900a7fc5fd54",
+        "933c9dbc2957b917459864a159eaf2fe15e15697f881dc09dd35900a7fc5fd54",
+        "933c9dbc2957b917459864a159eaf2fe15e15697f881dc09dd35900a7fc5fd54"
+      ],
+      "median_ms": 4492.009877998498,
+      "cold_median_ms": 92.15413799392991
+    },
+    "candidate": {
+      "revision": "c8ce5c792916c10e23b0618c59259960294b7bcc",
+      "edges": 20000,
+      "target_degree": 8,
+      "dates": 20,
+      "runs": 5,
+      "samples_ms": [
+        0.3165160014759749,
+        0.3423449961701408,
+        0.3435359976720065,
+        0.36135299887973815,
+        0.34616099583217874
+      ],
+      "cold_samples_ms": [
+        120.92889899940928,
+        122.49453300319146,
+        123.95339800423244,
+        131.4362870034529,
+        101.38395299873082
+      ],
+      "output_hashes": [
+        "933c9dbc2957b917459864a159eaf2fe15e15697f881dc09dd35900a7fc5fd54",
+        "933c9dbc2957b917459864a159eaf2fe15e15697f881dc09dd35900a7fc5fd54",
+        "933c9dbc2957b917459864a159eaf2fe15e15697f881dc09dd35900a7fc5fd54",
+        "933c9dbc2957b917459864a159eaf2fe15e15697f881dc09dd35900a7fc5fd54",
+        "933c9dbc2957b917459864a159eaf2fe15e15697f881dc09dd35900a7fc5fd54"
+      ],
+      "median_ms": 0.3435359976720065,
+      "cold_median_ms": 122.49453300319146
+    },
+    "speedup": 13075.805471446627,
+    "output_hashes_identical": true
+  },
+  "community_adjacency": {
+    "baseline": {
+      "revision": "c8ce5c792916c10e23b0618c59259960294b7bcc",
+      "members": 500,
+      "groups": 24,
+      "runs": 5,
+      "samples_ms": [
+        568.9992620027624,
+        477.0783839994692,
+        463.6794239995652,
+        424.7602769974037,
+        442.84385499486234
+      ],
+      "output_hashes": [
+        "ebfb6a0965ecddfe05084675117a77afc64960f518144b8e39aef1181a590b27",
+        "ebfb6a0965ecddfe05084675117a77afc64960f518144b8e39aef1181a590b27",
+        "ebfb6a0965ecddfe05084675117a77afc64960f518144b8e39aef1181a590b27",
+        "ebfb6a0965ecddfe05084675117a77afc64960f518144b8e39aef1181a590b27",
+        "ebfb6a0965ecddfe05084675117a77afc64960f518144b8e39aef1181a590b27"
+      ],
+      "traced_peak_bytes": 57711984,
+      "median_ms": 463.6794239995652
+    },
+    "candidate": {
+      "revision": "c8ce5c792916c10e23b0618c59259960294b7bcc",
+      "members": 500,
+      "groups": 24,
+      "runs": 5,
+      "samples_ms": [
+        32.68222000042442,
+        33.75692800182151,
+        31.294251995859668,
+        34.48483300599037,
+        34.05147100420436
+      ],
+      "output_hashes": [
+        "ebfb6a0965ecddfe05084675117a77afc64960f518144b8e39aef1181a590b27",
+        "ebfb6a0965ecddfe05084675117a77afc64960f518144b8e39aef1181a590b27",
+        "ebfb6a0965ecddfe05084675117a77afc64960f518144b8e39aef1181a590b27",
+        "ebfb6a0965ecddfe05084675117a77afc64960f518144b8e39aef1181a590b27",
+        "ebfb6a0965ecddfe05084675117a77afc64960f518144b8e39aef1181a590b27"
+      ],
+      "traced_peak_bytes": 18648240,
+      "median_ms": 33.75692800182151
+    },
+    "speedup": 13.73582998946306,
+    "output_hashes_identical": true,
+    "traced_peak_ratio": 3.0947684070990076
+  },
+  "verification": {
+    "focused_tests": 88,
+    "ruff": "pass",
+    "focused_seconds": 7.33
+  },
+  "cold_inclusive_graph_batch": {
+    "baseline": {
+      "samples_ms": [
+        4582.028653996531,
+        4369.8925630014855,
+        4461.841730997548,
+        5369.844249995367,
+        5560.257033001108
+      ],
+      "median_ms": 4582.028653996531
+    },
+    "candidate": {
+      "samples_ms": [
+        121.24541500088526,
+        122.8368779993616,
+        124.29693400190445,
+        131.79764000233263,
+        101.730113994563
+      ],
+      "median_ms": 122.8368779993616
+    },
+    "speedup": 37.30173485865006,
+    "measurement": "Sum of paired first-query and following 20 distinct-date graph-query durations from each existing run; excludes fixture/date construction and HTTP/LLM work."
+  }
+}

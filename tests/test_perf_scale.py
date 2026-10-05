@@ -80,13 +80,13 @@ class TestGraphCaps:
     def test_adjacency_memoized(self, tmp_path):
         root = str(tmp_path)
         _build_chain_graph(root)
-        assert len(graph._GRAPH_ADJ_CACHE) == 0
+        assert len(graph._GRAPH_INDEX_CACHE) == 0
         first = graph.multi_hop_subgraph(root, ["n0"])
-        assert len(graph._GRAPH_ADJ_CACHE) >= 1
-        size_before = len(graph._GRAPH_ADJ_CACHE)
+        assert len(graph._GRAPH_INDEX_CACHE) >= 1
+        size_before = len(graph._GRAPH_INDEX_CACHE)
         second = graph.multi_hop_subgraph(root, ["n0"])
         assert second == first
-        assert len(graph._GRAPH_ADJ_CACHE) == size_before
+        assert len(graph._GRAPH_INDEX_CACHE) == size_before
         graph.add_edge(root, "n1", "x0", relation="relates_to")
         third = graph.multi_hop_subgraph(root, ["n0"])
         assert third != first or len(third["edges"]) >= len(first["edges"])

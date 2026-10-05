@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import bisect
 import contextlib
+import copy
+import errno
 import logging
 import os
 import re
@@ -384,7 +386,10 @@ def _resolve_exclusive(txn: _Txn, new_edge: GraphEdge, now_iso: str) -> None:
                                        "closed_recorded_at": now_iso}
 
 
-def _is_active_edge(edge: GraphEdge, moment: datetime | None, known_at: datetime | None = None) -> bool:
+def _is_active_edge(
+    edge: GraphEdge, moment: datetime | None, known_at: datetime | None = None,
+    *, current_at: datetime | None = None,
+) -> bool:
     """Valid at `moment` (valid time), as the store knew it at `known_at` (record time):
     an edge recorded later is unknown then, and a close recorded later had not happened."""
     def _at(value: str | None) -> datetime | None:
@@ -404,10 +409,7 @@ def _is_active_edge(edge: GraphEdge, moment: datetime | None, known_at: datetime
         if closed is not None and closed > known_at:
             invalid_at = None
     if moment is None:
-        if invalid_at is not None:
-            return False
-        expires = _at(edge.expired_at)
-        return expires is None or expires > (known_at or datetime.now(timezone.utc))
+        moment = current_at or known_at or datetime.now(timezone.utc)
     start = _at(edge.valid_at)
     if start is not None and start > moment:
         return False
@@ -431,15 +433,16 @@ def _clear_graph_cache() -> None:
         _SCANNED_ONCE.clear()
 
 
-def _graph_files_stamp(root: str) -> tuple[int, int, int, int]:
+def _graph_files_stamp(root: str) -> tuple[int, ...]:
     stamps: list[int] = []
     for path in (_nodes_file(root), _edges_file(root)):
         try:
             st = os.stat(path)
-            stamps.extend((int(st.st_mtime_ns), int(st.st_size)))
+            stamps.extend((int(st.st_dev), int(st.st_ino), int(st.st_mtime_ns),
+                           int(st.st_ctime_ns), int(st.st_size)))
         except OSError:
-            stamps.extend((0, 0))
-    return tuple(stamps)  # type: ignore[return-value]
+            stamps.extend((0, 0, 0, 0, 0))
+    return tuple(stamps)
 
 
 @dataclass
@@ -456,6 +459,7 @@ class _GraphFullIndex:
     order_by_valid: list[int]
     sorted_begins: list[Any]
     chains: dict[str, list[GraphNode]]
+    stamp: tuple[int, ...] = ()
 
 
 _MIN_MOMENT = datetime.min.replace(tzinfo=timezone.utc)
@@ -505,28 +509,51 @@ def _cached_graph_full(
     root: str, as_of: str | None = None, known_at: str | None = None,
 ) -> tuple[dict[str, GraphNode], list[GraphEdge], dict[str, list[GraphEdge]], list[GraphEdge]]:
     """Cached (nodes, active, adj, all_edges); single load_nodes/load_edges per stamp."""
-    key = (os.path.abspath(str(root)), _graph_files_stamp(root), as_of or "", known_at or "")
+    index = _full_index(root)
+    key = (os.path.abspath(str(root)), index.stamp, as_of or "", known_at or "")
+    current = not as_of and not known_at
+    now = datetime.now(timezone.utc) if current else None
     with _GRAPH_CACHE_LOCK:
         hit = _GRAPH_ADJ_CACHE.get(key)
         if hit is not None:
-            if len(hit) == 4:
+            # A current-time view changes when a TTL passes, even without a
+            # source write. Historical views have no wall-clock deadline.
+            if current and len(hit) > 4 and (now < hit[4] or (hit[5] is not None and now >= hit[5])):
+                _GRAPH_ADJ_CACHE.pop(key, None)
+            elif len(hit) >= 4:
                 return hit[0], hit[1], hit[2], hit[3]
-            return hit[0], hit[1], hit[2], []
-    nodes = load_nodes(root)
-    all_edges = load_edges(root)
+            else:
+                return hit[0], hit[1], hit[2], []
+    nodes, all_edges = index.nodes, index.edges
     moment = lesson_cache.parse_moment(as_of) if as_of else None
     known = lesson_cache.parse_moment(known_at) if known_at else None
-    active = [e for e in all_edges if _is_active_edge(e, moment, known)]
+    active = [e for e in all_edges if _is_active_edge(e, moment, known, current_at=now)]
     adj: dict[str, list[GraphEdge]] = {}
     for e in active:
         adj.setdefault(e.source, []).append(e)
         if e.target != e.source:
             adj.setdefault(e.target, []).append(e)
-    value = (nodes, active, adj, all_edges)
+    deadlines = []
+    if current:
+        # Scheduled facts can start or close without a file write, including
+        # currently inactive edges. Evaluate every boundary against the same
+        # instant used to construct this view.
+        for edge in all_edges:
+            for boundary in (edge.valid_at, edge.invalid_at, edge.expired_at):
+                if not boundary:
+                    continue
+                try:
+                    deadline = lesson_cache.parse_moment(boundary)
+                except ValueError:
+                    continue
+                if deadline > now:
+                    deadlines.append(deadline)
+    value = (nodes, active, adj, all_edges, now, min(deadlines) if deadlines else None)
     with _GRAPH_CACHE_LOCK:
-        if len(_GRAPH_ADJ_CACHE) >= _GRAPH_ADJ_CACHE_MAX_ENTRIES:
-            _GRAPH_ADJ_CACHE.pop(next(iter(_GRAPH_ADJ_CACHE)))
-        _GRAPH_ADJ_CACHE[key] = value
+        if _graph_files_stamp(root) == index.stamp:
+            if len(_GRAPH_ADJ_CACHE) >= _GRAPH_ADJ_CACHE_MAX_ENTRIES:
+                _GRAPH_ADJ_CACHE.pop(next(iter(_GRAPH_ADJ_CACHE)))
+            _GRAPH_ADJ_CACHE[key] = value
     return nodes, active, adj, all_edges
 
 
@@ -536,25 +563,48 @@ def _cached_graph(root: str, as_of: str | None = None, known_at: str | None = No
 
 
 def _full_index(root: str) -> _GraphFullIndex:
-    """Stamp-keyed full index, built from _cached_graph's single load (no extra I/O)."""
+    """One immutable source generation shared by current and historical reads."""
     base = os.path.abspath(str(root))
     stamp = _graph_files_stamp(root)
     with _GRAPH_CACHE_LOCK:
         hit = _GRAPH_INDEX_CACHE.get((base, stamp))
         if hit is not None:
             return hit
-    nodes, _active, _adj, all_edges = _cached_graph_full(root)
-    fresh = _graph_files_stamp(root)
-    key = (base, fresh)
-    with _GRAPH_CACHE_LOCK:
-        hit = _GRAPH_INDEX_CACHE.get(key)
-        if hit is not None:
-            return hit
+    # Share the mutation lock while capturing both source files. Expensive
+    # indexing happens after release; a later writer cannot relabel this older
+    # generation as its own. Missing stores need no lock file or directories.
+    with contextlib.ExitStack() as guards:
+        if os.path.isdir(_graph_dir(root)):
+            try:
+                guards.enter_context(_jsonl.locked(_lock_file(root)))
+            except OSError as exc:
+                if not isinstance(exc, PermissionError) and exc.errno not in (errno.EACCES, errno.EPERM, errno.EROFS):
+                    raise
+                # A frozen/read-only store must remain queryable. Validate its
+                # file identities around the read instead of creating a lock.
+                # Concurrent readable-only snapshots retain the same legacy
+                # semantics; never publish a generation that changed mid-read.
+                pass
+        stamp = _graph_files_stamp(root)
+        with _GRAPH_CACHE_LOCK:
+            hit = _GRAPH_INDEX_CACHE.get((base, stamp))
+            if hit is not None:
+                return hit
+        for _attempt in range(3):
+            stamp = _graph_files_stamp(root)
+            nodes, all_edges = load_nodes(root), load_edges(root)
+            if _graph_files_stamp(root) == stamp:
+                break
+        else:
+            raise RuntimeError("graph source changed repeatedly during snapshot; retry the query")
     index = _build_full_index(nodes, all_edges)
+    index.stamp = stamp
+    key = (base, stamp)
     with _GRAPH_CACHE_LOCK:
-        if len(_GRAPH_INDEX_CACHE) >= _GRAPH_ADJ_CACHE_MAX_ENTRIES:
-            _GRAPH_INDEX_CACHE.pop(next(iter(_GRAPH_INDEX_CACHE)))
-        _GRAPH_INDEX_CACHE[key] = index
+        if _graph_files_stamp(root) == stamp:
+            if len(_GRAPH_INDEX_CACHE) >= _GRAPH_ADJ_CACHE_MAX_ENTRIES:
+                _GRAPH_INDEX_CACHE.pop(next(iter(_GRAPH_INDEX_CACHE)))
+            _GRAPH_INDEX_CACHE[key] = index
     return index
 
 
@@ -568,9 +618,16 @@ def get_neighbors(
 ) -> list[dict[str, Any]]:
     """Nodes one edge away from *node_id*, with the connecting relation."""
     clean_id = _clean_id(node_id)
-    nodes, _active, adj = _cached_graph(root, as_of, known_at)
+    index = _full_index(root)
+    nodes = index.nodes
+    moment = lesson_cache.parse_moment(as_of) if as_of else None
+    known = lesson_cache.parse_moment(known_at) if known_at else None
+    current_at = datetime.now(timezone.utc) if moment is None and known is None else None
     results: list[dict[str, Any]] = []
-    for edge in adj.get(clean_id, []):
+    for position in index.by_entity.get(clean_id, []):
+        edge = index.edges[position]
+        if not _is_active_edge(edge, moment, known, current_at=current_at):
+            continue
         if relation and edge.relation != relation:
             continue
         for side, other in (("out", edge.target), ("in", edge.source)):
@@ -600,7 +657,11 @@ def multi_hop_subgraph(
     known_at: str | None = None,
 ) -> dict[str, Any]:
     """Breadth-first subgraph within *max_hops* of the start nodes."""
-    nodes, _active, adj = _cached_graph(root, as_of, known_at)
+    index = _full_index(root)
+    nodes = index.nodes
+    moment = lesson_cache.parse_moment(as_of) if as_of else None
+    known = lesson_cache.parse_moment(known_at) if known_at else None
+    current_at = datetime.now(timezone.utc) if moment is None and known is None else None
     hops_limit = max(0, min(int(max_hops), MAX_HOPS))
     cap = None if max_edges is None else max(0, int(max_edges))
     visited: dict[str, int] = {}
@@ -617,7 +678,10 @@ def multi_hop_subgraph(
         current, hop = queue.popleft()
         if hop >= hops_limit:
             continue
-        for edge in adj.get(current, []):
+        for position in index.by_entity.get(current, []):
+            edge = index.edges[position]
+            if not _is_active_edge(edge, moment, known, current_at=current_at):
+                continue
             if cap is not None and len(collected) >= cap:
                 break
             if id(edge) not in seen_edges:
@@ -787,7 +851,7 @@ def edges_between(
         if lo is not None and finish is not None and finish <= lo:
             continue
         out.append(edge)
-    return sorted(out, key=lambda e: e.valid_at or e.created_at)
+    return copy.deepcopy(sorted(out, key=lambda e: e.valid_at or e.created_at))
 
 
 def timeline(root: str, entity: str) -> list[dict[str, Any]]:
@@ -873,13 +937,13 @@ def get_version_chain(root: str, node_id: str) -> list[GraphNode]:
     if target is None:
         return []
     root_id = target.root_id or target.id
-    return list(index.chains.get(root_id, []))
+    return copy.deepcopy(index.chains.get(root_id, []))
 
 
 def list_version_chains(root: str) -> dict[str, list[GraphNode]]:
     """Nodes grouped by version-chain root, each chain oldest first."""
     index = _full_index(root)
-    return {key: list(chain) for key, chain in index.chains.items()}
+    return copy.deepcopy(index.chains)
 
 
 def forget_node(

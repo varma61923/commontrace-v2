@@ -6,11 +6,11 @@ import html as _html
 import os
 import re
 import struct
-import textwrap
 import zipfile
 import zlib
+from html.parser import HTMLParser
 
-from commontrace.ingest import Chunk, IngestionResult, _fingerprint, _redact_secrets
+from commontrace.ingest import Chunk, IngestionResult, _fingerprint, _open_regular, _read_bytes, _redact_secrets
 
 _MAX_MM_CHUNK = 2000
 MAX_FILE_BYTES = 64 * 1024 * 1024
@@ -55,17 +55,45 @@ def _split_bounded(
     text = (text or "").strip()
     if not text:
         return []
-    blocks = textwrap.wrap(text, _MAX_MM_CHUNK) or [text]
+    # Offset slicing avoids textwrap's repeated copies of a long unbroken word.
+    text = " ".join(text.split())
+    blocks: list[str] = []
+    start = 0
+    while start < len(text):
+        end = min(start + _MAX_MM_CHUNK, len(text))
+        if end < len(text):
+            space = text.rfind(" ", start, end + 1)
+            if space > start:
+                end = space
+        blocks.append(text[start:end])
+        start = end
+        if start < len(text) and text[start] == " ":
+            start += 1
     return [
         _make_chunk(block, path, modality, chunk_type, breadcrumb, i)
         for i, block in enumerate(blocks)
     ]
 
 
-_PDF_BT_ET_RE = re.compile(r"BT(.*?)ET", re.DOTALL)
-_PDF_PAREN_RE = re.compile(r"\((?:\\.|[^\\()])*\)")
 _PDF_HEX_RE = re.compile(r"<([0-9A-Fa-f\s]+)>")
-_PDF_TJ_RE = re.compile(r"(?:Tj|TJ|')", re.DOTALL)
+
+
+def _pdf_string_tokens(region: str):
+    """Scan escaped PDF strings once, including unterminated escaped opens."""
+    start = None
+    position = 0
+    while position < len(region):
+        char = region[position]
+        if char == "\\":
+            position += 2
+            continue
+        if char == "(":
+            # Retain the extractor's flat-string behavior for nested input.
+            start = position
+        elif char == ")" and start is not None:
+            yield region[start:position + 1]
+            start = None
+        position += 1
 
 
 def _unescape_pdf_string(token: str) -> str:
@@ -121,18 +149,31 @@ def _decode_pdf_hex(token: str) -> str:
     return raw.decode("latin-1", errors="replace")
 
 
-_PDF_STREAM_RE = re.compile(rb"<<(.{0,2000}?)>>\s*stream\r?\n(.*?)\r?\n?endstream", re.DOTALL)
+_PDF_STREAM_START_RE = re.compile(rb"<<(.{0,2000}?)>>\s*stream\r?\n", re.DOTALL)
+
+
+def _pdf_streams(raw: bytes):
+    position = 0
+    while True:
+        match = _PDF_STREAM_START_RE.search(raw, position)
+        if match is None:
+            return
+        end = raw.find(b"endstream", match.end())
+        if end < 0:
+            return
+        yield match.group(1), raw[match.end():end].rstrip(b"\r\n")
+        position = end + len(b"endstream")
 
 
 def _inflate_pdf_streams(raw: bytes) -> bytes:
     out: list[bytes] = []
     budget = MAX_INFLATED_BYTES
-    for match in _PDF_STREAM_RE.finditer(raw):
-        if b"FlateDecode" not in match.group(1):
+    for dictionary, compressed in _pdf_streams(raw):
+        if b"FlateDecode" not in dictionary:
             continue
         decoder = zlib.decompressobj()
         try:
-            data = decoder.decompress(match.group(2), budget)
+            data = decoder.decompress(compressed, budget)
         except zlib.error:
             continue
         budget -= len(data)
@@ -144,20 +185,27 @@ def _inflate_pdf_streams(raw: bytes) -> bytes:
 
 def extract_pdf_text(path: str) -> str:
     """Extract text strings from PDF content streams (BT...ET regions), compressed or not."""
-    with open(path, "rb") as fh:
-        raw = fh.read(MAX_FILE_BYTES + 1)
-    if len(raw) > MAX_FILE_BYTES:
-        raise ValueError(f"{path!r} is larger than {MAX_FILE_BYTES} bytes; skipped")
+    raw = _read_bytes(path, MAX_FILE_BYTES)
     text = (raw + b"\n" + _inflate_pdf_streams(raw)).decode("latin-1", errors="replace")
-    regions = _PDF_BT_ET_RE.findall(text)
+    regions: list[str] = []
+    position = 0
+    while True:
+        start = text.find("BT", position)
+        if start < 0:
+            break
+        end = text.find("ET", start + 2)
+        if end < 0:
+            break
+        regions.append(text[start + 2:end])
+        position = end + 2
     if not regions:
         regions = [text]
     parts: list[str] = []
     for region in regions:
         if "Tj" not in region and "TJ" not in region and "'" not in region and regions != [text]:
             continue
-        for m in _PDF_PAREN_RE.finditer(region):
-            decoded = _unescape_pdf_string(m.group(0))
+        for token in _pdf_string_tokens(region):
+            decoded = _unescape_pdf_string(token)
             if decoded.strip():
                 parts.append(decoded)
         for m in _PDF_HEX_RE.finditer(region):
@@ -191,7 +239,7 @@ _W_BR = f"{_W_NS}br"
 
 def extract_docx_paragraphs(path: str) -> list[str]:
     """Return paragraph texts from word/document.xml (stdlib only)."""
-    with zipfile.ZipFile(path, "r") as zf:
+    with _open_regular(path, MAX_FILE_BYTES) as archive, zipfile.ZipFile(archive, "r") as zf:
         try:
             info = zf.getinfo("word/document.xml")
         except KeyError:
@@ -202,35 +250,59 @@ def extract_docx_paragraphs(path: str) -> list[str]:
             xml_bytes = member.read(MAX_INFLATED_BYTES + 1)
         if len(xml_bytes) > MAX_INFLATED_BYTES:
             raise ValueError(f"word/document.xml in {path!r} inflates past {MAX_INFLATED_BYTES} bytes; refused")
-    xml_text = xml_bytes.decode("utf-8", errors="replace")
-    try:
-        import xml.etree.ElementTree as ET
+    # OOXML needs no DTD. Strip NULs for UTF-16/32 declaration detection too.
+    if re.search(rb"<!\s*(?:DOCTYPE|ENTITY)\b", xml_bytes.replace(b"\x00", b""), re.IGNORECASE):
+        raise ValueError("DOCX document XML declarations/entities are not allowed")
+    import io
+    import xml.etree.ElementTree as ET
 
-        root = ET.fromstring(xml_bytes)  # nosec B314
-        paras: list[str] = []
-        for p in root.iter(_W_P):
-            bits: list[str] = []
-            for node in p.iter():
-                if node.tag == _W_T and node.text:
-                    bits.append(node.text)
-                elif node.tag in (_W_TAB,):
-                    bits.append("\t")
-                elif node.tag in (_W_BR,):
-                    bits.append("\n")
-            para = "".join(bits).strip()
-            if para:
-                paras.append(para)
-        if paras:
-            return paras
-    except Exception:
-        pass
-    paras = []
-    for p_block in re.findall(r"<w:p[\s>].*?</w:p>", xml_text, re.DOTALL):
-        runs = re.findall(r"<w:t[^>]*>(.*?)</w:t>", p_block, re.DOTALL)
-        para = "".join(_html.unescape(r) for r in runs).strip()
-        if para:
-            paras.append(para)
-    return paras
+    paras: list[str] = []
+    stack: list = []
+    nodes = 0
+    paragraph_depth = 0
+    paragraph_order: dict[int, int] = {}
+    extracted_chars = 0
+    try:
+        # DTD/entities rejected in all accepted encodings above; depth and
+        # element budgets below bound the tree retained by this stdlib parser.
+        for event, node in ET.iterparse(io.BytesIO(xml_bytes), events=("start", "end")):  # nosec B314
+            if event == "start":
+                nodes += 1
+                if nodes > 200_000 or len(stack) >= 256:
+                    raise ValueError("DOCX XML exceeds element/depth budget")
+                if node.tag == _W_P:
+                    paragraph_depth += 1
+                    paragraph_order[id(node)] = len(paras)
+                    paras.append("")
+                stack.append(node)
+                continue
+            if node.tag == _W_P:
+                bits: list[str] = []
+                paragraph_chars = 0
+                for child in node.iter():
+                    if child.tag == _W_T and child.text:
+                        bits.append(child.text)
+                    elif child.tag == _W_TAB:
+                        bits.append("\t")
+                    elif child.tag == _W_BR:
+                        bits.append("\n")
+                    else:
+                        continue
+                    paragraph_chars += len(bits[-1])
+                    if extracted_chars + paragraph_chars > MAX_INFLATED_BYTES:
+                        raise ValueError("DOCX extracted text exceeds character budget")
+                para = "".join(bits).strip()
+                paras[paragraph_order.pop(id(node))] = para
+                extracted_chars += len(para)
+                paragraph_depth -= 1
+            stack.pop()
+            if not paragraph_depth:
+                if stack:
+                    stack[-1].remove(node)
+                node.clear()
+    except ET.ParseError as exc:
+        raise ValueError(f"invalid DOCX document XML: {exc}") from exc
+    return [para for para in paras if para]
 
 
 def chunk_docx(path: str) -> list[Chunk]:
@@ -245,6 +317,16 @@ def chunk_docx(path: str) -> list[Chunk]:
     buf = ""
     idx = 0
     for para in paras:
+        if len(para) > _MAX_MM_CHUNK:
+            if buf.strip():
+                chunks.append(_make_chunk(buf.strip(), path, "docx", "docx_text", base, idx))
+                idx += 1
+                buf = ""
+            for block in _split_bounded(para, path, "docx", "docx_text", base):
+                block.chunk_id = f"{_fingerprint(path + 'docx' + base)}_{idx}"
+                chunks.append(block)
+                idx += 1
+            continue
         if len(buf) + len(para) + 2 > _MAX_MM_CHUNK and buf.strip():
             chunks.append(_make_chunk(buf.strip(), path, "docx", "docx_text", base, idx))
             idx += 1
@@ -255,28 +337,55 @@ def chunk_docx(path: str) -> list[Chunk]:
     return chunks
 
 
-_SCRIPT_STYLE_RE = re.compile(
-    r"<\s*(script|style|noscript)[^>]*>.*?</\s*\1\s*>", re.IGNORECASE | re.DOTALL
-)
-_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
-_TAG_RE = re.compile(r"<[^>]+>")
-_HEADING_RE = re.compile(r"<\s*h[1-3][^>]*>(.*?)</\s*h[1-3]\s*>", re.IGNORECASE | re.DOTALL)
-_TITLE_RE = re.compile(r"<\s*title[^>]*>(.*?)</\s*title\s*>", re.IGNORECASE | re.DOTALL)
+class _HTMLTextParser(HTMLParser):
+    """Linear HTML extraction, including unclosed script/style blocks."""
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self.title = ""
+        self.in_title = False
+        self.ignored = ""
+        self.ignored_depth = 0
+
+    def handle_starttag(self, tag, attrs):
+        if self.ignored:
+            if tag == self.ignored:
+                self.ignored_depth += 1
+            return
+        if tag in {"script", "style", "noscript"}:
+            self.ignored, self.ignored_depth = tag, 1
+        elif tag == "title":
+            self.in_title = True
+        else:
+            self.parts.append("\n" if tag in {"br", "hr"} else " ")
+
+    def handle_endtag(self, tag):
+        if self.ignored:
+            if tag == self.ignored:
+                self.ignored_depth -= 1
+                if self.ignored_depth == 0:
+                    self.ignored = ""
+            return
+        if tag == "title":
+            self.in_title = False
+        self.parts.append("\n" if tag in {"p", "div", "br", "li", "tr", "h1", "h2", "h3",
+                                              "h4", "h5", "h6", "section", "article"} else " ")
+
+    def handle_data(self, data):
+        if not self.ignored:
+            self.parts.append(data)
+            if self.in_title and len(self.title) < 200:
+                self.title += data[:200 - len(self.title)]
 
 
 def extract_html_text(path: str) -> tuple[str, str]:
     """Return (title, plain_text) from an HTML file via tag stripping."""
-    with open(path, "r", encoding="utf-8", errors="replace") as fh:
-        raw = fh.read()
-    title_m = _TITLE_RE.search(raw)
-    title = _TAG_RE.sub("", title_m.group(1)).strip() if title_m else ""
-    title = _html.unescape(title)
-    text = _SCRIPT_STYLE_RE.sub(" ", raw)
-    text = _COMMENT_RE.sub(" ", text)
-    text = re.sub(r"</\s*(p|div|br|li|tr|h[1-6]|section|article)\s*/?>", "\n", text, flags=re.IGNORECASE)
-    text = re.sub(r"<\s*(br|hr)[^>]*>", "\n", text, flags=re.IGNORECASE)
-    text = _TAG_RE.sub(" ", text)
-    text = _html.unescape(text)
+    raw = _read_bytes(path, MAX_FILE_BYTES).decode("utf-8", errors="replace")
+    parser = _HTMLTextParser()
+    parser.feed(raw)
+    parser.close()
+    title = parser.title.strip()
+    text = "".join(parser.parts)
     text = re.sub(r"[ \t\xa0]+", " ", text)
     text = re.sub(r"\n\s*\n+", "\n\n", text).strip()
     return title, text
@@ -385,8 +494,7 @@ def _parse_jpeg(data: bytes) -> tuple[int | None, int | None, dict]:
 
 
 def _describe_image(path: str) -> tuple[str, str, dict]:
-    with open(path, "rb") as fh:
-        data = fh.read()
+    data = _read_bytes(path, MAX_FILE_BYTES)
     size = len(data)
     ext = os.path.splitext(path)[1].lower()
     base = os.path.basename(path)
@@ -660,8 +768,7 @@ def _parse_flac(data: bytes) -> dict:
 
 
 def _describe_audio(path: str) -> tuple[str, str]:
-    with open(path, "rb") as fh:
-        data = fh.read()
+    data = _read_bytes(path, MAX_FILE_BYTES)
     size = len(data)
     ext = os.path.splitext(path)[1].lower()
     base = os.path.basename(path)
@@ -903,14 +1010,12 @@ def _chunk_subtitle_cues(
 
 
 def chunk_vtt(path: str) -> list[Chunk]:
-    with open(path, "r", encoding="utf-8", errors="replace") as fh:
-        text = fh.read()
+    text = _read_bytes(path, MAX_FILE_BYTES).decode("utf-8", errors="replace")
     return _chunk_subtitle_cues(_parse_vtt_cues(text), path, "VTT")
 
 
 def chunk_srt(path: str) -> list[Chunk]:
-    with open(path, "r", encoding="utf-8", errors="replace") as fh:
-        text = fh.read()
+    text = _read_bytes(path, MAX_FILE_BYTES).decode("utf-8", errors="replace")
     return _chunk_subtitle_cues(_parse_srt_cues(text), path, "SRT")
 
 

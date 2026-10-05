@@ -27,7 +27,14 @@ def dtype(np, dimensions):
                      ("vector", "<f2", (dimensions,))])
 
 
-def load(store, tag, np, revision, dimensions):
+def load(store, tag, np, revision, dimensions, *, check_ids=True):
+    """Validate a snapshot's source and shape before returning its read-only map.
+
+    A caller disabling the full id-order check must validate every selected
+    id/turn/hash against the authoritative source and must not share that map as
+    a globally validated index. This avoids reading unrelated vector pages for
+    a small restricted scope without weakening proof of selected evidence.
+    """
     if not store._units_identity:
         return None
     try:
@@ -44,9 +51,10 @@ def load(store, tag, np, revision, dimensions):
             return None
         if len(records) - 1 != store.db.execute("SELECT COUNT(*) FROM units").fetchone()[0]:
             return None
-        ids = records["id"][1:]
-        if len(ids) and (ids[0] <= 0 or (ids[1:] <= ids[:-1]).any()):
-            return None
+        if check_ids:
+            ids = records["id"][1:]
+            if len(ids) and (ids[0] <= 0 or (ids[1:] <= ids[:-1]).any()):
+                return None
         # A corrupted/truncated or incorrectly shaped file is an expendable
         # cache miss, never a reason to fail source-backed memory recall.
         return records

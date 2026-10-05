@@ -26,7 +26,8 @@ def cli(*argv: str) -> subprocess.CompletedProcess:
 
 
 @pytest.fixture
-def store(tmp_path):
+def store(tmp_path, monkeypatch):
+    monkeypatch.setattr(hierarchical, "_now", lambda: NOW)
     root = str(tmp_path / "fleet")
     assert cli("init", "--dest", root, "--agent-type", "code").returncode == 0
     return root
