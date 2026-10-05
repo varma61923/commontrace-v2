@@ -1092,6 +1092,7 @@ commontrace conversation summarize ana                # a dated summary under ea
 commontrace conversation extract ana                  # model-distilled, dated memories (COMMONTRACE_LLM_*)
 commontrace conversation answer ana "Where does Ana work now?" --rounds 2
 commontrace conversation profile ana --history        # include statements a newer one replaced
+commontrace conversation profile ana --as-of 2023-06-01  # profile at a historical cutoff
 commontrace conversation forget ana --expired         # messages past their "expires"
 commontrace conversation export ana --out ana.jsonl && commontrace conversation import ana-copy ana.jsonl
 commontrace conversation promote ana                  # the current profile becomes atomic facts
@@ -1123,14 +1124,22 @@ Ben: Congrats, what is his name?
   their own sentences and added when a question asks for advice or
   recommendations, or touches the same subject.
 - **What changes.** A newer statement of something single-valued replaces the
-  older one: a new job, a new home, a new favourite colour. `profile` shows
-  what is current; `--history` shows what it replaced.
+  older one for the same owner: a new job, a new home, a new favourite colour.
+  Updates follow observation timestamps, including imports that arrive out of
+  order. Different speakers keep separate beliefs. `profile` shows what is
+  current; `--history` includes replaced statements and their `valid_until`;
+  `--as-of DATE` shows beliefs supported by evidence available at that moment.
 - **Summaries, extraction and answers.** `summarize` writes each session's
   most central sentences (or, with `--model`, a summary by the configured
   model) and recall shows it under the session's header. `extract` has the
   model distil dated, self-contained memories from new messages (adapted from
   additive extraction: one call per batch, known memories passed in so nothing
   is repeated, a changed fact replacing the old one); they join the profile.
+  Derived memories can specify `owner` and `source_turn_ids`; `Store.fact_evidence(id)`
+  returns their exact source messages. Deleting any supporting message deletes
+  the derived memory. Invalid extraction output raises an error without advancing
+  the batch checkpoint, so it can be retried. Appending messages invalidates the
+  session's summary.
   `answer` asks the model with the recalled context; `--rounds 2..4` lets it
   name what is missing first, and each follow-up search keeps its own best
   ranks. None of these run unless asked; recall needs no model.
@@ -1166,9 +1175,24 @@ Ben: Congrats, what is his name?
   `promote` copies the current profile into the store's atomic facts, where
   MCP `query_facts` and the agent loop read it.
 - **Scope and lifetime.** Recall can be limited to sessions, speakers and a
-  date range. A message can carry `expires`: it stops being recalled then,
+  date range. These restrictions apply before selecting sparse and dense hits,
+  and to profile facts and standing instructions. Explicit `recall --now DATE`
+  excludes evidence observed after that date; session summaries are omitted from
+  filtered views because they may contain excluded evidence.
+  A message can carry `expires`: it stops being recalled then,
   and `forget --expired` deletes it; `forget --before DATE` deletes by age.
   `export` / `import` move a space as JSONL with its summaries.
+- **Bounded caches and indexed profiles.** Profile recall uses its own FTS5
+  index and bounded candidates instead of scanning every fact. Normalized
+  deduplication uses an owner-specific hash index; chronological updates use
+  indexed predecessor/successor lookups. Ubiquitous entities are counted before
+  candidate expansion. Turn caches are limited to 2,048 entries and approximately
+  16 MiB per store, recall caches to approximately 8 MiB, and retained dense
+  matrices to 128 MiB across at most 16 stores. Local writes and external commits
+  invalidate cached results; closing a store releases its turn/recall entries and
+  embedding connections. Bounded dense matrices use a persisted content revision
+  and remain reusable across HTTP/MCP requests. Profile and summary changes do not
+  rebuild a dense index. Returned recall objects are independent copies.
 - **Safety.** Credentials are redacted before anything is stored; a turn
   the injection screen flags is never shown, and recall lists it under
   `explain.withheld`. Re-adding a message (same `id`, or same speaker, time

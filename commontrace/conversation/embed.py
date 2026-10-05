@@ -6,6 +6,8 @@ import importlib.util
 import json
 import os
 import threading
+from collections import OrderedDict
+from dataclasses import dataclass
 
 from commontrace.conversation import store as _store
 
@@ -74,6 +76,9 @@ class Embedder:
             self.db = _store.connect(path, "CREATE TABLE IF NOT EXISTS vec (hash TEXT PRIMARY KEY, v BLOB NOT NULL)")
         self._lock = threading.Lock()
 
+    def close(self) -> None:
+        self.db.close()
+
     def encode(self, texts: list[str], query: bool = False):
         prefix = MODELS[self.tag][1] if query else ""
         vecs = _model(self.tag).encode([prefix + t for t in texts], batch_size=BATCH,
@@ -106,35 +111,79 @@ class Embedder:
         return np.stack([np.frombuffer(found[h], dtype=np.float16) for h, _t in items]).astype(np.float32)
 
 
-_INDEX: dict[tuple[str, str], tuple[tuple, list[int], object]] = {}
+@dataclass
+class _Index:
+    stamp: tuple
+    ids: list[int]
+    hashes: list[str]
+    turns: list[int]
+    matrix: object
+
+
+_INDEX: OrderedDict = OrderedDict()
+_INDEX_LOCK = threading.Lock()
 MAX_CACHED_SPACES = 16
+MAX_INDEX_BYTES = 128 * 1024 * 1024
 
 
-def search(store: _store.Store, embedder: Embedder, query_vec, limit: int) -> list[tuple[int, float]]:
+def forget_store(store: _store.Store) -> None:
+    with _INDEX_LOCK:
+        for key in list(_INDEX):
+            if key[:2] == (store.path, store._units_identity or store.cache_identity):
+                del _INDEX[key]
+
+
+def release_store(store: _store.Store) -> None:
+    # Legacy frozen stores have no persisted revision. Their indexes cannot be
+    # reused safely across connections. New indexes are process-wide bounded
+    # caches of vectors/hashes, so request-scoped stores can share them.
+    if not store._units_identity:
+        forget_store(store)
+
+
+def search(store: _store.Store, embedder: Embedder, query_vec, limit: int, *,
+           allowed: set[int] | None = None) -> list[tuple[int, float]]:
     """(unit id, cosine) for the store's units nearest the query, best first."""
     np = embedder.np
-    key = (store.path, embedder.tag)
-    top = store.db.execute("SELECT COALESCE(MAX(id), 0), COUNT(*) FROM units").fetchone()
-    cached = _INDEX.get(key)
-    if cached is None or cached[0] != tuple(top):
+    if limit <= 0 or allowed == set():
+        return []
+    key = (store.path, store._units_identity or store.cache_identity, embedder.tag)
+    stamp = store.unit_stamp()
+    with _INDEX_LOCK:
+        cached = _INDEX.get(key)
+        if cached is not None:
+            _INDEX.move_to_end(key)
+    if cached is None or cached.stamp != stamp:
         units = store.units()
-        known = {} if cached is None else dict(zip(cached[1], cached[2]))
-        missing = [(h, body) for uid, _t, body, h in units if uid not in known]
-        fresh = dict(zip([uid for uid, *_ in units if uid not in known],
+        # SQLite can reuse a unit id after deletion. Only the content hash is
+        # evidence that an old vector still describes the current passage.
+        known = {} if cached is None else dict(zip(cached.hashes, cached.matrix))
+        missing = [(h, body) for _uid, _t, body, h in units if h not in known]
+        fresh = dict(zip([h for _uid, _t, _body, h in units if h not in known],
                          embedder.vectors(missing) if missing else []))
         ids = [uid for uid, *_ in units]
-        matrix = np.stack([known[i] if i in known else fresh[i] for i in ids]) if ids else \
+        hashes = [h for _uid, _t, _body, h in units]
+        matrix = np.stack([known[h] if h in known else fresh[h] for h in hashes]) if ids else \
             np.zeros((0, 1), dtype=np.float32)
-        cached = (tuple(top), ids, matrix)
-        _INDEX.pop(key, None)
-        while len(_INDEX) >= MAX_CACHED_SPACES:
-            _INDEX.pop(next(iter(_INDEX)))
-        _INDEX[key] = cached
-    _top, ids, matrix = cached
+        cached = _Index(stamp, ids, hashes, [t for _u, t, _b, _h in units], matrix)
+        with _INDEX_LOCK:
+            _INDEX.pop(key, None)
+            if matrix.nbytes <= MAX_INDEX_BYTES:
+                while _INDEX and (len(_INDEX) >= MAX_CACHED_SPACES
+                                  or sum(v.matrix.nbytes for v in _INDEX.values()) + matrix.nbytes > MAX_INDEX_BYTES):
+                    _INDEX.popitem(last=False)
+                _INDEX[key] = cached
+    ids, matrix = cached.ids, cached.matrix
     if not ids:
         return []
-    scores = matrix @ query_vec
-    limit = min(limit, len(ids))
+    eligible = np.arange(len(ids)) if allowed is None else np.array(
+        [i for i, turn in enumerate(cached.turns) if turn in allowed], dtype=np.int64)
+    if not len(eligible):
+        return []
+    scores = matrix @ query_vec if allowed is None else matrix[eligible] @ query_vec
+    limit = min(limit, len(eligible))
+    # Restrict BEFORE top-k: unrelated spaces/sessions cannot starve the
+    # filtered view, even if there are thousands of stronger global hits.
     best = np.argpartition(-scores, limit - 1)[:limit]
     best = best[np.argsort(-scores[best])]
-    return [(ids[i], float(scores[i])) for i in best]
+    return [(ids[eligible[i]], float(scores[i])) for i in best]

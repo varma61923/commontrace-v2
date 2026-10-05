@@ -5,6 +5,7 @@ window lifts the turns said or set in it, and the page is filled best-first with
 each hit's neighbouring turns, then shown in the order things were said."""
 from __future__ import annotations
 
+import copy
 import datetime as dt
 import math
 import re
@@ -14,7 +15,12 @@ from dataclasses import dataclass, field
 
 from commontrace import injection_guard
 from commontrace.conversation import profile, timeparse
-from commontrace.conversation.store import Store, Turn, sigmoid_bm25  # noqa: F401 - re-exported (canonical home: store)
+from commontrace.conversation.store import (  # noqa: F401 - re-exported (canonical home: store)
+    ConversationError,
+    Store,
+    Turn,
+    sigmoid_bm25,
+)
 
 DEFAULT_BUDGET = 1500
 RRF_K = 60
@@ -308,7 +314,10 @@ def _embedder(store: Store, choice: str | None):
         return None
     if not embed.available():
         return None
-    return embed.Embedder(store.root, tag, read_only=getattr(store, "read_only", False))
+    with store._lock:
+        if tag not in store._embedders:
+            store._embedders[tag] = embed.Embedder(store.root, tag, read_only=store.read_only)
+        return store._embedders[tag]
 
 
 def _header(session: str, at: dt.datetime | None, now: dt.datetime | None = None) -> str:
@@ -371,33 +380,52 @@ def _excerpt(turn: Turn, question: str, cap: int) -> str:
 
 
 _RECALL_CACHE_MAX = 100
+_RECALL_CACHE_BYTES = 8 * 1024 * 1024
 _RECALL_CACHE: OrderedDict = OrderedDict()
 _RECALL_LOCK = threading.Lock()
+
+
+def _recall_size(result: Recall) -> int:
+    # Conservative bound including the copied metadata and candidate lists.
+    return len(result.context.encode("utf-8")) + len(result.question.encode("utf-8")) \
+        + 128 * (len(result.ranked) + len(result.turns)) + 4096
+
+
+def forget_store(store: Store) -> None:
+    with _RECALL_LOCK:
+        for key in list(_RECALL_CACHE):
+            if key[0] is store.cache_identity:
+                del _RECALL_CACHE[key]
 
 
 def _recall_key(store: Store, question: str, now, opts: Options,
                 extra_queries: list[str]) -> tuple | None:
     """Cache key for a recall, or None when the call must not be cached.
 
-    Includes the store's max turn id (one indexed query): any write changes
-    it, so a cached context can never outlive the memory it was built from.
+    Includes local change count and SQLite data_version: deletions, profile
+    changes and commits through other connections invalidate the context.
     Calls with an explicit `now` are keyed on it too, since headers render
     relative deltas against that moment.
     """
     try:
-        max_id = store.db.execute("SELECT MAX(id) FROM turns").fetchone()[0]
+        stamp = store.read_stamp()
+        # With an implicit clock an expiry can pass without a write. Do not
+        # cache that view; explicit moments are stable and safe to cache.
+        if now is None and store._has_expiry and store.db.execute(
+                "SELECT 1 FROM turns WHERE expires IS NOT NULL LIMIT 1").fetchone():
+            return None
     except Exception:  # noqa: BLE001 - no cache without a readable store
         return None
     moment = timeparse.parse_moment(now) if isinstance(now, str) else now
     return (
-        store.space, _normalize_text(question), str(moment or ""),
+        store.cache_identity, store.path, question, str(moment or ""),
         opts.budget, opts.pool, opts.neighbours_before, opts.neighbours_after,
         opts.neighbour_hits, opts.neighbour_minutes, opts.excerpt_tokens,
         opts.window_boost, opts.entity_boost, opts.lexical_weight, opts.rerank,
         opts.rerank_depth, opts.rerank_blend, opts.profile_facts, opts.instructions,
         opts.broad, opts.recency_boost, opts.primary_hits, opts.embedder,
         opts.summaries, opts.sessions, opts.speakers, opts.since, opts.until,
-        tuple(extra_queries), max_id,
+        tuple(extra_queries), stamp,
     )
 
 
@@ -406,15 +434,13 @@ def recall(store: Store, question: str, *, now=None, options: Options | None = N
     """`extra_queries` are searched beside the question, each keeping its own best
     ranks (a follow-up search that finds a missing fact first is not diluted).
 
-    Repeat questions within a turn are served from a small LRU (supermemory's
-    turn-key pattern): the key includes the store's max turn id, so any write
-    invalidates it -- a hit never serves stale memory.
+    Repeat questions use a bounded LRU invalidated by local and external writes.
+    Results are independent copies; closing the store releases its cached data.
     """
-    import dataclasses
-
     from commontrace import telemetry
 
-    with telemetry.span("conversation.recall", space=store.space, queries=1 + len(extra_queries)) as handle:
+    with store.read_snapshot(), telemetry.span(
+            "conversation.recall", space=store.space, queries=1 + len(extra_queries)) as handle:
         opts = options or Options()
         key = _recall_key(store, question, now, opts, extra_queries)
         if key is not None:
@@ -423,14 +449,20 @@ def recall(store: Store, question: str, *, now=None, options: Options | None = N
                 if hit is not None:
                     _RECALL_CACHE.move_to_end(key)
                     handle.set(tokens=hit.tokens, turns=len(hit.turns), cached=True)
-                    return dataclasses.replace(hit)
+                    return copy.deepcopy(hit)
         result = _recall(store, question, now=now, options=options, extra_queries=extra_queries)
         handle.set(tokens=result.tokens, turns=len(result.turns))
-        if key is not None:
+        if key is not None and _recall_size(result) <= _RECALL_CACHE_BYTES:
             with _RECALL_LOCK:
-                _RECALL_CACHE[key] = result
+                # Remove older revisions of this store before retaining another
+                # copy of potentially sensitive evidence.
+                for old in list(_RECALL_CACHE):
+                    if old[0] is store.cache_identity and old[-1] != key[-1]:
+                        del _RECALL_CACHE[old]
+                _RECALL_CACHE[key] = copy.deepcopy(result)
                 _RECALL_CACHE.move_to_end(key)
-                while len(_RECALL_CACHE) > _RECALL_CACHE_MAX:
+                while len(_RECALL_CACHE) > _RECALL_CACHE_MAX or sum(
+                        _recall_size(r) for r in _RECALL_CACHE.values()) > _RECALL_CACHE_BYTES:
                     _RECALL_CACHE.popitem(last=False)
         return result
 
@@ -442,23 +474,33 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
     if not question:
         return Recall(question, "", 0, [], [], None)
     moment = timeparse.parse_moment(now) if isinstance(now, str) else now
+    if now is not None and moment is None:
+        raise ConversationError(f"unrecognised date {now!r}")
+    if isinstance(moment, dt.datetime):
+        moment = moment.replace(tzinfo=None)
     moment = moment or store.latest_moment()
     window = timeparse.question_window(question, moment)
     embedder = _embedder(store, opts.embedder)
     qvec_cache: dict[str, object] = {}
+    until = opts.until
+    if now is not None and moment is not None:
+        parsed_until = timeparse.parse_moment(until) if until else moment
+        if parsed_until is None:
+            raise ConversationError(f"unrecognised date {until!r}")
+        until = min(parsed_until, moment)
     allowed = store.allowed(sessions=opts.sessions, speakers=opts.speakers, since=opts.since,
-                            until=opts.until, now=moment)
-    pool = opts.pool if allowed is None else opts.pool * 10
+                            until=until, now=moment if now is not None else None)
+    pool = opts.pool
 
     def arm_rankings(query: str) -> list[tuple[list[int], float]]:
-        lexical = [u for u, _s in store.lexical(query, pool)]
+        lexical = [u for u, _s in store.lexical(query, pool, allowed=allowed)]
         if embedder is None:
             return [(lexical, 1.0)]
         from commontrace.conversation import embed
 
         if query not in qvec_cache:
             qvec_cache[query] = embedder.encode([query], query=True)[0]
-        dense = [u for u, _s in embed.search(store, embedder, qvec_cache[query], pool)]
+        dense = [u for u, _s in embed.search(store, embedder, qvec_cache[query], pool, allowed=allowed)]
         return [(dense, 1.0), (lexical, opts.lexical_weight)]
 
     def turn_scores(queries: list[str]) -> dict[int, float]:
@@ -502,7 +544,7 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
         if named:
             top = max(scores.values())
             boosted = 0
-            for name, turns in store.entity_turns(named).items():
+            for name, turns in store.entity_turns(named, max_matches=pool).items():
                 weight = 1.0 / (1.0 + 0.001 * (len(turns) - 1) ** 2) if turns else 0.0
                 for turn in turns:
                     if allowed is None or turn in allowed:
@@ -520,7 +562,8 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
     if opts.recency_boost and scores and asks_current(question):
         # knowledge updates: among comparable matches the later statement wins
         top = max(scores.values())
-        order = sorted(scores, key=lambda t: t)  # turn ids grow with time of writing
+        candidates = store.turns(scores)
+        order = sorted(scores, key=lambda t: (candidates[t].at or dt.datetime.min, t))
         for position, turn in enumerate(order):
             scores[turn] += opts.recency_boost * top * (position / max(1, len(order) - 1))
         explain["recency"] = True
@@ -547,15 +590,16 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
     if rerank and ranked:
         ranked = _rerank(store, question, ranked, rerank, opts.rerank_depth, explain, opts.rerank_blend)
         explain["rerank"] = rerank
-    conf = confidence(store, question, ranked[:5])
-    explain["confidence"] = conf
-    if conf == 0.0:
-        explain["abstain"] = True
     withheld: list[int] = []
     # Relative deltas are shown only when the caller supplies a reference
     # moment: defaulting to the latest turn would print "0s ago" noise.
     show_now = moment if now is not None else None
-    context, used, n_tokens = assemble(store, question, ranked, opts, withheld, allowed, now=show_now)
+    context, used, n_tokens = assemble(store, question, ranked, opts, withheld, allowed, now=show_now,
+                                     as_of=moment if now is not None else None)
+    conf = confidence(store, question, used[:5]) if context else 0.0
+    explain["confidence"] = conf
+    if conf == 0.0:
+        explain["abstain"] = True
     if withheld:
         explain["withheld"] = withheld
     return Recall(question, context, n_tokens, used, ranked,
@@ -592,7 +636,8 @@ _GLOBAL_RULE = re.compile(r"\b(?:format\w*|style|length|short|shorter|concise|br
                           r"explain\w*|answers?|responses?|repl(?:y|ies)|summar\w*|cite|sources?|emoji\w*)\b", re.I)
 
 
-def _instruction_lines(store: Store, limit: int, question: str = "") -> list[tuple[str, int]]:
+def _instruction_lines(store: Store, limit: int, question: str = "", *,
+                       facts: list[dict] | None = None) -> list[tuple[str, int]]:
     """Standing instructions the user gave the assistant: they apply to every answer, so
     they are shown whatever the question, the ones touching its subject and the rules
     about how to answer (format, length, tone, units, code) first."""
@@ -605,8 +650,10 @@ def _instruction_lines(store: Store, limit: int, question: str = "") -> list[tup
         return []
     asked = _stems(question)
     picked, seen = [], set()
-    for f in reversed(store.facts(["instruction"])):
-        key = f["subject"]
+    for f in reversed(facts if facts is not None else store.facts(["instruction"])):
+        if f["kind"] != "instruction":
+            continue
+        key = (f["owner"], f["subject"])
         if key in seen:
             continue
         seen.add(key)
@@ -620,10 +667,11 @@ def _instruction_lines(store: Store, limit: int, question: str = "") -> list[tup
     return out
 
 
-def _profile_lines(store: Store, question: str, limit: int) -> list[tuple[str, int]]:
+def _profile_lines(store: Store, question: str, limit: int, *,
+                   facts: list[dict] | None = None) -> list[tuple[str, int]]:
     if limit <= 0:
         return []
-    facts = [f for f in store.facts() if f["kind"] != "instruction"]
+    facts = [f for f in (facts if facts is not None else store.facts()) if f["kind"] != "instruction"]
     if not facts:
         return []
     asked = _stems(question)
@@ -633,6 +681,7 @@ def _profile_lines(store: Store, question: str, limit: int) -> list[tuple[str, i
     scored = []
     for f in facts:
         overlap = len(asked & _stems(f["statement"])) + (2 if about_self and f["kind"] == "identity" else 0)
+        overlap += 2 if asked & _stems(f["owner"]) else 0
         is_pref_fact = f["kind"] in ("preference", "dislike", "favorite", "habit")
         matches_advice = advice and f["kind"] in ("preference", "dislike", "favorite", "identity")
         if overlap or matches_advice or (preference and is_pref_fact):
@@ -644,11 +693,13 @@ def _profile_lines(store: Store, question: str, limit: int) -> list[tuple[str, i
     scored.sort(key=lambda x: -x[0])
     out, seen = [], set()
     for _score, f in scored:
-        if f["statement"] in seen:
+        identity = (f["owner"], f["statement"])
+        if identity in seen:
             continue
-        seen.add(f["statement"])
+        seen.add(identity)
         day = f"({f['at'][:10]}) " if f["at"] else ""
-        out.append((f"- {day}{f['statement']}", f["turn"]))
+        owner = f["speaker"] if f["speaker"].lower() == f["owner"] else f["owner"]
+        out.append((f"- {day}{owner}: {f['statement']}", f["turn"]))
         if len(out) >= limit:
             break
     return out
@@ -660,19 +711,30 @@ def _flagged(turn: Turn) -> bool:
 
 def assemble(store: Store, question: str, ranked: list[int], opts: Options,
              withheld: list[int] | None = None, allowed: set[int] | None = None,
-             now: dt.datetime | None = None) -> tuple[str, list[int], int]:
+             now: dt.datetime | None = None, as_of=None) -> tuple[str, list[int], int]:
     """Fill the budget best-first, each hit with its neighbours, then render by time.
     A turn the injection screen flags is never shown; its id goes to `withheld`."""
     withheld = [] if withheld is None else withheld
     budget = max(0, opts.budget)
-    instruction_lines = _instruction_lines(store, opts.instructions, question)
+    facts = store.recall_facts(question, as_of=as_of, allowed=allowed,
+                              instructions=bool(opts.instructions), profile_facts=bool(opts.profile_facts)) \
+        if opts.instructions or opts.profile_facts else []
+    # The same eligibility and injection checks apply to every memory layer.
+    sources = store.fact_source_ids(f["id"] for f in facts)
+    fact_turns = store.turns(t for ids in sources.values() for t in ids)
+    flagged = {tid for tid, turn in fact_turns.items() if _flagged(turn)}
+    withheld.extend(sorted(flagged))
+    facts = [f for f in facts if sources.get(f["id"]) and not flagged.intersection(sources[f["id"]])
+             and not injection_guard.injection_labels({"text": f["statement"]})
+             and _normalize_text(f["statement"]) != _normalize_text(question)]
+    instruction_lines = _instruction_lines(store, opts.instructions, question, facts=facts)
     instruction_block = ("[Standing instructions from the user]\n" + "\n".join(t for t, _ in instruction_lines)
                          + "\n\n") if instruction_lines else ""
     while instruction_lines and tokens(instruction_block) > budget // 6:
         instruction_lines.pop()
         instruction_block = ("[Standing instructions from the user]\n" + "\n".join(t for t, _ in instruction_lines)
                              + "\n\n") if instruction_lines else ""
-    profile_lines = _profile_lines(store, question, opts.profile_facts)
+    profile_lines = _profile_lines(store, question, opts.profile_facts, facts=facts)
     profile_block = ("[What the user has said about themselves]\n" + "\n".join(t for t, _ in profile_lines)
                      + "\n\n") if profile_lines else ""
     if tokens(profile_block) > budget // 4:
@@ -682,7 +744,11 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
     spent = tokens(profile_block)
     chosen: dict[int, Turn] = {}
     sessions_seen: set[str] = set()
-    summaries = store.summaries() if opts.summaries else {}
+    # A session summary may include filtered, expired or future turns. In a
+    # restricted view use exact eligible evidence rather than a wider summary.
+    summaries = {s: f for s, f in store.summaries().items()
+                 if not injection_guard.injection_labels({"text": f["text"]})} \
+        if opts.summaries and allowed is None else {}
 
     def header_cost(session: str, at) -> int:
         cost = tokens(_header(session, at, now)) + 1
@@ -835,14 +901,15 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
             previous = turn.idx
         blocks.append("\n".join(lines))
     context = profile_block + "\n\n".join(blocks)
-    if not chosen and ranked:
-        # Hindsight fact_budget floor: never answer empty when something
-        # matched -- the top hit is returned whole even over budget, instead
-        # of an empty context that reads as "memory holds nothing".
+    if not chosen and ranked and budget > 0:
+        # A tiny allowance can omit a header, but never exceed the budget.
         top = store.turns(ranked[:1])
-        if ranked[0] in top and not _is_flagged(top[ranked[0]]):
-            rendered[ranked[0]] = _excerpt(top[ranked[0]], question, max(cap, 200))
+        if ranked[0] in top and (allowed is None or ranked[0] in allowed) and not _is_flagged(top[ranked[0]]):
+            snippet = _excerpt(top[ranked[0]], question, budget)
+            if tokens(snippet) > budget:
+                snippet = snippet.removeprefix(top[ranked[0]].speaker + ": ")
+            snippet = snippet[:budget * 4]
             chosen[ranked[0]] = top[ranked[0]]
-            context = profile_block + _header(
-                top[ranked[0]].session, top[ranked[0]].at, now) + "\n" + rendered[ranked[0]]
+            context = snippet
+            pinned = []
     return context, list(chosen) + [t for t in dict.fromkeys(pinned) if t not in chosen], tokens(context)

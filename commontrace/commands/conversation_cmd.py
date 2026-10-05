@@ -31,7 +31,8 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     r.add_argument("space", help=SPACE_HELP)
     r.add_argument("question")
     r.add_argument("--budget", type=int, default=None, help="context size in tokens (default 1500)")
-    r.add_argument("--now", default=None, help="when the question is asked (default: the latest message)")
+    r.add_argument("--now", default=None,
+                   help="historical cutoff and reference time (default: the latest message, without a cutoff)")
     r.add_argument("--rerank", choices=("auto", "none", "cross-encoder", "cross-encoder-fast"), default="auto",
                    help="second-stage reranker (auto: the accurate one when the attention extra is installed)")
     r.add_argument("--lexical", action="store_true", help="keyword search only, no embedding model")
@@ -100,6 +101,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     f = sub.add_parser("profile", help="What the user has said about themselves, oldest first.")
     f.add_argument("space", help=SPACE_HELP)
     f.add_argument("--history", action="store_true", help="include statements a newer one replaced")
+    f.add_argument("--as-of", default=None, help="show the profile as it stood at this date")
     f.add_argument("--json", action="store_true")
     f.add_argument("--dest", default=None)
     f.set_defaults(func=run_profile)
@@ -346,7 +348,7 @@ def run_profile(args) -> int:
 
     try:
         with _store(args, create=False) as store:
-            facts = store.facts(history=args.history)
+            facts = store.facts(history=args.history, as_of=args.as_of)
     except ConversationError as exc:
         print(f"[commontrace] {exc}", file=sys.stderr)
         return 2

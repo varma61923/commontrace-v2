@@ -75,13 +75,19 @@ class TestMigration:
         store.close()
         db = sqlite3.connect(path)
         db.executescript("""
-            CREATE TABLE facts_v1 AS SELECT id, turn, kind, subject, statement, at FROM facts;
+            CREATE TABLE facts_v1 (id INTEGER PRIMARY KEY, turn INTEGER NOT NULL,
+                kind TEXT NOT NULL, subject TEXT NOT NULL, statement TEXT NOT NULL, at TEXT);
+            INSERT INTO facts_v1 SELECT id, turn, kind, subject, statement, at FROM facts;
+            DROP TRIGGER remove_derived_facts;
             DROP TABLE facts; ALTER TABLE facts_v1 RENAME TO facts;
+            DROP INDEX turns_expires;
             ALTER TABLE turns DROP COLUMN expires;
             UPDATE meta SET value='1' WHERE key='schema';""")
         db.close()
         store = Store(str(tmp_path), "old")
-        assert store.get_meta("schema") == "2"
+        from commontrace.conversation.store import SCHEMA_VERSION
+
+        assert store.get_meta("schema") == str(SCHEMA_VERSION)
         assert [f["statement"] for f in store.facts()] == ["I love tea."]
         store.add("s", [{"role": "user", "text": "My favorite tea is oolong.", "expires": "2030-01-01"}])
         assert store.stats()["turns"] == 2
@@ -151,8 +157,14 @@ class TestExtraction:
         assert extract(store, complete=FakeModel())["calls"] == 0
 
     def test_unparseable_replies_add_nothing(self, tmp_path):
+        from commontrace.conversation.store import ConversationError
+
         store = _seed(str(tmp_path))
-        assert extract(store, ["s1"], complete=FakeModel("not json"))["memories"] == 0
+        before = store.facts(history=True)
+        with pytest.raises(ConversationError, match="checkpoint was not advanced"):
+            extract(store, ["s1"], complete=FakeModel("not json"))
+        assert store.facts(history=True) == before
+        assert store.get_meta("extracted:s1") is None
 
 
 class TestAnswer:
