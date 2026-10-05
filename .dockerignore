@@ -34,6 +34,10 @@ commontrace/**
 !commontrace/harm.py
 !commontrace/adapters.py
 !commontrace/fingerprints.py
+!commontrace/ui_style.py
+!commontrace/ui/
+commontrace/ui/*
+!commontrace/ui/tokens.css
 
 .env
 hub/.env
