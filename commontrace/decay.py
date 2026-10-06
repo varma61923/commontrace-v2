@@ -86,6 +86,7 @@ def still_counts(verdict: str, fresh: Freshness, *, helps: str, hurts: str) -> t
 
 @dataclass(frozen=True)
 class DecayItem:
+    """One measured lesson and whether stale benefit was withheld from billing."""
     slug: str
     verdict: str
     freshness: Freshness

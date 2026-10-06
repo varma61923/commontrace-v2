@@ -1884,7 +1884,7 @@ def add_console_routes(
         org_id = str(claims["org"])
         query = str(request.query_params.get("q") or "")[:500]
         try:
-            offset = max(0, int(request.query_params.get("offset") or 0))
+            offset = min(100_000, max(0, int(request.query_params.get("offset") or 0)))
         except ValueError:
             offset = 0
         async with session_scope(session_factory) as session:
@@ -1937,7 +1937,7 @@ def add_console_routes(
                          "<h1>Knowledge Base</h1><p class=\"sub\">The Knowledge Base is "
                          "not enabled on this deployment.</p>")
         try:
-            offset = int(request.query_params.get("offset", "0"))
+            offset = min(100_000, max(0, int(request.query_params.get("offset", "0"))))
         except ValueError:
             offset = 0
         return await _kb_view(
@@ -2409,7 +2409,7 @@ def add_console_routes(
             return _redirect_to_signin()
         org_id = str(claims["org"])
         try:
-            offset = max(0, int(request.query_params.get("offset") or 0))
+            offset = min(100_000, max(0, int(request.query_params.get("offset") or 0)))
         except ValueError:
             offset = 0
         limit = 50

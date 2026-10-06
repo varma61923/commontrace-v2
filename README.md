@@ -2712,3 +2712,12 @@ commontrace-v2/
 - **Any AI agent** that can read `SKILL.md` and spawn sub-agents
 - **git** (used for commit-after-A in Phase 4)
 - Disk: ~500 MB for the HuggingFace model cache (one-time download)
+
+## Contributor and operational references
+
+[Development and testing](CONTRIBUTING.md) · [Architecture](docs/architecture.md) ·
+[MCP and gateway APIs](docs/api.md) · [Environment reference](docs/environment.md) ·
+[Operations and migration](docs/operations.md) · [Handover audit](docs/handover.md)
+
+The handover audit records completed work and remaining items separately; it is
+not a claim that every recommendation or unspecified placeholder is implemented.

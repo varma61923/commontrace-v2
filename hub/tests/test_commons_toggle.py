@@ -44,6 +44,7 @@ class TestCommonsEnabledByDefault:
     async def test_the_whole_tool_surface_is_present_by_default(self, enabled_config, session_factory):
         names = await _tool_names(enabled_config, session_factory)
         assert names == {
+            "get_traces_batch", "contribute_traces_batch", "delete_traces_batch",
             "search_traces", "contribute_trace", "get_trace", "vote_trace",
             "amend_trace", "list_tags",
             "delete_trace", "request_account_deletion",

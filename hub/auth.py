@@ -254,7 +254,7 @@ async def _region_ok(session: AsyncSession, org_id: str) -> bool:
     if not pinned or pinned == _DEPLOYMENT_REGION:
         return True
     logger.warning("refused a key for org %s: it is pinned to region %r and this deployment serves %r",
-                   org_id, pinned, _DEPLOYMENT_REGION)
+                   hashlib.sha256(org_id.encode()).hexdigest()[:12], pinned, _DEPLOYMENT_REGION)
     return False
 
 

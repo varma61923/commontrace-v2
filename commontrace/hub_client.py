@@ -4,8 +4,11 @@ import asyncio
 import contextlib
 import glob
 import hashlib
+import itertools
 import json
+import math
 import os
+import random
 import re
 import socket
 import sys
@@ -72,6 +75,12 @@ class HubRateLimited(HubConnectionError):
 
 
 _PUSH_CONCURRENCY = 8
+_HTTP_MAX_CONNECTIONS = 16  # room for the MCP receive stream and push workers
+_HTTP_MAX_KEEPALIVE_CONNECTIONS = 8
+_HTTP_KEEPALIVE_EXPIRY_SECONDS = 30.0
+_HTTP_CONNECT_TIMEOUT_SECONDS = 10.0
+_HTTP_POOL_TIMEOUT_SECONDS = 5.0
+TRACE_BATCH_SIZE = 25
 
 
 @dataclass
@@ -190,6 +199,8 @@ class HttpStatusProbe:
 
 async def _open_session(hub_url: str, api_key: str, timeout_seconds: float):
     _validate_hub_url(hub_url)
+    if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+        raise HubConfigurationError("Hub timeout must be a finite positive number")
     try:
         import httpx
         from mcp import ClientSession
@@ -203,7 +214,17 @@ async def _open_session(hub_url: str, api_key: str, timeout_seconds: float):
     probe = HttpStatusProbe()
     http_client = httpx.AsyncClient(
         headers={"Authorization": f"Bearer {api_key}"},
-        timeout=timeout_seconds,
+        timeout=httpx.Timeout(
+            connect=min(timeout_seconds, _HTTP_CONNECT_TIMEOUT_SECONDS),
+            read=timeout_seconds,
+            write=timeout_seconds,
+            pool=min(timeout_seconds, _HTTP_POOL_TIMEOUT_SECONDS),
+        ),
+        limits=httpx.Limits(
+            max_connections=_HTTP_MAX_CONNECTIONS,
+            max_keepalive_connections=_HTTP_MAX_KEEPALIVE_CONNECTIONS,
+            keepalive_expiry=_HTTP_KEEPALIVE_EXPIRY_SECONDS,
+        ),
         event_hooks={"response": [probe.record]},
     )
     return streamable_http_client(hub_url, http_client=http_client), ClientSession, http_client, probe
@@ -463,7 +484,7 @@ class HubSession:
         self._gate = gate if gate is not None else _RateLimitGate()
         self._session = None
 
-    async def call(self, name: str, arguments: dict[str, Any]) -> dict:
+    async def call(self, name: str, arguments: dict[str, Any], *, retry_transport: bool = True) -> dict:
         """One tool call, with retries."""
         last_exc: Exception | None = None
         attempts = 0
@@ -495,7 +516,7 @@ class HubSession:
                 else:
                     transport_attempts += 1
                     delay = _backoff_delay(transport_attempts, exc, retry_after)
-                    budget_left = transport_attempts < self._max_attempts
+                    budget_left = retry_transport and transport_attempts < self._max_attempts
                 if not budget_left or not _is_retryable(exc, status):
                     break
                 await asyncio.sleep(delay)
@@ -542,6 +563,40 @@ class HubSession:
         """Soft-delete or retract a memory trace from the Hub."""
         return await self.call("delete_trace", {"id": trace_id})
 
+    async def _trace_batches(self, name: str, field: str, items: Iterable[Any], *,
+                             retry_transport: bool = True) -> list[dict]:
+        """Bound wire requests while retaining ordered per-item refusals."""
+        iterator, results = iter(items), []
+        while batch := list(itertools.islice(iterator, TRACE_BATCH_SIZE)):
+            retry = retry_transport
+            if name == "contribute_traces_batch":
+                # A disconnected response can follow successful writes. Replay
+                # only when every contribution has an explicit idempotency key.
+                retry = retry and all(isinstance(t, dict) and t.get("idempotency_key") for t in batch)
+            response = await self.call(name, {field: batch}, retry_transport=retry)
+            rows = response.get("results")
+            if not isinstance(rows, list) or len(rows) != len(batch) or any(
+                    not isinstance(row, dict) for row in rows):
+                raise HubToolError(f"{name} returned an invalid batch result envelope")
+            results.extend(rows)
+        return results
+
+    async def contribute_traces_batch(self, traces: Iterable[dict]) -> list[dict]:
+        """Contribute traces in bounded requests, preserving per-item results.
+
+        Include distinct ``idempotency_key`` values to permit transport retries.
+        """
+        return await self._trace_batches("contribute_traces_batch", "traces", traces)
+
+    async def get_traces_batch(self, trace_ids: Iterable[str]) -> list[dict]:
+        """Fetch traces in input order, including per-item privacy refusals."""
+        return await self._trace_batches("get_traces_batch", "ids", trace_ids)
+
+    async def delete_traces_batch(self, trace_ids: Iterable[str]) -> list[dict]:
+        """Retract bounded batches without replaying ambiguous transport failures."""
+        return await self._trace_batches("delete_traces_batch", "ids", trace_ids,
+                                         retry_transport=False)
+
     async def vote_trace(self, trace_id: str, vote: str) -> dict:
         """Cast an upvote or downvote on a published memory trace."""
         return await self.call("vote_trace", {"id": trace_id, "vote": vote})
@@ -585,7 +640,11 @@ def _backoff_delay(attempt: int, exc: BaseException, observed_retry_after: float
         retry_after = observed_retry_after
     if retry_after is not None:
         return min(max(retry_after, 0.0), RETRY_MAX_DELAY_SECONDS)
-    return min(RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1)), RETRY_MAX_DELAY_SECONDS)
+    ceiling = min(RETRY_BASE_DELAY_SECONDS * (2 ** min(max(attempt - 1, 0), 16)),
+                  RETRY_MAX_DELAY_SECONDS)
+    # Equal jitter retains a nonzero pause while preventing a fleet of clients
+    # from retrying in lockstep. Explicit Retry-After remains authoritative.
+    return random.uniform(ceiling / 2, ceiling)
 
 
 @contextlib.asynccontextmanager
@@ -745,7 +804,7 @@ async def _push_batch(
     make_push_one: Callable[["_LazyHubSession | None"], Callable[[str], Awaitable[_T]]],
     concurrency: int = _PUSH_CONCURRENCY,
 ) -> list[_T]:
-    files = list(paths_iter)
+    files = await asyncio.to_thread(list, paths_iter)
     if not files:
         return []
 
@@ -767,7 +826,7 @@ async def push_active_lessons(
 ) -> list[PushResult]:
     async def _push_one(path: str, session: "_LazyHubSession | None" = None) -> PushResult | None:
         try:
-            fm, body = frontmatter.read(path)
+            fm, body = await asyncio.to_thread(frontmatter.read, path)
         except Exception as exc:  # noqa: BLE001 - one malformed local file (hand-edited YAML
             return PushResult(
                 slug=os.path.splitext(os.path.basename(path))[0],
@@ -900,7 +959,7 @@ async def push_captured_traces(
 ) -> list[PushResult]:
     async def _push_one(path: str, session: "_LazyHubSession | None" = None) -> PushResult:
         try:
-            instance, _body = trace_io.read(path)
+            instance, _body = await asyncio.to_thread(trace_io.read, path)
         except Exception as exc:  # noqa: BLE001 - see push_active_lessons's identical
             return PushResult(
                 slug=os.path.splitext(os.path.basename(path))[0],
@@ -1178,26 +1237,41 @@ async def pull_search_results(
     tags: list[str] | None = None,
     max_results: int = DEFAULT_MAX_PULL_RESULTS,
 ) -> PullResult:
+    if isinstance(max_results, bool) or not isinstance(max_results, int) or max_results < 0:
+        raise ValueError("max_results must be a nonnegative integer")
+    if max_results == 0:
+        return PullResult()
     traces: list[dict] = []
     ignored_terms: list[str] = []
     offset = 0
-    while True:
-        response = await _call_tool(
-            hub_url, api_key, "search_traces", {"query": query, "tags": tags or [], "offset": offset}
-        )
-        if response.get("error"):
-            raise HubConnectionError(f"search_traces failed: {response['error']}")
-        raw_ignored = response.get("terms_ignored")
-        if isinstance(raw_ignored, list):
-            ignored_terms = [str(t) for t in raw_ignored]
-        page = response.get("traces", [])
-        traces.extend(page)
-        if not page or not response.get("has_more") or len(traces) >= max_results:
-            break
-        offset = int(response.get("offset", offset)) + (int(response.get("limit", 0)) or len(page))
-    if len(traces) > max_results:
-        traces = traces[:max_results]
+    async with contextlib.AsyncExitStack() as stack:
+        session = _LazyHubSession(stack, hub_url, api_key)
+        while True:
+            response = await _call_tool(
+                hub_url, api_key, "search_traces", {"query": query, "tags": tags or [], "offset": offset},
+                session=session,
+            )
+            if response.get("error"):
+                raise HubConnectionError(f"search_traces failed: {response['error']}")
+            raw_ignored = response.get("terms_ignored")
+            if isinstance(raw_ignored, list):
+                ignored_terms = [str(t) for t in raw_ignored]
+            page = response.get("traces", [])
+            traces.extend(page[:max_results - len(traces)])
+            if not page or not response.get("has_more") or len(traces) >= max_results:
+                break
+            next_offset = int(response.get("offset", offset)) + (int(response.get("limit", 0)) or len(page))
+            if next_offset <= offset:
+                raise HubConnectionError("search_traces returned a non-advancing pagination offset")
+            offset = next_offset
 
+    written = await asyncio.to_thread(_write_pulled_traces, root, traces)
+
+    return PullResult(written_paths=written, n_found=len(traces), ignored_terms=ignored_terms)
+
+
+def _write_pulled_traces(root: str, traces: list[dict]) -> list[str]:
+    """Persist one bounded pull off the event loop, retaining raw provenance."""
     tdir = paths.traces_dir(root)
     os.makedirs(tdir, exist_ok=True)
     tdir_abs = os.path.abspath(tdir)
@@ -1233,4 +1307,4 @@ async def pull_search_results(
         frontmatter.write(out_path, fm, body)
         written.append(out_path)
 
-    return PullResult(written_paths=written, n_found=len(traces), ignored_terms=ignored_terms)
+    return written

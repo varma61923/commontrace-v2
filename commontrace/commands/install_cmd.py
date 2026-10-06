@@ -10,6 +10,7 @@ from commontrace import mcp_tools, paths
 TARGETS = ["claude-code", "cursor", "devin", "windsurf", "generic-mcp", "generic"]
 
 _HUB_TOOLS = [
+            "get_traces_batch", "contribute_traces_batch", "delete_traces_batch",
     "search_traces", "contribute_trace", "get_trace", "vote_trace", "amend_trace", "list_tags",
     "fleet_outcomes", "holdout_assign", "record_occasion_outcome",
     "value_delivered",

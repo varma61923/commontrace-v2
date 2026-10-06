@@ -397,7 +397,8 @@ async def deliver_pending(
         try:
             await transport(cipher.decrypt(endpoint.url), body, headers)
         except Exception as exc:  # noqa: BLE001 - any failure is a retry
-            delivery.last_error = f"{type(exc).__name__}: {exc}"[:500]
+            # Transport messages can contain destination credentials or tokens.
+            delivery.last_error = type(exc).__name__[:100]
             if delivery.attempts >= MAX_ATTEMPTS:
                 delivery.status = STATUS_FAILED
                 gave_up += 1

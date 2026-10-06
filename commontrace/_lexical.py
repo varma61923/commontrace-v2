@@ -1,3 +1,7 @@
+"""Shared lexical primitives for sparse retrieval and evidence matching.
+
+Unicode word tokenization is paired with overlapping CJK bigrams so languages
+without whitespace boundaries still contribute searchable terms."""
 from __future__ import annotations
 
 import re

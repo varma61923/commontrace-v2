@@ -1,3 +1,8 @@
+"""Group recurring trace evidence into candidate lessons for human review.
+
+Small corpora use exact Jaccard clustering. Large corpora use deterministic
+MinHash/LSH to propose bounded pairs, then verify each with the same exact rule.
+Candidate generation is approximate; it never makes an unverified lesson active."""
 from __future__ import annotations
 
 import hashlib

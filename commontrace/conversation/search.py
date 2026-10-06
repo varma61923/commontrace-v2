@@ -647,10 +647,15 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
         graph, _ = filter_self_turns(store, question, graph)
         # Reserve a small discovery quota so graph-only evidence is not drowned
         # by hundreds of near-identical lexical/dense matches.
-        novel = [t for t in graph if t not in ranked[:6]]
+        head = set(ranked[:6])
+        novel = [t for t in graph if t not in head]
         # Every discovered turn remains a candidate, including later two-hop
         # evidence. Previously only the first four discoveries reached recall.
-        ranked.extend(t for t in novel if t not in ranked)
+        seen = set(ranked)
+        for turn in novel:
+            if turn not in seen:
+                seen.add(turn)
+                ranked.append(turn)
         for i, turn in enumerate(novel):
             if i >= 4:
                 break
@@ -710,7 +715,8 @@ def _rerank(store: Store, question: str, ranked: list[int], mode: str, depth: in
         scores = {t: 1.0 / (RRF_K + fused.get(t, len(head)) + 1) + blend / (RRF_K + i + 1)
                   for i, t in enumerate(order)}
         order = sorted(scores, key=lambda t: -scores[t])
-    return order + [t for t in ranked if t not in set(order)]
+    returned = set(order)
+    return order + [t for t in ranked if t not in returned]
 
 
 _GLOBAL_RULE = re.compile(r"\b(?:format\w*|style|length|short|shorter|concise|brief|bullet\w*|list|language|units?|"

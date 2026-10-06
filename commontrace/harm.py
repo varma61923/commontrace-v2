@@ -45,6 +45,7 @@ def split(
 
 
 def note(n: int) -> str:
+    """Return the human-readable explanation for measured-harm withdrawals."""
     return (
         f"{n} matching lesson(s) were not injected because this store's experiment "
         "measured them making outcomes WORSE (verdict HURTS on an anytime-valid "

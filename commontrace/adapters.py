@@ -6,6 +6,8 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass
 
+__all__ = ["ADAPTERS", "GENERIC", "SOURCES", "Adapter", "normalize", "otel_attributes"]
+
 GENERIC = "generic"
 
 _MAX_TEXT = 20_000
@@ -290,6 +292,7 @@ OTEL_OUTCOME_KEY = "commontrace.occasion.succeeded"
 
 @dataclass(frozen=True)
 class Adapter:
+    """A named export adapter and its normalization callable."""
     name: str
     describe: str
     normalize: Callable[[dict], dict]
@@ -329,6 +332,20 @@ SOURCES = tuple(ADAPTERS)
 
 
 def normalize(row: dict, source: str = GENERIC) -> dict:
+    """Convert a provider export row to CommonTrace trace fields.
+
+    Parameters
+    ----------
+    row : dict
+        One exported trace or span; non-object values normalize to an empty row.
+    source : str
+        Registered adapter name from ``SOURCES``. Unknown names raise ValueError.
+
+    Returns
+    -------
+    dict
+        Flat trace fields ready for the ingestion field mapper.
+    """
     try:
         adapter = ADAPTERS[source]
     except KeyError:

@@ -166,7 +166,7 @@ class RetrievalConfig:
 def _int_or(value: object, default: int) -> int:
     try:
         parsed = int(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
     return parsed if parsed >= 0 else default
 
@@ -174,7 +174,7 @@ def _int_or(value: object, default: int) -> int:
 def _float_or(value: object, default: float) -> float:
     try:
         out = float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
     if not math.isfinite(out):
         return default
@@ -184,6 +184,12 @@ def _float_or(value: object, default: float) -> float:
 def _unit_float_or(value: object, default: float) -> float:
     out = _float_or(value, default)
     return out if 0.0 <= out <= 1.0 else default
+
+
+def _nonnegative_float_or(value: object, default: float) -> float:
+    """Sanitize persisted weights without accepting NaN or negative influence."""
+    out = _float_or(value, default)
+    return out if out >= 0.0 else default
 
 
 def has_recorded_assignments(root: str) -> bool:
@@ -281,7 +287,7 @@ def load_config(root: str) -> RetrievalConfig:
                     scorer = retrieval.SCORER_IDF
                 return RetrievalConfig(
                     scorer=scorer,
-                    floor=_float_or(raw.get("floor"), retrieval.default_floor(scorer)),
+                    floor=_unit_float_or(raw.get("floor"), retrieval.default_floor(scorer)),
                     max_lessons=_int_or(
                         raw.get("max_lessons"), dosage.DEFAULT_MAX_LESSONS),
                     max_chars=_int_or(raw.get("max_chars"), dosage.DEFAULT_MAX_CHARS),
@@ -289,7 +295,7 @@ def load_config(root: str) -> RetrievalConfig:
                         raw.get("redundancy_threshold"), dosage.DEFAULT_REDUNDANCY_THRESHOLD),
                     reliability_weight=_unit_float_or(raw.get("reliability_weight"), 0.0),
                     recency_weight=_unit_float_or(raw.get("recency_weight"), 0.0),
-                    graph_weight=_float_or(raw.get("graph_weight"), 1.0),
+                    graph_weight=_nonnegative_float_or(raw.get("graph_weight"), 1.0),
                     fusion=(
                         str(raw["fusion"])
                         if raw.get("fusion") in FUSIONS
@@ -390,8 +396,8 @@ def configure(root: str, *, scorer: str | None = None, floor: float | None = Non
     new_graph_weight = (
         current.graph_weight if graph_weight is None else float(graph_weight)
     )
-    if new_graph_weight < 0.0:
-        raise ValueError(f"graph weight must be >= 0.0, got {new_graph_weight}")
+    if not math.isfinite(new_graph_weight) or new_graph_weight < 0.0:
+        raise ValueError(f"graph weight must be finite and >= 0.0, got {new_graph_weight}")
     new_rerank = current.rerank if rerank is None else rerank
     if new_rerank not in RERANKS:
         raise ValueError(

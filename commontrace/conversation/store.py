@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import datetime as dt
 import hashlib
+import heapq
 import json
 import math
 import os
@@ -14,7 +15,7 @@ import sys
 import threading
 import time
 import urllib.parse
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
@@ -24,6 +25,8 @@ from commontrace.conversation import profile, timeparse
 
 SPACE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 SESSION_RE = re.compile(r"^[^\x00-\x1f]{1,200}$")
+_WHITESPACE_RE = re.compile(r"\s+")
+_BM25_WORD_RE = re.compile(r"[a-z0-9]+")
 MAX_TURN_CHARS = 1_000_000  # long pastes are split into retrieval units, not refused
 UNIT_CHARS = 700
 SCHEMA_VERSION = 3
@@ -254,7 +257,7 @@ def fact_hash(statement: str) -> str:
     strip surrounding whitespace/punctuation, collapse internal whitespace.
     Two turns stating the same fact with different casing/spacing share a hash.
     """
-    norm = re.sub(r"\s+", " ", str(statement or "").strip().lower().strip(" .,;:!?\"'"))
+    norm = _WHITESPACE_RE.sub(" ", str(statement or "").strip().lower().strip(" .,;:!?\"'"))
     return hashlib.md5(norm.encode("utf-8"), usedforsecurity=False).hexdigest()
 
 
@@ -795,9 +798,23 @@ class Store:
             "SELECT id FROM turns WHERE session=? AND idx BETWEEN ? AND ? AND idx != ? ORDER BY idx",
             (turn.session, turn.idx - before, turn.idx + after, turn.idx))]
 
-    def units(self) -> list[tuple[int, int, str, str]]:
-        """Every retrieval unit: (unit id, turn id, body, content hash)."""
-        return [tuple(r) for r in self.db.execute("SELECT id, turn, body, hash FROM units ORDER BY id")]
+    def units(self, *, after_id: int | None = None, limit: int | None = None) -> list[tuple[int, int, str, str]]:
+        """Retrieval passages, optionally bounded by a stable unit-ID cursor.
+
+        The no-argument form retains the complete-corpus compatibility API;
+        index builders should prefer :meth:`unit_batches` to stream bodies.
+        """
+        query, params = "SELECT id, turn, body, hash FROM units", []
+        if after_id is not None:
+            query += " WHERE id>?"
+            params.append(after_id)
+        query += " ORDER BY id"
+        if limit is not None:
+            if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
+                raise ValueError("unit limit must be a nonnegative integer")
+            query += " LIMIT ?"
+            params.append(limit)
+        return [tuple(r) for r in self.db.execute(query, params)]
 
     def unit_batches(self, size: int = 1024, *, allowed: set[int] | None = None):
         """Stream eligible passages without materialising the interaction log."""
@@ -838,9 +855,7 @@ class Store:
                 "SELECT rowid, bm25(units_fts) FROM units_fts WHERE units_fts MATCH ? "  # nosec B608 - fixed eligibility SQL
                 + eligible + " ORDER BY bm25(units_fts) LIMIT ?", params)
             return [(r[0], sigmoid_bm25(-r[1], n_terms)) for r in rows]
-        units = self.units()
-        if allowed is not None:
-            units = [u for u in units if u[1] in allowed]
+        units = (unit for batch in self.unit_batches(allowed=allowed) for unit in batch)
         return _python_bm25(units, query, limit)
 
     def in_window(self, lo: dt.date, hi: dt.date) -> set[int]:
@@ -1005,8 +1020,13 @@ class Store:
             out.setdefault(fid, []).append(tid)
         return out
 
-    def timeline(self, limit: int = 500) -> list[dict]:
-        """Chronological episodic chain of sessions with their summaries, dates, and turn bounds."""
+    def timeline(self, limit: int = 500, *, after_seq: int | None = None) -> list[dict]:
+        """Chronological sessions, with optional keyset pagination by ``seq``.
+
+        Page limits never change the chronology or discard durable evidence.
+        """
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
+            raise ValueError("timeline limit must be a nonnegative integer")
         query = """
         SELECT s.id as session, s.started_at, s.seq, sm.text as summary, COUNT(t.id) as turns,
                MIN(t.id) as first_turn, MAX(t.id) as last_turn
@@ -1014,11 +1034,12 @@ class Store:
         LEFT JOIN summaries sm ON sm.session = s.id
             AND sm.turns=(SELECT COUNT(*) FROM turns st WHERE st.session=s.id)
         LEFT JOIN turns t ON t.session = s.id
+        WHERE (? IS NULL OR s.seq > ?)
         GROUP BY s.id
         ORDER BY s.seq ASC
         LIMIT ?
         """
-        rows = self.db.execute(query, (limit,)).fetchall()
+        rows = self.db.execute(query, (after_seq, after_seq, limit)).fetchall()
         return [dict(r) for r in rows]
 
     def session_turns(self, session: str, *, after_idx: int = -1,
@@ -1094,22 +1115,39 @@ class Store:
 
 def _python_bm25(units, query: str, limit: int) -> list[tuple[int, float]]:
     def terms(text):
-        return [stem(t) for t in re.findall(r"[a-z0-9]+", text.lower()) if t not in profile.STOPWORDS]
+        return (stem(m.group()) for m in _BM25_WORD_RE.finditer(text.lower())
+                if m.group() not in profile.STOPWORDS)
 
     q = set(terms(query))
-    docs = [(uid, terms(body)) for uid, _turn, body, _h in units]
-    if not docs or not q:
+    if not q or limit <= 0:
         return []
-    avg = sum(len(d) for _u, d in docs) / len(docs)
-    df = {t: sum(1 for _u, d in docs if t in d) for t in q}
-    scored = []
-    for uid, d in docs:
-        score = 0.0
-        for t in q:
-            tf = d.count(t)
-            if tf:
-                idf = math.log(1 + (len(docs) - df[t] + 0.5) / (df[t] + 0.5))
-                score += idf * tf * 2.2 / (tf + 1.2 * (0.25 + 0.75 * len(d) / avg))
-        if score > 0:
-            scored.append((uid, sigmoid_bm25(score, len(q))))
-    return sorted(scored, key=lambda x: -x[1])[:limit]
+    # Keep only query-term frequencies and document lengths. Source bodies are
+    # streamed by the store, rather than copied into a second full corpus.
+    docs, df, total_length = [], Counter(), 0
+    for uid, _turn, body, _h in units:
+        counts, length = Counter(), 0
+        for term in terms(body):
+            length += 1
+            if term in q:
+                counts[term] += 1
+        docs.append((uid, length, counts))
+        df.update(counts.keys())
+        total_length += length
+    if not docs:
+        return []
+    avg = total_length / len(docs)
+    idfs = {t: math.log(1 + (len(docs) - df[t] + 0.5) / (df[t] + 0.5)) for t in q}
+
+    def scored():
+        for uid, length, counts in docs:
+            score = 0.0
+            # Preserve query-set iteration order so floating sums and tie order
+            # exactly match the original fallback on every supported scorer.
+            for t in q:
+                tf = counts[t]
+                if tf:
+                    score += idfs[t] * tf * 2.2 / (tf + 1.2 * (0.25 + 0.75 * length / avg))
+            if score > 0:
+                yield uid, sigmoid_bm25(score, len(q))
+
+    return heapq.nlargest(limit, scored(), key=lambda x: x[1])

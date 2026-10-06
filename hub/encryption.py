@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import secrets as _secrets
 from dataclasses import dataclass
 
 try:
+    from cryptography.exceptions import InvalidTag
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 except ModuleNotFoundError:  # pragma: no cover - exercised when cryptography isn't installed
     AESGCM = None  # type: ignore[assignment,misc]
@@ -28,7 +30,7 @@ def _decode_key(value: str, *, source: str) -> bytes:
     padded = value + "=" * (-len(value) % 4)
     try:
         raw = base64.urlsafe_b64decode(padded.encode("ascii"))
-    except Exception as exc:
+    except (ValueError, UnicodeError, binascii.Error) as exc:
         raise EncryptionError(f"{source} is not valid urlsafe-base64: {exc}") from None
     if len(raw) != _KEY_BYTES:
         raise EncryptionError(
@@ -86,13 +88,18 @@ class EnvelopeCipher:
                 "a stored value is an encrypted envelope but the 'cryptography' "
                 "package is not installed to decrypt it -- see hub/requirements.txt."
             )
-        raw = base64.urlsafe_b64decode(value[len(_PREFIX):].encode("ascii"))
+        try:
+            raw = base64.b64decode(value[len(_PREFIX):].encode("ascii"), altchars=b"-_", validate=True)
+        except (ValueError, UnicodeError, binascii.Error):
+            raise EncryptionError("stored encryption envelope is malformed") from None
+        if len(raw) < _NONCE_BYTES + 16:
+            raise EncryptionError("stored encryption envelope is truncated")
         nonce, ciphertext = raw[:_NONCE_BYTES], raw[_NONCE_BYTES:]
         candidates = ([self.current] if self.current is not None else []) + list(self.previous)
         for key in candidates:
             try:
                 return AESGCM(key).decrypt(nonce, ciphertext, None).decode("utf-8")
-            except Exception:  # noqa: BLE001 - try every configured key before giving up
+            except (InvalidTag, UnicodeDecodeError):  # Try other keys only on authentication/decode failures
                 continue
         raise EncryptionError(
             "could not decrypt a stored value with the current HUB_ENCRYPTION_KEY or "

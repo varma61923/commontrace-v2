@@ -264,8 +264,29 @@ class GuardReport:
 
 
 def scan_fields(fields: dict) -> GuardReport:
+    """Scan text throughout JSON-style metadata, including nested tags.
+
+    Cycles are visited once. Excessive structural expansion fails closed.
+    """
     findings: list[Finding] = []
-    for name, value in fields.items():
+    if len(fields) > 100_000:
+        raise ValueError("content safety scan exceeds 100000 metadata nodes")
+    pending = list(reversed(list(fields.items())))
+    seen: set[int] = set()
+    visited = 0
+    while pending:
+        name, value = pending.pop()
+        visited += 1
+        if visited > 100_000 or len(str(name)) > 4096:
+            raise ValueError("content safety scan exceeds 100000 metadata nodes")
         if isinstance(value, str) and value:
             findings.extend(scan_text(value, field=name))
+        elif isinstance(value, (dict, list, tuple)) and id(value) not in seen:
+            seen.add(id(value))
+            if visited + len(pending) + len(value) > 100_000:
+                raise ValueError("content safety scan exceeds 100000 metadata nodes")
+            if isinstance(value, dict):
+                pending.extend((f"{name}.{key}", value[key]) for key in reversed(value))
+            else:
+                pending.extend((f"{name}[{i}]", value[i]) for i in range(len(value) - 1, -1, -1))
     return GuardReport(findings=findings)

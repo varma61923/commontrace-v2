@@ -109,6 +109,7 @@ def _preflight(url: str, api_key: str) -> str | None:
 
 
 CORE_TOOLS = [
+            "get_traces_batch", "contribute_traces_batch", "delete_traces_batch",
     "amend_trace", "contribute_trace", "get_trace", "list_tags",
     "search_traces", "vote_trace",
     "delete_trace", "request_account_deletion", "cancel_account_deletion",

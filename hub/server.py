@@ -1487,6 +1487,30 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         except Exception as exc:  # noqa: BLE001
             return _error_response(exc)
 
+    from hub.batches import run_batch
+
+    @scoped_tool(scopes.SCOPE_WRITE)
+    async def contribute_traces_batch(traces: list[dict]) -> dict:
+        """Contribute 1–25 traces, with ordered per-item outcomes and independent commits.
+
+        Supply a distinct idempotency_key per contribution before retrying a
+        disconnected batch. Earlier successful writes survive later refusals.
+        """
+        return await run_batch(contribute_trace, traces)
+
+    @scoped_tool(scopes.SCOPE_READ)
+    async def get_traces_batch(ids: list[str]) -> dict:
+        """Read 1–25 traces in order using each item's existing privacy policy."""
+        return await run_batch(get_trace, ids, field="id")
+
+    @scoped_tool(scopes.SCOPE_ADMIN)
+    async def delete_traces_batch(ids: list[str]) -> dict:
+        """Permanently delete 1–25 owned trace chains; operations commit independently.
+
+        Irreversible. Do not automatically replay an ambiguous transport failure.
+        """
+        return await run_batch(delete_trace, ids, field="id")
+
     mcp.commontrace_tool_scopes = dict(tool_scopes)
     return mcp
 

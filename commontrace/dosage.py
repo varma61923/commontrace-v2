@@ -23,6 +23,7 @@ def redundant_reason(other_slug: str) -> str:
 
 @dataclass(frozen=True)
 class Budget:
+    """Hard context caps; zero count or characters delivers no optional lessons."""
     max_lessons: int = DEFAULT_MAX_LESSONS
     max_chars: int = DEFAULT_MAX_CHARS
     redundancy_threshold: float = DEFAULT_REDUNDANCY_THRESHOLD
@@ -64,6 +65,7 @@ class Candidate:
 
 @dataclass(frozen=True)
 class Dropped:
+    """A candidate excluded by count, context size or redundancy checks."""
     slug: str
     reason: str
     core: bool = False
