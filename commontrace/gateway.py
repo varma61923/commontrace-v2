@@ -14,7 +14,6 @@ import json
 import logging
 import os
 import re
-import secrets
 import socket
 import threading
 import time
@@ -36,6 +35,7 @@ from commontrace import (
     retrieval,
     retrieval_io,
 )
+from commontrace.gateway_tokens import load_or_create_token, token_path  # noqa: F401 - public compatibility
 from commontrace.measure import CausalMemory, HarmWatch
 
 API_VERSION = "1"
@@ -239,27 +239,6 @@ def merge_config(root: str, *, env: str | None, protect: list[str]) -> GatewayCo
     return merged
 
 
-def token_path(root: str) -> str:
-    return os.path.join(paths.memory_dir(root), TOKEN_NAME)
-
-
-def load_or_create_token(root: str) -> str:
-    """The store's bearer token, created (0600) on first use."""
-    try:
-        with open(token_path(root), encoding="utf-8") as fh:
-            token = fh.read().strip()
-        if len(token) >= 24:
-            return token
-    except OSError as exc:
-        logger.debug("No existing token found; creating a new one: %s", exc)
-    token = secrets.token_urlsafe(32)
-    os.makedirs(paths.memory_dir(root), exist_ok=True)
-    fd = os.open(token_path(root), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(token + "\n")
-    return token
-
-
 def _text(value, label: str, *, limit: int, required: bool = True) -> str:
     if value is None and not required:
         return ""
@@ -390,10 +369,12 @@ class Gateway:
         self, root: str, *, token: str | None = None, config: GatewayConfig | None = None,
         durable: bool = True, on_harm: str | None = None, check_every: int = 25,
         allowed_hosts: tuple[str, ...] = (), allow_approval: bool = False,
+        token_provider: Callable[[], str | None] | None = None,
     ) -> None:
         self.root = os.path.abspath(root)
         self.allow_approval = allow_approval
         self.token = token
+        self._token_provider = token_provider
         self.config = config if config is not None else load_config(self.root)
         self.durable = durable
         self.allowed_hosts = frozenset(h.lower() for h in allowed_hosts) | LOOPBACK_HOSTS
@@ -544,13 +525,14 @@ class Gateway:
         return name.lower() in self.allowed_hosts
 
     def _authorised(self, headers: Mapping[str, str]) -> bool:
-        if not self.token:
+        token = self._token_provider() if self._token_provider is not None else self.token
+        if not token:
             return False
         for key, value in headers.items():
             if key.lower() == "authorization":
                 scheme, _, supplied = value.partition(" ")
                 return scheme.lower() == "bearer" and hmac.compare_digest(
-                    supplied.strip().encode("utf-8"), self.token.encode("utf-8"))
+                    supplied.strip().encode("utf-8"), token.encode("utf-8"))
         return False
 
     @staticmethod
@@ -794,10 +776,11 @@ class Gateway:
         from commontrace import telemetry
 
         curr = telemetry.current()
+        token = self._token_provider() if self._token_provider is not None else self.token
         return {
-            "authenticated": bool(self.token is not None),
-            "role": "admin" if self.token else "anonymous",
-            "token_prefix": (self.token[:8] + "...") if self.token and len(self.token) >= 8 else "",
+            "authenticated": bool(token),
+            "role": "admin" if token else "anonymous",
+            "token_prefix": (token[:8] + "...") if token and len(token) >= 8 else "",
             "container_tag": curr.get("container_tag", ""),
             "request_id": curr.get("request_id", ""),
         }

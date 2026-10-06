@@ -21,6 +21,9 @@ def local_model(monkeypatch):
             return np.array([[len(text), self.offset] for text in texts], dtype=np.float32)
 
     model = Model()
+    # This fixture injects a local encoder; it does not require the optional
+    # sentence-transformers package to be installed in a core-only test run.
+    monkeypatch.setattr(embed, "available", lambda: True)
     monkeypatch.setattr(embed, "_QUERY_CACHE", embed.OrderedDict())
     monkeypatch.setattr(embed, "_model", lambda _tag: model)
     return np, model, Model

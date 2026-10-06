@@ -1,0 +1,5 @@
+{
+  "startup_token_redacted": true,
+  "live_rotation": true,
+  "live_revocation": true
+}

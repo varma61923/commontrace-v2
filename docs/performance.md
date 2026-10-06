@@ -127,3 +127,49 @@ latency inconclusive. They do not establish a general 20× speedup.
 ```bash
 python -m pytest tests/test_conversation_ingestion_performance.py -q
 ```
+
+## Repeated lexical ranking and provider isolation (2026-10-06)
+
+Compared with `bf16603eddc6b220efcab95ce4a6912a88e79318`, seven alternating
+baseline/candidate pairs each measure 300 requests per workload. The corpus
+index is warm for both versions. Seed 61923 creates 12 description terms and
+three tags per lesson from a vocabulary of 100 terms; these are synthetic
+frequent-term queries with top-k 10, not an answer-quality benchmark. Repeated
+requests use the same three-term query; distinct requests use seeded four-term
+queries. The table reports the median of each trial's median.
+
+| Lessons | Workload | Baseline median | Candidate median | Change |
+| ---: | --- | ---: | ---: | --- |
+| 1,000 | repeated | 0.189701 ms | 0.020581 ms | 9.22x faster |
+| 1,000 | distinct | 0.287228 ms | 0.310674 ms | 8.2% slower |
+| 10,000 | repeated | 1.852324 ms | 0.020150 ms | 91.93x faster |
+| 10,000 | distinct | 2.605150 ms | 2.682975 ms | 3.0% slower |
+
+All ordered result hashes match across versions and trials. The 50x target is
+exceeded for repeated ranking at 10,000 lessons. It is not met for every
+operation: distinct queries pay cache admission/materialization overhead, and
+the measured regressions above are retained in this report. These measurements
+exclude file loading, cold indexing, prompt rendering, network transport and
+LLM inference. They do not compare CommonTrace against hosted competitor SLAs.
+
+For predominantly unique workloads, use `COMMONTRACE_QUERY_CACHE=0` or
+`rank_lessons(..., cache_results=False)`. The separate opt-out comparison is
+included below; it removes admission work, though numeric-template
+materialization still has a small cost versus the baseline implementation.
+
+- [All paired timings, output hashes and source hashes](../benchmarks/results/runtime-2026-10-06/retrieval-comparison.json)
+- [Comparison with query caching disabled](../benchmarks/results/runtime-2026-10-06/retrieval-disabled-comparison.json)
+- [Existing local latency gate](../benchmarks/results/runtime-2026-10-06/local-latency.md)
+- [Test, coverage and static-analysis validation](../benchmarks/results/runtime-2026-10-06/validation.json)
+- [Scope, operational controls and remaining gaps](runtime-upgrade.md)
+
+Reproduce from this checkout (Python 3.10+, core dependencies only):
+
+```bash
+git worktree add --detach ../commontrace-baseline bf16603eddc6b220efcab95ce4a6912a88e79318
+python -m benchmarks.runtime_comparison --baseline-checkout ../commontrace-baseline \
+  --trials 7 --runs 300 --output /tmp/retrieval-comparison.json
+COMMONTRACE_QUERY_CACHE=0 python -m benchmarks.runtime_comparison \
+  --baseline-checkout ../commontrace-baseline --trials 5 --runs 300 \
+  --output /tmp/retrieval-disabled-comparison.json
+```

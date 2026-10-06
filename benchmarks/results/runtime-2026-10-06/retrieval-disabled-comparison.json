@@ -1,0 +1,433 @@
+{
+  "trials": [
+    {
+      "baseline": {
+        "python": "3.12.14",
+        "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+        "commit": "bf16603eddc6b220efcab95ce4a6912a88e79318",
+        "query_cache_setting": "0",
+        "source_sha256": {
+          "retrieval.py": "a41093cc526be6e896a123ac6b548a4ea8191c69b1b97ae5da2fa7ef4e4a6396"
+        },
+        "runs": 300,
+        "results": [
+          {
+            "documents": 1000,
+            "repeated": {
+              "median_ms": 0.207688,
+              "p95_ms": 0.466093,
+              "ranking_sha256": "3757a48dabcb1a32183e9ac665eaf632b0977294d09a60dccf33f968cdcfa4bb"
+            },
+            "distinct": {
+              "median_ms": 0.2893865,
+              "p95_ms": 0.468346,
+              "ranking_sha256": "cbc976e2945a4e82faed8e4dd3fd22e04a8e8bafc9ff786792f153786ae20bbb"
+            }
+          },
+          {
+            "documents": 10000,
+            "repeated": {
+              "median_ms": 1.7859545,
+              "p95_ms": 2.190265,
+              "ranking_sha256": "bb79acf9dde9b194e4afa85d7225522bf93fc2cad86fe0b2910537dafe6ec98f"
+            },
+            "distinct": {
+              "median_ms": 2.5944545,
+              "p95_ms": 3.238796,
+              "ranking_sha256": "84dddcc458d621df6e6cac77ed8d7fdd9db57a16143fe2f65fc5843bb101f8f8"
+            }
+          }
+        ]
+      },
+      "candidate": {
+        "python": "3.12.14",
+        "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+        "commit": "bf16603eddc6b220efcab95ce4a6912a88e79318",
+        "query_cache_setting": "0",
+        "source_sha256": {
+          "retrieval.py": "83c143fc8057850bada76d821a854b75f55c453e01bc1e0b4b51e9096253ef7b",
+          "runtime_cache.py": "4b60cc641f5df5b82b15312e32ead8b82db95f9d4912a3f3e305d48e47cf9e36"
+        },
+        "runs": 300,
+        "results": [
+          {
+            "documents": 1000,
+            "repeated": {
+              "median_ms": 0.19291049999999998,
+              "p95_ms": 0.329487,
+              "ranking_sha256": "3757a48dabcb1a32183e9ac665eaf632b0977294d09a60dccf33f968cdcfa4bb"
+            },
+            "distinct": {
+              "median_ms": 0.28997249999999997,
+              "p95_ms": 0.539364,
+              "ranking_sha256": "cbc976e2945a4e82faed8e4dd3fd22e04a8e8bafc9ff786792f153786ae20bbb"
+            }
+          },
+          {
+            "documents": 10000,
+            "repeated": {
+              "median_ms": 1.793997,
+              "p95_ms": 2.119939,
+              "ranking_sha256": "bb79acf9dde9b194e4afa85d7225522bf93fc2cad86fe0b2910537dafe6ec98f"
+            },
+            "distinct": {
+              "median_ms": 2.6520669999999997,
+              "p95_ms": 3.640315,
+              "ranking_sha256": "84dddcc458d621df6e6cac77ed8d7fdd9db57a16143fe2f65fc5843bb101f8f8"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "candidate": {
+        "python": "3.12.14",
+        "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+        "commit": "bf16603eddc6b220efcab95ce4a6912a88e79318",
+        "query_cache_setting": "0",
+        "source_sha256": {
+          "retrieval.py": "83c143fc8057850bada76d821a854b75f55c453e01bc1e0b4b51e9096253ef7b",
+          "runtime_cache.py": "4b60cc641f5df5b82b15312e32ead8b82db95f9d4912a3f3e305d48e47cf9e36"
+        },
+        "runs": 300,
+        "results": [
+          {
+            "documents": 1000,
+            "repeated": {
+              "median_ms": 0.207423,
+              "p95_ms": 0.571973,
+              "ranking_sha256": "3757a48dabcb1a32183e9ac665eaf632b0977294d09a60dccf33f968cdcfa4bb"
+            },
+            "distinct": {
+              "median_ms": 0.3076445,
+              "p95_ms": 0.527907,
+              "ranking_sha256": "cbc976e2945a4e82faed8e4dd3fd22e04a8e8bafc9ff786792f153786ae20bbb"
+            }
+          },
+          {
+            "documents": 10000,
+            "repeated": {
+              "median_ms": 1.913634,
+              "p95_ms": 2.340984,
+              "ranking_sha256": "bb79acf9dde9b194e4afa85d7225522bf93fc2cad86fe0b2910537dafe6ec98f"
+            },
+            "distinct": {
+              "median_ms": 2.695514,
+              "p95_ms": 3.190466,
+              "ranking_sha256": "84dddcc458d621df6e6cac77ed8d7fdd9db57a16143fe2f65fc5843bb101f8f8"
+            }
+          }
+        ]
+      },
+      "baseline": {
+        "python": "3.12.14",
+        "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+        "commit": "bf16603eddc6b220efcab95ce4a6912a88e79318",
+        "query_cache_setting": "0",
+        "source_sha256": {
+          "retrieval.py": "a41093cc526be6e896a123ac6b548a4ea8191c69b1b97ae5da2fa7ef4e4a6396"
+        },
+        "runs": 300,
+        "results": [
+          {
+            "documents": 1000,
+            "repeated": {
+              "median_ms": 0.1822705,
+              "p95_ms": 0.263427,
+              "ranking_sha256": "3757a48dabcb1a32183e9ac665eaf632b0977294d09a60dccf33f968cdcfa4bb"
+            },
+            "distinct": {
+              "median_ms": 0.25865099999999996,
+              "p95_ms": 0.382407,
+              "ranking_sha256": "cbc976e2945a4e82faed8e4dd3fd22e04a8e8bafc9ff786792f153786ae20bbb"
+            }
+          },
+          {
+            "documents": 10000,
+            "repeated": {
+              "median_ms": 1.833386,
+              "p95_ms": 2.744992,
+              "ranking_sha256": "bb79acf9dde9b194e4afa85d7225522bf93fc2cad86fe0b2910537dafe6ec98f"
+            },
+            "distinct": {
+              "median_ms": 2.52179,
+              "p95_ms": 3.071244,
+              "ranking_sha256": "84dddcc458d621df6e6cac77ed8d7fdd9db57a16143fe2f65fc5843bb101f8f8"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "baseline": {
+        "python": "3.12.14",
+        "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+        "commit": "bf16603eddc6b220efcab95ce4a6912a88e79318",
+        "query_cache_setting": "0",
+        "source_sha256": {
+          "retrieval.py": "a41093cc526be6e896a123ac6b548a4ea8191c69b1b97ae5da2fa7ef4e4a6396"
+        },
+        "runs": 300,
+        "results": [
+          {
+            "documents": 1000,
+            "repeated": {
+              "median_ms": 0.1933665,
+              "p95_ms": 0.349126,
+              "ranking_sha256": "3757a48dabcb1a32183e9ac665eaf632b0977294d09a60dccf33f968cdcfa4bb"
+            },
+            "distinct": {
+              "median_ms": 0.275451,
+              "p95_ms": 0.422908,
+              "ranking_sha256": "cbc976e2945a4e82faed8e4dd3fd22e04a8e8bafc9ff786792f153786ae20bbb"
+            }
+          },
+          {
+            "documents": 10000,
+            "repeated": {
+              "median_ms": 1.8000965,
+              "p95_ms": 2.597499,
+              "ranking_sha256": "bb79acf9dde9b194e4afa85d7225522bf93fc2cad86fe0b2910537dafe6ec98f"
+            },
+            "distinct": {
+              "median_ms": 2.5920009999999998,
+              "p95_ms": 3.484818,
+              "ranking_sha256": "84dddcc458d621df6e6cac77ed8d7fdd9db57a16143fe2f65fc5843bb101f8f8"
+            }
+          }
+        ]
+      },
+      "candidate": {
+        "python": "3.12.14",
+        "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+        "commit": "bf16603eddc6b220efcab95ce4a6912a88e79318",
+        "query_cache_setting": "0",
+        "source_sha256": {
+          "retrieval.py": "83c143fc8057850bada76d821a854b75f55c453e01bc1e0b4b51e9096253ef7b",
+          "runtime_cache.py": "4b60cc641f5df5b82b15312e32ead8b82db95f9d4912a3f3e305d48e47cf9e36"
+        },
+        "runs": 300,
+        "results": [
+          {
+            "documents": 1000,
+            "repeated": {
+              "median_ms": 0.19369750000000002,
+              "p95_ms": 0.310649,
+              "ranking_sha256": "3757a48dabcb1a32183e9ac665eaf632b0977294d09a60dccf33f968cdcfa4bb"
+            },
+            "distinct": {
+              "median_ms": 0.286242,
+              "p95_ms": 0.466124,
+              "ranking_sha256": "cbc976e2945a4e82faed8e4dd3fd22e04a8e8bafc9ff786792f153786ae20bbb"
+            }
+          },
+          {
+            "documents": 10000,
+            "repeated": {
+              "median_ms": 1.776451,
+              "p95_ms": 2.562035,
+              "ranking_sha256": "bb79acf9dde9b194e4afa85d7225522bf93fc2cad86fe0b2910537dafe6ec98f"
+            },
+            "distinct": {
+              "median_ms": 2.7123835,
+              "p95_ms": 3.435744,
+              "ranking_sha256": "84dddcc458d621df6e6cac77ed8d7fdd9db57a16143fe2f65fc5843bb101f8f8"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "candidate": {
+        "python": "3.12.14",
+        "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+        "commit": "bf16603eddc6b220efcab95ce4a6912a88e79318",
+        "query_cache_setting": "0",
+        "source_sha256": {
+          "retrieval.py": "83c143fc8057850bada76d821a854b75f55c453e01bc1e0b4b51e9096253ef7b",
+          "runtime_cache.py": "4b60cc641f5df5b82b15312e32ead8b82db95f9d4912a3f3e305d48e47cf9e36"
+        },
+        "runs": 300,
+        "results": [
+          {
+            "documents": 1000,
+            "repeated": {
+              "median_ms": 0.19293100000000002,
+              "p95_ms": 0.267013,
+              "ranking_sha256": "3757a48dabcb1a32183e9ac665eaf632b0977294d09a60dccf33f968cdcfa4bb"
+            },
+            "distinct": {
+              "median_ms": 0.269412,
+              "p95_ms": 0.373775,
+              "ranking_sha256": "cbc976e2945a4e82faed8e4dd3fd22e04a8e8bafc9ff786792f153786ae20bbb"
+            }
+          },
+          {
+            "documents": 10000,
+            "repeated": {
+              "median_ms": 1.925686,
+              "p95_ms": 2.523089,
+              "ranking_sha256": "bb79acf9dde9b194e4afa85d7225522bf93fc2cad86fe0b2910537dafe6ec98f"
+            },
+            "distinct": {
+              "median_ms": 2.7047075,
+              "p95_ms": 3.486893,
+              "ranking_sha256": "84dddcc458d621df6e6cac77ed8d7fdd9db57a16143fe2f65fc5843bb101f8f8"
+            }
+          }
+        ]
+      },
+      "baseline": {
+        "python": "3.12.14",
+        "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+        "commit": "bf16603eddc6b220efcab95ce4a6912a88e79318",
+        "query_cache_setting": "0",
+        "source_sha256": {
+          "retrieval.py": "a41093cc526be6e896a123ac6b548a4ea8191c69b1b97ae5da2fa7ef4e4a6396"
+        },
+        "runs": 300,
+        "results": [
+          {
+            "documents": 1000,
+            "repeated": {
+              "median_ms": 0.18930049999999998,
+              "p95_ms": 0.27127,
+              "ranking_sha256": "3757a48dabcb1a32183e9ac665eaf632b0977294d09a60dccf33f968cdcfa4bb"
+            },
+            "distinct": {
+              "median_ms": 0.2745645,
+              "p95_ms": 0.403609,
+              "ranking_sha256": "cbc976e2945a4e82faed8e4dd3fd22e04a8e8bafc9ff786792f153786ae20bbb"
+            }
+          },
+          {
+            "documents": 10000,
+            "repeated": {
+              "median_ms": 1.766827,
+              "p95_ms": 2.192629,
+              "ranking_sha256": "bb79acf9dde9b194e4afa85d7225522bf93fc2cad86fe0b2910537dafe6ec98f"
+            },
+            "distinct": {
+              "median_ms": 2.5789264999999997,
+              "p95_ms": 4.063853,
+              "ranking_sha256": "84dddcc458d621df6e6cac77ed8d7fdd9db57a16143fe2f65fc5843bb101f8f8"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "baseline": {
+        "python": "3.12.14",
+        "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+        "commit": "bf16603eddc6b220efcab95ce4a6912a88e79318",
+        "query_cache_setting": "0",
+        "source_sha256": {
+          "retrieval.py": "a41093cc526be6e896a123ac6b548a4ea8191c69b1b97ae5da2fa7ef4e4a6396"
+        },
+        "runs": 300,
+        "results": [
+          {
+            "documents": 1000,
+            "repeated": {
+              "median_ms": 0.18387799999999999,
+              "p95_ms": 0.247684,
+              "ranking_sha256": "3757a48dabcb1a32183e9ac665eaf632b0977294d09a60dccf33f968cdcfa4bb"
+            },
+            "distinct": {
+              "median_ms": 0.26119899999999996,
+              "p95_ms": 0.350459,
+              "ranking_sha256": "cbc976e2945a4e82faed8e4dd3fd22e04a8e8bafc9ff786792f153786ae20bbb"
+            }
+          },
+          {
+            "documents": 10000,
+            "repeated": {
+              "median_ms": 1.79576,
+              "p95_ms": 2.197516,
+              "ranking_sha256": "bb79acf9dde9b194e4afa85d7225522bf93fc2cad86fe0b2910537dafe6ec98f"
+            },
+            "distinct": {
+              "median_ms": 2.6049605,
+              "p95_ms": 2.919895,
+              "ranking_sha256": "84dddcc458d621df6e6cac77ed8d7fdd9db57a16143fe2f65fc5843bb101f8f8"
+            }
+          }
+        ]
+      },
+      "candidate": {
+        "python": "3.12.14",
+        "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+        "commit": "bf16603eddc6b220efcab95ce4a6912a88e79318",
+        "query_cache_setting": "0",
+        "source_sha256": {
+          "retrieval.py": "83c143fc8057850bada76d821a854b75f55c453e01bc1e0b4b51e9096253ef7b",
+          "runtime_cache.py": "4b60cc641f5df5b82b15312e32ead8b82db95f9d4912a3f3e305d48e47cf9e36"
+        },
+        "runs": 300,
+        "results": [
+          {
+            "documents": 1000,
+            "repeated": {
+              "median_ms": 0.1857155,
+              "p95_ms": 0.222216,
+              "ranking_sha256": "3757a48dabcb1a32183e9ac665eaf632b0977294d09a60dccf33f968cdcfa4bb"
+            },
+            "distinct": {
+              "median_ms": 0.2634325,
+              "p95_ms": 0.346413,
+              "ranking_sha256": "cbc976e2945a4e82faed8e4dd3fd22e04a8e8bafc9ff786792f153786ae20bbb"
+            }
+          },
+          {
+            "documents": 10000,
+            "repeated": {
+              "median_ms": 1.7867009999999999,
+              "p95_ms": 2.84277,
+              "ranking_sha256": "bb79acf9dde9b194e4afa85d7225522bf93fc2cad86fe0b2910537dafe6ec98f"
+            },
+            "distinct": {
+              "median_ms": 2.610604,
+              "p95_ms": 3.137063,
+              "ranking_sha256": "84dddcc458d621df6e6cac77ed8d7fdd9db57a16143fe2f65fc5843bb101f8f8"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "summary": [
+    {
+      "documents": 1000,
+      "workload": "repeated",
+      "baseline_median_ms": 0.18930049999999998,
+      "candidate_median_ms": 0.19293100000000002,
+      "speedup": 0.9811823916322414,
+      "ranking_sha256": "3757a48dabcb1a32183e9ac665eaf632b0977294d09a60dccf33f968cdcfa4bb"
+    },
+    {
+      "documents": 1000,
+      "workload": "distinct",
+      "baseline_median_ms": 0.2745645,
+      "candidate_median_ms": 0.286242,
+      "speedup": 0.9592041000272497,
+      "ranking_sha256": "cbc976e2945a4e82faed8e4dd3fd22e04a8e8bafc9ff786792f153786ae20bbb"
+    },
+    {
+      "documents": 10000,
+      "workload": "repeated",
+      "baseline_median_ms": 1.79576,
+      "candidate_median_ms": 1.793997,
+      "speedup": 1.0009827218217198,
+      "ranking_sha256": "bb79acf9dde9b194e4afa85d7225522bf93fc2cad86fe0b2910537dafe6ec98f"
+    },
+    {
+      "documents": 10000,
+      "workload": "distinct",
+      "baseline_median_ms": 2.5920009999999998,
+      "candidate_median_ms": 2.695514,
+      "speedup": 0.9615980477192846,
+      "ranking_sha256": "84dddcc458d621df6e6cac77ed8d7fdd9db57a16143fe2f65fc5843bb101f8f8"
+    }
+  ]
+}

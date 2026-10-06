@@ -5,6 +5,7 @@ import math
 import os
 import sys
 import threading
+import weakref
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -16,6 +17,7 @@ from commontrace._lexical import WORD_RE as _WORD_RE
 from commontrace._lexical import has_cjk as _has_cjk
 from commontrace._lexical import segment_cjk as _segment_cjk
 from commontrace._stem import stem as _stem
+from commontrace.runtime_cache import RuntimeCache
 
 IDF_V2_FLOOR = 0.04
 
@@ -374,14 +376,78 @@ def rank_lessons(
     adaptive_tail: bool = True,
     graph_boost_lookup: dict[str, float] | None = None,
     graph_weight: float = 0.0,
+    cache_results: bool = True,
 ) -> list[RankedLesson]:
     query_terms = _terms_for(scorer, _tokenize(task))
-    if not query_terms:
+    if not query_terms or top_k <= 0:
         return []
     if floor is None:
         floor = default_floor(scorer)
-
     index = _corpus_index(lessons, term_cache, scorer)
+
+    def rank():
+        return _rank_numeric(query_terms, index, lessons, top_k, floor, scorer,
+                             reliability_lookup, reliability_weight, recency_lookup,
+                             recency_weight, adaptive_tail, graph_boost_lookup, graph_weight)
+
+    # Dynamic signals are never frozen in a result cache. Weak identity keeps
+    # this cache from retaining a corpus, and cannot alias a recycled object ID.
+    cache_enabled = cache_results and os.environ.get("COMMONTRACE_QUERY_CACHE", "1").strip().lower() \
+        not in ("0", "false", "off", "no")
+    if cache_enabled and not (reliability_lookup or recency_lookup or graph_boost_lookup):
+        key = (_IndexIdentity(index), scorer, tuple(sorted(query_terms)), top_k, floor, adaptive_tail)
+        rows = _QUERY_CACHE.get_or_load(key, rank)
+    else:
+        rows = rank()
+    return [RankedLesson(
+        path=lessons[i][0], slug=str(lessons[i][1].get("name", "")),
+        description=str(lessons[i][1].get("description", "")),
+        score=score, matched_terms=list(matches), relevance=round(rel, 6), scorer=scorer,
+        reliability_adjustment=round(reliability_adj, 6) if reliability_lookup else 0.0,
+        recency_adjustment=round(recency_adj, 6) if recency_lookup else 0.0,
+        graph_adjustment=round(graph_adj, 6) if graph_boost_lookup else 0.0,
+    ) for i, score, matches, rel, reliability_adj, recency_adj, graph_adj in rows]
+
+
+class _IndexIdentity:
+    """Hashable weak identity, including for an unhashable frozen dataclass."""
+
+    __slots__ = ("ref", "ident")
+
+    def __init__(self, index: _CorpusIndex) -> None:
+        self.ref = weakref.ref(index)
+        self.ident = id(index)
+
+    def __hash__(self) -> int:
+        return self.ident
+
+    def __eq__(self, other) -> bool:
+        return (isinstance(other, _IndexIdentity) and self.ref() is not None
+                and self.ref() is other.ref())
+
+
+def _query_bytes(key, rows) -> int:
+    # Conservative per-entry overhead plus keys, tuple records, numeric values,
+    # matched-term strings and their references. No corpus is retained here.
+    size = 1024 + sys.getsizeof(key) + sys.getsizeof(key[0]) + sys.getsizeof(key[0].ref)
+    size += sum(sys.getsizeof(value) for value in key[1:])
+    size += sum(sys.getsizeof(term) for term in key[2]) + sys.getsizeof(rows)
+    for row in rows:
+        # Unboosted templates have one bounded document ID and five floats.
+        # Their numeric size is fixed; traversing them individually penalizes
+        # every unique query without making the estimate more conservative.
+        size += _QUERY_ROW_BYTES + sys.getsizeof(row[2])
+        size += sum(sys.getsizeof(term) for term in row[2])
+    return size
+
+
+_QUERY_ROW_BYTES = sys.getsizeof((None,) * 7) + sys.getsizeof(sys.maxsize) + 5 * sys.getsizeof(0.0)
+_QUERY_CACHE = RuntimeCache(max_entries=256, max_bytes=8 * 1024 * 1024, ttl=30.0, weigh=_query_bytes)
+
+
+def _rank_numeric(query_terms, index, lessons, top_k, floor, scorer,
+                  reliability_lookup, reliability_weight, recency_lookup,
+                  recency_weight, adaptive_tail, graph_boost_lookup, graph_weight):
     doc_freq = index.doc_freq
     n_docs = index.n_docs
 
@@ -473,23 +539,14 @@ def rank_lessons(
                        reliability_adj, recency_adj, graph_adj))
 
     top = heapq.nlargest(max(0, top_k), scored, key=lambda item: item[:5])
-    return [
-        RankedLesson(
-            path=path,
-            slug=slug,
-            description=str(lessons[i][1].get("description", "")),
-            score=score,
-            matched_terms=([term for position, term in enumerate(terms) if masks[i] & (1 << position)]
-                           if compact_matches else list(masks[i])),
-            relevance=round(rel, 6),
-            scorer=scorer,
-            reliability_adjustment=round(reliability_adj, 6) if reliability_lookup else 0.0,
-            recency_adjustment=round(recency_adj, 6) if recency_lookup else 0.0,
-            graph_adjustment=round(graph_adj, 6) if graph_boost_lookup else 0.0,
-        )
+    return tuple(
+        (i, score,
+         tuple(term for position, term in enumerate(terms) if masks[i] & (1 << position))
+         if compact_matches else tuple(masks[i]),
+         rel, reliability_adj, recency_adj, graph_adj)
         for (_adj, score, _imp, _uses, _order, i, path, slug, rel,
              reliability_adj, recency_adj, graph_adj) in top
-    ]
+    )
 
 
 DEFAULT_RRF_K = 60
