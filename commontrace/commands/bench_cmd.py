@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 from commontrace import paths
@@ -75,11 +76,125 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         help="--retrieval only: fail if the worst field's pollution exceeds the best "
              "field's by more than this multiple.",
     )
+    # Conversation-benchmark wiring: --dataset routes bench to the judge-driven
+    # conversation harness (benchmarks/conversation_bench.py). Without
+    # --dataset, bench behaves (and prints) exactly as before.
+    p.add_argument("--dataset", choices=("locomo", "longmemeval", "dolphin", "beam"), default=None,
+                   help="conversation dataset to benchmark; activates the unified conversation harness")
+    p.add_argument("--data", default=None, help="--dataset only: dataset file/directory path")
+    p.add_argument("--judge", choices=("auto", "generic", "longmemeval", "locomo", "beam"), default="auto",
+                   help="--dataset only: judge protocol (default: auto, matching the dataset)")
+    p.add_argument("--budget", default=None, help="--dataset only: token budget(s), comma list")
+    p.add_argument("--limit", type=int, default=0, help="--dataset only: question/case limit")
+    p.add_argument("--seed", type=int, default=0, help="--dataset only: sampling seed")
+    p.add_argument("--answer", action="store_true",
+                   help="--dataset only: model-answer and judge with COMMONTRACE_LLM_*")
+    p.add_argument("--answer-model", default=None, help="--dataset only: answer model")
+    p.add_argument("--judge-model", default=None, help="--dataset only: judge model")
+    p.add_argument("--modes", default=None, help="--dataset only: comma list of memory, full-context, no-memory")
+    p.add_argument("--embedder", default=None, choices=("arctic-m", "minilm", "none"),
+                   help="--dataset only: embedding model")
+    p.add_argument("--rerank", default=None, choices=("auto", "none", "cross-encoder", "cross-encoder-fast"),
+                   help="--dataset only: reranker mode")
+    p.add_argument("--neighbours", type=int, default=None, help="--dataset only: neighbour turns")
+    p.add_argument("--rerank-blend", type=float, default=None, help="--dataset only: rerank blend")
+    p.add_argument("--profile-facts", type=int, default=None, help="--dataset only: profile facts hint count")
+    p.add_argument("--personas", default="", help="--dataset only: dolphin persona list")
+    p.add_argument("--max-cost", type=float, default=None, help="--dataset only: USD cost ceiling")
+    p.add_argument("--cache-dir", default=None, help="--dataset only: LLM disk cache directory")
+    p.add_argument("--no-cache", action="store_true", help="--dataset only: disable LLM disk cache")
+    p.add_argument("--bootstrap", action="store_true", help="--dataset only: bootstrap 95%% CIs")
+    p.add_argument("--compare", default=None, help="--dataset only: baseline JSON for paired comparison")
+    p.add_argument("--out", default=None, help="--dataset only: write full results (with rows) to this JSON file")
+    p.add_argument("--chunk-set", default=None,
+                   help="--dataset only: reuse/store parsed evaluation inputs under "
+                        "<root>/runs/chunk_sets/<name>/ (manifest snapshot makes sweeps cheap)")
     p.set_defaults(func=run)
+
+
+def _conversation_bench_script() -> str | None:
+    """Locate benchmarks/conversation_bench.py in the source checkout (newest ancestor wins)."""
+    override = os.environ.get("COMMONTRACE_CONVERSATION_BENCH")
+    if override and os.path.isfile(override):
+        return override
+    here = os.path.dirname(os.path.abspath(__file__))
+    for up in range(8):
+        candidate = os.path.normpath(os.path.join(here, *([".."] * (up + 2)), "benchmarks", "conversation_bench.py"))
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def conversation_bench_argv(args: argparse.Namespace) -> list[str]:
+    """Build the conversation_bench.py command line from the bench CLI args."""
+    script = _conversation_bench_script()
+    if script is None:
+        raise FileNotFoundError("benchmarks/conversation_bench.py not found; set COMMONTRACE_CONVERSATION_BENCH")
+    argv = [sys.executable, script, "--dataset", args.dataset, "--data", args.data, "--judge", args.judge]
+    if args.budget is not None:
+        argv += ["--budget", str(args.budget)]
+    if args.limit:
+        argv += ["--limit", str(args.limit)]
+    if args.seed:
+        argv += ["--seed", str(args.seed)]
+    if args.answer:
+        argv.append("--answer")
+    if args.answer_model:
+        argv += ["--answer-model", args.answer_model]
+    if args.judge_model:
+        argv += ["--judge-model", args.judge_model]
+    if args.modes:
+        argv += ["--modes", args.modes]
+    if args.embedder:
+        argv += ["--embedder", args.embedder]
+    if args.rerank:
+        argv += ["--rerank", args.rerank]
+    if args.neighbours is not None:
+        argv += ["--neighbours", str(args.neighbours)]
+    if args.rerank_blend is not None:
+        argv += ["--rerank-blend", str(args.rerank_blend)]
+    if args.profile_facts is not None:
+        argv += ["--profile-facts", str(args.profile_facts)]
+    if args.personas:
+        argv += ["--personas", args.personas]
+    if args.max_cost is not None:
+        argv += ["--max-cost", str(args.max_cost)]
+    if args.cache_dir:
+        argv += ["--cache-dir", args.cache_dir]
+    if args.no_cache:
+        argv.append("--no-cache")
+    if args.bootstrap:
+        argv.append("--bootstrap")
+    if args.compare:
+        argv += ["--compare", args.compare]
+    if args.out:
+        argv += ["--out", args.out]
+    if args.chunk_set:
+        argv += ["--chunk-set", args.chunk_set]
+    if args.dest:
+        argv += ["--root", args.dest]
+    return argv
 
 
 def run(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
+    if args.dataset:
+        if not args.data:
+            print("[commontrace] --dataset requires --data <path to the dataset file or directory>", file=sys.stderr)
+            return 2
+        if args.retrieval or args.pilot:
+            print("[commontrace] --dataset measures conversation memory; run --retrieval/--pilot separately.",
+                  file=sys.stderr)
+            return 2
+        try:
+            argv = conversation_bench_argv(args)
+        except FileNotFoundError as exc:
+            print(f"[commontrace] {exc}", file=sys.stderr)
+            return 1
+        import subprocess
+
+        proc = subprocess.run(argv)  # nosec B603 - argv is built from flags, no shell
+        return proc.returncode
     if args.retrieval:
         if args.pilot:
             print(

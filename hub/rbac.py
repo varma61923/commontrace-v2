@@ -60,6 +60,9 @@ ROLE_SCOPES: dict[str, tuple[str, ...]] = {
 }
 
 TOOL_CAPABILITY: dict[str, str] = {
+    "get_traces_batch": CAP_VIEW,
+    "contribute_traces_batch": CAP_CURATE,
+    "delete_traces_batch": CAP_SECURITY,
     "search_traces": CAP_VIEW,
     "get_trace": CAP_VIEW,
     "list_tags": CAP_VIEW,

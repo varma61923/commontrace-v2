@@ -1,3 +1,7 @@
+"""Bounded, deterministic Porter-style English stemming for lexical retrieval.
+
+The suffix stages use the Porter measure (VC transitions) to avoid stripping
+short roots. Non-ASCII tokens are preserved rather than applying English rules."""
 from __future__ import annotations
 
 from functools import lru_cache
@@ -15,6 +19,7 @@ def _is_consonant(word: str, i: int) -> bool:
 
 
 def _measure(stem: str) -> int:
+    """Count consonant-vowel transition groups in Porter's [C](VC)^m[V] form."""
     m = 0
     i, n = 0, len(stem)
     while i < n and _is_consonant(stem, i):
@@ -144,8 +149,12 @@ def _step5(w: str) -> str:
     return w
 
 
-@lru_cache(maxsize=65536)
+STEM_CACHE_MAX_ENTRIES = 65_536
+
+
+@lru_cache(maxsize=STEM_CACHE_MAX_ENTRIES)
 def stem(word: str) -> str:
+    """Stem one lowercase English token; preserve short/non-ASCII tokens."""
     if len(word) <= 2 or not word.isalpha() or not word.isascii():
         return word
     w = _step1a(word)

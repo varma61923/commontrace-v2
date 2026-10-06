@@ -5,17 +5,19 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import datetime
-import glob
 import json
 import os
 import tempfile
+import threading
+from collections import OrderedDict
+from types import MappingProxyType
 
 from commontrace import frontmatter, paths, ttl
 
 CACHE_NAME = "lessons.json"
 CACHE_DIR = ".cache"
 
-FORMAT_VERSION = 4
+FORMAT_VERSION = 5
 
 PROJECTED_FIELDS = (
     "name", "description", "applies_when", "tags",
@@ -75,7 +77,8 @@ def filter_eligible(
     moment = parse_moment(as_of) if as_of else datetime.datetime.now(datetime.timezone.utc)
     requested_scope = str(scope or "").strip()
     eligible = []
-    for path, fm in lessons:
+    for lesson in lessons:
+        _path, fm = lesson
         raw_scopes = fm.get("scopes")
         scopes = (
             {str(item).strip() for item in raw_scopes if str(item).strip()}
@@ -95,7 +98,7 @@ def filter_eligible(
             continue
         if not show_expired and ttl.lesson_is_expired(fm, moment):
             continue
-        eligible.append((path, fm))
+        eligible.append(lesson)
     return eligible
 
 
@@ -108,6 +111,23 @@ def _stat(path: str) -> tuple[int, int] | None:
 
 
 _SCAN_SCOPE: contextvars.ContextVar[dict | None] = contextvars.ContextVar("commontrace_scan_scope", default=None)
+_LISTING_ROOTS_MAX = 8
+_LISTING_FILES_MAX = 32768
+_LISTING_PATH_BYTES_MAX = 4 * 1024 * 1024
+_LISTINGS: OrderedDict[str, tuple[_Listing, int]] = OrderedDict()
+_LISTINGS_LOCK = threading.Lock()
+
+
+def _listing_after_fork():
+    global _LISTINGS_LOCK
+    # A thread holding the parent's lock does not survive into the child.
+    _LISTINGS_LOCK = threading.Lock()
+    _LISTINGS.clear()
+    _SCAN_SCOPE.set(None)
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_listing_after_fork)
 
 
 @contextlib.contextmanager
@@ -122,7 +142,25 @@ def one_scan():
 
 def listing(root: str) -> tuple:
     """((path, mtime_ns, size), ...) for every lesson file, sorted by path (see `_listing`)."""
-    return _listing(root)
+    return tuple(_listing(root))
+
+
+class _Listing(tuple):
+    """Keep the public three-field listing while carrying stronger identities."""
+
+    def __new__(cls, entries, identities):
+        value = super().__new__(cls, entries)
+        object.__setattr__(value, "identities", MappingProxyType(identities))
+        object.__setattr__(value, "fingerprint", tuple((p, identities[p]) for p, _m, _s in value))
+        return value
+
+    def __setattr__(self, name, value):
+        raise AttributeError("lesson snapshot is immutable")
+
+
+def source_fingerprint(root: str) -> tuple:
+    """Source generation for caches of scopes, status and lexical metadata."""
+    return _listing(root).fingerprint
 
 
 def mtime_seconds(mtime_ns: int) -> float:
@@ -135,8 +173,20 @@ def _listing(root: str) -> tuple:
     scope = _SCAN_SCOPE.get()
     if scope is not None and ldir in scope:
         return scope[ldir]
+    result = _scan_listing(ldir)
+    if scope is not None:
+        scope[ldir] = result
+    return result
+
+
+def _scan_listing(ldir: str) -> tuple:
+    """Verify every source; reuse immutable sorted generations only if equal."""
+    with _LISTINGS_LOCK:
+        prior = _LISTINGS.get(ldir)
+    previous = prior[0].identities if prior is not None else {}
     prefix = ldir if ldir.endswith(os.sep) else ldir + os.sep
-    out = []
+    identities = {}
+    unchanged = prior is not None
     with os.scandir(ldir) as entries:
         for entry in entries:
             name = entry.name
@@ -146,23 +196,36 @@ def _listing(root: str) -> tuple:
                 st = entry.stat()
             except OSError:
                 continue
-            out.append((prefix + name, st.st_mtime_ns, st.st_size))
+            path = prefix + name
+            old = previous.get(path)
+            if old is not None and (st.st_dev == old[0] and st.st_ino == old[1]
+                                    and st.st_mtime_ns == old[2] and st.st_ctime_ns == old[3]
+                                    and st.st_size == old[4]):
+                identities[path] = old
+            else:
+                identities[path] = _identity(st)
+                unchanged = False
+    if unchanged and len(identities) == len(previous):
+        with _LISTINGS_LOCK:
+            if _LISTINGS.get(ldir) is prior:
+                _LISTINGS.move_to_end(ldir)
+        return prior[0]
+    out = [(path, identity[2], identity[4]) for path, identity in identities.items()]
     out.sort()
-    result = tuple(out)
-    if scope is not None:
-        scope[ldir] = result
+    result = _Listing(out, identities)
+    path_bytes = sum(len(os.fsencode(path)) for path in identities)
+    with _LISTINGS_LOCK:
+        _LISTINGS.pop(ldir, None)
+        if len(result) <= _LISTING_FILES_MAX and path_bytes <= _LISTING_PATH_BYTES_MAX:
+            _LISTINGS[ldir] = (result, path_bytes)
+            while (len(_LISTINGS) > _LISTING_ROOTS_MAX
+                   or sum(len(item[0]) for item in _LISTINGS.values()) > _LISTING_FILES_MAX
+                   or sum(item[1] for item in _LISTINGS.values()) > _LISTING_PATH_BYTES_MAX):
+                _LISTINGS.popitem(last=False)
     return result
 
 
 _FAST: dict[str, tuple[tuple, tuple | None, dict, list]] = {}
-
-
-def _lesson_paths(root: str) -> list[str]:
-    ldir = paths.lessons_dir(root)
-    return [
-        p for p in sorted(glob.glob(os.path.join(ldir, "lesson_*.md")))
-        if os.path.basename(p) != "lesson_template.md"
-    ]
 
 
 _MEMO: dict[str, tuple[tuple, dict, frozenset]] = {}
@@ -173,7 +236,11 @@ def _file_identity(path: str) -> tuple | None:
         st = os.stat(path)
     except OSError:
         return None
-    return (st.st_ino, st.st_mtime_ns, st.st_size)
+    return _identity(st)
+
+
+def _identity(st: os.stat_result) -> tuple:
+    return (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_ctime_ns, st.st_size)
 
 
 def _read_cache(path: str) -> dict:
@@ -199,9 +266,8 @@ def _write_cache(path: str, entries: dict) -> tuple | None:
             with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
                 json.dump({"format_version": FORMAT_VERSION, "entries": entries}, fh)
                 fh.flush()
-                st = os.fstat(fh.fileno())
             os.replace(tmp, path)
-            return (st.st_ino, st.st_mtime_ns, st.st_size)
+            return _file_identity(path)
         except BaseException:
             try:
                 os.unlink(tmp)
@@ -231,6 +297,8 @@ def _stamps_differ(cached: dict, entries: dict) -> bool:
             return True
         if (prior.get("mtime_ns"), prior.get("size")) != (entry.get("mtime_ns"), entry.get("size")):
             return True
+        if prior.get("source_identity") != entry.get("source_identity"):
+            return True
         if prior.get("fm") != entry.get("fm"):
             return True
     return False
@@ -255,9 +323,10 @@ def _load_entries_keyed(root: str, reader) -> tuple[dict[str, dict], list[str], 
         return {}, [], ()
 
     cpath = cache_path(root)
+    source_key = listing.fingerprint
     identity = _file_identity(cpath)
     fast = _FAST.get(cpath)
-    if fast is not None and identity is not None and fast[1] == identity and fast[0] == listing:
+    if fast is not None and identity is not None and fast[1] == identity and fast[0] == source_key:
         return fast[2], fast[3], fast[0]
     lesson_paths = [p for p, _m, _s in listing]
     stamps = {p: (m, size) for p, m, size in listing}
@@ -276,6 +345,7 @@ def _load_entries_keyed(root: str, reader) -> tuple[dict[str, dict], list[str], 
             isinstance(prior, dict)
             and prior.get("mtime_ns") == stamp[0]
             and prior.get("size") == stamp[1]
+            and prior.get("source_identity") == list(listing.identities[path])
             and isinstance(prior.get("fm"), dict)
         )
         if stamp_and_fm_match and (path in validated or _valid_terms(prior.get("terms"))):
@@ -295,6 +365,7 @@ def _load_entries_keyed(root: str, reader) -> tuple[dict[str, dict], list[str], 
         projected = project(fm)
         entries[path] = {
             "mtime_ns": stamp[0], "size": stamp[1],
+            "source_identity": list(listing.identities[path]),
             "fm": projected, "terms": field_terms(projected),
         }
 
@@ -309,10 +380,10 @@ def _load_entries_keyed(root: str, reader) -> tuple[dict[str, dict], list[str], 
         _MEMO[cpath] = (identity, cached, validated | frozenset(entries))
     ordered = [p for p in lesson_paths if p in entries]
     if identity is not None:
-        _FAST[cpath] = (listing, identity, entries, ordered)
+        _FAST[cpath] = (source_key, identity, entries, ordered)
     else:
         _FAST.pop(cpath, None)
-    return entries, ordered, listing
+    return entries, ordered, source_key
 
 
 def load_projected(root: str, reader=None) -> list[tuple[str, dict]]:
@@ -335,15 +406,24 @@ def load_active(root: str, agent_type: str | None = None,
 
 
 class TermCache(dict):
-    """path -> tokenized fields, plus each lesson file's (mtime_ns, size)."""
+    """path -> tokenized fields, plus each lesson file's complete source identity."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.stamps: dict[str, tuple[int, int]] = {}
+        self.stamps: dict[str, tuple] = {}
         self.lessons: list | None = None
         self.fingerprint: tuple | None = None
         self.fingerprint_hash: int = 0
         self.bin_dir: str | None = None
+
+    def restrict(self, lessons: list) -> TermCache:
+        """Keep source stamps for a filtered RAM index without replacing the full disk index."""
+        scoped = TermCache({path: self[path] for path, _fm in lessons})
+        scoped.stamps = {path: self.stamps[path] for path, _fm in lessons}
+        scoped.lessons = lessons
+        scoped.fingerprint = tuple((path, scoped.stamps[path]) for path, _fm in lessons)
+        scoped.fingerprint_hash = hash(scoped.fingerprint)
+        return scoped
 
 
 _SNAPSHOTS: dict[tuple, tuple[tuple, list, TermCache]] = {}
@@ -370,7 +450,7 @@ def load_active_with_terms(
             continue
         lessons.append((path, fm))
         term_cache[path] = entry["terms"]
-        term_cache.stamps[path] = (entry["mtime_ns"], entry["size"])
+        term_cache.stamps[path] = tuple(entry["source_identity"])
     term_cache.lessons = lessons
     term_cache.fingerprint = tuple((p, term_cache.stamps[p]) for p, _fm in lessons)
     term_cache.fingerprint_hash = hash(term_cache.fingerprint)

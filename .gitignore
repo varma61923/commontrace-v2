@@ -16,7 +16,10 @@ memory/benchmark_reports/
 # Claude Code local session/worktree state (not project source)
 .claude/
 .agents/
+.agentteam/
 scratch/
+benchmarks/data/
+benchmarks/.work/
 
 # Python
 __pycache__/
@@ -45,3 +48,7 @@ htmlcov/
 # Jupyter (if anyone runs notebooks locally)
 .ipynb_checkpoints/
 
+
+# Machine-local lint caches and generated evaluation outputs
+.ruff_cache/
+/benchmark-results/

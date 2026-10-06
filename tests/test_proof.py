@@ -356,7 +356,17 @@ def test_a_malformed_csv_fails_recomputation_rather_than_crashing(package):
     assert {"data digest", "recomputation"} <= _failed(out)
 
 
-def test_the_cli_runs_the_whole_flow(tmp_path, capsys):
+def test_the_cli_runs_the_whole_flow(tmp_path, capsys, monkeypatch):
+    # Pin the salt in this CLI integration flow; production runs intentionally
+    # randomize it, but a probabilistic arm-balance test must be reproducible.
+    real_configure = holdout_io.configure
+    monkeypatch.setattr(
+        holdout_io,
+        "configure",
+        lambda *args, **kwargs: real_configure(
+            *args, **{**kwargs, "salt": kwargs.get("salt") or "cli-test-salt"}
+        ),
+    )
     root = str(tmp_path / "store")
     key = tmp_path / "key"
     key.write_bytes(KEY)

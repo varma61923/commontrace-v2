@@ -33,24 +33,60 @@ class EventError(Exception):
     """An event could not be emitted as described."""
 
 
+_EXTRA_BLOCKED_NETWORKS = (
+    ipaddress.ip_network("100.64.0.0/10"),  # RFC 6598 carrier-grade NAT / shared space
+    ipaddress.ip_network("169.254.0.0/16"),  # Link-local / AWS / GCP / Azure metadata service
+)
+
+
+@dataclass(frozen=True)
+class Allowlist:
+    """Operator-configured exceptions to the private-range block."""
+
+    hostnames: frozenset[str] = frozenset()
+    networks: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = ()
+
+    def allows_host(self, host: str) -> bool:
+        return host.lower() in self.hostnames
+
+    def allows_ip(self, ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+        return any(ip in net for net in self.networks)
+
+
 async def _default_resolve(hostname: str) -> list:
     return await asyncio.to_thread(socket.getaddrinfo, hostname, None)
 
 
-async def _reject_private_target(url: str, *, resolve=None) -> None:
-    hostname = urlsplit(url).hostname
+async def _reject_private_target(
+    url: str, *, resolve=None, allowlist: Allowlist | None = None,
+) -> list[str]:
+    parsed = urlsplit(url)
+    if parsed.scheme not in ("http", "https"):
+        raise EventError(f"webhook scheme must be http or https, got {parsed.scheme!r}")
+    hostname = parsed.hostname
     if not hostname:
         raise EventError(f"a webhook endpoint must have a resolvable host, got {url!r}")
+    # Even an allow-listed hostname is resolved and pinned for this request;
+    # the allowlist permits its address class but must not reintroduce DNS
+    # rebinding between validation and the actual socket connection.
+    allowlisted_host = bool(allowlist and allowlist.allows_host(hostname))
     resolve = resolve or _default_resolve
     try:
         addrinfo = await resolve(hostname)
     except socket.gaierror as exc:
         raise EventError(f"could not resolve webhook host {hostname!r}: {exc}") from None
+    validated_ips: list[str] = []
     for family, _type, _proto, _canonname, sockaddr in addrinfo:
         raw_ip = sockaddr[0]
         ip = ipaddress.ip_address(raw_ip)
-        if (
-            ip.is_private or ip.is_loopback or ip.is_link_local
+        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+            ip = ip.ipv4_mapped
+        if allowlist and allowlist.allows_ip(ip):
+            validated_ips.append(raw_ip)
+            continue
+        if not allowlisted_host and (
+            any(ip in net for net in _EXTRA_BLOCKED_NETWORKS)
+            or ip.is_private or ip.is_loopback or ip.is_link_local
             or ip.is_reserved or ip.is_multicast or ip.is_unspecified
             or not ip.is_global
         ):
@@ -60,6 +96,8 @@ async def _reject_private_target(url: str, *, resolve=None) -> None:
                 "infrastructure, never a way to reach this deployment's own "
                 "internal network."
             )
+        validated_ips.append(raw_ip)
+    return validated_ips
 
 
 @dataclass(frozen=True)
@@ -359,7 +397,8 @@ async def deliver_pending(
         try:
             await transport(cipher.decrypt(endpoint.url), body, headers)
         except Exception as exc:  # noqa: BLE001 - any failure is a retry
-            delivery.last_error = f"{type(exc).__name__}: {exc}"[:500]
+            # Transport messages can contain destination credentials or tokens.
+            delivery.last_error = type(exc).__name__[:100]
             if delivery.attempts >= MAX_ATTEMPTS:
                 delivery.status = STATUS_FAILED
                 gave_up += 1
@@ -400,14 +439,55 @@ async def failed_deliveries(
     return list(rows.scalars())
 
 
-def http_transport(timeout: float = 10.0):
-    """The default transport: an HTTPS POST that raises on a bad status."""
+def http_transport(timeout: float = 10.0, allowlist: Allowlist | None = None):
+    """The default transport: an HTTPS POST that raises on a bad status.
+
+    Hardened against SSRF (CWE-918):
+    - Deny-by-default for private/loopback/link-local/metadata ranges.
+    - The validated DNS answers are pinned into the socket dialer, closing the
+      validation-to-connect DNS rebinding window.
+    - follow_redirects=False (no redirects followed across egress).
+    """
+    import httpcore
     import httpx
 
+    class _PinnedBackend(httpcore.AsyncNetworkBackend):
+        def __init__(self, addresses: list[str]) -> None:
+            self._addresses = tuple(addresses)
+            self._backend = httpcore.AnyIOBackend()
+
+        async def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
+            last_error: Exception | None = None
+            for address in self._addresses:
+                try:
+                    return await self._backend.connect_tcp(
+                        address, port, timeout=timeout,
+                        local_address=local_address, socket_options=socket_options,
+                    )
+                except Exception as exc:  # noqa: BLE001 - try the next validated address
+                    last_error = exc
+            if last_error is not None:
+                raise last_error
+            raise OSError("DNS returned no addresses for webhook host")
+
+    async def _send(url: str, body: str, headers: dict) -> None:
+        addresses = await _reject_private_target(url, allowlist=allowlist)
+        transport = httpx.AsyncHTTPTransport(trust_env=False)
+        # httpx keeps the origin hostname for TLS SNI/certificate validation;
+        # replacing only httpcore's dialer connects that same origin to the
+        # already-validated address rather than resolving it again.
+        transport._pool._network_backend = _PinnedBackend(addresses)  # type: ignore[attr-defined]
+        async with httpx.AsyncClient(
+            timeout=timeout, follow_redirects=False, transport=transport,
+        ) as client:
+            # Only the status is used. Buffering an endpoint-controlled body
+            # lets a recipient consume arbitrary memory (including via gzip).
+            async with client.stream("POST", url, content=body, headers=headers) as response:
+                response.raise_for_status()
+
     async def send(url: str, body: str, headers: dict) -> None:
-        await _reject_private_target(url)
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.post(url, content=body, headers=headers)
-            response.raise_for_status()
+        # HTTPX timeouts apply separately to individual socket operations;
+        # DNS and repeated pinned-address attempts also need one total budget.
+        await asyncio.wait_for(_send(url, body, headers), timeout=timeout)
 
     return send

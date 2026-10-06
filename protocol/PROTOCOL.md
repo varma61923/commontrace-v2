@@ -71,7 +71,10 @@ under `profile`.
 
 Traces are content-addressable knowledge, not a session log: a good trace
 should read as a self-contained answer to "what would I need to know to not
-repeat this," independent of who hit the situation or when.
+repeat this," independent of who hit the situation or when. Optional `scopes`,
+`valid_from`, `valid_until`, `expires_at`, and `expired_at` preserve routing
+and lifecycle information without forcing consumers that only need the core
+trace fields to understand a particular retention policy.
 
 ## 4. Core object: `Lesson`
 

@@ -6,12 +6,16 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
+from collections.abc import Iterable
+from itertools import chain
 
 from commontrace.conversation import profile
 from commontrace.conversation.store import ConversationError, Store, Turn
 
 MAX_CHARS = 480
 SENTENCES = 3
+MAX_TRANSCRIPT_CHARS = 24_000
+MODEL_PAGE = 16
 
 _SPLIT = re.compile(r"(?<=[.!?])\s+")
 
@@ -58,14 +62,36 @@ Session of {when}:
 Summary:"""
 
 
-def written(turns: list[Turn], complete=None) -> str:
+def written(turns: Iterable[Turn], complete=None) -> str:
     from commontrace import llm
 
     complete = complete or llm.complete
-    when = turns[0].at.date().isoformat() if turns and turns[0].at else "unknown date"
-    transcript = "\n".join(f"{t.speaker}: {t.annotated()}" for t in turns)[:24_000]
+    turns = iter(turns)
+    first = next(turns, None)
+    when = first.at.date().isoformat() if first and first.at else "unknown date"
+    # Preserve the exact prompt prefix without materializing the rest of a long
+    # session or annotating messages that cannot enter the model context.
+    fragments, remaining = [], MAX_TRANSCRIPT_CHARS
+    for turn in chain((first,), turns) if first is not None else ():
+        line = ("\n" if fragments else "") + f"{turn.speaker}: {turn.annotated()}"
+        fragments.append(line[:remaining])
+        remaining -= len(fragments[-1])
+        if not remaining:
+            break
+    transcript = "".join(fragments)
     text, _usage = complete(PROMPT.format(when=when, transcript=transcript))
     return " ".join(text.split())[:MAX_CHARS * 2]
+
+
+def _model_turns(store: Store, session: str):
+    """Read only the ordered source pages the bounded model transcript needs."""
+    after = -1
+    while True:
+        page = store.session_turns(session, after_idx=after, limit=MODEL_PAGE)
+        if not page:
+            return
+        yield from page
+        after = page[-1].idx
 
 
 def summarize(store: Store, sessions: list[str] | None = None, *, method: str = "extractive",
@@ -77,15 +103,19 @@ def summarize(store: Store, sessions: list[str] | None = None, *, method: str = 
     targets = sessions or [s["id"] for s in store.sessions()]
     written_n, skipped = 0, 0
     for session in targets:
-        turns = store.session_turns(session)
-        if not turns:
-            raise ConversationError(f"no session {session!r} in space {store.space!r}")
         known = existing.get(session)
-        if known and not force and known["turns"] == len(turns):
+        # summaries() already verifies source turn counts using the session
+        # index. A valid cached summary needs no raw message hydration.
+        if known and not force:
             skipped += 1
             continue
-        text = written(turns, complete) if method == "model" else extractive(turns)
+        with store.read_snapshot():
+            revision = store.unit_stamp()
+            if not store.db.execute("SELECT 1 FROM turns WHERE session=? LIMIT 1", (session,)).fetchone():
+                raise ConversationError(f"no session {session!r} in space {store.space!r}")
+            text = written(_model_turns(store, session), complete) if method == "model" else \
+                extractive(store.session_turns(session))
         if text:
-            store.set_summary(session, text, method)
+            store.set_summary(session, text, method, expected_revision=revision)
             written_n += 1
     return {"space": store.space, "summarized": written_n, "unchanged": skipped, "method": method}

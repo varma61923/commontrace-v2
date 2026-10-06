@@ -96,9 +96,7 @@ def suspicion_reason(fields: dict, config: HubConfig) -> str | None:
     if stripped and len(set(stripped.lower())) <= 3 and len(stripped) > 20:
         return "content has near-zero character diversity (likely filler/spam)"
 
-    guard = memory_guard.scan_fields({
-        k: fields.get(k, "") for k in ("title", "context_text", "solution_text")
-    })
+    guard = memory_guard.scan_fields(fields)
     if guard.should_block:
         return guard.summary()
 

@@ -1,0 +1,221 @@
+"""Disk cache and cost accounting for benchmark answer generation and judging.
+
+Caches LLM completions keyed by (model, sha256(prompt)).
+Allows interrupted benchmark runs to resume without re-running or re-paying for calls.
+Enforces --max-cost USD budget limits before starting.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import sqlite3
+import time
+from typing import Any, Callable
+
+# Default pricing in USD per million tokens (input / output)
+DEFAULT_PRICES: dict[str, dict[str, float]] = {
+    "gpt-4o": {"input_per_mtok": 2.50, "output_per_mtok": 10.00},
+    "gpt-4o-2024-08-06": {"input_per_mtok": 2.50, "output_per_mtok": 10.00},
+    "gpt-4o-mini": {"input_per_mtok": 0.15, "output_per_mtok": 0.60},
+    "gpt-4o-mini-2024-07-18": {"input_per_mtok": 0.15, "output_per_mtok": 0.60},
+    "gpt-4.1-mini": {"input_per_mtok": 0.15, "output_per_mtok": 0.60},
+    "claude-sonnet-5": {"input_per_mtok": 3.00, "output_per_mtok": 15.00},
+    "claude-3-5-sonnet": {"input_per_mtok": 3.00, "output_per_mtok": 15.00},
+    "claude-3-5-haiku": {"input_per_mtok": 0.80, "output_per_mtok": 4.00},
+}
+
+
+def prompt_hash(prompt: str) -> str:
+    """Deterministic sha256 hex digest of the prompt text."""
+    return hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+
+
+def get_price(model: str, prices: dict | None = None) -> tuple[float, float]:
+    """Return (input_per_mtok, output_per_mtok) for a model."""
+    if prices is None:
+        path = os.environ.get("COMMONTRACE_LLM_PRICES", "").strip()
+        if path and os.path.exists(path):
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    prices = json.load(fh)
+            except Exception:
+                prices = None
+    if isinstance(prices, dict) and model in prices:
+        entry = prices[model]
+        return float(entry.get("input_per_mtok", 0.0)), float(entry.get("output_per_mtok", 0.0))
+    # Fallback to default prices (match longest prefix first)
+    for prefix in sorted(DEFAULT_PRICES.keys(), key=len, reverse=True):
+        if model.lower().startswith(prefix.lower()):
+            pr = DEFAULT_PRICES[prefix]
+            return pr["input_per_mtok"], pr["output_per_mtok"]
+    return 0.0, 0.0
+
+
+def compute_cost_usd(usage: dict, model: str, prices: dict | None = None) -> float:
+    """Compute cost in USD given usage dict with input_tokens and output_tokens."""
+    in_tok = usage.get("input_tokens") or usage.get("prompt_tokens") or 0
+    out_tok = usage.get("output_tokens") or usage.get("completion_tokens") or 0
+    in_price, out_price = get_price(model, prices)
+    return round((in_tok * in_price + out_tok * out_price) / 1_000_000, 6)
+
+
+class BenchmarkCache:
+    """Persistent SQLite-backed cache for LLM responses."""
+
+    def __init__(self, cache_dir: str):
+        self.cache_dir = cache_dir
+        os.makedirs(cache_dir, exist_ok=True)
+        self.db_path = os.path.join(cache_dir, "llm_cache.sqlite3")
+        self._init_db()
+
+    def _get_conn(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.db_path, timeout=60.0)
+        conn.execute("PRAGMA journal_mode=WAL")
+        return conn
+
+    def _init_db(self) -> None:
+        with self._get_conn() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS completions (
+                    model TEXT NOT NULL,
+                    prompt_hash TEXT NOT NULL,
+                    prompt TEXT NOT NULL,
+                    response TEXT NOT NULL,
+                    usage_json TEXT NOT NULL,
+                    cost_usd REAL NOT NULL,
+                    created_at REAL NOT NULL,
+                    PRIMARY KEY (model, prompt_hash)
+                )
+                """
+            )
+
+    def get(self, model: str, prompt: str) -> tuple[str, dict, float] | None:
+        """Lookup cached completion. Returns (response, usage, cost_usd) or None."""
+        p_hash = prompt_hash(prompt)
+        with self._get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT response, usage_json, cost_usd FROM completions WHERE model = ? AND prompt_hash = ?",
+                (model, p_hash),
+            )
+            row = cur.fetchone()
+            if row:
+                resp, usage_str, cost = row
+                try:
+                    usage = json.loads(usage_str)
+                except Exception:
+                    usage = {}
+                return resp, usage, cost
+        return None
+
+    def put(self, model: str, prompt: str, response: str, usage: dict, cost_usd: float | None = None) -> None:
+        """Store completion in cache."""
+        p_hash = prompt_hash(prompt)
+        if cost_usd is None:
+            cost_usd = compute_cost_usd(usage, model)
+        with self._get_conn() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO completions (model, prompt_hash, prompt, response, usage_json, cost_usd, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (model, p_hash, prompt, response, json.dumps(usage), cost_usd, time.time()),
+            )
+
+    def complete_cached(
+        self,
+        model: str,
+        prompt: str,
+        complete_fn: Callable[[str, str], tuple[str, dict]],
+    ) -> tuple[str, dict, float, bool]:
+        """Get from cache or invoke complete_fn(prompt, model).
+
+        Returns: (response_text, usage, cost_usd, is_cached)
+        """
+        hit = self.get(model, prompt)
+        if hit is not None:
+            resp, usage, cost = hit
+            return resp, usage, cost, True
+
+        resp, usage = complete_fn(prompt, model)
+        cost = compute_cost_usd(usage, model)
+        self.put(model, prompt, resp, usage, cost)
+        return resp, usage, cost, False
+
+    def stats(self) -> dict[str, Any]:
+        """Return total cached entries and total cost."""
+        with self._get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT count(*), coalesce(sum(cost_usd), 0.0) FROM completions")
+            count, total_cost = cur.fetchone()
+            return {"entries": count, "total_cost_usd": round(total_cost, 4)}
+
+
+class CostGuard:
+    """Pre-run cost estimation and budget enforcement."""
+
+    def __init__(self, max_cost_usd: float | None = None, prices: dict | None = None):
+        self.max_cost_usd = max_cost_usd
+        self.prices = prices
+        self.total_cost_usd: float = 0.0
+        self.call_count: int = 0
+        self.cached_count: int = 0
+
+    def record_call(self, cost_usd: float, is_cached: bool = False) -> None:
+        self.call_count += 1
+        if is_cached:
+            self.cached_count += 1
+        else:
+            self.total_cost_usd += cost_usd
+
+    def check_estimate(
+        self,
+        num_questions: int,
+        answer_model: str,
+        judge_model: str,
+        avg_context_tokens: int = 2500,
+        expected_output_tokens: int = 150,
+        judge_calls_per_question: int = 1,
+    ) -> dict[str, Any]:
+        """Estimate tokens and cost for an upcoming benchmark run.
+
+        Raises RuntimeError if estimated cost exceeds max_cost_usd.
+        """
+        ans_in_p, ans_out_p = get_price(answer_model, self.prices)
+        judge_in_p, judge_out_p = get_price(judge_model, self.prices)
+
+        # Answer estimation
+        ans_in_tok = num_questions * avg_context_tokens
+        ans_out_tok = num_questions * expected_output_tokens
+        ans_cost = (ans_in_tok * ans_in_p + ans_out_tok * ans_out_p) / 1_000_000
+
+        # Judge estimation
+        judge_in_tok = num_questions * judge_calls_per_question * (expected_output_tokens + 400)
+        judge_out_tok = num_questions * judge_calls_per_question * 50
+        judge_cost = (judge_in_tok * judge_in_p + judge_out_tok * judge_out_p) / 1_000_000
+
+        total_cost = round(ans_cost + judge_cost, 4)
+        total_tokens = ans_in_tok + ans_out_tok + judge_in_tok + judge_out_tok
+        total_calls = num_questions * (1 + judge_calls_per_question)
+
+        estimate = {
+            "num_questions": num_questions,
+            "answer_model": answer_model,
+            "judge_model": judge_model,
+            "total_calls": total_calls,
+            "total_tokens": total_tokens,
+            "estimated_cost_usd": total_cost,
+            "answer_cost_usd": round(ans_cost, 4),
+            "judge_cost_usd": round(judge_cost, 4),
+        }
+
+        if self.max_cost_usd is not None and total_cost > self.max_cost_usd:
+            raise RuntimeError(
+                f"Estimated cost ${total_cost:.2f} exceeds limit --max-cost ${self.max_cost_usd:.2f} "
+                f"for {num_questions} questions ({total_calls} calls, ~{total_tokens} tokens). "
+                f"Increase --max-cost or reduce question limit to proceed."
+            )
+
+        return estimate

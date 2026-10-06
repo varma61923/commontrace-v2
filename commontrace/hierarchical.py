@@ -26,6 +26,16 @@ CATEGORIES = (
 )
 MAX_STATEMENT_CHARS = 2000
 
+# Stability tiers follow supermemory's static/dynamic split: "stable" facts are
+# long-lived (identity, standing constraints) and "dynamic" facts change often.
+# "" is unset: legacy behavior, ranking untouched.
+STABILITY_TIERS = ("stable", "dynamic")
+STABILITY_VALUES = ("", "stable", "dynamic")
+
+
+def _normalize_stability(value: object) -> str:
+    return value if value in STABILITY_TIERS else ""
+
 
 @dataclass
 class AtomicFact:
@@ -45,6 +55,7 @@ class AtomicFact:
     revision: str = ""
     created_at: str = ""
     updated_at: str = ""
+    stability: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -54,12 +65,81 @@ _FACT_FIELDS = frozenset(AtomicFact.__dataclass_fields__)
 
 
 def _coerce_fact(data: dict[str, Any]) -> AtomicFact:
-    clean = {k: v for k, v in data.items() if k in _FACT_FIELDS}
-    if "forgotten" in clean:
-        clean["forgotten"] = bool(clean["forgotten"])
-    if clean.get("source_traces") is None:
-        clean["source_traces"] = []
-    return AtomicFact(**clean)
+    """Read current and pre-bitemporal rows without dropping valid legacy facts.
+
+    Fact files are durable user data, so adding fields must be a migration-by-read:
+    absent timestamps become a present valid-time instant (recorded time when
+    available, otherwise now), while malformed rows are still rejected by the
+    caller rather than partially entering the index.
+    """
+    if not isinstance(data, dict):
+        raise TypeError("fact row must be an object")
+    statement = str(data.get("statement") or "").strip()
+    if not statement:
+        raise TypeError("fact statement is required")
+    scopes = _clean_scopes(data.get("scopes"))
+    recorded_fallback = str(data.get("created_at") or "").strip()
+    try:
+        valid_from = _moment(data.get("valid_from") or recorded_fallback, "valid_from")
+    except ValueError:
+        valid_from = None
+    valid_from = valid_from or _now()
+    try:
+        valid_until = _moment(data.get("valid_until"), "valid_until")
+    except ValueError:
+        raise TypeError("invalid fact validity window") from None
+    _check_window(valid_from, valid_until)
+    try:
+        expires_at = _normalize_expires_at(data.get("expires_at"))
+    except ValueError:
+        raise TypeError("invalid fact expiry") from None
+    confidence = data.get("confidence", 0.8)
+    try:
+        confidence = float(confidence)
+    except (TypeError, ValueError, OverflowError):
+        confidence = 0.8
+    if confidence != confidence or confidence in (float("inf"), float("-inf")):
+        confidence = 0.8
+    confirmations = data.get("confirmations", 1)
+    try:
+        confirmations = max(1, int(confirmations))
+    except (TypeError, ValueError, OverflowError):
+        confirmations = 1
+    forgotten = data.get("forgotten", False)
+    if isinstance(forgotten, str):
+        forgotten = forgotten.strip().lower() in {"1", "true", "yes", "on"}
+    else:
+        forgotten = bool(forgotten)
+    raw_sources = data.get("source_traces")
+    source_values = (
+        raw_sources if isinstance(raw_sources, (list, tuple, set))
+        else ([raw_sources] if raw_sources else [])
+    )
+    clean = {
+        "id": str(data.get("id") or _fact_id(statement, scopes)),
+        "statement": statement,
+        "category": str(data.get("category") or DEFAULT_CATEGORY),
+        "scopes": scopes,
+        "confidence": min(1.0, max(0.0, round(confidence, 3))),
+        "confirmations": confirmations,
+        "valid_from": valid_from,
+        "valid_until": valid_until,
+        "expires_at": expires_at,
+        "forgotten": forgotten,
+        "source_traces": [str(s) for s in source_values if str(s)],
+        "status": str(data.get("status") or "active"),
+        "superseded_by": data.get("superseded_by"),
+        "revision": str(data.get("revision") or ""),
+        "created_at": recorded_fallback or valid_from,
+        "updated_at": str(data.get("updated_at") or recorded_fallback or valid_from),
+        "stability": data.get("stability") if data.get("stability") in STABILITY_VALUES else "",
+    }
+    if clean["category"] not in CATEGORIES:
+        clean["category"] = DEFAULT_CATEGORY
+    fact = AtomicFact(**{k: v for k, v in clean.items() if k in _FACT_FIELDS})
+    if not fact.revision:
+        fact.revision = _compute_revision(fact.to_dict())
+    return fact
 
 
 def _facts_dir(root: str) -> str:
@@ -138,7 +218,7 @@ def load_facts(root: str) -> dict[str, AtomicFact]:
     for row in _jsonl.read_rows(_facts_file(root)):
         try:
             fact = _coerce_fact(row)
-        except TypeError:
+        except (TypeError, ValueError):
             continue
         facts[fact.id] = fact
     return facts
@@ -161,10 +241,19 @@ def mutate_facts(root: str) -> Iterator[dict[str, AtomicFact]]:
 
 def _matching_active(facts: dict[str, AtomicFact], statement: str, scopes: list[str]) -> AtomicFact | None:
     norm = _normalize_statement(statement)
+    requested_scopes = frozenset(scopes)
     for existing in facts.values():
         if existing.status != "active" or _normalize_statement(existing.statement) != norm:
             continue
-        if not scopes or not existing.scopes or any(s in existing.scopes for s in scopes):
+        # Scope is an authorization boundary, not a relevance hint. A scoped
+        # write must never reinforce or re-scope a global fact (or another
+        # tenant's fact); scoped facts may reinforce when their scope sets
+        # overlap, preserving the existing multi-project fact semantics.
+        if not requested_scopes and existing.scopes:
+            continue
+        if requested_scopes and not existing.scopes:
+            continue
+        if not requested_scopes or requested_scopes & frozenset(existing.scopes):
             return existing
     return None
 
@@ -179,6 +268,8 @@ def _add_locked(
     expires_at: str | None,
     confidence: float,
     source_trace_id: str,
+    stability: str = "",
+    created_at: str | None = None,
 ) -> tuple[AtomicFact, str]:
     existing = _matching_active(facts, statement, scopes)
     if existing is not None:
@@ -187,10 +278,18 @@ def _add_locked(
         if source_trace_id and source_trace_id not in existing.source_traces:
             existing.source_traces.append(source_trace_id)
         existing.scopes = _clean_scopes([*existing.scopes, *scopes])
+        if stability in STABILITY_TIERS:
+            existing.stability = stability
         _stamp(existing)
         return existing, "NOOP"
 
     now_iso = _now()
+    recorded_at = now_iso
+    if created_at:
+        try:
+            recorded_at = _moment(created_at, "created_at") or now_iso
+        except ValueError:
+            raise ValueError(f"invalid fact `created_at` value {created_at!r}") from None
     fact = AtomicFact(
         id=_free_id(_fact_id(statement, scopes), facts),
         statement=statement,
@@ -202,8 +301,9 @@ def _add_locked(
         valid_until=valid_until,
         expires_at=expires_at,
         source_traces=[source_trace_id] if source_trace_id else [],
-        created_at=now_iso,
+        created_at=recorded_at,
         updated_at=now_iso,
+        stability=_normalize_stability(stability),
     )
     fact.revision = _compute_revision(fact.to_dict())
     facts[fact.id] = fact
@@ -234,15 +334,19 @@ def add_fact(
     expires_at: str | None = None,
     confidence: float = 0.8,
     source_trace_id: str = "",
+    stability: str = "",
+    created_at: str | None = None,
 ) -> tuple[AtomicFact, str]:
     """Add a fact, or reinforce the matching active one. Returns (fact, 'ADD' | 'NOOP')."""
     statement, category, valid_from, valid_until, expires_at = prepare_fact(
         statement, category, valid_from, valid_until, expires_at)
     with mutate_facts(root) as facts:
-        return _add_locked(
+        fact, action = _add_locked(
             facts, statement, category, _clean_scopes(scopes), valid_from, valid_until,
-            expires_at, confidence, source_trace_id,
+            expires_at, confidence, source_trace_id, _normalize_stability(stability), created_at,
         )
+    _link_entities_best_effort(root, [(fact.id, fact.statement)])
+    return fact, action
 
 
 def add_facts(root: str, items: list[dict[str, Any]]) -> list[tuple[AtomicFact, str]]:
@@ -254,12 +358,16 @@ def add_facts(root: str, items: list[dict[str, Any]]) -> list[tuple[AtomicFact, 
             item.get("valid_from"), item.get("valid_until"), item.get("expires_at"))
         prepared.append((statement, category, _clean_scopes(item.get("scopes")), valid_from,
                          valid_until, expires_at, float(item.get("confidence", 0.8)),
-                         str(item.get("source_trace_id", "") or "")))
+                         str(item.get("source_trace_id", "") or ""),
+                         _normalize_stability(item.get("stability", "")),
+                         item.get("created_at")))
     if not prepared:
         return []
     with mutate_facts(root) as facts:
-        return [_add_locked(facts, s, c, sc, vf, vu, ea, conf, src)
-                for s, c, sc, vf, vu, ea, conf, src in prepared]
+        results = [_add_locked(facts, s, c, sc, vf, vu, ea, conf, src, stab, created)
+                   for s, c, sc, vf, vu, ea, conf, src, stab, created in prepared]
+    _link_entities_best_effort(root, [(fact.id, fact.statement) for fact, _ in results])
+    return results
 
 
 _UNSET: Any = object()
@@ -274,8 +382,15 @@ def update_fact(
     confidence: float | None = None,
     valid_until: str | None = None,
     expires_at: Any = _UNSET,
+    stability: str | None = None,
 ) -> AtomicFact:
-    """Change fields of an existing fact."""
+    """Change fields of an existing fact.
+
+    Scopes are immutable here (mem0 tenant-isolation discipline): a scope
+    identifies *whose* fact this is, and silently re-scoping it would move one
+    tenant's memory into another's view. To change scope, supersede the fact
+    with explicit new scopes instead — the old scope stays on record.
+    """
     new_until = _moment(valid_until, "valid_until") if valid_until is not None else None
     new_expiry = _normalize_expires_at(expires_at) if expires_at is not _UNSET else None
     if statement is not None and len(statement.strip()) > MAX_STATEMENT_CHARS:
@@ -288,8 +403,11 @@ def update_fact(
             fact.statement = statement.strip()
         if category is not None and category in CATEGORIES:
             fact.category = category
-        if scopes is not None:
-            fact.scopes = _clean_scopes(scopes)
+        if scopes is not None and _clean_scopes(scopes) != list(fact.scopes):
+            raise ValueError(
+                f"fact '{fact_id}' scopes are immutable via update "
+                f"(currently {list(fact.scopes)}); supersede the fact with explicit "
+                "scopes to move it, so the old scope stays on record")
         if confidence is not None:
             fact.confidence = min(1.0, max(0.0, round(float(confidence), 3)))
         if new_until is not None:
@@ -297,6 +415,10 @@ def update_fact(
             fact.valid_until = new_until
         if expires_at is not _UNSET:
             fact.expires_at = new_expiry
+        if stability is not None:
+            if stability not in STABILITY_VALUES:
+                raise ValueError(f"unknown stability tier {stability!r} (expected 'stable' or 'dynamic')")
+            fact.stability = stability
         _stamp(fact)
         return fact
 
@@ -342,6 +464,63 @@ def supersede_fact(
         return old_fact, new_fact
 
 
+def _link_entities_best_effort(root: str, pairs: list[tuple[str, str]]) -> None:
+    """Fold fact statements into the entity index; failures never break the write."""
+    try:
+        from commontrace import entity_store
+
+        for memory_id, text in pairs:
+            try:
+                entity_store.link_memory(root, memory_id, text)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _unlink_entities_best_effort(root: str, memory_id: str) -> None:
+    """Drop a fact id from the entity index; failures never break the write."""
+    try:
+        from commontrace import entity_store
+
+        try:
+            entity_store.unlink_memory(root, memory_id)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+def _fact_line(fact: AtomicFact) -> str:
+    scope_str = f" [{','.join(fact.scopes)}]" if fact.scopes else ""
+    return f"- {fact.statement} (conf: {fact.confidence:.2f}){scope_str}"
+
+
+def format_fact_lines(scored: list[tuple[AtomicFact, float]], group_stability: bool = False) -> list[str]:
+    """Render ``search_facts`` pairs as injection prompt lines.
+
+    This is the retrieval prompt builder both fact consumers share: the agent
+    loop's "# Key facts" block and MCP ``query_facts`` output both start from
+    ``search_facts`` pairs. With ``group_stability=False`` (default) the lines
+    are byte-identical to the legacy flat rendering; opt in with
+    ``group_stability=True`` to group supermemory-style static facts under a
+    "## Stable" header and everything else (dynamic + untiered) under
+    "## Recent". Input order is kept within each group.
+    """
+    if not group_stability:
+        return [_fact_line(fact) for fact, _score in scored]
+    stable = [fact for fact, _score in scored if getattr(fact, "stability", "") == "stable"]
+    recent = [fact for fact, _score in scored if getattr(fact, "stability", "") != "stable"]
+    lines: list[str] = []
+    if stable:
+        lines.append("## Stable")
+        lines.extend(_fact_line(fact) for fact in stable)
+    if recent:
+        lines.append("## Recent")
+        lines.extend(_fact_line(fact) for fact in recent)
+    return lines
+
+
 def _audit_git(root: str, action: str, fact_id: str) -> None:
     try:
         from commontrace import memory_git
@@ -352,6 +531,75 @@ def _audit_git(root: str, action: str, fact_id: str) -> None:
         pass
 
 
+def resolve_contradiction(
+    root: str,
+    old_fact_id: str,
+    new_fact_id_or_statement: str,
+    *,
+    as_of: str | None = None,
+    category: str | None = None,
+    scopes: list[str] | None = None,
+) -> tuple[AtomicFact, AtomicFact]:
+    """Resolve a contradiction by invalidating the older fact in favor of newer evidence.
+
+    Graphiti's deterministic temporal guard, without the LLM: the replacement
+    must not be *older* than the fact it invalidates (compared on
+    ``valid_from``) and their validity windows must overlap — otherwise this
+    refuses instead of expiring a fact that was true in a different window.
+    Delegates the state change to :func:`supersede_fact`.
+    """
+    with mutate_facts(root) as facts:
+        if old_fact_id not in facts:
+            raise KeyError(f"Old fact '{old_fact_id}' not found")
+        old = facts[old_fact_id]
+        if old.status != "active":
+            raise ValueError(
+                f"fact '{old_fact_id}' is {old.status}, not active; only an active fact can be invalidated")
+        target = new_fact_id_or_statement
+        new_from: str | None = None
+        if target in facts:
+            new = facts[target]
+            if new.status != "active":
+                raise ValueError(f"replacement fact '{target}' is {new.status}, not active")
+            if new.id == old.id:
+                raise ValueError(f"fact '{old_fact_id}' cannot invalidate itself")
+            new_from = new.valid_from
+        else:
+            statement, _cat, vf, _vu, _ea = prepare_fact(
+                target, category or old.category, None, None, None)
+            if not statement:
+                raise ValueError("replacement statement must not be empty")
+            same = _matching_active(facts, statement, _clean_scopes(
+                scopes if scopes is not None else old.scopes))
+            if same is not None and same.id == old.id:
+                raise ValueError(
+                    f"the replacement restates fact '{old_fact_id}' itself; "
+                    "resolve it with a statement that differs")
+            # A fresh statement is present evidence: it takes effect now.
+            new_from = _now()
+    try:
+        old_from = lesson_cache.parse_moment(old.valid_from) if old.valid_from else None
+        new_from_m = lesson_cache.parse_moment(new_from) if new_from else None
+        old_until = lesson_cache.parse_moment(old.valid_until) if old.valid_until else None
+    except ValueError as exc:
+        raise ValueError(f"cannot compare validity windows: {exc}") from exc
+    if old_from is not None and new_from_m is not None:
+        old_naive = old_from.replace(tzinfo=None)
+        new_naive = new_from_m.replace(tzinfo=None)
+        if new_naive < old_naive:
+            raise ValueError(
+                f"refusing to invalidate '{old_fact_id}': the replacement (valid from "
+                f"{new_from}) predates it (valid from {old.valid_from}). "
+                "Close the old fact's window explicitly instead.")
+        if old_until is not None and old_until.replace(tzinfo=None) <= new_naive:
+            raise ValueError(
+                f"refusing to invalidate '{old_fact_id}': its validity already ends "
+                f"({old.valid_until}) before the replacement begins ({new_from}). "
+                "These cover different windows, not a contradiction.")
+    return supersede_fact(root, old_fact_id, new_fact_id_or_statement,
+                          scopes=scopes, category=category, as_of=as_of)
+
+
 def forget_fact(root: str, fact_id: str, undo: bool = False) -> AtomicFact:
     """Hide a fact from default listings, or restore it with ``undo=True``."""
     with mutate_facts(root) as facts:
@@ -360,6 +608,10 @@ def forget_fact(root: str, fact_id: str, undo: bool = False) -> AtomicFact:
         fact = facts[fact_id]
         fact.forgotten = not undo
         _stamp(fact)
+    if undo:
+        _link_entities_best_effort(root, [(fact.id, fact.statement)])
+    else:
+        _unlink_entities_best_effort(root, fact.id)
     _audit_git(root, "restore" if undo else "forget", fact_id)
     return fact
 
@@ -375,7 +627,8 @@ def delete_fact(root: str, fact_id: str) -> bool:
         fact.status = "deleted"
         fact.valid_until = _now()
         _stamp(fact)
-        return True
+    _unlink_entities_best_effort(root, fact_id)
+    return True
 
 
 def retire_source(root: str, source_id: str, keep: set[str]) -> int:
@@ -383,6 +636,7 @@ def retire_source(root: str, source_id: str, keep: set[str]) -> int:
     if not source_id:
         return 0
     ended = 0
+    ended_ids: list[str] = []
     with mutate_facts(root) as facts:
         now_iso = _now()
         for fact in facts.values():
@@ -393,19 +647,46 @@ def retire_source(root: str, source_id: str, keep: set[str]) -> int:
                 fact.status = "deleted"
                 fact.valid_until = now_iso
                 ended += 1
+                ended_ids.append(fact.id)
             _stamp(fact)
+    for fact_id in ended_ids:
+        _unlink_entities_best_effort(root, fact_id)
     return ended
 
 
 def _valid_at(fact: AtomicFact, moment: datetime) -> bool:
+    """Whether a fact was true at valid-time *moment*, including past revisions."""
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    else:
+        moment = moment.astimezone(timezone.utc)
     try:
-        if fact.valid_from and lesson_cache.parse_moment(fact.valid_from) > moment:
-            return False
-        if fact.valid_until:
-            return lesson_cache.parse_moment(fact.valid_until) > moment
+        valid_from = lesson_cache.parse_moment(fact.valid_from) if fact.valid_from else None
+        valid_until = lesson_cache.parse_moment(fact.valid_until) if fact.valid_until else None
     except ValueError:
         return False
-    return fact.status not in ("superseded", "deleted")
+    if valid_from is not None and valid_from > moment:
+        return False
+    if valid_until is not None and valid_until <= moment:
+        return False
+    # Superseded/deleted rows remain queryable through their historical window;
+    # status only controls the default present-time listing.
+    return True
+
+
+def _is_expired(fact: AtomicFact, moment: datetime) -> bool:
+    """True when the fact's TTL has passed at *moment* (mem0 hide-expired semantics)."""
+    if not fact.expires_at:
+        return False
+    try:
+        expiry = lesson_cache.parse_moment(fact.expires_at)
+    except ValueError:
+        return False
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    else:
+        moment = moment.astimezone(timezone.utc)
+    return expiry <= moment
 
 
 def list_facts(
@@ -415,12 +696,31 @@ def list_facts(
     category: str = "",
     as_of: str | None = None,
     include_forgotten: bool = False,
+    show_expired: bool = False,
+    now: datetime | None = None,
+    stability: str = "",
 ) -> list[AtomicFact]:
-    """Facts matching the filters; with `as_of`, the facts valid at that moment."""
+    """Facts matching the filters; with `as_of`, the facts valid at that moment.
+
+    Expired facts (TTL passed) are hidden unless `show_expired` — the read
+    half of the expiry contract `add --expires-at` writes.
+
+    `stability` optionally keeps one supermemory tier ("stable" or "dynamic");
+    the default "" keeps every tier, exactly like before the field existed.
+    """
+    if stability and stability not in STABILITY_TIERS:
+        raise ValueError(f"unknown stability tier {stability!r} (expected 'stable' or 'dynamic')")
     moment = lesson_cache.parse_moment(as_of) if as_of else None
+    reference = now or datetime.now(timezone.utc)
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=timezone.utc)
+    else:
+        reference = reference.astimezone(timezone.utc)
     results: list[AtomicFact] = []
     for fact in load_facts(root).values():
         if fact.forgotten and not include_forgotten:
+            continue
+        if stability and fact.stability != stability:
             continue
         if moment is None and status and fact.status != status:
             continue
@@ -430,11 +730,33 @@ def list_facts(
             continue
         if moment is not None and not _valid_at(fact, moment):
             continue
+        if not show_expired and _is_expired(fact, moment or reference):
+            continue
         results.append(fact)
     return sorted(results, key=lambda f: (f.category, -f.confidence, f.id))
 
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+_FACT_TOKENS: dict[tuple[str, str, str], frozenset] = {}
+
+
+def _fact_tokens(fact: AtomicFact) -> frozenset:
+    """Token set memoized with the actual statement as well as id/revision.
+
+    `search_facts` re-tokenized every fact on every query (mem0 precomputes
+    `text_lemmatized` at write time; same idea, lazy). Imported ids/revisions
+    can collide across stores or be stale. Actual text
+    identity prevents one store's token set from changing another's rankings.
+    The memo is capped to bound memory.
+    """
+    key = (fact.id, fact.revision, fact.statement)
+    toks = _FACT_TOKENS.get(key)
+    if toks is None:
+        toks = frozenset(_TOKEN_RE.findall(fact.statement.lower()))
+        if len(_FACT_TOKENS) < 4096:
+            _FACT_TOKENS[key] = toks
+    return toks
 
 
 def search_facts(
@@ -445,12 +767,22 @@ def search_facts(
     as_of: str | None = None,
     limit: int = 10,
     include_forgotten: bool = False,
+    show_expired: bool = False,
+    stability: str = "",
 ) -> list[tuple[AtomicFact, float]]:
-    """Active facts ranked by token overlap with *query*, weighted by confidence."""
+    """Active facts ranked by token overlap with *query*, weighted by confidence.
+
+    Expired facts are hidden unless `show_expired` (mem0 semantics).
+    `stability` optionally keeps one tier ("stable"/"dynamic"); "" keeps all,
+    with ranking untouched.
+    """
     candidates = list_facts(
         root, status="active", scope=scope, category=category, as_of=as_of,
-        include_forgotten=include_forgotten,
+        include_forgotten=include_forgotten, show_expired=show_expired, stability=stability,
     )
+    if not as_of:
+        moment = datetime.now(timezone.utc)
+        candidates = [fact for fact in candidates if _valid_at(fact, moment)]
     limit = max(0, int(limit))
     query_tokens = set(_TOKEN_RE.findall(query.lower()))
     if not candidates or not query_tokens:
@@ -458,7 +790,7 @@ def search_facts(
         return [(c, c.confidence) for c in ranked[:limit]]
     scored: list[tuple[AtomicFact, float]] = []
     for fact in candidates:
-        statement_tokens = set(_TOKEN_RE.findall(fact.statement.lower()))
+        statement_tokens = _fact_tokens(fact)
         overlap = len(query_tokens & statement_tokens)
         if not overlap:
             continue

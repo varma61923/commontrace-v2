@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import heapq
 import math
+import os
+import sys
+import threading
+from collections import OrderedDict
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
+from commontrace import corpus_bin
 from commontrace._lexical import STOPWORDS as _STOPWORDS
 from commontrace._lexical import WORD_RE as _WORD_RE
 from commontrace._lexical import has_cjk as _has_cjk
@@ -181,8 +186,144 @@ def _build_index(lessons, term_cache, scorer: str) -> _CorpusIndex:
     )
 
 
-_INDEX_CACHE: dict[tuple, tuple[tuple, _CorpusIndex]] = {}
 _INDEX_CACHE_MAX = 4
+_INDEX_CACHE_MAX_BYTES = 64 * 1024 * 1024
+
+
+def _index_bytes(fingerprint: tuple, index: _CorpusIndex) -> int:
+    """Conservative retained size without a posting-sized traversal or ID set.
+
+    Shared references are counted again deliberately. Numeric posting arrays
+    use fixed float sizes and an upper bound for document-ID integer sizes.
+    The budget bounds cached indexes, not a caller's active query or build.
+    """
+    def sequence_bytes(value) -> int:
+        size = 0
+        pending = [value]
+        while pending:
+            item = pending.pop()
+            size += sys.getsizeof(item)
+            if isinstance(item, (tuple, list)):
+                pending.extend(item)
+        return size
+
+    values = vars(index)
+    size = (512 + sys.getsizeof(index) + sys.getsizeof(values)
+            + sum(sys.getsizeof(name) for name in values)
+            + sequence_bytes(fingerprint) + sequence_bytes(index.n_terms)
+            + sequence_bytes(index.tie_breaks)
+            + sys.getsizeof(index.n_docs) + sys.getsizeof(index.avg_field_len)
+            + sys.getsizeof(index.max_idf) + sys.getsizeof(index.length_factors)
+            + len(index.length_factors) * sys.getsizeof(0.0)
+            + sys.getsizeof(index.postings) + sys.getsizeof(index.doc_freq))
+    id_bytes, float_bytes = sys.getsizeof(index.n_docs), sys.getsizeof(0.0)
+    for term, posting in index.postings.items():
+        ids, weights, best = posting
+        size += (2 * sys.getsizeof(term) + sys.getsizeof(posting)
+                 + sys.getsizeof(ids) + len(ids) * id_bytes
+                 + sys.getsizeof(weights) + len(weights) * float_bytes
+                 + sys.getsizeof(best) + len(best) * float_bytes
+                 + sys.getsizeof(index.doc_freq[term]))
+    return size
+
+
+@dataclass
+class _IndexFlight:
+    fingerprint: tuple
+    ready: threading.Event = field(default_factory=threading.Event)
+    index: _CorpusIndex | None = None
+    error: BaseException | None = None
+
+
+class _CorpusIndexCache:
+    """Bounded LRU with one cold build per source snapshot, not one global build.
+
+    Hashes narrow the lookup only; equality remains mandatory before reuse.
+    Disk I/O, tokenization and size accounting never hold the cache lock.
+    """
+
+    def __init__(self) -> None:
+        self._after_fork()
+
+    def _after_fork(self) -> None:
+        # A fork can inherit locks and unfinished builds owned by vanished
+        # threads. Do not acquire any inherited lock when resetting the child.
+        self._lock = threading.Lock()
+        self._entries: OrderedDict[tuple, tuple[tuple, _CorpusIndex, int]] = OrderedDict()
+        self._flights: dict[tuple, _IndexFlight] = {}
+        self.bytes_used = 0
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._entries)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._entries.clear()
+            # Existing readers can finish their build, but cannot republish it.
+            self._flights.clear()
+            self.bytes_used = 0
+
+    def get_or_build(self, key: tuple, fingerprint: tuple,
+                     build: Callable[[], _CorpusIndex]) -> _CorpusIndex:
+        while True:
+            with self._lock:
+                hit = self._entries.get(key)
+                if hit is not None and (hit[0] is fingerprint or hit[0] == fingerprint):
+                    self._entries.move_to_end(key)
+                    return hit[1]
+                flight = self._flights.get(key)
+                if flight is None:
+                    flight = _IndexFlight(fingerprint)
+                    self._flights[key] = flight
+                    owner = True
+                else:
+                    owner = False
+            if owner:
+                break
+            flight.ready.wait()
+            if flight.fingerprint is fingerprint or flight.fingerprint == fingerprint:
+                if flight.error is not None:
+                    raise flight.error
+                assert flight.index is not None
+                return flight.index
+            # A hash collision may have just built a different snapshot.
+
+        try:
+            index = build()
+            size = _index_bytes(fingerprint, index)
+            with self._lock:
+                if self._flights.get(key) is flight:
+                    if _INDEX_CACHE_MAX > 0 and size <= _INDEX_CACHE_MAX_BYTES:
+                        replaced = self._entries.pop(key, None)
+                        if replaced is not None:
+                            self.bytes_used -= replaced[2]
+                        while self._entries and (
+                            len(self._entries) >= _INDEX_CACHE_MAX
+                            or self.bytes_used + size > _INDEX_CACHE_MAX_BYTES
+                        ):
+                            _old_key, old = self._entries.popitem(last=False)
+                            self.bytes_used -= old[2]
+                        self._entries[key] = (fingerprint, index, size)
+                        self.bytes_used += size
+                    del self._flights[key]
+                flight.index = index
+                flight.ready.set()
+            return index
+        except BaseException as error:
+            # Wake every waiter even on a cancelled or failed build, without
+            # caching a partial result or preventing a subsequent retry.
+            with self._lock:
+                if self._flights.get(key) is flight:
+                    del self._flights[key]
+                flight.error = error
+                flight.ready.set()
+            raise
+
+
+_INDEX_CACHE = _CorpusIndexCache()
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_INDEX_CACHE._after_fork)
 
 
 def _corpus_index(lessons, term_cache, scorer: str) -> _CorpusIndex:
@@ -198,34 +339,25 @@ def _corpus_index(lessons, term_cache, scorer: str) -> _CorpusIndex:
             return _build_index(lessons, term_cache, scorer)
         fp_hash = hash(fingerprint)
     key = (scorer, fp_hash)
-    hit = _INDEX_CACHE.get(key)
-    if hit is not None and (hit[0] is fingerprint or hit[0] == fingerprint):
-        return hit[1]
     bin_dir = getattr(term_cache, "bin_dir", None)
-    if bin_dir:
-        try:
-            import importlib
-            corpus_bin = importlib.import_module("commontrace.corpus_bin")
-            persisted = corpus_bin.load(bin_dir, scorer, lessons, fingerprint)
-        except Exception:
-            persisted = None
-        if persisted is not None:
-            if key not in _INDEX_CACHE and len(_INDEX_CACHE) >= _INDEX_CACHE_MAX:
-                _INDEX_CACHE.pop(next(iter(_INDEX_CACHE)))
-            _INDEX_CACHE[key] = (fingerprint, persisted)
-            return persisted
-    index = _build_index(lessons, term_cache, scorer)
-    if bin_dir and fingerprint == getattr(term_cache, "fingerprint", None):
-        try:
-            import importlib
-            corpus_bin = importlib.import_module("commontrace.corpus_bin")
-            corpus_bin.save(bin_dir, scorer, fingerprint, index)
-        except Exception:
-            pass
-    if key not in _INDEX_CACHE and len(_INDEX_CACHE) >= _INDEX_CACHE_MAX:
-        _INDEX_CACHE.pop(next(iter(_INDEX_CACHE)))
-    _INDEX_CACHE[key] = (fingerprint, index)
-    return index
+
+    def build() -> _CorpusIndex:
+        if bin_dir:
+            try:
+                persisted = corpus_bin.load(bin_dir, scorer, lessons, fingerprint)
+            except Exception:
+                persisted = None
+            if persisted is not None:
+                return persisted
+        index = _build_index(lessons, term_cache, scorer)
+        if bin_dir and fingerprint == getattr(term_cache, "fingerprint", None):
+            try:
+                corpus_bin.save(bin_dir, scorer, fingerprint, index)
+            except Exception:
+                pass
+        return index
+
+    return _INDEX_CACHE.get_or_build(key, fingerprint, build)
 
 
 def rank_lessons(
@@ -259,90 +391,103 @@ def rank_lessons(
     max_idf = index.max_idf
     total_query_idf = len(query_terms) * max_idf
 
-    scored: list[tuple] = []
-    acc: dict[int, list] = {}
-    acc_get = acc.get
+    # Keep candidate state numeric; matched-term lists and result records are
+    # needed only for returned rows, not every posting in a broad query.
+    # Absent query terms still affect normalization above, but never need a bit
+    # in candidate state. This bounds masks by matched terms rather than a
+    # potentially huge out-of-vocabulary query.
+    terms = sorted(term for term in query_terms if term in index.postings)
+    sparse = sum(len(index.postings[t][0]) for t in terms) <= n_docs // 4
+    scores = {} if sparse else [0.0] * n_docs
+    coverage = {} if sparse else [0.0] * n_docs
+    masks = {} if sparse else [0] * n_docs
+    compact_matches = len(terms) <= 64
+    candidates = []
     is_bm25 = scorer == SCORER_BM25
-    avg_len = index.avg_field_len
-    for term in sorted(query_terms):
+    for position, term in enumerate(terms):
         post = index.postings.get(term)
         if post is None:
             continue
         term_idf = query_idf.get(term, 0.0)
+        bit = 1 << position if compact_matches else 0
         for i, weight_sum, best in zip(*post):
-            a = acc_get(i)
-            if is_bm25:
-                contrib = _bm25_term(weight_sum, term_idf, index.n_terms[i], avg_len)
-                if a is None:
-                    acc[i] = [weight_sum, contrib, [term]]
-                    continue
-                a[0] += weight_sum
-                a[1] += contrib
-                a[2].append(term)
-                continue
-            if a is None:
-                acc[i] = [weight_sum, term_idf * (best / _MAX_FIELD_WEIGHT), [term]]
-                continue
-            a[0] += weight_sum
-            a[1] += term_idf * (best / _MAX_FIELD_WEIGHT)
-            a[2].append(term)
-    length_factors = index.length_factors
-    tie_breaks = index.tie_breaks
-    for i in sorted(acc):
-        (path, fm) = lessons[i]
-        score, covered, matched = acc[i]
-
-        if scorer == SCORER_COUNT:
-            rel = score
-        elif scorer == SCORER_BM25:
-            if total_query_idf > 0 and matched:
-                rel = min(1.0, covered / total_query_idf)
+            previous = masks.get(i, 0) if sparse else masks[i]
+            contribution = _bm25_term(weight_sum, term_idf, index.n_terms[i], index.avg_field_len) if is_bm25 \
+                else term_idf * (best / _MAX_FIELD_WEIGHT)
+            if previous:
+                scores[i] += weight_sum
+                coverage[i] += contribution
             else:
-                rel = 0.0
-        elif total_query_idf > 0 and matched:
-            lam = length_factors[i] if length_factors else _length_factor(index.n_terms[i], index.avg_field_len)
-            rel = min(1.0, (covered * lam) / total_query_idf)
-        else:
+                candidates.append(i)
+                scores[i] = weight_sum
+                coverage[i] = contribution
+            if compact_matches:
+                masks[i] = previous | bit
+            elif previous:
+                previous.append(term)
+            else:
+                # Very large queries use storage proportional to actual hits,
+                # avoiding a corpus-sized array of arbitrarily wide integers.
+                masks[i] = [term]
+
+    adaptive = scorer == SCORER_ADAPTIVE and adaptive_tail
+    relevance = {} if sparse else [0.0] * n_docs
+    peak = 0.0
+    length_factors = index.length_factors
+    for i in candidates:
+        if scorer == SCORER_COUNT:
+            rel = scores[i]
+        elif total_query_idf <= 0:
             rel = 0.0
+        elif is_bm25:
+            rel = min(1.0, coverage[i] / total_query_idf)
+        else:
+            lam = length_factors[i] if length_factors else _length_factor(index.n_terms[i], index.avg_field_len)
+            rel = min(1.0, (coverage[i] * lam) / total_query_idf)
+        relevance[i] = rel
+        if adaptive and scores[i] > 0 and rel > peak:
+            peak = rel
+    if adaptive:
+        floor = max(floor, peak * _adaptive_tail_ratio(len(query_terms)))
 
-        if score > 0 and (scorer == SCORER_ADAPTIVE and adaptive_tail or rel >= floor):
-            slug = str(fm.get("name", ""))
-            reliability_adj = reliability_lookup.get(slug, 0.0) if reliability_lookup else 0.0
-            recency_adj = recency_lookup.get(slug, 0.0) if recency_lookup else 0.0
-            graph_adj = graph_boost_lookup.get(slug, 0.0) if graph_boost_lookup else 0.0
-            adjusted = min(1.0, max(0.0,
-                rel + reliability_weight * reliability_adj
-                + recency_weight * recency_adj + graph_weight * graph_adj,
-            ))
-            importance, uses = tie_breaks[i] if tie_breaks else (
-                _rank_int(fm.get("importance", 0)), _rank_int(fm.get("uses", 0)))
-            scored.append((
-                adjusted, score, importance, uses,
-                path, fm, slug, matched, rel, reliability_adj, recency_adj, graph_adj,
-            ))
+    scored = []
+    tie_breaks = index.tie_breaks
+    for i in candidates:
+        score, rel = scores[i], relevance[i]
+        if not (score > 0 and rel >= floor):
+            continue
+        path, fm = lessons[i]
+        slug = str(fm.get("name", ""))
+        reliability_adj = reliability_lookup.get(slug, 0.0) if reliability_lookup else 0.0
+        recency_adj = recency_lookup.get(slug, 0.0) if recency_lookup else 0.0
+        graph_adj = graph_boost_lookup.get(slug, 0.0) if graph_boost_lookup else 0.0
+        adjusted = min(1.0, max(0.0,
+            rel + reliability_weight * reliability_adj
+            + recency_weight * recency_adj + graph_weight * graph_adj,
+        ))
+        importance, uses = tie_breaks[i] if tie_breaks else (
+            _rank_int(fm.get("importance", 0)), _rank_int(fm.get("uses", 0)))
+        # Accumulation visits posting lists in term order. Explicitly preserve
+        # the former stable corpus-order tie break without sorting candidates.
+        scored.append((adjusted, score, importance, uses, -i, i, path, slug, rel,
+                       reliability_adj, recency_adj, graph_adj))
 
-    if scorer == SCORER_ADAPTIVE and adaptive_tail and scored:
-        adaptive_floor = max(
-            floor,
-            max(item[8] for item in scored) * _adaptive_tail_ratio(len(query_terms)),
-        )
-        scored = [item for item in scored if item[8] >= adaptive_floor]
-
-    top = heapq.nlargest(max(0, top_k), scored, key=lambda item: item[:4])
+    top = heapq.nlargest(max(0, top_k), scored, key=lambda item: item[:5])
     return [
         RankedLesson(
             path=path,
             slug=slug,
-            description=str(fm.get("description", "")),
+            description=str(lessons[i][1].get("description", "")),
             score=score,
-            matched_terms=list(matched),
+            matched_terms=([term for position, term in enumerate(terms) if masks[i] & (1 << position)]
+                           if compact_matches else list(masks[i])),
             relevance=round(rel, 6),
             scorer=scorer,
             reliability_adjustment=round(reliability_adj, 6) if reliability_lookup else 0.0,
             recency_adjustment=round(recency_adj, 6) if recency_lookup else 0.0,
             graph_adjustment=round(graph_adj, 6) if graph_boost_lookup else 0.0,
         )
-        for (_adj, score, _imp, _uses, path, fm, slug, matched, rel,
+        for (_adj, score, _imp, _uses, _order, i, path, slug, rel,
              reliability_adj, recency_adj, graph_adj) in top
     ]
 

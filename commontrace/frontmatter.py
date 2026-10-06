@@ -4,10 +4,14 @@ from __future__ import annotations
 import collections
 import contextlib
 import copy
+import errno
+import math
 import os
 import re
 import stat
+import sys
 import tempfile
+import threading
 import time
 import uuid
 from typing import Any
@@ -78,17 +82,66 @@ class FrontmatterError(ValueError):
 
 _PARSED: "collections.OrderedDict[str, Any]" = collections.OrderedDict()
 _PARSED_MAX = 4096
+_PARSED_MAX_BYTES = 16 * 1024 * 1024
+_PARSED_BYTES = 0
+_PARSED_SIZES: dict[str, int] = {}
+_PARSED_LOCK = threading.Lock()
+_MISSING = object()
+
+
+def _reset_parsed_after_fork() -> None:
+    global _PARSED_LOCK, _PARSED_BYTES
+    _PARSED_LOCK = threading.Lock()
+    # The parent may have forked while another thread was updating accounting.
+    # Start with an empty memo rather than inheriting a partially updated LRU.
+    _PARSED.clear()
+    _PARSED_SIZES.clear()
+    _PARSED_BYTES = 0
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_parsed_after_fork)
+
+
+def _retained_size(value: Any, seen: set[int]) -> int:
+    identity = id(value)
+    if identity in seen:
+        return 0
+    seen.add(identity)
+    size = sys.getsizeof(value)
+    if isinstance(value, dict):
+        size += sum(_retained_size(k, seen) + _retained_size(v, seen) for k, v in value.items())
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        size += sum(_retained_size(item, seen) for item in value)
+    return size
 
 
 def _parse(fm_text: str) -> Any:
-    cached = _PARSED.get(fm_text)
-    if cached is None:
+    global _PARSED_BYTES
+    with _PARSED_LOCK:
+        # Private callers may clear the memo (for example between test cases).
+        if not _PARSED:
+            _PARSED_SIZES.clear()
+            _PARSED_BYTES = 0
+        cached = _PARSED.get(fm_text, _MISSING)
+        if cached is not _MISSING:
+            _PARSED.move_to_end(fm_text)
+    if cached is _MISSING:
+        # Parsing and object traversal run without serializing unrelated reads.
         cached = load_text(fm_text)
-        _PARSED[fm_text] = cached
-        while len(_PARSED) > _PARSED_MAX:
-            _PARSED.popitem(last=False)
-    else:
-        _PARSED.move_to_end(fm_text)
+        # Include a conservative allowance for OrderedDict bookkeeping, the
+        # auxiliary size mapping, and its integer entry alongside YAML objects.
+        size = _retained_size((fm_text, cached), set()) + 256
+        if size <= _PARSED_MAX_BYTES:
+            with _PARSED_LOCK:
+                if fm_text not in _PARSED:
+                    _PARSED[fm_text] = cached
+                    _PARSED_SIZES[fm_text] = size
+                    _PARSED_BYTES += size
+                _PARSED.move_to_end(fm_text)
+                while len(_PARSED) > _PARSED_MAX or _PARSED_BYTES > _PARSED_MAX_BYTES:
+                    key, _ = _PARSED.popitem(last=False)
+                    _PARSED_BYTES -= _PARSED_SIZES.pop(key)
     return copy.deepcopy(cached)
 
 
@@ -100,10 +153,11 @@ def read(path: str) -> tuple[dict[str, Any], str]:
         raise FrontmatterError(f"cannot read {path}: {exc}") from exc
     if not content.startswith("---"):
         return {}, content
-    delims = list(_DELIM_RE.finditer(content))
-    if len(delims) < 2:
+    first = _DELIM_RE.search(content)
+    second = _DELIM_RE.search(content, first.end()) if first else None
+    if second is None:
         return {}, content
-    fm_text = content[delims[0].end():delims[1].start()]
+    fm_text = content[first.end():second.start()]
     try:
         fm = _parse(fm_text)
     except yaml.YAMLError as exc:
@@ -114,7 +168,7 @@ def read(path: str) -> tuple[dict[str, Any], str]:
         raise FrontmatterError(
             f"{path}: frontmatter must be a YAML mapping, got {type(fm).__name__}"
         )
-    body = content[delims[1].end():].lstrip("\n")
+    body = content[second.end():].lstrip("\n")
     return fm, body
 
 
@@ -143,20 +197,13 @@ def validate_expires(value: object) -> str:
         raise FrontmatterError(f"invalid lesson `expires` value {value!r}: {exc}") from exc
 
 
-_DIR_MODE_CACHE: dict[str, int] = {}
-
-
 def _new_file_mode(target_dir: str) -> int:
-    resolved_dir = os.path.abspath(target_dir)
-    cached = _DIR_MODE_CACHE.get(resolved_dir)
-    if cached is not None:
-        return cached
-
+    # A directory does not fix process umask or inherited ACLs. Probe each new
+    # file without temporarily changing the process-wide umask in other threads.
     probe_path = os.path.join(target_dir, f".commontrace-umask-probe-{uuid.uuid4().hex}")
     fd = os.open(probe_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
     try:
         mode = stat.S_IMODE(os.fstat(fd).st_mode)
-        _DIR_MODE_CACHE[resolved_dir] = mode
         return mode
     finally:
         os.close(fd)
@@ -200,16 +247,28 @@ def write(path: str, frontmatter: dict[str, Any], body: str) -> None:
         raise
 
 
-def _lock_exclusive(fd: int) -> None:
-    if fcntl is not None:
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        return
+_LOCK_TIMEOUT_SECONDS = 30.0
+_LOCK_RETRY_SECONDS = 0.01
+
+
+def _lock_exclusive(fd: int, deadline: float) -> None:
     while True:
         try:
-            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+            if fcntl is not None:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            else:
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
             return
-        except OSError:
-            time.sleep(0.05)
+        except OSError as exc:
+            retryable = {errno.EACCES, errno.EAGAIN, errno.EINTR}
+            if fcntl is None:
+                retryable.add(errno.EDEADLK)
+            if exc.errno not in retryable:
+                raise
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("timed out waiting for a frontmatter lock") from exc
+            time.sleep(min(_LOCK_RETRY_SECONDS, remaining))
 
 
 def _unlock(fd: int) -> None:
@@ -219,25 +278,33 @@ def _unlock(fd: int) -> None:
         msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
 
 
-def _acquire_lock_fd(lock_path: str) -> int:
-    if fcntl is None:
-        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
-        _lock_exclusive(fd)
-        return fd
-
+def _acquire_lock_fd(lock_path: str, timeout: float = _LOCK_TIMEOUT_SECONDS) -> int:
+    deadline = time.monotonic() + timeout
     while True:
         fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
-        _lock_exclusive(fd)
         try:
-            fd_stat = os.fstat(fd)
-            path_stat = os.stat(lock_path)
-            same_inode = (fd_stat.st_dev, fd_stat.st_ino) == (path_stat.st_dev, path_stat.st_ino)
-        except OSError:
-            same_inode = False
-        if same_inode:
-            return fd
-        _unlock(fd)
+            _lock_exclusive(fd, deadline)
+            if fcntl is None:
+                return fd
+            try:
+                fd_stat = os.fstat(fd)
+                path_stat = os.stat(lock_path)
+                same_inode = (fd_stat.st_dev, fd_stat.st_ino) == (path_stat.st_dev, path_stat.st_ino)
+            except OSError:
+                same_inode = False
+            if same_inode:
+                return fd
+            _unlock(fd)
+        except BaseException as exc:
+            os.close(fd)
+            if isinstance(exc, TimeoutError):
+                raise TimeoutError(f"timed out acquiring frontmatter lock {lock_path}") from exc
+            raise
         os.close(fd)
+        # A replaced/unlinked lock inode must share the original acquisition
+        # deadline; resetting it here would still permit an unbounded wait.
+        if time.monotonic() >= deadline:
+            raise TimeoutError(f"timed out acquiring frontmatter lock {lock_path}")
 
 
 def _release_lock_fd(fd: int, lock_path: str) -> None:
@@ -249,11 +316,15 @@ def _release_lock_fd(fd: int, lock_path: str) -> None:
                 os.unlink(lock_path)
         except OSError:
             pass
-        _unlock(fd)
-        os.close(fd)
+        try:
+            _unlock(fd)
+        finally:
+            os.close(fd)
     else:
-        _unlock(fd)
-        os.close(fd)
+        try:
+            _unlock(fd)
+        finally:
+            os.close(fd)
         try:
             os.unlink(lock_path)
         except OSError:
@@ -261,7 +332,14 @@ def _release_lock_fd(fd: int, lock_path: str) -> None:
 
 
 @contextlib.contextmanager
-def locked(path: str):
+def locked(path: str, *, timeout: float = _LOCK_TIMEOUT_SECONDS):
+    """Serialize file updates, failing after ``timeout`` seconds of contention.
+
+    ``timeout=0`` tries once without waiting. Time spent inside the protected
+    block is not limited. Acquisition errors always close the lock descriptor.
+    """
+    if not math.isfinite(timeout) or timeout < 0:
+        raise ValueError("frontmatter lock timeout must be finite and non-negative")
     if fcntl is None and msvcrt is None:
         import warnings
 
@@ -275,7 +353,7 @@ def locked(path: str):
 
     lock_path = path + ".lock"
     os.makedirs(os.path.dirname(os.path.abspath(lock_path)), exist_ok=True)
-    fd = _acquire_lock_fd(lock_path)
+    fd = _acquire_lock_fd(lock_path, timeout)
     try:
         yield
     finally:

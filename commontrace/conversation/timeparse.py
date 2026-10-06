@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import re
+from bisect import bisect_left
 from dataclasses import dataclass
 
 MONTHS = ("january", "february", "march", "april", "may", "june", "july", "august",
@@ -163,11 +164,28 @@ _PAST = re.compile(r"\b(?:was|were|went|had|did|got|made|saw|took|came|ran|ate|b
                    r"|[a-z]+ed)\b", re.I)
 
 
+class _ClauseTense:
+    """Index sentence boundaries once and evaluate each relevant clause once."""
+
+    def __init__(self, text: str):
+        self.text = text
+        self.boundaries = [m.start() for m in re.finditer(r"[.!?]", text)]
+        self.cache: dict[tuple[int, int], bool] = {}
+
+    def future(self, start: int, end: int) -> bool:
+        left = bisect_left(self.boundaries, start)
+        right = bisect_left(self.boundaries, end)
+        lo = self.boundaries[left - 1] + 1 if left else 0
+        hi = self.boundaries[right] if right < len(self.boundaries) else len(self.text)
+        key = (lo, hi)
+        if key not in self.cache:
+            clause = self.text[lo:hi]
+            self.cache[key] = bool(_FUTURE.search(clause)) and not _PAST.search(clause)
+        return self.cache[key]
+
+
 def _future_tense(text: str, start: int, end: int) -> bool:
-    lo = max(text.rfind(".", 0, start), text.rfind("!", 0, start), text.rfind("?", 0, start)) + 1
-    hi = min([i for i in (text.find(".", end), text.find("!", end), text.find("?", end)) if i >= 0] or [len(text)])
-    clause = text[lo:hi]
-    return bool(_FUTURE.search(clause)) and not _PAST.search(clause)
+    return _ClauseTense(text).future(start, end)
 
 
 def ground(text: str, anchor: dt.date | dt.datetime | None) -> list[Grounding]:
@@ -177,6 +195,7 @@ def ground(text: str, anchor: dt.date | dt.datetime | None) -> list[Grounding]:
     if isinstance(anchor, dt.datetime):
         anchor = anchor.date()
     out: list[Grounding] = []
+    clauses = None
     for m in _RELATIVE.finditer(text):
         g = m.groupdict()
         lo = hi = None
@@ -246,8 +265,10 @@ def ground(text: str, anchor: dt.date | dt.datetime | None) -> list[Grounding]:
                 text_label = str(year)
         elif g["wrel"]:
             which, weekday = g["wrel"].lower(), WEEKDAYS.index(g["wday"].lower())
+            if which in ("this", "on") and clauses is None:
+                clauses = _ClauseTense(text)
             ahead = which in ("next", "this coming") or (
-                which in ("this", "on") and _future_tense(text, m.start(), m.end()))
+                which in ("this", "on") and clauses.future(m.start(), m.end()))
             if ahead:
                 day = anchor + dt.timedelta(days=(weekday - anchor.weekday()) % 7 or 7)
             else:
@@ -292,6 +313,14 @@ def annotate(text: str, groundings: list[Grounding]) -> str:
 _Q_EXACT = re.compile(
     rf"\b(?:on\s+)?(?:(\d{{1,2}})(?:st|nd|rd|th)?\s+({_MONTH_RE})|({_MONTH_RE})\s+(\d{{1,2}})(?:st|nd|rd|th)?),?"
     rf"\s+(\d{{4}})\b", re.I)
+_Q_RANGE = re.compile(
+    rf"\b(?:between|from)\s+({_MONTH_RE})(?:\s+of)?,?\s+(\d{{4}})\s+(?:and|to|-)\s+({_MONTH_RE})(?:\s+of)?,?\s+(\d{{4}})\b",
+    re.I,
+)
+_Q_YEAR_RANGE = re.compile(
+    r"\b(?:between|from)\s+((?:19|20)\d{2})\s+(?:and|to|-)\s+((?:19|20)\d{2})\b",
+    re.I,
+)
 _Q_MONTH = re.compile(rf"\b(?:in\s+|during\s+)?({_MONTH_RE})(?:\s+of)?,?\s+(\d{{4}})\b", re.I)
 _Q_YEAR = re.compile(r"\b(?:in|during|of|since|before|after)\s+((?:19|20)\d{2})\b", re.I)
 _Q_PAST = re.compile(rf"\b(?:in|over|during)\s+the\s+(?:past|last)\s+(?:({_NUM_RE})\s+)?(day|week|month|year)s?\b",
@@ -313,6 +342,18 @@ def question_window(question: str, now: dt.date | dt.datetime | None) -> tuple[d
             day = None
         if day:
             return day, day, label(day)
+    m = _Q_RANGE.search(question)
+    if m:
+        mon1, y1, mon2, y2 = m.groups()
+        lo, _ = _month_bounds(int(y1), MONTH_NUMBER[mon1.lower()])
+        _, hi = _month_bounds(int(y2), MONTH_NUMBER[mon2.lower()])
+        lbl1 = month_label(int(y1), MONTH_NUMBER[mon1.lower()])
+        lbl2 = month_label(int(y2), MONTH_NUMBER[mon2.lower()])
+        return lo, hi, f"{lbl1} to {lbl2}"
+    m = _Q_YEAR_RANGE.search(question)
+    if m:
+        y1, y2 = int(m.group(1)), int(m.group(2))
+        return dt.date(y1, 1, 1), dt.date(y2, 12, 31), f"{y1} to {y2}"
     m = _Q_MONTH.search(question)
     may_verb = m and m.group(1).lower() == "may" and not re.search(
         r"\b(?:in|during|of)\s+may\b|\bmay\s+(?:of\s+)?\d{4}", question, re.I)

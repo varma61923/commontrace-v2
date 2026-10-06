@@ -1,0 +1,54 @@
+/* Shared theme roles for the local, customer, operator and signup consoles. */
+:root{
+  color-scheme:light;
+  --bg:#F6F7F9; --surface:#FFFFFF; --surface-2:#F3F5F8; --surface-3:#EBEEF3;
+  --ink:#0E1621; --ink-2:#344150; --muted:#5E6B7A; --faint:#66717F;
+  --rule:#E3E7ED; --rule-soft:#EEF1F5; --ring:rgba(14,22,33,.08);
+  --accent:#3651D4; --accent-hover:#2B43B8; --accent-ink:#FFFFFF;
+  --accent-soft:#EBEFFF; --accent-text:#2E46C2;
+  --ok:#0E7650; --ok-soft:#E6F5EE; --warn:#A35A00; --warn-soft:#FDF2E3;
+  --bad:#C0352B; --bad-soft:#FCEBEA; --info:#2E6BC6; --info-soft:#E8F0FB;
+  --series-1:#2a78d6; --series-2:#eb6834; --grid:#E8EBF0; --axis:#C9CFD8;
+  --shadow-sm:0 1px 2px rgba(16,24,40,.05);
+  --shadow:0 1px 3px rgba(16,24,40,.06),0 1px 2px rgba(16,24,40,.04);
+  --shadow-lg:0 12px 32px rgba(16,24,40,.16),0 2px 6px rgba(16,24,40,.08);
+  --radius:12px; --radius-sm:8px;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --side-w:252px;
+  /* names the shared components (hub/admin.py secret_field, live badge) use */
+  --paper:var(--bg); --code:var(--surface-2);
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){
+  color-scheme:dark;
+  --bg:#0A0E13; --surface:#121821; --surface-2:#171E28; --surface-3:#1E2632;
+  --ink:#E7ECF2; --ink-2:#C3CCD7; --muted:#93A0B0; --faint:#8592A3;
+  --rule:#242D39; --rule-soft:#1B232D; --ring:rgba(255,255,255,.08);
+  --accent:#8199FF; --accent-hover:#9AAEFF; --accent-ink:#0A0E13;
+  --accent-soft:#1D2547; --accent-text:#A9B8FF;
+  --ok:#40C98F; --ok-soft:#10291F; --warn:#F0A64A; --warn-soft:#2E2111;
+  --bad:#F2766D; --bad-soft:#341716; --info:#6FA4F0; --info-soft:#132238;
+  --series-1:#3987e5; --series-2:#d95926; --grid:#1F2731; --axis:#334050;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.3); --shadow:0 1px 3px rgba(0,0,0,.35);
+  --shadow-lg:0 16px 40px rgba(0,0,0,.55);
+}}
+:root[data-theme=dark]{
+  color-scheme:dark;
+  --bg:#0A0E13; --surface:#121821; --surface-2:#171E28; --surface-3:#1E2632;
+  --ink:#E7ECF2; --ink-2:#C3CCD7; --muted:#93A0B0; --faint:#8592A3;
+  --rule:#242D39; --rule-soft:#1B232D; --ring:rgba(255,255,255,.08);
+  --accent:#8199FF; --accent-hover:#9AAEFF; --accent-ink:#0A0E13;
+  --accent-soft:#1D2547; --accent-text:#A9B8FF;
+  --ok:#40C98F; --ok-soft:#10291F; --warn:#F0A64A; --warn-soft:#2E2111;
+  --bad:#F2766D; --bad-soft:#341716; --info:#6FA4F0; --info-soft:#132238;
+  --series-1:#3987e5; --series-2:#d95926; --grid:#1F2731; --axis:#334050;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.3); --shadow:0 1px 3px rgba(0,0,0,.35);
+  --shadow-lg:0 16px 40px rgba(0,0,0,.55);
+}
+:root {
+  --text:var(--ink); --text-2:var(--ink-2); --text-muted:var(--muted);
+  --line:var(--rule); --focus:var(--accent); --pos:var(--series-1); --neg:var(--bad);
+  --zero:var(--muted); --pos-ink:var(--info); --neg-ink:var(--bad);
+  --good:var(--ok); --good-ink:var(--ok); --warn-ink:var(--warn);
+  --serious:var(--warn); --crit:var(--bad); --crit-ink:var(--bad);
+}

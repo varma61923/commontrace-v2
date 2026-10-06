@@ -60,6 +60,9 @@ jobs:
       - name: Lint with ruff
         run: ruff check .
 
+      - name: Source-derived API and environment references stay current
+        run: python scripts/dev.py docs --check
+
       - name: Hub server image allowlist stays in sync with hub/'s imports
         run: python -m pytest hub/tests/test_image_contents.py -q --noconftest
 

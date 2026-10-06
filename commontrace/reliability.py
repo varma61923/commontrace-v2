@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from commontrace.overlap import estimate_jaccard, minhash
@@ -176,35 +177,102 @@ class Contradiction:
     severity: str = "review"
 
 
+# --- Perf caps for find_contradictions ---------------------------------------
+# The pair loop was O(L^2) full MinHash estimates (each over 128 positions).
+# Three guards, all output-identical below the caps: signal-possibility is
+# checked before any MinHash work (a pair with no possible signal can never be
+# reported); a partial-signature probe skips full estimates that cannot reach
+# the threshold; and inputs/candidate pairs are deterministically capped.
+_CONTRADICTION_EXACT_LIMIT = 500
+_CONTRADICTION_MAX_PAIRS = 200_000
+_OVERLAP_PROBE_POSITIONS = 32
+
+
+def _activation_text(fm: dict) -> str:
+    """The text two lessons' activation overlap is estimated on."""
+    tags = fm.get("tags")
+    tags_list = [str(t) for t in tags if t is not None] if isinstance(tags, (list, tuple)) else []
+    return f"{fm.get('applies_when', '')} {' '.join(tags_list)} {fm.get('domain', '')}"
+
+
+def _signals_possible(pa: float, pb: float, la: float | None, lb: float | None) -> bool:
+    """Whether a pair could yield any signal -- checked before scoring it."""
+    if pa * pb < 0 and abs(pa) > 0.2 and abs(pb) > 0.2:
+        return True
+    return la is not None and lb is not None and la * lb < 0 and abs(la - lb) > 0.2
+
+
+def _overlap_at_least(sig_a: Sequence[int], sig_b: Sequence[int], threshold: float) -> float | None:
+    """Full MinHash overlap, or None when a probe already rules the pair out.
+
+    The probe is exact-safe: it returns None only when even unanimous
+    agreement on the unprobed positions could not reach `threshold`, in which
+    case the full estimate would also fall below it and the caller would skip
+    the pair anyway.
+    """
+    n = len(sig_a)
+    probe = min(_OVERLAP_PROBE_POSITIONS, n)
+    agree = sum(1 for x, y in zip(sig_a[:probe], sig_b[:probe]) if x == y)
+    if agree + (n - probe) < threshold * n:
+        return None
+    return estimate_jaccard(list(sig_a), list(sig_b))
+
+
 def find_contradictions(
     lessons: list[dict],
     reliability: list[LessonReliability] | None = None,
     activation_overlap: float = DEFAULT_ACTIVATION_OVERLAP,
+    signatures: dict[str, Sequence[int]] | None = None,
 ) -> list[Contradiction]:
+    """Pairs firing in overlapping situations but pulling opposite ways.
+
+    Before: O(L^2) full MinHash estimates. Now each pair is signal-checked
+    first (polarity/lift lookups only), then probe-pruned, so the full
+    estimate runs solely for pairs that could be reported. Beyond
+    `_CONTRADICTION_EXACT_LIMIT` active lessons only the first lessons in
+    sorted slug order are considered, and overlap evaluations stop after
+    `_CONTRADICTION_MAX_PAIRS` pairs in deterministic (i, j) order. Below
+    those caps the output is identical to the old double loop. `signatures`
+    accepts precomputed MinHash signatures by slug (same values this function
+    would compute); it is a perf hook for `consolidate.build_report`.
+    """
     by_slug = {str(fm.get("name", "")): fm for fm in lessons if fm.get("status") == "active"}
     lift_by_slug = {r.slug: r.lift for r in (reliability or [])}
 
-    sigs = {}
+    sigs: dict[str, Sequence[int]] = {}
     for slug, fm in by_slug.items():
-        tags = fm.get("tags")
-        tags_list = [str(t) for t in tags if t is not None] if isinstance(tags, (list, tuple)) else []
-        sigs[slug] = minhash(f"{fm.get('applies_when', '')} {' '.join(tags_list)} {fm.get('domain', '')}")
+        if signatures is not None and slug in signatures:
+            sigs[slug] = signatures[slug]
+        else:
+            sigs[slug] = minhash(_activation_text(fm))
     pol = {slug: polarity(str(fm.get("description", ""))) for slug, fm in by_slug.items()}
 
     found: list[Contradiction] = []
     slugs = sorted(by_slug)
+    if len(slugs) > _CONTRADICTION_EXACT_LIMIT:
+        slugs = slugs[:_CONTRADICTION_EXACT_LIMIT]
+    evaluated = 0
+    capped = False
     for i, a in enumerate(slugs):
+        if capped:
+            break
         for b in slugs[i + 1:]:
-            overlap_score = estimate_jaccard(sigs[a], sigs[b])
-            if overlap_score < activation_overlap:
+            pa, pb = pol[a], pol[b]
+            la, lb = lift_by_slug.get(a), lift_by_slug.get(b)
+            if not _signals_possible(pa, pb, la, lb):
+                continue
+            if evaluated >= _CONTRADICTION_MAX_PAIRS:
+                capped = True
+                break
+            evaluated += 1
+            overlap_score = _overlap_at_least(sigs[a], sigs[b], activation_overlap)
+            if overlap_score is None or overlap_score < activation_overlap:
                 continue
 
             signals: list[str] = []
-            pa, pb = pol[a], pol[b]
             if pa * pb < 0 and abs(pa) > 0.2 and abs(pb) > 0.2:
                 signals.append("opposite prescriptive/prohibitive polarity")
 
-            la, lb = lift_by_slug.get(a), lift_by_slug.get(b)
             if la is not None and lb is not None and la * lb < 0 and abs(la - lb) > 0.2:
                 signals.append("opposite measured effect on task success")
 

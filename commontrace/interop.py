@@ -318,6 +318,10 @@ def _apply_fact(root: str, data: dict[str, Any]) -> bool:
             root=root, statement=statement,
             category=str(data.get("category") or hierarchical.DEFAULT_CATEGORY),
             scopes=scopes, confidence=confidence, source_trace_id=str(data.get("source_id") or ""),
+            valid_from=data.get("valid_from"),
+            valid_until=data.get("valid_until"),
+            expires_at=data.get("expires_at") or data.get("expiration_date"),
+            created_at=data.get("created_at") or data.get("createdAt"),
         )
     except ValueError:
         return False
@@ -497,6 +501,11 @@ def import_mem0_dump(doc: Any) -> list[dict[str, Any]]:
         }
         if created:
             data["created_at"] = created
+        # Mem0 TTL + bitemporal fields survive the import instead of flattening.
+        for key in ("expiration_date", "expires_at", "valid_from", "valid_until"):
+            value = _as_text(item.get(key, meta.get(key, "")))
+            if value:
+                data[key] = value
         out.append(make_record(KIND_FACT, data))
     return out
 
@@ -535,6 +544,14 @@ def import_zep_episodes(doc: Any, agent_type: str = "general") -> list[dict[str,
         fm = _lesson_frontmatter(slug, title, content, agent_type, "zep")
         if raw_id:
             fm["source_traces"] = [raw_id]
+        # Zep bi-temporal fields survive as the lesson validity window instead
+        # of flattening to undated text.
+        valid_at = _as_text(item.get("valid_at", item.get("validAt", "")))
+        invalid_at = _as_text(item.get("invalid_at", item.get("invalidAt", "")))
+        if valid_at:
+            fm["valid_from"] = valid_at
+        if invalid_at:
+            fm["valid_until"] = invalid_at
         body = f"# {title}\n\n{content}"
         created = str(item.get("created_at", item.get("createdAt", ""))).strip()
         if created:
@@ -546,7 +563,29 @@ def import_zep_episodes(doc: Any, agent_type: str = "general") -> list[dict[str,
 
 
 def import_letta_blocks(doc: Any) -> list[dict[str, Any]]:
-    """Convert Letta core-memory blocks to block records."""
+    """Convert Letta core-memory blocks to block records.
+
+    Archival passages (``passages``/``archival_memory`` lists) become fact
+    records alongside the blocks — previously they were silently dropped while
+    only core blocks survived the import.
+    """
+    out: list[dict[str, Any]] = []
+    for item in _coerce_items(doc, "passages", "archival_memory", "archival"):
+        text = _as_text(item.get("text", item.get("content", item.get("memory", ""))))
+        if not text:
+            continue
+        created = _as_text(item.get("created_at", item.get("createdAt", "")))
+        data: dict[str, Any] = {
+            "statement": text[:2000],
+            "category": "general",
+            "scopes": [],
+            "confidence": 0.8,
+            "source": "letta",
+            "source_id": str(item.get("id", "")),
+        }
+        if created:
+            data["created_at"] = created
+        out.append(make_record(KIND_FACT, data))
     items = _coerce_items(doc, "blocks", "core_memory", "memory", "data", "items")
     if isinstance(doc, dict) and not items:
         items = [
@@ -554,7 +593,6 @@ def import_letta_blocks(doc: Any) -> list[dict[str, Any]]:
             for k, v in doc.items()
             if isinstance(v, (str, dict)) and k != "format"
         ]
-    out: list[dict[str, Any]] = []
     for item in items:
         label = str(item.get("label", item.get("name", item.get("key", "")))).strip()
         value = item.get("value", item.get("content", item.get("text", "")))

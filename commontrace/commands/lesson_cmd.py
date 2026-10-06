@@ -241,7 +241,7 @@ def _iter_lesson_paths(root: str, explicit: str | None):
         yield p
 
 
-def _active_lesson_texts(root: str, *, exclude: str = "") -> list[tuple[str, str]]:
+def _active_lesson_texts(root: str, *, exclude: str = "", scope: str = "") -> list[tuple[str, str]]:
     out = []
     for path in _iter_lesson_paths(root, None):
         parsed = read_or_warn(frontmatter.read, path)
@@ -249,6 +249,14 @@ def _active_lesson_texts(root: str, *, exclude: str = "") -> list[tuple[str, str
             continue
         fm, body = parsed
         if str(fm.get("status", "")) != "active":
+            continue
+        raw_scopes = fm.get("scopes")
+        scopes = (
+            {str(item).strip() for item in raw_scopes}
+            if isinstance(raw_scopes, (list, tuple, set))
+            else {str(raw_scopes).strip()} if raw_scopes else set()
+        )
+        if scope and scopes and scope not in scopes:
             continue
         slug = str(fm.get("name", ""))
         if not slug or slug == exclude:
@@ -387,7 +395,7 @@ def run_approve(args: argparse.Namespace) -> int:
 
         duplicate = redundancy.closest(
             redundancy.comparable_text(fm, body),
-            _active_lesson_texts(root, exclude=args.slug),
+            _active_lesson_texts(root, exclude=args.slug, scope=getattr(args, "scope", "")),
             threshold=redundancy.DEFAULT_THRESHOLD,
         )
         if duplicate is not None and not args.force:

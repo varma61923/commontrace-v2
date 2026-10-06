@@ -177,3 +177,36 @@ def test_cross_encoder_blends_with_the_fused_rank(monkeypatch):
     assert replaced[0] == 4
     assert set(blended[:2]) == {1, 4} and blended != replaced
     assert search.Options().rerank_blend == 1.0
+
+
+def test_asks_when_boosts_dated_turns(tmp_path):
+    with Store(str(tmp_path), "s") as s:
+        s.add("sess1", [
+            {"role": "user", "text": "We discussed the project budget."},
+            {"role": "user", "text": "We finalized the contract yesterday and signed it."},
+        ], session_at="2023-05-08")
+        r = recall(s, "When did we sign the contract?", options=Options(budget=300, **LEX))
+        assert r.explain.get("asks_when") is True
+        assert "yesterday [7 May 2023]" in r.context
+
+
+def test_preference_questions_boost_preference_facts(tmp_path):
+    with Store(str(tmp_path), "s") as s:
+        s.add("sess1", [
+            {"role": "user", "text": "I usually drink black coffee with oat milk every morning."},
+            {"role": "user", "text": "I work from home as a programmer."},
+        ], session_at="2023-05-08")
+        r = recall(s, "What coffee do you prefer?", options=Options(budget=300, **LEX))
+        assert "black coffee" in r.context
+
+
+def test_abstention_detection_zeros_confidence_for_unmentioned_salient_entities(tmp_path):
+    with Store(str(tmp_path), "s") as s:
+        s.add("sess1", [
+            {"role": "user", "text": "We adopted a beagle named Biscuit yesterday!"},
+            {"role": "assistant", "text": "Congrats! How is he settling in?"},
+        ], session_at="2023-05-08")
+        r = recall(s, "What is my favourite saxophone brand?", options=Options(budget=300, **LEX))
+        assert r.explain.get("abstain") is True
+        assert r.explain.get("confidence") == 0.0
+

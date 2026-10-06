@@ -480,12 +480,12 @@ class TestDelivery:
         await self._queue(session_factory, endpoint["org"])
         async with session_scope(session_factory) as session:
             await events.deliver_pending(
-                session, Recorder(fail_times=1, error="host unreachable"),
+                session, Recorder(fail_times=1, error="host unreachable https://user:secret@hooks.example/?token=private"),
                 signing_key=KEY, now=NOW,
             )
         async with session_scope(session_factory) as session:
             row = (await session.execute(select(WebhookDelivery))).scalar_one()
-        assert "host unreachable" in row.last_error
+        assert row.last_error == "RuntimeError"
 
     async def test_it_gives_up_loudly_rather_than_retrying_forever(
         self, session_factory, endpoint

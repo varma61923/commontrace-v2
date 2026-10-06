@@ -4,17 +4,21 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import sys
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, Iterator, Sequence
 
+from commontrace import fingerprints as _fingerprints
 from commontrace.ingest import Chunk, IngestionResult
 
 LAZY_HASH_BYTES = 256 * 1024 * 1024
 SAMPLE_BYTES = 1024 * 1024
 DOC_SUFFIXES = (".md", ".markdown", ".txt", ".rst", ".adoc", ".org", ".text", ".csv", ".json", ".yaml", ".yml",
-                ".toml", ".ini", ".log", ".html", ".htm")
+                ".toml", ".ini", ".log", ".html", ".htm", ".pdf", ".docx", ".ipynb", ".parquet")
+PARSED_BINARY_SUFFIXES = (".pdf", ".docx")
+UNSUPPORTED_SUFFIXES = (".ipynb", ".parquet")
 
 
 class Loader(ABC):
@@ -56,6 +60,12 @@ class TextChunker(Transform):
     max_chars: int = 2000
     overlap: int = 50
 
+    def __post_init__(self) -> None:
+        if isinstance(self.max_chars, bool) or not isinstance(self.max_chars, int) or self.max_chars < 1:
+            raise ValueError("max_chars must be a positive integer")
+        if isinstance(self.overlap, bool) or not isinstance(self.overlap, int) or self.overlap < 0:
+            raise ValueError("overlap must be a nonnegative integer")
+
     def apply(self, chunks: Iterable[Chunk]) -> Iterable[Chunk]:
         for chunk in chunks:
             yield from self._chunk_text(chunk)
@@ -66,18 +76,25 @@ class TextChunker(Transform):
             yield chunk
             return
 
-        paragraphs: list[str] = []
-        for para in text.split("\n\n"):
-            while len(para) > self.max_chars:
-                cut = para.rfind(" ", 0, self.max_chars)
-                cut = cut if cut > self.max_chars // 2 else self.max_chars
-                paragraphs.append(para[:cut])
-                para = para[cut:]
-            paragraphs.append(para)
+        def paragraphs() -> Iterator[str]:
+            # Advance offsets in the original text. Slicing the remaining
+            # paragraph on each iteration copies O(n**2) bytes for long lines.
+            start = 0
+            while start <= len(text):
+                end = text.find("\n\n", start)
+                if end < 0:
+                    end = len(text)
+                while end - start > self.max_chars:
+                    cut = text.rfind(" ", start, start + self.max_chars)
+                    cut = cut if cut - start > self.max_chars // 2 else start + self.max_chars
+                    yield text[start:cut]
+                    start = cut
+                yield text[start:end]
+                start = end + 2
         current = ""
         chunk_idx = 0
 
-        for para in paragraphs:
+        for para in paragraphs():
             para = para.strip()
             if not para:
                 continue
@@ -89,6 +106,9 @@ class TextChunker(Transform):
                     chunk_id=f"{chunk.chunk_id}_chunk_{chunk_idx}",
                     breadcrumb=chunk.breadcrumb,
                     chunk_type=chunk.chunk_type,
+                    modality=chunk.modality,
+                    source=chunk.source,
+                    provenance=dict(chunk.provenance),
                 )
                 chunk_idx += 1
                 if self.overlap > 0 and len(current) > self.overlap:
@@ -105,6 +125,9 @@ class TextChunker(Transform):
                 chunk_id=f"{chunk.chunk_id}_chunk_{chunk_idx}",
                 breadcrumb=chunk.breadcrumb,
                 chunk_type=chunk.chunk_type,
+                modality=chunk.modality,
+                source=chunk.source,
+                provenance=dict(chunk.provenance),
             )
 
 
@@ -124,6 +147,9 @@ class LLMContextualizer(Transform):
                 chunk_id=f"{chunk.chunk_id}_ctx",
                 breadcrumb=chunk.breadcrumb,
                 chunk_type=f"{chunk.chunk_type}_contextualized",
+                modality=chunk.modality,
+                source=chunk.source,
+                provenance=dict(chunk.provenance),
             )
 
 
@@ -170,6 +196,9 @@ class AliasCanonicalizer(Transform):
             chunk_id=chunk_id,
             breadcrumb=chunk.breadcrumb,
             chunk_type=chunk.chunk_type,
+            modality=chunk.modality,
+            source=chunk.source,
+            provenance=dict(chunk.provenance),
         )
 
     def flush_warnings(self) -> list[str]:
@@ -197,6 +226,9 @@ class LimitGuard(Transform):
                     chunk_id=chunk.chunk_id,
                     breadcrumb=chunk.breadcrumb,
                     chunk_type=chunk.chunk_type,
+                    modality=chunk.modality,
+                    source=chunk.source,
+                    provenance=dict(chunk.provenance),
                 )
             else:
                 yield chunk
@@ -269,24 +301,65 @@ class Pipeline:
                 out[key] = out.get(key, 0) + value
         return out
 
-    def run(self) -> IngestionResult:
+    def run(self, job_id: str | None = None, root: str | None = None) -> IngestionResult:
         """Run the full pipeline and submit to storage; the loader's ledger records
-        what was ingested only once the submitter has written it."""
+        what was ingested only once the submitter has written it.
+        If job_id is provided, lifecycle stages are tracked:
+        queued -> extracting -> transforming -> submitting -> done | failed.
+        """
         if self.submitter is None:
             raise ValueError("Pipeline cannot run without a submitter")
 
+        target_root = root or getattr(self.submitter, "root", None)
         from commontrace import telemetry
+        from commontrace.ingest import catalog
 
-        with telemetry.span("ingest.run", submitter=type(self.submitter).__name__) as handle:
-            result = self.submitter.submit(self._stream())
-            handle.set(chunks=result.chunks_extracted, facts=result.facts_written)
-        self.last_warnings = self._collect_warnings()
-        result.errors.extend(self.last_warnings)
-        commit = getattr(self.loader, "commit", None)
-        if commit is not None and not any(e.startswith("fact error") for e in result.errors):
-            commit()
-        self.last_stats = self._stats()
-        return result
+        if job_id and target_root:
+            catalog.update_ingest_job(target_root, job_id, "extracting", message="Extracting and reading source chunks")
+
+        try:
+            with telemetry.span("ingest.run", submitter=type(self.submitter).__name__) as handle:
+                if job_id and target_root:
+                    catalog.update_ingest_job(
+                        target_root, job_id, "transforming",
+                        message="Transforming and deduplicating chunks",
+                    )
+                chunks_stream = self._stream()
+
+                if job_id and target_root:
+                    catalog.update_ingest_job(
+                        target_root, job_id, "submitting",
+                        message="Submitting chunks to storage",
+                    )
+                result = self.submitter.submit(chunks_stream)
+
+                handle.set(chunks=result.chunks_extracted, facts=result.facts_written)
+
+            self.last_warnings = self._collect_warnings()
+            result.errors.extend(self.last_warnings)
+            stats = getattr(self.loader, "stats", None) or {}
+            result.skipped_unchanged += int(stats.get("unchanged", 0) or 0)
+            result.skipped_large += int(stats.get("skipped_large", 0) or 0)
+            result.skipped_unsupported += int(stats.get("unsupported", 0) or 0)
+            result.truncated += int(stats.get("truncated", 0) or 0)
+            commit = getattr(self.loader, "commit", None)
+            if commit is not None and not any(e.startswith("fact error") for e in result.errors):
+                commit()
+            self.last_stats = self._stats()
+
+            if job_id and target_root:
+                final_stage = "failed" if result.errors and not result.chunks_extracted else "done"
+                catalog.update_ingest_job(
+                    target_root, job_id, final_stage,
+                    message=f"Ingestion {final_stage}: {result.chunks_extracted} chunk(s) processed",
+                    stats={"chunks": result.chunks_extracted, "facts": result.facts_written},
+                )
+            return result
+        except Exception as exc:
+            if job_id and target_root:
+                catalog.update_ingest_job(target_root, job_id, "failed", error=str(exc))
+            raise
+
 
 
 @dataclass
@@ -297,7 +370,7 @@ class FileLoader(Loader):
     chunk_type: str = "text"
 
     def load(self) -> Iterable[Chunk]:
-        from commontrace.ingest import _fingerprint, _read_text, _redact_secrets
+        from commontrace.ingest import _read_text, _redact_secrets, short_fingerprint
 
         try:
             content = _read_text(self.path)
@@ -307,7 +380,7 @@ class FileLoader(Loader):
         yield Chunk(
             content=_redact_secrets(content),
             source_path=self.path,
-            chunk_id=_fingerprint(self.path),
+            chunk_id=short_fingerprint(self.path),
             breadcrumb=os.path.basename(self.path),
             chunk_type=self.chunk_type,
         )
@@ -355,25 +428,23 @@ class MemorySubmitter(Submitter):
 # --- change detection -------------------------------------------------------------
 
 def file_fingerprint(path: str, *, known_sizes: frozenset[int] = frozenset()) -> str:
-    """sha256 of a file's bytes; a file over LAZY_HASH_BYTES is sampled (size, head,
-    tail) unless another file of the same size is known, when it is hashed in full."""
-    size = os.path.getsize(path)
-    digest = hashlib.sha256()
-    with open(path, "rb") as fh:
-        if size <= LAZY_HASH_BYTES or size in known_sizes:
-            for block in iter(lambda: fh.read(1 << 20), b""):
-                digest.update(block)
-            return "sha256:" + digest.hexdigest()
-        digest.update(str(size).encode())
-        digest.update(fh.read(SAMPLE_BYTES))
-        fh.seek(max(0, size - SAMPLE_BYTES))
-        digest.update(fh.read(SAMPLE_BYTES))
-    return "sample:" + digest.hexdigest()
+    """sha256 of a file's bytes (see commontrace.fingerprints.file_fingerprint).
+
+    LAZY_HASH_BYTES/SAMPLE_BYTES stay module-level so existing callers can tune them."""
+    from commontrace.ingest import _open_regular
+
+    with _open_regular(path, sys.maxsize) as fh:
+        size = os.fstat(fh.fileno()).st_size
+        return _fingerprints.stream_fingerprint(
+            fh, size, known_sizes=known_sizes, lazy_hash_bytes=LAZY_HASH_BYTES, sample_bytes=SAMPLE_BYTES)
 
 
 class Ledger:
-    """What a store has ingested from each file: size, mtime and content fingerprint.
-    An unchanged file (same size and mtime) is skipped without being read."""
+    """What a store has ingested from each file: size, mtime, content fingerprint and
+    per-file status. An unchanged file (same size and mtime) is skipped without being
+    read; a file whose last attempt errored is always retried. commit() persists the
+    manifest atomically (tmp file + rename under a lock), so a crash can never leave
+    a half-written manifest behind."""
 
     def __init__(self, root: str):
         from commontrace import paths
@@ -390,21 +461,78 @@ class Ledger:
     def sizes(self) -> frozenset[int]:
         return frozenset(r.get("size", -1) for r in self.rows.values())
 
-    def changed(self, path: str) -> bool:
+    def changed(self, path: str, *, max_bytes: int = sys.maxsize) -> bool:
         """Whether `path` must be read again; remembers its new fingerprint if so."""
         key = os.path.abspath(path)
-        st = os.stat(path)
-        known = self.rows.get(key)
-        if known and known.get("size") == st.st_size and known.get("mtime_ns") == st.st_mtime_ns:
-            return False
-        fingerprint = file_fingerprint(path, known_sizes=self.sizes())
+        from commontrace.ingest import _open_regular
+
+        with _open_regular(path, max_bytes) as fh:
+            st = os.fstat(fh.fileno())
+            known = self.rows.get(key)
+            if (known and known.get("size") == st.st_size and known.get("mtime_ns") == st.st_mtime_ns
+                    and known.get("dev") == st.st_dev and known.get("inode") == st.st_ino
+                    and known.get("ctime_ns") == st.st_ctime_ns
+                    and known.get("status") != "error"):
+                return False
+            was_error = bool(known and known.get("status") == "error")
+            fingerprint = _fingerprints.stream_fingerprint(fh, st.st_size, known_sizes=self.sizes())
         row = {"path": key, "size": st.st_size, "mtime_ns": st.st_mtime_ns, "fingerprint": fingerprint,
+               "dev": st.st_dev, "inode": st.st_ino, "ctime_ns": st.st_ctime_ns,
+               "status": (known.get("status") if known else "pending"),
                "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
-        if known and known.get("fingerprint") == fingerprint:
+        if known and known.get("fingerprint") == fingerprint and not was_error:
             self.pending[key] = row
             return False
         self.pending[key] = row
         return True
+
+    def note(self, path: str, status: str, *, detail: dict | None = None) -> None:
+        """Stage an explicit per-file outcome: ingested, unchanged, skipped_large,
+        skipped_unsupported or error. Overwrites any row staged by changed()."""
+        key = os.path.abspath(path)
+        prev = self.pending.get(key) or self.rows.get(key) or {}
+        staged = self.pending.get(key)
+        if status == "ingested" and staged and staged.get("fingerprint"):
+            # The staged fingerprint describes the source generation that was
+            # loaded. A later replacement must be detected on the next run,
+            # not paired with the older fingerprint and marked ingested here.
+            row = {**staged, "status": status,
+                   "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+            if detail:
+                row["detail"] = dict(detail)
+            self.pending[key] = row
+            return
+        try:
+            st = os.stat(path)
+            size, mtime_ns = st.st_size, st.st_mtime_ns
+            identity = {"dev": st.st_dev, "inode": st.st_ino, "ctime_ns": st.st_ctime_ns}
+        except OSError:
+            size, mtime_ns = -1, -1
+            identity = {}
+        fingerprint = prev.get("fingerprint", "")
+        if status == "ingested" and size >= 0:
+            try:
+                from commontrace.ingest import _open_regular
+
+                with _open_regular(path, sys.maxsize) as fh:
+                    st = os.fstat(fh.fileno())
+                    size, mtime_ns = st.st_size, st.st_mtime_ns
+                    identity = {"dev": st.st_dev, "inode": st.st_ino, "ctime_ns": st.st_ctime_ns}
+                    fingerprint = _fingerprints.stream_fingerprint(fh, size, known_sizes=self.sizes())
+            except (OSError, ValueError):
+                fingerprint = ""
+        row: dict = {"path": key, "size": size, "mtime_ns": mtime_ns, "fingerprint": fingerprint,
+                     **identity,
+                     "status": status, "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+        if detail:
+            row["detail"] = dict(detail)
+        self.pending[key] = row
+
+    def manifest(self) -> list[dict]:
+        """Committed rows with staged updates applied: the per-file ingest manifest."""
+        merged = dict(self.rows)
+        merged.update(self.pending)
+        return [dict(row) for row in merged.values()]
 
     def commit(self) -> None:
         if not self.pending:
@@ -424,36 +552,108 @@ class Ledger:
 @dataclass
 class DirectoryLoader(Loader):
     """Every document under a path (or the one file it names); with a ledger, only
-    the files that changed since they were last ingested."""
+    the files that changed since they were last ingested. Text suffixes are read
+    directly, pdf/docx go through the stdlib multimodal extractors, and suffixes
+    with no parser (ipynb/parquet) are counted as unsupported instead of silently
+    dropped. Oversized files and max_files truncation are counted, never silent."""
 
     path: str
     suffixes: tuple[str, ...] = DOC_SUFFIXES
     max_files: int | None = 1000
     ledger: Ledger | None = None
-    stats: dict = field(default_factory=lambda: {"files": 0, "unchanged": 0, "unreadable": 0})
+    stats: dict = field(default_factory=lambda: {"files": 0, "unchanged": 0, "unreadable": 0, "skipped_large": 0,
+                                                 "unsupported": 0, "truncated": 0})
 
     def load(self) -> Iterable[Chunk]:
-        from commontrace.ingest import _read_text, _redact_secrets, _walk_files
+        from commontrace.ingest import MAX_TEXT_FILE_BYTES, _read_text, _redact_secrets, _walk_files
+        from commontrace.ingest import multimodal as mm
 
+        walk_stats: dict[str, int] = {}
         files = [self.path] if os.path.isfile(self.path) else \
-            list(_walk_files(self.path, self.suffixes, self.max_files))
+            list(_walk_files(self.path, self.suffixes, self.max_files, stats=walk_stats))
+        self.stats["truncated"] += walk_stats.get("truncated", 0)
         for path in files:
-            if self.ledger is not None and not self.ledger.changed(path):
-                self.stats["unchanged"] += 1
+            ext = os.path.splitext(path)[1].lower()
+            if ext in UNSUPPORTED_SUFFIXES:
+                self.stats["unsupported"] += 1
+                if self.ledger is not None:
+                    self.ledger.note(path, "skipped_unsupported", detail={"suffix": ext})
+                continue
+            if ext in PARSED_BINARY_SUFFIXES:
+                yield from self._load_binary(path, ext, mm)
                 continue
             try:
+                too_big = os.path.getsize(path) > MAX_TEXT_FILE_BYTES
+            except OSError:
+                self.stats["unreadable"] += 1
+                continue
+            if too_big:
+                self.stats["skipped_large"] += 1
+                if self.ledger is not None:
+                    self.ledger.note(path, "skipped_large", detail={"limit": MAX_TEXT_FILE_BYTES})
+                continue
+            try:
+                if self.ledger is not None and not self.ledger.changed(path, max_bytes=MAX_TEXT_FILE_BYTES):
+                    self.stats["unchanged"] += 1
+                    continue
                 content = _read_text(path)
             except (OSError, ValueError):
                 self.stats["unreadable"] += 1
+                if self.ledger is not None:
+                    self.ledger.note(path, "error", detail={"stage": "read"})
                 continue
             self.stats["files"] += 1
+            if self.ledger is not None:
+                self.ledger.note(path, "ingested")
             rel = os.path.relpath(path, self.path) if os.path.isdir(self.path) else os.path.basename(path)
             yield Chunk(content=_redact_secrets(content), source_path=os.path.abspath(path),
-                        chunk_id=hashlib.sha256(os.path.abspath(path).encode()).hexdigest()[:16],
+                        chunk_id=_fingerprints.short_fingerprint(os.path.abspath(path)),
                         breadcrumb=rel, chunk_type="document")
+
+    def _load_binary(self, path: str, ext: str, mm) -> Iterable[Chunk]:
+        """Yield chunks for a pdf/docx file via the stdlib multimodal extractors."""
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            self.stats["unreadable"] += 1
+            return
+        if size > mm.MAX_FILE_BYTES:
+            self.stats["skipped_large"] += 1
+            if self.ledger is not None:
+                self.ledger.note(path, "skipped_large", detail={"bytes": size, "limit": mm.MAX_FILE_BYTES})
+            return
+        try:
+            if self.ledger is not None and not self.ledger.changed(path, max_bytes=mm.MAX_FILE_BYTES):
+                self.stats["unchanged"] += 1
+                return
+        except (OSError, ValueError):
+            self.stats["unreadable"] += 1
+            self.ledger.note(path, "error", detail={"stage": "fingerprint"})
+            return
+        fn = mm.INGEST_FNS.get(ext)
+        if fn is None:
+            self.stats["unsupported"] += 1
+            if self.ledger is not None:
+                self.ledger.note(path, "skipped_unsupported", detail={"suffix": ext})
+            return
+        try:
+            chunks = fn(path)
+        except Exception:  # noqa: BLE001 - one bad binary must not stop the directory walk
+            self.stats["unreadable"] += 1
+            if self.ledger is not None:
+                self.ledger.note(path, "error", detail={"stage": "parse"})
+            return
+        self.stats["files"] += 1
+        if self.ledger is not None:
+            detail = {"bytes": size, "chars": sum(len(c.content) for c in chunks)} if ext == ".pdf" \
+                else {"bytes": size}
+            self.ledger.note(path, "ingested", detail=detail)
+        yield from chunks
 
     def commit(self) -> None:
         if self.ledger is not None:
+            for row in self.ledger.pending.values():
+                row.setdefault("status", "ingested")
             self.ledger.commit()
 
 
@@ -468,7 +668,7 @@ class TextLoader(Loader):
         from commontrace.ingest import _redact_secrets
 
         yield Chunk(content=_redact_secrets(self.text), source_path=self.name,
-                    chunk_id=hashlib.sha256(self.text.encode()).hexdigest()[:16],
+                    chunk_id=_fingerprints.short_fingerprint(self.text),
                     breadcrumb=self.name, chunk_type="document")
 
 
@@ -508,7 +708,7 @@ class Deduplicator(Transform):
 
     def apply(self, chunks: Iterable[Chunk]) -> Iterable[Chunk]:
         for chunk in chunks:
-            key = hashlib.sha256(" ".join(chunk.content.lower().split()).encode()).hexdigest()
+            key = _fingerprints.content_hash(chunk.content)
             if key in self._seen:
                 self.stats["duplicates"] += 1
                 continue
@@ -545,7 +745,8 @@ class ContextHeader(Transform):
             header = self._header(chunk)
             self.stats["headed"] += 1
             yield Chunk(content=f"[{header}] {chunk.content}", source_path=chunk.source_path,
-                        chunk_id=chunk.chunk_id, breadcrumb=chunk.breadcrumb, chunk_type=chunk.chunk_type)
+                        chunk_id=chunk.chunk_id, breadcrumb=chunk.breadcrumb, chunk_type=chunk.chunk_type,
+                        modality=chunk.modality, source=chunk.source, provenance=dict(chunk.provenance))
 
     def _title(self, chunk: Chunk) -> str:
         document = self._document(chunk.source_path)
@@ -652,7 +853,11 @@ class ConversationSubmitter(Submitter):
             by_source.setdefault(chunk.source_path, []).append(chunk)
         with Store(self.root, self.space) as store:
             for source, items in by_source.items():
-                session = ("doc:" + os.path.basename(source))[:200]
+                base = os.path.basename(source)
+                key = hashlib.sha256(
+                    (os.path.abspath(source) + "\x1f" + "\x1f".join(c.content for c in items)).encode("utf-8")
+                ).hexdigest()[:12]
+                session = ("doc:" + base + "-" + key)[:200]
                 try:
                     out = store.add(session, [{"speaker": self.speaker, "role": "document", "text": c.content,
                                                "id": c.chunk_id + ":" + hashlib.sha256(c.content.encode())

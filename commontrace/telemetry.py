@@ -24,7 +24,7 @@ import threading
 import time
 import uuid
 from bisect import bisect_left
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Any
 
 BUCKETS_MS = (1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000)
@@ -71,6 +71,26 @@ def bind(**fields: Any) -> Iterator[dict]:
 
 def new_request_id() -> str:
     return uuid.uuid4().hex[:16]
+
+
+def spawn_background(
+    target: Callable,
+    *args: Any,
+    name: str = "commontrace-worker",
+    daemon: bool = True,
+    **kwargs: Any,
+) -> threading.Thread:
+    """Spawn a background thread with the current telemetry/tracing context propagated."""
+    ctx = contextvars.copy_context()
+    thread = threading.Thread(
+        target=ctx.run,
+        args=(target, *args),
+        kwargs=kwargs,
+        name=name,
+        daemon=daemon,
+    )
+    thread.start()
+    return thread
 
 
 # --- tracing ---------------------------------------------------------------------

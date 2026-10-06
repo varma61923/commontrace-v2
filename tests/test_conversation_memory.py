@@ -70,6 +70,8 @@ class TestQuestionWindow:
         ("What happened on 8 May 2023?", dt.date(2023, 5, 8), dt.date(2023, 5, 8)),
         ("What did Melanie paint in 2022?", dt.date(2022, 1, 1), dt.date(2022, 12, 31)),
         ("What did I buy last week?", dt.date(2023, 5, 22), dt.date(2023, 5, 28)),
+        ("What happened between May 2023 and August 2023?", dt.date(2023, 5, 1), dt.date(2023, 8, 31)),
+        ("What did we do from 2021 to 2023?", dt.date(2021, 1, 1), dt.date(2023, 12, 31)),
     ])
     def test_windows(self, question, lo, hi):
         window = timeparse.question_window(question, self.NOW)

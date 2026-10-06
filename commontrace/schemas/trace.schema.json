@@ -48,6 +48,28 @@
       "description": "Optional name of a domain-specific extension profile that governs the `extensions` payload (e.g. 'code-review' for the Alpha/A/B/Omega/Lambda pipeline shipped in SKILL.md).",
       "default": ""
     },
+    "scopes": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Optional routing scopes. Unscoped traces are fleet-wide; a scoped query includes its matching scope and global traces.",
+      "default": []
+    },
+    "valid_from": {
+      "type": ["string", "null"],
+      "description": "Optional inclusive valid-time start, separate from recorded creation time."
+    },
+    "valid_until": {
+      "type": ["string", "null"],
+      "description": "Optional exclusive valid-time end."
+    },
+    "expires_at": {
+      "type": ["string", "null"],
+      "description": "Optional TTL after which local retrieval hides the trace unless expired records are requested."
+    },
+    "expired_at": {
+      "type": ["string", "null"],
+      "description": "Optional recorded-time instant at which this trace was retired or superseded."
+    },
     "extensions": {
       "type": "object",
       "description": "Profile-specific metadata that does not generalize across agent types (e.g. commit_sha, verdict, n_iterations for the code-review profile). MUST be ignored by any consumer that does not recognize `profile`.",

@@ -23,6 +23,7 @@ commontrace/**
 !commontrace/value.py
 !commontrace/decay.py
 !commontrace/retrieval.py
+!commontrace/corpus_bin.py
 !commontrace/_lexical.py
 !commontrace/_stem.py
 !commontrace/memory_guard.py
@@ -32,6 +33,11 @@ commontrace/**
 !commontrace/paths.py
 !commontrace/harm.py
 !commontrace/adapters.py
+!commontrace/fingerprints.py
+!commontrace/ui_style.py
+!commontrace/ui/
+commontrace/ui/*
+!commontrace/ui/tokens.css
 
 .env
 hub/.env

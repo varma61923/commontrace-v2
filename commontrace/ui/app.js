@@ -9,10 +9,12 @@
   var nav = document.getElementById("nav");
   var conn = document.getElementById("conn");
   var envChip = document.getElementById("env");
+  var tierChip = document.getElementById("tier");
+  var commandLaunch = document.getElementById("command-launch");
   var token = "";
   var timer = null;
   var lastOk = 0;
-  var state = { status: null, memories: null, agents: null, events: null, lessons: null, lesson: null };
+  var state = { status: null, capabilities: null, memories: null, agents: null, events: null, lessons: null, lesson: null, commandCatalog: null, commandResult: null };
   var selected = {};   // slug -> true, the review queue's bulk selection; survives repaints
   var notice = null;   // { kind: "ok"|"crit", text } shown on the next paint of the review views
   var lastPaint = "";
@@ -139,6 +141,7 @@
     { id: "lesson", label: "Review", title: "Lesson", hidden: true },
     { id: "live", label: "Live", title: "Live activity" },
     { id: "fleet", label: "Fleet", title: "Robots and agents" },
+    { id: "commands", label: "Command center", title: "Command center" },
     { id: "safety", label: "Safety", title: "Safety and policy" }
   ];
   function hashQuery(name) {
@@ -594,7 +597,118 @@
     return root;
   }
 
-  var VIEWS = { overview: viewOverview, memories: viewMemories, review: viewReview, lesson: viewLesson, live: viewLive, fleet: viewFleet, safety: viewSafety };
+  function commandArgsFrom(text) {
+    return String(text || "").split(/\r?\n/).map(function (line) { return line.trim(); }).filter(Boolean);
+  }
+  function commandLine(spec, args) {
+    return "commontrace " + spec.name + (args.length ? " " + args.map(function (arg) {
+      return /\s/.test(arg) ? JSON.stringify(arg) : arg;
+    }).join(" ") : "");
+  }
+  function viewCommands() {
+    var root = h("div"), catalog = state.commandCatalog && state.commandCatalog.commands;
+    root.appendChild(h("div", { class: "page-heading" },
+      h("div", null, h("p", { class: "eyebrow", text: "OPERATIONS" }), h("h1", { text: "Command center" }),
+        h("p", { class: "lede", text: "Every CommonTrace capability, one authenticated surface. Run store-scoped commands without leaving the console." })),
+      h("span", { class: "chip command-count", text: catalog ? catalog.length + " commands" : "Loading catalog…" })));
+    if (!catalog) {
+      root.appendChild(h("div", { class: "card command-loading" }, h("div", { class: "skeleton-line wide" }), h("div", { class: "skeleton-line" })));
+      return root;
+    }
+
+    var search = h("input", { class: "command-search", type: "search", placeholder: "Filter commands…", "aria-label": "Filter commands" });
+    var select = h("select", { class: "command-select", "aria-label": "Command" });
+    var args = h("textarea", { class: "command-args", rows: 7, spellcheck: "false", "aria-label": "Command arguments, one per line" });
+    var description = h("p", { class: "muted command-description" });
+    var badge = h("div", { class: "command-badges" });
+    var output = h("div", { class: "command-output", "aria-live": "polite" });
+    var selected = catalog[0];
+
+    function visibleSpecs() {
+      var query = search.value.trim().toLowerCase();
+      return catalog.filter(function (spec) {
+        return !query || (spec.name + " " + spec.group + " " + spec.description).toLowerCase().indexOf(query) >= 0;
+      });
+    }
+    function renderOptions(keep) {
+      var specs = visibleSpecs();
+      select.textContent = "";
+      specs.forEach(function (spec) {
+        select.appendChild(h("option", { value: spec.name, text: spec.group + "  /  " + spec.name }));
+      });
+      var wanted = specs.filter(function (spec) { return spec.name === keep; })[0] || specs[0];
+      if (wanted) { select.value = wanted.name; selected = wanted; }
+      updateSelected();
+    }
+    function updateSelected() {
+      selected = catalog.filter(function (spec) { return spec.name === select.value; })[0] || catalog[0];
+      description.textContent = selected.description;
+      badge.textContent = "";
+      badge.appendChild(h("span", { class: "chip" }, selected.group));
+      badge.appendChild(h("span", { class: "chip " + (selected.runnable ? "good" : "warn") }, selected.runnable ? "Runnable here" : "Terminal only"));
+      if (!args.value.trim() && selected.example && selected.example.length) args.value = selected.example.join("\n");
+      if (!selected.runnable) {
+        args.disabled = true;
+      } else {
+        args.disabled = false;
+      }
+    }
+    function paintResult(result) {
+      output.textContent = "";
+      if (!result) {
+        output.appendChild(h("p", { class: "muted", text: "Run a command to see its output here." }));
+        return;
+      }
+      output.appendChild(h("div", { class: "command-result-head" },
+        h("span", { class: "chip " + (result.ok ? "good" : "crit") }, result.ok ? "Completed" : "Exited " + result.exit_code),
+        h("span", { class: "muted small", text: result.elapsed_ms + " ms" }),
+        h("button", { class: "btn-link", type: "button", text: "Copy output" })));
+      var copy = output.lastChild;
+      copy.addEventListener("click", function () {
+        var text = [result.stdout, result.stderr].filter(Boolean).join("\n");
+        if (navigator.clipboard) navigator.clipboard.writeText(text);
+      });
+      if (result.stdout) output.appendChild(h("pre", { class: "command-pre" }, h("code", { text: result.stdout })));
+      if (result.stderr) output.appendChild(h("pre", { class: "command-pre stderr" }, h("code", { text: result.stderr })));
+      if (!result.stdout && !result.stderr) output.appendChild(h("p", { class: "muted", text: "Command completed without output." }));
+      if (result.truncated) output.appendChild(h("p", { class: "muted small", text: "Output was capped for browser safety." }));
+    }
+
+    search.addEventListener("input", function () { renderOptions(select.value); });
+    select.addEventListener("change", function () { args.value = ""; updateSelected(); });
+    renderOptions(selected.name);
+    paintResult(state.commandResult);
+
+    var run = h("button", { class: "btn", type: "button", text: "Run command" });
+    var help = h("button", { class: "btn secondary", type: "button", text: "Load --help" });
+    var copy = h("button", { class: "btn secondary", type: "button", text: "Copy terminal command" });
+    run.addEventListener("click", function () {
+      if (!selected.runnable) return;
+      run.disabled = true; run.textContent = "Running…";
+      post("/v1/command", { command: selected.name, args: commandArgsFrom(args.value) })
+        .then(function (result) { state.commandResult = result; paint(true); })
+        .catch(function (error) { state.commandResult = { ok: false, exit_code: 1, stdout: "", stderr: error.message, elapsed_ms: 0 }; paint(true); })
+        .then(function () { run.disabled = false; run.textContent = "Run command"; });
+    });
+    help.addEventListener("click", function () { args.value = "--help"; run.click(); });
+    copy.addEventListener("click", function () {
+      if (navigator.clipboard) navigator.clipboard.writeText(commandLine(selected, commandArgsFrom(args.value)));
+    });
+
+    root.appendChild(h("div", { class: "command-layout" },
+      h("section", { class: "card command-panel" },
+        h("div", { class: "command-toolbar" }, search, select),
+        h("div", { class: "command-title-row" }, h("div", null, h("p", { class: "eyebrow", text: "SELECTED COMMAND" }), h("h2", { class: "mono", text: selected.name })), badge),
+        description,
+        h("label", { for: "command-args", text: "Arguments · one per line" }),
+        args,
+        h("div", { class: "toolbar command-actions" }, run, help, copy),
+        h("p", { class: "muted small", text: "The gateway store is implicit. Lifecycle commands stay terminal-only so the UI cannot replace its own server." })),
+      h("section", { class: "card command-output-card" }, h("div", { class: "command-output-heading" }, h("p", { class: "eyebrow", text: "OUTPUT" }), h("span", { class: "muted small", text: "stdout + stderr" })), output)));
+    return root;
+  }
+
+  var VIEWS = { overview: viewOverview, memories: viewMemories, review: viewReview, lesson: viewLesson, live: viewLive, fleet: viewFleet, commands: viewCommands, safety: viewSafety };
 
   function viewAuth(message) {
     var input = h("input", { id: "tok", type: "password", autocomplete: "off", spellcheck: "false", "aria-describedby": "tok-help" });
@@ -622,8 +736,8 @@
   // throw away a half-typed edit, a selection or the focus.
   function paint(force) {
     var route = currentRoute();
-    var sig = route.id + "|" + location.hash + "|" + JSON.stringify([state.status, state.memories, state.agents, state.events,
-      state.lessons, state.lesson, selected, notice]);
+    var sig = route.id + "|" + location.hash + "|" + JSON.stringify([state.status, state.capabilities, state.memories, state.agents, state.events,
+      state.lessons, state.lesson, state.commandCatalog, state.commandResult, selected, notice]);
     if (!force && sig === lastPaint) return;
     if (!force && editing()) return;
     lastPaint = sig;
@@ -631,7 +745,18 @@
     document.title = route.title + " · CommonTrace";
     var focusId = document.activeElement && main.contains(document.activeElement) ? document.activeElement.id : "";
     main.textContent = "";
-    main.appendChild(VIEWS[route.id]());
+    var view = VIEWS[route.id]();
+    if (!view.querySelector(".page-heading")) {
+      var title = view.querySelector("h1"), lede = view.querySelector(".lede");
+      if (title) {
+        var heading = h("div", { class: "page-heading" });
+        var copy = h("div", {}, h("p", { class: "eyebrow", text: "MEMORY OPERATIONS" }));
+        copy.appendChild(title);
+        if (lede) copy.appendChild(lede);
+        heading.appendChild(copy); view.insertBefore(heading, view.firstChild);
+      }
+    }
+    main.appendChild(view);
     if (focusId) { var again = document.getElementById(focusId); if (again) again.focus(); }
     if (notice && (route.id === "review" || route.id === "lesson")) {
       var shown = notice; setTimeout(function () { if (notice === shown) { notice = null; } }, 8000);
@@ -642,26 +767,60 @@
     var s = state.status;
     if (s && s.gateway && s.gateway.env) { envChip.hidden = false; envChip.textContent = "Environment: " + s.gateway.env; }
     else envChip.hidden = true;
+    var caps = state.capabilities && state.capabilities.capabilities;
+    if (caps && tierChip) {
+      tierChip.hidden = false;
+      tierChip.textContent = "Tier · " + String(caps.tier || "lexical").replace(/_/g, " ");
+    } else if (tierChip) tierChip.hidden = true;
   }
 
+  var refreshGeneration = 0, capabilitiesAt = 0, capabilitiesToken = "", stateToken = null;
+  function clearCredentialState() {
+    var replacing = stateToken !== null;
+    Object.keys(state).forEach(function (key) { state[key] = null; });
+    selected = {}; notice = null; lastPaint = ""; lastOk = 0;
+    capabilitiesAt = 0; capabilitiesToken = ""; stateToken = token;
+    // Remove the previous credential's data from the visible page immediately,
+    // including while the replacement connection is still awaiting a response.
+    if (replacing) { paintHeader(); paint(true); }
+  }
   function refresh() {
+    var generation = ++refreshGeneration, requestedToken = token, requestedHash = location.hash;
+    function current() {
+      return generation === refreshGeneration && token === requestedToken && location.hash === requestedHash;
+    }
+    if (stateToken !== token) clearCredentialState();
     if (!token) { main.textContent = ""; main.appendChild(viewAuth()); setConn("bad", "Not connected"); return Promise.resolve(); }
     var route = currentRoute().id;
-    var wants = ["status", "memories", "agents"];
+    var wants = ["status"];
+    // Capability discovery changes infrequently. Fetch it on first connection
+    // and once a minute; every live page still refreshes its own source data.
+    if (capabilitiesToken !== token || !state.capabilities || Date.now() - capabilitiesAt >= 60000) wants.push("capabilities");
+    if (route === "overview" || route === "memories" || route === "lesson") wants.push("memories");
+    if (route === "overview" || route === "fleet" || route === "safety") wants.push("agents");
     if (route === "live") wants.push("occasions");
     if (route === "review") wants.push("lessons?status=review");
     if (route === "lesson") wants.push("lesson?slug=" + encodeURIComponent(hashQuery("slug")));
-    var keys = { occasions: "events", "lessons?status=review": "lessons" };
+    if (route === "commands") wants.push("command-catalog");
+    var keys = {
+      capabilities: "capabilities", occasions: "events", "lessons?status=review": "lessons",
+      "command-catalog": "commandCatalog"
+    };
     return Promise.all(wants.map(function (w) { return api("/v1/" + w).then(function (d) { return [w, d]; }); }))
       .then(function (pairs) {
+        // A slow poll from an earlier page or credential must never replace
+        // newer results, or turn a valid new connection into a signed-out one.
+        if (!current()) return;
         pairs.forEach(function (p) { state[keys[p[0]] || (p[0].indexOf("lesson?") === 0 ? "lesson" : p[0])] = p[1]; });
+        if (wants.indexOf("capabilities") !== -1) { capabilitiesAt = Date.now(); capabilitiesToken = requestedToken; }
         lastOk = Date.now();
         setConn("ok", "Live · updated " + ago(new Date(lastOk).toISOString()));
         paintHeader();
         render();
       })
       .catch(function (e) {
-        if (e && e.auth) { token = ""; try { sessionStorage.removeItem("ct-token"); } catch (x) { /* ignore */ } main.textContent = ""; main.appendChild(viewAuth("That token was not accepted.")); setConn("bad", "Not connected"); return; }
+        if (!current()) return;
+        if (e && e.auth) { token = ""; clearCredentialState(); try { sessionStorage.removeItem("ct-token"); } catch (x) { /* ignore */ } main.textContent = ""; main.appendChild(viewAuth("That token was not accepted.")); setConn("bad", "Not connected"); return; }
         if (e && !e.auth) console.error(e);
         setConn("bad", lastOk ? "Disconnected · last update " + ago(new Date(lastOk).toISOString()) : "Cannot reach the gateway");
       });
@@ -681,6 +840,12 @@
   var saved = load("ct-theme") || "system";
   themeSel.value = saved; applyTheme(saved);
   themeSel.addEventListener("change", function () { store("ct-theme", themeSel.value); applyTheme(themeSel.value); });
+  if (commandLaunch) commandLaunch.addEventListener("click", function () { location.hash = "#/commands"; });
+  document.addEventListener("keydown", function (event) {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+      event.preventDefault(); location.hash = "#/commands";
+    }
+  });
 
   // The token arrives in the URL FRAGMENT (#token=...), which browsers never send to a server or
   // a referrer. It is moved to sessionStorage and removed from the address bar.

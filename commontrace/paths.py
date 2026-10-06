@@ -5,6 +5,13 @@ import os
 import re
 import sys
 
+__all__ = [
+    "AGENT_TYPES", "AGENT_TYPE_RE", "GENERAL_AGENT_TYPE", "STARTER_DOMAINS", "SUGGESTED_AGENT_TYPES",
+    "PathTraversalError", "enforce_boundary", "episodes_dir", "index_path", "is_within_directory",
+    "lessons_dir", "memory_dir", "resolve_root", "safe_prepare_output_path", "schemas_dir",
+    "store_agent_type", "traces_dir", "warn_if_implicit_cwd_store",
+]
+
 GENERAL_AGENT_TYPE = "general"
 
 SUGGESTED_AGENT_TYPES = ["code", "support", "sales", "hr", "marketing", "ops", "custom"]
@@ -26,6 +33,7 @@ STARTER_DOMAINS = {
 
 
 def resolve_root(explicit: str | None = None) -> str:
+    """Resolve explicit destination, environment override, then current directory."""
     if explicit:
         return os.path.abspath(explicit)
     env_root = os.environ.get("COMMONTRACE_ROOT") or os.environ.get("JUSTDOIT_ROOT")
@@ -56,6 +64,7 @@ def warn_if_implicit_cwd_store(explicit: str | None) -> None:
 
 
 def memory_dir(root: str) -> str:
+    """Return the durable memory directory inside a store root."""
     return os.path.join(root, "memory")
 
 
@@ -84,10 +93,12 @@ def store_agent_type(root: str, default: str = GENERAL_AGENT_TYPE) -> str:
 
 
 def lessons_dir(root: str) -> str:
+    """Return the source lesson directory for a store."""
     return os.path.join(memory_dir(root), "lessons")
 
 
 def episodes_dir(root: str) -> str:
+    """Return the recorded episode directory for a store."""
     return os.path.join(memory_dir(root), "episodes")
 
 
@@ -97,6 +108,7 @@ def traces_dir(root: str) -> str:
 
 
 def index_path(root: str) -> str:
+    """Return the hierarchical memory index path for a store."""
     return os.path.join(memory_dir(root), "INDEX.md")
 
 
@@ -123,6 +135,7 @@ def is_within_directory(base_dir: str, candidate_path: str) -> bool:
 
 
 def enforce_boundary(base_dir: str, candidate_path: str, allow_within: bool = True) -> str:
+    """Resolve a candidate path or raise PathTraversalError outside the boundary."""
     if not base_dir:
         raise ValueError("base_dir must not be empty")
     if not candidate_path:

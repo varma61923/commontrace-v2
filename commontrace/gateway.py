@@ -1,20 +1,28 @@
-"""A language-neutral door into the causal loop, for any agent, including robots."""
+"""Store-scoped gateway application, authentication, routes and causal evidence.
+
+HTTP/TLS and stdio framing are implemented by ``gateway_transport``; the public
+factory functions here preserve existing CLI and embedding integrations.
+"""
 from __future__ import annotations
 
+import copy
 import dataclasses
 import datetime
+import hashlib
 import hmac
 import json
 import logging
 import os
 import re
 import secrets
-import ssl
+import socket
 import threading
 import time
+import weakref
+from collections import OrderedDict
 from collections.abc import Callable, Mapping
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any
+from http.server import ThreadingHTTPServer
+from typing import Any, TextIO
 from urllib.parse import parse_qs, urlsplit
 
 from commontrace import (
@@ -33,6 +41,7 @@ from commontrace.measure import CausalMemory, HarmWatch
 API_VERSION = "1"
 REPORT_MIN_INTERVAL = 5.0
 REPORT_MAX_AGE = 60.0
+REPORT_CACHE_MAX = 128
 MAX_BODY_BYTES = 1 << 20
 MAX_ITEMS = 200
 MAX_TEXT_CHARS = 20_000
@@ -48,11 +57,130 @@ _AGENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui")
 
+# Bounded event scan: newest-N events within a trailing byte cap.
+EVENTS_TAIL_BYTES = 1_500_000
+EVENTS_MAX_EVENTS = 5000
+EVENTS_STATUS_LIMIT = 2000
+
+# mtime-keyed active-lesson index cache (module-level, capped).
+_ACTIVE_CACHE_MAX = 8
+_ACTIVE_CACHE: dict[str, tuple[tuple, list, dict]] = {}
+_ACTIVE_CACHE_LOCK = threading.Lock()
+
+# Lesson-body cache keyed by strong file identity (module-level, capped).
+_BODY_CACHE_MAX = 512
+_BODY_CACHE_BYTES_MAX = 16 * 1024 * 1024
+_BODY_CACHE_BYTES = 0
+_BODY_CACHE: dict[tuple, str] = {}
+_BODY_CACHE_LOCK = threading.Lock()
+
+
+def _cached_active(root: str, reader) -> tuple[list, dict]:
+    """Active lessons + term cache, re-parsed only when the listing changes."""
+    from commontrace import lesson_cache
+
+    with lesson_cache.one_scan():
+        try:
+            listing = lesson_cache.source_fingerprint(root)
+        except OSError:
+            listing = ()
+        key = os.path.abspath(root)
+        with _ACTIVE_CACHE_LOCK:
+            hit = _ACTIVE_CACHE.get(key)
+            if hit is not None and hit[0] == listing:
+                _ACTIVE_CACHE[key] = _ACTIVE_CACHE.pop(key)
+                return hit[1], hit[2]
+        active, term_cache = lesson_cache.load_active_with_terms(root, None, reader=reader)
+    with _ACTIVE_CACHE_LOCK:
+        _ACTIVE_CACHE[key] = (listing, active, term_cache)
+        while len(_ACTIVE_CACHE) > _ACTIVE_CACHE_MAX:
+            _ACTIVE_CACHE.pop(next(iter(_ACTIVE_CACHE)))
+    return active, term_cache
+
+
+def _cached_body(path: str, *, expected_identity: tuple | None = None) -> str:
+    """One lesson body, fresh on replacement or restored-mtime edits."""
+    global _BODY_CACHE_BYTES
+
+    try:
+        st = os.stat(path)
+        ident = (path, st.st_dev, st.st_ino, st.st_mtime_ns, st.st_ctime_ns, st.st_size)
+    except OSError:
+        if expected_identity is not None:
+            raise frontmatter.FrontmatterError("lesson source changed during retrieval") from None
+        return frontmatter.read_body(path)
+    if expected_identity is not None and ident[1:] != expected_identity:
+        raise frontmatter.FrontmatterError("lesson source changed during retrieval")
+    with _BODY_CACHE_LOCK:
+        hit = _BODY_CACHE.get(ident)
+        if hit is not None:
+            _BODY_CACHE[ident] = _BODY_CACHE.pop(ident)
+            return hit
+    body = frontmatter.read_body(path)
+    size = len(body.encode("utf-8"))
+    with _BODY_CACHE_LOCK:
+        try:
+            st = os.stat(path)
+        except OSError:
+            if expected_identity is not None:
+                raise frontmatter.FrontmatterError("lesson source changed during retrieval") from None
+            return body
+        current = (path, st.st_dev, st.st_ino, st.st_mtime_ns, st.st_ctime_ns, st.st_size)
+        if current != ident:
+            if expected_identity is not None:
+                raise frontmatter.FrontmatterError("lesson source changed during retrieval")
+            return body
+        # Retain one generation per path, including when its new body is too
+        # large to cache. An older reader cannot evict a newer source entry.
+        for key in [key for key in _BODY_CACHE if key[0] == path]:
+            _BODY_CACHE_BYTES -= len(_BODY_CACHE.pop(key).encode("utf-8"))
+        if size > _BODY_CACHE_BYTES_MAX:
+            return body
+        _BODY_CACHE[ident] = body
+        _BODY_CACHE_BYTES += size
+        while len(_BODY_CACHE) > _BODY_CACHE_MAX or _BODY_CACHE_BYTES > _BODY_CACHE_BYTES_MAX:
+            _BODY_CACHE_BYTES -= len(_BODY_CACHE.pop(next(iter(_BODY_CACHE))).encode("utf-8"))
+    return body
+
 
 class ApiError(Exception):
     def __init__(self, status: int, code: str, message: str) -> None:
         super().__init__(message)
         self.status, self.code, self.message = status, code, message
+
+
+class TransientAuthError(Exception):
+    """Raised when upstream authentication or network verification fails transiently (5xx, timeout)."""
+
+    def __init__(self, message: str, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+def is_transient_auth_error(exc: BaseException) -> bool:
+    """Classify transient upstream errors vs permanent invalid credentials.
+
+    5xx status codes, timeouts, connection blips are transient and should not nuke creds.
+    401/403 indicate bad credentials.
+    """
+    if isinstance(exc, TransientAuthError):
+        return True
+    status = getattr(exc, "status", None) or getattr(exc, "status_code", None)
+    if isinstance(status, int):
+        if status in (401, 403):
+            return False
+        if status in (408, 429) or 500 <= status <= 599:
+            return True
+    err_str = str(exc).lower()
+    transient_markers = (
+        "timeout", "timed out", "connection refused",
+        "econnreset", "temporarily unavailable", "try again",
+    )
+    if any(m in err_str for m in transient_markers):
+        return True
+    if isinstance(exc, (TimeoutError, socket.gaierror, ConnectionError, OSError)):
+        return True
+    return False
 
 
 def _bad(message: str, code: str = "bad_request") -> ApiError:
@@ -272,7 +400,10 @@ class Gateway:
         self._watch = HarmWatch(self.root, on_harm, check_every)
         self._events_lock = threading.Lock()
         self._memo_lock = threading.Lock()
-        self._memo: dict[str, tuple] = {}
+        self._memo: OrderedDict[str, tuple] = OrderedDict()
+        self._memo_work: weakref.WeakValueDictionary[str, threading.Lock] = weakref.WeakValueDictionary()
+        self._event_tail_lock = threading.Lock()
+        self._event_tail = None
         self.routes: dict[tuple[str, str], tuple[Callable, dict]] = {}
         self._register()
 
@@ -284,9 +415,20 @@ class Gateway:
 
     def _register(self) -> None:
         self._route("GET", "/v1/health", self._health, summary="Liveness.", auth=False)
+        self._route("GET", "/v1/capabilities", self._capabilities, summary="Tier and capability matrix.", auth=False)
+        self._route("GET", "/v1/whoami", self._whoami, summary="Caller identity and scope.")
+        self._route("POST", "/v1/resolve_tag", self._resolve_tag, request={
+            "container_tag": "string: container/tenant identifier (alphanumeric, -, _)"
+        }, summary="Resolve and validate a container isolation tag.")
         self._route("GET", "/v1/metrics", self._metrics,
                     summary="Request, tool and operation counters and latencies (Prometheus text; ?format=json).")
         self._route("GET", "/v1/openapi.json", self._openapi, summary="This API's schema.", auth=False)
+        self._route("GET", "/v1/command-catalog", self._command_catalog,
+                    summary="CLI command catalog for the authenticated console.")
+        self._route("POST", "/v1/command", self._command, request={
+            "command": "one command name from /v1/command-catalog",
+            "args": "optional array of command arguments; the gateway store root is implicit",
+        }, summary="Run one store-scoped CommonTrace CLI command.")
         self._route("POST", "/v1/recall", self._recall, request={
             "occasion_id": "string, your id for one episode/task/ticket",
             "items": "optional list of {id, text, protected?, meta?}: your candidate memories",
@@ -339,13 +481,16 @@ class Gateway:
         supplied = next((v for k, v in headers.items() if k.lower() == "x-request-id"), "")
         request_id = supplied if re.fullmatch(r"[A-Za-z0-9._-]{1,64}", supplied or "") else \
             telemetry.new_request_id()
+        container_tag = next((v for k, v in headers.items() if k.lower() in ("x-container-tag", "container-tag")), "")
         path_label = urlsplit(target).path if (method, urlsplit(target).path) in self.routes else "other"
-        with telemetry.bind(request_id=request_id, surface="gateway"), \
+        with telemetry.bind(request_id=request_id, container_tag=container_tag, surface="gateway"), \
                 telemetry.span(f"gateway {method} {path_label}") as handle:
             response = self._handle(method, target, headers, body, trusted=trusted)
             handle.set(status=response.status)
         telemetry.count("commontrace_gateway_requests", method=method, path=path_label, status=response.status)
         response.headers.setdefault("X-Request-Id", request_id)
+        if container_tag:
+            response.headers.setdefault("X-Container-Tag", container_tag)
         return response
 
     def _handle(
@@ -356,7 +501,8 @@ class Gateway:
             path = split.path
             if not trusted and not self._host_ok(headers):
                 raise ApiError(403, "bad_host", "the Host header is not allowed")
-            if path in ("/", "/index.html", "/ui/app.js", "/ui/app.css", "/ui/favicon.svg") and method == "GET":
+            if path in ("/", "/index.html", "/ui/app.js", "/ui/app.css", "/ui/tokens.css",
+                        "/ui/favicon.svg") and method == "GET":
                 return self._static(path)
             entry = self.routes.get((method, path))
             if entry is None:
@@ -366,6 +512,12 @@ class Gateway:
             handler, spec = entry
             if spec["auth"] and not trusted and not self._authorised(headers):
                 raise ApiError(401, "unauthorized", "a valid Authorization: Bearer token is required")
+            container_tag = next((
+                v for k, v in headers.items()
+                if k.lower() in ("x-container-tag", "container-tag")
+            ), "")
+            if container_tag:
+                self._validated_tag(container_tag)
             payload: dict = {}
             if method == "POST":
                 payload = self._parse_body(body)
@@ -373,9 +525,12 @@ class Gateway:
             if isinstance(result, Response):
                 return result
             return _json(200, result)
+        except TransientAuthError as exc:
+            return _json(503, {"error": {"code": "transient_auth_error", "message": str(exc)}})
         except ApiError as exc:
             return _json(exc.status, {"error": {"code": exc.code, "message": exc.message}})
         except Exception as exc:  # noqa: BLE001 - never leak a traceback to a client
+            logger.error("Gateway %s request failed (%s)", method, type(exc).__name__)
             return _json(500, {"error": {"code": "internal", "message": f"{type(exc).__name__}"}})
 
     def _host_ok(self, headers: Mapping[str, str]) -> bool:
@@ -414,7 +569,7 @@ class Gateway:
 
     def _static(self, path: str) -> Response:
         name = {"/": "index.html", "/index.html": "index.html", "/ui/app.js": "app.js",
-                "/ui/app.css": "app.css", "/ui/favicon.svg": "favicon.svg"}[path]
+                "/ui/app.css": "app.css", "/ui/tokens.css": "tokens.css", "/ui/favicon.svg": "favicon.svg"}[path]
         types = {"html": "text/html; charset=utf-8", "js": "text/javascript; charset=utf-8",
                  "css": "text/css; charset=utf-8", "svg": "image/svg+xml"}
         try:
@@ -445,28 +600,131 @@ class Gateway:
         except OSError as exc:
             logger.warning("Failed to log gateway event to %s: %s", path, exc)
 
-    def _read_events(self, limit: int = 5000) -> list[dict]:
-        path = self._events_path()
-        try:
-            size = os.path.getsize(path)
-            with open(path, "rb") as fh:
-                fh.seek(max(0, size - 1_500_000))
-                chunk = fh.read()
-        except OSError:
-            return []
-        lines = chunk.splitlines()
-        if size > 1_500_000 and lines:
-            lines = lines[1:]
-        out = []
-        for line in lines[-limit:]:
-            try:
-                row = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(row, dict):
-                out.append(row)
-        return out
+    def _read_events(self, limit: int = 5000, *, isolated: bool = True) -> list[dict]:
+        """Newest-N lines with incremental decoding of one bounded source tail.
 
+        The line positions include malformed/non-object JSON, preserving the
+        original newest-N-line contract. Internal report code borrows read-only
+        rows; direct callers receive independent nested values.
+        """
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError):
+            limit = EVENTS_MAX_EVENTS
+        limit = max(1, min(limit, EVENTS_MAX_EVENTS))
+        with self._event_tail_lock:
+            ident = self._events_identity()
+            tail = self._event_tail
+            if tail is None or tail[0] != ident:
+                try:
+                    with open(self._events_path(), "rb") as fh:
+                        st = os.fstat(fh.fileno())
+                        source = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+                        fh.seek(max(0, st.st_size - EVENTS_TAIL_BYTES))
+                        chunk = fh.read(EVENTS_TAIL_BYTES)
+                except OSError:
+                    self._event_tail = None
+                    return []
+                lines = chunk.splitlines()
+                if st.st_size > EVENTS_TAIL_BYTES and lines:
+                    lines = lines[1:]
+                lines = lines[-EVENTS_MAX_EVENTS:]
+                # Each entry remains absent until a requested page needs it.
+                tail = (source, lines, {})
+                self._event_tail = tail
+            lines, decoded = tail[1], tail[2]
+            out = []
+            for position in range(max(0, len(lines) - limit), len(lines)):
+                if position not in decoded:
+                    try:
+                        row = json.loads(lines[position])
+                    except (ValueError, RecursionError):
+                        row = None
+                    decoded[position] = row if isinstance(row, dict) else None
+                row = decoded[position]
+                if row is not None:
+                    out.append(row)
+            return copy.deepcopy(out) if isolated else out
+
+    def _events_identity(self) -> tuple | None:
+        try:
+            st = os.stat(self._events_path())
+        except OSError:
+            return None
+        return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+
+    def _events_truncated(self) -> bool:
+        try:
+            return os.path.getsize(self._events_path()) > EVENTS_TAIL_BYTES
+        except OSError:
+            return False
+
+    def _memoized_flag(self, name: str, compute, extra_key=None) -> tuple[Any, bool]:
+        """Like _memoized but also reports whether the value came from the memo."""
+        def lookup():
+            data_key = self._data_key()
+            key = data_key if extra_key is None else (data_key, extra_key)
+            now = time.monotonic()
+            with self._memo_lock:
+                hit = self._memo.get(name)
+                if hit is not None and (now - hit[1] < REPORT_MIN_INTERVAL
+                                        or (hit[0] == key and now - hit[1] < REPORT_MAX_AGE)):
+                    self._memo.move_to_end(name)
+                    return key, now, hit
+            return key, now, None
+
+        key, now, hit = lookup()
+        if hit is not None:
+            return hit[2], True
+        with self._memo_lock:
+            work = self._memo_work.get(name)
+            if work is None:
+                work = threading.Lock()
+                self._memo_work[name] = work
+        # Identical cold/expired report requests share one calculation. Other
+        # report names and warm hits do not wait behind that calculation.
+        with work:
+            key, now, hit = lookup()
+            if hit is not None:
+                return hit[2], True
+            value = compute()
+            with self._memo_lock:
+                self._memo[name] = (key, now, value)
+                self._memo.move_to_end(name)
+                while len(self._memo) > REPORT_CACHE_MAX:
+                    self._memo.popitem(last=False)
+            return value, False
+
+    def _memoized_events(self, limit: int) -> tuple[list[dict], bool, bool]:
+        """Bounded event scan with 5-60s memo; returns (events, cached, truncated)."""
+        try:
+            want = max(1, min(int(limit), EVENTS_MAX_EVENTS))
+        except (TypeError, ValueError):
+            want = EVENTS_MAX_EVENTS
+        ident = self._events_identity()
+        events, cached = self._memoized_flag(
+            f"events:{want}", lambda: self._read_events(want, isolated=False), extra_key=ident)
+        return list(events), cached, self._events_truncated()
+
+
+    def _command_catalog(self, _body, _query) -> dict:
+        from commontrace import ui_commands
+
+        return {
+            "commands": ui_commands.catalog(),
+            "store": os.path.basename(self.root.rstrip(os.sep)) or "store",
+        }
+
+    def _command(self, req: dict, _query) -> dict:
+        from commontrace import ui_commands
+
+        command = req.get("command")
+        try:
+            return ui_commands.run(self.root, command, req.get("args"))
+        except ui_commands.UICommandError as exc:
+            code = "command_unavailable" if "terminal-only" in str(exc) else "bad_request"
+            status = 409 if code == "command_unavailable" else 400
+            raise ApiError(status, code, str(exc)) from None
 
     def _metrics(self, _body, query) -> dict | Response:
         from commontrace import telemetry
@@ -475,8 +733,108 @@ class Gateway:
             return telemetry.metrics()
         return Response(200, telemetry.prometheus().encode("utf-8"), "text/plain; version=0.0.4")
 
+    def _capability_matrix(self) -> dict[str, Any]:
+        retrieval_config = retrieval_io.load_config(self.root)
+        has_embed = bool(retrieval_io.parse_embedder(retrieval_config.fusion))
+        has_rerank = retrieval_config.rerank != retrieval_io.RERANK_NONE
+        provider = os.environ.get("COMMONTRACE_LLM_PROVIDER", "").strip().lower()
+        has_key = any(os.environ.get(name, "").strip() for name in (
+            "COMMONTRACE_LLM_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+            "GOOGLE_API_KEY", "GEMINI_API_KEY",
+        ))
+        local_provider = provider in {"ollama", "local", "llama.cpp", "llamacpp"}
+        has_llm = bool(has_key or local_provider)
+        if has_llm and has_embed:
+            tier = "full"
+        elif has_llm:
+            tier = "no_embed"
+        elif has_embed:
+            tier = "no_llm"
+        else:
+            tier = "lexical"
+        return {
+            "llm": has_llm,
+            "embeddings": has_embed,
+            "rerank": has_rerank,
+            "tier": tier,
+            "degraded_paths": [
+                name for name, enabled in (
+                    ("lexical_retrieval", True),
+                    ("llm_generation", has_llm),
+                    ("semantic_retrieval", has_embed),
+                    ("cross_encoder_rerank", has_rerank),
+                ) if not enabled
+            ],
+            "rbac": True,
+            "container_scoping": True,
+            "defense_screen": True,
+            "ssrf_guard": True,
+        }
+
     def _health(self, _body, _query) -> dict:
-        return {"ok": True, "api": API_VERSION, "version": __version__}
+        capabilities = self._capability_matrix()
+        return {
+            "ok": True,
+            "api": API_VERSION,
+            "version": __version__,
+            "tier": capabilities["tier"],
+            "capabilities": capabilities,
+        }
+
+    def _capabilities(self, _body, _query) -> dict:
+        capabilities = self._capability_matrix()
+        return {
+            "api": API_VERSION,
+            "version": __version__,
+            "tier": capabilities["tier"],
+            "capabilities": capabilities,
+        }
+
+    def _whoami(self, _body, _query) -> dict:
+        from commontrace import telemetry
+
+        curr = telemetry.current()
+        return {
+            "authenticated": bool(self.token is not None),
+            "role": "admin" if self.token else "anonymous",
+            "token_prefix": (self.token[:8] + "...") if self.token and len(self.token) >= 8 else "",
+            "container_tag": curr.get("container_tag", ""),
+            "request_id": curr.get("request_id", ""),
+        }
+
+    @staticmethod
+    def _validated_tag(tag: str) -> str:
+        clean_tag = tag.strip()
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,128}", clean_tag):
+            raise _bad("container_tag must contain only letters, numbers, '.', '_', or '-' (max 128 chars)")
+        return clean_tag
+
+    def _request_scope(self) -> str:
+        from commontrace import telemetry
+
+        tag = str(telemetry.current().get("container_tag") or "")
+        return f"container:{self._validated_tag(tag)}" if tag else ""
+
+    def _scoped_space(self, space: str) -> str:
+        scope = self._request_scope()
+        if not scope:
+            return space
+        scoped = f"{scope}:{space}"
+        if len(scoped) <= 128:
+            return scoped
+        digest = hashlib.sha256(f"{scope}\x1f{space}".encode("utf-8")).hexdigest()[:32]
+        return f"container-{digest}"
+
+    def _resolve_tag(self, req: dict, _query) -> dict:
+        tag = req.get("container_tag")
+        if not tag or not isinstance(tag, str):
+            raise _bad("container_tag must be a non-empty string")
+        clean_tag = self._validated_tag(tag)
+        return {
+            "container_tag": clean_tag,
+            "scope": f"container:{clean_tag}",
+            "valid": True,
+        }
 
     def _check_env(self, req: dict) -> None:
         asked = req.get("env")
@@ -493,7 +851,7 @@ class Gateway:
         return bool(item.get("protected")) or any(
             item["id"].startswith(prefix) for prefix in self.config.protected_prefixes)
 
-    def _store_candidates(self, req: dict) -> list[dict]:
+    def _store_candidates(self, req: dict, *, scope: str = "") -> list[dict]:
         query = _text(req.get("query"), "query", limit=2000)
         top_k = req.get("top_k", 5)
         if isinstance(top_k, bool) or not isinstance(top_k, int) or not 1 <= top_k <= 50:
@@ -505,15 +863,19 @@ class Gateway:
             except Exception:  # noqa: BLE001 - one unreadable lesson must not stop retrieval
                 return None
 
+        active, term_cache = _cached_active(self.root, read)
         from commontrace import lesson_cache
 
-        active, term_cache = lesson_cache.load_active_with_terms(self.root, None, reader=read)
+        eligible = lesson_cache.filter_eligible(active, scope=scope)
+        if len(eligible) != len(active):
+            active = eligible
+            term_cache = term_cache.restrict(active)
         ranked = retrieval.rank_lessons(query, active, top_k=top_k, term_cache=term_cache)
         projected = dict(active)
         out = []
         for hit in ranked:
             try:
-                body = frontmatter.read_body(hit.path)
+                body = _cached_body(hit.path, expected_identity=term_cache.stamps.get(hit.path))
             except frontmatter.FrontmatterError:
                 continue
             out.append({"id": hit.slug, "text": body, "protected": bool(projected.get(hit.path, {}).get("core")),
@@ -529,7 +891,8 @@ class Gateway:
         if len(messages) > 1000:
             raise _bad("at most 1000 messages per request")
         try:
-            with Store(self.root, _ident(req.get("space"), "space")) as store:
+            space = self._scoped_space(_ident(req.get("space"), "space"))
+            with Store(self.root, space) as store:
                 return store.add(_ident(req.get("session"), "session"), messages,
                                  session_at=req.get("session_at") or None)
         except ConversationError as exc:
@@ -550,7 +913,8 @@ class Gateway:
             lists[key] = tuple(value)
         opts = Options(budget=budget, since=req.get("since") or None, until=req.get("until") or None, **lists)
         try:
-            with Store(self.root, _ident(req.get("space"), "space"), create=False) as store:
+            space = self._scoped_space(_ident(req.get("space"), "space"))
+            with Store(self.root, space, create=False) as store:
                 return recall(store, question, now=req.get("now") or None, options=opts).as_dict()
         except ConversationError as exc:
             raise ApiError(404 if "no conversations" in str(exc) else 400, "conversation", str(exc)) from None
@@ -560,7 +924,12 @@ class Gateway:
         agent = _agent(req)
         self._check_env(req)
         mode = "items" if req.get("items") is not None else "store"
-        candidates = _items(req["items"]) if mode == "items" else self._store_candidates(req)
+        scope = self._request_scope()
+        candidates = (
+            _items(req["items"])
+            if mode == "items"
+            else self._store_candidates(req, scope=scope)
+        )
 
         clean, quarantined = [], []
         for item in candidates:
@@ -639,22 +1008,13 @@ class Gateway:
                      paths.traces_dir(self.root)):
             try:
                 st = os.stat(path)
-                key.append((st.st_ino, st.st_size, st.st_mtime_ns))
+                key.append((st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns))
             except OSError:
                 key.append(None)
         return tuple(key)
 
     def _memoized(self, name: str, compute):
-        key, now = self._data_key(), time.monotonic()
-        with self._memo_lock:
-            hit = self._memo.get(name)
-            if hit is not None and (now - hit[1] < REPORT_MIN_INTERVAL
-                                    or (hit[0] == key and now - hit[1] < REPORT_MAX_AGE)):
-                return hit[2]
-        value = compute()
-        with self._memo_lock:
-            self._memo[name] = (key, now, value)
-        return value
+        return self._memoized_flag(name, compute)[0]
 
     def _analysis(self):
         return self._memoized("analysis", self._compute_analysis)
@@ -671,7 +1031,7 @@ class Gateway:
 
     def _status(self, _body, _query) -> dict:
         config = holdout_io.load_config(self.root)
-        events = self._read_events(2000)
+        events, activity_cached, truncated = self._memoized_events(EVENTS_STATUS_LIMIT)
         out: dict = {
             "gateway": {"api": API_VERSION, "version": __version__, "env": self.config.env,
                         "protected_prefixes": list(self.config.protected_prefixes),
@@ -681,14 +1041,21 @@ class Gateway:
                            "rate": config.rate if config.started_at and config.running else 0.0},
             "activity": {"recalls": sum(1 for e in events if e.get("kind") == "recall"),
                          "outcomes": sum(1 for e in events if e.get("kind") == "outcome"),
-                         "window_events": len(events)},
+                         "window_events": len(events), "truncated": truncated,
+                         "cached": activity_cached, "limit": EVENTS_STATUS_LIMIT},
             "proof": None,
+            "cached": activity_cached,
         }
         if proof.load_state(self.root):
             try:
-                out["proof"] = self._memoized("proof", lambda: dataclasses.asdict(proof.status(self.root)))
+                payload, proof_cached = self._memoized_flag(
+                    "proof", lambda: dataclasses.asdict(proof.status(self.root)))
+                out["proof"] = payload
+                out["proof_cached"] = proof_cached
             except proof.ProofError as exc:
                 logger.debug("Gateway proof status unavailable: %s", exc)
+        else:
+            out["proof_cached"] = False
         return out
 
     def _memories(self, _body, _query) -> dict:
@@ -720,26 +1087,49 @@ class Gateway:
 
     def _lessons(self, _body, query) -> dict:
         status = (query.get("status") or [None])[0]
-        return {"lessons": self._workbench(lambda w: w.list_lessons(self.root, status)),
-                "approval_enabled": self.allow_approval}
+        limit_raw = (query.get("limit") or [None])[0]
+        offset_raw = (query.get("offset") or [None])[0]
+        try:
+            limit = None if limit_raw is None else int(limit_raw)
+        except (TypeError, ValueError):
+            raise _bad("limit must be a positive integer") from None
+        try:
+            offset = 0 if offset_raw is None else int(offset_raw)
+        except (TypeError, ValueError):
+            raise _bad("offset must be a non-negative integer") from None
+        if limit is not None and (not 1 <= limit <= 1000):
+            raise _bad("limit must be between 1 and 1000")
+        if offset < 0:
+            raise _bad("offset must be a non-negative integer")
+
+        scope = self._request_scope()
+
+        lessons, total = self._workbench(
+            lambda w: w.lesson_page(self.root, status, limit=limit, offset=offset, scope=scope))
+        return {"lessons": lessons, "approval_enabled": self.allow_approval,
+                "total": total, "limit": limit, "offset": offset}
 
     def _lesson(self, _body, query) -> dict:
         slug = (query.get("slug") or [""])[0]
-        return {**self._workbench(lambda w: w.detail(self.root, slug)), "approval_enabled": self.allow_approval}
+        scope = self._request_scope()
+        return {**self._workbench(lambda w: w.detail(self.root, slug, scope)), "approval_enabled": self.allow_approval}
 
     def _lesson_edit(self, body, _query) -> dict:
         self._acting()
         fields = {k: v for k, v in body.items() if k != "slug"}
-        return self._workbench(lambda w: w.edit(self.root, body.get("slug", ""), fields, "console"))
+        scope = self._request_scope()
+        return self._workbench(lambda w: w.edit(self.root, body.get("slug", ""), fields, "console", scope))
 
     def _lesson_approve(self, body, _query) -> dict:
         self._acting()
+        scope = self._request_scope()
         return self._workbench(lambda w: w.approve(self.root, body.get("slug", ""), body.get("rationale"),
-                                                   "console"))
+                                                   "console", scope))
 
     def _lesson_reject(self, body, _query) -> dict:
         self._acting()
-        return self._workbench(lambda w: w.reject(self.root, body.get("slug", ""), body.get("reason", "")))
+        scope = self._request_scope()
+        return self._workbench(lambda w: w.reject(self.root, body.get("slug", ""), body.get("reason", ""), scope))
 
     @staticmethod
     def _limit(query: dict, default: int, cap: int) -> int:
@@ -750,35 +1140,48 @@ class Gateway:
 
     def _occasions(self, _body, query) -> dict:
         limit = self._limit(query, 50, 500)
-        return {"events": list(reversed(self._read_events(limit)))}
+        events, cached, truncated = self._memoized_events(limit)
+        return {"events": list(reversed(events)), "cached": cached, "truncated": truncated,
+                "window_events": len(events), "limit": limit}
 
     def _agents(self, _body, _query) -> dict:
-        agents: dict[str, dict] = {}
-        now = time.time()
-        for e in self._read_events(5000):
-            who = e.get("agent_id") or "(unattributed)"
-            a = agents.setdefault(who, {"agent_id": who, "recalls": 0, "outcomes": 0, "succeeded": 0,
-                                        "withheld": 0, "protected": 0, "quarantined": 0, "last_seen": ""})
-            if e.get("kind") == "recall":
-                a["recalls"] += 1
-                a["withheld"] += int(e.get("withheld", 0))
-                a["protected"] += int(e.get("protected", 0))
-                a["quarantined"] += int(e.get("quarantined", 0))
-            elif e.get("kind") == "outcome":
-                a["outcomes"] += 1
-                a["succeeded"] += 1 if e.get("succeeded") else 0
-            a["last_seen"] = e.get("at", a["last_seen"])
-        rows = []
-        for a in agents.values():
-            a["success_rate"] = round(a["succeeded"] / a["outcomes"], 4) if a["outcomes"] else None
-            try:
-                age = now - datetime.datetime.fromisoformat(a["last_seen"]).timestamp()
-            except ValueError:
-                age = None
-            a["seconds_since_seen"] = None if age is None else round(max(age, 0.0), 1)
-            rows.append(a)
-        rows.sort(key=lambda r: r["last_seen"], reverse=True)
-        return {"agents": rows, "window": "last 5000 events"}
+        ident = self._events_identity()
+
+        def compute():
+            agents: dict[str, dict] = {}
+            now = time.time()
+            events = self._read_events(EVENTS_MAX_EVENTS, isolated=False)
+            truncated = self._events_truncated()
+            for e in events:
+                who = e.get("agent_id") or "(unattributed)"
+                a = agents.setdefault(who, {"agent_id": who, "recalls": 0, "outcomes": 0, "succeeded": 0,
+                                            "withheld": 0, "protected": 0, "quarantined": 0, "last_seen": ""})
+                if e.get("kind") == "recall":
+                    a["recalls"] += 1
+                    a["withheld"] += int(e.get("withheld", 0))
+                    a["protected"] += int(e.get("protected", 0))
+                    a["quarantined"] += int(e.get("quarantined", 0))
+                elif e.get("kind") == "outcome":
+                    a["outcomes"] += 1
+                    a["succeeded"] += 1 if e.get("succeeded") else 0
+                a["last_seen"] = e.get("at", a["last_seen"])
+            rows = []
+            for a in agents.values():
+                a["success_rate"] = round(a["succeeded"] / a["outcomes"], 4) if a["outcomes"] else None
+                try:
+                    age = now - datetime.datetime.fromisoformat(a["last_seen"]).timestamp()
+                except ValueError:
+                    age = None
+                a["seconds_since_seen"] = None if age is None else round(max(age, 0.0), 1)
+                rows.append(a)
+            rows.sort(key=lambda r: r["last_seen"], reverse=True)
+            return {"agents": rows, "window": "last 5000 events", "window_events": len(events),
+                    "truncated": truncated, "limit": EVENTS_MAX_EVENTS}
+
+        payload, cached = self._memoized_flag("agents", compute, extra_key=ident)
+        return {"agents": [dict(a) for a in payload["agents"]], "window": payload["window"],
+                "window_events": payload["window_events"], "truncated": payload["truncated"],
+                "limit": payload["limit"], "cached": cached}
 
     def _openapi(self, _body, _query) -> dict:
         paths_doc: dict = {}
@@ -802,108 +1205,16 @@ class Gateway:
 
 
 def make_http_server(gateway: Gateway, host: str, port: int, *, tls: tuple[str, str] | None = None,
-                     request_timeout: float = 10.0) -> ThreadingHTTPServer:
-    class Handler(BaseHTTPRequestHandler):
-        protocol_version = "HTTP/1.1"
-        timeout = request_timeout
+                     request_timeout: float = 10.0, max_connections: int = 128) -> ThreadingHTTPServer:
+    """Create the HTTP transport; retained here for import compatibility."""
+    from commontrace.gateway_transport import make_http_server as create_server
 
-        def log_message(self, format: str, *args: Any) -> None:
-            logger.debug("Gateway HTTP: %s", format % args)
-
-        def handle(self):
-            if isinstance(self.connection, ssl.SSLSocket):
-                try:
-                    self.connection.do_handshake()
-                except (ssl.SSLError, OSError):
-                    self.close_connection = True
-                    return
-            super().handle()
-
-        def _send(self, response: Response) -> None:
-            self.send_response(response.status)
-            self.send_header("Content-Type", response.content_type)
-            self.send_header("Content-Length", str(len(response.body)))
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("X-Content-Type-Options", "nosniff")
-            for key, value in response.headers.items():
-                self.send_header(key, value)
-            self.end_headers()
-            self.wfile.write(response.body)
-
-        def _fail(self, status: int, code: str, message: str) -> None:
-            self._send(_json(status, {"error": {"code": code, "message": message}}))
-            self.close_connection = True
-
-        def do_GET(self):  # noqa: N802
-            self._send(gateway.handle("GET", self.path, dict(self.headers.items())))
-
-        def do_POST(self):  # noqa: N802
-            if "chunked" in (self.headers.get("Transfer-Encoding") or "").lower():
-                return self._fail(411, "length_required", "send a Content-Length, not chunked encoding")
-            try:
-                length = int(self.headers.get("Content-Length", ""))
-            except ValueError:
-                return self._fail(411, "length_required", "Content-Length is required")
-            if length < 0 or length > MAX_BODY_BYTES:
-                return self._fail(413, "too_large", f"body is larger than {MAX_BODY_BYTES} bytes")
-            ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
-            if ctype != "application/json":
-                return self._fail(415, "unsupported_media_type", "Content-Type must be application/json")
-            origin, host_header = self.headers.get("Origin"), self.headers.get("Host", "")
-            if origin and urlsplit(origin).netloc != host_header:
-                return self._fail(403, "bad_origin", "cross-origin requests are not accepted")
-            body = self.rfile.read(length)
-            self._send(gateway.handle("POST", self.path, dict(self.headers.items()), body))
-
-        do_PUT = do_DELETE = do_PATCH = lambda self: self._fail(  # noqa: E731
-            405, "method_not_allowed", "only GET and POST are used")
-
-    class Server(ThreadingHTTPServer):
-        daemon_threads = True
-        allow_reuse_address = True
-        request_queue_size = 64
-
-    server = Server((host, port), Handler)
-    if tls:
-        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        context.minimum_version = ssl.TLSVersion.TLSv1_2
-        context.load_cert_chain(*tls)
-        server.socket = context.wrap_socket(server.socket, server_side=True, do_handshake_on_connect=False)
-    return server
+    return create_server(gateway, host, port, tls=tls, request_timeout=request_timeout,
+                         max_connections=max_connections)
 
 
-def serve_stdio(gateway: Gateway, stdin, stdout) -> int:
-    """One JSON object per line in, one per line out, until EOF."""
-    shorthand = {"recall": ("POST", "/v1/recall"), "outcome": ("POST", "/v1/outcome"),
-                 "status": ("GET", "/v1/status"), "memories": ("GET", "/v1/memories"),
-                 "occasions": ("GET", "/v1/occasions"), "agents": ("GET", "/v1/agents"),
-                 "health": ("GET", "/v1/health"),
-                 "remember": ("POST", "/v1/conversation/add"), "converse": ("POST", "/v1/conversation/recall")}
-    for line in stdin:
-        line = line.strip()
-        if not line:
-            continue
-        request_id = None
-        try:
-            req = json.loads(line)
-            if not isinstance(req, dict):
-                raise ValueError("a request must be a JSON object")
-            request_id = req.get("id")
-            if "op" in req:
-                if req["op"] not in shorthand:
-                    raise ValueError(f"unknown op {req['op']!r}")
-                method, path = shorthand[req["op"]]
-                body = {k: v for k, v in req.items() if k not in ("op", "id")}
-            else:
-                method, path, body = req.get("method", "POST"), req["path"], req.get("body") or {}
-            response = gateway.handle(
-                method, path, body=json.dumps(body).encode("utf-8") if method == "POST" else None,
-                trusted=True)
-            reply = {"id": request_id, "status": response.status, "body": json.loads(response.body)}
-        except (ValueError, KeyError) as exc:
-            reply = {"id": request_id, "status": 400,
-                     "body": {"error": {"code": "bad_request", "message": str(exc)}}}
-        stdout.write(json.dumps(reply, separators=(",", ":")) + "\n")
-        stdout.flush()
-    return 0
+def serve_stdio(gateway: Gateway, stdin: TextIO, stdout: TextIO) -> int:
+    """Serve newline-delimited JSON through the compatible transport facade."""
+    from commontrace.gateway_transport import serve_stdio as serve
 
+    return serve(gateway, stdin, stdout)

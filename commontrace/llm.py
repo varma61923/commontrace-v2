@@ -5,6 +5,9 @@ import json
 import os
 from dataclasses import dataclass, field
 
+from commontrace import llm_cache as llm_cache_mod
+from commontrace.retry import call_with_retries
+
 DEFAULT_PROVIDER = "anthropic"
 DEFAULT_MODEL = "claude-sonnet-5"
 
@@ -107,15 +110,25 @@ def _post_json(url: str, headers: dict, payload: dict) -> dict:
     if not _is_http_url(url):
         raise LLMUnavailable(f"refusing a non-http(s) URL: {url!r}")
     body = json.dumps(payload).encode("utf-8")
-    request = urllib.request.Request(url, data=body, headers=headers, method="POST")
-    try:
-        with urllib.request.urlopen(request, timeout=_TIMEOUT_SECONDS) as resp:  # nosec B310 - scheme checked above
-            raw = resp.read().decode("utf-8")
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")[:500]
-        raise LLMUnavailable(f"{url} returned HTTP {exc.code}: {detail}") from exc
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise LLMUnavailable(f"could not reach {url}: {exc}") from exc
+
+    def _once() -> str:
+        request = urllib.request.Request(url, data=body, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(request, timeout=_TIMEOUT_SECONDS) as resp:  # nosec B310 - scheme checked above
+                return resp.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            bodies.append(exc.read().decode("utf-8", errors="replace")[:500])
+            raise
+
+    bodies: list[str] = []
+    # POST lesson drafts are idempotent (same payload → same draft text), so a
+    # 5xx may be retried; 429 always is. Non-JSON/4xx surface immediately.
+    raw, error = call_with_retries(_once, max_retries=4, idempotent=True)
+    if error is not None:
+        if isinstance(error, urllib.error.HTTPError):
+            raise LLMUnavailable(
+                f"{url} returned HTTP {error.code}: {bodies[-1] if bodies else ''}") from error
+        raise LLMUnavailable(f"could not reach {url}: {error}") from error
     try:
         return json.loads(raw)
     except ValueError as exc:
@@ -298,12 +311,26 @@ def _non_empty_str(parsed: dict, key: str) -> str:
 
 
 def complete(prompt: str, config: Config | None = None) -> tuple[str, dict]:
-    """One completion from the configured provider: (text, usage)."""
+    """One completion from the configured provider: (text, usage).
+
+    When ``COMMONTRACE_LLM_CACHE=1``, identical ``(model, prompt)`` calls are
+    served from a local SQLite cache (``commontrace/llm_cache.py``, graphiti's
+    ``LLMCache`` pattern) instead of billed again.
+    """
     cfg = config or load_config()
+    cache = llm_cache_mod.LLMCache() if llm_cache_mod.enabled() else None
+    key = llm_cache_mod.cache_key(cfg.model, prompt) if cache else ""
+    if cache:
+        hit = cache.get(key)
+        if hit is not None and isinstance(hit.get("text"), str):
+            return hit["text"], hit.get("usage", {})
     caller = {"anthropic": _call_anthropic, "openai-compatible": _call_openai_compatible,
               "ollama": _call_openai_compatible,
               "bedrock": _call_bedrock, "vertex": _call_vertex}[cfg.provider]
-    return caller(cfg, prompt)
+    text, usage = caller(cfg, prompt)
+    if cache:
+        cache.set(key, {"text": text, "usage": usage})
+    return text, usage
 
 
 def draft(

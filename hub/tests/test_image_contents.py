@@ -122,6 +122,28 @@ class TestImportedModulesAreStdlibOnly:
                     )
 
 
+def test_packaged_theme_loads_without_installed_client_or_dependencies(tmp_path):
+    """Server-only installs still need the resource used at import time."""
+    import os
+    import shutil
+    import subprocess
+    import sys
+
+    package = tmp_path / "commontrace"
+    package.mkdir()
+    for name in ("__init__.py", "ui_style.py"):
+        shutil.copyfile(REPO_ROOT / "commontrace" / name, package / name)
+    (package / "ui").mkdir()
+    shutil.copyfile(REPO_ROOT / "commontrace" / "ui" / "tokens.css", package / "ui" / "tokens.css")
+    result = subprocess.run(
+        [sys.executable, "-S", "-c", "from commontrace.ui_style import THEME_CSS; assert '--accent:' in THEME_CSS"],
+        cwd=tmp_path, env={**os.environ, "PYTHONPATH": str(tmp_path)}, capture_output=True, text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "!commontrace/ui/tokens.css" in DOCKERIGNORE.read_text()
+
+
 def test_every_base_image_is_pinned_by_digest():
     import re
 

@@ -4,15 +4,20 @@ import asyncio
 import contextlib
 import glob
 import hashlib
+import itertools
 import json
+import math
 import os
+import random
 import re
 import socket
 import sys
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Iterable, TypeVar
+from typing import Any, Awaitable, Callable, Iterable, TypeVar, cast
 
 from commontrace import frontmatter, paths, templates, trace_io
+from commontrace.fingerprints import push_fingerprint as _push_fingerprint
+from commontrace.fingerprints import trace_push_fingerprint as _trace_push_fingerprint
 
 _T = TypeVar("_T")
 
@@ -70,6 +75,12 @@ class HubRateLimited(HubConnectionError):
 
 
 _PUSH_CONCURRENCY = 8
+_HTTP_MAX_CONNECTIONS = 16  # room for the MCP receive stream and push workers
+_HTTP_MAX_KEEPALIVE_CONNECTIONS = 8
+_HTTP_KEEPALIVE_EXPIRY_SECONDS = 30.0
+_HTTP_CONNECT_TIMEOUT_SECONDS = 10.0
+_HTTP_POOL_TIMEOUT_SECONDS = 5.0
+TRACE_BATCH_SIZE = 25
 
 
 @dataclass
@@ -188,6 +199,8 @@ class HttpStatusProbe:
 
 async def _open_session(hub_url: str, api_key: str, timeout_seconds: float):
     _validate_hub_url(hub_url)
+    if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+        raise HubConfigurationError("Hub timeout must be a finite positive number")
     try:
         import httpx
         from mcp import ClientSession
@@ -201,7 +214,17 @@ async def _open_session(hub_url: str, api_key: str, timeout_seconds: float):
     probe = HttpStatusProbe()
     http_client = httpx.AsyncClient(
         headers={"Authorization": f"Bearer {api_key}"},
-        timeout=timeout_seconds,
+        timeout=httpx.Timeout(
+            connect=min(timeout_seconds, _HTTP_CONNECT_TIMEOUT_SECONDS),
+            read=timeout_seconds,
+            write=timeout_seconds,
+            pool=min(timeout_seconds, _HTTP_POOL_TIMEOUT_SECONDS),
+        ),
+        limits=httpx.Limits(
+            max_connections=_HTTP_MAX_CONNECTIONS,
+            max_keepalive_connections=_HTTP_MAX_KEEPALIVE_CONNECTIONS,
+            keepalive_expiry=_HTTP_KEEPALIVE_EXPIRY_SECONDS,
+        ),
         event_hooks={"response": [probe.record]},
     )
     return streamable_http_client(hub_url, http_client=http_client), ClientSession, http_client, probe
@@ -405,15 +428,20 @@ class _RateLimitGate:
         while True:
             async with self._lock:
                 now = asyncio.get_running_loop().time()
-                if now >= self._resume_at:
+                slot_reserved = now >= self._resume_at
+                if slot_reserved:
                     slot = max(now, self._next_slot)
                     self._next_slot = slot + self._min_interval
                     delay = slot - now
-                    break
-                delay = self._resume_at - now
-            await asyncio.sleep(min(delay, RETRY_MAX_DELAY_SECONDS))
-        if delay > 0:
+                    if delay <= 0:
+                        return
+                else:
+                    delay = min(self._resume_at - now, RETRY_MAX_DELAY_SECONDS)
             await asyncio.sleep(delay)
+            # Another in-flight call can receive a 429 while this slot sleeps.
+            # Rejoin the gate rather than sending through its newer pause.
+            if slot_reserved and asyncio.get_running_loop().time() >= self._resume_at:
+                return
 
     def pause(self, seconds: float) -> None:
         """Called on a 429: hold the whole batch, and slow the paced rate."""
@@ -456,7 +484,7 @@ class HubSession:
         self._gate = gate if gate is not None else _RateLimitGate()
         self._session = None
 
-    async def call(self, name: str, arguments: dict[str, Any]) -> dict:
+    async def call(self, name: str, arguments: dict[str, Any], *, retry_transport: bool = True) -> dict:
         """One tool call, with retries."""
         last_exc: Exception | None = None
         attempts = 0
@@ -488,7 +516,7 @@ class HubSession:
                 else:
                     transport_attempts += 1
                     delay = _backoff_delay(transport_attempts, exc, retry_after)
-                    budget_left = transport_attempts < self._max_attempts
+                    budget_left = retry_transport and transport_attempts < self._max_attempts
                 if not budget_left or not _is_retryable(exc, status):
                     break
                 await asyncio.sleep(delay)
@@ -499,6 +527,112 @@ class HubSession:
             self._hub_url, attempts, last_exc, status, retry_after
         ) from last_exc
 
+    async def search_traces(
+        self,
+        query: str,
+        *,
+        tags: list[str] | None = None,
+        limit: int = 10,
+        include_content: bool = True,
+    ) -> dict:
+        """Search published memory traces matching semantic or keyword query."""
+        args: dict[str, Any] = {"query": query, "limit": limit, "include_content": include_content}
+        if tags is not None:
+            args["tags"] = tags
+        return await self.call("search_traces", args)
+
+    async def contribute_trace(
+        self,
+        text: str,
+        *,
+        tags: list[str] | None = None,
+        agent_type: str = "agent",
+        rationale: str = "",
+    ) -> dict:
+        """Submit a new trace or memory to the Hub Knowledge Base."""
+        args: dict[str, Any] = {"text": text, "agent_type": agent_type, "rationale": rationale}
+        if tags is not None:
+            args["tags"] = tags
+        return await self.call("contribute_trace", args)
+
+    async def get_trace(self, trace_id: str) -> dict:
+        """Retrieve full details of a specific memory trace by ID."""
+        return await self.call("get_trace", {"id": trace_id})
+
+    async def delete_trace(self, trace_id: str) -> dict:
+        """Soft-delete or retract a memory trace from the Hub."""
+        return await self.call("delete_trace", {"id": trace_id})
+
+    async def _trace_batches(self, name: str, field: str, items: Iterable[Any], *,
+                             retry_transport: bool = True) -> list[dict]:
+        """Bound wire requests while retaining ordered per-item refusals."""
+        iterator, results = iter(items), []
+        while batch := list(itertools.islice(iterator, TRACE_BATCH_SIZE)):
+            retry = retry_transport
+            if name == "contribute_traces_batch":
+                # A disconnected response can follow successful writes. Replay
+                # only when every contribution has an explicit idempotency key.
+                retry = retry and all(isinstance(t, dict) and t.get("idempotency_key") for t in batch)
+            response = await self.call(name, {field: batch}, retry_transport=retry)
+            rows = response.get("results")
+            if not isinstance(rows, list) or len(rows) != len(batch) or any(
+                    not isinstance(row, dict) for row in rows):
+                raise HubToolError(f"{name} returned an invalid batch result envelope")
+            results.extend(rows)
+        return results
+
+    async def contribute_traces_batch(self, traces: Iterable[dict]) -> list[dict]:
+        """Contribute traces in bounded requests, preserving per-item results.
+
+        Include distinct ``idempotency_key`` values to permit transport retries.
+        """
+        return await self._trace_batches("contribute_traces_batch", "traces", traces)
+
+    async def get_traces_batch(self, trace_ids: Iterable[str]) -> list[dict]:
+        """Fetch traces in input order, including per-item privacy refusals."""
+        return await self._trace_batches("get_traces_batch", "ids", trace_ids)
+
+    async def delete_traces_batch(self, trace_ids: Iterable[str]) -> list[dict]:
+        """Retract bounded batches without replaying ambiguous transport failures."""
+        return await self._trace_batches("delete_traces_batch", "ids", trace_ids,
+                                         retry_transport=False)
+
+    async def vote_trace(self, trace_id: str, vote: str) -> dict:
+        """Cast an upvote or downvote on a published memory trace."""
+        return await self.call("vote_trace", {"id": trace_id, "vote": vote})
+
+    async def list_tags(self) -> dict:
+        """Retrieve all taxonomy tags and their associated trace counts."""
+        return await self.call("list_tags", {})
+
+    async def add_comment(self, trace_id: str, body: str) -> dict:
+        """Post a review comment or collaborative note on a trace."""
+        return await self.call("add_comment", {"trace_id": trace_id, "body": body})
+
+    async def list_comments(self, trace_id: str) -> dict:
+        """List all collaborative review comments on a trace."""
+        return await self.call("list_comments", {"trace_id": trace_id})
+
+    async def assign_trace(self, trace_id: str, user_id: str) -> dict:
+        """Assign trace review ownership to a specific collaborator."""
+        return await self.call("assign_trace", {"trace_id": trace_id, "user_id": user_id})
+
+    async def unassign_trace(self, trace_id: str) -> dict:
+        """Unassign trace review ownership."""
+        return await self.call("unassign_trace", {"trace_id": trace_id})
+
+    async def tag_trace_subjects(self, trace_id: str, subject_ids: list[str]) -> dict:
+        """Tag data subject IDs on a trace for privacy/GDPR compliance."""
+        return await self.call("tag_trace_subjects", {"id": trace_id, "subject_ids": subject_ids})
+
+    async def purge_subject_traces(self, subject_id: str) -> dict:
+        """Purge all traces associated with a specific data subject ID."""
+        return await self.call("purge_subject_traces", {"subject_id": subject_id})
+
+    async def commons_overlap(self, failures: list[str]) -> dict:
+        """Check known commons failures overlap."""
+        return await self.call("commons_overlap", {"failures": failures})
+
 
 def _backoff_delay(attempt: int, exc: BaseException, observed_retry_after: float | None = None) -> float:
     retry_after = _retry_after_seconds(exc)
@@ -506,7 +640,11 @@ def _backoff_delay(attempt: int, exc: BaseException, observed_retry_after: float
         retry_after = observed_retry_after
     if retry_after is not None:
         return min(max(retry_after, 0.0), RETRY_MAX_DELAY_SECONDS)
-    return min(RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1)), RETRY_MAX_DELAY_SECONDS)
+    ceiling = min(RETRY_BASE_DELAY_SECONDS * (2 ** min(max(attempt - 1, 0), 16)),
+                  RETRY_MAX_DELAY_SECONDS)
+    # Equal jitter retains a nonzero pause while preventing a fleet of clients
+    # from retrying in lockstep. Explicit Retry-After remains authoritative.
+    return random.uniform(ceiling / 2, ceiling)
 
 
 @contextlib.asynccontextmanager
@@ -583,11 +721,6 @@ async def _call_tool(
     raise _transport_failure(hub_url, attempts, last_exc) from last_exc
 
 
-def _push_fingerprint(title: str, context_text: str, solution_text: str, tags: list[str]) -> str:
-    parts = [title, context_text, solution_text, "\x1f".join(sorted(tags))]
-    return hashlib.sha256("\x1e".join(parts).encode("utf-8")).hexdigest()
-
-
 def _amend_idempotency_key(slug: str, fingerprint: str) -> str:
     return "lesson-amend:" + hashlib.sha256(f"{slug}\x1e{fingerprint}".encode("utf-8")).hexdigest()
 
@@ -605,13 +738,42 @@ async def _gather_bounded(
     fn: Callable[[str], Awaitable[_T]],
     concurrency: int = _PUSH_CONCURRENCY,
 ) -> list[_T]:
-    semaphore = asyncio.Semaphore(max(1, concurrency))
+    """Consume lazily with bounded tasks, preserving input order and cleanup."""
+    items = iter(paths_iter)
+    results: list[_T | None] = []
 
-    async def _bounded(path: str) -> _T:
-        async with semaphore:
-            return await fn(path)
+    async def worker(index: int, path: str) -> None:
+        while True:
+            results[index] = await fn(path)
+            # Iterator access has no await: workers reserve distinct slots on
+            # the event loop without a producer queue or one task per file.
+            try:
+                path = next(items)
+            except StopIteration:
+                return
+            index = len(results)
+            results.append(None)
 
-    return await asyncio.gather(*(_bounded(p) for p in paths_iter))
+    tasks: list[asyncio.Task[None]] = []
+    try:
+        for _ in range(max(1, concurrency)):
+            try:
+                path = next(items)
+            except StopIteration:
+                break
+            index = len(results)
+            results.append(None)
+            tasks.append(asyncio.create_task(worker(index, path)))
+        await asyncio.gather(*tasks)
+        return cast(list[_T], results)
+    finally:
+        # gather alone leaves siblings running after an exception. Finish
+        # cancellation before the caller closes their shared MCP session.
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
 
 class _LazyHubSession:
@@ -642,7 +804,7 @@ async def _push_batch(
     make_push_one: Callable[["_LazyHubSession | None"], Callable[[str], Awaitable[_T]]],
     concurrency: int = _PUSH_CONCURRENCY,
 ) -> list[_T]:
-    files = list(paths_iter)
+    files = await asyncio.to_thread(list, paths_iter)
     if not files:
         return []
 
@@ -664,7 +826,7 @@ async def push_active_lessons(
 ) -> list[PushResult]:
     async def _push_one(path: str, session: "_LazyHubSession | None" = None) -> PushResult | None:
         try:
-            fm, body = frontmatter.read(path)
+            fm, body = await asyncio.to_thread(frontmatter.read, path)
         except Exception as exc:  # noqa: BLE001 - one malformed local file (hand-edited YAML
             return PushResult(
                 slug=os.path.splitext(os.path.basename(path))[0],
@@ -773,16 +935,6 @@ async def push_active_lessons(
     return [r for r in outcomes if r is not None]
 
 
-def _trace_push_fingerprint(
-    title: str, context_text: str, solution_text: str, tags: list[str], outcome: dict
-) -> str:
-    parts = [
-        title, context_text, solution_text, "\x1f".join(sorted(tags)),
-        json.dumps(outcome or {}, sort_keys=True, ensure_ascii=False),
-    ]
-    return hashlib.sha256("\x1e".join(parts).encode("utf-8")).hexdigest()
-
-
 def _trace_amend_idempotency_key(local_id: str, fingerprint: str) -> str:
     return "trace-amend:" + hashlib.sha256(f"{local_id}\x1e{fingerprint}".encode("utf-8")).hexdigest()
 
@@ -807,7 +959,7 @@ async def push_captured_traces(
 ) -> list[PushResult]:
     async def _push_one(path: str, session: "_LazyHubSession | None" = None) -> PushResult:
         try:
-            instance, _body = trace_io.read(path)
+            instance, _body = await asyncio.to_thread(trace_io.read, path)
         except Exception as exc:  # noqa: BLE001 - see push_active_lessons's identical
             return PushResult(
                 slug=os.path.splitext(os.path.basename(path))[0],
@@ -876,6 +1028,7 @@ async def push_captured_traces(
                     "profile": profile,
                     "outcome": outcome,
                     "idempotency_key": f"trace:{slug}",
+                    **_routing_fields(instance),
                 },
                 session=session,
             )
@@ -1084,26 +1237,41 @@ async def pull_search_results(
     tags: list[str] | None = None,
     max_results: int = DEFAULT_MAX_PULL_RESULTS,
 ) -> PullResult:
+    if isinstance(max_results, bool) or not isinstance(max_results, int) or max_results < 0:
+        raise ValueError("max_results must be a nonnegative integer")
+    if max_results == 0:
+        return PullResult()
     traces: list[dict] = []
     ignored_terms: list[str] = []
     offset = 0
-    while True:
-        response = await _call_tool(
-            hub_url, api_key, "search_traces", {"query": query, "tags": tags or [], "offset": offset}
-        )
-        if response.get("error"):
-            raise HubConnectionError(f"search_traces failed: {response['error']}")
-        raw_ignored = response.get("terms_ignored")
-        if isinstance(raw_ignored, list):
-            ignored_terms = [str(t) for t in raw_ignored]
-        page = response.get("traces", [])
-        traces.extend(page)
-        if not page or not response.get("has_more") or len(traces) >= max_results:
-            break
-        offset = int(response.get("offset", offset)) + (int(response.get("limit", 0)) or len(page))
-    if len(traces) > max_results:
-        traces = traces[:max_results]
+    async with contextlib.AsyncExitStack() as stack:
+        session = _LazyHubSession(stack, hub_url, api_key)
+        while True:
+            response = await _call_tool(
+                hub_url, api_key, "search_traces", {"query": query, "tags": tags or [], "offset": offset},
+                session=session,
+            )
+            if response.get("error"):
+                raise HubConnectionError(f"search_traces failed: {response['error']}")
+            raw_ignored = response.get("terms_ignored")
+            if isinstance(raw_ignored, list):
+                ignored_terms = [str(t) for t in raw_ignored]
+            page = response.get("traces", [])
+            traces.extend(page[:max_results - len(traces)])
+            if not page or not response.get("has_more") or len(traces) >= max_results:
+                break
+            next_offset = int(response.get("offset", offset)) + (int(response.get("limit", 0)) or len(page))
+            if next_offset <= offset:
+                raise HubConnectionError("search_traces returned a non-advancing pagination offset")
+            offset = next_offset
 
+    written = await asyncio.to_thread(_write_pulled_traces, root, traces)
+
+    return PullResult(written_paths=written, n_found=len(traces), ignored_terms=ignored_terms)
+
+
+def _write_pulled_traces(root: str, traces: list[dict]) -> list[str]:
+    """Persist one bounded pull off the event loop, retaining raw provenance."""
     tdir = paths.traces_dir(root)
     os.makedirs(tdir, exist_ok=True)
     tdir_abs = os.path.abspath(tdir)
@@ -1129,10 +1297,14 @@ async def pull_search_results(
             list(trace.get("tags") or []) if isinstance(trace.get("tags"), (list, tuple)) else [],
             str(trace.get("profile") or ""),
             trace.get("outcome") if isinstance(trace.get("outcome"), dict) else None,
+            scopes=list(trace.get("scopes") or []) if isinstance(trace.get("scopes"), (list, tuple)) else None,
+            valid_from=str(trace.get("valid_from") or ""),
+            valid_until=str(trace.get("valid_until") or ""),
+            expires_at=str(trace.get("expires_at") or ""),
         )
         fm["hub_trace_id"] = raw_trace_id
         body = templates.trace_body(trace.get("context_text") or "", trace.get("solution_text") or "")
         frontmatter.write(out_path, fm, body)
         written.append(out_path)
 
-    return PullResult(written_paths=written, n_found=len(traces), ignored_terms=ignored_terms)
+    return written

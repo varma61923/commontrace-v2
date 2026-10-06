@@ -104,7 +104,7 @@ def add_otlp_routes(
         skipped = 0
         occasions_resolved = 0
         errors: list[dict] = []
-        async with session_scope(session_factory) as session:
+        async with session_scope(session_factory, org_id=authenticated.org_id) as session:
             for span in spans:
                 flat = adapters.normalize(span, source="otel")
                 span_id = str(flat.get("id") or "")

@@ -90,7 +90,14 @@ def answer(store: Store, question: str, *, now=None, options: Options | None = N
     moment = timeparse.parse_moment(now) if isinstance(now, str) else now
     moment = moment or store.latest_moment()
     when = timeparse.label(moment.date()) if moment else "now"
-    text, used = complete(ANSWER.format(context=result.context or "(no memories)", question=question, now=when))
+    ctx_text = result.context or "(no memories)"
+    if result.explain.get("abstain"):
+        ctx_text += (
+            "\n\n[Note: No mentions of this subject were found in memory. If asking for a specific detail "
+            "that was never recorded, state that you do not have this information.]"
+        )
+    text, used = complete(ANSWER.format(context=ctx_text, question=question, now=when))
     usage.append(used)
     return {"question": question, "answer": text.strip(), "context": result.context, "tokens": result.tokens,
-            "follow_ups": asked, "rounds": searched, "usage": usage, "turns": result.turns}
+            "follow_ups": asked, "rounds": searched, "usage": usage, "turns": result.turns,
+            "explain": result.explain}

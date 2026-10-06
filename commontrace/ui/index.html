@@ -6,14 +6,17 @@
   <meta name="color-scheme" content="light dark">
   <title>CommonTrace console</title>
   <link rel="icon" href="/ui/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/ui/tokens.css">
   <link rel="stylesheet" href="/ui/app.css">
 </head>
 <body>
   <a class="skip" href="#main">Skip to content</a>
   <header class="bar">
-    <div class="brand"><img src="/ui/favicon.svg" alt="" width="28" height="28"><span>CommonTrace</span></div>
+    <div class="brand"><img src="/ui/favicon.svg" alt="" width="28" height="28"><span>CommonTrace</span><small>memory control plane</small></div>
     <span id="env" class="chip" hidden></span>
+    <span id="tier" class="chip tier-chip" hidden></span>
     <span class="spacer"></span>
+    <button id="command-launch" class="command-launch" type="button" title="Open command center (⌘K)"><kbd>⌘K</kbd><span>Command center</span></button>
     <p id="conn" class="conn" role="status" aria-live="polite">Connecting…</p>
     <label class="theme"><span class="sr">Theme</span>
       <select id="theme">

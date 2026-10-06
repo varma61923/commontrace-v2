@@ -96,6 +96,21 @@
       "type": "string",
       "description": "Optional TTL as YYYY-MM-DD or ISO 8601. From this instant the lesson is hidden from retrieval unless --show-expired is given."
     },
+    "forgotten": {
+      "type": "boolean",
+      "description": "Reversible soft-forget marker; forgotten lessons are hidden by default.",
+      "default": false
+    },
+    "forget_reason": {
+      "type": "string",
+      "description": "Operator-provided reason for a reversible forget operation.",
+      "default": ""
+    },
+    "superseded_by": {
+      "type": ["string", "null"],
+      "description": "Lesson slug that superseded this lesson, if any.",
+      "default": null
+    },
     "source_traces": {
       "type": "array",
       "items": { "type": "string" },

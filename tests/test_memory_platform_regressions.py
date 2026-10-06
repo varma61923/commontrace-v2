@@ -19,9 +19,10 @@ def store(tmp_path):
 
 
 def _cli(*args, cwd=None):
+    env = {k: v for k, v in os.environ.items() if k not in ("COMMONTRACE_ROOT", "JUSTDOIT_ROOT")}
     return subprocess.run(
         [sys.executable, "-m", "commontrace", *args],
-        capture_output=True, text=True, cwd=cwd, timeout=120,
+        capture_output=True, text=True, cwd=cwd, env=env, timeout=120,
     )
 
 

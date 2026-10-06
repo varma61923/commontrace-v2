@@ -686,3 +686,77 @@ class TestDesigningTheExperimentBeforeRunningIt:
     def test_a_non_positive_effect_is_refused(self):
         with pytest.raises(ValueError):
             ex.required_n_per_arm(0.0, 0.5)
+
+
+class TestNormalQuantileOracle:
+    """Hardcoded known values for the inverse-normal CDF (stdlib math only)."""
+
+    @pytest.mark.parametrize("p,expected", [
+        (0.975, 1.959964),
+        (0.80, 0.841621),
+        (0.90, 1.281552),
+        (0.95, 1.644854),
+        (0.50, 0.0),
+    ])
+    def test_matches_textbook_values(self, p, expected):
+        assert ex._norm_ppf(p) == pytest.approx(expected, abs=1e-6)
+
+    def test_reproduces_the_precomputed_module_constants(self):
+        assert ex._norm_ppf(0.975) == pytest.approx(ex._Z_95, abs=1e-8)
+        assert ex._norm_ppf(0.80) == pytest.approx(ex._Z_80_POWER, abs=1e-8)
+        assert ex._norm_ppf(0.90) == pytest.approx(ex._Z_90_POWER, abs=1e-8)
+        assert ex._norm_ppf(0.95) == pytest.approx(ex._Z_95_POWER, abs=1e-8)
+
+    def test_z_for_power_is_a_thin_wrapper_over_the_quantile(self):
+        for power in (0.5, 0.8, 0.9, 0.95, 0.975):
+            assert ex._z_for_power(power) == ex._norm_ppf(power)
+
+    def test_symmetry_around_the_median(self):
+        assert ex._norm_ppf(0.5) == 0.0
+        assert ex._norm_ppf(0.025) == pytest.approx(-ex._norm_ppf(0.975))
+
+    @pytest.mark.parametrize("bad", [0.0, 1.0, -0.1, 1.5, float("nan")])
+    def test_out_of_range_probabilities_are_rejected(self, bad):
+        with pytest.raises(ValueError):
+            ex._norm_ppf(bad)
+
+
+class TestPooledTestAndIntervalAgree:
+    """The z-test and the interval share one variance estimator, so the fixed
+    p-value and the fixed interval can never contradict each other."""
+
+    @pytest.mark.parametrize("s1,n1,s2,n2", [
+        (80, 100, 60, 100),
+        (90, 100, 50, 100),
+        (9, 10, 5, 10),
+        (8, 10, 3, 10),
+        (60, 100, 60, 100),
+        (30, 50, 20, 50),
+        (10, 10, 0, 10),
+        (5, 6, 0, 6),
+        (7, 10, 7, 10),
+        (1, 10, 0, 10),
+        (6, 6, 6, 6),
+        (0, 10, 0, 10),
+    ])
+    def test_significance_matches_interval_exclusion(self, s1, n1, s2, n2):
+        _, p = ex.two_proportion_test(s1, n1, s2, n2)
+        lo, hi = ex.diff_confidence_interval(s1, n1, s2, n2)
+        assert (p < 0.05) == (hi < 0.0 or lo > 0.0)
+
+    def test_symmetric_data_gives_a_symmetric_interval_containing_zero(self):
+        lo, hi = ex.diff_confidence_interval(60, 100, 60, 100)
+        assert lo == pytest.approx(-0.1358, abs=1e-4)
+        assert hi == pytest.approx(0.1358, abs=1e-4)
+        assert lo == pytest.approx(-hi)
+        assert lo < 0.0 < hi
+
+    def test_the_anytime_interval_covers_a_null_effect(self):
+        lo, hi = ex.anytime_confidence_interval(60, 100, 60, 100)
+        assert lo < 0.0 < hi
+
+
+class TestBenjaminiHochbergOracle:
+    def test_a_fixed_p_value_vector_decides_as_hand_computed(self):
+        # Sorted: 0.01<=1/5*.05, 0.02<=2/5*.05, 0.03<=3/5*.05, then two misses.
+        assert ex.benjamini_hochberg([0.01, 0.02, 0.03, 0.5, 0.9]) == [True, True, True, False, False]

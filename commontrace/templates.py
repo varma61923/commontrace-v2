@@ -70,6 +70,10 @@ def trace_frontmatter(
     profile: str = "",
     outcome: dict[str, Any] | None = None,
     agent_id: str = "",
+    scopes: list[str] | None = None,
+    valid_from: str = "",
+    valid_until: str = "",
+    expires_at: str = "",
 ) -> dict[str, Any]:
     fm = {
         "id": trace_id,
@@ -85,6 +89,14 @@ def trace_frontmatter(
     }
     if outcome:
         fm["outcome"] = outcome
+    if scopes:
+        fm["scopes"] = list(dict.fromkeys(str(scope).strip() for scope in scopes if str(scope).strip()))
+    if valid_from:
+        fm["valid_from"] = str(valid_from)
+    if valid_until:
+        fm["valid_until"] = str(valid_until)
+    if expires_at:
+        fm["expires_at"] = str(expires_at)
     return fm
 
 

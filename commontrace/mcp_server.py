@@ -72,12 +72,22 @@ nothing new until someone opts in.
 
 from __future__ import annotations
 
+import argparse
+import asyncio
 import contextlib
+import dataclasses
 import datetime
 import glob
+import importlib
 import io
+import json
 import logging
 import os
+import re
+import threading
+import time
+import uuid
+from collections.abc import Mapping
 from typing import Any
 
 from commontrace import (
@@ -147,6 +157,29 @@ def _err(message: str, **extra: Any) -> dict:
     return {"ok": False, "error": message, **extra}
 
 
+async def _progress(ctx, value: int, message: str) -> None:
+    """Opt-in MCP progress using the SDK's request-correlated transport.
+
+    No response, memory text or exception detail is carried in these messages.
+    Direct in-process calls have no request context and retain their old result.
+    Progress delivery is optional; it must not turn a successful write into a
+    failed tool result. Cancellation still propagates normally.
+    """
+    if ctx is None:
+        return
+    try:
+        meta = ctx.request_context.meta
+        if isinstance(meta, Mapping):
+            token = meta.get("progress_token", meta.get("progressToken"))
+        else:
+            token = getattr(meta, "progressToken", getattr(meta, "progress_token", None))
+        if isinstance(token, bool) or not isinstance(token, (str, int)):
+            return
+        await ctx.report_progress(value, total=1, message=message)
+    except Exception:  # noqa: BLE001 - an optional notification cannot change a tool result
+        logger.debug("MCP progress notification unavailable")
+
+
 @contextlib.contextmanager
 def _quiet():
     """Run a block with stdout captured, so a CLI-style print cannot reach the wire."""
@@ -165,9 +198,6 @@ def _run_cli(command: str, argv: list[str]) -> tuple[int, str, str]:
     `--frustration` binds to `frustration`, and a hand-built namespace spelled
     it `frustration_signal` -- accepted in silence, recorded nowhere.)
     """
-    import argparse
-    import importlib
-
     module = importlib.import_module(f"commontrace.commands.{command}_cmd")
     parser = argparse.ArgumentParser(prog="commontrace")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -427,29 +457,40 @@ def _unsafe_write(what: str, fields: dict) -> dict | None:
 
 def build_server(root: str, *, allow_approval: bool = True):
     """Build the MCP server for the store at `root`. See module docstring."""
-    try:
-        from mcp.server.mcpserver import MCPServer
-    except ModuleNotFoundError as exc:  # pragma: no cover - environment-dependent
-        raise LocalStoreError(
-            "`commontrace serve` needs the MCP SDK, which the base install does "
-            "not include. Install it with:  pip install 'commontrace[serve]'"
-        ) from exc
+    import inspect
 
     from commontrace import __version__
 
-    mcp = MCPServer(
-        name="commontrace-local",
-        version=__version__,
-        instructions=(
-            "Your own fleet's memory, on this machine. Retrieve before you act "
-            "(`retrieve`), record what happened afterwards (`capture`), and let "
-            "repeated failures become lessons (`propose_lessons` -> `draft_lesson` "
-            "-> `approve_lesson`). Nothing here leaves this machine; a Hub, if one "
-            "is configured, is a separate server. "
-            "Retrieval is the step that pays for the rest: call it with the task "
-            "in your own words, not with keywords."
-        ),
+    instructions = (
+        "Your own fleet's memory, on this machine. Retrieve before you act "
+        "(`retrieve`), record what happened afterwards (`capture`), and let "
+        "repeated failures become lessons (`propose_lessons` -> `draft_lesson` "
+        "-> `approve_lesson`). Nothing here leaves this machine; a Hub, if one "
+        "is configured, is a separate server. "
+        "Retrieval is the step that pays for the rest: call it with the task "
+        "in your own words, not with keywords."
     )
+    try:
+        from mcp.server.mcpserver import MCPServer
+        MCPContext = getattr(importlib.import_module("mcp.server.mcpserver"), "Context", None)
+        mcp = MCPServer(
+            name="commontrace-local",
+            version=__version__,
+            instructions=instructions,
+        )
+    except (ModuleNotFoundError, ImportError):
+        try:
+            from mcp.server.fastmcp import FastMCP
+            MCPContext = getattr(importlib.import_module("mcp.server.fastmcp"), "Context", None)
+            mcp = FastMCP(
+                name="commontrace-local",
+                instructions=instructions,
+            )
+        except (ModuleNotFoundError, ImportError) as exc:  # pragma: no cover - environment-dependent
+            raise LocalStoreError(
+                "`commontrace serve` needs the MCP SDK, which the base install does "
+                "not include. Install it with:  pip install 'commontrace[serve]'"
+            ) from exc
 
     from commontrace import telemetry
 
@@ -457,7 +498,25 @@ def build_server(root: str, *, allow_approval: bool = True):
 
     def _traced_tool(*args, **kwargs):
         decorate = _register_tool(*args, **kwargs)
-        return lambda func: decorate(telemetry.wrap_tool(func))
+
+        def register(func):
+            # Resolve the optional SDK's Context class only while constructing
+            # the server. Its annotation tells the SDK to inject request state
+            # and omit ctx from the public tool argument schema.
+            if "ctx" in func.__annotations__:
+                if MCPContext is None:
+                    # Minimal/older server adapters can register the existing
+                    # tools without exposing request context. Keep progress
+                    # disabled and hide the optional internal argument there.
+                    wrapped = telemetry.wrap_tool(func)
+                    signature = inspect.signature(func)
+                    wrapped.__signature__ = signature.replace(
+                        parameters=[p for name, p in signature.parameters.items() if name != "ctx"])
+                    return decorate(wrapped)
+                func.__annotations__["ctx"] = MCPContext
+            return decorate(telemetry.wrap_tool(func))
+
+        return register
 
     mcp.tool = _traced_tool
 
@@ -966,22 +1025,40 @@ def build_server(root: str, *, allow_approval: bool = True):
                    next_step="Fill each one in with `draft_lesson`, then `approve_lesson`.")
 
     @mcp.tool()
-    async def list_lessons(status: str = "") -> dict:
-        """Every lesson in this store, newest first. Filter by `status`
-        ('active', 'review', 'archived'). Each carries `unfilled`: the parts
-        still left as scaffolding."""
-        out = []
-        for path in sorted(glob.glob(os.path.join(paths.lessons_dir(root), "lesson_*.md"))):
+    async def list_lessons(status: str = "", limit: int = 100, offset: int = 0) -> dict:
+        """List lightweight lesson summaries, newest first.
+
+        The response is paginated; call ``get_lesson`` for the full body of one
+        result. This keeps a large review queue from becoming an unbounded MCP
+        response or forcing every body through the tool wire.
+        """
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:
+            return _err("limit must be an integer from 1 to 1000")
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            return _err("offset must be a non-negative integer")
+        paths_to_scan = []
+        for path in glob.glob(os.path.join(paths.lessons_dir(root), "lesson_*.md")):
             if os.path.basename(path) == "lesson_template.md":
                 continue
+            try:
+                paths_to_scan.append((os.path.getmtime(path), path))
+            except OSError:
+                continue
+        paths_to_scan.sort(reverse=True)
+        paths_to_scan = [path for _mtime, path in paths_to_scan]
+        out = []
+        total = 0
+        for path in paths_to_scan:
             try:
                 fm, body = frontmatter.read(path)
             except Exception:  # noqa: BLE001 - one bad file must not hide the rest
                 continue
             if status and fm.get("status") != status:
                 continue
-            out.append(_lesson_wire(fm, body))
-        return _ok(lessons=out, count=len(out))
+            if total >= offset and len(out) < limit:
+                out.append(_lesson_wire(fm, body))
+            total += 1
+        return _ok(lessons=out, count=len(out), total=total, limit=limit, offset=offset)
 
     @mcp.tool()
     async def get_lesson(slug: str) -> dict:
@@ -1257,8 +1334,6 @@ def build_server(root: str, *, allow_approval: bool = True):
         toward zero. Honour `withheld` from `retrieve` or the number is
         yours to have broken.
         """
-        import dataclasses
-
         try:
             with _quiet():
                 analysis = evidence_mod.analyse(root)
@@ -1366,16 +1441,18 @@ def build_server(root: str, *, allow_approval: bool = True):
         content: str,
         mode: str = "set",
         old_content: str = "",
+        line_number: int = -1,
     ) -> dict:
         """Update or append to a stateful working memory block with quota checking.
 
-        Supports three modes: 'set' (overwrite), 'append' (add text to the end),
-        and 'replace' (replace exact substring `old_content` with `content`).
+        Supports four modes: 'set' (overwrite), 'append' (add text to the end),
+        'replace' (replace exact substring `old_content` with `content`), and
+        'insert' (insert `content` at `line_number`: 0=top, -1=bottom, N=after line N).
         Every change records an immutable SHA-256 revision hash and audit history.
         Enforces character limit quotas to prevent prompt bloat and context stuffing.
         """
-        if mode not in ("set", "append", "replace"):
-            return _err(f"unknown mode {mode!r}; use set, append or replace")
+        if mode not in ("set", "append", "replace", "insert"):
+            return _err(f"unknown mode {mode!r}; use set, append, replace or insert")
         refusal = _unsafe_write("memory block", {"content": content})
         if refusal is not None:
             return refusal
@@ -1384,6 +1461,9 @@ def build_server(root: str, *, allow_approval: bool = True):
                 block = memory_blocks.append_block(root, name, content, actor="mcp")
             elif mode == "replace":
                 block = memory_blocks.replace_block(root, name, old_content, content, actor="mcp")
+            elif mode == "insert":
+                block = memory_blocks.insert_block(
+                    root, name, content, line_number=line_number, actor="mcp")
             else:
                 block = memory_blocks.set_block(root, name, content, actor="mcp")
             return _ok(block=block.to_dict())
@@ -1417,22 +1497,165 @@ def build_server(root: str, *, allow_approval: bool = True):
             return _err(str(exc))
 
     @mcp.tool()
+    async def core_memory_append(name: str, content: str) -> dict:
+        """Append to a core memory block (persona, human, or project).
+
+        Agent-tool alias over `memory_block_update(mode="append")` matching the
+        Letta core-memory surface: the block keeps its quota, revision hash,
+        and audit history. Read-only blocks refuse with ok=false.
+        """
+        refusal = _unsafe_write("memory block", {"content": content})
+        if refusal is not None:
+            return refusal
+        try:
+            block = memory_blocks.append_block(root, name, content, actor="mcp")
+            return _ok(block=block.to_dict())
+        except (memory_blocks.MemoryBlockError, OSError) as exc:
+            return _err(str(exc))
+
+    @mcp.tool()
+    async def core_memory_replace(name: str, old_content: str, new_content: str) -> dict:
+        """Replace one exact substring of a core memory block.
+
+        Agent-tool alias over `memory_block_update(mode="replace")`: the target
+        must occur exactly once (the error names every line when it does not),
+        tab-expanded and line-prefix-stripped before comparison. Read-only
+        blocks refuse with ok=false.
+        """
+        refusal = _unsafe_write("memory block", {"content": new_content})
+        if refusal is not None:
+            return refusal
+        try:
+            block = memory_blocks.replace_block(root, name, old_content, new_content, actor="mcp")
+            return _ok(block=block.to_dict())
+        except (memory_blocks.MemoryBlockError, OSError) as exc:
+            return _err(str(exc))
+
+    @mcp.tool()
+    async def archival_memory_insert(content: str, category: str = "general", scope: str = "") -> dict:
+        """Insert one passage into long-term archival memory.
+
+        Stored as an atomic fact (reinforcing an existing match instead of
+        duplicating it), with the same content-safety screen as `record_fact`.
+        Retrieve it later with `archival_memory_search`.
+        """
+        refusal = _unsafe_write("archival memory", {"statement": content})
+        if refusal is not None:
+            return refusal
+        try:
+            fact, action = hierarchical.add_fact(
+                root, statement=content, category=category or "general",
+                scopes=[scope] if scope else None,
+            )
+            return _ok(fact=fact.to_dict(), action=action)
+        except Exception as exc:  # noqa: BLE001
+            return _err(f"could not insert archival memory: {type(exc).__name__}: {exc}")
+
+    @mcp.tool()
+    async def archival_memory_search(query: str, scope: str = "", limit: int | str = 10) -> dict:
+        """Search long-term archival memory for passages matching `query`.
+
+        Scoped, confidence-weighted lexical search over the same atomic facts
+        `archival_memory_insert` writes. `limit` is clamped to 1..50.
+        """
+        try:
+            want = max(1, min(int(limit), 50))
+        except (TypeError, ValueError):
+            return _err("limit must be a number of facts")
+        try:
+            results = hierarchical.search_facts(
+                root, query=query, scope=scope, limit=want,
+            )
+            return _ok(
+                facts=[{"fact": f.to_dict(), "score": score} for f, score in results],
+                count=len(results),
+            )
+        except Exception as exc:  # noqa: BLE001
+            return _err(f"could not search archival memory: {type(exc).__name__}: {exc}")
+
+    @mcp.tool()
+    async def conversation_search(question: str, space: str = "", budget: int = 1500, ctx: Any = None) -> dict:
+        """Search past conversation turns for what answers `question`.
+
+        Without `space`, every conversation space is searched in parallel and
+        the contexts are merged within `budget` tokens; with `space`, only
+        that space. Each space gets a lexical BM25 search with sub-query
+        fusion, self-echo turns are filtered, and injection-flagged turns are
+        withheld, not shown.
+
+        This fans out over spaces with the lexical arm only (no model load per
+        space), so `degraded` is true and names what was skipped; use
+        `conversation_recall` for the full per-space retrieval.
+        """
+        from commontrace.conversation import ConversationError, Options, Store, recall
+        from commontrace.conversation import store as store_mod
+
+        try:
+            budget = max(50, min(int(budget), 32_000))
+        except (TypeError, ValueError):
+            return _err("budget must be a number of tokens")
+
+        def _run():
+            from commontrace import parallel as parallel_mod
+
+            names = [space] if space else store_mod.spaces(root)
+            if not names:
+                return {"question": question, "context": "", "tokens": 0,
+                        "spaces": [], "note": "no conversation spaces stored yet"}
+            per = max(50, budget // max(1, len(names)))
+
+            def _one(name: str) -> tuple[str, str]:
+                # Own Store per worker: one SQLite connection each, safe
+                # across threads (WAL + check_same_thread=False).
+                with Store(root, name, create=False) as st:
+                    rec = recall(st, question,
+                                 options=Options(budget=per, embedder=None, rerank=None)).as_dict()
+                return name, rec["context"] if rec["context"] else ""
+
+            try:
+                found = parallel_mod.bounded_map(_one, names, max_workers=4)
+            except ConversationError as exc:
+                return {"error": str(exc)}
+            parts = [f"[space: {name}]\n{ctx}" for name, ctx in found if ctx]
+            seen_spaces = [name for name, ctx in found if ctx]
+            context = "\n\n".join(parts)
+            return {"question": question, "context": context,
+                    "tokens": sum(len(p) // 4 for p in parts),
+                    "spaces": seen_spaces, "degraded": True,
+                    "note": ("lexical-only fan-out: the semantic and rerank arms "
+                             "are skipped so one call does not load models per space; "
+                             "use conversation_recall for full per-space retrieval.")}
+
+        try:
+            await _progress(ctx, 0, "Searching conversation memory")
+            out = await asyncio.to_thread(_run)
+        except ConversationError as exc:
+            return _err(str(exc))
+        if "error" in out:
+            return _err(out["error"])
+        await _progress(ctx, 1, "Conversation search complete")
+        return _ok(**out)
+
+    @mcp.tool()
     async def query_facts(
         query: str,
         scope: str = "",
         category: str = "",
         as_of: str = "",
         limit: int = 10,
+        show_expired: bool = False,
     ) -> dict:
         """Search distilled atomic facts with bitemporal validity and scoped routing.
 
         Searches high-confidence atomic facts extracted from traces and episodes.
         Results are scored by lexical overlap and confidence weighting. Supports
         point-in-time filtering via `as_of` and team/domain routing via `scope`.
+        TTL-expired facts are hidden unless `show_expired`.
         """
         try:
             results = hierarchical.search_facts(
                 root, query=query, scope=scope, category=category, as_of=as_of or None, limit=limit,
+                show_expired=bool(show_expired),
             )
             return _ok(
                 facts=[{"fact": f.to_dict(), "score": score} for f, score in results],
@@ -1535,7 +1758,8 @@ def build_server(root: str, *, allow_approval: bool = True):
             return _err(f"could not render the knowledge graph: {type(exc).__name__}: {exc}")
 
     @mcp.tool()
-    async def conversation_add(space: str, session: str, messages: list[dict], session_at: str = "") -> dict:
+    async def conversation_add(space: str, session: str, messages: list[dict], session_at: str = "",
+                               ctx: Any = None) -> dict:
         """Remember messages from a conversation, in order, under a space (one user, agent or thread).
 
         Each message is {"speaker" or "role", "text" or "content", optional "at" (when it
@@ -1547,16 +1771,22 @@ def build_server(root: str, *, allow_approval: bool = True):
 
         if not isinstance(messages, list) or not all(isinstance(m, dict) for m in messages):
             return _err("messages must be a list of objects with text (or content)")
-        try:
+        def _run():
             with Store(root, space) as store:
-                return _ok(**store.add(session, messages, session_at=session_at or None))
+                return store.add(session, messages, session_at=session_at or None)
+
+        try:
+            await _progress(ctx, 0, "Storing conversation messages")
+            out = await asyncio.to_thread(_run)
         except (ConversationError, OSError) as exc:
             return _err(str(exc))
+        await _progress(ctx, 1, "Conversation messages stored")
+        return _ok(**out)
 
     @mcp.tool()
     async def conversation_recall(space: str, question: str, budget: int = 1500, now: str = "",
                                   sessions: list[str] | None = None, speakers: list[str] | None = None,
-                                  since: str = "", until: str = "") -> dict:
+                                  since: str = "", until: str = "", ctx: Any = None) -> dict:
         """What was said that answers `question`: the matching turns with their neighbours,
         grouped by session with dates, within `budget` tokens, plus what the user has said
         about themselves when it bears on the question. Pass `now` when the question is
@@ -1564,8 +1794,6 @@ def build_server(root: str, *, allow_approval: bool = True):
         and `until` narrow what may be recalled. Turns the injection screen flags are
         withheld and listed under explain.withheld.
         """
-        import asyncio
-
         from commontrace.conversation import ConversationError, Options, Store, recall
 
         try:
@@ -1581,21 +1809,23 @@ def build_server(root: str, *, allow_approval: bool = True):
                 return recall(store, question, now=now or None, options=opts).as_dict()
 
         try:
-            return _ok(**await asyncio.to_thread(_run))
+            await _progress(ctx, 0, "Retrieving conversation evidence")
+            out = await asyncio.to_thread(_run)
         except ConversationError as exc:
             return _err(str(exc))
+        await _progress(ctx, 1, "Conversation retrieval complete")
+        return _ok(**out)
 
     @mcp.tool()
     async def memory_recall(question: str, budget: int = 1500, agent: str = "", as_of: str = "",
-                            channels: list[str] | None = None, spaces: list[str] | None = None) -> dict:
+                            channels: list[str] | None = None, spaces: list[str] | None = None,
+                            ctx: Any = None) -> dict:
         """One context from every kind of memory: approved lessons, atomic facts, graph
         relations around the entities `question` names, and conversation spaces, fused,
         de-duplicated and packed into `budget` tokens. `as_of` reads every channel as it
         stood at that moment. `agent` applies that agent's budget and channel weights from
         memory/budgets.json. `channels` narrows to lessons/facts/graph/conversations.
         """
-        import asyncio
-
         from commontrace import recall as recall_mod
 
         def _run():
@@ -1604,9 +1834,12 @@ def build_server(root: str, *, allow_approval: bool = True):
                                      spaces=spaces).to_dict()
 
         try:
-            return _ok(**await asyncio.to_thread(_run))
+            await _progress(ctx, 0, "Retrieving memory evidence")
+            out = await asyncio.to_thread(_run)
         except ValueError as exc:
             return _err(str(exc))
+        await _progress(ctx, 1, "Memory retrieval complete")
+        return _ok(**out)
 
     @mcp.tool()
     async def conversation_profile(space: str, history: bool = False) -> dict:
@@ -1629,8 +1862,6 @@ def build_server(root: str, *, allow_approval: bool = True):
         """Delete from a space: one `session`, messages said `before` a date, and/or messages
         whose `expires` has passed. Profile statements they carried go with them.
         """
-        import datetime as _dt
-
         from commontrace.conversation import ConversationError, Store
 
         if not (session or before or expired):
@@ -1639,25 +1870,31 @@ def build_server(root: str, *, allow_approval: bool = True):
             with Store(root, space, create=False) as store:
                 deleted = store.delete_session(session) if session else 0
                 if before or expired:
-                    deleted += store.purge(before=before or None, expired_at=_dt.datetime.now(
-                        _dt.timezone.utc).replace(tzinfo=None) if expired else None)
+                    deleted += store.purge(before=before or None, expired_at=datetime.datetime.now(
+                        datetime.timezone.utc).replace(tzinfo=None) if expired else None)
         except ConversationError as exc:
             return _err(str(exc))
         return _ok(space=space, deleted=deleted)
 
     @mcp.tool()
-    async def conversation_summarize(space: str, session: str = "") -> dict:
+    async def conversation_summarize(space: str, session: str = "", ctx: Any = None) -> dict:
         """Write an extractive summary (the most central dated sentences) for each session
         of a space, or one `session`; recall shows it under the session header.
         """
         from commontrace.conversation import ConversationError, Store
         from commontrace.conversation.summary import summarize
 
-        try:
+        def _run():
             with Store(root, space, create=False) as store:
-                return _ok(**summarize(store, [session] if session else None))
+                return summarize(store, [session] if session else None)
+
+        try:
+            await _progress(ctx, 0, "Summarizing conversation sessions")
+            out = await asyncio.to_thread(_run)
         except ConversationError as exc:
             return _err(str(exc))
+        await _progress(ctx, 1, "Conversation summaries complete")
+        return _ok(**out)
 
     @mcp.tool()
     async def graph_timeline(entity: str) -> dict:
@@ -1669,6 +1906,74 @@ def build_server(root: str, *, allow_approval: bool = True):
             return _ok(entity=entity, events=graph_mod.timeline(root, entity))
         except (ValueError, OSError) as exc:
             return _err(str(exc))
+
+    @mcp.tool()
+    async def lessons_from_trace(trace_id: str) -> dict:
+        """Lessons that cite `trace_id` in their `source_traces` (trace -> lesson lookup).
+
+        The reverse moment of `traces_for_lesson`: given a captured trace, which
+        curated lessons trace their evidence back to it. Sorted lesson slugs.
+        """
+        import glob
+        import os as _os
+
+        hits = []
+        for path in sorted(glob.glob(_os.path.join(paths.lessons_dir(root), "lesson_*.md"))):
+            if _os.path.basename(path) == "lesson_template.md":
+                continue
+            try:
+                fm, _body = frontmatter.read(path)
+            except Exception:  # noqa: BLE001 - unreadable lessons are skipped
+                continue
+            if trace_id and trace_id in [str(t) for t in (fm.get("source_traces") or [])]:
+                hits.append(lesson_io.canonical_slug(_os.path.basename(path)))
+        return _ok(trace_id=trace_id, lessons=sorted(set(hits)), count=len(set(hits)))
+
+    @mcp.tool()
+    async def traces_for_lesson(slug: str) -> dict:
+        """The source trace ids a lesson cites in its frontmatter (lesson -> trace provenance lookup)."""
+        try:
+            path = lesson_io.lesson_path(root, slug)
+            if path is None:
+                return _err(f"no lesson found for slug {slug!r}")
+            fm, _body = frontmatter.read(path)
+        except Exception as exc:  # noqa: BLE001
+            return _err(f"could not read lesson {slug!r}: {type(exc).__name__}: {exc}")
+        traces = sorted({str(t) for t in (fm.get("source_traces") or []) if str(t).strip()})
+        return _ok(slug=lesson_io.canonical_slug(slug), traces=traces, count=len(traces))
+
+    @mcp.tool()
+    async def community_members(name: str) -> dict:
+        """Members of one topic community by name (from `commontrace community build`).
+
+        Returns the stored member list (lesson slugs and fact ids), size, and the
+        extractive summary; ok=false when the community is unknown -- build first.
+        """
+        from commontrace import communities
+
+        community = communities.get_community(root, name)
+        if community is None:
+            return _err(f"no community named {name!r}; run `commontrace community build` first")
+        return _ok(
+            name=str(community.get("name", name)),
+            members=list(community.get("members") or []),
+            size=int(community.get("size") or 0),
+            summary=str(community.get("summary") or ""),
+        )
+
+    @mcp.tool()
+    async def observation_evidence(id: str) -> dict:
+        """One consolidated observation with its cited evidence (quote + source_id).
+
+        The proof chain behind a distilled claim: statement, evidence entries,
+        proof_count, and density trend; ok=false when unknown -- consolidate first.
+        """
+        from commontrace import observations
+
+        observation = observations.get_observation(root, id)
+        if observation is None:
+            return _err(f"no observation {id!r}; run `commontrace observation consolidate` first")
+        return _ok(observation=observation.to_dict())
 
     @mcp.tool()
     async def list_skills() -> dict:
@@ -1703,7 +2008,338 @@ def build_server(root: str, *, allow_approval: bool = True):
         return _ok(name=skill.name, description=skill.description, body=body,
                    notice=injection_guard.NOTICE)
 
+    # --- Ingest Lifecycle & Document Catalog ---
+
+    @mcp.tool()
+    async def ingest_job_status(job_id: str) -> dict:
+        """Inspect the current stage and progress of an ingestion job.
+
+        Lifecycle stages: queued -> extracting -> transforming -> embedding -> submitting -> done | failed.
+        """
+        from commontrace.ingest import catalog
+
+        job = catalog.get_ingest_job(root, job_id)
+        if job is None:
+            return _err(f"No ingestion job with id {job_id!r}")
+        return _ok(job=job.to_dict())
+
+    @mcp.tool()
+    async def ingest_documents_list(query: str = "", limit: int = 50) -> dict:
+        """List lightweight document summaries in the catalog (NOT dumping full contents).
+
+        Returns short summary snippets (<=200 chars), titles, paths, tokens, and chunk counts.
+        Use `ingest_document_get` only when full document content is specifically required.
+        """
+        from commontrace.ingest import catalog
+
+        docs = catalog.list_documents(root, query=query, limit=limit)
+        return _ok(documents=docs, count=len(docs))
+
+    @mcp.tool()
+    async def ingest_document_get(doc_id_or_path: str, chunk_index: int | None = None) -> dict:
+        """Retrieve a registered document snapshot or chunk by ID or registered source path."""
+        from commontrace.ingest import catalog
+
+        try:
+            doc = await asyncio.to_thread(
+                catalog.get_document, root, doc_id_or_path, chunk_index=chunk_index,
+            )
+        except (ValueError, OSError) as exc:
+            return _err(f"Cannot read registered document: {exc}", code="document_error")
+        if doc is None:
+            return _err(f"Document {doc_id_or_path!r} not found in catalog")
+        return _ok(document=doc)
+
+    # --- Sagas (Graphiti & Zep #5 M) ---
+
+    @mcp.tool()
+    async def saga_create(
+        saga_id: str,
+        title: str,
+        tags: list[str] | None = None,
+        brief: str = "",
+        status: str = "active",
+    ) -> dict:
+        """Create an ordered incident or migration narrative saga with a
+        watermarked running brief and tagged metadata.
+        """
+        from commontrace import sagas
+
+        try:
+            saga = sagas.create_saga(root, saga_id, title, tags=tags, brief=brief, status=status)
+            return _ok(saga=saga.to_dict())
+        except (sagas.SagaError, ValueError) as exc:
+            return _err(str(exc))
+
+    @mcp.tool()
+    async def saga_get(saga_id: str) -> dict:
+        """Fetch a saga narrative along with its complete chronological event timeline,
+        metadata, and watermarked running brief.
+        """
+        from commontrace import sagas
+
+        saga = sagas.get_saga(root, saga_id)
+        if saga is None:
+            return _err(f"Saga {saga_id!r} not found")
+        return _ok(saga=saga.to_dict())
+
+    @mcp.tool()
+    async def saga_list(status: str = "", tag: str = "", limit: int = 50) -> dict:
+        """List all recorded incident or migration sagas, optionally filtered
+        by status ('active'/'resolved'/'archived') or tag.
+        """
+        from commontrace import sagas
+
+        items = sagas.list_sagas(root, status=status, tag=tag, limit=limit)
+        return _ok(sagas=[s.to_dict() for s in items], count=len(items))
+
+    @mcp.tool()
+    async def saga_append_event(
+        saga_id: str,
+        title: str,
+        description: str = "",
+        actor: str = "agent",
+        new_brief: str = "",
+        watermark: str = "",
+    ) -> dict:
+        """Append a milestone, telemetry update, or incident response event to
+        the ordered narrative of a saga timeline.
+        """
+        from commontrace import sagas
+
+        try:
+            saga = sagas.append_saga_event(
+                root, saga_id, title, description=description, actor=actor,
+                new_brief=new_brief if new_brief else None,
+                watermark=watermark if watermark else None,
+            )
+            return _ok(saga=saga.to_dict())
+        except (sagas.SagaError, ValueError) as exc:
+            return _err(str(exc))
+
+    @mcp.tool()
+    async def saga_update_brief(saga_id: str, brief: str, watermark: str = "") -> dict:
+        """Update the rolling synthesis running brief of an ongoing saga narrative,
+        advancing its progress watermark.
+        """
+        from commontrace import sagas
+
+        try:
+            saga = sagas.update_running_brief(root, saga_id, brief, watermark=watermark)
+            return _ok(saga=saga.to_dict())
+        except (sagas.SagaError, ValueError) as exc:
+            return _err(str(exc))
+
+    # --- Knowledge Pages (Hindsight #2 L) ---
+
+    @mcp.tool()
+    async def knowledge_page_list(tag: str = "", limit: int = 50) -> dict:
+        """List all curated knowledge pages and mental model synthesis documents,
+        optionally filtered by category or tag.
+        """
+        from commontrace import knowledge_pages
+
+        pages = knowledge_pages.list_pages(root, tag=tag, limit=limit)
+        return _ok(pages=[p.to_dict() for p in pages], count=len(pages))
+
+    @mcp.tool()
+    async def knowledge_page_get(slug: str, version: int | None = None) -> dict:
+        """Fetch the latest or a specific historical revision of a curated knowledge page,
+        including content and version metadata.
+        """
+        from commontrace import knowledge_pages
+
+        page = knowledge_pages.get_page(root, slug, version=version)
+        if page is None:
+            return _err(f"Knowledge page {slug!r} not found" + (f" (v{version})" if version else ""))
+        return _ok(page=page.to_dict())
+
+    @mcp.tool()
+    async def knowledge_page_update(
+        slug: str,
+        content: str,
+        title: str = "",
+        tags: list[str] | None = None,
+        expected_version: int | None = None,
+        dry_run: bool = False,
+        comment: str = "",
+    ) -> dict:
+        """Update or create a curated knowledge page with dry-run diff preview.
+
+        Set `dry_run=True` to inspect line-by-line unified diffs before writing to disk.
+        Set `expected_version` for optimistic concurrency protection.
+        """
+        from commontrace import knowledge_pages
+
+        refusal = _unsafe_write("knowledge page", {"content": content})
+        if refusal is not None:
+            return refusal
+
+        try:
+            res = knowledge_pages.update_page(
+                root, slug, content, title=title, tags=tags,
+                expected_version=expected_version, dry_run=dry_run,
+                actor="mcp", comment=comment,
+            )
+            return _ok(**res)
+        except (knowledge_pages.KnowledgePageError, ValueError) as exc:
+            return _err(str(exc))
+
+    # --- Session Ledger (Cognee #3 L) ---
+
+    @mcp.tool()
+    async def session_ledger_record(
+        session_id: str,
+        model: str,
+        prompt_tokens: int,
+        completion_tokens: int,
+        provider: str = "",
+        cost_usd: float | None = None,
+        occasion: str = "",
+    ) -> dict:
+        """Record an LLM model call with prompt tokens, completion tokens, provider,
+        and dollar cost attribution for a session.
+        """
+        from commontrace import session_ledger
+
+        entry = session_ledger.record_usage(
+            root, session_id, model, prompt_tokens, completion_tokens,
+            provider=provider, cost_usd=cost_usd, occasion=occasion,
+        )
+        return _ok(entry=entry.to_dict())
+
+    @mcp.tool()
+    async def session_ledger_get(session_id: str) -> dict:
+        """Get aggregate token usage and estimated costs for a session with per-model breakdown."""
+        from commontrace import session_ledger
+
+        summary = session_ledger.session_summary(root, session_id)
+        return _ok(**summary)
+
+    @mcp.tool()
+    async def session_ledger_summary(since: str = "", until: str = "") -> dict:
+        """Get global token usage and cost expenditure aggregated across all sessions,
+        with per-model breakdown and optional date bounds.
+        """
+        from commontrace import session_ledger
+
+        summary = session_ledger.overall_ledger_summary(root, since=since, until=until)
+        return _ok(**summary)
+
+    @mcp.tool()
+    async def procedural_memory_create(
+        task_objective: str,
+        progress_status: str,
+        steps: list[dict],
+        agent_id: str = "",
+        metadata: dict | None = None,
+    ) -> dict:
+        """Create and persist a structured procedural memory trajectory recording sequential
+        agent actions and verbatim outputs.
+        """
+        from commontrace import procedural
+
+        if not isinstance(steps, list) or len(steps) > 256 or not all(isinstance(step, dict) for step in steps):
+            return _err("steps must be a list of at most 256 objects")
+        refusal = _unsafe_write(
+            "procedural memory",
+            {
+                "task_objective": task_objective,
+                "progress_status": progress_status,
+                "steps": json.dumps(steps, ensure_ascii=False, default=str),
+                "metadata": json.dumps(metadata or {}, ensure_ascii=False, default=str),
+            },
+        )
+        if refusal is not None:
+            return refusal
+        mem_id = uuid.uuid4().hex[:16]
+        parsed_steps = [procedural.ProceduralStep.from_dict(s) for s in steps]
+        mem = procedural.ProceduralMemory(
+            id=mem_id,
+            task_objective=task_objective,
+            progress_status=progress_status,
+            steps=parsed_steps,
+            agent_id=agent_id,
+            metadata=metadata or {},
+        )
+        saved_path = procedural.save_procedural_memory(root, mem)
+        return _ok(id=mem.id, path=saved_path, steps_count=len(mem.steps), token_estimate=mem.token_count)
+
+    @mcp.tool()
+    async def procedural_memory_replay(
+        memory_id: str,
+        token_budget: int = 1500,
+    ) -> dict:
+        """Replay a procedural memory trajectory rendered into a structured markdown prompt context
+        within a token budget.
+        """
+        from commontrace import procedural
+
+        mem = procedural.load_procedural_memory(root, memory_id)
+        if mem is None:
+            return _err(f"Procedural memory {memory_id} not found", code="not_found")
+        formatted = procedural.format_procedural_memory(mem, token_budget=token_budget)
+        return _ok(id=mem.id, prompt_context=formatted, token_estimate=mem.token_count, budget=token_budget)
+
+    @mcp.tool()
+    async def sql_guarded_query(
+        db_path: str,
+        sql: str,
+        max_rows: int = 100,
+        timeout_seconds: float = 5.0,
+    ) -> dict:
+        """Validate, cap, and safely execute a read-only SELECT query against a SQLite database with guardrails."""
+        from commontrace import sql_guard
+
+        try:
+            db_path_abs = os.path.realpath(os.path.expanduser(db_path))
+            root_abs = os.path.realpath(root)
+            if not (db_path_abs == root_abs or db_path_abs.startswith(root_abs + os.sep)):
+                return _err(
+                    "db_path must be inside the CommonTrace store root",
+                    code="scope_error",
+                )
+            result = await asyncio.to_thread(
+                sql_guard.execute_guarded_sql, db_path_abs, sql,
+                max_rows=max_rows, timeout_seconds=timeout_seconds,
+            )
+            return _ok(**result)
+        except Exception as exc:
+            return _err(f"Guarded SQL execution failed: {exc}", code="sql_error")
+
+    @mcp.tool()
+    async def defense_screen_content(
+        content: str,
+        action: str = "redact",
+    ) -> dict:
+        """Screen content against known sensitive data, credentials, PII, and injection patterns
+        with fingerprinted previews.
+        """
+        from commontrace import defense
+
+        act = (
+            defense.DefenseAction(action.lower())
+            if action.lower() in ("allow", "redact", "block")
+            else defense.DefenseAction.REDACT
+        )
+        policy = defense.DefensePolicy(
+            enabled=True,
+            rules=(defense.PolicyRule(on="sensitive_data", action=act),),
+        )
+        decision = defense.screen_content(content, policy=policy)
+        return _ok(
+            action=decision.action.value,
+            detector=decision.detector,
+            message=decision.message,
+            redacted_content=decision.redacted_content,
+            matched_types=decision.matched_types,
+            hits=decision.hits,
+        )
+
+
+
     if hasattr(mcp, "resource"):
+
         @mcp.resource("commontrace://profile")
         def active_space_profile() -> str:
             """Synthesized active space profile combining working memory blocks,
@@ -1743,17 +2379,51 @@ def build_server(root: str, *, allow_approval: bool = True):
             """Active knowledge graph rendered as Mermaid diagram and entity edges."""
             return graph_mod.export_mermaid(root)
 
+    if hasattr(mcp, "call_tool"):
+        _orig_call_tool = mcp.call_tool
+        _accepts_context = "context" in inspect.signature(_orig_call_tool).parameters
+
+        async def _call_tool_compat(name: str, arguments: dict | None = None,
+                                    *args: Any, **kwargs: Any):
+            # SDK v2 passes a request-scoped Context; forwarding it preserves
+            # progress correlation. Older SDKs resolve context internally.
+            if _accepts_context:
+                ctx = args[0] if args else kwargs.get("context")
+                res = await _orig_call_tool(name, arguments or {}, context=ctx)
+            else:
+                res = await _orig_call_tool(name, arguments or {})
+            if isinstance(res, list):
+                class _ResultCompat:
+                    def __init__(self, content):
+                        self.content = content
+                        self.structured_content = None
+                return _ResultCompat(res)
+            return res
+
+        mcp.call_tool = _call_tool_compat
+
     return mcp
+
+
+_SECTION_PATTERNS: dict[str, re.Pattern] = {}
+
+
+def _section_pattern(name: str) -> re.Pattern:
+    """Compiled `## <name>` matcher, cached: one compile per section name."""
+    pattern = _SECTION_PATTERNS.get(name)
+    if pattern is None:
+        pattern = re.compile(
+            rf"^(##\s*{re.escape(name)}\s*\n)(.*?)(?=\n##\s|\Z)",
+            re.DOTALL | re.MULTILINE | re.IGNORECASE,
+        )
+        if len(_SECTION_PATTERNS) < 64:
+            _SECTION_PATTERNS[name] = pattern
+    return pattern
 
 
 def _replace_section(body: str, name: str, text: str) -> str:
     """Replace one `## <name>` section, or append it if absent."""
-    import re
-
-    pattern = re.compile(
-        rf"^(##\s*{re.escape(name)}\s*\n)(.*?)(?=\n##\s|\Z)",
-        re.DOTALL | re.MULTILINE | re.IGNORECASE,
-    )
+    pattern = _section_pattern(name)
     replacement = f"## {name}\n{text.strip()}\n"
     if pattern.search(body):
         return pattern.sub(lambda _m: replacement, body, count=1)
@@ -1777,8 +2447,6 @@ def _warm_models(root: str, delay: float = 2.0) -> None:
     simply waits for the load it would have done anyway. Any failure is
     left for `retrieve` to meet and report as it always has.
     """
-    import time
-
     time.sleep(delay)
     try:
         active, _terms = lesson_cache.load_active_with_terms(root, None, reader=frontmatter.read)
@@ -1798,9 +2466,7 @@ def _warm_models(root: str, delay: float = 2.0) -> None:
 
 def serve(root: str, *, allow_approval: bool = True) -> int:
     """Run the server on stdio until the client disconnects."""
-    import threading
-
-    import anyio
+    import anyio  # optional: only needed to run the stdio transport
 
     mcp = build_server(root, allow_approval=allow_approval)
     if os.environ.get(WARM_ENV, "1").strip().lower() not in ("0", "false", "no", "off"):

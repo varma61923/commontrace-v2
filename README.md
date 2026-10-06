@@ -978,9 +978,18 @@ from the document's headings, or written by the configured model with
 `--contextualize model`, cached by chunk), canonicalised with the ontology's
 aliases, and written as facts attributed to their file (or to a conversation
 space with `--space`). A ledger in `memory/ingest_ledger.jsonl` skips files
-whose size and mtime are unchanged; files over 256 MB are fingerprinted by
+whose device/inode, size, modification time and change time are unchanged;
+legacy ledger rows are revalidated. Files over 256 MB are fingerprinted by
 sampling and hashed in full only when another file has the same size.
 `--preview` shows the counts without writing.
+
+Catalog retrieval returns registered snapshots by document ID or registered
+source path; it never opens an uncataloged source file. Ingestion pins regular
+file descriptors, rejects symlink components, and bounds source reads, archive
+inflation and XML depth. Guarded SQL uses SQLite read-only authorization,
+outer-result limits, a maximum of 10,000 requested rows and bounded cell payloads;
+Python 3.10 uses a conservative analytical-function allowlist. Document and SQL
+MCP reads run in worker threads so other requests remain responsive.
 
 **One recall across every kind of memory** (`commontrace recall`): lessons,
 facts, graph relations around the entities the question names, and
@@ -1088,14 +1097,86 @@ More of it:
 
 ```bash
 commontrace conversation recall ana "What did Ana say about work?" --session s2 --speaker Ana --since 2023-06-01
+commontrace conversation index ana --model minilm      # prepare local vectors before serving questions
 commontrace conversation summarize ana                # a dated summary under each session header
 commontrace conversation extract ana                  # model-distilled, dated memories (COMMONTRACE_LLM_*)
 commontrace conversation answer ana "Where does Ana work now?" --rounds 2
 commontrace conversation profile ana --history        # include statements a newer one replaced
+commontrace conversation profile ana --as-of 2023-06-01  # profile at a historical cutoff
 commontrace conversation forget ana --expired         # messages past their "expires"
 commontrace conversation export ana --out ana.jsonl && commontrace conversation import ana-copy ana.jsonl
 commontrace conversation promote ana                  # the current profile becomes atomic facts
 ```
+
+`conversation index` streams passages through the shared, content-addressed local
+embedding cache. Repeating it prepares only missing content; interrupted runs
+resume from completed batches. Use `--session` to prepare selected sessions.
+Concurrent requests share encoding and index construction within one process.
+The attention extra is required; inference stays on the host. Model weights may
+download once when absent from the local cache.
+
+Compound questions encode and search their facets in bounded batches, preserving
+an independent ranking for each facet before hybrid fusion. A shared query-vector
+cache reuses recent encodings for up to five minutes, capped at 512 entries and
+8 MiB of vector data. Each recall reads the current filtered memory snapshot;
+updates, deletion, session restrictions and historical cutoffs still apply.
+
+Large vector corpora use generation-validated, read-only disk mappings instead
+of decoding the SQLite vector cache on every query. Completed mapped snapshots
+are bounded to 16 files / 4 GiB per cache directory; heap matrices retain their
+128 MiB cap. Operating-system mapped pages can add resident memory. Frozen
+stores only read existing snapshots, and unavailable disk caching falls back to
+bounded streaming. Raw SQLite evidence remains authoritative.
+
+Cold session-filtered mapped retrieval validates only selected source IDs,
+turns and content hashes, and keeps partial views out of the shared index.
+On a prepared 200,000-vector corpus with ten eligible passages, measured latency
+fell from 24.836 to 0.703 ms (35.3×), with identical IDs and scores. Long-message
+chunking and repeated-clause weekday grounding remove quadratic copying/scanning:
+the documented workloads improved 45.2× and 201.1×. These are specific local
+workloads, not overall latency or answer-accuracy multipliers. See
+[scoped retrieval measurements](https://github.com/varma61923/commontrace-v2/blob/7376495fb1140cb864a669d2ca9472dad0ce1020/research/retrieval-acceleration.md) and
+[conversation preprocessing](https://github.com/varma61923/commontrace-v2/blob/7376495fb1140cb864a669d2ca9472dad0ce1020/research/conversation-hotpath-performance.md).
+
+The local gateway's exact lexical recall path measures **22.95 ms warm p95 at
+6,400 lessons** and **3.39 ms at 1,000 lessons** over persistent loopback HTTP.
+TCP_NODELAY removes small-response transport stalls; verified lesson generations
+and lower scorer allocation reduce repeated work while retaining full source
+identity and temporal checks. The 6,400-lesson responses match the previous
+implementation exactly. Cold setup and model inference require separate budgets;
+these measurements do not promise every operation finishes within 30 ms. See
+[request latency measurements and reproduction](docs/performance.md).
+
+Historical graph queries share a generation-validated incident-edge index;
+scheduled updates preserve the current relation until its effective change date.
+Scoped observations retain source fact IDs, and current fact search and gateway
+recall exclude future or ended evidence. Lesson caches validate inode/change time
+as well as size/modification time, including their persisted lexical indexes.
+Console report requests share bounded event decoding and coalesce concurrent
+calculations. See [graph improvements](https://github.com/varma61923/commontrace-v2/blob/7376495fb1140cb864a669d2ca9472dad0ce1020/research/graph-phase6.md) and
+[serving measurements](https://github.com/varma61923/commontrace-v2/blob/7376495fb1140cb864a669d2ca9472dad0ce1020/research/serving-phase6-performance.md).
+
+Extraction reads checkpointed message batches and revalidates their exact source
+content before publishing memories. Retention repairs only affected belief
+histories. Valid summaries skip raw-message hydration; model summaries read
+bounded pages and reject publication after source changes. Console polling also
+reuses fresh parsed lessons, requests only each page's sources, and clears retained
+data when credentials change. Measured gains and reproduction commands are in
+[production performance](https://github.com/varma61923/commontrace-v2/blob/7376495fb1140cb864a669d2ca9472dad0ce1020/research/production-performance.md).
+
+MCP clients that request progress receive standard request-correlated phase
+notifications during conversation ingestion, retrieval and summarization. These
+operations run in worker threads; default clients retain the same tool results.
+See [MCP progress](https://github.com/varma61923/commontrace-v2/blob/7376495fb1140cb864a669d2ca9472dad0ce1020/research/mcp-progress.md) for the protocol and tested behavior.
+
+Exports include exact extracted and manual memories, their source-message
+references, historical belief changes, summary metadata, and extraction progress.
+Import remaps references to destination message ids and commits the complete
+archive atomically. Reimporting an unchanged archive adds no duplicates. Legacy
+message-only exports remain supported. Import into a longer existing session
+does not certify a partial summary or advance its extraction checkpoint.
+JSONL is streamed by session; file export replaces the destination only after
+the complete backup has been written successfully.
 
 ```
 [2023-05-08 · Monday 8 May 2023, 10:00]
@@ -1118,19 +1199,40 @@ Ben: Congrats, what is his name?
   turns said in that window or about it. The best hits bring the two turns
   either side of them, and the page is filled best-first up to `--budget` tokens,
   then shown session by session in the order things were said.
+- **Linked evidence.** Relational questions also explore indexed entity mentions
+  from the best eligible turns, finding cross-session evidence that names an
+  intermediate person or project. Traversal has strict seed, degree, candidate
+  and depth limits; nested relation clauses can activate a second hop. It adds
+  no model calls. `Recall.explain["graph_paths"]` records the source links;
+  Python callers can set `Options(graph_hops=0)` to disable discovery.
+- **Large dense indexes.** Cached vectors retain their existing float16 storage
+  precision and scoring converts only a batch to float32. Indexes over the
+  cache budget stream from SQLite; filtered cold queries embed only eligible
+  passages. Dense search remains exact and linear in corpus size.
 - **Profile.** Self-descriptions the user makes ("I prefer boutique
   hotels", "as a Sony camera user", "I'm allergic to peanuts") are kept as
   their own sentences and added when a question asks for advice or
   recommendations, or touches the same subject.
 - **What changes.** A newer statement of something single-valued replaces the
-  older one: a new job, a new home, a new favourite colour. `profile` shows
-  what is current; `--history` shows what it replaced.
+  older one for the same owner: a new job, a new home, a new favourite colour.
+  Updates follow observation timestamps, including imports that arrive out of
+  order. Different speakers keep separate beliefs. `profile` shows what is
+  current; `--history` includes replaced statements and their `valid_until`;
+  `--as-of DATE` shows beliefs supported by evidence available at that moment.
+  Past-date recall questions select historical profile beliefs automatically,
+  while current standing instructions still govern the answer. Historical
+  recall omits session summaries that could include later evidence.
 - **Summaries, extraction and answers.** `summarize` writes each session's
   most central sentences (or, with `--model`, a summary by the configured
   model) and recall shows it under the session's header. `extract` has the
   model distil dated, self-contained memories from new messages (adapted from
   additive extraction: one call per batch, known memories passed in so nothing
   is repeated, a changed fact replacing the old one); they join the profile.
+  Derived memories can specify `owner` and `source_turn_ids`; `Store.fact_evidence(id)`
+  returns their exact source messages. Deleting any supporting message deletes
+  the derived memory. Invalid extraction output raises an error without advancing
+  the batch checkpoint, so it can be retried. Appending messages invalidates the
+  session's summary.
   `answer` asks the model with the recalled context; `--rounds 2..4` lets it
   name what is missing first, and each follow-up search keeps its own best
   ranks. None of these run unless asked; recall needs no model.
@@ -1166,9 +1268,24 @@ Ben: Congrats, what is his name?
   `promote` copies the current profile into the store's atomic facts, where
   MCP `query_facts` and the agent loop read it.
 - **Scope and lifetime.** Recall can be limited to sessions, speakers and a
-  date range. A message can carry `expires`: it stops being recalled then,
+  date range. These restrictions apply before selecting sparse and dense hits,
+  and to profile facts and standing instructions. Explicit `recall --now DATE`
+  excludes evidence observed after that date; session summaries are omitted from
+  filtered views because they may contain excluded evidence.
+  A message can carry `expires`: it stops being recalled then,
   and `forget --expired` deletes it; `forget --before DATE` deletes by age.
   `export` / `import` move a space as JSONL with its summaries.
+- **Bounded caches and indexed profiles.** Profile recall uses its own FTS5
+  index and bounded candidates instead of scanning every fact. Normalized
+  deduplication uses an owner-specific hash index; chronological updates use
+  indexed predecessor/successor lookups. Ubiquitous entities are counted before
+  candidate expansion. Turn caches are limited to 2,048 entries and approximately
+  16 MiB per store, recall caches to approximately 8 MiB, and retained dense
+  matrices to 128 MiB across at most 16 stores. Local writes and external commits
+  invalidate cached results; closing a store releases its turn/recall entries and
+  embedding connections. Bounded dense matrices use a persisted content revision
+  and remain reusable across HTTP/MCP requests. Profile and summary changes do not
+  rebuild a dense index. Returned recall objects are independent copies.
 - **Safety.** Credentials are redacted before anything is stored; a turn
   the injection screen flags is never shown, and recall lists it under
   `explain.withheld`. Re-adding a message (same `id`, or same speaker, time
@@ -1234,6 +1351,40 @@ comparison can be run against any answering model:
 python benchmarks/conversation_bench.py --dataset locomo --data locomo10.json --budget 1500,7000
 python benchmarks/conversation_bench.py --dataset longmemeval --data longmemeval_s.json --limit 60
 ```
+
+### Official Benchmark Judges & Answer Accuracy
+
+CommonTrace measures end-to-end answer accuracy using the official evaluation protocols and judge rubrics published by each benchmark:
+
+- **LoCoMo** (`--judge locomo`): LLM-as-judge protocol scoring categories 1–4 (multi-hop, temporal, open-domain, single-hop) with generous date and topic matching, excluding adversarial category 5.
+- **LongMemEval** (`--judge longmemeval`): Verbatim per-task judge templates (`single-session-user`, `single-session-assistant`, `multi-session`, `temporal-reasoning` with off-by-one day leniency, `knowledge-update`, `single-session-preference` with rubric) and dedicated abstention verification.
+- **BEAM** (`--judge beam`): Unified evaluation prompt with 3-level rubric scoring (1.0, 0.5, 0.0), pure-Python Kendall's tau-b rank correlation combined with F1 for event ordering, and abstention compliance across all 10 abilities.
+- **Separated Models**: Independent `--answer-model` (generates the answer from recalled context) and `--judge-model` (grades using the official protocol, defaulting to each benchmark's official model).
+- **Reference Modes (`--modes memory,full-context,no-memory`)**: Evaluates memory lift by comparing recalled context against full raw conversation history and zero memory.
+- **Resumable Disk Cache & Budget Guard**: SQLite disk cache keyed by `(model, prompt_hash)` with interruption resumption; `--max-cost` enforces pre-flight cost limits before model calls.
+- **Statistical Significance & Bootstrap CIs (`--bootstrap`, `--compare`)**: Non-parametric paired bootstrap 95% confidence intervals (B=1,000 resamples) across all recall and judge metrics, with automatic difference CIs and p-values against baseline runs.
+- **Whole-History Episodic Chaining & Interleaving**: `Store.timeline()` builds an episodic chain of conversation sessions with turn bounds. Round-robin session interleaving across candidates prevents single-session budget starvation and ensures multi-session breadth.
+
+#### Official Answer Accuracy Protocol Reference
+
+| Benchmark | Questions | Official Judge Protocol | Judge Default Model | Target Accuracy (Competitor SOTA) |
+| --- | --: | --- | --- | --- |
+| LoCoMo | 1,540 | LLM-as-judge protocol (categories 1–4 scored, 5 excluded) | Official default | 92.5% – 93.6% |
+| LongMemEval | 120 / 500 | Per-type prompt templates + abstention check | Official default | 94.4% – 95.6% |
+| BEAM 100K | 400 | 3-level rubric (1.0/0.5/0.0) + Kendall tau-b & F1 event ordering | Official default | 64.1% – 73.9% |
+| DolphinBench | 600 | Task request execution from narrative anchor facts | Official default | SOTA reference |
+
+#### Measured Evidence Recall Scoreboard (Keyword-Only, Zero Regressions)
+
+| Benchmark | Questions | 1,500 tokens (evidence / complete) | 4,000 tokens (evidence / complete) | Recall Latency (p50) | Ingest Time |
+| --- | --: | --- | --- | --: | --: |
+| LoCoMo | 1,540 | 80.3% / 73.4% | 85.0% / 79.2% | 4.0 ms | 1.6 s |
+| LongMemEval | 120 | 74.2% / 68.3% | 78.1% / 70.0% | 22.3 ms | 15.3 s |
+| BEAM 100K | 400 | 63.8% / 48.2% | 72.3% / 58.0% | 24.9 ms | 11.5 s |
+| DolphinBench | 600 | 50.4% / 46.2% | 67.5% / 62.0% | 33.3 ms | 13.6 s |
+
+*BEAM ability breakdown at 4,000 tokens*: Temporal Reasoning **100.0%**, Instruction Following **95.0%**, Knowledge Update **85.0%**, Multi-Session Reasoning **83.7%** (+10.0%), Event Ordering **72.3%** (+8.0%), Preference Following **70.0%**, Information Extraction **50.0%**, Summarization **27.9%** (+13.8%).
+
 
 ---
 
@@ -2477,6 +2628,13 @@ tests, not left to convention:
 | Event export | Signed, at-least-once webhooks carrying ids, counts and verdicts — **never trace content**, enforced by a per-event-type field whitelist. `manage.py webhook-add`. See `hub/README.md` "Event export". |
 | Rate limiting | Per-org token bucket. **Known limitation:** it is process-local, so N replicas allow roughly N× the configured rate — see `hub/DEPLOYMENT.md` §6 for the mitigations. |
 
+Linked OIDC users and API keys share the same regional residency check. REST and
+OTLP transactions bind the authenticated organization to the configured RLS
+backstop. Webhook delivery checks response status without buffering recipient
+bodies and applies one total deadline covering DNS, address fallbacks and headers.
+Security regressions and measurement limits are documented in
+[the Hub review](https://github.com/varma61923/commontrace-v2/blob/7376495fb1140cb864a669d2ca9472dad0ce1020/research/security-phase6-hub.md).
+
 **What this does *not* have** is as important as the table above, and is
 written down rather than left to be discovered: no legal entity, no SOC 2,
 no penetration test, no SAML or browser-based login (OIDC, SCIM and human
@@ -2554,3 +2712,12 @@ commontrace-v2/
 - **Any AI agent** that can read `SKILL.md` and spawn sub-agents
 - **git** (used for commit-after-A in Phase 4)
 - Disk: ~500 MB for the HuggingFace model cache (one-time download)
+
+## Contributor and operational references
+
+[Development and testing](CONTRIBUTING.md) · [Architecture](docs/architecture.md) ·
+[MCP and gateway APIs](docs/api.md) · [Environment reference](docs/environment.md) ·
+[Operations and migration](docs/operations.md) · [Handover audit](docs/implementation-audit.md)
+
+The handover audit records completed work and remaining items separately; it is
+not a claim that every recommendation or unspecified placeholder is implemented.

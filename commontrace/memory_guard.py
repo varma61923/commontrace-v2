@@ -137,6 +137,46 @@ def redact_secrets(text: str) -> tuple[str, list[str]]:
     return text, found
 
 
+def redact_pii(text: str) -> tuple[str, list[str]]:
+    """Actively mask PII in *text*, returning ``(masked_text, labels)``.
+
+    Unlike :func:`scan_text` which only reports findings, this function
+    replaces PII in the string with placeholder tokens so the original data
+    never touches storage.  Adapted from the Supermemory / Mem0 ingestion
+    protection pattern.
+
+    Masked categories:
+    - Email addresses → ``[REDACTED email]``
+    - Phone numbers → ``[REDACTED phone]``
+    - US SSN-shaped numbers → ``[REDACTED ssn]``
+    - Luhn-valid card numbers → ``[REDACTED card]``
+    """
+    if not text:
+        return text, []
+    found: list[str] = []
+
+    def _sub(pattern: re.Pattern, label: str, text: str) -> str:
+        def _mark(m: re.Match) -> str:
+            found.append(label)
+            return f"[REDACTED {label}]"
+        return pattern.sub(_mark, text)
+
+    text = _sub(_EMAIL_RE, "email", text)
+    text = _sub(_PHONE_RE, "phone", text)
+    text = _sub(_SSN_RE, "ssn", text)
+
+    # Card numbers need Luhn validation before redacting.
+    def _card_mark(m: re.Match) -> str:
+        digits = re.sub(r"[ -]", "", m.group())
+        if _luhn_ok(digits):
+            found.append("card")
+            return "[REDACTED card]"
+        return m.group()
+
+    text = _CARD_CANDIDATE_RE.sub(_card_mark, text)
+    return text, found
+
+
 def scan_text(text: str, field: str = "") -> list[Finding]:
     if not text:
         return []
@@ -224,8 +264,29 @@ class GuardReport:
 
 
 def scan_fields(fields: dict) -> GuardReport:
+    """Scan text throughout JSON-style metadata, including nested tags.
+
+    Cycles are visited once. Excessive structural expansion fails closed.
+    """
     findings: list[Finding] = []
-    for name, value in fields.items():
+    if len(fields) > 100_000:
+        raise ValueError("content safety scan exceeds 100000 metadata nodes")
+    pending = list(reversed(list(fields.items())))
+    seen: set[int] = set()
+    visited = 0
+    while pending:
+        name, value = pending.pop()
+        visited += 1
+        if visited > 100_000 or len(str(name)) > 4096:
+            raise ValueError("content safety scan exceeds 100000 metadata nodes")
         if isinstance(value, str) and value:
             findings.extend(scan_text(value, field=name))
+        elif isinstance(value, (dict, list, tuple)) and id(value) not in seen:
+            seen.add(id(value))
+            if visited + len(pending) + len(value) > 100_000:
+                raise ValueError("content safety scan exceeds 100000 metadata nodes")
+            if isinstance(value, dict):
+                pending.extend((f"{name}.{key}", value[key]) for key in reversed(value))
+            else:
+                pending.extend((f"{name}[{i}]", value[i]) for i in range(len(value) - 1, -1, -1))
     return GuardReport(findings=findings)

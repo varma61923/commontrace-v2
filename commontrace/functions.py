@@ -331,9 +331,11 @@ def render_kit(kit: FunctionKit) -> str:
     return "\n".join(lines)
 
 
+# Demo effects are deliberately well above the practical threshold so the
+# synthetic proof remains decisive under the anytime-valid sequential boundary.
 DEMO_LESSONS = (
-    ("demo-helpful-memory", +0.12),
-    ("demo-harmful-memory", -0.12),
+    ("demo-helpful-memory", +0.25),
+    ("demo-harmful-memory", -0.25),
     ("demo-neutral-memory", 0.0),
 )
 DEMO_OCCASIONS = 2400

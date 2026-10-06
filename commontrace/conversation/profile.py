@@ -73,9 +73,13 @@ class Fact:
 
 
 _SLOTS = [
-    (re.compile(r"\bwork(?:ing)? (?:as|at|for)\b", re.I), "job"),
-    (re.compile(r"\blive in\b|\bmoved to\b", re.I), "home"),
-    (re.compile(r"\b(?:study|studied|majored in)\b", re.I), "study"),
+    (re.compile(r"\b(?:work(?:ing)? (?:as|at|for|in)|job (?:is|as)|hired (?:as|at|by))\b", re.I), "job"),
+    (re.compile(r"\b(?:live in|living in|moved to|relocated to|based in)\b", re.I), "home"),
+    (re.compile(r"\b(?:study|studied|majored in|studying)\b", re.I), "study"),
+    (re.compile(r"\b(?:married to|engaged to|partner (?:is|of)|husband (?:is|of)|wife (?:is|of)|dating)\b", re.I),
+     "partner"),
+    (re.compile(r"\b(?:drive|bought a (?:car|truck|tesla|toyota|honda)|my car is)\b", re.I), "car"),
+    (re.compile(r"\b(?:allergic to|vegetarian|vegan|diet is)\b", re.I), "diet"),
 ]
 
 
@@ -84,7 +88,7 @@ def slot_of(kind: str, sentence: str, what: str) -> str | None:
     if kind == "favorite":
         first = subject_of(what, limit=1)
         return f"favorite:{first}" if first else None
-    if kind == "identity":
+    if kind in ("identity", "relationship", "possession", "dislike"):
         for pattern, slot in _SLOTS:
             if pattern.search(sentence):
                 return slot

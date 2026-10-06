@@ -13,7 +13,10 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         "ingest",
         help="Ingest a source (code, markdown, json-logs, transcript) into governed memory.",
     )
-    p.add_argument("source", help="Path to file or directory to ingest.")
+    p.add_argument("source", nargs="?", default=None, help="Path to file or directory to ingest.")
+    p.add_argument("--list-docs", action="store_true", help="List lightweight document summaries in catalog.")
+    p.add_argument("--get-doc", default=None, help="Retrieve full content of a document by ID or path.")
+    p.add_argument("--job-status", default=None, help="Check status and lifecycle stage of an ingestion job.")
     choices = [
         "code", "markdown", "json-logs", "logs", "transcript",
         "fact-triples", "fact_triples", "triples", "multimodal",
@@ -48,6 +51,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
                    help="docs: prefix chunks with where they sit (model uses COMMONTRACE_LLM_*)")
     p.add_argument("--force", action="store_true", help="docs: re-read files the ledger says are unchanged")
     p.set_defaults(func=run)
+
 
 
 def _run_docs(args: argparse.Namespace, root: str) -> int:
@@ -86,9 +90,66 @@ def _run_docs(args: argparse.Namespace, root: str) -> int:
 
 
 def run(args: argparse.Namespace) -> int:
-    from commontrace.ingest import IngestionPipeline
+    from commontrace.ingest import IngestionPipeline, catalog
 
     root = paths.resolve_root(args.dest)
+
+    if getattr(args, "job_status", None):
+        job = catalog.get_ingest_job(root, args.job_status)
+        if not job:
+            print(f"[commontrace] Job '{args.job_status}' not found.", file=sys.stderr)
+            return 1
+        if args.output_json:
+            print(json.dumps(job.to_dict(), indent=2))
+        else:
+            print(f"[commontrace] Ingest Job: {job.id} [{job.stage.upper()}]")
+            print(f"  Source:     {job.source}")
+            print(f"  Message:    {job.message}")
+            if job.progress:
+                print(f"  Progress:   {job.progress}")
+            if job.error:
+                print(f"  Error:      {job.error}")
+        return 0
+
+    if getattr(args, "list_docs", False) or args.source == "list":
+        docs = catalog.list_documents(root)
+        if args.output_json:
+            print(json.dumps(docs, indent=2))
+        else:
+            if not docs:
+                print("[commontrace] No ingested documents found.")
+            else:
+                print(f"[commontrace] {len(docs)} document summary(ies):")
+                for d in docs:
+                    print(f"  [{d['id'][:8]}] {d['title']:28s} ({d['token_count']} toks, {d['chunk_count']} chunks)")
+                    print(f"         Summary: {d['summary']}")
+        return 0
+
+    if getattr(args, "get_doc", None) or args.source == "get":
+        target = args.get_doc or (args.scope if args.scope else "")
+        if not target and getattr(args, "service", ""):
+            target = args.service
+        doc = catalog.get_document(root, target)
+        if not doc:
+            print(f"[commontrace] Document {target!r} not found.", file=sys.stderr)
+            return 1
+        if args.output_json:
+            print(json.dumps(doc, indent=2))
+        else:
+            print(f"# {doc.get('title')} ({doc.get('id')})")
+            print(f"Source: {doc.get('source_path')} ({doc.get('token_count')} tokens)")
+            print("-" * 60)
+            print(doc.get("content", ""))
+        return 0
+
+    if not args.source:
+        print(
+            "[commontrace] error: must provide source path or one of --list-docs, --get-doc, --job-status",
+            file=sys.stderr,
+        )
+        return 2
+
+
     raw_type = args.source_type or args.source_format or "code"
     source_type = raw_type.replace("-", "_")
     if source_type == "logs":
@@ -98,6 +159,7 @@ def run(args: argparse.Namespace) -> int:
 
     if source_type == "docs":
         return _run_docs(args, root)
+
 
     pipeline = IngestionPipeline()
     kwargs: dict = {}

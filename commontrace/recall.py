@@ -55,6 +55,34 @@ class Item:
                 "truncated": self.truncated}
 
 
+@dataclass(frozen=True)
+class RetrievalAssessment:
+    """Conservative retrieval confidence and abstention signal.
+
+    LongMemEval treats abstention as a first-class memory ability. This signal
+    describes evidence coverage only; it never claims that a generated answer
+    is factually correct. Callers can refuse to answer or trigger a deeper
+    reader when ``abstain`` is true.
+    """
+
+    confidence: float = 0.0
+    abstain: bool = True
+    reason: str = "no relevant evidence"
+    channels: tuple[str, ...] = ()
+    matched_query_terms: int = 0
+    query_terms: int = 0
+
+    def to_dict(self) -> dict:
+        return {
+            "confidence": self.confidence,
+            "abstain": self.abstain,
+            "reason": self.reason,
+            "channels": list(self.channels),
+            "matched_query_terms": self.matched_query_terms,
+            "query_terms": self.query_terms,
+        }
+
+
 @dataclass
 class Result:
     question: str
@@ -63,6 +91,7 @@ class Result:
     items: list[Item] = field(default_factory=list)
     considered: dict = field(default_factory=dict)
     errors: dict = field(default_factory=dict)
+    assessment: RetrievalAssessment = field(default_factory=RetrievalAssessment)
 
     @property
     def tokens(self) -> int:
@@ -84,7 +113,7 @@ class Result:
     def to_dict(self) -> dict:
         return {"question": self.question, "as_of": self.as_of, "budget": self.budget, "tokens": self.tokens,
                 "items": [i.to_dict() for i in self.items], "considered": self.considered,
-                "errors": self.errors, "context": self.context}
+                "errors": self.errors, "assessment": self.assessment.to_dict(), "context": self.context}
 
 
 # --- budgets ---------------------------------------------------------------------------
@@ -278,6 +307,46 @@ def pack(items: list[Item], budget: int) -> list[Item]:
     return sorted(chosen, key=lambda i: order[i.id])
 
 
+def _assess_retrieval(
+    question: str,
+    items: list[Item],
+    errors: dict,
+) -> RetrievalAssessment:
+    """Compute a calibrated-looking, deterministic evidence coverage signal.
+
+    It combines lexical query coverage, strongest channel score, and channel
+    diversity. The result is intentionally conservative: it is a retrieval
+    gate for abstention/deeper reading, not an answer truth score.
+    """
+    query_terms = {term for term in _WORDS.findall(question.lower()) if len(term) > 2}
+    if not items:
+        return RetrievalAssessment(reason="no channel returned relevant evidence", query_terms=len(query_terms))
+    evidence_terms = {term for item in items for term in _WORDS.findall(item.text.lower())}
+    matched = len(query_terms & evidence_terms)
+    coverage = matched / len(query_terms) if query_terms else 0.0
+    strongest = min(1.0, max(0.0, max((float(item.score) for item in items), default=0.0)))
+    channels = tuple(sorted({item.channel for item in items}))
+    diversity = min(1.0, len(channels) / 3.0)
+    confidence_raw = 0.55 * strongest + 0.30 * coverage + 0.15 * diversity
+    confidence = round(min(1.0, confidence_raw * (0.8 if errors else 1.0)), 4)
+    if not query_terms or matched == 0:
+        reason = "retrieved items do not cover the query terms"
+    elif confidence < 0.2:
+        reason = "evidence is weak; use a deeper reader or ask for clarification"
+    elif errors:
+        reason = "some memory channels failed; confidence is intentionally reduced"
+    else:
+        reason = "retrieved evidence covers the query"
+    return RetrievalAssessment(
+        confidence=confidence,
+        abstain=confidence < 0.2 or matched == 0,
+        reason=reason,
+        channels=channels,
+        matched_query_terms=matched,
+        query_terms=len(query_terms),
+    )
+
+
 def recall(root: str, question: str, *, budget: int | None = None, agent: str | None = None,
            channels: tuple[str, ...] = CHANNELS, as_of: str | None = None, weights: dict[str, float] | None = None,
            spaces: list[str] | None = None, embedder: str = "none", per_channel: int = 12) -> Result:
@@ -314,6 +383,7 @@ def recall(root: str, question: str, *, budget: int | None = None, agent: str | 
             if found:
                 rankings[channel] = found
         result.items = pack(diversify(fuse(rankings, weights)), total)
-        handle.set(tokens=result.tokens, items=len(result.items))
+        result.assessment = _assess_retrieval(question, result.items, result.errors)
+        handle.set(tokens=result.tokens, items=len(result.items), confidence=result.assessment.confidence)
     telemetry.observe("commontrace_recall_tokens", float(result.tokens))
     return result
