@@ -6,7 +6,11 @@ Use the tested deployment assets in [deploy/README.md](../deploy/README.md) and
 [hub/DEPLOYMENT.md](../hub/DEPLOYMENT.md); those cover local/staging/production
 setup, migrations, TLS, replicas, connection budgets and restoration drills.
 CI validates assets and never applies infrastructure. Keep development on
-loopback. Store tokens/keys in deployment secrets, not CLI history or the repo.
+loopback. The local HTTP gateway defaults to at most 128 active connections;
+`make_http_server(..., max_connections=...)` configures the positive limit. Idle
+connections retain a slot until timeout; excess connections close without starting
+a waiting worker. Deploy a reverse proxy with appropriate client retry/admission
+policy when public traffic exceeds that budget. Store tokens/keys in deployment secrets, not CLI history or the repo.
 
 Hub `/healthz` checks the process and `/readyz` checks database readiness.
 Existing telemetry, request metrics, webhook delivery state and optional

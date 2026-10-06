@@ -99,3 +99,31 @@ python -m pytest tests/test_retrieval_cache_safety.py tests/test_hub_batch_bound
 # With a disposable PostgreSQL configured through HUB_TEST_DATABASE_URL:
 python -m pytest hub/tests/test_hydration_projection.py -q
 ```
+
+## Chronology insertion CPU cost
+
+Common fact insertions now reuse the predecessor's maintained successor link,
+reducing neighbor SELECTs from two to one. Earliest insertions still seek the
+successor; owner/slot isolation, timestamp ties and historical evidence are unchanged.
+An independent sorted-history oracle covers shuffled/tied/unknown timestamps,
+source links and rollback.
+
+Compared with commit `6029dfa51efe8b8508f8ca563d1ecb2283ef5d6c` on the same local
+Python/SQLite environment, ten alternating pairs of 3,000 inserts in a transaction
+gave the following medians measured with `time.process_time()`:
+
+| Insertion order | Baseline CPU | Improved CPU | Ratio |
+| --- | ---: | ---: | ---: |
+| Increasing timestamps | 78.43 ms | 74.32 ms | 1.05× |
+| Permuted timestamps | 83.99 ms | 79.08 ms | 1.06× |
+
+Each run uses a fresh temporary store, one source turn and the same owner/slot.
+The timed block calls `_insert_fact` 3,000 times within `write_txn`; timestamps
+are zero-padded ordinals, either `i` or `(i * 7919) % 3000`. Variant order reverses
+on alternating repetitions. Store creation and source insertion are excluded.
+These measurements describe CPU cost; concurrent system load made wall-clock
+latency inconclusive. They do not establish a general 20× speedup.
+
+```bash
+python -m pytest tests/test_conversation_ingestion_performance.py -q
+```

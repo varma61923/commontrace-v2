@@ -1205,11 +1205,12 @@ class Gateway:
 
 
 def make_http_server(gateway: Gateway, host: str, port: int, *, tls: tuple[str, str] | None = None,
-                     request_timeout: float = 10.0) -> ThreadingHTTPServer:
+                     request_timeout: float = 10.0, max_connections: int = 128) -> ThreadingHTTPServer:
     """Create the HTTP transport; retained here for import compatibility."""
     from commontrace.gateway_transport import make_http_server as create_server
 
-    return create_server(gateway, host, port, tls=tls, request_timeout=request_timeout)
+    return create_server(gateway, host, port, tls=tls, request_timeout=request_timeout,
+                         max_connections=max_connections)
 
 
 def serve_stdio(gateway: Gateway, stdin: TextIO, stdout: TextIO) -> int:

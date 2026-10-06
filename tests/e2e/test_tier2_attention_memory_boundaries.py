@@ -31,7 +31,7 @@ class DummyEmbeddingModel:
         return out
 
 
-def test_r2_f1_boundary_chunk_size_one() -> None:
+def test_boundary_chunk_size_one() -> None:
     from commontrace.reference.measure_performance import compute_semantic_duplicates
 
     n = 6
@@ -51,7 +51,7 @@ def test_r2_f1_boundary_chunk_size_one() -> None:
     assert found_slugs == {"lesson_0", "lesson_3"}
 
 
-def test_r2_f1_boundary_chunk_size_exceeds_total_items() -> None:
+def test_boundary_chunk_size_exceeds_total_items() -> None:
     from commontrace.reference.measure_performance import compute_semantic_duplicates
 
     n = 5
@@ -68,7 +68,7 @@ def test_r2_f1_boundary_chunk_size_exceeds_total_items() -> None:
     assert count >= 0
 
 
-def test_r2_f1_boundary_identical_all_elements() -> None:
+def test_boundary_identical_all_elements() -> None:
     from commontrace.reference.measure_performance import compute_semantic_duplicates
 
     n = 5
@@ -85,7 +85,7 @@ def test_r2_f1_boundary_identical_all_elements() -> None:
     assert len(pairs) == expected_pairs
 
 
-def test_r2_f1_boundary_strictly_orthogonal_embeddings() -> None:
+def test_boundary_strictly_orthogonal_embeddings() -> None:
     from commontrace.reference.measure_performance import compute_semantic_duplicates
 
     embs = np.eye(4, dtype=np.float32)
@@ -96,7 +96,7 @@ def test_r2_f1_boundary_strictly_orthogonal_embeddings() -> None:
     assert pairs == []
 
 
-def test_r2_f1_boundary_threshold_epsilon_above_one() -> None:
+def test_boundary_threshold_epsilon_above_one() -> None:
     from commontrace.reference.measure_performance import compute_semantic_duplicates
 
     rng = np.random.default_rng(303)
@@ -109,7 +109,7 @@ def test_r2_f1_boundary_threshold_epsilon_above_one() -> None:
     assert pairs == []
 
 
-def test_r2_f2_boundary_corrupt_index_npz_recovery(
+def test_boundary_corrupt_index_npz_recovery(
     isolated_store: Path,
     monkeypatch: pytest.MonkeyPatch,
     lesson_factory: Callable[..., Path],
@@ -139,7 +139,7 @@ def test_r2_f2_boundary_corrupt_index_npz_recovery(
         assert len(data["slugs"]) == 2
 
 
-def test_r2_f2_boundary_non_markdown_and_templates_ignored(
+def test_boundary_non_markdown_and_templates_ignored(
     isolated_store: Path,
     monkeypatch: pytest.MonkeyPatch,
     lesson_factory: Callable[..., Path],
@@ -171,7 +171,7 @@ def test_r2_f2_boundary_non_markdown_and_templates_ignored(
         assert "lesson_valid_md" in slugs
 
 
-def test_r2_f2_boundary_zero_lessons_creates_valid_empty_index(
+def test_boundary_zero_lessons_creates_valid_empty_index(
     isolated_store: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -193,7 +193,7 @@ def test_r2_f2_boundary_zero_lessons_creates_valid_empty_index(
     assert output_file.exists()
 
 
-def test_r2_f2_boundary_partial_deletion_of_indexed_files(
+def test_boundary_partial_deletion_of_indexed_files(
     isolated_store: Path,
     monkeypatch: pytest.MonkeyPatch,
     lesson_factory: Callable[..., Path],
@@ -222,7 +222,7 @@ def test_r2_f2_boundary_partial_deletion_of_indexed_files(
         assert "lesson_delete_me" not in slugs_after
 
 
-def test_r2_f2_boundary_mtime_unchanged_skips_encoding(
+def test_boundary_mtime_unchanged_skips_encoding(
     isolated_store: Path,
     monkeypatch: pytest.MonkeyPatch,
     lesson_factory: Callable[..., Path],
@@ -244,7 +244,7 @@ def test_r2_f2_boundary_mtime_unchanged_skips_encoding(
     assert res2["reused_count"] == 1
 
 
-def test_r2_f3_boundary_missing_importances_key_fallback(
+def test_boundary_missing_importances_key_fallback(
     isolated_store: Path,
 ) -> None:
     from commontrace.reference.query import load_importances_from_index
@@ -264,7 +264,7 @@ def test_r2_f3_boundary_missing_importances_key_fallback(
     assert res is None
 
 
-def test_r2_f3_boundary_corrupt_importance_values(
+def test_boundary_corrupt_importance_values(
     isolated_store: Path,
 ) -> None:
     from commontrace.reference.query import load_importances_from_index
@@ -290,7 +290,7 @@ def test_r2_f3_boundary_corrupt_importance_values(
     assert imp_dict["s2"] == -50
 
 
-def test_r2_f3_boundary_status_filtering_in_fast_loader(
+def test_boundary_status_filtering_in_fast_loader(
     isolated_store: Path,
 ) -> None:
     from commontrace.reference.query import load_importances_from_index
@@ -317,7 +317,7 @@ def test_r2_f3_boundary_status_filtering_in_fast_loader(
     assert "inactive_two" not in imp_dict
 
 
-def test_r2_f3_boundary_corrupt_index_file_raises_cleanly(
+def test_boundary_corrupt_index_file_raises_cleanly(
     isolated_store: Path,
 ) -> None:
     attention_dir = isolated_store / "memory" / "attention"
@@ -330,7 +330,7 @@ def test_r2_f3_boundary_corrupt_index_file_raises_cleanly(
             pass
 
 
-def test_r2_f3_boundary_cosine_similarity_computation() -> None:
+def test_boundary_cosine_similarity_computation() -> None:
     q_emb = np.array([1.0, 0.0, 0.0], dtype=np.float32)
     doc_embs = np.array([
         [-1.0, 0.0, 0.0],
@@ -344,7 +344,7 @@ def test_r2_f3_boundary_cosine_similarity_computation() -> None:
     assert scores[2] == 1.0
 
 
-def test_r2_f4_boundary_zero_tokens_and_whitespace_only() -> None:
+def test_boundary_zero_tokens_and_whitespace_only() -> None:
     from commontrace.reference.measure_performance import compute_lexical_duplicates
 
     lessons = {
@@ -357,7 +357,7 @@ def test_r2_f4_boundary_zero_tokens_and_whitespace_only() -> None:
     assert res["n_lessons"] == 0
 
 
-def test_r2_f4_boundary_single_shared_token_below_threshold() -> None:
+def test_boundary_single_shared_token_below_threshold() -> None:
     from commontrace.reference.measure_performance import compute_lexical_duplicates
 
     lessons = {
@@ -375,7 +375,7 @@ def test_r2_f4_boundary_single_shared_token_below_threshold() -> None:
     assert len(res["pairs"]) == 0
 
 
-def test_r2_f4_boundary_identical_wording_detected() -> None:
+def test_boundary_identical_wording_detected() -> None:
     from commontrace.reference.measure_performance import compute_lexical_duplicates
 
     text = "thorough system integration testing and boundary verification protocol"
@@ -391,7 +391,7 @@ def test_r2_f4_boundary_identical_wording_detected() -> None:
     assert pair["score"] >= 0.9
 
 
-def test_r2_f4_boundary_degenerate_threshold_zero() -> None:
+def test_boundary_degenerate_threshold_zero() -> None:
     from commontrace.reference.measure_performance import compute_lexical_duplicates
 
     lessons = {
@@ -404,7 +404,7 @@ def test_r2_f4_boundary_degenerate_threshold_zero() -> None:
     assert res["threshold"] == 0.0
 
 
-def test_r2_f4_boundary_disjoint_vocabularies_zero_pairs() -> None:
+def test_boundary_disjoint_vocabularies_zero_pairs() -> None:
     from commontrace.reference.measure_performance import compute_lexical_duplicates
 
     lessons = {

@@ -1,4 +1,4 @@
-# Handover implementation audit
+# Implementation audit
 
 This is an evidence-based disposition, **not a claim that every proposal is implemented**.
 The attached report mixes existing protections, recommendations, duplicate actions and unspecified placeholders.
@@ -14,8 +14,8 @@ Rows labelled Partial, Remaining or Unspecified are deliberately open. Not adopt
 | Implemented | 50 |
 | Not adopted | 16 |
 | Not applicable | 2 |
-| Partial | 10 |
-| Remaining | 6 |
+| Partial | 11 |
+| Remaining | 5 |
 | Reviewed | 20 |
 | Unspecified | 27 |
 | Unsupported claim | 2 |
@@ -52,7 +52,7 @@ Rows labelled Partial, Remaining or Unspecified are deliberately open. Not adopt
 | --- | --- | --- | --- |
 | 2.1 | N+1 Query in Votes Loading | Existing | [hub/crud.py](../hub/crud.py) — Child/evidence hydration already uses bounded bulk queries, not one query per row; scalar projection is optimized. |
 | 2.2 | N+1 Query in Related Traces | Existing | [hub/crud.py](../hub/crud.py) — Child/evidence hydration already uses bounded bulk queries, not one query per row; scalar projection is optimized. |
-| 2.3 | Multiple Single-Row Queries in Loop | Remaining | [commontrace/conversation/store.py](../commontrace/conversation/store.py) — Per-insert predecessor/successor queries remain; chronology repair and migrations optimized separately. |
+| 2.3 | Multiple Single-Row Queries in Loop | Partial | [commontrace/conversation/store.py](../commontrace/conversation/store.py) — Maintained successor links reduce common insertion neighbor lookups from two SELECTs to one; inserts still perform per-row persistence, so a full bulk rewrite is not claimed. |
 | 2.4 | Loading Entire Corpus into Memory | Reviewed | [commontrace/retrieval.py](../commontrace/retrieval.py) — Cached inverted postings and numeric candidate state avoid corpus reparsing/result allocation; dense vectorization is not required for core. |
 | 2.5 | Unbounded Concurrent HTTP Requests | Implemented | [commontrace/hub_client.py](../commontrace/hub_client.py) — Explicit connection/keepalive limits and finite connect/read/write/pool deadlines. |
 | 2.6 | Non-Thread-Safe Cache Access | Implemented | [tests/test_retrieval_cache_safety.py](../tests/test_retrieval_cache_safety.py) — Thread/fork-safe single-flight LRU with retained-memory budget, exact identity and collision checks. |
@@ -93,20 +93,20 @@ Rows labelled Partial, Remaining or Unspecified are deliberately open. Not adopt
 | 2.41 | Missing Timeout Configurations | Implemented | [commontrace/hub_client.py](../commontrace/hub_client.py) — Explicit connection/keepalive limits and finite connect/read/write/pool deadlines. |
 | 2.42 | Inefficient YAML Parsing | Implemented | [tests/test_frontmatter_cache_resources.py](../tests/test_frontmatter_cache_resources.py) — Concurrent/fork-safe bounded frontmatter memo; first-two delimiter scanning avoids body materialization. |
 | 2.43 | Additional medium-priority performance issues covering: | Reviewed | [commontrace/telemetry.py](../commontrace/telemetry.py) — Generic repeated-JSON assertion has no concrete hot path; measured serializers and source-safe caching remain. |
-| 2.44 | Additional medium-priority performance issues covering: | Unspecified | [docs/handover.md](../docs/handover.md) — Grouped placeholder contains no individual actionable description/source/acceptance criteria; cannot claim implementation. |
-| 2.45 | Additional medium-priority performance issues covering: | Unspecified | [docs/handover.md](../docs/handover.md) — Grouped placeholder contains no individual actionable description/source/acceptance criteria; cannot claim implementation. |
+| 2.44 | Additional medium-priority performance issues covering: | Unspecified | [docs/implementation-audit.md](../docs/implementation-audit.md) — Grouped placeholder contains no individual actionable description/source/acceptance criteria; cannot claim implementation. |
+| 2.45 | Additional medium-priority performance issues covering: | Unspecified | [docs/implementation-audit.md](../docs/implementation-audit.md) — Grouped placeholder contains no individual actionable description/source/acceptance criteria; cannot claim implementation. |
 | 2.46 | Additional medium-priority performance issues covering: | Remaining | [commontrace/gateway_transport.py](../commontrace/gateway_transport.py) — Optional HTTP response compression not implemented; it needs content/privacy and CPU tradeoff validation. |
-| 2.47 | Additional medium-priority performance issues covering: | Unspecified | [docs/handover.md](../docs/handover.md) — Grouped placeholder contains no individual actionable description/source/acceptance criteria; cannot claim implementation. |
-| 2.48 | Additional medium-priority performance issues covering: | Unspecified | [docs/handover.md](../docs/handover.md) — Grouped placeholder contains no individual actionable description/source/acceptance criteria; cannot claim implementation. |
-| 2.49 | Additional medium-priority performance issues covering: | Unspecified | [docs/handover.md](../docs/handover.md) — Grouped placeholder contains no individual actionable description/source/acceptance criteria; cannot claim implementation. |
-| 2.50 | Additional medium-priority performance issues covering: | Unspecified | [docs/handover.md](../docs/handover.md) — Grouped placeholder contains no individual actionable description/source/acceptance criteria; cannot claim implementation. |
-| 2.51 | Additional medium-priority performance issues covering: | Unspecified | [docs/handover.md](../docs/handover.md) — Grouped placeholder contains no individual actionable description/source/acceptance criteria; cannot claim implementation. |
-| 2.52 | Additional medium-priority performance issues covering: | Unspecified | [docs/handover.md](../docs/handover.md) — Grouped placeholder contains no individual actionable description/source/acceptance criteria; cannot claim implementation. |
-| 2.53 | Additional medium-priority performance issues covering: | Unspecified | [docs/handover.md](../docs/handover.md) — Grouped placeholder contains no individual actionable description/source/acceptance criteria; cannot claim implementation. |
-| 2.54 | Additional medium-priority performance issues covering: | Unspecified | [docs/handover.md](../docs/handover.md) — Grouped placeholder contains no individual actionable description/source/acceptance criteria; cannot claim implementation. |
-| 2.55 | Additional medium-priority performance issues covering: | Unspecified | [docs/handover.md](../docs/handover.md) — Grouped placeholder contains no individual actionable description/source/acceptance criteria; cannot claim implementation. |
-| 2.56 | Additional medium-priority performance issues covering: | Unspecified | [docs/handover.md](../docs/handover.md) — Grouped placeholder contains no individual actionable description/source/acceptance criteria; cannot claim implementation. |
-| 2.57 | Additional medium-priority performance issues covering: | Unspecified | [docs/handover.md](../docs/handover.md) — Grouped placeholder contains no individual actionable description/source/acceptance criteria; cannot claim implementation. |
+| 2.47 | Additional medium-priority performance issues covering: | Unspecified | [docs/implementation-audit.md](../docs/implementation-audit.md) — Grouped placeholder contains no individual actionable description/source/acceptance criteria; cannot claim implementation. |
+| 2.48 | Additional medium-priority performance issues covering: | Unspecified | [docs/implementation-audit.md](../docs/implementation-audit.md) — Grouped placeholder contains no individual actionable description/source/acceptance criteria; cannot claim implementation. |
+| 2.49 | Additional medium-priority performance issues covering: | Unspecified | [docs/implementation-audit.md](../docs/implementation-audit.md) — Grouped placeholder contains no individual actionable description/source/acceptance criteria; cannot claim implementation. |
+| 2.50 | Additional medium-priority performance issues covering: | Unspecified | [docs/implementation-audit.md](../docs/implementation-audit.md) — Grouped placeholder contains no individual actionable description/source/acceptance criteria; cannot claim implementation. |
+| 2.51 | Additional medium-priority performance issues covering: | Unspecified | [docs/implementation-audit.md](../docs/implementation-audit.md) — Grouped placeholder contains no individual actionable description/source/acceptance criteria; cannot claim implementation. |
+| 2.52 | Additional medium-priority performance issues covering: | Unspecified | [docs/implementation-audit.md](../docs/implementation-audit.md) — Grouped placeholder contains no individual actionable description/source/acceptance criteria; cannot claim implementation. |
+| 2.53 | Additional medium-priority performance issues covering: | Unspecified | [docs/implementation-audit.md](../docs/implementation-audit.md) — Grouped placeholder contains no individual actionable description/source/acceptance criteria; cannot claim implementation. |
+| 2.54 | Additional medium-priority performance issues covering: | Unspecified | [docs/implementation-audit.md](../docs/implementation-audit.md) — Grouped placeholder contains no individual actionable description/source/acceptance criteria; cannot claim implementation. |
+| 2.55 | Additional medium-priority performance issues covering: | Unspecified | [docs/implementation-audit.md](../docs/implementation-audit.md) — Grouped placeholder contains no individual actionable description/source/acceptance criteria; cannot claim implementation. |
+| 2.56 | Additional medium-priority performance issues covering: | Unspecified | [docs/implementation-audit.md](../docs/implementation-audit.md) — Grouped placeholder contains no individual actionable description/source/acceptance criteria; cannot claim implementation. |
+| 2.57 | Additional medium-priority performance issues covering: | Unspecified | [docs/implementation-audit.md](../docs/implementation-audit.md) — Grouped placeholder contains no individual actionable description/source/acceptance criteria; cannot claim implementation. |
 
 ## Group 3
 
@@ -124,27 +124,27 @@ Rows labelled Partial, Remaining or Unspecified are deliberately open. Not adopt
 | 3.10 | MD5 Usage for Non-Security Purposes | Not adopted | [commontrace/fingerprints.py](../commontrace/fingerprints.py) — Nonsecurity durable identifiers are explicitly noncryptographic; changing them requires a migration, not a blind hash swap. |
 | 3.11 | Potential Log Injection via Unsanitized Input | Implemented | [commontrace/gateway.py](../commontrace/gateway.py) — Error responses/logs expose error class, not exception messages that may contain private data. |
 | 3.12 | Webhook URLs Stored in Plaintext (Optional Encryption) | Existing | [hub/encryption.py](../hub/encryption.py) — At-rest encryption supports rotation and explicit disabled local configuration; production setup documented. No hidden plaintext fallback for encrypted values. |
-| 3.13 | Secret Redaction Not Applied to All Fields | Partial | [tests/test_handover_completion.py](../tests/test_handover_completion.py) — Nested Hub metadata scanned cycle-safely and bounded; all local capture/import metadata redaction paths not yet audited. |
+| 3.13 | Secret Redaction Not Applied to All Fields | Partial | [tests/test_metadata_encryption_and_batch_validation.py](../tests/test_metadata_encryption_and_batch_validation.py) — Nested Hub metadata scanned cycle-safely and bounded; all local capture/import metadata redaction paths not yet audited. |
 | 3.14 | Sentence-Transformers Version Range | Unsupported claim | [requirements.txt](../requirements.txt) — Attachment cites no advisory proving audited declared ranges vulnerable; keep compatibility floors and verify with CI pip-audit, not blind pins. |
 | 3.15 | Missing Boundary Check in Offset Parameter | Implemented | [hub/console.py](../hub/console.py) — Console memory, KB and audit offsets are nonnegative and capped at 100000. |
 | 3.16 | Broad Exception Swallowing | Implemented | [hub/encryption.py](../hub/encryption.py) — Malformed envelopes produce EncryptionError; only authentication/decoding failures trigger key retry, not arbitrary exceptions. |
 | 3.17 | Missing Error Logging in Event Delivery | Implemented | [hub/tests/test_events.py](../hub/tests/test_events.py) — Delivery failure class retained safely; transport URL/token messages omitted from stored retry errors. |
 | 3.18 | Generic Exception Catching in Server Routes | Reviewed | [hub/server.py](../hub/server.py) — Expected policy errors are classified; unexpected failures deliberately become a safe structured internal error. |
-| 3.19 | Additional error handling issues covering: | Unspecified | [docs/handover.md](../docs/handover.md) — Grouped placeholder does not specify this issue, affected code, failure or acceptance criteria. |
-| 3.20 | Additional error handling issues covering: | Unspecified | [docs/handover.md](../docs/handover.md) — Grouped placeholder does not specify this issue, affected code, failure or acceptance criteria. |
-| 3.21 | Additional error handling issues covering: | Unspecified | [docs/handover.md](../docs/handover.md) — Grouped placeholder does not specify this issue, affected code, failure or acceptance criteria. |
-| 3.22 | Additional error handling issues covering: | Unspecified | [docs/handover.md](../docs/handover.md) — Grouped placeholder does not specify this issue, affected code, failure or acceptance criteria. |
-| 3.23 | Additional error handling issues covering: | Unspecified | [docs/handover.md](../docs/handover.md) — Grouped placeholder does not specify this issue, affected code, failure or acceptance criteria. |
-| 3.24 | Additional error handling issues covering: | Unspecified | [docs/handover.md](../docs/handover.md) — Grouped placeholder does not specify this issue, affected code, failure or acceptance criteria. |
-| 3.25 | Additional error handling issues covering: | Unspecified | [docs/handover.md](../docs/handover.md) — Grouped placeholder does not specify this issue, affected code, failure or acceptance criteria. |
-| 3.26 | Additional error handling issues covering: | Unspecified | [docs/handover.md](../docs/handover.md) — Grouped placeholder does not specify this issue, affected code, failure or acceptance criteria. |
-| 3.27 | Additional error handling issues covering: | Unspecified | [docs/handover.md](../docs/handover.md) — Grouped placeholder does not specify this issue, affected code, failure or acceptance criteria. |
-| 3.28 | Additional error handling issues covering: | Unspecified | [docs/handover.md](../docs/handover.md) — Grouped placeholder does not specify this issue, affected code, failure or acceptance criteria. |
-| 3.29 | Additional error handling issues covering: | Unspecified | [docs/handover.md](../docs/handover.md) — Grouped placeholder does not specify this issue, affected code, failure or acceptance criteria. |
-| 3.30 | Additional error handling issues covering: | Unspecified | [docs/handover.md](../docs/handover.md) — Grouped placeholder does not specify this issue, affected code, failure or acceptance criteria. |
+| 3.19 | Additional error handling issues covering: | Unspecified | [docs/implementation-audit.md](../docs/implementation-audit.md) — Grouped placeholder does not specify this issue, affected code, failure or acceptance criteria. |
+| 3.20 | Additional error handling issues covering: | Unspecified | [docs/implementation-audit.md](../docs/implementation-audit.md) — Grouped placeholder does not specify this issue, affected code, failure or acceptance criteria. |
+| 3.21 | Additional error handling issues covering: | Unspecified | [docs/implementation-audit.md](../docs/implementation-audit.md) — Grouped placeholder does not specify this issue, affected code, failure or acceptance criteria. |
+| 3.22 | Additional error handling issues covering: | Unspecified | [docs/implementation-audit.md](../docs/implementation-audit.md) — Grouped placeholder does not specify this issue, affected code, failure or acceptance criteria. |
+| 3.23 | Additional error handling issues covering: | Unspecified | [docs/implementation-audit.md](../docs/implementation-audit.md) — Grouped placeholder does not specify this issue, affected code, failure or acceptance criteria. |
+| 3.24 | Additional error handling issues covering: | Unspecified | [docs/implementation-audit.md](../docs/implementation-audit.md) — Grouped placeholder does not specify this issue, affected code, failure or acceptance criteria. |
+| 3.25 | Additional error handling issues covering: | Unspecified | [docs/implementation-audit.md](../docs/implementation-audit.md) — Grouped placeholder does not specify this issue, affected code, failure or acceptance criteria. |
+| 3.26 | Additional error handling issues covering: | Unspecified | [docs/implementation-audit.md](../docs/implementation-audit.md) — Grouped placeholder does not specify this issue, affected code, failure or acceptance criteria. |
+| 3.27 | Additional error handling issues covering: | Unspecified | [docs/implementation-audit.md](../docs/implementation-audit.md) — Grouped placeholder does not specify this issue, affected code, failure or acceptance criteria. |
+| 3.28 | Additional error handling issues covering: | Unspecified | [docs/implementation-audit.md](../docs/implementation-audit.md) — Grouped placeholder does not specify this issue, affected code, failure or acceptance criteria. |
+| 3.29 | Additional error handling issues covering: | Unspecified | [docs/implementation-audit.md](../docs/implementation-audit.md) — Grouped placeholder does not specify this issue, affected code, failure or acceptance criteria. |
+| 3.30 | Additional error handling issues covering: | Unspecified | [docs/implementation-audit.md](../docs/implementation-audit.md) — Grouped placeholder does not specify this issue, affected code, failure or acceptance criteria. |
 | 3.31 | Potential PII in Logs | Implemented | [hub/auth.py](../hub/auth.py) — Regional denial logs a bounded SHA256-derived organization identifier instead of the full ID. |
-| 3.32 | Additional privacy issues | Unspecified | [docs/handover.md](../docs/handover.md) — Grouped placeholder does not specify this issue, affected code, failure or acceptance criteria. |
-| 3.33 | Additional privacy issues | Unspecified | [docs/handover.md](../docs/handover.md) — Grouped placeholder does not specify this issue, affected code, failure or acceptance criteria. |
+| 3.32 | Additional privacy issues | Unspecified | [docs/implementation-audit.md](../docs/implementation-audit.md) — Grouped placeholder does not specify this issue, affected code, failure or acceptance criteria. |
+| 3.33 | Additional privacy issues | Unspecified | [docs/implementation-audit.md](../docs/implementation-audit.md) — Grouped placeholder does not specify this issue, affected code, failure or acceptance criteria. |
 
 ## Group 4
 
@@ -176,7 +176,7 @@ Rows labelled Partial, Remaining or Unspecified are deliberately open. Not adopt
 | 5.2 | Missing Architecture Documentation | Implemented | [docs/architecture.md](../docs/architecture.md) — Mermaid flow, storage layers, configuration boundaries, source validation, concurrency and batch transaction contracts. |
 | 5.3 | Missing API Documentation | Implemented | [docs/api.md](../docs/api.md) — Source-derived decorated MCP tool and HTTP route inventory with signatures/source contracts; Python pydoc instructions. |
 | 5.4 | Unexplained Complex Algorithms | Implemented | [commontrace/_stem.py](../commontrace/_stem.py) — Targeted module docstrings and stem/MinHash explanations added; existing modules already explain their algorithms. |
-| 5.5 | Improve Error Messages with Context | Implemented | [tests/test_handover_architecture.py](../tests/test_handover_architecture.py) — Numeric configuration rejection/fallback identifies fields; malformed encryption/batches have bounded safe error categories. |
+| 5.5 | Improve Error Messages with Context | Implemented | [tests/test_retrieval_configuration_and_gateway_errors.py](../tests/test_retrieval_configuration_and_gateway_errors.py) — Numeric configuration rejection/fallback identifies fields; malformed encryption/batches have bounded safe error categories. |
 | 5.6 | Create Troubleshooting Guide | Implemented | [docs/operations.md](../docs/operations.md) — Consolidated developer/operations docs cover setup, tests, troubleshooting, debugging, deployment, restoration and migration; existing deployment guides linked. |
 | 5.7 | Split Large Files | Partial | [commontrace/gateway_transport.py](../commontrace/gateway_transport.py) — Gateway transport extracted and hot membership/fallback code simplified; broad decomposition of every named large module remains undone. |
 | 5.8 | Add Function Docstrings to Public Functions | Partial | [commontrace/paths.py](../commontrace/paths.py) — Targeted public functions documented; source-derived inventory is not a claim that every public function has a new docstring. |

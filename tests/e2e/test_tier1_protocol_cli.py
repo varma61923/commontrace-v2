@@ -7,7 +7,7 @@ from typing import Callable
 from tests.e2e.conftest import CLIResult
 
 
-def test_r1_f1_init_validates_agent_type_slug(cli_runner: Callable[..., CLIResult], tmp_path: Path) -> None:
+def test_init_validates_agent_type_slug(cli_runner: Callable[..., CLIResult], tmp_path: Path) -> None:
     target_dir = tmp_path / "init_test"
     res_bad = cli_runner(["init", "--dest", str(target_dir), "--agent-type", "INVALID TYPE!"])
     assert res_bad.exit_code == 2
@@ -18,14 +18,14 @@ def test_r1_f1_init_validates_agent_type_slug(cli_runner: Callable[..., CLIResul
     assert "Initialized a support_ops-1 store" in res_good.stdout
 
 
-def test_r1_f1_capture_validates_required_args(cli_runner: Callable[..., CLIResult], isolated_store: Path) -> None:
+def test_capture_validates_required_args(cli_runner: Callable[..., CLIResult], isolated_store: Path) -> None:
     res = cli_runner(["capture", "--dest", str(isolated_store), "--title", "Missing Others"])
     assert res.exit_code == 2
     assert "the following arguments are required" in res.stderr
     assert "--context" in res.stderr or "--solution" in res.stderr
 
 
-def test_r1_f1_query_validates_top_k_bounds(cli_runner: Callable[..., CLIResult], isolated_store: Path) -> None:
+def test_query_validates_top_k_bounds(cli_runner: Callable[..., CLIResult], isolated_store: Path) -> None:
     res_neg = cli_runner(["query", "search term", "--top-k", "-5", "--dest", str(isolated_store)])
     assert res_neg.exit_code == 2
     assert "--top-k must be >= 1" in res_neg.stderr
@@ -35,7 +35,7 @@ def test_r1_f1_query_validates_top_k_bounds(cli_runner: Callable[..., CLIResult]
     assert "--top-k must be >= 1" in res_zero.stderr
 
 
-def test_r1_f1_distill_validates_similarity_threshold(cli_runner: Callable[..., CLIResult], isolated_store: Path) -> None:
+def test_distill_validates_similarity_threshold(cli_runner: Callable[..., CLIResult], isolated_store: Path) -> None:
     res_zero = cli_runner(["distill", "--similarity-threshold", "0", "--dest", str(isolated_store)])
     assert res_zero.exit_code == 2
     assert "must be > 0 and <= 1" in res_zero.stderr
@@ -45,13 +45,13 @@ def test_r1_f1_distill_validates_similarity_threshold(cli_runner: Callable[..., 
     assert "must be > 0 and <= 1" in res_too_high.stderr
 
 
-def test_r1_f1_export_validates_kind_choices(cli_runner: Callable[..., CLIResult], isolated_store: Path) -> None:
+def test_export_validates_kind_choices(cli_runner: Callable[..., CLIResult], isolated_store: Path) -> None:
     res = cli_runner(["export", "--kind", "unsupported_kind", "--dest", str(isolated_store)])
     assert res.exit_code == 2
     assert "invalid choice: 'unsupported_kind'" in res.stderr
 
 
-def test_r1_f1_lesson_new_validates_slug_pattern(cli_runner: Callable[..., CLIResult], isolated_store: Path) -> None:
+def test_lesson_new_validates_slug_pattern(cli_runner: Callable[..., CLIResult], isolated_store: Path) -> None:
     res = cli_runner([
         "lesson", "new",
         "--slug", "../traversal_lesson",
@@ -63,7 +63,7 @@ def test_r1_f1_lesson_new_validates_slug_pattern(cli_runner: Callable[..., CLIRe
     assert "invalid --slug" in res.stderr or "error" in res.stderr
 
 
-def test_r1_f2_exit_code_0_on_success(cli_runner: Callable[..., CLIResult], isolated_store: Path) -> None:
+def test_exit_code_0_on_success(cli_runner: Callable[..., CLIResult], isolated_store: Path) -> None:
     res_help = cli_runner(["--help"])
     assert res_help.exit_code == 0
 
@@ -74,32 +74,32 @@ def test_r1_f2_exit_code_0_on_success(cli_runner: Callable[..., CLIResult], isol
     assert res_version.exit_code == 0
 
 
-def test_r1_f2_exit_code_1_on_operational_and_validation_error(cli_runner: Callable[..., CLIResult], isolated_store: Path) -> None:
+def test_exit_code_1_on_operational_and_validation_error(cli_runner: Callable[..., CLIResult], isolated_store: Path) -> None:
     res = cli_runner(["lesson", "validate", "/nonexistent/path.md", "--dest", str(isolated_store)])
     assert res.exit_code == 1
     assert "error" in res.stderr.lower()
 
 
-def test_r1_f2_exit_code_2_on_argparse_syntax_error(cli_runner: Callable[..., CLIResult]) -> None:
+def test_exit_code_2_on_argparse_syntax_error(cli_runner: Callable[..., CLIResult]) -> None:
     res = cli_runner(["init", "--nonexistent-unrecognized-flag"])
     assert res.exit_code == 2
     assert "unrecognized arguments" in res.stderr
 
 
-def test_r1_f2_exit_code_2_on_missing_required_positional(cli_runner: Callable[..., CLIResult], isolated_store: Path) -> None:
+def test_exit_code_2_on_missing_required_positional(cli_runner: Callable[..., CLIResult], isolated_store: Path) -> None:
     res = cli_runner(["query"])
     assert res.exit_code == 2
     assert "the following arguments are required" in res.stderr
 
 
-def test_r1_f2_clean_error_message_no_traceback_on_exit_1(cli_runner: Callable[..., CLIResult], isolated_store: Path) -> None:
+def test_clean_error_message_no_traceback_on_exit_1(cli_runner: Callable[..., CLIResult], isolated_store: Path) -> None:
     res = cli_runner(["lesson", "validate", str(isolated_store / "memory"), "--dest", str(isolated_store)])
     assert res.exit_code == 1
     assert "[commontrace] error:" in res.stderr
     assert "Traceback (most recent call last)" not in res.stderr
 
 
-def test_r1_f3_capture_refuses_negative_tokens_used_pre_write(
+def test_capture_refuses_negative_tokens_used_pre_write(
     cli_runner: Callable[..., CLIResult],
     isolated_store: Path,
 ) -> None:
@@ -121,7 +121,7 @@ def test_r1_f3_capture_refuses_negative_tokens_used_pre_write(
     assert new_files == existing_files, "No trace file should be written when validation fails"
 
 
-def test_r1_f3_capture_refuses_negative_llm_calls_pre_write(
+def test_capture_refuses_negative_llm_calls_pre_write(
     cli_runner: Callable[..., CLIResult],
     isolated_store: Path,
 ) -> None:
@@ -143,7 +143,7 @@ def test_r1_f3_capture_refuses_negative_llm_calls_pre_write(
     assert new_files == existing_files
 
 
-def test_r1_f3_capture_writes_valid_schema_and_validates(
+def test_capture_writes_valid_schema_and_validates(
     cli_runner: Callable[..., CLIResult],
     isolated_store: Path,
 ) -> None:
@@ -165,7 +165,7 @@ def test_r1_f3_capture_writes_valid_schema_and_validates(
     assert "traces valid" in res_val.stdout
 
 
-def test_r1_f3_lesson_new_refuses_oversized_payload(
+def test_lesson_new_refuses_oversized_payload(
     isolated_store: Path,
 ) -> None:
     from commontrace.commands._validators import REFUSE_CHARS, check_text_size
@@ -173,7 +173,7 @@ def test_r1_f3_lesson_new_refuses_oversized_payload(
     assert check_text_size(fields, what="lesson") is False
 
 
-def test_r1_f3_lesson_validate_detects_unfilled_placeholders_in_active_lesson(
+def test_lesson_validate_detects_unfilled_placeholders_in_active_lesson(
     cli_runner: Callable[..., CLIResult],
     isolated_store: Path,
     lesson_factory: Callable[..., Path],
@@ -189,7 +189,7 @@ def test_r1_f3_lesson_validate_detects_unfilled_placeholders_in_active_lesson(
     assert "unedited scaffolding" in res.stdout or "scaffolding" in res.stderr
 
 
-def test_r1_f4_query_with_leading_double_dash_task(
+def test_query_with_leading_double_dash_task(
     cli_runner: Callable[..., CLIResult],
     isolated_store: Path,
     lesson_factory: Callable[..., Path],
@@ -206,7 +206,7 @@ def test_r1_f4_query_with_leading_double_dash_task(
     assert "lesson_refactor_guard" in res.stdout or "no match" in res.stdout
 
 
-def test_r1_f4_query_with_single_dash_task(
+def test_query_with_single_dash_task(
     cli_runner: Callable[..., CLIResult],
     isolated_store: Path,
 ) -> None:
@@ -214,7 +214,7 @@ def test_r1_f4_query_with_single_dash_task(
     assert res.exit_code == 0
 
 
-def test_r1_f4_query_task_resembling_builtin_flag(
+def test_query_task_resembling_builtin_flag(
     cli_runner: Callable[..., CLIResult],
     isolated_store: Path,
 ) -> None:
@@ -223,7 +223,7 @@ def test_r1_f4_query_task_resembling_builtin_flag(
     assert "usage: commontrace query" not in res.stdout, "Should not print usage help when delimited"
 
 
-def test_r1_f4_query_with_spaces_and_quotes(
+def test_query_with_spaces_and_quotes(
     cli_runner: Callable[..., CLIResult],
     isolated_store: Path,
     lesson_factory: Callable[..., Path],
@@ -239,7 +239,7 @@ def test_r1_f4_query_with_spaces_and_quotes(
     assert res.exit_code == 0
 
 
-def test_r1_f4_query_hybrid_and_lexical_with_flag_delimited_task(
+def test_query_hybrid_and_lexical_with_flag_delimited_task(
     cli_runner: Callable[..., CLIResult],
     isolated_store: Path,
 ) -> None:
@@ -254,7 +254,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 INSTALL_SCRIPT = REPO_ROOT / "install.sh"
 
 
-def test_r1_f5_install_sh_help_exits_cleanly() -> None:
+def test_install_sh_help_exits_cleanly() -> None:
     assert INSTALL_SCRIPT.exists()
     res = subprocess.run(
         ["bash", str(INSTALL_SCRIPT), "--help"],
@@ -266,7 +266,7 @@ def test_r1_f5_install_sh_help_exits_cleanly() -> None:
     assert "install.sh" in res.stdout
 
 
-def test_r1_f5_install_sh_dest_without_arg_fails_cleanly() -> None:
+def test_install_sh_dest_without_arg_fails_cleanly() -> None:
     res = subprocess.run(
         ["bash", str(INSTALL_SCRIPT), "--dest"],
         stdout=subprocess.PIPE,
@@ -277,7 +277,7 @@ def test_r1_f5_install_sh_dest_without_arg_fails_cleanly() -> None:
     assert "--dest requires a path argument" in res.stderr
 
 
-def test_r1_f5_install_sh_unknown_arg_fails_cleanly() -> None:
+def test_install_sh_unknown_arg_fails_cleanly() -> None:
     res = subprocess.run(
         ["bash", str(INSTALL_SCRIPT), "--unrecognized-option-test"],
         stdout=subprocess.PIPE,
@@ -288,7 +288,7 @@ def test_r1_f5_install_sh_unknown_arg_fails_cleanly() -> None:
     assert "Unknown argument" in res.stderr
 
 
-def test_r1_f5_install_sh_supports_in_place_flag() -> None:
+def test_install_sh_supports_in_place_flag() -> None:
     res = subprocess.run(
         ["bash", str(INSTALL_SCRIPT), "--in-place", "--no-deps", "--no-index"],
         stdout=subprocess.PIPE,
@@ -299,6 +299,6 @@ def test_r1_f5_install_sh_supports_in_place_flag() -> None:
     assert "Install complete" in res.stdout or "Installation complete" in res.stdout or "Setup complete" in res.stdout or "Done" in res.stdout
 
 
-def test_r1_f5_install_sh_references_valid_reference_paths() -> None:
+def test_install_sh_references_valid_reference_paths() -> None:
     content = INSTALL_SCRIPT.read_text(encoding="utf-8")
     assert "commontrace/reference/build_index.py" in content or "commontrace.cli index" in content or "commontrace index" in content or "memory/attention/build_index.py" in content

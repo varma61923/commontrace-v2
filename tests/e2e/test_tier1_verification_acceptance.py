@@ -10,7 +10,7 @@ import pytest
 from tests.e2e.conftest import CLIResult
 
 
-def test_r4_f1_trace_schema_validates_complete_instance() -> None:
+def test_trace_schema_validates_complete_instance() -> None:
     from commontrace import validate
 
     schema = validate.load_schema("trace.schema.json")
@@ -34,7 +34,7 @@ def test_r4_f1_trace_schema_validates_complete_instance() -> None:
     assert errors == []
 
 
-def test_r4_f1_trace_schema_rejects_missing_required_fields() -> None:
+def test_trace_schema_rejects_missing_required_fields() -> None:
     from commontrace import validate
 
     schema = validate.load_schema("trace.schema.json")
@@ -47,7 +47,7 @@ def test_r4_f1_trace_schema_rejects_missing_required_fields() -> None:
     assert any("required" in e for e in errors)
 
 
-def test_r4_f1_trace_schema_rejects_boolean_for_numeric_field() -> None:
+def test_trace_schema_rejects_boolean_for_numeric_field() -> None:
     from commontrace import validate
 
     schema = validate.load_schema("trace.schema.json")
@@ -68,7 +68,7 @@ def test_r4_f1_trace_schema_rejects_boolean_for_numeric_field() -> None:
     assert len(errors) >= 1
 
 
-def test_r4_f1_lesson_schema_validates_complete_instance() -> None:
+def test_lesson_schema_validates_complete_instance() -> None:
     from commontrace import validate
 
     schema = validate.load_schema("lesson.schema.json")
@@ -90,7 +90,7 @@ def test_r4_f1_lesson_schema_validates_complete_instance() -> None:
     assert errors == []
 
 
-def test_r4_f1_lesson_schema_rejects_out_of_bound_importance() -> None:
+def test_lesson_schema_rejects_out_of_bound_importance() -> None:
     from commontrace import validate
 
     schema = validate.load_schema("lesson.schema.json")
@@ -114,7 +114,7 @@ def test_r4_f1_lesson_schema_rejects_out_of_bound_importance() -> None:
     assert len(errors_low) >= 1
 
 
-def test_r4_f1_lesson_schema_rejects_invalid_status_enum() -> None:
+def test_lesson_schema_rejects_invalid_status_enum() -> None:
     from commontrace import validate
 
     schema = validate.load_schema("lesson.schema.json")
@@ -136,7 +136,7 @@ def test_r4_f1_lesson_schema_rejects_invalid_status_enum() -> None:
     assert len(errors) >= 1
 
 
-def test_r4_f2_cannot_escape_store_via_dest_flag(
+def test_cannot_escape_store_via_dest_flag(
     cli_runner: Callable[..., CLIResult],
     isolated_store: Path,
 ) -> None:
@@ -144,7 +144,7 @@ def test_r4_f2_cannot_escape_store_via_dest_flag(
     assert "Traceback (most recent call last)" not in res.stderr
 
 
-def test_r4_f2_import_rejects_path_traversal(
+def test_import_rejects_path_traversal(
     cli_runner: Callable[..., CLIResult],
     isolated_store: Path,
 ) -> None:
@@ -153,7 +153,7 @@ def test_r4_f2_import_rejects_path_traversal(
     assert "cannot read" in res.stderr.lower() or "error" in res.stderr.lower()
 
 
-def test_r4_f2_commons_ask_rejects_traversal(
+def test_commons_ask_rejects_traversal(
     cli_runner: Callable[..., CLIResult],
     isolated_store: Path,
 ) -> None:
@@ -161,7 +161,7 @@ def test_r4_f2_commons_ask_rejects_traversal(
     assert "Traceback (most recent call last)" not in res.stderr
 
 
-def test_r4_f2_overlap_rejects_traversal(
+def test_overlap_rejects_traversal(
     cli_runner: Callable[..., CLIResult],
     isolated_store: Path,
 ) -> None:
@@ -169,7 +169,7 @@ def test_r4_f2_overlap_rejects_traversal(
     assert res.exit_code in (1, 2)
 
 
-def test_r4_f2_install_rejects_symlink_traversal(
+def test_install_rejects_symlink_traversal(
     cli_runner: Callable[..., CLIResult],
     tmp_path: Path,
 ) -> None:
@@ -182,7 +182,7 @@ def test_r4_f2_install_rejects_symlink_traversal(
     assert "Traceback (most recent call last)" not in res.stderr
 
 
-def test_r4_f3_query_latency_under_threshold(
+def test_query_latency_under_threshold(
     cli_runner: Callable[..., CLIResult],
     isolated_store: Path,
     lesson_factory: Callable[..., Path],
@@ -204,7 +204,7 @@ def test_r4_f3_query_latency_under_threshold(
     assert elapsed < 2.0, f"Query took {elapsed:.2f}s, expected < 2.0s"
 
 
-def test_r4_f3_benchmark_execution_time_bounded(
+def test_benchmark_execution_time_bounded(
     cli_runner: Callable[..., CLIResult],
     isolated_store: Path,
     lesson_factory: Callable[..., Path],
@@ -221,7 +221,7 @@ def test_r4_f3_benchmark_execution_time_bounded(
     assert elapsed < 5.0
 
 
-def test_r4_f3_lexical_dedup_scales_with_corpus() -> None:
+def test_lexical_dedup_scales_with_corpus() -> None:
     from commontrace.reference.measure_performance import compute_lexical_duplicates
 
     corpus = {
@@ -240,7 +240,7 @@ def test_r4_f3_lexical_dedup_scales_with_corpus() -> None:
     assert elapsed < 0.5, f"Lexical dedup took {elapsed:.2f}s, expected < 0.5s"
 
 
-def test_r4_f3_chunked_similarity_memory_bounded() -> None:
+def test_chunked_similarity_memory_bounded() -> None:
     np = pytest.importorskip("numpy", reason="numpy required for memory bounded chunked similarity test")
     from commontrace.reference.measure_performance import compute_semantic_duplicates
 
@@ -258,7 +258,7 @@ def test_r4_f3_chunked_similarity_memory_bounded() -> None:
     assert elapsed < 1.0
 
 
-def test_r4_f3_lesson_cache_avoids_redundant_disk_io(
+def test_lesson_cache_avoids_redundant_disk_io(
     isolated_store: Path,
     lesson_factory: Callable[..., Path],
 ) -> None:
@@ -274,7 +274,7 @@ def test_r4_f3_lesson_cache_avoids_redundant_disk_io(
     assert len(loaded2) == len(loaded1)
 
 
-def test_r4_f4_doctor_reports_clean_system_health(
+def test_doctor_reports_clean_system_health(
     cli_runner: Callable[..., CLIResult],
     isolated_store: Path,
 ) -> None:
@@ -284,7 +284,7 @@ def test_r4_f4_doctor_reports_clean_system_health(
     assert "Done." in res.stdout
 
 
-def test_r4_f4_bench_generates_markdown_and_json_report(
+def test_bench_generates_markdown_and_json_report(
     cli_runner: Callable[..., CLIResult],
     isolated_store: Path,
     lesson_factory: Callable[..., Path],
@@ -298,7 +298,7 @@ def test_r4_f4_bench_generates_markdown_and_json_report(
     assert "lesson_quality" in res.stdout
 
 
-def test_r4_f4_bench_json_output_mode(
+def test_bench_json_output_mode(
     cli_runner: Callable[..., CLIResult],
     isolated_store: Path,
     lesson_factory: Callable[..., Path],
@@ -312,7 +312,7 @@ def test_r4_f4_bench_json_output_mode(
     assert "schema_version" in parsed or "lessons_in_store" in parsed or "metrics" in parsed or "episodes" in parsed
 
 
-def test_r4_f4_bench_pilot_mode_outputs_metrics(
+def test_bench_pilot_mode_outputs_metrics(
     cli_runner: Callable[..., CLIResult],
     isolated_store: Path,
     trace_factory: Callable[..., Path],
@@ -323,7 +323,7 @@ def test_r4_f4_bench_pilot_mode_outputs_metrics(
     assert "Pilot" in res.stdout or "resolution" in res.stdout.lower() or "report" in res.stdout.lower()
 
 
-def test_r4_f4_doctor_detects_broken_store_path(
+def test_doctor_detects_broken_store_path(
     cli_runner: Callable[..., CLIResult],
     tmp_path: Path,
 ) -> None:
@@ -333,7 +333,7 @@ def test_r4_f4_doctor_detects_broken_store_path(
     assert "missing" in res.stdout.lower() or "not present" in res.stdout.lower() or "[WARN]" in res.stdout
 
 
-def test_r4_f5_end_to_end_capture_distill_approve_query_pipeline(
+def test_end_to_end_capture_distill_approve_query_pipeline(
     cli_runner: Callable[..., CLIResult],
     isolated_store: Path,
 ) -> None:
@@ -376,7 +376,7 @@ def test_r4_f5_end_to_end_capture_distill_approve_query_pipeline(
     assert "lesson_deadlock_order" in res_q.stdout
 
 
-def test_r4_f5_end_to_end_export_import_roundtrip(
+def test_end_to_end_export_import_roundtrip(
     cli_runner: Callable[..., CLIResult],
     isolated_store: Path,
     tmp_path: Path,
@@ -401,7 +401,7 @@ def test_r4_f5_end_to_end_export_import_roundtrip(
     assert "traces valid" in res_val.stdout
 
 
-def test_r4_f5_end_to_end_experiment_holdout_flow(
+def test_end_to_end_experiment_holdout_flow(
     cli_runner: Callable[..., CLIResult],
     isolated_store: Path,
     lesson_factory: Callable[..., Path],
@@ -430,7 +430,7 @@ def test_r4_f5_end_to_end_experiment_holdout_flow(
     assert res_cap.exit_code == 0
 
 
-def test_r4_f5_end_to_end_consolidate_reporting(
+def test_end_to_end_consolidate_reporting(
     cli_runner: Callable[..., CLIResult],
     isolated_store: Path,
     lesson_factory: Callable[..., Path],
@@ -443,7 +443,7 @@ def test_r4_f5_end_to_end_consolidate_reporting(
     assert "consolidate" in res.stdout.lower() or "lessons" in res.stdout.lower() or "active" in res.stdout.lower()
 
 
-def test_r4_f5_end_to_end_release_snapshot(
+def test_end_to_end_release_snapshot(
     cli_runner: Callable[..., CLIResult],
     isolated_store: Path,
     lesson_factory: Callable[..., Path],
@@ -453,7 +453,7 @@ def test_r4_f5_end_to_end_release_snapshot(
     assert res.exit_code == 0 or "Traceback" not in res.stderr
 
 
-def test_r4_f6_special_characters_and_shell_injection_strings(
+def test_special_characters_and_shell_injection_strings(
     cli_runner: Callable[..., CLIResult],
     isolated_store: Path,
 ) -> None:
@@ -480,7 +480,7 @@ def test_r4_f6_special_characters_and_shell_injection_strings(
     assert res_q.exit_code == 0
 
 
-def test_r4_f6_multibyte_utf8_cjk_emoji_handling(
+def test_multibyte_utf8_cjk_emoji_handling(
     cli_runner: Callable[..., CLIResult],
     isolated_store: Path,
     lesson_factory: Callable[..., Path],
@@ -502,7 +502,7 @@ def test_r4_f6_multibyte_utf8_cjk_emoji_handling(
     assert "lesson_multilingual_utf8" in res_q.stdout
 
 
-def test_r4_f6_corrupted_yaml_frontmatter_resilience(
+def test_corrupted_yaml_frontmatter_resilience(
     cli_runner: Callable[..., CLIResult],
     isolated_store: Path,
 ) -> None:
@@ -518,7 +518,7 @@ def test_r4_f6_corrupted_yaml_frontmatter_resilience(
     assert "Traceback" not in res.stderr
 
 
-def test_r4_f6_truncated_json_file_resilience(
+def test_truncated_json_file_resilience(
     cli_runner: Callable[..., CLIResult],
     isolated_store: Path,
 ) -> None:
@@ -534,7 +534,7 @@ def test_r4_f6_truncated_json_file_resilience(
     assert "Traceback" not in res.stderr
 
 
-def test_r4_f6_near_limit_boundary_payload(
+def test_near_limit_boundary_payload(
     cli_runner: Callable[..., CLIResult],
     isolated_store: Path,
 ) -> None:

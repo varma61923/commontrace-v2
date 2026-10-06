@@ -10,7 +10,7 @@ np = pytest.importorskip("numpy", reason="numpy is required for attention memory
 from tests.e2e.conftest import CLIResult  # noqa: E402
 
 
-def test_r2_f1_compute_semantic_duplicates_chunked_interface() -> None:
+def test_compute_semantic_duplicates_chunked_interface() -> None:
     from commontrace.reference.measure_performance import compute_semantic_duplicates
 
     n = 20
@@ -30,7 +30,7 @@ def test_r2_f1_compute_semantic_duplicates_chunked_interface() -> None:
     assert any((p[0] == "lesson_00" and p[1] == "lesson_01") or (p[0] == "lesson_01" and p[1] == "lesson_00") for p in pairs)
 
 
-def test_r2_f1_empty_embeddings_graceful() -> None:
+def test_empty_embeddings_graceful() -> None:
     from commontrace.reference.measure_performance import compute_semantic_duplicates
 
     embs = np.zeros((0, 64), dtype=np.float32)
@@ -39,7 +39,7 @@ def test_r2_f1_empty_embeddings_graceful() -> None:
     assert pairs == []
 
 
-def test_r2_f1_single_lesson_graceful() -> None:
+def test_single_lesson_graceful() -> None:
     from commontrace.reference.measure_performance import compute_semantic_duplicates
 
     embs = np.ones((1, 64), dtype=np.float32)
@@ -49,7 +49,7 @@ def test_r2_f1_single_lesson_graceful() -> None:
     assert pairs == []
 
 
-def test_r2_f1_detects_identical_and_rejects_orthogonal_pairs() -> None:
+def test_detects_identical_and_rejects_orthogonal_pairs() -> None:
     from commontrace.reference.measure_performance import compute_semantic_duplicates
 
     embs = np.array([
@@ -66,7 +66,7 @@ def test_r2_f1_detects_identical_and_rejects_orthogonal_pairs() -> None:
     assert pytest.approx(pairs[0][2], 0.001) == 1.0
 
 
-def test_r2_f1_pairs_sorted_descending_by_score() -> None:
+def test_pairs_sorted_descending_by_score() -> None:
     from commontrace.reference.measure_performance import compute_semantic_duplicates
 
     embs = np.array([
@@ -82,7 +82,7 @@ def test_r2_f1_pairs_sorted_descending_by_score() -> None:
     assert scores == sorted(scores, reverse=True)
 
 
-def test_r2_f1_bounded_memory_float32_preservation() -> None:
+def test_bounded_memory_float32_preservation() -> None:
     from commontrace.reference.measure_performance import compute_semantic_duplicates
 
     embs64 = np.array([[1.0, 0.0], [0.99, 0.01]], dtype=np.float64)
@@ -115,7 +115,7 @@ class DummyEmbeddingModel:
         return out
 
 
-def test_r2_f2_build_index_computes_sha256_hashes(
+def test_build_index_computes_sha256_hashes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     lesson_factory: Callable[..., Path],
@@ -144,7 +144,7 @@ def test_r2_f2_build_index_computes_sha256_hashes(
         assert all(len(str(h)) == 64 for h in data["hashes"])
 
 
-def test_r2_f2_unchanged_lessons_cached_in_index(
+def test_unchanged_lessons_cached_in_index(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     lesson_factory: Callable[..., Path],
@@ -170,7 +170,7 @@ def test_r2_f2_unchanged_lessons_cached_in_index(
     assert res2["reused_count"] == 2
 
 
-def test_r2_f2_modified_lesson_triggers_selective_reencoding(
+def test_modified_lesson_triggers_selective_reencoding(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     lesson_factory: Callable[..., Path],
@@ -197,7 +197,7 @@ def test_r2_f2_modified_lesson_triggers_selective_reencoding(
     assert res["reused_count"] == 1
 
 
-def test_r2_f2_new_lesson_added_incrementally(
+def test_new_lesson_added_incrementally(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     lesson_factory: Callable[..., Path],
@@ -224,7 +224,7 @@ def test_r2_f2_new_lesson_added_incrementally(
     assert res["reused_count"] == 2
 
 
-def test_r2_f2_force_rebuild_bypasses_cache(
+def test_force_rebuild_bypasses_cache(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     lesson_factory: Callable[..., Path],
@@ -249,7 +249,7 @@ def test_r2_f2_force_rebuild_bypasses_cache(
     assert res["reused_count"] == 0
 
 
-def test_r2_f2_empty_lessons_build_index(tmp_path: Path) -> None:
+def test_empty_lessons_build_index(tmp_path: Path) -> None:
     from commontrace.reference import build_index
 
     store = tmp_path / "store"
@@ -265,7 +265,7 @@ def test_r2_f2_empty_lessons_build_index(tmp_path: Path) -> None:
         assert data["embeddings"].shape == (0, 768)
 
 
-def test_r2_f3_npz_stores_importances_and_statuses(
+def test_npz_stores_importances_and_statuses(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     lesson_factory: Callable[..., Path],
@@ -291,7 +291,7 @@ def test_r2_f3_npz_stores_importances_and_statuses(
         assert set(str(s) for s in data["statuses"]) == {"active"}
 
 
-def test_r2_f3_query_filters_active_status_using_metadata(
+def test_query_filters_active_status_using_metadata(
     cli_runner: Callable[..., CLIResult],
     isolated_store: Path,
     lesson_factory: Callable[..., Path],
@@ -316,7 +316,7 @@ def test_r2_f3_query_filters_active_status_using_metadata(
     assert "lesson_under_review" not in res.stdout
 
 
-def test_r2_f3_query_importance_floor_filtering(
+def test_query_importance_floor_filtering(
     isolated_store: Path,
     lesson_factory: Callable[..., Path],
 ) -> None:
@@ -350,7 +350,7 @@ def test_r2_f3_query_importance_floor_filtering(
         assert imp_dict["lesson_imp2"] == 2
 
 
-def test_r2_f3_fast_metadata_loading_in_query(
+def test_fast_metadata_loading_in_query(
     isolated_store: Path,
     lesson_factory: Callable[..., Path],
 ) -> None:
@@ -381,7 +381,7 @@ def test_r2_f3_fast_metadata_loading_in_query(
         assert meta["statuses"]["lesson_alpha"] == "active"
 
 
-def test_r2_f3_query_fallback_when_metadata_absent(
+def test_query_fallback_when_metadata_absent(
     isolated_store: Path,
     lesson_factory: Callable[..., Path],
 ) -> None:
@@ -402,7 +402,7 @@ def test_r2_f3_query_fallback_when_metadata_absent(
         assert "importances" not in data.files
 
 
-def test_r2_f4_compute_lexical_duplicates_basic() -> None:
+def test_compute_lexical_duplicates_basic() -> None:
     from commontrace.reference.measure_performance import compute_lexical_duplicates
 
     lessons = {
@@ -428,7 +428,7 @@ def test_r2_f4_compute_lexical_duplicates_basic() -> None:
     assert names == {"lesson_db_pool_1", "lesson_db_pool_2"}
 
 
-def test_r2_f4_inverted_index_prunes_disjoint_candidates() -> None:
+def test_inverted_index_prunes_disjoint_candidates() -> None:
     from commontrace.reference.measure_performance import compute_lexical_duplicates
 
     lessons = {
@@ -441,7 +441,7 @@ def test_r2_f4_inverted_index_prunes_disjoint_candidates() -> None:
     assert result["pairs"] == []
 
 
-def test_r2_f4_stopword_filtering_prevents_false_matches() -> None:
+def test_stopword_filtering_prevents_false_matches() -> None:
     from commontrace.reference.measure_performance import compute_lexical_duplicates
 
     lessons = {
@@ -453,7 +453,7 @@ def test_r2_f4_stopword_filtering_prevents_false_matches() -> None:
     assert result["pairs"] == []
 
 
-def test_r2_f4_unicode_and_accent_normalization() -> None:
+def test_unicode_and_accent_normalization() -> None:
     from commontrace.reference.measure_performance import compute_lexical_duplicates
 
     lessons = {
@@ -465,7 +465,7 @@ def test_r2_f4_unicode_and_accent_normalization() -> None:
     assert len(result["pairs"]) >= 1
 
 
-def test_r2_f4_empty_corpus_handling() -> None:
+def test_empty_corpus_handling() -> None:
     from commontrace.reference.measure_performance import compute_lexical_duplicates
 
     res_empty = compute_lexical_duplicates({}, threshold=0.5)
@@ -477,7 +477,7 @@ def test_r2_f4_empty_corpus_handling() -> None:
     assert res_one["n_lessons"] == 1
 
 
-def test_r2_f4_prunes_large_candidate_space() -> None:
+def test_prunes_large_candidate_space() -> None:
     from commontrace.reference.measure_performance import compute_lexical_duplicates
 
     lessons = {}

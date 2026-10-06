@@ -584,26 +584,32 @@ class Store:
                      slot: str | None, source: str, owner: str | None = None) -> int:
         owner = (owner or self.db.execute("SELECT speaker FROM turns WHERE id=?", (turn,)).fetchone()[0]) \
             .strip().lower()
+        predecessor = None
+        successor_id = None
+        if slot:
+            # Read before insertion: equal timestamps belong before the new id.
+            # A maintained chain already records the predecessor's successor,
+            # avoiding a second index seek for append and middle insertions.
+            predecessor = self.db.execute(
+                "SELECT id, superseded_by FROM facts WHERE slot=? AND owner=? "
+                "AND COALESCE(at, '') <= ? ORDER BY COALESCE(at, '') DESC, id DESC LIMIT 1",
+                (slot, owner, at or "")).fetchone()
+            if predecessor:
+                successor_id = predecessor["superseded_by"]
+            else:
+                successor = self.db.execute(
+                    "SELECT id FROM facts WHERE slot=? AND owner=? "
+                    "AND COALESCE(at, '') > ? ORDER BY COALESCE(at, ''), id LIMIT 1",
+                    (slot, owner, at or "")).fetchone()
+                successor_id = successor[0] if successor else None
         fid = self.db.execute(
             "INSERT INTO facts (turn, kind, subject, statement, at, slot, source, owner, statement_hash) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (turn, kind, subject, statement, at, slot, source, owner, fact_hash(statement))).lastrowid
         self.db.execute("INSERT INTO fact_sources VALUES (?, ?)", (fid, turn))
         if slot:
-            # Arrival order is not event order. Insert between the previous and next
-            # assertions of this owner's slot, preserving both historical beliefs.
-            # This freshly allocated id is greater than every existing fact id,
-            # so equal timestamps are predecessors, never successors.
-            successor = self.db.execute(
-                "SELECT id FROM facts WHERE slot=? AND owner=? "
-                "AND COALESCE(at, '') > ? ORDER BY COALESCE(at, ''), id LIMIT 1",
-                (slot, owner, at or "")).fetchone()
-            predecessor = self.db.execute(
-                "SELECT id FROM facts WHERE slot=? AND owner=? "
-                "AND COALESCE(at, '') <= ? AND id != ? ORDER BY COALESCE(at, '') DESC, id DESC LIMIT 1",
-                (slot, owner, at or "", fid)).fetchone()
-            if successor:
-                self.db.execute("UPDATE facts SET superseded_by=? WHERE id=?", (successor[0], fid))
+            if successor_id is not None:
+                self.db.execute("UPDATE facts SET superseded_by=? WHERE id=?", (successor_id, fid))
             if predecessor:
                 self.db.execute("UPDATE facts SET superseded_by=? WHERE id=?", (fid, predecessor[0]))
         return fid

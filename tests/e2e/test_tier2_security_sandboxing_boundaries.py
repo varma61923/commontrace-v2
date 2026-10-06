@@ -10,7 +10,7 @@ import pytest
 from tests.e2e.conftest import CLIResult
 
 
-def test_r3_f1_boundary_dot_and_current_directory(tmp_path: Path) -> None:
+def test_boundary_dot_and_current_directory(tmp_path: Path) -> None:
     from commontrace.paths import enforce_boundary
 
     base = tmp_path / "sandbox"
@@ -20,7 +20,7 @@ def test_r3_f1_boundary_dot_and_current_directory(tmp_path: Path) -> None:
     assert resolved == str(base.resolve())
 
 
-def test_r3_f1_boundary_redundant_inner_navigation(tmp_path: Path) -> None:
+def test_boundary_redundant_inner_navigation(tmp_path: Path) -> None:
     from commontrace.paths import enforce_boundary
 
     base = tmp_path / "sandbox"
@@ -34,7 +34,7 @@ def test_r3_f1_boundary_redundant_inner_navigation(tmp_path: Path) -> None:
     assert resolved == str(target.resolve())
 
 
-def test_r3_f1_boundary_symlink_inside_pointing_outside(tmp_path: Path) -> None:
+def test_boundary_symlink_inside_pointing_outside(tmp_path: Path) -> None:
     from commontrace.paths import PathTraversalError, enforce_boundary
 
     base = tmp_path / "sandbox"
@@ -53,7 +53,7 @@ def test_r3_f1_boundary_symlink_inside_pointing_outside(tmp_path: Path) -> None:
     assert "traversal" in str(exc.value).lower() or "outside" in str(exc.value).lower()
 
 
-def test_r3_f1_boundary_root_path_escape(tmp_path: Path) -> None:
+def test_boundary_root_path_escape(tmp_path: Path) -> None:
     from commontrace.paths import PathTraversalError, enforce_boundary
 
     base = tmp_path / "sandbox"
@@ -66,7 +66,7 @@ def test_r3_f1_boundary_root_path_escape(tmp_path: Path) -> None:
         enforce_boundary(str(base), "/etc/passwd")
 
 
-def test_r3_f1_boundary_nonexistent_nested_target(tmp_path: Path) -> None:
+def test_boundary_nonexistent_nested_target(tmp_path: Path) -> None:
     from commontrace.paths import enforce_boundary
 
     base = tmp_path / "sandbox"
@@ -78,7 +78,7 @@ def test_r3_f1_boundary_nonexistent_nested_target(tmp_path: Path) -> None:
     assert resolved == expected
 
 
-def test_r3_f2_boundary_validate_symlink_to_outside_rejected(
+def test_boundary_validate_symlink_to_outside_rejected(
     isolated_store: Path,
     cli_runner: Callable[..., CLIResult],
     tmp_path: Path,
@@ -97,7 +97,7 @@ def test_r3_f2_boundary_validate_symlink_to_outside_rejected(
     assert "error" in res.stderr.lower() or "traversal" in res.stderr.lower() or "invalid" in res.stderr.lower() or "outside" in res.stderr.lower()
 
 
-def test_r3_f2_boundary_validate_directory_instead_of_file(
+def test_boundary_validate_directory_instead_of_file(
     isolated_store: Path,
     cli_runner: Callable[..., CLIResult],
 ) -> None:
@@ -106,7 +106,7 @@ def test_r3_f2_boundary_validate_directory_instead_of_file(
     assert "Traceback" not in res.stderr
 
 
-def test_r3_f2_boundary_validate_zero_byte_empty_file(
+def test_boundary_validate_zero_byte_empty_file(
     isolated_store: Path,
     cli_runner: Callable[..., CLIResult],
 ) -> None:
@@ -118,7 +118,7 @@ def test_r3_f2_boundary_validate_zero_byte_empty_file(
     assert "Traceback" not in res.stderr
 
 
-def test_r3_f2_boundary_validate_nonexistent_file(
+def test_boundary_validate_nonexistent_file(
     isolated_store: Path,
     cli_runner: Callable[..., CLIResult],
 ) -> None:
@@ -128,7 +128,7 @@ def test_r3_f2_boundary_validate_nonexistent_file(
     assert "no such file" in res.stderr.lower() or "error" in res.stderr.lower()
 
 
-def test_r3_f2_boundary_validate_permission_denied_file(
+def test_boundary_validate_permission_denied_file(
     isolated_store: Path,
     cli_runner: Callable[..., CLIResult],
 ) -> None:
@@ -147,7 +147,7 @@ def test_r3_f2_boundary_validate_permission_denied_file(
         unreadable.chmod(original_mode)
 
 
-def test_r3_f3_boundary_safe_prepare_dangling_symlink_broken(tmp_path: Path) -> None:
+def test_boundary_safe_prepare_dangling_symlink_broken(tmp_path: Path) -> None:
     from commontrace.paths import safe_prepare_output_path
 
     target_dir = tmp_path / "output_dir"
@@ -167,7 +167,7 @@ def test_r3_f3_boundary_safe_prepare_dangling_symlink_broken(tmp_path: Path) -> 
     assert not Path(safe_path).is_symlink()
 
 
-def test_r3_f3_boundary_safe_prepare_symlink_to_target_unlinked(tmp_path: Path) -> None:
+def test_boundary_safe_prepare_symlink_to_target_unlinked(tmp_path: Path) -> None:
     from commontrace.paths import safe_prepare_output_path
 
     decoy = tmp_path / "important_target.txt"
@@ -184,7 +184,7 @@ def test_r3_f3_boundary_safe_prepare_symlink_to_target_unlinked(tmp_path: Path) 
     assert not Path(safe_path).is_symlink()
 
 
-def test_r3_f3_boundary_safe_prepare_allow_unlink_leaf_false_rejects(tmp_path: Path) -> None:
+def test_boundary_safe_prepare_allow_unlink_leaf_false_rejects(tmp_path: Path) -> None:
     from commontrace.paths import PathTraversalError, safe_prepare_output_path
 
     decoy = tmp_path / "target.txt"
@@ -199,7 +199,7 @@ def test_r3_f3_boundary_safe_prepare_allow_unlink_leaf_false_rejects(tmp_path: P
         safe_prepare_output_path(str(symlink_dest), allow_unlink_leaf=False)
 
 
-def test_r3_f3_boundary_safe_prepare_creates_deep_nested_parents(tmp_path: Path) -> None:
+def test_boundary_safe_prepare_creates_deep_nested_parents(tmp_path: Path) -> None:
     from commontrace.paths import safe_prepare_output_path
 
     deep_dest = tmp_path / "a" / "b" / "c" / "d" / "e" / "output.json"
@@ -210,7 +210,7 @@ def test_r3_f3_boundary_safe_prepare_creates_deep_nested_parents(tmp_path: Path)
     assert Path(safe_path).parent.is_dir()
 
 
-def test_r3_f3_boundary_export_refuses_symlink_destination(
+def test_boundary_export_refuses_symlink_destination(
     isolated_store: Path,
     cli_runner: Callable[..., CLIResult],
     lesson_factory: Callable[..., Path],
@@ -231,7 +231,7 @@ def test_r3_f3_boundary_export_refuses_symlink_destination(
     assert target_file.read_text(encoding="utf-8") == "KEEP_ORIGINAL_DATA"
 
 
-def test_r3_f4_boundary_shell_metacharacters_in_arguments(tmp_path: Path) -> None:
+def test_boundary_shell_metacharacters_in_arguments(tmp_path: Path) -> None:
     from commontrace.commands import _shellout
 
     marker_file = tmp_path / "hacked_metachar_marker.txt"
@@ -247,7 +247,7 @@ def test_r3_f4_boundary_shell_metacharacters_in_arguments(tmp_path: Path) -> Non
     assert not marker_file.exists()
 
 
-def test_r3_f4_boundary_command_substitution_not_expanded(tmp_path: Path) -> None:
+def test_boundary_command_substitution_not_expanded(tmp_path: Path) -> None:
     from commontrace.commands import _shellout
 
     marker_file = tmp_path / "hacked_subst_marker.txt"
@@ -263,7 +263,7 @@ def test_r3_f4_boundary_command_substitution_not_expanded(tmp_path: Path) -> Non
     assert not marker_file.exists()
 
 
-def test_r3_f4_boundary_missing_script_handled_cleanly(tmp_path: Path) -> None:
+def test_boundary_missing_script_handled_cleanly(tmp_path: Path) -> None:
     from commontrace.commands import _shellout
 
     code = _shellout.run_script(
@@ -276,7 +276,7 @@ def test_r3_f4_boundary_missing_script_handled_cleanly(tmp_path: Path) -> None:
     assert code == 1
 
 
-def test_r3_f4_boundary_pipe_characters_treated_as_literal(tmp_path: Path) -> None:
+def test_boundary_pipe_characters_treated_as_literal(tmp_path: Path) -> None:
     from commontrace.commands import _shellout
 
     pipe_arg = "foo | cat | grep something"
@@ -290,7 +290,7 @@ def test_r3_f4_boundary_pipe_characters_treated_as_literal(tmp_path: Path) -> No
     assert isinstance(code, int)
 
 
-def test_r3_f4_boundary_env_preserves_pythonsafepath(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_boundary_env_preserves_pythonsafepath(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from commontrace.commands import _shellout
 
     captured_env: dict[str, str] = {}

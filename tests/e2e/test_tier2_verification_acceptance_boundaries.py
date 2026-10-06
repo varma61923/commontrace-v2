@@ -14,7 +14,7 @@ except ImportError:
 from tests.e2e.conftest import CLIResult
 
 
-def test_r4_f1_boundary_importance_bounds() -> None:
+def test_boundary_importance_bounds() -> None:
     from commontrace import validate
 
     schema = validate.load_schema("lesson.schema.json")
@@ -47,7 +47,7 @@ def test_r4_f1_boundary_importance_bounds() -> None:
     assert len(errors_high) > 0
 
 
-def test_r4_f1_boundary_empty_tags_accepted() -> None:
+def test_boundary_empty_tags_accepted() -> None:
     from commontrace import validate
 
     schema = validate.load_schema("trace.schema.json")
@@ -70,7 +70,7 @@ def test_r4_f1_boundary_empty_tags_accepted() -> None:
     assert validate.validate(trace_data, schema) == []
 
 
-def test_r4_f1_boundary_non_string_tags_rejected() -> None:
+def test_boundary_non_string_tags_rejected() -> None:
     from commontrace import validate
 
     schema = validate.load_schema("trace.schema.json")
@@ -90,7 +90,7 @@ def test_r4_f1_boundary_non_string_tags_rejected() -> None:
     assert len(errors) > 0
 
 
-def test_r4_f1_boundary_outcome_optional_fields() -> None:
+def test_boundary_outcome_optional_fields() -> None:
     from commontrace import validate
 
     schema = validate.load_schema("trace.schema.json")
@@ -111,7 +111,7 @@ def test_r4_f1_boundary_outcome_optional_fields() -> None:
     assert validate.validate(trace_data, schema) == []
 
 
-def test_r4_f1_boundary_frontmatter_delimiters_edge(tmp_path: Path) -> None:
+def test_boundary_frontmatter_delimiters_edge(tmp_path: Path) -> None:
     from commontrace import frontmatter
 
     raw_markdown = """---
@@ -145,7 +145,7 @@ Final remarks.
     assert "Final remarks" in body
 
 
-def test_r4_f2_boundary_symlink_circular_loop(tmp_path: Path) -> None:
+def test_boundary_symlink_circular_loop(tmp_path: Path) -> None:
     from commontrace.reference.build_index import iter_active_lessons
 
     lessons_dir = tmp_path / "lessons"
@@ -164,7 +164,7 @@ def test_r4_f2_boundary_symlink_circular_loop(tmp_path: Path) -> None:
     assert isinstance(found, list)
 
 
-def test_r4_f2_boundary_null_byte_in_path_rejected(tmp_path: Path) -> None:
+def test_boundary_null_byte_in_path_rejected(tmp_path: Path) -> None:
     from commontrace.paths import enforce_boundary
 
     base = tmp_path / "safe_store"
@@ -174,7 +174,7 @@ def test_r4_f2_boundary_null_byte_in_path_rejected(tmp_path: Path) -> None:
         enforce_boundary(str(base), "memory/lessons/\x00evil.md")
 
 
-def test_r4_f2_boundary_uncanonicalized_double_dot_escape(tmp_path: Path) -> None:
+def test_boundary_uncanonicalized_double_dot_escape(tmp_path: Path) -> None:
     from commontrace.paths import PathTraversalError, enforce_boundary
 
     base = tmp_path / "safe_store"
@@ -184,7 +184,7 @@ def test_r4_f2_boundary_uncanonicalized_double_dot_escape(tmp_path: Path) -> Non
         enforce_boundary(str(base), "memory/../../../etc/passwd")
 
 
-def test_r4_f2_boundary_leading_slash_treated_as_traversal(tmp_path: Path) -> None:
+def test_boundary_leading_slash_treated_as_traversal(tmp_path: Path) -> None:
     from commontrace.paths import PathTraversalError, enforce_boundary
 
     base = tmp_path / "safe_store"
@@ -194,7 +194,7 @@ def test_r4_f2_boundary_leading_slash_treated_as_traversal(tmp_path: Path) -> No
         enforce_boundary(str(base), "/tmp/outside.txt")
 
 
-def test_r4_f2_boundary_subprocess_safe_path_isolated() -> None:
+def test_boundary_subprocess_safe_path_isolated() -> None:
     import inspect
 
     from commontrace.commands import _shellout
@@ -203,7 +203,7 @@ def test_r4_f2_boundary_subprocess_safe_path_isolated() -> None:
     assert 'env["PYTHONSAFEPATH"] = "1"' in source or "PYTHONSAFEPATH" in source
 
 
-def test_r4_f3_boundary_large_chunk_size_scaling() -> None:
+def test_boundary_large_chunk_size_scaling() -> None:
     np = pytest.importorskip("numpy", reason="numpy required for benchmark scaling test")
     from commontrace.reference.measure_performance import compute_semantic_duplicates
 
@@ -222,7 +222,7 @@ def test_r4_f3_boundary_large_chunk_size_scaling() -> None:
     assert isinstance(count, int)
 
 
-def test_r4_f3_boundary_tiny_chunk_size_scaling() -> None:
+def test_boundary_tiny_chunk_size_scaling() -> None:
     np = pytest.importorskip("numpy", reason="numpy required for benchmark scaling test")
     from commontrace.reference.measure_performance import compute_semantic_duplicates
 
@@ -241,7 +241,7 @@ def test_r4_f3_boundary_tiny_chunk_size_scaling() -> None:
     assert isinstance(count, int)
 
 
-def test_r4_f3_boundary_fast_importances_loader_latency(tmp_path: Path) -> None:
+def test_boundary_fast_importances_loader_latency(tmp_path: Path) -> None:
     np = pytest.importorskip("numpy", reason="numpy required for fast importances loader test")
     from commontrace.reference.query import load_importances_from_index
 
@@ -265,7 +265,7 @@ def test_r4_f3_boundary_fast_importances_loader_latency(tmp_path: Path) -> None:
     assert elapsed < 0.05, f"Fast load exceeded 50ms latency limit: {elapsed*1000:.2f}ms"
 
 
-def test_r4_f3_boundary_lexical_index_latency_100_docs() -> None:
+def test_boundary_lexical_index_latency_100_docs() -> None:
     from commontrace.reference.measure_performance import compute_lexical_duplicates
 
     lessons = {
@@ -284,7 +284,7 @@ def test_r4_f3_boundary_lexical_index_latency_100_docs() -> None:
     assert isinstance(dups, dict)
 
 
-def test_r4_f3_boundary_frontmatter_parse_50_files_latency(
+def test_boundary_frontmatter_parse_50_files_latency(
     isolated_store: Path,
     lesson_factory: Callable[..., Path],
 ) -> None:
@@ -304,7 +304,7 @@ def test_r4_f3_boundary_frontmatter_parse_50_files_latency(
     assert elapsed < 0.5, f"Frontmatter batch load took {elapsed:.2f}s"
 
 
-def test_r4_f4_boundary_bench_zero_episodes_clean(
+def test_boundary_bench_zero_episodes_clean(
     isolated_store: Path,
     cli_runner: Callable[..., CLIResult],
 ) -> None:
@@ -314,7 +314,7 @@ def test_r4_f4_boundary_bench_zero_episodes_clean(
     assert "Traceback" not in res.stderr
 
 
-def test_r4_f4_boundary_bench_single_episode_computes(
+def test_boundary_bench_single_episode_computes(
     isolated_store: Path,
     cli_runner: Callable[..., CLIResult],
     episode_factory: Callable[..., Path],
@@ -326,7 +326,7 @@ def test_r4_f4_boundary_bench_single_episode_computes(
     assert "Traceback" not in res.stderr
 
 
-def test_r4_f4_boundary_bench_corrupt_episode_tolerated(
+def test_boundary_bench_corrupt_episode_tolerated(
     isolated_store: Path,
     cli_runner: Callable[..., CLIResult],
     episode_factory: Callable[..., Path],
@@ -341,7 +341,7 @@ def test_r4_f4_boundary_bench_corrupt_episode_tolerated(
     assert "Traceback" not in res.stderr
 
 
-def test_r4_f4_boundary_bench_save_creates_json_artifact(
+def test_boundary_bench_save_creates_json_artifact(
     isolated_store: Path,
     cli_runner: Callable[..., CLIResult],
     episode_factory: Callable[..., Path],
@@ -353,7 +353,7 @@ def test_r4_f4_boundary_bench_save_creates_json_artifact(
     assert "saved" in res.stdout.lower() or res.exit_code == 0
 
 
-def test_r4_f4_boundary_doctor_custom_dest(
+def test_boundary_doctor_custom_dest(
     isolated_store: Path,
     cli_runner: Callable[..., CLIResult],
 ) -> None:
@@ -362,7 +362,7 @@ def test_r4_f4_boundary_doctor_custom_dest(
     assert "commontrace" in res.stdout.lower()
 
 
-def test_r4_f5_boundary_distill_zero_traces(
+def test_boundary_distill_zero_traces(
     isolated_store: Path,
     cli_runner: Callable[..., CLIResult],
 ) -> None:
@@ -371,7 +371,7 @@ def test_r4_f5_boundary_distill_zero_traces(
     assert "Traceback" not in res.stderr
 
 
-def test_r4_f5_boundary_multi_profile_trace_separation(
+def test_boundary_multi_profile_trace_separation(
     isolated_store: Path,
     cli_runner: Callable[..., CLIResult],
 ) -> None:
@@ -399,7 +399,7 @@ def test_r4_f5_boundary_multi_profile_trace_separation(
     assert len(traces) == 2
 
 
-def test_r4_f5_boundary_distill_with_extreme_similarity_threshold(
+def test_boundary_distill_with_extreme_similarity_threshold(
     isolated_store: Path,
     cli_runner: Callable[..., CLIResult],
     trace_factory: Callable[..., Path],
@@ -412,7 +412,7 @@ def test_r4_f5_boundary_distill_with_extreme_similarity_threshold(
     assert "Traceback" not in res.stderr
 
 
-def test_r4_f5_boundary_lesson_approve_refuses_nonexistent_or_active(
+def test_boundary_lesson_approve_refuses_nonexistent_or_active(
     isolated_store: Path,
     cli_runner: Callable[..., CLIResult],
     lesson_factory: Callable[..., Path],
@@ -427,7 +427,7 @@ def test_r4_f5_boundary_lesson_approve_refuses_nonexistent_or_active(
     assert "refusing to approve" in res_active.stderr.lower() or "not 'review'" in res_active.stderr.lower()
 
 
-def test_r4_f5_boundary_full_trace_capture_and_export_lifecycle(
+def test_boundary_full_trace_capture_and_export_lifecycle(
     isolated_store: Path,
     cli_runner: Callable[..., CLIResult],
     tmp_path: Path,
@@ -458,7 +458,7 @@ def test_r4_f5_boundary_full_trace_capture_and_export_lifecycle(
     assert "Lifecycle Trace" in export_file.read_text(encoding="utf-8")
 
 
-def test_r4_f6_boundary_adversarial_zalgo_text(
+def test_boundary_adversarial_zalgo_text(
     isolated_store: Path,
     cli_runner: Callable[..., CLIResult],
 ) -> None:
@@ -474,7 +474,7 @@ def test_r4_f6_boundary_adversarial_zalgo_text(
     assert "Traceback" not in res.stderr
 
 
-def test_r4_f6_boundary_binary_garbage_in_memory_directory(
+def test_boundary_binary_garbage_in_memory_directory(
     isolated_store: Path,
     cli_runner: Callable[..., CLIResult],
 ) -> None:
@@ -486,7 +486,7 @@ def test_r4_f6_boundary_binary_garbage_in_memory_directory(
     assert "Traceback" not in res.stderr
 
 
-def test_r4_f6_boundary_extremely_long_tags_list(
+def test_boundary_extremely_long_tags_list(
     isolated_store: Path,
     cli_runner: Callable[..., CLIResult],
 ) -> None:
@@ -503,7 +503,7 @@ def test_r4_f6_boundary_extremely_long_tags_list(
     assert "Traceback" not in res.stderr
 
 
-def test_r4_f6_boundary_control_characters_in_lesson_body(
+def test_boundary_control_characters_in_lesson_body(
     isolated_store: Path,
     lesson_factory: Callable[..., Path],
     cli_runner: Callable[..., CLIResult],
@@ -515,7 +515,7 @@ def test_r4_f6_boundary_control_characters_in_lesson_body(
     assert "Traceback" not in res.stderr
 
 
-def test_r4_f6_boundary_newlines_in_title_and_context(
+def test_boundary_newlines_in_title_and_context(
     isolated_store: Path,
     cli_runner: Callable[..., CLIResult],
 ) -> None:

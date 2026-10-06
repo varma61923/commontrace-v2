@@ -9,7 +9,7 @@ import pytest
 from tests.e2e.conftest import CLIResult
 
 
-def test_r3_f1_enforce_boundary_resolves_valid_relative_path(tmp_path: Path) -> None:
+def test_enforce_boundary_resolves_valid_relative_path(tmp_path: Path) -> None:
     from commontrace.paths import enforce_boundary
 
     base = tmp_path / "base"
@@ -22,7 +22,7 @@ def test_r3_f1_enforce_boundary_resolves_valid_relative_path(tmp_path: Path) -> 
     assert resolved == str(subfile.resolve())
 
 
-def test_r3_f1_enforce_boundary_rejects_parent_traversal(tmp_path: Path) -> None:
+def test_enforce_boundary_rejects_parent_traversal(tmp_path: Path) -> None:
     from commontrace.paths import PathTraversalError, enforce_boundary
 
     base = tmp_path / "base"
@@ -33,7 +33,7 @@ def test_r3_f1_enforce_boundary_rejects_parent_traversal(tmp_path: Path) -> None
     assert "path traversal" in str(exc.value).lower() or "outside" in str(exc.value).lower()
 
 
-def test_r3_f1_enforce_boundary_rejects_absolute_path_outside(tmp_path: Path) -> None:
+def test_enforce_boundary_rejects_absolute_path_outside(tmp_path: Path) -> None:
     from commontrace.paths import PathTraversalError, enforce_boundary
 
     base = tmp_path / "base"
@@ -45,7 +45,7 @@ def test_r3_f1_enforce_boundary_rejects_absolute_path_outside(tmp_path: Path) ->
         enforce_boundary(str(base), str(outside))
 
 
-def test_r3_f1_enforce_boundary_rejects_symlink_pointing_outside(tmp_path: Path) -> None:
+def test_enforce_boundary_rejects_symlink_pointing_outside(tmp_path: Path) -> None:
     from commontrace.paths import PathTraversalError, enforce_boundary
 
     base = tmp_path / "base"
@@ -60,7 +60,7 @@ def test_r3_f1_enforce_boundary_rejects_symlink_pointing_outside(tmp_path: Path)
         enforce_boundary(str(base), "link_to_outside.txt")
 
 
-def test_r3_f1_enforce_boundary_rejects_empty_paths(tmp_path: Path) -> None:
+def test_enforce_boundary_rejects_empty_paths(tmp_path: Path) -> None:
     from commontrace.paths import enforce_boundary
 
     base = tmp_path / "base"
@@ -73,7 +73,7 @@ def test_r3_f1_enforce_boundary_rejects_empty_paths(tmp_path: Path) -> None:
         enforce_boundary("", "some_file.txt")
 
 
-def test_r3_f1_enforce_boundary_exact_match_allowed(tmp_path: Path) -> None:
+def test_enforce_boundary_exact_match_allowed(tmp_path: Path) -> None:
     from commontrace.paths import enforce_boundary
 
     base = tmp_path / "base"
@@ -83,7 +83,7 @@ def test_r3_f1_enforce_boundary_exact_match_allowed(tmp_path: Path) -> None:
     assert exact == str(base.resolve())
 
 
-def test_r3_f2_lesson_validate_blocks_path_traversal(
+def test_lesson_validate_blocks_path_traversal(
     cli_runner: Callable[..., CLIResult],
     isolated_store: Path,
 ) -> None:
@@ -92,7 +92,7 @@ def test_r3_f2_lesson_validate_blocks_path_traversal(
     assert "traversal" in res.stderr.lower() or "error" in res.stderr.lower()
 
 
-def test_r3_f2_trace_validate_blocks_path_traversal(
+def test_trace_validate_blocks_path_traversal(
     cli_runner: Callable[..., CLIResult],
     isolated_store: Path,
 ) -> None:
@@ -101,7 +101,7 @@ def test_r3_f2_trace_validate_blocks_path_traversal(
     assert "traversal" in res.stderr.lower() or "error" in res.stderr.lower()
 
 
-def test_r3_f2_lesson_validate_blocks_symlink_escape(
+def test_lesson_validate_blocks_symlink_escape(
     cli_runner: Callable[..., CLIResult],
     isolated_store: Path,
     tmp_path: Path,
@@ -117,7 +117,7 @@ def test_r3_f2_lesson_validate_blocks_symlink_escape(
     assert "traversal" in res.stderr.lower() or "error" in res.stderr.lower()
 
 
-def test_r3_f2_trace_validate_blocks_symlink_escape(
+def test_trace_validate_blocks_symlink_escape(
     cli_runner: Callable[..., CLIResult],
     isolated_store: Path,
     tmp_path: Path,
@@ -133,7 +133,7 @@ def test_r3_f2_trace_validate_blocks_symlink_escape(
     assert "traversal" in res.stderr.lower() or "error" in res.stderr.lower()
 
 
-def test_r3_f2_validation_within_store_allowed(
+def test_validation_within_store_allowed(
     cli_runner: Callable[..., CLIResult],
     isolated_store: Path,
     lesson_factory: Callable[..., Path],
@@ -144,7 +144,7 @@ def test_r3_f2_validation_within_store_allowed(
     assert "OK" in res.stdout
 
 
-def test_r3_f3_safe_prepare_output_path_unlinks_leaf_symlink(tmp_path: Path) -> None:
+def test_safe_prepare_output_path_unlinks_leaf_symlink(tmp_path: Path) -> None:
     from commontrace.paths import safe_prepare_output_path
 
     target_file = tmp_path / "sensitive_target.txt"
@@ -158,7 +158,7 @@ def test_r3_f3_safe_prepare_output_path_unlinks_leaf_symlink(tmp_path: Path) -> 
     assert target_file.read_text(encoding="utf-8") == "original content"
 
 
-def test_r3_f3_safe_prepare_output_path_rejects_symlink_intermediate_dir(tmp_path: Path) -> None:
+def test_safe_prepare_output_path_rejects_symlink_intermediate_dir(tmp_path: Path) -> None:
     from commontrace.paths import PathTraversalError, safe_prepare_output_path
 
     real_dir = tmp_path / "real_dir"
@@ -174,14 +174,14 @@ def test_r3_f3_safe_prepare_output_path_rejects_symlink_intermediate_dir(tmp_pat
     assert "symlink" in str(exc.value).lower()
 
 
-def test_r3_f3_safe_prepare_output_path_rejects_empty() -> None:
+def test_safe_prepare_output_path_rejects_empty() -> None:
     from commontrace.paths import safe_prepare_output_path
 
     with pytest.raises(ValueError):
         safe_prepare_output_path("")
 
 
-def test_r3_f3_export_blocks_symlink_write_through(
+def test_export_blocks_symlink_write_through(
     cli_runner: Callable[..., CLIResult],
     isolated_store: Path,
     tmp_path: Path,
@@ -198,7 +198,7 @@ def test_r3_f3_export_blocks_symlink_write_through(
     assert not os.path.islink(str(symlink_out))
 
 
-def test_r3_f3_export_blocks_symlinked_directory_output(
+def test_export_blocks_symlinked_directory_output(
     cli_runner: Callable[..., CLIResult],
     isolated_store: Path,
     tmp_path: Path,
@@ -216,7 +216,7 @@ def test_r3_f3_export_blocks_symlinked_directory_output(
     assert "symlink" in res.stderr.lower()
 
 
-def test_r3_f4_shellout_enforces_python_safe_path() -> None:
+def test_shellout_enforces_python_safe_path() -> None:
     import inspect
 
     from commontrace.commands import _shellout
@@ -225,7 +225,7 @@ def test_r3_f4_shellout_enforces_python_safe_path() -> None:
     assert 'env["PYTHONSAFEPATH"] = "1"' in source or "PYTHONSAFEPATH" in source
 
 
-def test_r3_f4_shellout_enforces_python_utf8() -> None:
+def test_shellout_enforces_python_utf8() -> None:
     import inspect
 
     from commontrace.commands import _shellout
@@ -234,7 +234,7 @@ def test_r3_f4_shellout_enforces_python_utf8() -> None:
     assert 'env["PYTHONUTF8"] = "1"' in source or "PYTHONUTF8" in source
 
 
-def test_r3_f4_shellout_uses_shell_false() -> None:
+def test_shellout_uses_shell_false() -> None:
     import inspect
 
     from commontrace.commands import _shellout
@@ -243,7 +243,7 @@ def test_r3_f4_shellout_uses_shell_false() -> None:
     assert "shell=True" not in source
 
 
-def test_r3_f4_cwd_module_shadowing_mitigated(
+def test_cwd_module_shadowing_mitigated(
     tmp_path: Path,
     isolated_store: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -267,7 +267,7 @@ def test_r3_f4_cwd_module_shadowing_mitigated(
     assert rc == 0
 
 
-def test_r3_f4_run_script_sets_canonical_root_in_child_env(isolated_store: Path) -> None:
+def test_run_script_sets_canonical_root_in_child_env(isolated_store: Path) -> None:
     import inspect
 
     from commontrace.commands import _shellout

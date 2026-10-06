@@ -35,7 +35,7 @@ except ImportError:
     Trace = None  # type: ignore[assignment]
 
 
-class TestM1Argon2HardeningAndFailClosed:
+class TestArgon2HardeningAndFailClosed:
     @pytest.fixture(autouse=True)
     def require_hub(self):
         pytest.importorskip("sqlalchemy", reason="hub[server] extra not installed in this env")
@@ -113,7 +113,7 @@ class TestM1Argon2HardeningAndFailClosed:
         asyncio.run(_test())
 
 
-class TestM2HubPepperRotationAndTenantIsolation:
+class TestHubPepperRotationAndTenantIsolation:
     @pytest.fixture(autouse=True)
     def require_hub(self):
         pytest.importorskip("sqlalchemy", reason="hub[server] extra not installed in this env")
@@ -272,7 +272,7 @@ class TestM2HubPepperRotationAndTenantIsolation:
         asyncio.run(_test())
 
 
-class TestM2TypeScriptSdkHardening:
+class TestTypeScriptSdkHardening:
     @pytest.fixture(autouse=True)
     def check_node(self):
         if not shutil.which("node"):
@@ -354,7 +354,7 @@ class TestM2TypeScriptSdkHardening:
         assert "TS_SDK_HARDENING_OK" in proc.stdout
 
 
-class TestM3ApprovalPolicyStrictValidation:
+class TestApprovalPolicyStrictValidation:
     def test_validate_policy_rejects_unrecognized_keys(self):
         with pytest.raises(approval.PolicyError, match="unrecognized policy key\\(s\\): extra_key"):
             approval.validate_policy({"mode": "single", "extra_key": "val"})
@@ -416,7 +416,7 @@ class TestM3ApprovalPolicyStrictValidation:
             approval.load_policy(str(tmp_path))
 
 
-class TestM3DefensiveImportCli:
+class TestDefensiveImportCli:
     def _make_args(self, file_path: str, dest: str) -> argparse.Namespace:
         return argparse.Namespace(
             file=file_path,
@@ -496,7 +496,7 @@ class TestM3DefensiveImportCli:
             assert not traces_dir.exists()
 
 
-class TestM3McpServerLockSafetyAndTraceIo:
+class TestMcpServerLockSafetyAndTraceIo:
     def test_draft_lesson_handles_post_lock_validation_exception_and_releases_lock(self, tmp_path):
         mcp_mod = types.ModuleType("mcp")
         mcp_server_mod = types.ModuleType("mcp.server")
@@ -649,7 +649,7 @@ class TestM3McpServerLockSafetyAndTraceIo:
         assert instance["solution_text"] == "67890"
 
 
-class TestM3MemoryStoreScaffoldingAndInvariants:
+class TestMemoryStoreScaffoldingAndInvariants:
     def test_memory_trace_example_trace_conforms_to_schema(self):
         trace_path = REPO_ROOT / "memory" / "traces" / "2026-07-01_example-trace.md"
         assert trace_path.is_file(), f"Expected trace file at {trace_path}"

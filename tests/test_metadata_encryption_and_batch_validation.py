@@ -1,4 +1,4 @@
-"""Remaining handover boundaries: metadata, encryption and RPC batches."""
+"""Security and RPC boundaries: metadata, encryption and RPC batches."""
 import asyncio
 
 import pytest
