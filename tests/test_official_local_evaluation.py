@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from research.run_official_local import balanced, local_endpoint, main, sha256, subset
+from benchmarks.local_eval import balanced, local_endpoint, main, sha256, subset
 
 
 @pytest.mark.parametrize("url", ["https://127.0.0.1/v1", "http://api.example.com/v1",

@@ -48,3 +48,7 @@ htmlcov/
 # Jupyter (if anyone runs notebooks locally)
 .ipynb_checkpoints/
 
+
+# Machine-local lint caches and generated evaluation outputs
+.ruff_cache/
+/benchmark-results/

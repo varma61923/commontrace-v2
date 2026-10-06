@@ -1135,8 +1135,8 @@ fell from 24.836 to 0.703 ms (35.3×), with identical IDs and scores. Long-messa
 chunking and repeated-clause weekday grounding remove quadratic copying/scanning:
 the documented workloads improved 45.2× and 201.1×. These are specific local
 workloads, not overall latency or answer-accuracy multipliers. See
-[scoped retrieval measurements](research/retrieval-acceleration.md) and
-[conversation preprocessing](research/conversation-hotpath-performance.md).
+[scoped retrieval measurements](https://github.com/varma61923/commontrace-v2/blob/7376495fb1140cb864a669d2ca9472dad0ce1020/research/retrieval-acceleration.md) and
+[conversation preprocessing](https://github.com/varma61923/commontrace-v2/blob/7376495fb1140cb864a669d2ca9472dad0ce1020/research/conversation-hotpath-performance.md).
 
 The local gateway's exact lexical recall path measures **22.95 ms warm p95 at
 6,400 lessons** and **3.39 ms at 1,000 lessons** over persistent loopback HTTP.
@@ -1145,7 +1145,7 @@ and lower scorer allocation reduce repeated work while retaining full source
 identity and temporal checks. The 6,400-lesson responses match the previous
 implementation exactly. Cold setup and model inference require separate budgets;
 these measurements do not promise every operation finishes within 30 ms. See
-[request latency measurements and reproduction](research/latency30-production-review.md).
+[request latency measurements and reproduction](docs/performance.md).
 
 Historical graph queries share a generation-validated incident-edge index;
 scheduled updates preserve the current relation until its effective change date.
@@ -1153,8 +1153,8 @@ Scoped observations retain source fact IDs, and current fact search and gateway
 recall exclude future or ended evidence. Lesson caches validate inode/change time
 as well as size/modification time, including their persisted lexical indexes.
 Console report requests share bounded event decoding and coalesce concurrent
-calculations. See [graph improvements](research/graph-phase6.md) and
-[serving measurements](research/serving-phase6-performance.md).
+calculations. See [graph improvements](https://github.com/varma61923/commontrace-v2/blob/7376495fb1140cb864a669d2ca9472dad0ce1020/research/graph-phase6.md) and
+[serving measurements](https://github.com/varma61923/commontrace-v2/blob/7376495fb1140cb864a669d2ca9472dad0ce1020/research/serving-phase6-performance.md).
 
 Extraction reads checkpointed message batches and revalidates their exact source
 content before publishing memories. Retention repairs only affected belief
@@ -1162,12 +1162,12 @@ histories. Valid summaries skip raw-message hydration; model summaries read
 bounded pages and reject publication after source changes. Console polling also
 reuses fresh parsed lessons, requests only each page's sources, and clears retained
 data when credentials change. Measured gains and reproduction commands are in
-[production performance](research/production-performance.md).
+[production performance](https://github.com/varma61923/commontrace-v2/blob/7376495fb1140cb864a669d2ca9472dad0ce1020/research/production-performance.md).
 
 MCP clients that request progress receive standard request-correlated phase
 notifications during conversation ingestion, retrieval and summarization. These
 operations run in worker threads; default clients retain the same tool results.
-See [MCP progress](research/mcp-progress.md) for the protocol and tested behavior.
+See [MCP progress](https://github.com/varma61923/commontrace-v2/blob/7376495fb1140cb864a669d2ca9472dad0ce1020/research/mcp-progress.md) for the protocol and tested behavior.
 
 Exports include exact extracted and manual memories, their source-message
 references, historical belief changes, summary metadata, and extraction progress.
@@ -2633,7 +2633,7 @@ OTLP transactions bind the authenticated organization to the configured RLS
 backstop. Webhook delivery checks response status without buffering recipient
 bodies and applies one total deadline covering DNS, address fallbacks and headers.
 Security regressions and measurement limits are documented in
-[the Hub review](research/security-phase6-hub.md).
+[the Hub review](https://github.com/varma61923/commontrace-v2/blob/7376495fb1140cb864a669d2ca9472dad0ce1020/research/security-phase6-hub.md).
 
 **What this does *not* have** is as important as the table above, and is
 written down rather than left to be discovered: no legal entity, no SOC 2,
