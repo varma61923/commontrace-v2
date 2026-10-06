@@ -8,6 +8,9 @@ import datetime
 import json
 import os
 import tempfile
+import threading
+from collections import OrderedDict
+from types import MappingProxyType
 
 from commontrace import frontmatter, paths, ttl
 
@@ -74,7 +77,8 @@ def filter_eligible(
     moment = parse_moment(as_of) if as_of else datetime.datetime.now(datetime.timezone.utc)
     requested_scope = str(scope or "").strip()
     eligible = []
-    for path, fm in lessons:
+    for lesson in lessons:
+        _path, fm = lesson
         raw_scopes = fm.get("scopes")
         scopes = (
             {str(item).strip() for item in raw_scopes if str(item).strip()}
@@ -94,7 +98,7 @@ def filter_eligible(
             continue
         if not show_expired and ttl.lesson_is_expired(fm, moment):
             continue
-        eligible.append((path, fm))
+        eligible.append(lesson)
     return eligible
 
 
@@ -107,6 +111,23 @@ def _stat(path: str) -> tuple[int, int] | None:
 
 
 _SCAN_SCOPE: contextvars.ContextVar[dict | None] = contextvars.ContextVar("commontrace_scan_scope", default=None)
+_LISTING_ROOTS_MAX = 8
+_LISTING_FILES_MAX = 32768
+_LISTING_PATH_BYTES_MAX = 4 * 1024 * 1024
+_LISTINGS: OrderedDict[str, tuple[_Listing, int]] = OrderedDict()
+_LISTINGS_LOCK = threading.Lock()
+
+
+def _listing_after_fork():
+    global _LISTINGS_LOCK
+    # A thread holding the parent's lock does not survive into the child.
+    _LISTINGS_LOCK = threading.Lock()
+    _LISTINGS.clear()
+    _SCAN_SCOPE.set(None)
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_listing_after_fork)
 
 
 @contextlib.contextmanager
@@ -121,7 +142,7 @@ def one_scan():
 
 def listing(root: str) -> tuple:
     """((path, mtime_ns, size), ...) for every lesson file, sorted by path (see `_listing`)."""
-    return _listing(root)
+    return tuple(_listing(root))
 
 
 class _Listing(tuple):
@@ -129,9 +150,12 @@ class _Listing(tuple):
 
     def __new__(cls, entries, identities):
         value = super().__new__(cls, entries)
-        value.identities = identities
-        value.fingerprint = tuple((p, identities[p]) for p, _m, _s in value)
+        object.__setattr__(value, "identities", MappingProxyType(identities))
+        object.__setattr__(value, "fingerprint", tuple((p, identities[p]) for p, _m, _s in value))
         return value
+
+    def __setattr__(self, name, value):
+        raise AttributeError("lesson snapshot is immutable")
 
 
 def source_fingerprint(root: str) -> tuple:
@@ -149,8 +173,20 @@ def _listing(root: str) -> tuple:
     scope = _SCAN_SCOPE.get()
     if scope is not None and ldir in scope:
         return scope[ldir]
+    result = _scan_listing(ldir)
+    if scope is not None:
+        scope[ldir] = result
+    return result
+
+
+def _scan_listing(ldir: str) -> tuple:
+    """Verify every source; reuse immutable sorted generations only if equal."""
+    with _LISTINGS_LOCK:
+        prior = _LISTINGS.get(ldir)
+    previous = prior[0].identities if prior is not None else {}
     prefix = ldir if ldir.endswith(os.sep) else ldir + os.sep
-    out, identities = [], {}
+    identities = {}
+    unchanged = prior is not None
     with os.scandir(ldir) as entries:
         for entry in entries:
             name = entry.name
@@ -161,12 +197,31 @@ def _listing(root: str) -> tuple:
             except OSError:
                 continue
             path = prefix + name
-            out.append((path, st.st_mtime_ns, st.st_size))
-            identities[path] = _identity(st)
+            old = previous.get(path)
+            if old is not None and (st.st_dev == old[0] and st.st_ino == old[1]
+                                    and st.st_mtime_ns == old[2] and st.st_ctime_ns == old[3]
+                                    and st.st_size == old[4]):
+                identities[path] = old
+            else:
+                identities[path] = _identity(st)
+                unchanged = False
+    if unchanged and len(identities) == len(previous):
+        with _LISTINGS_LOCK:
+            if _LISTINGS.get(ldir) is prior:
+                _LISTINGS.move_to_end(ldir)
+        return prior[0]
+    out = [(path, identity[2], identity[4]) for path, identity in identities.items()]
     out.sort()
     result = _Listing(out, identities)
-    if scope is not None:
-        scope[ldir] = result
+    path_bytes = sum(len(os.fsencode(path)) for path in identities)
+    with _LISTINGS_LOCK:
+        _LISTINGS.pop(ldir, None)
+        if len(result) <= _LISTING_FILES_MAX and path_bytes <= _LISTING_PATH_BYTES_MAX:
+            _LISTINGS[ldir] = (result, path_bytes)
+            while (len(_LISTINGS) > _LISTING_ROOTS_MAX
+                   or sum(len(item[0]) for item in _LISTINGS.values()) > _LISTING_FILES_MAX
+                   or sum(item[1] for item in _LISTINGS.values()) > _LISTING_PATH_BYTES_MAX):
+                _LISTINGS.popitem(last=False)
     return result
 
 

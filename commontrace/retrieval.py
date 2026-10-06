@@ -256,90 +256,103 @@ def rank_lessons(
     max_idf = index.max_idf
     total_query_idf = len(query_terms) * max_idf
 
-    scored: list[tuple] = []
-    acc: dict[int, list] = {}
-    acc_get = acc.get
+    # Keep candidate state numeric; matched-term lists and result records are
+    # needed only for returned rows, not every posting in a broad query.
+    # Absent query terms still affect normalization above, but never need a bit
+    # in candidate state. This bounds masks by matched terms rather than a
+    # potentially huge out-of-vocabulary query.
+    terms = sorted(term for term in query_terms if term in index.postings)
+    sparse = sum(len(index.postings[t][0]) for t in terms) <= n_docs // 4
+    scores = {} if sparse else [0.0] * n_docs
+    coverage = {} if sparse else [0.0] * n_docs
+    masks = {} if sparse else [0] * n_docs
+    compact_matches = len(terms) <= 64
+    candidates = []
     is_bm25 = scorer == SCORER_BM25
-    avg_len = index.avg_field_len
-    for term in sorted(query_terms):
+    for position, term in enumerate(terms):
         post = index.postings.get(term)
         if post is None:
             continue
         term_idf = query_idf.get(term, 0.0)
+        bit = 1 << position if compact_matches else 0
         for i, weight_sum, best in zip(*post):
-            a = acc_get(i)
-            if is_bm25:
-                contrib = _bm25_term(weight_sum, term_idf, index.n_terms[i], avg_len)
-                if a is None:
-                    acc[i] = [weight_sum, contrib, [term]]
-                    continue
-                a[0] += weight_sum
-                a[1] += contrib
-                a[2].append(term)
-                continue
-            if a is None:
-                acc[i] = [weight_sum, term_idf * (best / _MAX_FIELD_WEIGHT), [term]]
-                continue
-            a[0] += weight_sum
-            a[1] += term_idf * (best / _MAX_FIELD_WEIGHT)
-            a[2].append(term)
-    length_factors = index.length_factors
-    tie_breaks = index.tie_breaks
-    for i in sorted(acc):
-        (path, fm) = lessons[i]
-        score, covered, matched = acc[i]
-
-        if scorer == SCORER_COUNT:
-            rel = score
-        elif scorer == SCORER_BM25:
-            if total_query_idf > 0 and matched:
-                rel = min(1.0, covered / total_query_idf)
+            previous = masks.get(i, 0) if sparse else masks[i]
+            contribution = _bm25_term(weight_sum, term_idf, index.n_terms[i], index.avg_field_len) if is_bm25 \
+                else term_idf * (best / _MAX_FIELD_WEIGHT)
+            if previous:
+                scores[i] += weight_sum
+                coverage[i] += contribution
             else:
-                rel = 0.0
-        elif total_query_idf > 0 and matched:
-            lam = length_factors[i] if length_factors else _length_factor(index.n_terms[i], index.avg_field_len)
-            rel = min(1.0, (covered * lam) / total_query_idf)
-        else:
+                candidates.append(i)
+                scores[i] = weight_sum
+                coverage[i] = contribution
+            if compact_matches:
+                masks[i] = previous | bit
+            elif previous:
+                previous.append(term)
+            else:
+                # Very large queries use storage proportional to actual hits,
+                # avoiding a corpus-sized array of arbitrarily wide integers.
+                masks[i] = [term]
+
+    adaptive = scorer == SCORER_ADAPTIVE and adaptive_tail
+    relevance = {} if sparse else [0.0] * n_docs
+    peak = 0.0
+    length_factors = index.length_factors
+    for i in candidates:
+        if scorer == SCORER_COUNT:
+            rel = scores[i]
+        elif total_query_idf <= 0:
             rel = 0.0
+        elif is_bm25:
+            rel = min(1.0, coverage[i] / total_query_idf)
+        else:
+            lam = length_factors[i] if length_factors else _length_factor(index.n_terms[i], index.avg_field_len)
+            rel = min(1.0, (coverage[i] * lam) / total_query_idf)
+        relevance[i] = rel
+        if adaptive and scores[i] > 0 and rel > peak:
+            peak = rel
+    if adaptive:
+        floor = max(floor, peak * _adaptive_tail_ratio(len(query_terms)))
 
-        if score > 0 and (scorer == SCORER_ADAPTIVE and adaptive_tail or rel >= floor):
-            slug = str(fm.get("name", ""))
-            reliability_adj = reliability_lookup.get(slug, 0.0) if reliability_lookup else 0.0
-            recency_adj = recency_lookup.get(slug, 0.0) if recency_lookup else 0.0
-            graph_adj = graph_boost_lookup.get(slug, 0.0) if graph_boost_lookup else 0.0
-            adjusted = min(1.0, max(0.0,
-                rel + reliability_weight * reliability_adj
-                + recency_weight * recency_adj + graph_weight * graph_adj,
-            ))
-            importance, uses = tie_breaks[i] if tie_breaks else (
-                _rank_int(fm.get("importance", 0)), _rank_int(fm.get("uses", 0)))
-            scored.append((
-                adjusted, score, importance, uses,
-                path, fm, slug, matched, rel, reliability_adj, recency_adj, graph_adj,
-            ))
+    scored = []
+    tie_breaks = index.tie_breaks
+    for i in candidates:
+        score, rel = scores[i], relevance[i]
+        if not (score > 0 and rel >= floor):
+            continue
+        path, fm = lessons[i]
+        slug = str(fm.get("name", ""))
+        reliability_adj = reliability_lookup.get(slug, 0.0) if reliability_lookup else 0.0
+        recency_adj = recency_lookup.get(slug, 0.0) if recency_lookup else 0.0
+        graph_adj = graph_boost_lookup.get(slug, 0.0) if graph_boost_lookup else 0.0
+        adjusted = min(1.0, max(0.0,
+            rel + reliability_weight * reliability_adj
+            + recency_weight * recency_adj + graph_weight * graph_adj,
+        ))
+        importance, uses = tie_breaks[i] if tie_breaks else (
+            _rank_int(fm.get("importance", 0)), _rank_int(fm.get("uses", 0)))
+        # Accumulation visits posting lists in term order. Explicitly preserve
+        # the former stable corpus-order tie break without sorting candidates.
+        scored.append((adjusted, score, importance, uses, -i, i, path, slug, rel,
+                       reliability_adj, recency_adj, graph_adj))
 
-    if scorer == SCORER_ADAPTIVE and adaptive_tail and scored:
-        adaptive_floor = max(
-            floor,
-            max(item[8] for item in scored) * _adaptive_tail_ratio(len(query_terms)),
-        )
-        scored = [item for item in scored if item[8] >= adaptive_floor]
-
-    top = heapq.nlargest(max(0, top_k), scored, key=lambda item: item[:4])
+    top = heapq.nlargest(max(0, top_k), scored, key=lambda item: item[:5])
     return [
         RankedLesson(
             path=path,
             slug=slug,
-            description=str(fm.get("description", "")),
+            description=str(lessons[i][1].get("description", "")),
             score=score,
-            matched_terms=list(matched),
+            matched_terms=([term for position, term in enumerate(terms) if masks[i] & (1 << position)]
+                           if compact_matches else list(masks[i])),
             relevance=round(rel, 6),
             scorer=scorer,
             reliability_adjustment=round(reliability_adj, 6) if reliability_lookup else 0.0,
             recency_adjustment=round(recency_adj, 6) if recency_lookup else 0.0,
             graph_adjustment=round(graph_adj, 6) if graph_boost_lookup else 0.0,
         )
-        for (_adj, score, _imp, _uses, path, fm, slug, matched, rel,
+        for (_adj, score, _imp, _uses, _order, i, path, slug, rel,
              reliability_adj, recency_adj, graph_adj) in top
     ]
 

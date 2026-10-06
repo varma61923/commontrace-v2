@@ -76,17 +76,18 @@ def _cached_active(root: str, reader) -> tuple[list, dict]:
     """Active lessons + term cache, re-parsed only when the listing changes."""
     from commontrace import lesson_cache
 
-    try:
-        listing = lesson_cache.source_fingerprint(root)
-    except OSError:
-        listing = ()
-    key = os.path.abspath(root)
-    with _ACTIVE_CACHE_LOCK:
-        hit = _ACTIVE_CACHE.get(key)
-        if hit is not None and hit[0] == listing:
-            _ACTIVE_CACHE[key] = _ACTIVE_CACHE.pop(key)
-            return hit[1], hit[2]
-    active, term_cache = lesson_cache.load_active_with_terms(root, None, reader=reader)
+    with lesson_cache.one_scan():
+        try:
+            listing = lesson_cache.source_fingerprint(root)
+        except OSError:
+            listing = ()
+        key = os.path.abspath(root)
+        with _ACTIVE_CACHE_LOCK:
+            hit = _ACTIVE_CACHE.get(key)
+            if hit is not None and hit[0] == listing:
+                _ACTIVE_CACHE[key] = _ACTIVE_CACHE.pop(key)
+                return hit[1], hit[2]
+        active, term_cache = lesson_cache.load_active_with_terms(root, None, reader=reader)
     with _ACTIVE_CACHE_LOCK:
         _ACTIVE_CACHE[key] = (listing, active, term_cache)
         while len(_ACTIVE_CACHE) > _ACTIVE_CACHE_MAX:
@@ -1204,6 +1205,9 @@ def make_http_server(gateway: Gateway, host: str, port: int, *, tls: tuple[str, 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
         timeout = request_timeout
+        # Headers and small JSON bodies are separate writes. On persistent
+        # connections Nagle can hold the body for the peer's delayed ACK.
+        disable_nagle_algorithm = True
 
         def log_message(self, format: str, *args: Any) -> None:
             logger.debug("Gateway HTTP: %s", format % args)

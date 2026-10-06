@@ -13,6 +13,7 @@ from collections import deque
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+from functools import cached_property
 from typing import Any
 
 from commontrace import _jsonl, lesson_cache, paths
@@ -422,6 +423,7 @@ def _is_active_edge(
 _GRAPH_ADJ_CACHE: dict[tuple, tuple] = {}
 _GRAPH_ADJ_CACHE_MAX_ENTRIES = 64
 _GRAPH_INDEX_CACHE: dict[tuple, "_GraphFullIndex"] = {}
+_GRAPH_NODE_CACHE: dict[tuple, "_GraphNodeIndex"] = {}
 _GRAPH_CACHE_LOCK = threading.RLock()
 
 
@@ -429,80 +431,113 @@ def _clear_graph_cache() -> None:
     with _GRAPH_CACHE_LOCK:
         _GRAPH_ADJ_CACHE.clear()
         _GRAPH_INDEX_CACHE.clear()
+        _GRAPH_NODE_CACHE.clear()
         _PHRASE_INDEX.clear()
         _SCANNED_ONCE.clear()
 
 
+def _file_stamp(path: str) -> tuple[int, ...]:
+    try:
+        st = os.stat(path)
+        return (int(st.st_dev), int(st.st_ino), int(st.st_mtime_ns), int(st.st_ctime_ns), int(st.st_size))
+    except OSError:
+        return (0, 0, 0, 0, 0)
+
+
 def _graph_files_stamp(root: str) -> tuple[int, ...]:
-    stamps: list[int] = []
-    for path in (_nodes_file(root), _edges_file(root)):
-        try:
-            st = os.stat(path)
-            stamps.extend((int(st.st_dev), int(st.st_ino), int(st.st_mtime_ns),
-                           int(st.st_ctime_ns), int(st.st_size)))
-        except OSError:
-            stamps.extend((0, 0, 0, 0, 0))
-    return tuple(stamps)
+    return _file_stamp(_nodes_file(root)) + _file_stamp(_edges_file(root))
+
+
+def _version_chains(nodes: dict[str, GraphNode]) -> dict[str, list[GraphNode]]:
+    chains: dict[str, list[GraphNode]] = {}
+    for node in nodes.values():
+        chains.setdefault(node.root_id or node.id, []).append(node)
+    for chain in chains.values():
+        chain.sort(key=lambda node: node.version)
+    return chains
+
+
+@dataclass
+class _GraphNodeIndex:
+    nodes: dict[str, GraphNode]
+    stamp: tuple[int, ...]
+
+    @cached_property
+    def chains(self) -> dict[str, list[GraphNode]]:
+        return _version_chains(self.nodes)
 
 
 @dataclass
 class _GraphFullIndex:
-    """Full-graph indexes built once per file stamp; timestamps parsed once."""
+    """Incident edges eager; query-specific subsidiary indexes built on demand."""
 
     nodes: dict[str, GraphNode]
     edges: list[GraphEdge]
-    begins: list[Any]
-    ends: list[Any]
     by_entity: dict[str, list[int]]
-    by_relation: dict[str, list[int]]
-    by_source_relation: dict[tuple[str, str], list[int]]
-    order_by_valid: list[int]
-    sorted_begins: list[Any]
-    chains: dict[str, list[GraphNode]]
     stamp: tuple[int, ...] = ()
+    _moment_memo: dict[str, Any] = field(default_factory=dict, repr=False)
+
+    @cached_property
+    def begins(self) -> list[Any]:
+        return [_parsed_moment(edge.valid_at or edge.created_at, self._moment_memo) for edge in self.edges]
+
+    @cached_property
+    def ends(self) -> list[Any]:
+        result = []
+        for edge in self.edges:
+            moments = [_parsed_moment(value, self._moment_memo)
+                       for value in (edge.invalid_at, edge.expired_at) if value]
+            result.append(min((moment for moment in moments if moment is not None), default=None))
+        return result
+
+    @cached_property
+    def by_relation(self) -> dict[str, list[int]]:
+        result: dict[str, list[int]] = {}
+        for position, edge in enumerate(self.edges):
+            result.setdefault(edge.relation, []).append(position)
+        return result
+
+    @cached_property
+    def by_source_relation(self) -> dict[tuple[str, str], list[int]]:
+        result: dict[tuple[str, str], list[int]] = {}
+        for position, edge in enumerate(self.edges):
+            result.setdefault((edge.source, edge.relation), []).append(position)
+        return result
+
+    @cached_property
+    def order_by_valid(self) -> list[int]:
+        return sorted(range(len(self.edges)), key=lambda position: self.begins[position] or _MIN_MOMENT)
+
+    @cached_property
+    def sorted_begins(self) -> list[Any]:
+        return [self.begins[position] or _MIN_MOMENT for position in self.order_by_valid]
+
+    @cached_property
+    def chains(self) -> dict[str, list[GraphNode]]:
+        return _version_chains(self.nodes)
 
 
 _MIN_MOMENT = datetime.min.replace(tzinfo=timezone.utc)
 
 
-def _build_full_index(nodes: dict[str, GraphNode], all_edges: list[GraphEdge]) -> _GraphFullIndex:
-    """Index all edges and version chains; each edge timestamp is parsed once."""
-    begins: list[Any] = []
-    ends: list[Any] = []
-    by_entity: dict[str, list[int]] = {}
-    by_relation: dict[str, list[int]] = {}
-    by_source_relation: dict[tuple[str, str], list[int]] = {}
-    for idx, edge in enumerate(all_edges):
+def _parsed_moment(value: Any, memo: dict[str, Any]) -> Any:
+    key = str(value)
+    if key not in memo:
         try:
-            begins.append(lesson_cache.parse_moment(edge.valid_at or edge.created_at))
+            memo[key] = lesson_cache.parse_moment(value)
         except ValueError:
-            begins.append(None)
-        end_candidates = []
-        for value in (edge.invalid_at, edge.expired_at):
-            if not value:
-                continue
-            try:
-                end_candidates.append(lesson_cache.parse_moment(value))
-            except ValueError:
-                continue
-        ends.append(min(end_candidates) if end_candidates else None)
+            memo[key] = None
+    return memo[key]
+
+
+def _build_full_index(nodes: dict[str, GraphNode], all_edges: list[GraphEdge]) -> _GraphFullIndex:
+    """Build only incident lists; timestamp/relation/chain indexes remain lazy."""
+    by_entity: dict[str, list[int]] = {}
+    for idx, edge in enumerate(all_edges):
         by_entity.setdefault(edge.source, []).append(idx)
         if edge.target != edge.source:
             by_entity.setdefault(edge.target, []).append(idx)
-        by_relation.setdefault(edge.relation, []).append(idx)
-        by_source_relation.setdefault((edge.source, edge.relation), []).append(idx)
-    order = sorted(range(len(all_edges)), key=lambda i: begins[i] if begins[i] is not None else _MIN_MOMENT)
-    sorted_begins = [begins[i] if begins[i] is not None else _MIN_MOMENT for i in order]
-    chains: dict[str, list[GraphNode]] = {}
-    for node in nodes.values():
-        chains.setdefault(node.root_id or node.id, []).append(node)
-    for chain in chains.values():
-        chain.sort(key=lambda n: n.version)
-    return _GraphFullIndex(
-        nodes=nodes, edges=all_edges, begins=begins, ends=ends, by_entity=by_entity,
-        by_relation=by_relation, by_source_relation=by_source_relation,
-        order_by_valid=order, sorted_begins=sorted_begins, chains=chains,
-    )
+    return _GraphFullIndex(nodes=nodes, edges=all_edges, by_entity=by_entity)
 
 
 def _cached_graph_full(
@@ -562,6 +597,49 @@ def _cached_graph(root: str, as_of: str | None = None, known_at: str | None = No
     return nodes, active, adj
 
 
+@contextlib.contextmanager
+def _snapshot_guard(root: str) -> Iterator[None]:
+    """Reuse the graph mutation lock, with identity checks for read-only stores."""
+    with contextlib.ExitStack() as guards:
+        if os.path.isdir(_graph_dir(root)):
+            try:
+                guards.enter_context(_jsonl.locked(_lock_file(root)))
+            except OSError as exc:
+                if not isinstance(exc, PermissionError) and exc.errno not in (errno.EACCES, errno.EPERM, errno.EROFS):
+                    raise
+        yield
+
+
+def _node_index(root: str) -> _GraphNodeIndex:
+    """A coherent node-only snapshot; unrelated edges need not be read."""
+    base = os.path.abspath(str(root))
+    stamp = _file_stamp(_nodes_file(root))
+    with _GRAPH_CACHE_LOCK:
+        hit = _GRAPH_NODE_CACHE.get((base, stamp))
+        if hit is not None:
+            return hit
+    with _snapshot_guard(root):
+        stamp = _file_stamp(_nodes_file(root))
+        with _GRAPH_CACHE_LOCK:
+            hit = _GRAPH_NODE_CACHE.get((base, stamp))
+            if hit is not None:
+                return hit
+        for _attempt in range(3):
+            stamp = _file_stamp(_nodes_file(root))
+            nodes = load_nodes(root)
+            if _file_stamp(_nodes_file(root)) == stamp:
+                break
+        else:
+            raise RuntimeError("graph nodes changed repeatedly during snapshot; retry the query")
+    index = _GraphNodeIndex(nodes, stamp)
+    with _GRAPH_CACHE_LOCK:
+        if _file_stamp(_nodes_file(root)) == stamp:
+            if len(_GRAPH_NODE_CACHE) >= _GRAPH_ADJ_CACHE_MAX_ENTRIES:
+                _GRAPH_NODE_CACHE.pop(next(iter(_GRAPH_NODE_CACHE)))
+            _GRAPH_NODE_CACHE[(base, stamp)] = index
+    return index
+
+
 def _full_index(root: str) -> _GraphFullIndex:
     """One immutable source generation shared by current and historical reads."""
     base = os.path.abspath(str(root))
@@ -573,18 +651,7 @@ def _full_index(root: str) -> _GraphFullIndex:
     # Share the mutation lock while capturing both source files. Expensive
     # indexing happens after release; a later writer cannot relabel this older
     # generation as its own. Missing stores need no lock file or directories.
-    with contextlib.ExitStack() as guards:
-        if os.path.isdir(_graph_dir(root)):
-            try:
-                guards.enter_context(_jsonl.locked(_lock_file(root)))
-            except OSError as exc:
-                if not isinstance(exc, PermissionError) and exc.errno not in (errno.EACCES, errno.EPERM, errno.EROFS):
-                    raise
-                # A frozen/read-only store must remain queryable. Validate its
-                # file identities around the read instead of creating a lock.
-                # Concurrent readable-only snapshots retain the same legacy
-                # semantics; never publish a generation that changed mid-read.
-                pass
+    with _snapshot_guard(root):
         stamp = _graph_files_stamp(root)
         with _GRAPH_CACHE_LOCK:
             hit = _GRAPH_INDEX_CACHE.get((base, stamp))
@@ -592,7 +659,7 @@ def _full_index(root: str) -> _GraphFullIndex:
                 return hit
         for _attempt in range(3):
             stamp = _graph_files_stamp(root)
-            nodes, all_edges = load_nodes(root), load_edges(root)
+            nodes, all_edges = _node_index(root).nodes, load_edges(root)
             if _graph_files_stamp(root) == stamp:
                 break
         else:
@@ -721,22 +788,23 @@ def _node_terms(nid: str, node: GraphNode) -> list[tuple[str, ...]]:
 
 def _phrase_index(root: str) -> dict[str, list[tuple[tuple[str, ...], str]]]:
     """First word -> [(phrase words, node id)] for every live node, cached per graph version."""
-    key = (os.path.abspath(str(root)), _graph_files_stamp(root))
+    snapshot = _node_index(root)
+    key = (os.path.abspath(str(root)), snapshot.stamp)
     with _GRAPH_CACHE_LOCK:
         hit = _PHRASE_INDEX.get(key)
         if hit is not None:
             return hit
-    nodes, _active, _adj = _cached_graph(root)
     index: dict[str, list[tuple[tuple[str, ...], str]]] = {}
-    for nid, node in nodes.items():
+    for nid, node in snapshot.nodes.items():
         if node.is_forgotten:
             continue
         for words in set(_node_terms(nid, node)):
             index.setdefault(words[0], []).append((words, nid))
     with _GRAPH_CACHE_LOCK:
-        if len(_PHRASE_INDEX) >= _GRAPH_ADJ_CACHE_MAX_ENTRIES:
-            _PHRASE_INDEX.pop(next(iter(_PHRASE_INDEX)))
-        _PHRASE_INDEX[key] = index
+        if _file_stamp(_nodes_file(root)) == snapshot.stamp:
+            if len(_PHRASE_INDEX) >= _GRAPH_ADJ_CACHE_MAX_ENTRIES:
+                _PHRASE_INDEX.pop(next(iter(_PHRASE_INDEX)))
+            _PHRASE_INDEX[key] = index
     return index
 
 
@@ -754,16 +822,16 @@ def extract_entities_from_text(root: str, text: str) -> list[str]:
     words = _WORD_RE.findall(text.lower())
     if not words:
         return []
-    key = (os.path.abspath(str(root)), _graph_files_stamp(root))
+    snapshot = _node_index(root)
+    key = (os.path.abspath(str(root)), snapshot.stamp)
     with _GRAPH_CACHE_LOCK:
         first_scan = key not in _PHRASE_INDEX and key not in _SCANNED_ONCE
         if first_scan:
             _SCANNED_ONCE.add(key)
     if first_scan:
-        nodes, _active, _adj = _cached_graph(root)
         norm = " " + " ".join(words) + " "
         return sorted(
-            nid for nid, node in nodes.items()
+            nid for nid, node in snapshot.nodes.items()
             if not node.is_forgotten and any(f" {' '.join(t)} " in norm for t in _node_terms(nid, node))
         )
     index = _phrase_index(root)
@@ -811,14 +879,14 @@ def edges_between(
     ent = _clean_id(entity) if entity else None
     index = _full_index(root)
     edges = index.edges
-    begins = index.begins
-    ends = index.ends
+    begins = index.begins if ent is None else index.__dict__.get("begins")
+    ends = index.ends if ent is None else index.__dict__.get("ends")
     if ent is not None and relation is not None:
         by_ent = index.by_entity.get(ent, [])
         by_rel = index.by_relation.get(relation, [])
         cand: Any = by_ent if len(by_ent) <= len(by_rel) else by_rel
     elif ent is not None:
-        cand = index.by_entity.get(ent, [])
+        cand: Any = index.by_entity.get(ent, [])
     elif relation is not None:
         cand = index.by_relation.get(relation, [])
     elif hi is not None:
@@ -833,21 +901,18 @@ def edges_between(
             continue
         if ent and ent not in (edge.source, edge.target):
             continue
-        begin = begins[i]
+        begin = (begins[i] if begins is not None
+                 else _parsed_moment(edge.valid_at or edge.created_at, index._moment_memo))
         if begin is None:
             begin = lesson_cache.parse_moment(edge.valid_at or edge.created_at)
         if hi is not None and begin > hi:
             continue
-        finish = ends[i]
-        if finish is None:
-            candidates = []
-            for value in (edge.invalid_at, edge.expired_at):
-                if value:
-                    try:
-                        candidates.append(lesson_cache.parse_moment(value))
-                    except ValueError:
-                        continue
-            finish = min(candidates) if candidates else None
+        if ends is not None:
+            finish = ends[i]
+        else:
+            candidates = [_parsed_moment(value, index._moment_memo)
+                          for value in (edge.invalid_at, edge.expired_at) if value]
+            finish = min((moment for moment in candidates if moment is not None), default=None)
         if lo is not None and finish is not None and finish <= lo:
             continue
         out.append(edge)
@@ -860,12 +925,11 @@ def timeline(root: str, entity: str) -> list[dict[str, Any]]:
     ent = _clean_id(entity)
     index = _full_index(root)
     edges = index.edges
-    begins = index.begins
     decorated: list[tuple[Any, bool, dict[str, Any]]] = []
     for i in index.by_entity.get(ent, []):
         edge = edges[i]
         base = {"source": edge.source, "relation": edge.relation, "target": edge.target}
-        begin = begins[i]
+        begin = _parsed_moment(edge.valid_at or edge.created_at, index._moment_memo)
         if begin is None:
             begin = lesson_cache.parse_moment(edge.valid_at or edge.created_at)
         decorated.append((begin, True, {**base, "at": edge.valid_at or edge.created_at, "event": "began",
@@ -932,7 +996,7 @@ def export_json(root: str, as_of: str | None = None) -> dict[str, Any]:
 
 def get_version_chain(root: str, node_id: str) -> list[GraphNode]:
     """Every version of *node_id*'s entity, oldest first."""
-    index = _full_index(root)
+    index = _node_index(root)
     target = index.nodes.get(_clean_id(node_id))
     if target is None:
         return []
@@ -942,7 +1006,7 @@ def get_version_chain(root: str, node_id: str) -> list[GraphNode]:
 
 def list_version_chains(root: str) -> dict[str, list[GraphNode]]:
     """Nodes grouped by version-chain root, each chain oldest first."""
-    index = _full_index(root)
+    index = _node_index(root)
     return copy.deepcopy(index.chains)
 
 

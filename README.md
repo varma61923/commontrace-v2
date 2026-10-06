@@ -1138,6 +1138,15 @@ workloads, not overall latency or answer-accuracy multipliers. See
 [scoped retrieval measurements](research/retrieval-acceleration.md) and
 [conversation preprocessing](research/conversation-hotpath-performance.md).
 
+The local gateway's exact lexical recall path measures **22.95 ms warm p95 at
+6,400 lessons** and **3.39 ms at 1,000 lessons** over persistent loopback HTTP.
+TCP_NODELAY removes small-response transport stalls; verified lesson generations
+and lower scorer allocation reduce repeated work while retaining full source
+identity and temporal checks. The 6,400-lesson responses match the previous
+implementation exactly. Cold setup and model inference require separate budgets;
+these measurements do not promise every operation finishes within 30 ms. See
+[request latency measurements and reproduction](research/latency30-production-review.md).
+
 Historical graph queries share a generation-validated incident-edge index;
 scheduled updates preserve the current relation until its effective change date.
 Scoped observations retain source fact IDs, and current fact search and gateway
