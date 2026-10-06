@@ -198,8 +198,17 @@ def test_sql_authorizer_denies_pragma_table_and_extension(database, query):
 def test_sql_scalar_and_total_result_budgets(database):
     with pytest.raises(sql_guard.SqlGuardError, match='resource limits'):
         sql_guard.execute_guarded_sql(database, 'SELECT randomblob(1000000000)')
+    # Stored values exercise the result budget on every supported runtime.
+    # Python 3.10 correctly rejects allocation functions before row fetching.
+    conn = sqlite3.connect(database)
+    try:
+        conn.execute('CREATE TABLE payloads(body TEXT NOT NULL)')
+        conn.executemany('INSERT INTO payloads(body) VALUES (?)', [('x' * 900_000,)] * 10)
+        conn.commit()
+    finally:
+        conn.close()
     with pytest.raises(sql_guard.SqlGuardError, match='result exceeded'):
-        sql_guard.execute_guarded_sql(database, 'SELECT randomblob(900000) FROM t', max_rows=20)
+        sql_guard.execute_guarded_sql(database, 'SELECT body FROM payloads', max_rows=20)
 
 
 def test_sql_progress_deadline_stops_unbounded_recursive_query(database):
