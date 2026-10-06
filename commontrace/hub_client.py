@@ -10,7 +10,7 @@ import re
 import socket
 import sys
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Iterable, TypeVar
+from typing import Any, Awaitable, Callable, Iterable, TypeVar, cast
 
 from commontrace import frontmatter, paths, templates, trace_io
 from commontrace.fingerprints import push_fingerprint as _push_fingerprint
@@ -407,15 +407,20 @@ class _RateLimitGate:
         while True:
             async with self._lock:
                 now = asyncio.get_running_loop().time()
-                if now >= self._resume_at:
+                slot_reserved = now >= self._resume_at
+                if slot_reserved:
                     slot = max(now, self._next_slot)
                     self._next_slot = slot + self._min_interval
                     delay = slot - now
-                    break
-                delay = self._resume_at - now
-            await asyncio.sleep(min(delay, RETRY_MAX_DELAY_SECONDS))
-        if delay > 0:
+                    if delay <= 0:
+                        return
+                else:
+                    delay = min(self._resume_at - now, RETRY_MAX_DELAY_SECONDS)
             await asyncio.sleep(delay)
+            # Another in-flight call can receive a 429 while this slot sleeps.
+            # Rejoin the gate rather than sending through its newer pause.
+            if slot_reserved and asyncio.get_running_loop().time() >= self._resume_at:
+                return
 
     def pause(self, seconds: float) -> None:
         """Called on a 429: hold the whole batch, and slow the paced rate."""
@@ -674,13 +679,42 @@ async def _gather_bounded(
     fn: Callable[[str], Awaitable[_T]],
     concurrency: int = _PUSH_CONCURRENCY,
 ) -> list[_T]:
-    semaphore = asyncio.Semaphore(max(1, concurrency))
+    """Consume lazily with bounded tasks, preserving input order and cleanup."""
+    items = iter(paths_iter)
+    results: list[_T | None] = []
 
-    async def _bounded(path: str) -> _T:
-        async with semaphore:
-            return await fn(path)
+    async def worker(index: int, path: str) -> None:
+        while True:
+            results[index] = await fn(path)
+            # Iterator access has no await: workers reserve distinct slots on
+            # the event loop without a producer queue or one task per file.
+            try:
+                path = next(items)
+            except StopIteration:
+                return
+            index = len(results)
+            results.append(None)
 
-    return await asyncio.gather(*(_bounded(p) for p in paths_iter))
+    tasks: list[asyncio.Task[None]] = []
+    try:
+        for _ in range(max(1, concurrency)):
+            try:
+                path = next(items)
+            except StopIteration:
+                break
+            index = len(results)
+            results.append(None)
+            tasks.append(asyncio.create_task(worker(index, path)))
+        await asyncio.gather(*tasks)
+        return cast(list[_T], results)
+    finally:
+        # gather alone leaves siblings running after an exception. Finish
+        # cancellation before the caller closes their shared MCP session.
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
 
 class _LazyHubSession:

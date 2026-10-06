@@ -335,7 +335,7 @@ class Store:
         if self.get_meta("entities") != "1":
             with self._lock, write_txn(self.db):
                 if self.get_meta("entities") != "1":
-                    for tid, text in self.db.execute("SELECT id, text FROM turns").fetchall():
+                    for tid, text in self.db.execute("SELECT id, text FROM turns"):
                         self.db.executemany("INSERT OR IGNORE INTO entities VALUES (?, ?)",
                                             [(e, tid) for e in profile.entities(text)])
                     self.db.execute("INSERT OR REPLACE INTO meta VALUES ('entities', '1')")
@@ -351,9 +351,17 @@ class Store:
                             "ON facts (owner, slot, COALESCE(at, ''), id)")
             self.db.execute("CREATE INDEX IF NOT EXISTS facts_kind_at ON facts (kind, at DESC, id DESC)")
             self.db.execute("CREATE INDEX IF NOT EXISTS facts_owner_hash ON facts (owner, statement_hash)")
-            self.db.executemany("UPDATE facts SET statement_hash=? WHERE id=?",
-                                [(fact_hash(r[1]), r[0]) for r in self.db.execute(
-                                    "SELECT id, statement FROM facts WHERE statement_hash IS NULL").fetchall()])
+            # Keyset batches bound legacy backfill memory even for a very large
+            # profile. Finish each SELECT before updating its source table;
+            # mutating a live SQLite cursor's result can skip or repeat rows.
+            rows = self.db.execute("SELECT id, statement FROM facts WHERE statement_hash IS NULL "
+                                   "ORDER BY id LIMIT 256").fetchall()
+            while rows:
+                self.db.executemany("UPDATE facts SET statement_hash=? WHERE id=?",
+                                    [(fact_hash(r[1]), r[0]) for r in rows])
+                rows = self.db.execute(
+                    "SELECT id, statement FROM facts WHERE statement_hash IS NULL AND id>? "
+                    "ORDER BY id LIMIT 256", (rows[-1][0],)).fetchall()
             self.db.execute("CREATE INDEX IF NOT EXISTS facts_turn ON facts (turn)")
             self.db.execute("CREATE INDEX IF NOT EXISTS turns_expires ON turns (expires) WHERE expires IS NOT NULL")
             self.db.execute("CREATE INDEX IF NOT EXISTS sessions_seq ON sessions (seq)")
@@ -551,12 +559,23 @@ class Store:
                      "json_extract(value, '$[1]') AS slot FROM json_each(?)) ")
             params = (json.dumps(pairs),)
         join = " JOIN scope ON scope.owner=f.owner AND scope.slot=f.slot" if scope else ""
-        rows = self.db.execute(
-            scope + "SELECT f.id, LEAD(f.id) OVER (PARTITION BY f.slot, f.owner "  # nosec B608 - fixed scope query
-            "ORDER BY COALESCE(f.at, ''), f.id) AS successor FROM facts f "
-            "JOIN turns t ON t.id=f.turn" + join + " WHERE f.slot IS NOT NULL", params).fetchall()
-        self.db.executemany("UPDATE facts SET superseded_by=? WHERE id=? AND superseded_by IS NOT ?",
-                            [(r[1], r[0], r[1]) for r in rows])
+        # Stage the complete window before modifying facts, without copying the
+        # history into Python. Its primary key also guarantees indexed lookups
+        # on older SQLite versions that scan a repeatedly referenced window CTE.
+        self.db.execute("CREATE TEMP TABLE commontrace_belief_successors "
+                        "(id INTEGER PRIMARY KEY, successor INTEGER)")
+        try:
+            self.db.execute(
+                scope + "INSERT INTO commontrace_belief_successors "  # nosec B608 - fixed scope query
+                "SELECT f.id, LEAD(f.id) OVER (PARTITION BY f.owner, f.slot "
+                "ORDER BY COALESCE(f.at, ''), f.id) FROM facts f "
+                "JOIN turns t ON t.id=f.turn" + join + " WHERE f.slot IS NOT NULL", params)
+            self.db.execute(
+                "UPDATE facts SET superseded_by=(SELECT successor FROM commontrace_belief_successors "
+                "WHERE id=facts.id) WHERE id IN (SELECT id FROM commontrace_belief_successors) "
+                "AND superseded_by IS NOT (SELECT successor FROM commontrace_belief_successors WHERE id=facts.id)")
+        finally:
+            self.db.execute("DROP TABLE commontrace_belief_successors")
 
     def _insert_fact(self, turn: int, kind: str, subject: str, statement: str, at: str | None,
                      slot: str | None, source: str, owner: str | None = None) -> int:

@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import heapq
 import math
+import os
+import sys
+import threading
+from collections import OrderedDict
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from commontrace import corpus_bin
@@ -182,8 +186,144 @@ def _build_index(lessons, term_cache, scorer: str) -> _CorpusIndex:
     )
 
 
-_INDEX_CACHE: dict[tuple, tuple[tuple, _CorpusIndex]] = {}
 _INDEX_CACHE_MAX = 4
+_INDEX_CACHE_MAX_BYTES = 64 * 1024 * 1024
+
+
+def _index_bytes(fingerprint: tuple, index: _CorpusIndex) -> int:
+    """Conservative retained size without a posting-sized traversal or ID set.
+
+    Shared references are counted again deliberately. Numeric posting arrays
+    use fixed float sizes and an upper bound for document-ID integer sizes.
+    The budget bounds cached indexes, not a caller's active query or build.
+    """
+    def sequence_bytes(value) -> int:
+        size = 0
+        pending = [value]
+        while pending:
+            item = pending.pop()
+            size += sys.getsizeof(item)
+            if isinstance(item, (tuple, list)):
+                pending.extend(item)
+        return size
+
+    values = vars(index)
+    size = (512 + sys.getsizeof(index) + sys.getsizeof(values)
+            + sum(sys.getsizeof(name) for name in values)
+            + sequence_bytes(fingerprint) + sequence_bytes(index.n_terms)
+            + sequence_bytes(index.tie_breaks)
+            + sys.getsizeof(index.n_docs) + sys.getsizeof(index.avg_field_len)
+            + sys.getsizeof(index.max_idf) + sys.getsizeof(index.length_factors)
+            + len(index.length_factors) * sys.getsizeof(0.0)
+            + sys.getsizeof(index.postings) + sys.getsizeof(index.doc_freq))
+    id_bytes, float_bytes = sys.getsizeof(index.n_docs), sys.getsizeof(0.0)
+    for term, posting in index.postings.items():
+        ids, weights, best = posting
+        size += (2 * sys.getsizeof(term) + sys.getsizeof(posting)
+                 + sys.getsizeof(ids) + len(ids) * id_bytes
+                 + sys.getsizeof(weights) + len(weights) * float_bytes
+                 + sys.getsizeof(best) + len(best) * float_bytes
+                 + sys.getsizeof(index.doc_freq[term]))
+    return size
+
+
+@dataclass
+class _IndexFlight:
+    fingerprint: tuple
+    ready: threading.Event = field(default_factory=threading.Event)
+    index: _CorpusIndex | None = None
+    error: BaseException | None = None
+
+
+class _CorpusIndexCache:
+    """Bounded LRU with one cold build per source snapshot, not one global build.
+
+    Hashes narrow the lookup only; equality remains mandatory before reuse.
+    Disk I/O, tokenization and size accounting never hold the cache lock.
+    """
+
+    def __init__(self) -> None:
+        self._after_fork()
+
+    def _after_fork(self) -> None:
+        # A fork can inherit locks and unfinished builds owned by vanished
+        # threads. Do not acquire any inherited lock when resetting the child.
+        self._lock = threading.Lock()
+        self._entries: OrderedDict[tuple, tuple[tuple, _CorpusIndex, int]] = OrderedDict()
+        self._flights: dict[tuple, _IndexFlight] = {}
+        self.bytes_used = 0
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._entries)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._entries.clear()
+            # Existing readers can finish their build, but cannot republish it.
+            self._flights.clear()
+            self.bytes_used = 0
+
+    def get_or_build(self, key: tuple, fingerprint: tuple,
+                     build: Callable[[], _CorpusIndex]) -> _CorpusIndex:
+        while True:
+            with self._lock:
+                hit = self._entries.get(key)
+                if hit is not None and (hit[0] is fingerprint or hit[0] == fingerprint):
+                    self._entries.move_to_end(key)
+                    return hit[1]
+                flight = self._flights.get(key)
+                if flight is None:
+                    flight = _IndexFlight(fingerprint)
+                    self._flights[key] = flight
+                    owner = True
+                else:
+                    owner = False
+            if owner:
+                break
+            flight.ready.wait()
+            if flight.fingerprint is fingerprint or flight.fingerprint == fingerprint:
+                if flight.error is not None:
+                    raise flight.error
+                assert flight.index is not None
+                return flight.index
+            # A hash collision may have just built a different snapshot.
+
+        try:
+            index = build()
+            size = _index_bytes(fingerprint, index)
+            with self._lock:
+                if self._flights.get(key) is flight:
+                    if _INDEX_CACHE_MAX > 0 and size <= _INDEX_CACHE_MAX_BYTES:
+                        replaced = self._entries.pop(key, None)
+                        if replaced is not None:
+                            self.bytes_used -= replaced[2]
+                        while self._entries and (
+                            len(self._entries) >= _INDEX_CACHE_MAX
+                            or self.bytes_used + size > _INDEX_CACHE_MAX_BYTES
+                        ):
+                            _old_key, old = self._entries.popitem(last=False)
+                            self.bytes_used -= old[2]
+                        self._entries[key] = (fingerprint, index, size)
+                        self.bytes_used += size
+                    del self._flights[key]
+                flight.index = index
+                flight.ready.set()
+            return index
+        except BaseException as error:
+            # Wake every waiter even on a cancelled or failed build, without
+            # caching a partial result or preventing a subsequent retry.
+            with self._lock:
+                if self._flights.get(key) is flight:
+                    del self._flights[key]
+                flight.error = error
+                flight.ready.set()
+            raise
+
+
+_INDEX_CACHE = _CorpusIndexCache()
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_INDEX_CACHE._after_fork)
 
 
 def _corpus_index(lessons, term_cache, scorer: str) -> _CorpusIndex:
@@ -199,30 +339,25 @@ def _corpus_index(lessons, term_cache, scorer: str) -> _CorpusIndex:
             return _build_index(lessons, term_cache, scorer)
         fp_hash = hash(fingerprint)
     key = (scorer, fp_hash)
-    hit = _INDEX_CACHE.get(key)
-    if hit is not None and (hit[0] is fingerprint or hit[0] == fingerprint):
-        return hit[1]
     bin_dir = getattr(term_cache, "bin_dir", None)
-    if bin_dir:
-        try:
-            persisted = corpus_bin.load(bin_dir, scorer, lessons, fingerprint)
-        except Exception:
-            persisted = None
-        if persisted is not None:
-            if key not in _INDEX_CACHE and len(_INDEX_CACHE) >= _INDEX_CACHE_MAX:
-                _INDEX_CACHE.pop(next(iter(_INDEX_CACHE)))
-            _INDEX_CACHE[key] = (fingerprint, persisted)
-            return persisted
-    index = _build_index(lessons, term_cache, scorer)
-    if bin_dir and fingerprint == getattr(term_cache, "fingerprint", None):
-        try:
-            corpus_bin.save(bin_dir, scorer, fingerprint, index)
-        except Exception:
-            pass
-    if key not in _INDEX_CACHE and len(_INDEX_CACHE) >= _INDEX_CACHE_MAX:
-        _INDEX_CACHE.pop(next(iter(_INDEX_CACHE)))
-    _INDEX_CACHE[key] = (fingerprint, index)
-    return index
+
+    def build() -> _CorpusIndex:
+        if bin_dir:
+            try:
+                persisted = corpus_bin.load(bin_dir, scorer, lessons, fingerprint)
+            except Exception:
+                persisted = None
+            if persisted is not None:
+                return persisted
+        index = _build_index(lessons, term_cache, scorer)
+        if bin_dir and fingerprint == getattr(term_cache, "fingerprint", None):
+            try:
+                corpus_bin.save(bin_dir, scorer, fingerprint, index)
+            except Exception:
+                pass
+        return index
+
+    return _INDEX_CACHE.get_or_build(key, fingerprint, build)
 
 
 def rank_lessons(

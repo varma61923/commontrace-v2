@@ -97,7 +97,11 @@ def _clamp_int(value: object, lo: int, hi: int, default: int) -> int:
 async def _votes_by_trace(session: AsyncSession, trace_ids: list[str]) -> dict[str, list[dict]]:
     if not trace_ids:
         return {}
-    rows = (await session.execute(select(Vote).where(Vote.trace_id.in_(trace_ids)))).scalars().all()
+    # Hydration needs only wire fields, not ORM entities or their audit metadata.
+    rows = (await session.execute(
+        select(Vote.trace_id, Vote.vote_type, Vote.feedback_tag, Vote.feedback_text)
+        .where(Vote.trace_id.in_(trace_ids))
+    )).all()
     out: dict[str, list[dict]] = {}
     for v in rows:
         out.setdefault(v.trace_id, []).append(
@@ -110,8 +114,14 @@ async def _related_by_trace(session: AsyncSession, trace_ids: list[str]) -> dict
     if not trace_ids:
         return {}
     rows = (
-        await session.execute(select(TraceRelation).where(TraceRelation.trace_id.in_(trace_ids)))
-    ).scalars().all()
+        await session.execute(
+            select(
+                TraceRelation.trace_id,
+                TraceRelation.relationship_type,
+                TraceRelation.related_trace_id,
+            ).where(TraceRelation.trace_id.in_(trace_ids))
+        )
+    ).all()
     out: dict[str, list[dict]] = {}
     for r in rows:
         out.setdefault(r.trace_id, []).append(

@@ -316,14 +316,21 @@ def test_overlap_estimate_jaccard():
         overlap.estimate_jaccard([1, 2], [1])
 
 
-def test_frontmatter_caches_new_file_mode(tmp_path):
-    target_dir = str(tmp_path)
-    frontmatter._DIR_MODE_CACHE.clear()
-
-    mode1 = frontmatter._new_file_mode(target_dir)
-    assert os.path.abspath(target_dir) in frontmatter._DIR_MODE_CACHE
-
-    with patch("os.open", side_effect=AssertionError("os.open probe should not be called when cached")):
-        mode2 = frontmatter._new_file_mode(target_dir)
-
-    assert mode1 == mode2
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX file permission semantics")
+def test_frontmatter_new_file_permissions_follow_changed_umask(tmp_path):
+    original_umask = os.umask(0o022)
+    try:
+        first = tmp_path / "first.md"
+        frontmatter.write(str(first), {"name": "first"}, "body")
+        assert first.stat().st_mode & 0o777 == 0o644
+        os.umask(0o077)
+        second = tmp_path / "second.md"
+        frontmatter.write(str(second), {"name": "second"}, "body")
+        assert second.stat().st_mode & 0o777 == 0o600
+        # Replacing a preexisting file must preserve its explicit permissions.
+        first.chmod(0o640)
+        frontmatter.write(str(first), {"name": "updated"}, "body")
+        assert first.stat().st_mode & 0o777 == 0o640
+        assert list(tmp_path.glob(".commontrace-umask-probe-*")) == []
+    finally:
+        os.umask(original_umask)
