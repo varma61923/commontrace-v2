@@ -78,6 +78,22 @@ class RuntimeCache(Generic[V]):
                     "hits": self.hits, "misses": self.misses,
                     "coalesced": self.coalesced, "evictions": self.evictions}
 
+    def peek(self, key: Hashable) -> V | None:
+        """Return a retained live value without loading or waiting for a flight.
+
+        Does not refresh expiry or affect hit/miss counters. This lets optional
+        write optimizations reuse warm state without making cold writes load it.
+        """
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is None:
+                return None
+            if self._clock() >= entry[0]:
+                self.bytes_used -= self._entries.pop(key)[2]
+                return None
+            self._entries.move_to_end(key)
+            return entry[1]
+
     def get_or_load(self, key: Hashable, load: Callable[[], V]) -> V:
         with self._lock:
             entry = self._entries.get(key)

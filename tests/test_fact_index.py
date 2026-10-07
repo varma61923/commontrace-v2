@@ -114,7 +114,8 @@ def test_detected_source_mutation_drops_retained_old_generation(tmp_path):
     hierarchical.update_fact(str(tmp_path), 'fact-00199', statement='NEW_VALUE orbital calibration')
     with pytest.raises(fact_index.FactSnapshotChanged):
         old.ensure_current()
-    assert fact_index.cache_info()['snapshots']['entries'] == 0
+    # The prior generation is withdrawn while the verified successor is warm.
+    assert fact_index.cache_info()['snapshots']['entries'] == 1
     assert fact_index.cache_info()['statistics']['entries'] == 0
     fresh = fact_index.snapshot_facts(str(tmp_path))
     assert fresh.generation != old_generation

@@ -15,6 +15,7 @@ request views can retain old objects until released; this is not physical erasur
 """
 from __future__ import annotations
 
+import hashlib
 import heapq
 import json
 import os
@@ -23,7 +24,7 @@ import sys
 import threading
 from collections import Counter, OrderedDict
 from collections.abc import Hashable, Iterable, Iterator, Mapping
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass, fields, is_dataclass, replace
 from datetime import datetime
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal, cast
@@ -109,6 +110,8 @@ class _Record:
     overlap: frozenset[str]
     bm25: tuple[tuple[str, int], ...]
     length: int
+    source_digest: str
+    stable_time: bool
 
     def copy(self) -> AtomicFact:
         from commontrace.hierarchical import _coerce_fact
@@ -198,29 +201,17 @@ if hasattr(os, 'register_at_fork'):
 
 
 def _build(path: str, identity: FileIdentity | None) -> _Snapshot:
-    from commontrace.hierarchical import _coerce_fact
-
     if file_identity(path) != identity:
         raise FactSnapshotChanged('fact source changed before snapshot read')
     records: dict[str, _Record] = {}
     stable_time = True
     for row in _jsonl.read_rows(path):
         try:
-            fact = _coerce_fact(row)
+            record = _record(row, _line_digest(json.dumps(row, ensure_ascii=False)))
         except (TypeError, ValueError):
             continue
-        try:
-            lesson_cache.parse_moment(row.get('valid_from') or row.get('created_at') or '')
-        except (ValueError, TypeError, AttributeError):
-            stable_time = False
-        counts = Counter(_bm25_tokens(fact.statement))
-        records[fact.id] = _Record(
-            fact.id, json.dumps(fact.to_dict(), ensure_ascii=False), fact.category, tuple(fact.scopes),
-            fact.confidence, fact.forgotten, fact.status, fact.stability,
-            lesson_cache.parse_moment(fact.valid_from),
-            lesson_cache.parse_moment(fact.valid_until) if fact.valid_until else None,
-            lesson_cache.parse_moment(fact.expires_at) if fact.expires_at else None, fact.evidence_bound,
-            _terms(fact.statement, 'overlap-v1'), tuple(sorted(counts.items())), sum(counts.values()))
+        records[record.id] = record
+        stable_time = stable_time and record.stable_time
     overlap: dict[str, set[str]] = {}
     bm25: dict[str, set[str]] = {}
     boundaries: set[datetime] = set()
@@ -238,6 +229,169 @@ def _build(path: str, identity: FileIdentity | None) -> _Snapshot:
                          tuple(sorted(boundaries)), stable_time)
     snapshot.ensure_current()
     return snapshot
+
+
+def _line_digest(line: str) -> str:
+    return hashlib.sha256(line.encode('utf-8')).hexdigest()
+
+
+def _record(row: Mapping[str, object], digest: str, previous: _Record | None = None) -> _Record:
+    from commontrace.hierarchical import _coerce_fact
+
+    fact = _coerce_fact(dict(row))
+    try:
+        lesson_cache.parse_moment(row.get('valid_from') or row.get('created_at') or '')  # type: ignore[arg-type]
+        stable_time = True
+    except (ValueError, TypeError, AttributeError):
+        stable_time = False
+    payload = json.dumps(fact.to_dict(), ensure_ascii=False)
+    # Metadata-only writes retain lexical materialization as well as the cold
+    # parser's normalized statement semantics.
+    same_statement = previous is not None and json.loads(previous.payload)['statement'] == fact.statement
+    if same_statement:
+        assert previous is not None
+        overlap, bm25, length = previous.overlap, previous.bm25, previous.length
+    else:
+        counts = Counter(_bm25_tokens(fact.statement))
+        overlap = _terms(fact.statement, 'overlap-v1')
+        bm25, length = tuple(sorted(counts.items())), sum(counts.values())
+    return _Record(fact.id, payload, fact.category, tuple(fact.scopes), fact.confidence, fact.forgotten,
+                   fact.status, fact.stability, lesson_cache.parse_moment(fact.valid_from),
+                   lesson_cache.parse_moment(fact.valid_until) if fact.valid_until else None,
+                   lesson_cache.parse_moment(fact.expires_at) if fact.expires_at else None, fact.evidence_bound,
+                   overlap, bm25, length, digest, stable_time)
+
+
+def capture_for_write(root: str) -> _Snapshot | None:
+    """Capture only an already retained exact generation; never cold-build.
+
+    The canonical writer holds its file lock across capture and replacement.
+    Complete committed rows, not a prior mutable read, prove the candidate.
+    Returned immutable state is an optimization, not authority.
+    """
+    from commontrace.hierarchical import _facts_file
+    path = os.path.abspath(_facts_file(root))
+    identity = file_identity(path)
+    _remember(path, identity)
+    snapshot = _CACHE.peek((path, identity))
+    if snapshot is None or not snapshot.stable_time:
+        return None
+    try:
+        snapshot.ensure_current()
+    except FactSnapshotChanged:
+        return None
+    return snapshot
+
+
+def _committed_identity(path: str, rows: tuple[str, ...], digest: str) -> FileIdentity | None:
+    expected = hashlib.sha256()
+    for row in rows:
+        expected.update((row + '\n').encode('utf-8'))
+    if expected.hexdigest() != digest:
+        return None
+    identity = file_identity(path)
+    if identity is None:
+        return None
+    actual = hashlib.sha256()
+    try:
+        with open(path, 'rb') as source:
+            while chunk := source.read(65536):
+                actual.update(chunk)
+    except FileNotFoundError:
+        return None
+    return identity if actual.hexdigest() == digest and file_identity(path) == identity else None
+
+
+def _patch_postings(previous: Mapping[str, frozenset[str]], before: Mapping[str, _Record],
+                    after: Mapping[str, _Record], *, bm25: bool) -> Mapping[str, frozenset[str]]:
+    postings = dict(previous)
+    removed: dict[str, set[str]] = {}
+    added: dict[str, set[str]] = {}
+    def terms(record: _Record) -> frozenset[str]:
+        return frozenset(term for term, _count in record.bm25) if bm25 else record.overlap
+    for key in before.keys() | after.keys():
+        old, new = before.get(key), after.get(key)
+        if old is new or (old is not None and new is not None and
+                          (old.bm25 is new.bm25 if bm25 else old.overlap is new.overlap)):
+            continue
+        old_terms, new_terms = terms(old) if old else frozenset(), terms(new) if new else frozenset()
+        for term in old_terms - new_terms:
+            removed.setdefault(term, set()).add(key)
+        for term in new_terms - old_terms:
+            added.setdefault(term, set()).add(key)
+    for term in removed.keys() | added.keys():
+        ids = (previous.get(term, frozenset()) - removed.get(term, set())) | added.get(term, set())
+        if ids:
+            postings[term] = frozenset(ids)
+        else:
+            postings.pop(term, None)
+    return MappingProxyType(postings)
+
+
+def publish_committed(root: str, base: _Snapshot | None, rows: tuple[str, ...], digest: str) -> bool:
+    """Publish copy-on-write reuse only for a digest-verified canonical commit.
+
+    Unchanged rows avoid parsing/tokenization; metadata-only changes reuse
+    lexical terms. Complete serialized rows bind deletions and arbitrary edits.
+    Source hashing, map copies, ordering and retention weighing remain O(N).
+    External writers, cold/expired bases and unstable legacy timestamps fall
+    back to the authoritative coherent reader. No mutable caller object escapes.
+    """
+    from commontrace.hierarchical import _facts_file
+    path = os.path.abspath(_facts_file(root))
+    _remember(path, file_identity(path))
+    if base is None or base.path != path or not base.stable_time:
+        return False
+    # Each envelope element must be one JSONL record. Literal line breaks can
+    # encode two disk rows while json.loads treats the element as malformed.
+    if any('\r' in line or '\n' in line for line in rows):
+        return False
+    identity = _committed_identity(path, rows, digest)
+    if identity is None:
+        _remember(path, file_identity(path))
+        return False
+    reuse: dict[str, _Record] = {}
+    for previous in base.records.values():
+        reuse[previous.source_digest] = previous
+        reuse[_line_digest(previous.payload)] = previous
+    records: dict[str, _Record] = {}
+    for line in rows:
+        checksum = _line_digest(line)
+        record = reuse.get(checksum)
+        if record is not None:
+            if record.source_digest != checksum:
+                record = replace(record, source_digest=checksum)
+        else:
+            try:
+                raw = json.loads(line)
+                if not isinstance(raw, dict):
+                    continue
+                prior = base.records.get(str(raw.get('id') or ''))
+                record = _record(raw, checksum, prior)
+            except (TypeError, ValueError):
+                continue
+        if not record.stable_time:
+            return False
+        records[record.id] = record
+    snapshot = _Snapshot(path, identity, MappingProxyType(records),
+                         _patch_postings(base.overlap, base.records, records, bm25=False),
+                         _patch_postings(base.bm25, base.records, records, bm25=True),
+                         tuple(sorted(records, key=lambda key: (-records[key].confidence, key))),
+                         tuple(sorted({moment for record in records.values() for moment in
+                                       (record.valid_from, record.valid_until, record.expires_at)
+                                       if moment is not None})), True)
+    try:
+        snapshot.ensure_current()
+        # The loader checks again even if a competing cold reader owns the
+        # flight. Generation invalidation fences retained publication.
+        def load() -> _Snapshot:
+            snapshot.ensure_current()
+            return snapshot
+        published = _CACHE.get_or_load((path, identity), load)
+        published.ensure_current()
+        return True
+    except FactSnapshotChanged:
+        return False
 
 
 class FactView(Mapping[str, 'AtomicFact']):

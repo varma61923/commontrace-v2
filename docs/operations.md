@@ -96,8 +96,17 @@ inode and change time; it does not wait for a TTL to notice mutation. Current
 source quotations and lesson admission are verified per request. If the source
 changes during assembly, retrieval conservatively withholds that snapshot.
 Retained snapshots are capped at 64 MiB across eight store paths and scoped
-statistics at 8 MiB. Cold builds and source mutation rebuilds read the corpus;
-active request views have their own lifetime. `commontrace.fact_index.clear_cache()`
+statistics at 8 MiB. Canonical locked fact writes can advance an already warm
+snapshot by reusing unchanged normalized records and token postings. Publication
+is bound to the exact serialized bytes: a coherent read-back checksum verifies
+the committed file before its generation can be cached. External replacement,
+restart, expired/oversized cache entries or an unverified write retain the cold
+reconciliation path. Current evidence checks are never reused from that snapshot.
+Full JSONL writes, checksum verification, map copies and ordering remain O(N);
+this is changed-record reuse, not constant-time writes or a persistent index.
+Optional cache publication failures do not turn a committed write into a failed
+API response. Active request views have their own lifetime.
+`commontrace.fact_index.clear_cache()`
 releases retained cache state; clearing Python objects is not physical secure erasure.
 BM25 corpus statistics are filtered by routing, lifecycle and validity metadata;
 they do not certify source support. Evidence-ineligible facts can affect ranking
@@ -109,6 +118,10 @@ and scope, correction, erasure and abstention contracts. It does not measure
 downstream answers or compare competitors. `python -m benchmarks.fact_search`
 prints reproducible real-store timing and compatibility checks. Both use
 temporary stores and clean up without creating result folders.
+`python -m benchmarks.fact_mutation` compares canonical write-plus-search paths
+and full cold-oracle results across mutation, correction, erasure and restart.
+It emits timings and compatibility contracts to stdout; elapsed times are
+descriptive and are not portable CI thresholds.
 
 Lesson list/detail responses expose a governed-content `revision`. Send it as
 `expected_revision` when editing, approving or rejecting. Comparison, fresh

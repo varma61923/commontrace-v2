@@ -2897,6 +2897,14 @@ results go to stdout. Evidence coverage, attribution and leakage are measured
 separately from answer accuracy. Familiar entities cannot satisfy an unrecorded
 identifier; uncertain evidence remains available for a deeper reader.
 
+`python -m benchmarks.fact_mutation` checks complete fact rows, scores and
+ordering against a cold canonical scan across updates, forgetting, erasure,
+temporal correction and restart. It also measures real canonical write plus
+retrieval costs. Warm writes reuse unchanged fact records after verifying the
+exact committed bytes; JSONL rewriting, hashing and snapshot map copies still
+scale with corpus size. See [operational guidance](docs/operations.md) for cache
+bounds and fallback behavior. All output goes to stdout.
+
 The design draws on the evidence/inference separation in
 [Hindsight](https://arxiv.org/abs/2512.12818), temporal knowledge updates in
 [Zep](https://arxiv.org/abs/2501.13956), and abstention in

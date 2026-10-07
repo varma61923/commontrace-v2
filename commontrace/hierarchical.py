@@ -244,8 +244,38 @@ def load_facts(root: str) -> dict[str, AtomicFact]:
 
 
 def save_facts(root: str, facts: dict[str, AtomicFact]) -> None:
-    """Atomically replace the fact file with *facts*."""
-    _jsonl.write_rows(_facts_file(root), (fact.to_dict() for fact in facts.values()))
+    """Atomically replace facts, reusing a verified warm retrieval snapshot.
+
+    JSONL remains authoritative. Incremental publication is an optimization:
+    a missing base, external edit or cache failure leaves the coherent cold
+    reader available. Exact serialized bytes, not caller-owned mutable facts,
+    bind the publication to its committed source generation.
+    """
+    from commontrace import fact_index
+
+    with _jsonl.locked(_facts_file(root)):
+        try:
+            base = fact_index.capture_for_write(root)
+        except Exception:
+            fact_index.clear_cache()
+            base = None
+        if base is None:
+            _jsonl.write_rows(_facts_file(root), (fact.to_dict() for fact in facts.values()))
+            try:
+                # Withdraw scoped statistics even when an oversized/expired
+                # snapshot was not retained. The no-base path never rebuilds.
+                fact_index.publish_committed(root, None, (), "")
+            except Exception:
+                fact_index.clear_cache()
+            return
+        rows = tuple(json.dumps(fact.to_dict(), ensure_ascii=False) for fact in facts.values())
+        digest = _jsonl.write_serialized_rows(_facts_file(root), rows)
+        try:
+            fact_index.publish_committed(root, base, rows, digest)
+        except Exception:
+            # A durable successful write must not be reported as failed merely
+            # because its optional retrieval acceleration could not publish.
+            fact_index.clear_cache()
 
 
 @contextlib.contextmanager

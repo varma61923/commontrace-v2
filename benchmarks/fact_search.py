@@ -138,7 +138,11 @@ def measure(*, facts: int, trials: int) -> list[dict[str, Any]]:
         if _rows(changed) != _rows(original_search(root, 'rarecalibration', scope='alpha')):
             raise RuntimeError('source mutation was not reflected in indexed output')
         outputs.append({'operation': 'source-mutation-and-rebuild', 'canonical_write_ms': mutation_ms,
-                        'next_search_rebuild_ms': rebuild_ms, 'cache': fact_index.cache_info()})
+                        # Preserve the old output key; a verified canonical
+                        # update can now reuse its snapshot rather than rebuild.
+                        'next_search_rebuild_ms': rebuild_ms, 'next_search_ms': rebuild_ms,
+                        'maintenance': 'verified-snapshot-reuse-or-cold-reconciliation',
+                        'cache': fact_index.cache_info()})
         started = time.perf_counter_ns()
         hierarchical.search_facts(root, 'rarecalibration', scope='alpha', scorer='bm25-v1')
         first_bm25_ms = (time.perf_counter_ns() - started) / 1_000_000
