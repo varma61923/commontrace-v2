@@ -12,6 +12,7 @@ import math
 import re
 import threading
 from collections import OrderedDict
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from commontrace import injection_guard
@@ -70,6 +71,21 @@ class Recall:
     def as_dict(self) -> dict:
         return {"question": self.question, "context": self.context, "tokens": self.tokens,
                 "turns": self.turns, "window": self.window, "explain": self.explain}
+
+
+@dataclass(frozen=True)
+class DenseCandidates:
+    """Externally prefetched unit IDs bound to an exact canonical revision.
+
+    Providers supply IDs only; source text and eligibility always come from
+    this Store. A concurrent canonical write rejects the stale arm rather than
+    injecting vector results against a different evidence snapshot.
+    """
+
+    identity: object
+    stamp: tuple[object, ...]
+    model: str
+    rankings: Mapping[str, tuple[int, ...]]
 
 
 def tokens(text: str) -> int:
@@ -483,7 +499,7 @@ def _recall_key(store: Store, question: str, now, opts: Options,
 
 
 def recall(store: Store, question: str, *, now=None, options: Options | None = None,
-           extra_queries: list[str] = ()) -> Recall:
+           extra_queries: list[str] = (), dense_candidates: DenseCandidates | None = None) -> Recall:
     """`extra_queries` are searched beside the question, each keeping its own best
     ranks (a follow-up search that finds a missing fact first is not diluted).
 
@@ -495,7 +511,7 @@ def recall(store: Store, question: str, *, now=None, options: Options | None = N
     with store.read_snapshot(), telemetry.span(
             "conversation.recall", space=store.space, queries=1 + len(extra_queries)) as handle:
         opts = options or Options()
-        key = _recall_key(store, question, now, opts, extra_queries)
+        key = _recall_key(store, question, now, opts, extra_queries) if dense_candidates is None else None
         if key is not None:
             with _RECALL_LOCK:
                 hit = _RECALL_CACHE.get(key)
@@ -503,7 +519,8 @@ def recall(store: Store, question: str, *, now=None, options: Options | None = N
                     _RECALL_CACHE.move_to_end(key)
                     handle.set(tokens=hit.tokens, turns=len(hit.turns), cached=True)
                     return copy.deepcopy(hit)
-        result = _recall(store, question, now=now, options=options, extra_queries=extra_queries)
+        result = _recall(store, question, now=now, options=options, extra_queries=extra_queries,
+                         dense_candidates=dense_candidates)
         handle.set(tokens=result.tokens, turns=len(result.turns))
         if key is not None and _recall_size(result) <= _RECALL_CACHE_BYTES:
             with _RECALL_LOCK:
@@ -521,7 +538,7 @@ def recall(store: Store, question: str, *, now=None, options: Options | None = N
 
 
 def _recall(store: Store, question: str, *, now=None, options: Options | None = None,
-            extra_queries: list[str] = ()) -> Recall:
+            extra_queries: list[str] = (), dense_candidates: DenseCandidates | None = None) -> Recall:
     opts = options or Options()
     question = (question or "").strip()
     if not question:
@@ -533,7 +550,15 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
         moment = moment.replace(tzinfo=None)
     moment = moment or store.latest_moment()
     window = timeparse.question_window(question, moment)
-    embedder = _embedder(store, opts.embedder)
+    if dense_candidates is not None:
+        from commontrace.conversation import embed
+
+        tag = embed.configured() if opts.embedder == "auto" else opts.embedder
+        expected_model = embed.MODELS[tag][0] if tag in embed.MODELS else None
+        if dense_candidates.identity != (store._units_identity or store.cache_identity) \
+                or dense_candidates.stamp != store.unit_stamp() or dense_candidates.model != expected_model:
+            raise ConversationError("external vector candidates are stale or use a different embedding model")
+    embedder = _embedder(store, opts.embedder) if dense_candidates is None else None
     until = opts.until
     if now is not None and moment is not None:
         parsed_until = timeparse.parse_moment(until) if until else moment
@@ -544,7 +569,9 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
                             until=until, now=moment if now is not None else None)
     pool = opts.pool
     queries = list(dict.fromkeys(subqueries(question) + [q.strip() for q in extra_queries if q and q.strip()]))
-    dense_rankings: dict[str, list[int]] = {}
+    dense_rankings: dict[str, list[int]] = {
+        query: list(units) for query, units in dense_candidates.rankings.items()
+    } if dense_candidates is not None else {}
     if embedder is not None and allowed != set() and pool > 0:
         from commontrace.conversation import embed
 
@@ -557,7 +584,7 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
 
     def arm_rankings(query: str) -> list[tuple[list[int], float]]:
         lexical = [u for u, _s in store.lexical(query, pool, allowed=allowed)]
-        if embedder is None:
+        if embedder is None and dense_candidates is None:
             return [(lexical, 1.0)]
         return [(dense_rankings.get(query, []), 1.0), (lexical, opts.lexical_weight)]
 

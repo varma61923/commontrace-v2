@@ -800,6 +800,24 @@ That file is the MCP entry — merge it into your agent platform's config:
 }
 ```
 
+For clients that connect over HTTP, install the optional SDK and choose its
+transport. Stdio remains the default:
+
+```bash
+python -m pip install '.[serve]'
+commontrace serve --dest /abs/path/to/store --transport streamable-http --no-approval
+# Alternative legacy transport: --transport sse
+```
+
+Streamable HTTP uses `/mcp`; SSE uses `/sse` and `/messages/`. Both require the
+store's private file token in `Authorization: Bearer ...` on every request.
+Manage it with `commontrace gateway --rotate-token` or `--revoke-token`;
+`--show-token` explicitly reveals it for client setup. Network listeners default
+to loopback and enforce Host/Origin checks, bounded sessions and request admission.
+Remote listeners require `--allowed-host` and TLS certificate/key flags, or
+explicit `--allow-insecure-http` behind a TLS proxy. This token authorizes one
+fleet's whole local store; use the Hub for organization-scoped access controls.
+
 The agent then has the whole protocol as tools:
 
 | Tool | What the agent does with it |
@@ -818,7 +836,7 @@ The agent then has the whole protocol as tools:
 
 Two things about this are deliberate.
 
-**There is no authentication, because there is no boundary to authenticate.**
+**Stdio uses the launching process's filesystem permissions.**
 The client spawns this process and talks to it over its own stdin/stdout —
 no port, no listener, nothing for another program on the machine to connect
 to. It reads and writes `memory/` with exactly the permissions of the agent
@@ -883,12 +901,106 @@ character-bounded scratchpads such as `persona`, `human` or `project`.
 Every write is all-or-nothing and recorded in `memory/blocks/history.jsonl`
 with a chained revision hash.
 
+To protect against stale edits from concurrent agents, pass the revision read
+from the block as `--expected-revision REV` or MCP `expected_revision=REV`.
+A mismatch returns a conflict without changing the block; omit it to retain
+unconditional legacy writes. An empty expected revision creates only if absent.
+
 ```bash
 commontrace block set persona "Senior systems engineer. Check idempotency first."
 commontrace block append human "Prefers concise answers."
 commontrace block replace human --old "concise" --new "short, concrete"
 commontrace block history persona
 ```
+
+**Evidence-grounded extraction.** `commontrace distill --extract --failed
+--min-validation-score 0.7` writes complete review candidates from corroborated
+resolutions, recording evidence IDs and bounded score components. It never
+activates them. `--semantic-dedup` additionally screens candidate rules against
+existing proposals using local embeddings when the attention extra is available;
+underlying session traces remain intact. MCP exposes these controls through
+`propose_lessons(extract=true, failed_only=true, semantic_dedup=true)`.
+
+The durable queue also supports `commontrace jobs add distill --dedupe-key
+failure-lessons --payload '{"min_validation_score":0.7}'`, followed by
+`commontrace jobs run --kind distill --watch`. The worker defaults to failures,
+has an execution deadline shorter than its lease, and retries the same guarded
+pipeline after crashes. Every candidate still requires independent approval.
+
+**Framework tools and asynchronous storage.** Optional tool factories import
+each framework only when requested. Their space and session are owner settings,
+so model-generated arguments cannot redirect a tool to another namespace:
+
+```python
+from commontrace.frameworks import MemoryTools
+
+tools = MemoryTools("/abs/path/to/store", "customer-123", "session-456")
+langgraph_tools = tools.tools("langgraph")
+# Also: langchain, autogen, crewai, llamaindex; native_tools() needs no SDK.
+```
+
+For sustained asynchronous ingestion, use `async with await
+AsyncStore.open(root, space)` from `commontrace.conversation` and pass the store
+to `MemoryTools(..., async_store=store)`. The bounded writer reuses a dedicated
+SQLite connection, groups writes into commits, isolates failed appends, and
+drains accepted writes when closed. Cancellation stops waiting but does not
+retract an admitted write. MCP blocking store work uses eight shared workers
+and admits at most 32 queued/running operations; overload returns `server_busy`.
+Conversation session routing IDs must be opaque identifiers without credentials,
+PII or forged instruction delimiters; unsafe IDs are refused instead of rerouted.
+
+**Optional vector engines.** `AsyncStore.recall` can use an exact SQLite vector
+index or pooled PostgreSQL/pgvector as its dense arm, fused with the existing
+BM25/RRF pipeline. Source text, expiry, session filters and injection guards
+still come from the canonical conversation store. Install
+`commontrace[vector-postgres,attention]` for PostgreSQL and local embeddings;
+SQLite's vector engine itself uses only the standard library.
+
+```python
+import asyncio
+import os
+
+from commontrace.conversation import AsyncStore, Options
+from commontrace.frameworks import MemoryTools
+from commontrace.vector_store import PostgresVectorIndex, SQLiteVectorIndex
+
+async def main():
+    root = os.environ.get("COMMONTRACE_ROOT", ".")
+    scope = dict(tenant="fleet-a", namespace="memory",
+                 model="sentence-transformers/all-MiniLM-L6-v2", dimension=384)
+    dsn = os.environ.get("COMMONTRACE_VECTOR_DSN")
+    index = (await PostgresVectorIndex.open(dsn, **scope, approximate=False)
+             if dsn else await SQLiteVectorIndex.open(
+                 os.path.join(root, "memory", "vectors.sqlite"), **scope))
+    try:
+        async with await AsyncStore.open(root, "memory", tenant="fleet-a", vector_index=index) as memory:
+            tools = MemoryTools(root, "memory", "example", async_store=memory,
+                                options=Options(embedder="minilm"))
+            await tools.aremember("The upload failed.", "A bounded retry with jitter succeeded.")
+            print(await tools.arecall("How should uploads be retried?"))
+    finally:
+        await index.close()
+
+asyncio.run(main())
+```
+
+The database administrator must install pgvector first. PostgreSQL exact mode
+is the default; `approximate=True` creates an HNSW index and uses pgvector 0.8+
+iterative scanning. Approximate search can return fewer candidates after filters;
+evaluate recall for your workload. Both engines reject nonfinite/zero vectors
+and dimension mismatches, bind owner values as SQL parameters, and pin each scope
+to one canonical database path and identity. Choosing a tenant is application
+configuration, not authentication; authenticate before selecting it.
+
+A source revision invalidates prefetched results. The current cold preparation
+re-upserts the corpus in bounded batches after a unit revision changes, so it is
+not an optimized incremental enterprise ingestion path. Keep one active builder
+per vector scope. Moving/copying the canonical database requires a new vector
+scope. Canonical deletion immediately prevents that source from being injected;
+external vector retention requires separate maintenance. After quiescing **all**
+readers/builders of the scoped index, an owner can call
+`await index.prune(memory.vector_generation)` for the last prepared generation.
+Pruning is never automatic and does not provide distributed generation fencing.
 
 **Atomic facts** (`commontrace fact`, MCP `record_fact` / `query_facts`):
 single statements with a confidence, optional scopes and a validity window.
@@ -1055,6 +1167,20 @@ OpenTelemetry spans. `COMMONTRACE_LOG_FORMAT=json` writes one JSON object per
 log line carrying the request id, tool and command; anything that looks like
 a credential is redacted before it is written. `commontrace doctor` reports
 which of these are on.
+
+Structured log extras, metric labels and span attributes are also scrubbed,
+including credential-named fields with short or numeric values. Structured logs
+bound nested collections and handle cycles. Set `COMMONTRACE_REDACT_PII=1` to
+scrub PII, including IP addresses, during trace capture, import, synchronization
+and structured logging; conversation capture already scrubs PII by default.
+
+Curated commons exports can be authenticated with `HUB_COMMONS_SIGNING_KEY`
+(at least 32 bytes) and `HUB_COMMONS_SIGNING_KEY_ID`. Pin the corresponding
+`COMMONTRACE_COMMONS_VERIFY_KEY` and ID on clients to require verification before
+downloads persist; previous-key settings support rotation. All payload fields
+are authenticated. This HMAC trust group lets verifiers also sign, and does not
+replace independent review. Without a pinned policy, unsigned compatibility is
+preserved. `_FILE` secret sources support external secret management.
 
 **Agent loop** (`commontrace agent run`): runs a task against the configured
 model (`COMMONTRACE_LLM_PROVIDER`), with relevant lessons, blocks, facts and

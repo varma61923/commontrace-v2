@@ -57,9 +57,15 @@ def write_new(
     from commontrace import memory_guard, paths, templates, validate
     from commontrace.commands.capture_cmd import _free_path, _id_suffix, _slugify
 
-    title = memory_guard.redact_secrets(title)[0].strip()[:200] or "Trace"
-    context = memory_guard.redact_secrets(context)[0].strip()
-    solution = memory_guard.redact_secrets(solution)[0].strip()
+    clean, _ = memory_guard.sanitize_metadata(
+        {"title": title, "context": context, "solution": solution, "tags": tags, "extra": extra or {}},
+        pii=memory_guard.privacy_redaction_enabled(),
+    )
+    title = clean["title"].strip()[:200] or "Trace"
+    context = clean["context"].strip()
+    solution = clean["solution"].strip()
+    tags = clean["tags"]
+    extra = clean["extra"]
     tid = trace_id or str(uuid.uuid4())
     tdir = paths.traces_dir(root)
     os.makedirs(tdir, exist_ok=True)

@@ -10,7 +10,7 @@ from commontrace import jobs, paths
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
-    p = subparsers.add_parser("jobs", help="Queue and run slow memory work (ingest, extract, summarize, index, link).")
+    p = subparsers.add_parser("jobs", help="Queue slow memory work (ingest, extract, distill, summarize, index, link).")
     sub = p.add_subparsers(dest="subcommand", required=True)
 
     q = sub.add_parser("add", help="Queue a job.")

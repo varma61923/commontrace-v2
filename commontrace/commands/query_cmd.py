@@ -240,7 +240,8 @@ def _screen_semantic(stdout: str, root: str) -> str:
                 labels = [] if parsed is None else injection_guard.injection_labels({
                     "description": parsed[0].get("description"), "applies_when": parsed[0].get("applies_when"),
                     "do_not_apply_when": parsed[0].get("do_not_apply_when"), "body": parsed[1]})
-                verdicts[slug] = parsed is not None and not labels
+                verdicts[slug] = parsed is not None and not labels and (
+                    str(parsed[0].get("status") or "active") == "active")
                 if labels:
                     print(f"[commontrace] quarantined {slug}: injection screen: {', '.join(labels)}",
                           file=sys.stderr)
@@ -266,7 +267,8 @@ def _semantic_dose_or_pinned(
         if notice:
             notice = "\n" + notice + "\n"
     if dosed:
-        text, eligible, note = _dose_semantic(stdout, root, agent_type, config, active=active)
+        text, eligible, note = _dose_semantic(stdout, root, agent_type, config, active=active,
+                                             scope=scope, as_of=as_of, show_expired=show_expired)
         return text, eligible, note + notice
     stdout = _screen_semantic(stdout, root)
     allowed = {str(fm.get("name", "")) for _path, fm in active}
@@ -281,6 +283,7 @@ def _semantic_dose_or_pinned(
 def _dose_semantic(
     stdout: str, root: str, agent_type: str | None, config: retrieval_io.RetrievalConfig,
     active: list[tuple[str, dict]] | None = None,
+    *, scope: str = "", as_of: str = "", show_expired: bool = False,
 ) -> tuple[str, list[str], str]:
     lines = stdout.splitlines()
     order = list(dict.fromkeys(_slugs_from_semantic_output(stdout)))
@@ -297,7 +300,8 @@ def _dose_semantic(
 
     window = max(2 * config.max_lessons, config.max_lessons + 8)
     while True:
-        considered, dose = _apply_dosage(active, ranked[:window], config)
+        considered, dose = _apply_dosage(active, ranked[:window], config, scope=scope,
+                                         as_of=as_of, agent_type=agent_type, show_expired=show_expired)
         if window >= len(ranked) or len(dose.admitted) >= config.max_lessons:
             break
         window *= 2
@@ -333,6 +337,7 @@ def _apply_dosage(
     active: list[tuple[str, dict]],
     ranked: list[tuple[str, float]],
     config: retrieval_io.RetrievalConfig,
+    *, scope: str = "", as_of: str = "", agent_type: str | None = None, show_expired: bool = False,
 ) -> tuple[dict[str, dict], "dosage.Dose"]:
     path_by_slug = {str(fm.get("name", "")): path for path, fm in active}
     core_slugs_all = {str(fm.get("name", "")) for path, fm in active if dosage.is_core(fm)}
@@ -350,6 +355,10 @@ def _apply_dosage(
         if parsed is None:
             return
         fm, body = parsed
+        if not lesson_cache.fresh_eligible(path, fm, slug, scope=scope, as_of=as_of or None,
+                                          agent_type=agent_type, expected_core=slug in core_slugs_all,
+                                          show_expired=show_expired):
+            return
         labels = injection_guard.injection_labels({
             "description": fm.get("description"), "applies_when": fm.get("applies_when"),
             "do_not_apply_when": fm.get("do_not_apply_when"), "body": body,
@@ -564,7 +573,9 @@ def _run_lexical(args: argparse.Namespace, root: str) -> int:
         return 0
 
     ranked_by_slug = {r.slug: r for r in ranked}
-    considered, dose = _apply_dosage(lessons, page, config)
+    considered, dose = _apply_dosage(lessons, page, config, scope=getattr(args, "scope", ""),
+                                     as_of=getattr(args, "as_of", ""), agent_type=args.agent_type,
+                                     show_expired=getattr(args, "show_expired", False))
     if not dose.admitted:
         if notice:
             print(notice)
@@ -775,7 +786,9 @@ def _run_hybrid(args: argparse.Namespace, root: str, missing_hint: str) -> int:
         for path, fm in lessons
     }
 
-    _considered, dose = _apply_dosage(lessons, fused, config)
+    _considered, dose = _apply_dosage(lessons, fused, config, scope=getattr(args, "scope", ""),
+                                      as_of=getattr(args, "as_of", ""), agent_type=args.agent_type,
+                                      show_expired=getattr(args, "show_expired", False))
     if not dose.admitted:
         if notice:
             print(notice)

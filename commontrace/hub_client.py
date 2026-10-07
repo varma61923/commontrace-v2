@@ -833,6 +833,12 @@ async def push_active_lessons(
                 hub_trace_id=None,
                 error=f"could not read this file: {type(exc).__name__}: {exc}",
             )
+        from commontrace import memory_guard
+
+        clean, _ = memory_guard.sanitize_metadata(
+            {"fm": fm, "body": body}, pii=memory_guard.privacy_redaction_enabled(),
+        )
+        fm, body = clean["fm"], clean["body"]
         if fm.get("status") != "active":
             return None
         slug = fm.get("name", os.path.splitext(os.path.basename(path))[0])
@@ -966,6 +972,9 @@ async def push_captured_traces(
                 hub_trace_id=None,
                 error=f"could not read this file: {type(exc).__name__}: {exc}",
             )
+        from commontrace import memory_guard
+
+        instance, _ = memory_guard.sanitize_metadata(instance, pii=memory_guard.privacy_redaction_enabled())
         local_id = str(instance.get("id") or "")
         slug = local_id or os.path.splitext(os.path.basename(path))[0]
         title = str(instance.get("title") or "")
@@ -1101,6 +1110,15 @@ async def commons_export(hub_url: str, api_key: str, limit: int | None = None) -
     if response.get("error"):
         raise HubConnectionError(
             f"commons_export failed: {response['error']}: {response.get('detail', '')}")
+    from commontrace.commons_integrity import CommonsIntegrityError, verify_records
+
+    try:
+        entries = response.get("entries", [])
+        if not isinstance(entries, list):
+            raise CommonsIntegrityError("commons export entries must be a list")
+        verify_records(entries)
+    except CommonsIntegrityError as exc:
+        raise HubConnectionError(str(exc)) from None
     return response
 
 
@@ -1277,7 +1295,10 @@ def _write_pulled_traces(root: str, traces: list[dict]) -> list[str]:
     tdir_abs = os.path.abspath(tdir)
 
     written: list[str] = []
+    from commontrace import memory_guard
+
     for trace in traces:
+        trace, _ = memory_guard.sanitize_metadata(trace, pii=memory_guard.privacy_redaction_enabled())
         raw_trace_id = str(trace.get("id", "")) if trace.get("id") is not None else ""
         clean_trace_id = re.sub(r"[^A-Za-z0-9_-]", "", raw_trace_id)[:64]
         raw_title = str(trace.get("title") or "trace")

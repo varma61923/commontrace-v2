@@ -159,8 +159,10 @@ def _lessons(root: str, question: str, as_of: str | None, k: int) -> list[Item]:
     out = []
     for r in ranked:
         try:
-            _fm, body = frontmatter.read(r.path)
+            fm, body = frontmatter.read(r.path)
         except Exception:  # noqa: BLE001 - an unreadable lesson is skipped, not fatal
+            continue
+        if not lesson_cache.fresh_eligible(r.path, fm, r.slug, as_of=as_of):
             continue
         text = f"{r.slug}: {r.description}".strip(": ")
         rule = _rule(body)

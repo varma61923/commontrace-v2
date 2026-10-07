@@ -120,18 +120,20 @@ def _row_to_trace(line_no: int, row: dict[str, Any], mapping: FieldMapping) -> I
     if missing:
         return SkippedRow(line_no=line_no, reason=f"missing/empty required field(s): {', '.join(missing)}")
 
-    from commontrace.memory_guard import redact_secrets
+    from commontrace.memory_guard import privacy_redaction_enabled, redact_secrets, sanitize_metadata
 
     title, _ = redact_secrets(title)
     context_text, _ = redact_secrets(context_text)
     solution_text, _ = redact_secrets(solution_text)
+    if privacy_redaction_enabled():
+        title, context_text, solution_text = sanitize_metadata([title, context_text, solution_text], pii=True)[0]
     return ImportedRow(
         line_no=line_no,
         title=title,
         context_text=context_text,
         solution_text=solution_text,
-        tags=_parse_tags(row.get(mapping.tags)),
-        source_id=str(row.get(mapping.id, "") or ""),
+        tags=sanitize_metadata(_parse_tags(row.get(mapping.tags)), pii=privacy_redaction_enabled())[0],
+        source_id=redact_secrets(str(row.get(mapping.id, "") or ""))[0],
         outcome=_extract_outcome(row),
     )
 

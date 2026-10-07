@@ -24,15 +24,9 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
 
 
 def _redact_value(value: Any, found: list[str]) -> Any:
-    if isinstance(value, str):
-        clean, labels = memory_guard.redact_secrets(value)
-        found.extend(labels)
-        return clean
-    if isinstance(value, list):
-        return [_redact_value(v, found) for v in value]
-    if isinstance(value, dict):
-        return {k: _redact_value(v, found) for k, v in value.items()}
-    return value
+    clean, labels = memory_guard.sanitize_metadata(value, pii=memory_guard.privacy_redaction_enabled())
+    found.extend(labels)
+    return clean
 
 
 def trace_paths(root: str) -> list[str]:

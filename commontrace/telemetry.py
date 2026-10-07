@@ -19,6 +19,7 @@ import contextlib
 import contextvars
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -50,6 +51,58 @@ def redact(value: Any) -> Any:
 
     text, _found = memory_guard.redact_secrets(text)
     return text if len(text) <= _MAX_ATTR else text[:_MAX_ATTR] + "..."
+
+
+def _safe_fields(fields: dict[str, Any]) -> dict[str, Any]:
+    """Bound structured exports and scrub credentials in keys and nested values.
+
+    Logging must also succeed for cycles, arbitrary application objects and
+    huge containers. Limits apply before serialization; object representations
+    are scanned and credential-named fields redact even unrecognized values.
+    """
+    from commontrace import memory_guard
+
+    remaining = 2048
+    ancestors: set[int] = set()
+
+    def bound(value: Any, depth: int) -> Any:
+        nonlocal remaining
+        remaining -= 1
+        if remaining < 0 or depth > 16:
+            return "[TRUNCATED log data]"
+        if value is None or isinstance(value, (bool, int)):
+            return value
+        if isinstance(value, float):
+            return value if math.isfinite(value) else str(value)
+        if isinstance(value, (dict, list, tuple)):
+            if id(value) in ancestors:
+                return "[TRUNCATED cyclic log data]"
+            ancestors.add(id(value))
+            try:
+                if isinstance(value, dict):
+                    result: dict[str, Any] = {}
+                    for index, (key, nested) in enumerate(value.items()):
+                        if index >= 64 or remaining < 1:
+                            break
+                        safe_key = str(redact(key))
+                        if safe_key in result:
+                            raise ValueError("duplicate sanitized log keys")
+                        result[safe_key] = bound(nested, depth + 1)
+                    return result
+                return [bound(nested, depth + 1) for nested in value[:64]]
+            finally:
+                ancestors.remove(id(value))
+        try:
+            return redact(value)
+        except Exception:
+            return "[REDACTED unrenderable log data]"
+
+    try:
+        bounded = bound(fields, 0)
+        safe, _ = memory_guard.sanitize_metadata(bounded, pii=memory_guard.privacy_redaction_enabled())
+        return dict(safe)
+    except Exception:
+        return {"error": "[REDACTED invalid structured log data]"}
 
 
 # --- context ---------------------------------------------------------------------
@@ -145,7 +198,7 @@ class Span:
         self._otel = otel_span
 
     def set(self, **attrs: Any) -> None:
-        for key, value in attrs.items():
+        for key, value in _safe_fields(attrs).items():
             self.attributes[key] = redact(value)
             if self._otel is not None:
                 with contextlib.suppress(Exception):
@@ -220,7 +273,7 @@ def wrap_tool(func, prefix: str = "mcp"):
 # --- metrics ---------------------------------------------------------------------
 
 def _labels(labels: dict) -> tuple:
-    return tuple(sorted((k, str(v)[:64]) for k, v in labels.items()))
+    return tuple(sorted((k, str(v)[:64]) for k, v in _safe_fields(labels).items()))
 
 
 def count(name: str, value: float = 1.0, **labels: Any) -> None:
@@ -317,7 +370,7 @@ class JsonFormatter(logging.Formatter):
                 entry[key] = value if isinstance(value, (dict, list)) else redact(value)
         if record.exc_info:
             entry["exc"] = redact(self.formatException(record.exc_info).splitlines()[-1])
-        return json.dumps(entry, default=str)
+        return json.dumps(_safe_fields(entry), allow_nan=False)
 
 
 class _RedactingFormatter(logging.Formatter):

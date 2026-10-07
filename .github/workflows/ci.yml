@@ -108,6 +108,48 @@ jobs:
       - name: Build and run the test suite
         run: npm test
 
+  test-vector-engines:
+    name: vector engines (SQLite + pgvector, py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+    services:
+      pgvector:
+        image: pgvector/pgvector:0.8.1-pg16
+        env:
+          POSTGRES_USER: commontrace
+          POSTGRES_PASSWORD: commontrace
+          POSTGRES_DB: commontrace_vector_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      COMMONTRACE_TEST_PGVECTOR_DSN: postgresql://commontrace:commontrace@127.0.0.1:5432/commontrace_vector_test
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install the optional PostgreSQL engine and test runner
+        run: python -m pip install -e ".[dev,vector-postgres]" "numpy>=1.24,<3.0"
+      - name: Provision pgvector as the test database administrator
+        run: >-
+          docker exec ${{ job.services.pgvector.id }}
+          psql -U commontrace -d commontrace_vector_test -v ON_ERROR_STOP=1
+          -c 'CREATE EXTENSION IF NOT EXISTS vector;'
+      - name: Exercise both engines through real retrieval and concurrent ingestion
+        run: >-
+          python -m pytest tests/test_vector_store.py
+          tests/test_conversation_vector_backend.py tests/test_async_conversation_store.py
+          tests/test_concurrent_agent_ingestion.py -q
+
   test-hub:
     name: hub tests (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
@@ -216,6 +258,17 @@ jobs:
 
       - name: pip-audit -- the Hub server's pinned dependencies
         run: pip-audit -r hub/requirements.txt
+
+      - name: Strict types for memory boundaries and async runtime
+        run: |
+          mypy --strict --follow-imports=silent --ignore-missing-imports \
+            commontrace/async_workers.py commontrace/mcp_transport.py \
+            commontrace/commons_integrity.py commontrace/frameworks.py \
+            commontrace/conversation/async_store.py commontrace/conversation/validation.py \
+            commontrace/semantic.py commontrace/vector_store.py \
+            commontrace/distill.py commontrace/distillation_worker.py commontrace/draft_quality.py \
+            commontrace/failure_signals.py commontrace/memory_blocks.py \
+            commontrace/commands/block_cmd.py commontrace/commands/distill_cmd.py
 
       - name: mypy (known findings, informational only)
         continue-on-error: true

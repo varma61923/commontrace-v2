@@ -195,6 +195,8 @@ def serve_stdio(gateway: Gateway, stdin: TextIO, stdout: TextIO) -> int:
                 raise ValueError("a request must be a JSON object")
             request_id = req.get("id")
             if "op" in req:
+                if not isinstance(req["op"], str):
+                    raise ValueError("op must be a string")
                 if req["op"] not in shorthand:
                     raise ValueError(f"unknown op {req['op']!r}")
                 method, base = shorthand[req["op"]]
@@ -204,14 +206,23 @@ def serve_stdio(gateway: Gateway, stdin: TextIO, stdout: TextIO) -> int:
                 else:
                     path, body = base, params
             else:
-                method, path, body = req.get("method", "POST"), req["path"], req.get("body") or {}
-                if method == "GET" and isinstance(body, dict) and body:
+                method, path = req.get("method", "POST"), req["path"]
+                if not isinstance(method, str) or not method:
+                    raise ValueError("method must be a nonempty string")
+                if not isinstance(path, str) or not path:
+                    raise ValueError("path must be a nonempty string")
+                body = req.get("body")
+                if body is None:
+                    body = {}
+                elif not isinstance(body, dict):
+                    raise ValueError("body must be a JSON object")
+                if method == "GET" and body:
                     path, body = with_query(path, body), {}
             response = gateway.handle(
                 method, path, body=json.dumps(body).encode("utf-8") if method == "POST" else None,
                 trusted=True)
             reply = {"id": request_id, "status": response.status, "body": json.loads(response.body)}
-        except (ValueError, KeyError) as exc:
+        except (ValueError, KeyError, RecursionError) as exc:
             reply = {"id": request_id, "status": 400,
                      "body": {"error": {"code": "bad_request", "message": str(exc)}}}
         stdout.write(json.dumps(reply, separators=(",", ":")) + "\n")

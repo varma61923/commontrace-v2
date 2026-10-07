@@ -867,13 +867,11 @@ class Gateway:
 
     def _conversation_add(self, req: dict, _query) -> dict:
         from commontrace.conversation import ConversationError, Store
+        from commontrace.conversation.validation import validate_messages
 
         messages = req.get("messages")
-        if not isinstance(messages, list) or not all(isinstance(m, dict) for m in messages):
-            raise _bad("messages must be a list of objects with text (or content)")
-        if len(messages) > 1000:
-            raise _bad("at most 1000 messages per request")
         try:
+            validate_messages(messages)
             space = self._scoped_space(_ident(req.get("space"), "space"))
             with Store(self.root, space) as store:
                 return store.add(_ident(req.get("session"), "session"), messages,

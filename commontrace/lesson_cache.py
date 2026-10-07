@@ -11,6 +11,7 @@ import tempfile
 import threading
 from collections import OrderedDict
 from types import MappingProxyType
+from typing import Any
 
 from commontrace import frontmatter, paths, ttl
 
@@ -100,6 +101,28 @@ def filter_eligible(
             continue
         eligible.append(lesson)
     return eligible
+
+
+def fresh_eligible(
+    path: str, fm: dict[str, Any], slug: str, *, scope: str = "",
+    as_of: str | datetime.datetime | None = None, agent_type: str | None = None,
+    expected_core: bool | None = None, show_expired: bool = False,
+) -> bool:
+    """Recheck eligibility on the authoritative body read after cached ranking.
+
+    Revoked approval, changed identity, routing, validity and core designation
+    must not be combined with an earlier ranked snapshot. The next query can
+    rerank the changed document; the current query conservatively skips it.
+    """
+    from commontrace import dosage
+
+    return (
+        str(fm.get("status") or "active") == "active"
+        and str(fm.get("name", "")) == slug
+        and (not agent_type or fm.get("agent_type") == agent_type)
+        and (expected_core is None or dosage.is_core(fm) == expected_core)
+        and bool(filter_eligible([(path, fm)], scope=scope, as_of=as_of, show_expired=show_expired))
+    )
 
 
 def _stat(path: str) -> tuple[int, int] | None:

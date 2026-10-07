@@ -40,6 +40,32 @@ class ConversationError(ValueError):
     """A request the conversation store refuses."""
 
 
+def _safe_label(value: str, *, limit: int = 120) -> tuple[str, int]:
+    """Scrub external labels without collapsing distinct private identities.
+
+    Stable names are retained. Sensitive names receive a deterministic opaque
+    suffix so replay and owner attribution remain stable after redaction. Role
+    forgery is refused before any label can enter retrieval or profile units.
+    """
+    if memory_guard.scan_injection(value):
+        raise ConversationError("conversation metadata contains unsafe role or instruction delimiters")
+    clean, secrets = memory_guard.redact_secrets(value)
+    clean, pii = memory_guard.redact_pii(clean)
+    count = len(secrets) + len(pii)
+    if count:
+        suffix = "#" + hashlib.sha256(value.lower().encode("utf-8")).hexdigest()[:16]
+        return clean[:max(0, limit - len(suffix))] + suffix, count
+    return clean[:limit], 0
+
+
+def _validate_session_metadata(session: str) -> None:
+    # Routing IDs are never rewritten: changing one would redirect operations
+    # and break callers' idempotency. Reject sensitive/forged IDs instead.
+    if (memory_guard.scan_injection(session) or memory_guard.redact_secrets(session)[1]
+            or memory_guard.redact_pii(session)[1]):
+        raise ConversationError("session id must not contain credentials, PII, or instruction delimiters")
+
+
 def conversations_dir(root: str) -> str:
     return os.path.join(paths.memory_dir(root), "conversations")
 
@@ -60,7 +86,8 @@ def spaces(root: str) -> list[str]:
 
 def _fts5_available() -> bool:
     try:
-        sqlite3.connect(":memory:").execute("CREATE VIRTUAL TABLE t USING fts5(x)")
+        with contextlib.closing(sqlite3.connect(":memory:")) as db:
+            db.execute("CREATE VIRTUAL TABLE t USING fts5(x)")
     except sqlite3.OperationalError:
         return False
     return True
@@ -454,8 +481,9 @@ class Store:
         """Append messages to a session. Re-adding a message already stored is a no-op."""
         if not SESSION_RE.match(session or ""):
             raise ConversationError("session id must be 1-200 printable characters")
+        _validate_session_metadata(session)
         started = _moment(session_at)
-        users = {s.lower() for s in user_speakers}
+        users = {_safe_label(str(s).strip())[0].lower() for s in user_speakers}
         added = skipped = redacted = 0
         with self._lock, write_txn(self.db):
             row = self.db.execute("SELECT started_at FROM sessions WHERE id=?", (session,)).fetchone()
@@ -481,16 +509,25 @@ class Store:
                 if pii_found:
                     text = pii_text
                     redacted += len(pii_found)
-                role = str(message.get("role") or "").strip().lower()
-                speaker = str(message.get("speaker") or message.get("name") or role or "user").strip()[:120]
+                raw_role = str(message.get("role") or "").strip().lower()
+                role, role_redacted = _safe_label(raw_role)
+                role = role.lower()
+                raw_speaker = str(message.get("speaker") or message.get("name") or raw_role or "user").strip()
+                speaker, speaker_redacted = _safe_label(raw_speaker)
+                redacted += role_redacted + speaker_redacted
                 if not role:
                     role = "user" if not users or speaker.lower() in users else "other"
                 at = _moment(message.get("at") or message.get("timestamp")) or started
                 expires = _moment(message.get("expires"))
                 ref = message.get("id")
-                ref = str(ref)[:200] if ref not in (None, "") else None
-                key = _hash("\x1f".join([session, "ref", ref]) if ref else
-                            "\x1f".join([session, speaker, _iso(at) or "", text]))
+                key_ref = str(ref)[:200] if ref not in (None, "") else None
+                if ref not in (None, ""):
+                    ref, ref_redacted = _safe_label(str(ref), limit=200)
+                    redacted += ref_redacted
+                else:
+                    ref = None
+                key = _hash("\x1f".join([session, "ref", key_ref]) if key_ref else
+                            "\x1f".join([session, raw_speaker[:120], _iso(at) or "", text]))
                 if self.db.execute("SELECT 1 FROM turns WHERE key=?", (key,)).fetchone():
                     skipped += 1
                     continue
@@ -674,7 +711,7 @@ class Store:
                 else:
                     source_ids, anchor = [row["id"]], row
                 slot = str(m["slot"]).strip().lower()[:80] if m.get("slot") else None
-                owner = str(m.get("owner") or row["speaker"]).strip().lower()[:120]
+                owner = _safe_label(str(m.get("owner") or row["speaker"]).strip())[0].lower()
                 # Deduplicate within an owner's live beliefs. A repeated old
                 # statement after an update is a reversion, not a duplicate.
                 if self.db.execute(
@@ -1067,7 +1104,7 @@ class Store:
     def allowed(self, *, sessions: Iterable[str] = (), speakers: Iterable[str] = (), since=None, until=None,
                 now: dt.datetime | None = None) -> set[int] | None:
         """The turns a filtered recall may use, or None when nothing is filtered out."""
-        sessions, speakers = list(sessions), [s.lower() for s in speakers]
+        sessions, speakers = list(sessions), [_safe_label(str(s).strip())[0].lower() for s in speakers]
         clauses, args = [], []
         if sessions:
             clauses.append("session IN (SELECT value FROM json_each(?))")

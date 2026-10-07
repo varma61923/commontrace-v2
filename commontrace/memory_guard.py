@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import ipaddress
+import os
 import re
 from dataclasses import dataclass, field
+from typing import Any
 
 CATEGORY_SECRET = "secret"
 CATEGORY_PII = "pii"
@@ -19,14 +22,19 @@ _SECRET_PATTERNS_HIGH: tuple[tuple[str, re.Pattern], ...] = (
     ("Stripe webhook signing secret", re.compile(r"\bwhsec_[A-Za-z0-9]{32,}\b")),
     ("Google API key", re.compile(r"\bAIza[0-9A-Za-z\-_]{35}\b")),
     ("Anthropic API key", re.compile(r"\bsk-ant-[A-Za-z0-9\-_]{20,}\b")),
-    ("OpenAI-style API key", re.compile(r"\bsk-[A-Za-z0-9]{20,}\b")),
+    ("OpenAI-style API key", re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b")),
+    ("CommonTrace Hub API key", re.compile(r"\bct_live_[A-Za-z0-9_-]{32,}\b")),
     ("PEM private key block", re.compile(
-        r"-----BEGIN (?:RSA |EC |OPENSSH |DSA |ENCRYPTED )?PRIVATE KEY-----"
+        r"-----BEGIN (?P<pem_kind>(?:RSA |EC |OPENSSH |DSA |ENCRYPTED |PGP )?PRIVATE KEY(?: BLOCK)?)-----"
+        r"(?:[ \t]*\r?\n[\s\S]*?(?:-----END (?P=pem_kind)-----|\Z))?"
     )),
+    ("URI credentials", re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://[^\s/:@]+:[^\s/@]+@")),
     ("JSON Web Token", re.compile(
         r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"
     )),
 )
+
+_SECRET_PATTERNS_HIGH += (("HTTP authorization credential", re.compile(r"(?i)\bbearer[ \t]+[A-Za-z0-9._~+/-]+=*")),)
 
 _SECRET_PATTERNS_MEDIUM: tuple[tuple[str, re.Pattern], ...] = (
     ("possible credential assignment", re.compile(
@@ -55,6 +63,10 @@ def _luhn_ok(digits: str) -> bool:
 
 
 _INJECTION_PHRASE_PATTERNS: tuple[tuple[str, re.Pattern], ...] = (
+    ("forged model-role delimiter", re.compile(
+        r"(?i)<\s*/?\s*(?:system|developer|assistant)\b[^>]{0,200}>|"
+        r"<\|(?:im_start|start_header_id)\|>\s*(?:system|developer|assistant)\b|\[INST\]"
+    )),
     ("instruction-override phrasing", re.compile(
         r"(?i)\b(?:ignore|disregard|forget)\s+(?:all\s+|any\s+)?"
         r"(?:previous|prior|above|earlier|the\s+above)\s+"
@@ -134,7 +146,92 @@ def redact_secrets(text: str) -> tuple[str, list[str]]:
             found.append(label)
             return f"[REDACTED {label}]"
         text = pattern.sub(_mark, text)
+    # Explicit credential assignments are sensitive even when a provider prefix
+    # is absent. Preserve field names and quotes, never the assigned value.
+    def _assignment(match: re.Match[str]) -> str:
+        value = match.group("value")
+        if value.lstrip("\"\'").startswith("[REDACTED"):
+            return match.group()
+        found.append("credential assignment")
+        quote = value[0] if value.startswith(("\"", "\'")) else ""
+        return match.group("prefix") + quote + "[REDACTED credential assignment]" + quote
+    text = _CREDENTIAL_VALUE_RE.sub(_assignment, text)
     return text, found
+
+
+_CREDENTIAL_VALUE_RE = re.compile(
+    r"(?i)(?P<prefix>\b(?:api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token|"
+    r"client[_-]?secret|private[_-]?key|aws[_-]?secret[_-]?access[_-]?key|aws[_-]?session[_-]?token|passwd|password)\b[\"']?\s*[:=]\s*)"
+    r"(?P<value>\"(?:\\.|[^\"\\\r\n])+\"|'(?:\\.|[^'\\\r\n])+'|[^\s,;]+)"
+)
+
+_SECRET_FIELD_NAMES = frozenset({
+    "api_key", "apikey", "secret", "secret_key", "access_token", "auth_token",
+    "client_secret", "private_key", "passwd", "password", "authorization",
+    "aws_secret_access_key", "aws_session_token",
+})
+_IP_CANDIDATE_RE = re.compile(
+    r"(?<![\w:.])(?:[0-9]{1,3}(?:\.[0-9]{1,3}){3}|[0-9A-Fa-f]*:[0-9A-Fa-f:.]+)(?![\w:]|\.[0-9])"
+)
+
+
+def privacy_redaction_enabled() -> bool:
+    """Whether existing trace APIs should also mask PII (explicit policy)."""
+    return os.environ.get("COMMONTRACE_REDACT_PII", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def sanitize_metadata(value: Any, *, pii: bool = False) -> tuple[Any, list[str]]:
+    """Copy metadata while scrubbing secrets; reject cycles and excessive depth.
+
+    Optional PII policy applies to all string leaves. Input is never mutated.
+    Credential-named fields mask even short or unrecognized credential values.
+    Keys are scrubbed too; collisions fail closed instead of losing metadata.
+    """
+    found: list[str] = []
+    ancestors: set[int] = set()
+    nodes = 0
+
+    def visit(item: Any, depth: int, secret_field: bool = False) -> Any:
+        nonlocal nodes
+        nodes += 1
+        if nodes > 100_000 or depth > 64:
+            raise ValueError("metadata redaction exceeds structural limits")
+        if isinstance(item, str):
+            if secret_field and item and not item.startswith("[REDACTED"):
+                found.append("credential field")
+                return "[REDACTED credential field]"
+            clean, labels = redact_secrets(item)
+            found.extend(labels)
+            if pii:
+                clean, labels = redact_pii(clean)
+                found.extend(labels)
+            return clean
+        if isinstance(item, (dict, list, tuple)):
+            if id(item) in ancestors:
+                raise ValueError("metadata redaction rejects cyclic objects")
+            if nodes + len(item) > 100_000:
+                raise ValueError("metadata redaction exceeds structural limits")
+            ancestors.add(id(item))
+            try:
+                if isinstance(item, dict):
+                    out: dict[Any, Any] = {}
+                    for key, nested in item.items():
+                        new_key = visit(key, depth + 1)
+                        if new_key in out:
+                            raise ValueError("metadata redaction creates duplicate keys")
+                        sensitive = str(key).lower().replace("-", "_") in _SECRET_FIELD_NAMES
+                        out[new_key] = visit(nested, depth + 1, secret_field or sensitive)
+                    return out
+                values = [visit(nested, depth + 1, secret_field) for nested in item]
+                return tuple(values) if isinstance(item, tuple) else values
+            finally:
+                ancestors.remove(id(item))
+        if secret_field and item is not None:
+            found.append("credential field")
+            return "[REDACTED credential field]"
+        return item
+
+    return visit(value, 0), found
 
 
 def redact_pii(text: str) -> tuple[str, list[str]]:
@@ -174,6 +271,15 @@ def redact_pii(text: str) -> tuple[str, list[str]]:
         return m.group()
 
     text = _CARD_CANDIDATE_RE.sub(_card_mark, text)
+    def _ip_mark(match: re.Match[str]) -> str:
+        try:
+            address = match.group().rstrip(".")
+            ipaddress.ip_address(address)
+        except ValueError:
+            return match.group()
+        found.append("ip address")
+        return "[REDACTED ip address]" + match.group()[len(address):]
+    text = _IP_CANDIDATE_RE.sub(_ip_mark, text)
     return text, found
 
 

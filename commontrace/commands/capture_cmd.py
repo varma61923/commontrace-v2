@@ -176,6 +176,10 @@ def run(args: argparse.Namespace) -> int:
             f"{', '.join(dict.fromkeys(redacted))}.",
             file=sys.stderr,
         )
+    if memory_guard.privacy_redaction_enabled():
+        title = memory_guard.redact_pii(title)[0]
+        context = memory_guard.redact_pii(context)[0]
+        solution = memory_guard.redact_pii(solution)[0]
     root = paths.resolve_root(args.dest)
     tdir = paths.traces_dir(root)
     os.makedirs(tdir, exist_ok=True)
@@ -221,6 +225,17 @@ def run(args: argparse.Namespace) -> int:
         )
         if created_at:
             fm["created_at"] = created_at
+        clean, metadata_redacted = memory_guard.sanitize_metadata(
+            {"frontmatter": fm, "context": context, "solution": solution},
+            pii=memory_guard.privacy_redaction_enabled(),
+        )
+        fm = clean["frontmatter"]
+        context, solution = clean["context"], clean["solution"]
+        if metadata_redacted:
+            print(
+                f"[commontrace] redacted {len(metadata_redacted)} sensitive metadata value(s) before storage.",
+                file=sys.stderr,
+            )
         body = templates.trace_body(context, solution)
 
         instance = dict(fm)

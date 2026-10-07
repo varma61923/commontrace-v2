@@ -36,7 +36,7 @@ class Signal:
         return len(self.trace_ids)
 
 
-def _is_failure(outcome: dict | None) -> bool:
+def _is_failure(outcome: dict[str, object] | None) -> bool:
     if not isinstance(outcome, dict):
         return False
     if outcome.get("resolved") is False:
@@ -83,9 +83,12 @@ _TREND_RATIO = 1.3
 
 def _parse_iso(ts: str) -> datetime.datetime | None:
     try:
-        return datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        parsed = datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
     except ValueError:
         return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed.astimezone(datetime.timezone.utc)
 
 
 def _trend(dated: list[str]) -> str:
@@ -118,7 +121,7 @@ def _vectors(occurrences: list[FailureOccurrence]) -> list[dict[str, float]]:
         return [_stem.stem(w) for w in WORD_RE.findall(text.lower()) if w not in STOPWORDS and len(w) > 1]
 
     docs = [Counter(tokens(f"{o.title} {o.context_text}")) for o in occurrences]
-    df: Counter = Counter(t for d in docs for t in d)
+    df: Counter[str] = Counter(t for d in docs for t in d)
     n = len(docs)
     out = []
     for d in docs:
@@ -213,7 +216,7 @@ def build_signals(
     return signals, by_id
 
 
-def export_langsmith(signal: Signal, by_id: dict[str, FailureOccurrence]) -> list[dict]:
+def export_langsmith(signal: Signal, by_id: dict[str, FailureOccurrence]) -> list[dict[str, object]]:
     return [
         {
             "inputs": {"input": occ.context_text},
@@ -228,7 +231,7 @@ def export_langsmith(signal: Signal, by_id: dict[str, FailureOccurrence]) -> lis
     ]
 
 
-def export_braintrust(signal: Signal, by_id: dict[str, FailureOccurrence]) -> list[dict]:
+def export_braintrust(signal: Signal, by_id: dict[str, FailureOccurrence]) -> list[dict[str, object]]:
     return [
         {
             "input": occ.context_text,
