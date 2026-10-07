@@ -32,7 +32,7 @@ jsonschema==4.26.0         # protocol/schemas/*.json validation
 PyJWT==2.15.1              # OIDC bearer-token verification (hub/sso.py) -- was
                            # only ever a transitive dependency before; now
                            # imported directly, so it is pinned directly too
-cryptography==50.0.1       # AES-256-GCM envelope encryption for WebhookEndpoint.url
+cryptography==50.0.2       # AES-256-GCM envelope encryption for WebhookEndpoint.url
                            # (hub/encryption.py) -- same story as PyJWT above: this was
                            # already resolving as a transitive dependency (underneath
                            # mcp/httpx2's own TLS stack; see hub/requirements-lock.txt,
