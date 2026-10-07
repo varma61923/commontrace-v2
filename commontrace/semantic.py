@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 class Encoder(Protocol):
     """The local encoder seam; implementations return one vector per input."""
 
-    def encode(self, texts: list[str], *, normalize_embeddings: bool) -> Any: ...
+    def encode(self, texts: list[str], /, *, normalize_embeddings: bool) -> Any: ...
 
 DEFAULT_SEMANTIC_THRESHOLD = 0.65
 
