@@ -5,8 +5,6 @@ and the attached `HANDOVER_PROMPT.md`. It improves concrete gaps in CommonTrace'
 existing implementation. It does not establish superiority on answer quality,
 certify security, or make every operation 50 times faster.
 
-The exact reference commits and the handover's SHA-256 are recorded in
-[source-revisions.json](../benchmarks/results/runtime-2026-10-06/source-revisions.json).
 CommonTrace's comparison baseline is `bf16603eddc6b220efcab95ce4a6912a88e79318`.
 Reference repositories were cloned with their histories, inspected as references,
 and left unchanged. This review is focused rather than a line-by-line audit of
@@ -188,7 +186,7 @@ the adapter is not a substitute for an authenticated multi-tenant service.
 ## Measurement and verification
 
 [Performance evidence](performance.md) records baseline/candidate timings,
-workloads, raw measurements, output hashes and reproduction commands. Repeated
+workloads and reproduction commands. Repeated
 ranking at 10,000 lessons is the workload targeted at 50x; distinct queries,
 file scans, cold indexing, LLM inference and end-to-end latency are separate.
 
@@ -201,8 +199,8 @@ failures were four MCP SDK-version mismatches plus a stub-encoder fixture that
 did not enable the semantic arm on a core-only install; the fixture now enables
 its injected local encoder, without downloading a model.
 
-Full core/end-to-end and disposable-PostgreSQL Hub results, focused coverage,
-lint and the existing local-latency gate are recorded in the accompanying
-[validation artifact](../benchmarks/results/runtime-2026-10-06/validation.json).
+Full core/end-to-end, disposable-PostgreSQL Hub, lint and local-latency
+checks run in CI. Generated benchmark and validation output is not kept in the
+source tree.
 Live cloud SDK authorization, Windows file locking, external model quality and
 multi-machine throughput were not exercised.

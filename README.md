@@ -2889,11 +2889,8 @@ does not establish patent novelty or freedom to operate.
 
 [Development and testing](CONTRIBUTING.md) · [Architecture](docs/architecture.md) ·
 [MCP and gateway APIs](docs/api.md) · [Environment reference](docs/environment.md) ·
-[Operations and migration](docs/operations.md) · [Handover audit](docs/implementation-audit.md)
+[Operations and migration](docs/operations.md)
 
 [Runtime, security and provider improvements](docs/runtime-upgrade.md) documents
 snapshot-scoped query caching, completion isolation, live gateway token control,
 rotatable secrets and provider circuit breakers, with reproducible measurements.
-
-The handover audit records completed work and remaining items separately; it is
-not a claim that every recommendation or unspecified placeholder is implemented.

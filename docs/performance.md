@@ -148,19 +148,15 @@ queries. The table reports the median of each trial's median.
 All ordered result hashes match across versions and trials. The 50x target is
 exceeded for repeated ranking at 10,000 lessons. It is not met for every
 operation: distinct queries pay cache admission/materialization overhead, and
-the measured regressions above are retained in this report. These measurements
+the measured regressions above are retained in this guide. These measurements
 exclude file loading, cold indexing, prompt rendering, network transport and
 LLM inference. They do not compare CommonTrace against hosted competitor SLAs.
 
 For predominantly unique workloads, use `COMMONTRACE_QUERY_CACHE=0` or
-`rank_lessons(..., cache_results=False)`. The separate opt-out comparison is
-included below; it removes admission work, though numeric-template
+`rank_lessons(..., cache_results=False)`. An opt-out comparison can be reproduced with the command
+below; disabling caching removes admission work, though numeric-template
 materialization still has a small cost versus the baseline implementation.
 
-- [All paired timings, output hashes and source hashes](../benchmarks/results/runtime-2026-10-06/retrieval-comparison.json)
-- [Comparison with query caching disabled](../benchmarks/results/runtime-2026-10-06/retrieval-disabled-comparison.json)
-- [Existing local latency gate](../benchmarks/results/runtime-2026-10-06/local-latency.md)
-- [Test, coverage and static-analysis validation](../benchmarks/results/runtime-2026-10-06/validation.json)
 - [Scope, operational controls and remaining gaps](runtime-upgrade.md)
 
 Reproduce from this checkout (Python 3.10+, core dependencies only):

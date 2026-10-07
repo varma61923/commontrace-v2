@@ -55,3 +55,7 @@ htmlcov/
 # Machine-local lint caches and generated evaluation outputs
 .ruff_cache/
 /benchmark-results/
+
+# Disposable benchmark output and type-checker cache
+/benchmarks/results/
+.mypy_cache/
