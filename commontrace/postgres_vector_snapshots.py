@@ -110,6 +110,7 @@ class PostgresSnapshots:
                              "VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING", *self._scope)
 
     async def _locked(self, db: Any) -> Any:
+        await self._schema_reader(db)
         row = await db.fetchrow("SELECT revision,generation,fence FROM commontrace_vector_heads "
                                 "WHERE tenant=$1 AND namespace=$2 AND model=$3 AND dimension=$4 FOR UPDATE",
                                 *self._scope)
@@ -117,8 +118,16 @@ class PostgresSnapshots:
             raise RuntimeError("snapshot backend is not initialized")
         return row
 
+    async def _schema_reader(self, db: Any) -> None:
+        # Initialization may ALTER shared tables. Acquire the shared schema
+        # barrier before any table/row lock so DDL cannot invert the runtime
+        # head -> builds order. Shared locks retain concurrent pooled readers
+        # and builders from independent scopes until their transaction ends.
+        await db.execute("SELECT pg_advisory_xact_lock_shared(736482091503)")
+
     async def head(self) -> SnapshotHead:
-        async with self._pool.acquire() as db:
+        async with self._pool.acquire() as db, db.transaction():
+            await self._schema_reader(db)
             row = await db.fetchrow("SELECT revision,generation FROM commontrace_vector_heads "
                                     "WHERE tenant=$1 AND namespace=$2 AND model=$3 AND dimension=$4", *self._scope)
         if row is None:
@@ -286,6 +295,7 @@ class PostgresSnapshots:
         query = _vector(vector, self._scope[3])
         ids = _keys(allowed_ids) if allowed_ids is not None else None
         async with self._pool.acquire() as db, db.transaction():
+            await self._schema_reader(db)
             # Share-lock only this reader: independent pooled readers remain concurrent.
             # GC must erase expired lease rows before reclaiming their vector intervals.
             live = await db.fetchval("SELECT token FROM commontrace_vector_readers "

@@ -320,3 +320,99 @@ def test_forged_abort_cannot_consume_legitimate_build(forged_field: int) -> None
             read = await snapshots.pin("legitimate")
             assert [hit.key for hit in await snapshots.search(read, [1, 0, 0])] == ["a"]
     asyncio.run(run())
+
+
+def test_initialize_waits_before_ddl_while_builder_owns_head(monkeypatch) -> None:
+    """Force the former head/builds DDL inversion using independent connections."""
+    async def run() -> None:
+        async with backend() as (snapshots, pool):
+            head_owned, continue_builder = asyncio.Event(), asyncio.Event()
+            original = snapshots._locked
+            builder_pid = 0
+
+            async def hold_head(db: Any) -> Any:
+                nonlocal builder_pid
+                row = await original(db)
+                builder_pid = db.get_server_pid()
+                head_owned.set()
+                await continue_builder.wait()
+                return row
+
+            monkeypatch.setattr(snapshots, "_locked", hold_head)
+            builder = asyncio.create_task(snapshots.begin(1, "builder"))
+            initializer: asyncio.Task[None] | None = None
+            try:
+                await asyncio.wait_for(head_owned.wait(), 5)
+                other = PostgresSnapshots(pool, snapshots._scope)
+                initializer = asyncio.create_task(other.initialize())
+                async with pool.acquire() as observer:
+                    async def initialization_blocked_at_barrier() -> None:
+                        while not await observer.fetchval(
+                            "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE "
+                            "$1::integer=ANY(pg_blocking_pids(pid)) AND wait_event_type='Lock' "
+                            "AND query='SELECT pg_advisory_xact_lock(736482091503)')", builder_pid):
+                            if initializer is not None and initializer.done():
+                                initializer.result()
+                                raise AssertionError("initializer bypassed the live builder schema barrier")
+                            await asyncio.sleep(0.01)
+                    await asyncio.wait_for(initialization_blocked_at_barrier(), 5)
+                    # Shared barrier was taken before the head lock. DDL has
+                    # not acquired builds-table locks, so this INSERT completes.
+                    continue_builder.set()
+                    lease = await asyncio.wait_for(builder, 5)
+                    await asyncio.wait_for(initializer, 5)
+                assert lease is not None
+                monkeypatch.setattr(snapshots, "_locked", original)
+                await snapshots.stage(lease, [VectorRecord("evidence", [1, 0, 0])])
+                assert await snapshots.publish(lease)
+                read = await snapshots.pin("builder")
+                assert [hit.key for hit in await snapshots.search(read, [1, 0, 0])] == ["evidence"]
+                await snapshots.release(read)
+            finally:
+                continue_builder.set()
+                tasks = [builder] + ([initializer] if initializer is not None else [])
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("operation", ["head", "search"])
+def test_metadata_and_vector_reads_wait_before_schema_ddl(operation: str) -> None:
+    async def run() -> None:
+        async with backend() as (snapshots, pool):
+            await publish(snapshots, 1, "first", [VectorRecord("evidence", [1, 0, 0])])
+            read = await snapshots.pin("first")
+            pending: asyncio.Task[Any] | None = None
+            try:
+                async with pool.acquire() as schema_connection:
+                    async with schema_connection.transaction():
+                        await schema_connection.execute("SELECT pg_advisory_xact_lock(736482091503)")
+                        schema_pid = schema_connection.get_server_pid()
+                        pending = asyncio.create_task(snapshots.head() if operation == "head" else
+                                                      snapshots.search(read, [1, 0, 0]))
+                        async with pool.acquire() as observer:
+                            async def reader_blocked_at_barrier() -> None:
+                                while not await observer.fetchval(
+                                    "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE "
+                                    "$1::integer=ANY(pg_blocking_pids(pid)) AND wait_event_type='Lock' "
+                                    "AND query='SELECT pg_advisory_xact_lock_shared(736482091503)')", schema_pid):
+                                    if pending is not None and pending.done():
+                                        pending.result()
+                                        raise AssertionError("read bypassed schema initialization barrier")
+                                    await asyncio.sleep(0.01)
+                            await asyncio.wait_for(reader_blocked_at_barrier(), 5)
+                        assert not pending.done()
+                    result = await asyncio.wait_for(pending, 5)
+                if operation == "head":
+                    assert result == SnapshotHead(1, "first")
+                else:
+                    assert [hit.key for hit in result] == ["evidence"]
+            finally:
+                if pending is not None:
+                    if not pending.done():
+                        pending.cancel()
+                    await asyncio.gather(pending, return_exceptions=True)
+                await snapshots.release(read)
+    asyncio.run(run())
