@@ -89,7 +89,7 @@ def test_concurrent_source_change_rejects_prefetched_candidates(tmp_path, engine
         try:
             async with await AsyncStore.open(str(tmp_path), "memory", vector_index=index, tenant=tenant) as store:
                 await store.add("cats", [{"text": "A lynx rests."}], extract_profile=False)
-                original = index.search
+                original = index.snapshots.search
                 changed = False
                 async def changing(*args, **kwargs):
                     nonlocal changed
@@ -97,9 +97,10 @@ def test_concurrent_source_change_rejects_prefetched_candidates(tmp_path, engine
                         changed = True
                         await store.add("more", [{"text": "Sea waves roll."}], extract_profile=False)
                     return await original(*args, **kwargs)
-                monkeypatch.setattr(index, "search", changing)
+                monkeypatch.setattr(index.snapshots, "search", changing)
                 with pytest.raises(ConversationError, match="stale"):
                     await store.recall("feline", options=options())
+                assert changed  # The mutation must cross the active provider seam.
                 assert "lynx" in (await store.recall("feline", options=options())).context
         finally:
             await index.close()

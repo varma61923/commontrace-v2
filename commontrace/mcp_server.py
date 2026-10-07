@@ -294,7 +294,7 @@ def _lesson_path(root: str, slug: str) -> str:
 
 def _fresh_lesson_eligible(path: str, fm: dict, slug: str, *,
                            scope: str = "", as_of: str = "", agent_type: str = "",
-                           expected_core: bool | None = None) -> bool:
+                           expected_core: bool | None = None, body: str | None = None) -> bool:
     """Recheck fresh metadata before admitting a body from the ranked snapshot.
 
     A curator can revoke approval, rescope, or expire a lesson between the
@@ -303,7 +303,7 @@ def _fresh_lesson_eligible(path: str, fm: dict, slug: str, *,
     """
     return lesson_cache.fresh_eligible(
         path, fm, slug, scope=scope, as_of=as_of or None, agent_type=agent_type or None,
-        expected_core=expected_core,
+        expected_core=expected_core, body=body,
     )
 
 
@@ -331,8 +331,8 @@ def _apply_dosage(matched, active, config, quarantined=None, *, scope="", as_of=
             fm_full, body = frontmatter.read(path)
         except Exception:  # noqa: BLE001 - an unreadable lesson is not injected
             continue
-        if not dosage.is_core(fm_full) or not _fresh_lesson_eligible(
-            path, fm_full, slug, scope=scope, as_of=as_of, agent_type=agent_type,
+        if not dosage.is_core(fm_full) or not lesson_cache._fresh_metadata_eligible(
+            path, fm_full, slug, scope=scope, as_of=as_of or None, agent_type=agent_type or None,
         ):
             continue
         item = _lesson_wire(fm_full, body, include_body=True)
@@ -341,6 +341,9 @@ def _apply_dosage(matched, active, config, quarantined=None, *, scope="", as_of=
         if bad:
             if quarantined is not None:
                 quarantined.extend(bad)
+            continue
+        if not _fresh_lesson_eligible(path, fm_full, slug, scope=scope, as_of=as_of,
+                                      agent_type=agent_type, body=body):
             continue
         core_items.append(item)
 
@@ -803,12 +806,24 @@ def build_server(root: str, *, allow_approval: bool = True):
             if fused is not None:
                 fused = fused[:want]
 
-        description_of = {str(fm.get("name", "")): str(fm.get("description", "")) for _, fm in active}
         withdrawn_slugs = set(withdrawn_order)
-        withdrawn_items = [
-            {"slug": slug, "description": description_of.get(slug, ""), "reason": harm.REASON}
-            for slug in withdrawn_order
-        ]
+        withdrawn_items = []
+        for slug in withdrawn_order:
+            path = path_by_slug.get(slug)
+            if path is None:
+                continue
+            try:
+                fm, _body = frontmatter.read(path)
+            except (OSError, ValueError, TypeError):
+                continue
+            if not lesson_cache._fresh_metadata_eligible(
+                path, fm, slug, scope=scope, as_of=as_of or None, agent_type=agent_type or None,
+                expected_core=slug in core_slugs,
+            ):
+                continue
+            # Diagnostic identity/reason stays useful without replaying cached
+            # prose that did not pass fresh content admission.
+            withdrawn_items.append({"slug": slug, "description": "", "reason": harm.REASON})
 
         eligibility_label = retrieval_io.rerank_label(
             retrieval_config.eligibility_label_for(fused=fused is not None, embedder=embedder),
@@ -833,13 +848,16 @@ def build_server(root: str, *, allow_approval: bool = True):
                 fm, body = frontmatter.read(path)
             except Exception:  # noqa: BLE001
                 continue
-            if not _fresh_lesson_eligible(path, fm, slug, scope=scope, as_of=as_of,
-                                          agent_type=agent_type, expected_core=slug in core_slugs):
+            if not lesson_cache._fresh_metadata_eligible(path, fm, slug, scope=scope, as_of=as_of or None,
+                                          agent_type=agent_type or None, expected_core=slug in core_slugs):
                 continue
             item = _lesson_wire(fm, body, include_body=True)
             _clean, _bad = injection_guard.screen([item])
             if _bad:
                 quarantined.extend(_bad)
+                continue
+            if not _fresh_lesson_eligible(path, fm, slug, scope=scope, as_of=as_of,
+                                          agent_type=agent_type, expected_core=slug in core_slugs, body=body):
                 continue
             lexical_hit = lexical_by_slug.get(slug)
             if fused is None and reranked is None:
@@ -1349,6 +1367,11 @@ def build_server(root: str, *, allow_approval: bool = True):
                     safe_rationale = _sanitize_comment(rationale)
                     note = f"Approved by {safe_by}" + (f": {safe_rationale}" if rationale else "")
                     body = body.rstrip() + f"\n\n<!-- {note} -->\n"
+                    from commontrace import lesson_admission
+
+                    fm["approval_receipt"] = lesson_admission.issue(
+                        root, path, fm, body, actor=_agent_actor(approved_by),
+                    )
                     activated = lesson_io.write_lesson(
                         path, fm, body, root=root, actor=_agent_actor(approved_by),
                         reason=rationale or "approved",
@@ -1753,14 +1776,22 @@ def build_server(root: str, *, allow_approval: bool = True):
         TTL-expired facts are hidden unless `show_expired`.
         """
         try:
+            from commontrace.fact_evidence import EvidenceResolver
+
             results = hierarchical.search_facts(
                 root, query=query, scope=scope, category=category, as_of=as_of or None, limit=limit,
                 show_expired=bool(show_expired),
             )
-            return _ok(
-                facts=[{"fact": f.to_dict(), "score": score} for f, score in results],
-                count=len(results),
-            )
+            resolver = EvidenceResolver(root, hierarchical.load_facts(root), as_of=as_of or None)
+            facts = []
+            for fact, score in results:
+                current = resolver.facts.get(fact.id)
+                if fact.evidence_bound and (current is None or current.revision != fact.revision
+                                            or not resolver.assess(fact.id).eligible):
+                    continue
+                facts.append({"fact": fact.to_dict(), "score": score,
+                              "evidence_assessment": resolver.assess(fact.id).to_dict()})
+            return _ok(facts=facts, count=len(facts))
         except Exception as exc:  # noqa: BLE001
             return _err(f"could not query facts: {type(exc).__name__}: {exc}")
 
@@ -1770,22 +1801,31 @@ def build_server(root: str, *, allow_approval: bool = True):
         category: str = "general",
         scope: str = "",
         confidence: float = 0.8,
+        evidence: list[dict[str, object]] | None = None,
+        min_support: int = 1,
     ) -> dict:
         """Record an atomic fact discovered during execution or reinforce an existing fact.
 
-        If a matching fact exists, performs a NOOP reinforcement to bump confirmation
-        counts and confidence. Otherwise inserts a new atomic fact with full lifecycle tracking.
+        Bound evidence names current fact/lesson sources by kind and source_id, optionally
+        their expected SHA256 revision and support/refute polarity. Bound receipts are
+        idempotent; distinct source counts never turn into a probability of truth.
+        Legacy unbound calls retain reinforcement behavior.
         Facts represent atomic propositions of truth (e.g. constraints, patterns, preferences).
         """
         refusal = _unsafe_write("fact", {"statement": statement})
         if refusal is not None:
             return refusal
         try:
+            from commontrace.fact_evidence import EvidenceResolver, parse_evidence
+
             scopes = [scope] if scope else None
             fact, action = hierarchical.add_fact(
                 root, statement=statement, category=category, scopes=scopes, confidence=confidence,
+                evidence=parse_evidence(root, evidence) if evidence is not None else None,
+                min_support=min_support,
             )
-            return _ok(fact=fact.to_dict(), action=action)
+            resolver = EvidenceResolver(root, hierarchical.load_facts(root))
+            return _ok(fact=fact.to_dict(), action=action, evidence_assessment=resolver.assess(fact.id).to_dict())
         except Exception as exc:  # noqa: BLE001
             return _err(f"could not record fact: {type(exc).__name__}: {exc}")
 

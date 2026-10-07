@@ -32,6 +32,7 @@ UNIT_CHARS = 700
 SCHEMA_VERSION = 3
 TURN_CACHE_SIZE = 2048
 TURN_CACHE_BYTES = 16 * 1024 * 1024
+UNIT_JOURNAL_LIMIT = 100_000
 FACT_KINDS = ("instruction", "preference", "dislike", "favorite", "identity", "habit", "plan", "possession",
               "event", "fact", "relationship")
 
@@ -216,6 +217,20 @@ class Turn:
         return hashlib.sha256(json.dumps(evidence, ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
+@dataclass(frozen=True)
+class UnitChange:
+    """One revision cursor with its unit's state in the current read snapshot.
+
+    A missing body is a tombstone. Recycled unit IDs and repeated updates are
+    resolved against the target canonical snapshot, never an old event body.
+    """
+
+    revision: int
+    unit: int
+    body: str | None
+    checksum: str | None
+
+
 def _iso(moment: dt.datetime | None) -> str | None:
     return moment.isoformat(timespec="minutes") if moment else None
 
@@ -345,6 +360,7 @@ class Store:
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA foreign_keys=ON")
         self._migrate()
+        self._init_unit_journal()
         self._inspect_schema()
 
     def _inspect_schema(self) -> None:
@@ -353,6 +369,42 @@ class Store:
             "SELECT 1 FROM sqlite_master WHERE name='fact_sources'").fetchone())
         self._has_expiry = "expires" in {r[1] for r in self.db.execute("PRAGMA table_info(turns)")}
         self._units_identity = self.get_meta("units_identity")
+        self._has_unit_journal = self.get_meta("unit_journal") == "1"
+
+    def _init_unit_journal(self) -> None:
+        """Add a bounded durable change cursor without rewriting source units."""
+        if self.get_meta("unit_journal") == "1":
+            return
+        with self._lock, write_txn(self.db):
+            if self.get_meta("unit_journal") == "1":
+                return
+            self.db.execute("CREATE TABLE IF NOT EXISTS unit_changes "
+                            "(revision INTEGER PRIMARY KEY, unit INTEGER NOT NULL)")
+            revision = self.get_meta("units_revision") or "0"
+            self.db.execute("INSERT OR REPLACE INTO meta VALUES ('unit_journal_floor', ?)", (revision,))
+            for operation in ("INSERT", "UPDATE", "DELETE"):
+                reference = "old" if operation == "DELETE" else "new"
+                moved = (
+                    "UPDATE meta SET value=CAST(value AS INTEGER)+1 "
+                    "WHERE key='units_revision' AND old.id<>new.id; "
+                    "INSERT INTO unit_changes SELECT CAST(value AS INTEGER),old.id "
+                    "FROM meta WHERE key='units_revision' AND old.id<>new.id; "
+                ) if operation == "UPDATE" else ""
+                self.db.execute(f"DROP TRIGGER IF EXISTS units_revision_{operation.lower()}")
+                # Operations/references are fixed, and the retention literal is
+                # an internal integer constant. All source data stays bound.
+                self.db.execute(  # nosec B608
+                    f"CREATE TRIGGER units_revision_{operation.lower()} AFTER {operation} ON units BEGIN "
+                    + moved +
+                    "UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='units_revision'; "  # nosec B608
+                    f"INSERT INTO unit_changes SELECT CAST(value AS INTEGER), {reference}.id "
+                    "FROM meta WHERE key='units_revision'; "
+                    f"DELETE FROM unit_changes WHERE revision<=(SELECT CAST(value AS INTEGER)-{UNIT_JOURNAL_LIMIT} "
+                    "FROM meta WHERE key='units_revision'); "
+                    "UPDATE meta SET value=MAX(CAST(value AS INTEGER),"
+                    f"(SELECT CAST(value AS INTEGER)-{UNIT_JOURNAL_LIMIT} "
+                    "FROM meta WHERE key='units_revision')) WHERE key='unit_journal_floor'; END")
+            self.db.execute("INSERT OR REPLACE INTO meta VALUES ('unit_journal', '1')")
 
     def _migrate(self) -> None:
         """Bring a file written by an older version up to this schema, in place."""
@@ -438,6 +490,27 @@ class Store:
     def unit_stamp(self) -> tuple:
         """Dense index generation, changing only when retrieval units change."""
         return (self.get_meta("units_revision"),) if self._units_identity else self.read_stamp()
+
+    def unit_journal_floor(self) -> int:
+        """Revisions below this cursor require a complete snapshot bootstrap."""
+        return int(self.get_meta("unit_journal_floor") or self.get_meta("units_revision") or 0)
+
+    def unit_changes(self, after_revision: int, through_revision: int, *, limit: int = 512) -> list[UnitChange]:
+        """A bounded keyset page; call inside ``read_snapshot`` for target binding."""
+        if isinstance(after_revision, bool) or not isinstance(after_revision, int) or after_revision < 0 \
+                or isinstance(through_revision, bool) or not isinstance(through_revision, int) \
+                or through_revision < after_revision:
+            raise ValueError("journal cursors must be nonnegative ordered integers")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 10_000:
+            raise ValueError("journal page limit must be an integer from 1 to 10000")
+        if after_revision < self.unit_journal_floor():
+            raise ConversationError("unit change journal has a retention gap; rebuild the vector snapshot")
+        if not self._has_unit_journal:
+            return []
+        return [UnitChange(int(row[0]), int(row[1]), row[2], row[3]) for row in self.db.execute(
+            "SELECT c.revision,c.unit,u.body,u.hash FROM unit_changes c LEFT JOIN units u ON u.id=c.unit "
+            "WHERE c.revision>? AND c.revision<=? ORDER BY c.revision LIMIT ?",
+            (after_revision, through_revision, limit))]
 
     @contextlib.contextmanager
     def read_snapshot(self):

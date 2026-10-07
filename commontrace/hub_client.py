@@ -833,7 +833,19 @@ async def push_active_lessons(
                 hub_trace_id=None,
                 error=f"could not read this file: {type(exc).__name__}: {exc}",
             )
-        from commontrace import memory_guard
+        from commontrace import lesson_admission, memory_guard
+
+        if fm.get("status") != "active":
+            return None
+        # Approval binds the original authoritative document. Redacting before
+        # verification could conceal unreviewed changes from the digest check.
+        admitted = await asyncio.to_thread(lesson_admission.eligible, root, path, fm, body)
+        if not admitted:
+            return PushResult(
+                slug=memory_guard.redact_secrets(os.path.splitext(os.path.basename(path))[0])[0],
+                hub_trace_id=None,
+                error="not pushed: lesson approval is absent, revoked or does not match the current document",
+            )
 
         clean, _ = memory_guard.sanitize_metadata(
             {"fm": fm, "body": body}, pii=memory_guard.privacy_redaction_enabled(),

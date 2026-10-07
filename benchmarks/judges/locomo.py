@@ -1,6 +1,9 @@
-# Reproduces LoCoMo official judge prompt and scoring verbatim.
-# Source: arXiv 2402.17753 and arXiv 2504.19413 (commit fc49c88243ccccc6950495edfc5cd30af4b72107)
-# References: EverOS benchmarks/adapters/locomo.py lines 172-198
+# Backward-compatible downstream binary judge used in Mem0/EverOS comparisons.
+# Dataset: LoCoMo, arXiv 2402.17753. Judge profile: arXiv 2504.19413,
+# EverOS benchmarks/adapters/locomo.py (fc49c88243ccccc6950495edfc5cd30af4b72107).
+# This is not primary LoCoMo scoring: its task_eval/evaluation.py uses stemmed
+# token F1 for categories 1-4 and evaluates adversarial category 5 as abstention.
+# Primary: https://github.com/snap-research/locomo/blob/main/task_eval/evaluation.py
 from __future__ import annotations
 
 import json
@@ -8,6 +11,8 @@ import re
 from typing import Any, Callable
 
 DEFAULT_MODEL = "gpt-4o"
+PROFILE = "locomo-downstream-binary-v1"
+PRIMARY_SCORING_URL = "https://github.com/snap-research/locomo/blob/main/task_eval/evaluation.py"
 
 LOCOMO_CATEGORIES: dict[int, str] = {
     1: "multi-hop",
@@ -49,7 +54,7 @@ Just return the label CORRECT or WRONG in a json format with the key as "label".
 
 
 def is_scorable_category(category: int | str) -> bool:
-    """Return True if category is one of official LoCoMo categories 1-4, excluding category 5."""
+    """Return True for categories included by this downstream binary profile."""
     if isinstance(category, int):
         return category in LOCOMO_CATEGORIES and category not in EXCLUDED_CATEGORIES
     if isinstance(category, str):
@@ -64,7 +69,7 @@ def is_scorable_category(category: int | str) -> bool:
 
 
 def format_user_prompt(question: str, golden_answer: str, generated_answer: str) -> str:
-    """Format the LoCoMo user prompt with question, gold answer, and candidate answer."""
+    """Format the legacy binary user prompt with question, gold and candidate."""
     return JUDGE_USER_PROMPT.format(
         question=question,
         golden_answer=golden_answer,
@@ -150,9 +155,10 @@ def score(response: str) -> float:
 
 
 class LoCoMoJudge:
-    """Official LoCoMo benchmark judge."""
+    """Legacy downstream LoCoMo binary judge; scores and names stay compatible."""
 
     name: str = "locomo"
+    profile: str = PROFILE
     default_model: str = DEFAULT_MODEL
     system_prompt: str = JUDGE_SYSTEM_PROMPT
     user_prompt_template: str = JUDGE_USER_PROMPT

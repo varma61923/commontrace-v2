@@ -489,6 +489,7 @@ def grade_answer(
         "answer_cost_usd": ans_cost,
         "judge_cost_usd": j_cost_total,
         "judge": judge_inst.name,
+        "judge_profile": getattr(judge_inst, "profile", judge_inst.name),
         "judge_model": j_model,
         "answer_model": ans_model,
     }
@@ -654,6 +655,7 @@ def run(args) -> dict:
     n = max(1, len(rows_by_mode[modes[0]][budgets[0]]))
     judge_info = {
         "judge": j_name,
+        "judge_profile": getattr(judge_inst, "profile", j_name),
         "judge_model": j_model,
         "answer_model": ans_model,
     } if args.answer else {}
@@ -711,7 +713,7 @@ def summarize(rows, args, budget, ingest_s, recall_s, full_tokens, mode="memory"
             "completeness": bucket_counts(r.get("completeness_bucket") for r in rs),
         }
         if args.answer:
-            # LoCoMo protocol: category 5 (adversarial) is excluded from overall accuracy
+            # Legacy downstream LoCoMo binary profile excludes category 5.
             if args.dataset == "locomo":
                 scorable = [r for r in rs if is_scorable_category(r.get("type", ""))]
             else:
@@ -852,7 +854,7 @@ def main(argv=None) -> int:
     p.add_argument(
         "--judge-model",
         default=None,
-        help="model used to judge answers (default: official model for the benchmark)",
+        help="model used to judge answers (default: the configured judge profile's model)",
     )
     p.add_argument(
         "--modes",

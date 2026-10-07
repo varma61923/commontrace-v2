@@ -37,6 +37,27 @@ SQL enforce read-only statements, result bounds and progress-handler deadlines.
 
 ## Upgrade and recover
 
+New explicit CLI/MCP lesson approvals bind governed frontmatter and body to a
+signed local admission record. Editing those bytes requires another review;
+operational usage counters and Hub synchronization fields do not invalidate it.
+`commontrace lesson revoke SLUG` withdraws approval durably, including when an
+old active lesson file is restored. Historical recall applies current revocation.
+Set `require_integrity: true` in `memory/approval-policy.yaml` to withhold legacy
+unsigned lessons, then move each lesson to review and approve it through the
+supported workflow. Keep the existing mode and separation-of-duties settings.
+
+The local `.approval-key` and `lesson_admissions.db` under `memory/` are private
+owner-only state. Back them up consistently with reviewed lesson files; moving
+the root changes its bound identity and requires renewed approval. Deployment
+approvers can supply `COMMONTRACE_APPROVAL_KEY_FILE` and
+`COMMONTRACE_APPROVAL_KEY_ID`; retain the previous verification key using
+`COMMONTRACE_APPROVAL_KEY_PREVIOUS_FILE` and
+`COMMONTRACE_APPROVAL_KEY_PREVIOUS_ID` while rotating. Producers must not have
+access to signing keys or write access to the trusted ledger. Receipt verification
+cannot protect against an attacker with the same OS identity/key access or a
+rollback of the entire trusted ledger. A receipt certifies review of content,
+not factual truth or the absence of every possible prompt injection.
+
 Back up raw memory and SQLite databases consistently before upgrading. Writable
 conversation opens apply idempotent migrations; legacy turns stream and fact
 hashes backfill in bounded batches. Belief repair is transactional and temporary

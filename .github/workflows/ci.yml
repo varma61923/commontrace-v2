@@ -36,6 +36,9 @@ jobs:
       - name: Run tests
         run: python -m pytest tests/ e2e_tests/ -q
 
+      - name: Original offline evidence and governed-memory contracts
+        run: python -m benchmarks.memory_contracts
+
   test-dev:
     name: test + lint (dev extra, py${{ matrix.python-version }})
     runs-on: ubuntu-latest
@@ -148,7 +151,9 @@ jobs:
         run: >-
           python -m pytest tests/test_vector_store.py
           tests/test_conversation_vector_backend.py tests/test_async_conversation_store.py
-          tests/test_concurrent_agent_ingestion.py -q
+          tests/test_concurrent_agent_ingestion.py tests/test_postgres_vector_snapshots.py
+          tests/test_sqlite_vector_snapshots.py tests/test_conversation_incremental_vectors.py
+          tests/test_vector_snapshot_processes.py -q
 
   test-hub:
     name: hub tests (py${{ matrix.python-version }})
@@ -268,7 +273,11 @@ jobs:
             commontrace/semantic.py commontrace/vector_store.py \
             commontrace/distill.py commontrace/distillation_worker.py commontrace/draft_quality.py \
             commontrace/failure_signals.py commontrace/memory_blocks.py \
-            commontrace/commands/block_cmd.py commontrace/commands/distill_cmd.py
+            commontrace/commands/block_cmd.py commontrace/commands/distill_cmd.py \
+            commontrace/conversation/coverage.py commontrace/lesson_admission.py \
+            commontrace/fact_evidence.py commontrace/vector_snapshots.py \
+            commontrace/sqlite_vector_snapshots.py commontrace/postgres_vector_snapshots.py \
+            benchmarks/memory_contracts.py
 
       - name: mypy (known findings, informational only)
         continue-on-error: true

@@ -5,6 +5,7 @@ import argparse
 import sys
 
 from commontrace import hierarchical, paths
+from commontrace.fact_evidence import EvidenceKind, EvidencePolarity, FactEvidence, bind_evidence
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -39,6 +40,12 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p_add.add_argument("--valid-until", default=None, help="End date (YYYY-MM-DD or ISO 8601).")
     p_add.add_argument("--expires-at", default=None, help="TTL expiry instant (YYYY-MM-DD or ISO 8601).")
     p_add.add_argument("--source-trace", default="", help="Trace ID where this was observed.")
+    p_add.add_argument("--evidence", action="append", default=[], metavar="KIND:ID",
+                       help="Bind supporting fact:ID or lesson:SLUG evidence (repeatable).")
+    p_add.add_argument("--refuting-evidence", action="append", default=[], metavar="KIND:ID",
+                       help="Bind refuting evidence; unresolved conflicts are withheld from recall.")
+    p_add.add_argument("--min-support", type=int, default=1,
+                       help="Required distinct supporting sources for bound facts (default 1).")
     p_add.add_argument("--dest", default=None)
     p_add.set_defaults(func=run_add)
 
@@ -116,6 +123,19 @@ def run_list(args: argparse.Namespace) -> int:
 def run_add(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
     try:
+        receipts: list[FactEvidence] | None = None
+        if args.evidence or args.refuting_evidence:
+            receipts = []
+            polarized: tuple[tuple[list[str], EvidencePolarity], ...] = (
+                (args.evidence, "support"), (args.refuting_evidence, "refute"),
+            )
+            for values, polarity in polarized:
+                for value in values:
+                    kind, _, identity = value.partition(":")
+                    if kind not in ("fact", "lesson") or not identity:
+                        raise ValueError("evidence must name fact:ID or lesson:SLUG")
+                    source_kind: EvidenceKind = "fact" if kind == "fact" else "lesson"
+                    receipts.append(bind_evidence(root, source_kind, identity, polarity=polarity))
         fact, action = hierarchical.add_fact(
             root=root,
             statement=args.statement,
@@ -126,13 +146,21 @@ def run_add(args: argparse.Namespace) -> int:
             expires_at=args.expires_at,
             confidence=args.confidence,
             source_trace_id=args.source_trace,
+            evidence=receipts,
+            min_support=args.min_support,
         )
     except Exception as exc:
         print(f"[commontrace] {exc}", file=sys.stderr)
         return 1
 
     if action == "NOOP":
-        print(f"Reinforced existing fact '{fact.id}' (confirmations: {fact.confirmations}, conf: {fact.confidence}).")
+        if fact.evidence_bound:
+            verb = "Retained source-bound fact (NOOP)"
+        elif args.source_trace:
+            verb = "Existing fact (NOOP)"
+        else:
+            verb = "Reinforced existing fact"
+        print(f"{verb} '{fact.id}' (confirmations: {fact.confirmations}, conf: {fact.confidence}).")
     else:
         print(f"Added fact '{fact.id}' (category: {fact.category}, conf: {fact.confidence}).")
     return 0

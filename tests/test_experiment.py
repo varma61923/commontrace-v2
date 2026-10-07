@@ -524,8 +524,17 @@ class TestSemanticPathRunsTheExperiment:
     )
 
     @pytest.fixture
-    def semantic(self, monkeypatch):
+    def semantic(self, monkeypatch, store):
+        from commontrace import frontmatter, paths
         from commontrace.commands import query_cmd
+
+        # The semantic ranking is synthetic; its sources must be real eligible
+        # lessons. Missing/stale index IDs are no longer allowed to bypass review.
+        for slug, importance in (("lesson_alpha", 4), ("lesson_beta", 3), ("lesson_gamma", 2)):
+            frontmatter.write(os.path.join(paths.lessons_dir(str(store)), f"{slug}.md"),
+                              {"name": slug, "status": "active", "description": "refunds",
+                               "agent_type": "code", "importance": importance},
+                              "## Rule\nReview delayed refunds before escalating.\n")
         monkeypatch.setattr(query_cmd, "has_attention_deps", lambda: True)
         monkeypatch.setattr(query_cmd, "_index_is_unusable", lambda root: "")
         monkeypatch.setattr(query_cmd, "_has_candidates", lambda args, root: True)
@@ -593,7 +602,9 @@ class TestSemanticPathRunsTheExperiment:
         main(["init", "--agent-type", "code", "--dest", str(store)])
         capsys.readouterr()
         assert main(["query", "q", "--dest", str(store)]) == 0
-        assert calls == [True] and capsys.readouterr().out == self.SEMANTIC_STDOUT
+        assert calls == [True]
+        # The query header comes from this call, never a cached/script header.
+        assert capsys.readouterr().out == self.SEMANTIC_STDOUT.replace("'refund delayed'", "'q'")
 
     def test_a_lesson_failing_the_injection_screen_is_neither_listed_nor_given_an_arm(self, store, semantic,
                                                                                        capsys):

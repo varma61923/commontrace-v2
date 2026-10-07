@@ -17,10 +17,13 @@ import struct
 import threading
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
 from commontrace.async_workers import STORE_WORKERS
 from commontrace.conversation.store import connect, write_txn
+
+if TYPE_CHECKING:
+    from commontrace.vector_snapshots import SnapshotBackend
 
 MAX_BATCH = 10_000
 MAX_DIMENSION = 2000  # pgvector HNSW's vector type limit
@@ -32,6 +35,7 @@ class VectorRecord:
     key: str
     vector: Sequence[float]
     generation: str = ""
+    checksum: str = ""
 
 
 @dataclass(frozen=True)
@@ -58,6 +62,32 @@ class VectorIndex(Protocol):
     async def search(self, vector: Sequence[float], *, top_k: int = 10,
                      generation: str | None = None, allowed_ids: Sequence[str] | None = None) -> list[VectorHit]: ...
     async def close(self) -> None: ...
+
+
+async def _published_search(snapshots: SnapshotBackend, vector: Sequence[float], *, top_k: int,
+                            generation: str | None, allowed_ids: Sequence[str] | None) -> list[VectorHit] | None:
+    """Read published MVCC data when present; preserve independent legacy CRUD."""
+    from commontrace.vector_snapshots import SnapshotConflict
+
+    head = await snapshots.head()
+    wanted = generation if generation is not None else head.generation
+    if wanted is None:
+        return None
+    for _attempt in range(3):
+        try:
+            read = await snapshots.pin(wanted)
+        except SnapshotConflict:
+            if generation is not None:
+                return None  # This can be a legacy upsert generation.
+            head = await snapshots.head()
+            assert head.generation is not None
+            wanted = head.generation
+            continue
+        try:
+            return await snapshots.search(read, vector, top_k=top_k, allowed_ids=allowed_ids)
+        finally:
+            await asyncio.shield(snapshots.release(read))
+    raise SnapshotConflict("published snapshot changed repeatedly; retry search")
 
 
 def _label(value: str, name: str) -> str:
@@ -165,6 +195,21 @@ class SQLiteVectorIndex(_Scoped):
         self._activity = threading.Condition()
         self._closing = False
         self._pending = 0
+        from commontrace.sqlite_vector_snapshots import SQLiteSnapshots
+
+        self._snapshots: SnapshotBackend = SQLiteSnapshots(db, self._scope.sql(), self._snapshot_run)
+
+    @property
+    def snapshots(self) -> SnapshotBackend:
+        """Optional durable incremental indexing, independently of legacy CRUD."""
+        return self._snapshots
+
+    async def _snapshot_run(self, function: Callable[[], T]) -> T:
+        def execute() -> T:
+            with self._lock:
+                self._check()
+                return function()
+        return await self._run(execute)
 
     @classmethod
     async def open(cls, path: str, *, tenant: str, namespace: str, model: str,
@@ -194,7 +239,7 @@ class SQLiteVectorIndex(_Scoped):
 
         task = asyncio.create_task(STORE_WORKERS.run(opening))
         try:
-            return await asyncio.shield(task)
+            index = await asyncio.shield(task)
         except asyncio.CancelledError:
             def dispose(future: asyncio.Task[SQLiteVectorIndex]) -> None:
                 if not future.cancelled() and future.exception() is None:
@@ -203,6 +248,12 @@ class SQLiteVectorIndex(_Scoped):
                     index._db.close()
             task.add_done_callback(dispose)
             raise
+        try:
+            await index.snapshots.initialize()
+        except BaseException:
+            await index.close()
+            raise
+        return index
 
     def _check(self) -> None:
         if self._closed:
@@ -298,6 +349,10 @@ class SQLiteVectorIndex(_Scoped):
 
     async def search(self, vector: Sequence[float], *, top_k: int = 10,
                      generation: str | None = None, allowed_ids: Sequence[str] | None = None) -> list[VectorHit]:
+        published = await _published_search(self.snapshots, vector, top_k=top_k,
+                                            generation=generation, allowed_ids=allowed_ids)
+        if published is not None:
+            return published
         def execute() -> list[VectorHit]:
             import heapq
             import json
@@ -368,6 +423,14 @@ class PostgresVectorIndex(_Scoped):
     def __init__(self, pool: Any, scope: _Scope, *, approximate: bool) -> None:
         super().__init__(scope)
         self._pool, self._approximate = pool, approximate
+        from commontrace.postgres_vector_snapshots import PostgresSnapshots
+
+        self._snapshots: SnapshotBackend = PostgresSnapshots(pool, scope.sql(), approximate=approximate)
+
+    @property
+    def snapshots(self) -> SnapshotBackend:
+        """Durable revision-fenced vector materializations and pinned readers."""
+        return self._snapshots
 
     @classmethod
     async def open(cls, dsn: str, *, tenant: str, namespace: str, model: str,
@@ -419,7 +482,13 @@ class PostgresVectorIndex(_Scoped):
         except BaseException:
             await pool.close()
             raise
-        return cls(pool, scope, approximate=approximate)
+        index = cls(pool, scope, approximate=approximate)
+        try:
+            await index.snapshots.initialize()
+        except BaseException:
+            await pool.close()
+            raise
+        return index
 
     async def bind_source(self, identity: str) -> None:
         """Atomically bind a shared namespace to one canonical source identity."""
@@ -453,6 +522,10 @@ class PostgresVectorIndex(_Scoped):
 
     async def search(self, vector: Sequence[float], *, top_k: int = 10,
                      generation: str | None = None, allowed_ids: Sequence[str] | None = None) -> list[VectorHit]:
+        published = await _published_search(self.snapshots, vector, top_k=top_k,
+                                            generation=generation, allowed_ids=allowed_ids)
+        if published is not None:
+            return published
         _limit(top_k)
         query = _vector(vector, self.dimension)
         ids = _keys(allowed_ids) if allowed_ids is not None else None

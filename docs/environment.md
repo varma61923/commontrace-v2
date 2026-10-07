@@ -9,6 +9,11 @@ Dynamic provider prefixes and test-only variables are described in the relevant 
 | Name | First source reference |
 | --- | --- |
 | `COMMONTRACE_ALLOW_STORE_SCRIPTS` | [commontrace/commands/_shellout.py:25](../commontrace/commands/_shellout.py#L25) |
+| `COMMONTRACE_APPROVAL_KEY` | [commontrace/lesson_admission.py:134](../commontrace/lesson_admission.py#L134) |
+| `COMMONTRACE_APPROVAL_KEY_FILE` | [commontrace/lesson_admission.py:9](../commontrace/lesson_admission.py#L9) |
+| `COMMONTRACE_APPROVAL_KEY_ID` | [commontrace/lesson_admission.py:136](../commontrace/lesson_admission.py#L136) |
+| `COMMONTRACE_APPROVAL_KEY_PREVIOUS` | [commontrace/lesson_admission.py:135](../commontrace/lesson_admission.py#L135) |
+| `COMMONTRACE_APPROVAL_KEY_PREVIOUS_ID` | [commontrace/lesson_admission.py:137](../commontrace/lesson_admission.py#L137) |
 | `COMMONTRACE_COMMONS_REQUIRE_SIGNED` | [commontrace/commons_integrity.py:96](../commontrace/commons_integrity.py#L96) |
 | `COMMONTRACE_COMMONS_VERIFY_KEY` | [commontrace/commons_integrity.py:90](../commontrace/commons_integrity.py#L90) |
 | `COMMONTRACE_COMMONS_VERIFY_KEY_ID` | [commontrace/commons_integrity.py:94](../commontrace/commons_integrity.py#L94) |
@@ -35,7 +40,7 @@ Dynamic provider prefixes and test-only variables are described in the relevant 
 | `COMMONTRACE_LLM_REGION` | [commontrace/llm.py:102](../commontrace/llm.py#L102) |
 | `COMMONTRACE_LOG_FORMAT` | [commontrace/cli.py:189](../commontrace/cli.py#L189) |
 | `COMMONTRACE_LOG_LEVEL` | [commontrace/cli.py:189](../commontrace/cli.py#L189) |
-| `COMMONTRACE_MCP_WARM` | [commontrace/mcp_server.py:2536](../commontrace/mcp_server.py#L2536) |
+| `COMMONTRACE_MCP_WARM` | [commontrace/mcp_server.py:2576](../commontrace/mcp_server.py#L2576) |
 | `COMMONTRACE_OTEL` | [commontrace/cli.py:190](../commontrace/cli.py#L190) |
 | `COMMONTRACE_QUERY_CACHE` | [commontrace/retrieval.py:395](../commontrace/retrieval.py#L395) |
 | `COMMONTRACE_REDACT_PII` | [commontrace/memory_guard.py:180](../commontrace/memory_guard.py#L180) |

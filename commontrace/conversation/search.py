@@ -192,31 +192,12 @@ _ATTRIBUTE_WORDS = frozenset(
 
 
 def confidence(store: Store, question: str, turn_ids: list[int]) -> float:
-    """How much of the question the best recalled turns cover (0..1): a low value means
-    memory probably does not hold the answer, so the answerer should say so."""
-    asked = {w for w in re.findall(r"[a-z0-9]+", question.lower()) if len(w) > 2 and w not in profile.STOPWORDS
-             and w not in _QUESTION_WORDS}
-    if not asked or not turn_ids:
-        return 0.0
+    """Lexical evidence coverage (0..1), never an answer probability."""
+    from commontrace.conversation.coverage import assess
+
     turns = store.turns(turn_ids)
-    if not turns:
-        return 0.0
-
-    salient = asked - _ATTRIBUTE_WORDS
-    if salient:
-        all_text = " ".join(f"{t.speaker} {t.annotated()} {t.at or ''}".lower() for t in turns.values())
-        salient_found = any(w in all_text or (len(w) >= 4 and w[:4] in all_text) for w in salient)
-        if not salient_found:
-            return 0.0
-
-    best = 0.0
-    for t in turns.values():
-        turn_str = f"{t.speaker} {t.annotated()} {t.at or ''}".lower()
-        have = set(re.findall(r"[a-z0-9]+", turn_str))
-        stems = {w[:5] for w in have}
-        hit = sum(1 for w in asked if w in have or w[:5] in stems)
-        best = max(best, hit / len(asked))
-    return round(best, 3)
+    return assess(question, [turn.annotated() for turn in turns.values()],
+                  labels=[turn.speaker for turn in turns.values()]).confidence
 
 
 def is_broad(question: str) -> bool:
@@ -710,8 +691,14 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
         chosen = set(used)
         explain["selected_graph_paths"] = [p for p in explain["graph_paths"]
                                            if p["source"] in chosen and p["turn"] in chosen]
-    conf = confidence(store, question, used[:5]) if context else 0.0
+    from commontrace.conversation.coverage import assess
+
+    coverage_turns = store.turns(used[:5]) if context else {}
+    coverage = assess(question, [turn.annotated() for turn in coverage_turns.values()],
+                      labels=[turn.speaker for turn in coverage_turns.values()])
+    conf = coverage.confidence
     explain["confidence"] = conf
+    explain["coverage"] = coverage.as_dict()
     if conf == 0.0:
         explain["abstain"] = True
     if withheld:

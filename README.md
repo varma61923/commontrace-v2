@@ -992,21 +992,44 @@ and dimension mismatches, bind owner values as SQL parameters, and pin each scop
 to one canonical database path and identity. Choosing a tenant is application
 configuration, not authentication; authenticate before selecting it.
 
-A source revision invalidates prefetched results. The current cold preparation
-re-upserts the corpus in bounded batches after a unit revision changes, so it is
-not an optimized incremental enterprise ingestion path. Keep one active builder
-per vector scope. Moving/copying the canonical database requires a new vector
-scope. Canonical deletion immediately prevents that source from being injected;
-external vector retention requires separate maintenance. After quiescing **all**
-readers/builders of the scoped index, an owner can call
-`await index.prune(memory.vector_generation)` for the last prepared generation.
-Pruning is never automatic and does not provide distributed generation fencing.
+A source revision invalidates prefetched results. Built-in engines expose
+`index.snapshots`: a persistent head, private staged deltas, leased builders and
+atomic compare-and-swap publication. A bounded canonical change journal supplies
+changed/deleted unit IDs; its retention gaps trigger a full bootstrap. Unchanged
+content reuses model-bound cached embeddings. Concurrent builders can stage
+independently; one publication wins for a given base revision. Readers pin
+immutable revision intervals, and expired or forged leases cannot publish.
+Custom engines without the optional snapshot capability retain bounded legacy
+preparation and search. Moving/copying the canonical database requires a new
+vector scope.
+
+Canonical deletion immediately prevents a source from being injected. External
+physical erasure follows publication of its deletion and reclamation after
+reader/build leases end; it is not immediate. Recall runs bounded snapshot
+collection. Operators can repeatedly call
+`await index.snapshots.collect_garbage(limit=1000)` for further reclamation after
+preparing the current source revision. Legacy CRUD vectors remain in separate
+tables and require their existing scoped `index.delete`/`index.prune` maintenance;
+snapshot collection does not remove those legacy records. Exact SQLite search
+still scans its eligible vectors; incremental publication is not an ANN latency
+claim. Evaluate PostgreSQL HNSW recall and latency on your own workload.
 
 **Atomic facts** (`commontrace fact`, MCP `record_fact` / `query_facts`):
 single statements with a confidence, optional scopes and a validity window.
 Restating a fact reinforces it; `supersede` closes the old one and links the
 replacement; `delete` ends its validity; `forget` hides it reversibly.
 `--as-of` answers what was true at a moment.
+
+Derived facts can bind revision-specific supporting or refuting sources with
+`--evidence fact:ID`, `--evidence lesson:SLUG`, `--refuting-evidence KIND:ID`,
+and `--min-support N`. The same source replay does not increase corroboration.
+Bound facts require current source revisions and enough distinct supporting
+identities; unresolved refutation, missing sources, corrections or revocation
+withhold them from retrieval. Dependencies are checked with bounded depth and
+cycle detection. Structured recall includes source receipts in `provenance`.
+Receipts establish attribution and currency; they do not prove logical entailment
+or that two source identities represent independent experiments. Unbound legacy
+facts retain their existing API and retrieval behavior.
 
 ```bash
 commontrace fact add "Stripe idempotency keys expire after 24 hours" --category constraint --scope payments
@@ -1478,27 +1501,27 @@ python benchmarks/conversation_bench.py --dataset locomo --data locomo10.json --
 python benchmarks/conversation_bench.py --dataset longmemeval --data longmemeval_s.json --limit 60
 ```
 
-### Official Benchmark Judges & Answer Accuracy
+### Benchmark Judges & Answer Accuracy
 
-CommonTrace measures end-to-end answer accuracy using the official evaluation protocols and judge rubrics published by each benchmark:
+CommonTrace separates evidence retrieval from end-to-end answer evaluation. Judge profiles are recorded in evaluation output so scores can be compared using the same scoring procedure:
 
-- **LoCoMo** (`--judge locomo`): LLM-as-judge protocol scoring categories 1–4 (multi-hop, temporal, open-domain, single-hop) with generous date and topic matching, excluding adversarial category 5.
+- **LoCoMo** (`--judge locomo`): The downstream binary LLM judge profile `locomo-downstream-binary-v1`, retained for compatibility with earlier CommonTrace and Mem0-style runs, scores categories 1–4 and excludes category 5. This differs from the [primary LoCoMo evaluator](https://github.com/snap-research/locomo/blob/main/task_eval/evaluation.py), which uses task-specific token F1 and abstention checks; the scores are not interchangeable.
 - **LongMemEval** (`--judge longmemeval`): Verbatim per-task judge templates (`single-session-user`, `single-session-assistant`, `multi-session`, `temporal-reasoning` with off-by-one day leniency, `knowledge-update`, `single-session-preference` with rubric) and dedicated abstention verification.
 - **BEAM** (`--judge beam`): Unified evaluation prompt with 3-level rubric scoring (1.0, 0.5, 0.0), pure-Python Kendall's tau-b rank correlation combined with F1 for event ordering, and abstention compliance across all 10 abilities.
-- **Separated Models**: Independent `--answer-model` (generates the answer from recalled context) and `--judge-model` (grades using the official protocol, defaulting to each benchmark's official model).
+- **Separated Models**: Independent `--answer-model` (generates the answer from recalled context) and `--judge-model` (grades using the selected profile).
 - **Reference Modes (`--modes memory,full-context,no-memory`)**: Evaluates memory lift by comparing recalled context against full raw conversation history and zero memory.
 - **Resumable Disk Cache & Budget Guard**: SQLite disk cache keyed by `(model, prompt_hash)` with interruption resumption; `--max-cost` enforces pre-flight cost limits before model calls.
 - **Statistical Significance & Bootstrap CIs (`--bootstrap`, `--compare`)**: Non-parametric paired bootstrap 95% confidence intervals (B=1,000 resamples) across all recall and judge metrics, with automatic difference CIs and p-values against baseline runs.
 - **Whole-History Episodic Chaining & Interleaving**: `Store.timeline()` builds an episodic chain of conversation sessions with turn bounds. Round-robin session interleaving across candidates prevents single-session budget starvation and ensures multi-session breadth.
 
-#### Official Answer Accuracy Protocol Reference
+#### Answer Evaluation Profile Reference
 
-| Benchmark | Questions | Official Judge Protocol | Judge Default Model | Target Accuracy (Competitor SOTA) |
+| Benchmark | Questions | Evaluation Profile | Judge Model | Comparison Requirement |
 | --- | --: | --- | --- | --- |
-| LoCoMo | 1,540 | LLM-as-judge protocol (categories 1–4 scored, 5 excluded) | Official default | 92.5% – 93.6% |
-| LongMemEval | 120 / 500 | Per-type prompt templates + abstention check | Official default | 94.4% – 95.6% |
-| BEAM 100K | 400 | 3-level rubric (1.0/0.5/0.0) + Kendall tau-b & F1 event ordering | Official default | 64.1% – 73.9% |
-| DolphinBench | 600 | Task request execution from narrative anchor facts | Official default | SOTA reference |
+| LoCoMo | 1,540 | Downstream binary judge (categories 1–4 scored, 5 excluded) | Configured model | Same profile, category mask, reader and dataset |
+| LongMemEval | 120 / 500 | Per-type prompt templates + abstention check | Official default | Same split, prompts, reader and context budget |
+| BEAM 100K | 400 | 3-level rubric (1.0/0.5/0.0) + Kendall tau-b & F1 event ordering | Official default | Same history length, abilities and judge |
+| DolphinBench | 600 | Task request execution from narrative anchor facts | Official default | Same execution environment and scoring |
 
 #### Measured Evidence Recall Scoreboard (Keyword-Only, Zero Regressions)
 
@@ -2840,6 +2863,29 @@ commontrace-v2/
 - Disk: ~500 MB for the HuggingFace model cache (one-time download)
 
 ## Contributor and operational references
+
+Research-informed memory contracts now have an offline regression gate:
+`python -m benchmarks.memory_contracts`. Its original fixtures exercise actual
+persistence, reopening, updates, deletion, approval, replay and abstention;
+results go to stdout. Evidence coverage, attribution and leakage are measured
+separately from answer accuracy. Familiar entities cannot satisfy an unrecorded
+identifier; uncertain evidence remains available for a deeper reader.
+
+The design draws on the evidence/inference separation in
+[Hindsight](https://arxiv.org/abs/2512.12818), temporal knowledge updates in
+[Zep](https://arxiv.org/abs/2501.13956), and abstention in
+[LongMemEval](https://arxiv.org/abs/2410.10813). The consolidation failure study
+[Useful Memories Become Faulty](https://arxiv.org/abs/2605.12978) motivates keeping
+raw episodes and checking derived sources rather than treating repeated rewrites
+as guaranteed learning. [AgentPoison](https://arxiv.org/abs/2407.12784) and
+[MemoryGraft](https://arxiv.org/abs/2512.16962) motivate content-bound approval in
+addition to heuristic injection screening. These are design references, not
+claims that CommonTrace reproduces their experiments or scores.
+
+Incremental indexing and scoped memory have existing published prior art,
+including [US11055286B2](https://patents.google.com/patent/US11055286B2/en) and
+[US12517919B2](https://patents.google.com/patent/US12517919B2/en). The implementation
+does not establish patent novelty or freedom to operate.
 
 [Development and testing](CONTRIBUTING.md) · [Architecture](docs/architecture.md) ·
 [MCP and gateway APIs](docs/api.md) · [Environment reference](docs/environment.md) ·

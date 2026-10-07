@@ -30,6 +30,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from commontrace import _jsonl, frontmatter, hierarchical, paths
+from commontrace.fact_evidence import EvidenceResolver, claim_revision, scope_allows
 
 TRENDS = ("stable", "strengthening", "weakening", "new", "stale")
 BOOST_CAP = 0.3
@@ -74,6 +75,7 @@ class Observation:
     updated_at: str = ""
     scopes: list[str] = field(default_factory=list)
     source_fact_ids: list[str] = field(default_factory=list)
+    source_revisions: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -92,6 +94,11 @@ class Observation:
             clean[name] = sorted({str(value).strip() for value in values if str(value).strip()})
         if clean.get("trend") not in TRENDS:
             clean["trend"] = "new"
+        revisions = clean.get("source_revisions", {})
+        if not isinstance(revisions, dict) or not all(isinstance(k, str) and isinstance(v, str)
+                                                     for k, v in revisions.items()):
+            raise TypeError("observation source_revisions must map identifiers to digests")
+        clean["source_revisions"] = revisions
         return cls(**clean)
 
 
@@ -100,8 +107,10 @@ def _observations_file(root: str) -> str:
 
 
 def load_observations(root: str, *, scope: str | None = None) -> dict[str, Observation]:
-    """Every observation on disk, keyed by id; unreadable rows are skipped."""
+    """Eligible observations; bound proof is checked again without a resweep."""
     out: dict[str, Observation] = {}
+    facts = None
+    resolver = None
     for row in _jsonl.read_rows(_observations_file(root)):
         try:
             observation = Observation.from_dict(row)
@@ -109,9 +118,48 @@ def load_observations(root: str, *, scope: str | None = None) -> dict[str, Obser
             continue
         if scope is not None and observation.scopes and scope not in observation.scopes:
             continue
+        if observation.source_revisions:
+            if facts is None:
+                facts = hierarchical.load_facts(root)
+                resolver = EvidenceResolver(root, facts)
+            assert resolver is not None
+            valid = True
+            for source_id, revision in observation.source_revisions.items():
+                fact = facts.get(source_id)
+                if fact is None or fact.status != "active" or fact.forgotten or claim_revision(fact) != revision \
+                        or fact.statement != observation.statement \
+                        or not scope_allows(observation.scopes, fact.scopes) \
+                        or not resolver._fact_live(fact) or not resolver.assess(source_id).eligible:
+                    valid = False
+                    break
+                expected = _bound_evidence(resolver, fact)
+                if expected is None or observation.evidence != expected \
+                        or observation.proof_count != resolver.assess(source_id).supports:
+                    valid = False
+                    break
+            if not valid:
+                continue
         if observation.id:
             out[observation.id] = observation
     return out
+
+
+def _bound_evidence(resolver: EvidenceResolver, fact: hierarchical.AtomicFact) -> list[dict[str, Any]] | None:
+    """Assemble verified source quotes, withholding a partial proof snapshot."""
+    evidence: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for receipt in fact.evidence:
+        key = receipt.kind, receipt.source_id
+        source = resolver.source(receipt)
+        if receipt.polarity != "support" or key in seen or source is None or source[0] != receipt.revision:
+            continue
+        quote = resolver.source_quote(receipt)
+        if quote is None:
+            return None
+        seen.add(key)
+        evidence.append({"quote": quote, "source_id": receipt.source_id, "kind": receipt.kind,
+                         "revision": receipt.revision, "at": receipt.recorded_at})
+    return evidence if len(evidence) == resolver.assess(fact.id).supports else None
 
 
 def save_observations(root: str, observations: dict[str, Observation]) -> None:
@@ -180,6 +228,7 @@ def consolidate_facts(root: str, now: str | None = None) -> list[Observation]:
     now_dt = _parse(now) or datetime.now(timezone.utc)
     now_iso = now_dt.isoformat()
     facts = hierarchical.load_facts(root)
+    resolver = EvidenceResolver(root, facts, as_of=now_iso)
     trace_dates = _trace_dates(root)
     existing = load_observations(root)
     out: dict[str, Observation] = {}
@@ -188,8 +237,18 @@ def consolidate_facts(root: str, now: str | None = None) -> list[Observation]:
         if fact.status != "active" or fact.forgotten or fact.confirmations < 2 \
                 or not hierarchical._valid_at(fact, now_dt) or hierarchical._is_expired(fact, now_dt):
             continue
+        assessment = resolver.assess(fact.id)
+        if fact.evidence_bound and not assessment.eligible:
+            continue
         evidence: list[dict[str, Any]] = []
+        if fact.evidence_bound:
+            verified = _bound_evidence(resolver, fact)
+            if verified is None or len(verified) < 2:
+                continue
+            evidence = verified
         for trace_id in sorted({str(t) for t in fact.source_traces if str(t).strip()}):
+            if fact.evidence_bound:
+                break
             evidence.append({
                 "quote": fact.statement,
                 "source_id": trace_id,
@@ -204,12 +263,13 @@ def consolidate_facts(root: str, now: str | None = None) -> list[Observation]:
             id=observation_id,
             statement=fact.statement,
             evidence=evidence,
-            proof_count=fact.confirmations,
+            proof_count=assessment.supports if fact.evidence_bound else fact.confirmations,
             trend=trend,
             created_at=previous.created_at if previous is not None else now_iso,
             updated_at=now_iso,
             scopes=list(fact.scopes),
             source_fact_ids=[fact.id],
+            source_revisions={fact.id: claim_revision(fact)} if fact.evidence_bound else {},
         )
     save_observations(root, out)
     return [out[key] for key in sorted(out)]

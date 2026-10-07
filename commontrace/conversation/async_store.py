@@ -22,9 +22,13 @@ from commontrace.conversation.search import DenseCandidates, Options, Recall, _e
 from commontrace.conversation.store import ConversationError, Store, write_txn
 
 if TYPE_CHECKING:
+    from commontrace.vector_snapshots import BuildLease, ReadLease, SnapshotBackend
     from commontrace.vector_store import VectorIndex
 
-Operation = Literal["add", "recall", "stats", "vector_plan", "vector_batch", "vector_ids"]
+Operation = Literal["add", "recall", "stats", "vector_plan", "vector_batch", "vector_ids",
+                    "vector_delta", "vector_check"]
+VECTOR_HEARTBEAT_SECONDS = 20
+VECTOR_BUILD_TIMEOUT_SECONDS = 900
 
 
 @dataclass
@@ -75,9 +79,9 @@ class AsyncStore:
     def vector_generation(self) -> str | None:
         """Last prepared generation, for explicit owner maintenance.
 
-        External vector retention is separate from canonical trace retention.
-        Call ``index.prune(generation)`` only after quiescing every reader and
-        builder of that scoped index, including other processes/instances.
+        Snapshot-capable engines reclaim superseded versions with bounded GC;
+        leased readers retain their immutable versions until release/expiry.
+        Legacy engines require quiescent owner-controlled ``prune`` maintenance.
         """
         return self._indexed_generation
 
@@ -212,7 +216,8 @@ class AsyncStore:
                                          since=options.since, until=options.until)
             return {"stamp": stamp, "identity": identity, "generation": generation, "queries": queries,
                     "vectors": vectors, "allowed": None if allowed is None else json.dumps(sorted(allowed)),
-                    "choice": encoder.tag}
+                    "choice": encoder.tag, "revision": int(stamp[0]),
+                    "floor": self._store.unit_journal_floor()}
 
     def _vector_ids(self, plan: dict[str, Any], after: int) -> list[str]:
         """Keyset pages bound the filter payload even for very large sessions."""
@@ -232,8 +237,113 @@ class AsyncStore:
             rows = self._store.units(after_id=after, limit=512)
             encoder = _embedder(self._store, plan["choice"])
             assert encoder is not None
-            vectors = encoder.vectors([(row[3], row[2]) for row in rows])
-            return [VectorRecord(str(row[0]), vector, plan["generation"]) for row, vector in zip(rows, vectors)]
+            checksums = [self._vector_checksum(row[3]) for row in rows]
+            vectors = encoder.vectors(list(zip(checksums, (row[2] for row in rows))))
+            return [VectorRecord(str(row[0]), vector, plan["generation"], checksum)
+                    for row, vector, checksum in zip(rows, vectors, checksums)]
+
+    def _vector_checksum(self, checksum: str) -> str:
+        from commontrace.conversation import embed
+
+        assert self._vector_index is not None
+        return hashlib.sha256(json.dumps([self._vector_index.model, self._vector_index.dimension,
+                                          embed.MAX_SEQ, checksum]).encode()).hexdigest()
+
+    def _vector_check(self, plan: dict[str, Any]) -> None:
+        if self._store.unit_stamp() != plan["stamp"]:
+            raise ConversationError("conversation changed while preparing the vector index; retry recall")
+
+    def _vector_delta(self, plan: dict[str, Any], after: int) -> tuple[int, list[Any], list[str]]:
+        from commontrace.vector_store import VectorRecord
+
+        with self._store.read_snapshot():
+            self._vector_check(plan)
+            changes = self._store.unit_changes(after, plan["revision"])
+            if not changes:
+                return plan["revision"], [], []
+            # Repeated journal events resolve to the same current target state.
+            # Coalescing within each page bounds memory and avoids duplicate work.
+            current = {change.unit: change for change in changes}
+            live = [change for change in current.values() if change.body is not None]
+            checksums = [self._vector_checksum(str(change.checksum)) for change in live]
+            encoder = _embedder(self._store, plan["choice"])
+            assert encoder is not None
+            vectors = encoder.vectors([(checksum, str(change.body)) for checksum, change in zip(checksums, live)])
+            records = [VectorRecord(str(change.unit), vector, plan["generation"], checksum)
+                       for change, vector, checksum in zip(live, vectors, checksums)]
+            deleted = [str(change.unit) for change in current.values() if change.body is None]
+            return changes[-1].revision, records, deleted
+
+    async def _prepare_snapshot(self, snapshots: SnapshotBackend, plan: dict[str, Any]) -> ReadLease:
+        """Persist only the delta; publication is fenced by the durable base head."""
+        from commontrace.vector_snapshots import SnapshotConflict
+
+        for _attempt in range(4):
+            head = await snapshots.head()
+            if head.revision == plan["revision"]:
+                if head.generation != plan["generation"]:
+                    raise SnapshotConflict("canonical revision has a different materialization identity")
+                return await snapshots.pin(plan["generation"])
+            if head.revision > plan["revision"]:
+                raise ConversationError("conversation vector plan is stale; retry recall")
+            lease = await snapshots.begin(plan["revision"], plan["generation"],
+                                          full=head.revision < plan["floor"])
+            if lease is None:
+                continue
+            published = False
+            try:
+                if lease.base_revision < plan["floor"] and not lease.full:
+                    continue  # A race moved the head; choose bootstrap on retry.
+                await self._build_snapshot(snapshots, lease, plan)
+                if await snapshots.publish(lease):
+                    published = True
+            finally:
+                # Accepted staging may finish after caller cancellation. Abort is
+                # ordered after it by the engine; crashed builders expire in DB.
+                await asyncio.shield(snapshots.abort(lease))
+            if published:
+                return await snapshots.pin(plan["generation"])
+        raise SnapshotConflict("concurrent publishers changed the materialization; retry recall")
+
+    async def _build_snapshot(self, snapshots: SnapshotBackend, lease: BuildLease, plan: dict[str, Any]) -> None:
+        """Renew while off-loop encoding progresses, with a bounded total build.
+
+        Each batch uses at most 512 source units. A 20-second heartbeat retains
+        the 60-second idle lease through slow inference; a 15-minute total limit
+        stops renewal of stalled builds. Admitted CPU work still drains safely.
+        """
+        async def pulse() -> None:
+            while True:
+                await asyncio.sleep(VECTOR_HEARTBEAT_SECONDS)
+                await snapshots.stage(lease, [])
+
+        async def populate() -> None:
+            if lease.full:
+                after = 0
+                while rows := await self._request("vector_batch", (plan, after), {}):
+                    await snapshots.stage(lease, rows)
+                    after = int(rows[-1].key)
+            else:
+                cursor = lease.base_revision
+                while cursor < plan["revision"]:
+                    cursor, records, deleted = await self._request("vector_delta", (plan, cursor), {})
+                    await snapshots.stage(lease, records, deleted)
+            await self._request("vector_check", (plan,), {})
+
+        heartbeat = self._loop.create_task(pulse(), name="commontrace-vector-build-lease")
+        work = self._loop.create_task(populate(), name="commontrace-vector-build")
+        try:
+            done, _pending = await asyncio.wait((work, heartbeat), timeout=VECTOR_BUILD_TIMEOUT_SECONDS,
+                                               return_when=asyncio.FIRST_COMPLETED)
+            if not done:
+                raise ConversationError("vector snapshot build exceeded its 15-minute budget; retry recall")
+            for task in done:
+                task.result()  # Propagate either completed work or lease failure.
+        finally:
+            for task in (heartbeat, work):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(heartbeat, work, return_exceptions=True)
 
     async def _vector_recall(self, question: str, options: Options) -> Recall:
         index = self._vector_index
@@ -247,30 +357,44 @@ class AsyncStore:
             source = hashlib.sha256(json.dumps([os.path.realpath(self._store.path), str(plan["identity"])])
                                     .encode()).hexdigest()
             await index.bind_source(source)
-            if self._indexed_generation != plan["generation"]:
+            snapshots = cast("SnapshotBackend | None", getattr(index, "snapshots", None))
+            read = await self._prepare_snapshot(snapshots, plan) if snapshots is not None else None
+            if snapshots is None and self._indexed_generation != plan["generation"]:
                 after = 0
                 while rows := await self._request("vector_batch", (plan, after), {}):
                     await index.upsert(rows)
                     after = int(rows[-1].key)
-                self._indexed_generation = plan["generation"]
+            self._indexed_generation = plan["generation"]
             rankings: dict[str, tuple[int, ...]] = {}
             pages: dict[str, list[Any]] = {query: [] for query in plan["queries"]}
             after = 0
-            while True:
-                ids = None if plan["allowed"] is None else await self._request("vector_ids", (plan, after), {})
-                if ids == []:
-                    break
-                for query, vector in zip(plan["queries"], plan["vectors"]):
-                    hits = await index.search(vector, top_k=options.pool, generation=plan["generation"],
-                                              allowed_ids=ids)
-                    pages[query] = sorted(pages[query] + hits, key=lambda hit: (-hit.score, hit.key))[:options.pool]
-                if ids is None:
-                    break
-                after = int(ids[-1])
+            try:
+                while True:
+                    ids = None if plan["allowed"] is None else await self._request("vector_ids", (plan, after), {})
+                    if ids == []:
+                        break
+                    if snapshots is not None and read is not None:
+                        await snapshots.renew(read)
+                    for query, vector in zip(plan["queries"], plan["vectors"]):
+                        if snapshots is not None and read is not None:
+                            hits = await snapshots.search(read, vector, top_k=options.pool, allowed_ids=ids)
+                        else:
+                            hits = await index.search(vector, top_k=options.pool, generation=plan["generation"],
+                                                      allowed_ids=ids)
+                        pages[query] = sorted(pages[query] + hits, key=lambda hit: (-hit.score, hit.key))[:options.pool]
+                    if ids is None:
+                        break
+                    after = int(ids[-1])
+            finally:
+                if snapshots is not None and read is not None:
+                    await asyncio.shield(snapshots.release(read))
+                    await snapshots.collect_garbage(limit=512)
             for query, hits in pages.items():
                 # Never trust provider metadata or text. IDs are rejoined to
                 # canonical units and rechecked against eligibility by recall.
-                rankings[query] = tuple(int(hit.key) for hit in hits if hit.key.isdecimal())
+                rankings[query] = tuple(int(hit.key) for hit in hits
+                                        if hit.key.isascii() and hit.key.isdecimal() and len(hit.key) <= 19
+                                        and 0 < int(hit.key) < 2**63)
             dense = DenseCandidates(plan["identity"], plan["stamp"], index.model, rankings)
             return cast(Recall, await self._request("recall", (question,),
                                                    {"options": options, "dense_candidates": dense}))
@@ -313,6 +437,11 @@ class AsyncStore:
                     value = self._vector_batch(*request.args)
                 elif request.operation == "vector_ids":
                     value = self._vector_ids(*request.args)
+                elif request.operation == "vector_delta":
+                    value = self._vector_delta(*request.args)
+                elif request.operation == "vector_check":
+                    self._vector_check(*request.args)
+                    value = None
                 else:
                     value = self._store.stats()
                 outcomes.append((value, None))

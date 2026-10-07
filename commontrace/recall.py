@@ -8,9 +8,9 @@ the budget: every channel that has something relevant gets a floor share, the re
 goes in fused order, and an item that does not fit is cut at a sentence boundary
 rather than dropped when most of it fits.
 
-`as_of` is applied to every channel at once (a "truth subspace"): lessons, facts,
-graph edges and conversation turns are all read as they stood at that moment, so the
-context never mixes a past state of one store with the present state of another.
+`as_of` selects valid-time evidence across channels. Current lesson revocation,
+forgotten/deleted sources and integrity checks still apply to historical recall;
+time travel never restores trust in revoked content.
 
 Budgets can be set per agent in `memory/budgets.json`:
     {"default": 1500, "agents": {"reviewer": {"budget": 800, "weights": {"lessons": 2}}}}"""
@@ -48,11 +48,15 @@ class Item:
     at: str = ""
     fused: float = 0.0
     truncated: bool = False
+    provenance: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
-        return {"channel": self.channel, "id": self.id, "text": self.text, "score": round(self.score, 4),
+        result = {"channel": self.channel, "id": self.id, "text": self.text, "score": round(self.score, 4),
                 "fused": round(self.fused, 5), "at": self.at, "tokens": tokens(self.text),
                 "truncated": self.truncated}
+        if self.provenance:
+            result["provenance"] = self.provenance
+        return result
 
 
 @dataclass(frozen=True)
@@ -162,9 +166,9 @@ def _lessons(root: str, question: str, as_of: str | None, k: int) -> list[Item]:
             fm, body = frontmatter.read(r.path)
         except Exception:  # noqa: BLE001 - an unreadable lesson is skipped, not fatal
             continue
-        if not lesson_cache.fresh_eligible(r.path, fm, r.slug, as_of=as_of):
+        if not lesson_cache.fresh_eligible(r.path, fm, r.slug, as_of=as_of, root=root, body=body):
             continue
-        text = f"{r.slug}: {r.description}".strip(": ")
+        text = f"{r.slug}: {fm.get('description', '')}".strip(": ")
         rule = _rule(body)
         if rule:
             text += f" Rule: {rule}"
@@ -174,9 +178,27 @@ def _lessons(root: str, question: str, as_of: str | None, k: int) -> list[Item]:
 
 def _facts(root: str, question: str, as_of: str | None, k: int) -> list[Item]:
     from commontrace import hierarchical
+    from commontrace.fact_evidence import EvidenceResolver
 
-    return [Item("facts", f"fact:{f.id}", f.statement, score, f.valid_from or "")
-            for f, score in hierarchical.search_facts(root, question, as_of=as_of, limit=k) if score > 0]
+    ranked = hierarchical.search_facts(root, question, as_of=as_of, limit=k)
+    resolver = EvidenceResolver(root, hierarchical.load_facts(root), as_of=as_of)
+    output = []
+    for fact, score in ranked:
+        if score <= 0:
+            continue
+        provenance = {}
+        if fact.evidence_bound:
+            current = resolver.facts.get(fact.id)
+            # Re-check the fresh snapshot before assembling injection, including
+            # a write or revocation that landed after initial candidate ranking.
+            if current is None or current.revision != fact.revision or not resolver.assess(fact.id).eligible:
+                continue
+            provenance = {"evidence": [receipt.to_dict() for receipt in fact.evidence],
+                          "assessment": resolver.assess(fact.id).to_dict(),
+                          "claim_revision": fact.evidence_revision}
+        output.append(Item("facts", f"fact:{fact.id}", fact.statement, score, fact.valid_from or "",
+                           provenance=provenance))
+    return output
 
 
 def _graph(root: str, question: str, as_of: str | None, k: int) -> list[Item]:
@@ -215,7 +237,7 @@ def _conversations(root: str, question: str, as_of: str | None, budget: int, spa
             result = conversation.recall(store, question, now=as_of, options=opts)
         if result.context.strip():
             out.append(Item("conversations", f"space:{space}", f"[{space}]\n{result.context}",
-                            1.0 / (1 + len(out))))
+                            1.0 / (1 + len(out)), provenance={"coverage": result.explain.get("coverage", {})}))
     return out
 
 
@@ -292,7 +314,8 @@ def pack(items: list[Item], budget: int) -> list[Item]:
             chosen.append(item)
             used += need
         elif room >= max(20, min(int(need * MIN_CUT_FRACTION), budget // 4)):
-            cut = Item(item.channel, item.id, truncate(item.text, room), item.score, item.at, item.fused, True)
+            cut = Item(item.channel, item.id, truncate(item.text, room), item.score, item.at, item.fused, True,
+                       provenance=item.provenance)
             chosen.append(cut)
             used += tokens(cut.text)
         seen.add(item.id)
@@ -314,20 +337,25 @@ def _assess_retrieval(
     items: list[Item],
     errors: dict,
 ) -> RetrievalAssessment:
-    """Compute a calibrated-looking, deterministic evidence coverage signal.
+    """Compute a deterministic evidence coverage signal.
 
     It combines lexical query coverage, strongest channel score, and channel
     diversity. The result is intentionally conservative: it is a retrieval
     gate for abstention/deeper reading, not an answer truth score.
     """
+    from commontrace.conversation.coverage import assess
+
     query_terms = {term for term in _WORDS.findall(question.lower()) if len(term) > 2}
     if not items:
         return RetrievalAssessment(reason="no channel returned relevant evidence", query_terms=len(query_terms))
-    evidence_terms = {term for item in items for term in _WORDS.findall(item.text.lower())}
-    matched = len(query_terms & evidence_terms)
-    coverage = matched / len(query_terms) if query_terms else 0.0
+    evidence = assess(question, [item.text for item in items])
+    matched = evidence.matched_terms
+    coverage = evidence.confidence
     strongest = min(1.0, max(0.0, max((float(item.score) for item in items), default=0.0)))
     channels = tuple(sorted({item.channel for item in items}))
+    if evidence.abstain:
+        return RetrievalAssessment(reason=evidence.reason, channels=channels,
+                                   matched_query_terms=matched, query_terms=evidence.query_terms)
     diversity = min(1.0, len(channels) / 3.0)
     confidence_raw = 0.55 * strongest + 0.30 * coverage + 0.15 * diversity
     confidence = round(min(1.0, confidence_raw * (0.8 if errors else 1.0)), 4)
@@ -345,7 +373,7 @@ def _assess_retrieval(
         reason=reason,
         channels=channels,
         matched_query_terms=matched,
-        query_terms=len(query_terms),
+        query_terms=evidence.query_terms,
     )
 
 

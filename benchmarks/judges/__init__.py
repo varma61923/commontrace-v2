@@ -1,5 +1,5 @@
 # Benchmarks Judges Registry and Dispatcher.
-# Provides official benchmark judges for LongMemEval, LoCoMo, BEAM, and Generic/CommonTrace.
+# Provides benchmark judge profiles; LoCoMo uses a legacy downstream binary profile.
 from __future__ import annotations
 
 from typing import Union
@@ -83,7 +83,7 @@ def get_judge(name: str, model: str | None = None) -> JudgeType:
 
 
 def get_default_judge_for_dataset(dataset: str) -> tuple[str, str]:
-    """Helper to get official default (judge_name, default_model) for a dataset.
+    """Get this harness's default (judge_name, default_model) for a dataset.
 
     Mappings:
       - locomo      -> ('locomo', 'gpt-4o')

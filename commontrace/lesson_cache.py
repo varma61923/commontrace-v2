@@ -103,17 +103,12 @@ def filter_eligible(
     return eligible
 
 
-def fresh_eligible(
+def _fresh_metadata_eligible(
     path: str, fm: dict[str, Any], slug: str, *, scope: str = "",
     as_of: str | datetime.datetime | None = None, agent_type: str | None = None,
     expected_core: bool | None = None, show_expired: bool = False,
 ) -> bool:
-    """Recheck eligibility on the authoritative body read after cached ranking.
-
-    Revoked approval, changed identity, routing, validity and core designation
-    must not be combined with an earlier ranked snapshot. The next query can
-    rerank the changed document; the current query conservatively skips it.
-    """
+    """Routing checks for safe diagnostics; content admission remains mandatory."""
     from commontrace import dosage
 
     return (
@@ -122,6 +117,34 @@ def fresh_eligible(
         and (not agent_type or fm.get("agent_type") == agent_type)
         and (expected_core is None or dosage.is_core(fm) == expected_core)
         and bool(filter_eligible([(path, fm)], scope=scope, as_of=as_of, show_expired=show_expired))
+    )
+
+
+def fresh_eligible(
+    path: str, fm: dict[str, Any], slug: str, *, scope: str = "",
+    as_of: str | datetime.datetime | None = None, agent_type: str | None = None,
+    expected_core: bool | None = None, show_expired: bool = False,
+    body: str | None = None, root: str | None = None,
+) -> bool:
+    """Recheck eligibility on the authoritative body read after cached ranking.
+
+    Revoked approval, changed identity, routing, validity and core designation
+    must not be combined with an earlier ranked snapshot. The next query can
+    rerank the changed document; the current query conservatively skips it.
+    """
+    from commontrace import frontmatter, lesson_admission
+
+    if body is None:
+        try:
+            fm, body = frontmatter.read(path)
+        except (OSError, ValueError, TypeError):
+            return False
+    store_root = root if root is not None else os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(path))))
+
+    return (
+        _fresh_metadata_eligible(path, fm, slug, scope=scope, as_of=as_of,
+                                 agent_type=agent_type, expected_core=expected_core, show_expired=show_expired)
+        and lesson_admission.eligible(store_root, path, fm, body)
     )
 
 
