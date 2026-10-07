@@ -10,7 +10,7 @@
 # 40-package set installs every time rather than whatever the latest
 # compatible transitive versions happen to be on the day of a build.
 #
-# That is not a theoretical gap: `mcp==2.2.0` requires `httpx2` (a distinct
+# That is not a theoretical gap: `mcp==2.3.0` requires `httpx2` (a distinct
 # package from the `httpx` this Hub's own code uses directly in
 # hub/smoke.py / commontrace/hub_client.py -- both are legitimate, official
 # packages from the same original authors, not a typosquat) and
@@ -62,7 +62,7 @@ attrs==26.1.0
 certifi==2026.7.22
 cffi==2.1.1
 click==8.5.0
-cryptography==50.0.1
+cryptography==50.0.2
 greenlet==3.5.6
 h11==0.16.0
 httpcore==1.0.9
@@ -73,9 +73,9 @@ idna==3.20
 jsonschema==4.26.0
 jsonschema-specifications==2025.9.1
 Mako==1.4.3
-MarkupSafe==3.0.3
-mcp==2.2.0
-mcp-types==2.2.0
+MarkupSafe==3.0.4
+mcp==2.3.0
+mcp-types==2.3.0
 numpy==2.2.6
 opentelemetry-api==1.45.0
 pycparser==3.0
@@ -84,7 +84,7 @@ pydantic_core==2.46.5
 PyJWT==2.15.1
 python-multipart==0.0.32
 referencing==0.37.0
-rpds-py==2026.6.3
+rpds-py==2026.9.1
 SQLAlchemy==2.0.54
 sse-starlette==3.5.0
 starlette==1.7.0
