@@ -40,7 +40,7 @@ Dynamic provider prefixes and test-only variables are described in the relevant 
 | `COMMONTRACE_LLM_REGION` | [commontrace/llm.py:102](../commontrace/llm.py#L102) |
 | `COMMONTRACE_LOG_FORMAT` | [commontrace/cli.py:189](../commontrace/cli.py#L189) |
 | `COMMONTRACE_LOG_LEVEL` | [commontrace/cli.py:189](../commontrace/cli.py#L189) |
-| `COMMONTRACE_MCP_WARM` | [commontrace/mcp_server.py:2596](../commontrace/mcp_server.py#L2596) |
+| `COMMONTRACE_MCP_WARM` | [commontrace/mcp_server.py:2609](../commontrace/mcp_server.py#L2609) |
 | `COMMONTRACE_OTEL` | [commontrace/cli.py:190](../commontrace/cli.py#L190) |
 | `COMMONTRACE_QUERY_CACHE` | [commontrace/retrieval.py:395](../commontrace/retrieval.py#L395) |
 | `COMMONTRACE_REDACT_PII` | [commontrace/memory_guard.py:180](../commontrace/memory_guard.py#L180) |

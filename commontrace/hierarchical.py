@@ -840,35 +840,20 @@ def search_facts(
     include_forgotten: bool = False,
     show_expired: bool = False,
     stability: str = "",
+    *,
+    scorer: str = "overlap-v1",
 ) -> list[tuple[AtomicFact, float]]:
-    """Active facts ranked by token overlap with *query*, weighted by confidence.
+    """Fresh governed sparse retrieval; overlap-v1 preserves legacy ranking.
 
-    Expired facts are hidden unless `show_expired` (mem0 semantics).
-    `stability` optionally keeps one tier ("stable"/"dynamic"); "" keeps all,
-    with ranking untouched.
+    Optional bm25-v1 uses scope/time/metadata-filtered corpus statistics and
+    English stemming and Unicode/CJK tokenization. Evidence is revalidated only for candidate results
+    and their dependency ancestry; proof eligibility is never cached.
     """
-    candidates = list_facts(
-        root, status="active", scope=scope, category=category, as_of=as_of,
-        include_forgotten=include_forgotten, show_expired=show_expired, stability=stability,
-    )
-    if not as_of:
-        moment = datetime.now(timezone.utc)
-        candidates = [fact for fact in candidates if _valid_at(fact, moment)]
-    limit = max(0, int(limit))
-    query_tokens = set(_TOKEN_RE.findall(query.lower()))
-    if not candidates or not query_tokens:
-        ranked = sorted(candidates, key=lambda f: (-f.confidence, f.id))
-        return [(c, c.confidence) for c in ranked[:limit]]
-    scored: list[tuple[AtomicFact, float]] = []
-    for fact in candidates:
-        statement_tokens = _fact_tokens(fact)
-        overlap = len(query_tokens & statement_tokens)
-        if not overlap:
-            continue
-        lex_score = overlap / len(query_tokens | statement_tokens)
-        scored.append((fact, round(lex_score * 0.7 + fact.confidence * 0.3, 4)))
-    scored.sort(key=lambda x: (-x[1], x[0].id))
-    return scored[:limit]
+    from commontrace.fact_index import search
+
+    return search(root, query, scope=scope, category=category, as_of=as_of, limit=limit,
+                  include_forgotten=include_forgotten, show_expired=show_expired,
+                  stability=stability, scorer=scorer)
 
 
 @dataclass(frozen=True)

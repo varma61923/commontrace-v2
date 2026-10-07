@@ -55,6 +55,8 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p_srch.add_argument("--scope", default="", help="Filter by scope.")
     p_srch.add_argument("--category", default="", choices=("", *hierarchical.CATEGORIES))
     p_srch.add_argument("--limit", type=int, default=10)
+    p_srch.add_argument("--scorer", default="overlap-v1", choices=("overlap-v1", "bm25-v1"),
+                        help="Fact ranking: compatible overlap or stemmed multilingual BM25.")
     p_srch.add_argument("--as-of", default="", help="Point-in-time date.")
     p_srch.add_argument(
         "--show-expired", action="store_true",
@@ -207,6 +209,7 @@ def run_search(args: argparse.Namespace) -> int:
         as_of=args.as_of or None,
         limit=args.limit,
         show_expired=bool(getattr(args, "show_expired", False)),
+        scorer=getattr(args, "scorer", "overlap-v1"),
     )
     if not scored:
         print(f"No facts found matching '{args.query}'.")

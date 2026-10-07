@@ -25,6 +25,8 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument("--evidence-budget", type=int, default=0,
                    help="Expand cited fact source quotes within this token allowance (default: disabled).")
     p.add_argument("--scope", default="", help="Route lessons/facts to a scope or public memory.")
+    p.add_argument("--fact-scorer", default="overlap-v1", choices=("overlap-v1", "bm25-v1"),
+                   help="Fact ranking: compatible overlap or stemmed multilingual BM25.")
     p.add_argument("--weight", action="append", default=[], metavar="CHANNEL=W", help="Channel weight override.")
     p.add_argument("--json", action="store_true")
     p.add_argument("--dest", default=None)
@@ -46,7 +48,8 @@ def run(args: argparse.Namespace) -> int:
         result = recall.recall(paths.resolve_root(args.dest), args.question, budget=args.budget, agent=args.agent,
                                channels=tuple(args.channel) or recall.CHANNELS, as_of=args.as_of,
                                weights=weights or None, spaces=args.space, embedder=args.embedder,
-                               evidence_budget=args.evidence_budget, scope=args.scope)
+                               evidence_budget=args.evidence_budget, scope=args.scope,
+                               fact_scorer=getattr(args, "fact_scorer", "overlap-v1"))
     except ValueError as exc:
         print(f"[commontrace] {exc}", file=sys.stderr)
         return 2

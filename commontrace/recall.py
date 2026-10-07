@@ -96,6 +96,7 @@ class Result:
     considered: dict = field(default_factory=dict)
     errors: dict = field(default_factory=dict)
     assessment: RetrievalAssessment = field(default_factory=RetrievalAssessment)
+    fact_scorer: str = "overlap-v1"
 
     @property
     def tokens(self) -> int:
@@ -117,7 +118,8 @@ class Result:
     def to_dict(self) -> dict:
         return {"question": self.question, "as_of": self.as_of, "budget": self.budget, "tokens": self.tokens,
                 "items": [i.to_dict() for i in self.items], "considered": self.considered,
-                "errors": self.errors, "assessment": self.assessment.to_dict(), "context": self.context}
+                "errors": self.errors, "assessment": self.assessment.to_dict(), "context": self.context,
+                "fact_scorer": self.fact_scorer}
 
 
 # --- budgets ---------------------------------------------------------------------------
@@ -188,32 +190,35 @@ def _lessons(root: str, question: str, as_of: str | None, k: int, scope: str = "
 
 def _facts(
     root: str, question: str, as_of: str | None, k: int, evidence_budget: int = 0, scope: str = "",
+    fact_scorer: str = "overlap-v1",
 ) -> list[Item]:
-    from commontrace import hierarchical
+    from commontrace import fact_index, hierarchical
     from commontrace.fact_evidence import EvidenceResolver
 
-    ranked = hierarchical.search_facts(root, question, as_of=as_of, limit=k, scope=scope)
-    resolver = EvidenceResolver(root, hierarchical.load_facts(root), as_of=as_of)
+    ranked = hierarchical.search_facts(root, question, as_of=as_of, limit=k, scope=scope, scorer=fact_scorer)
+    current_facts = fact_index.snapshot_facts(root)
+    resolver = EvidenceResolver(root, current_facts, as_of=as_of)
     output = []
     remaining = evidence_budget
     for fact, score in ranked:
         if score <= 0:
             continue
         current = resolver.facts.get(fact.id)
-        if current is None or current.statement != fact.statement or current.scopes != fact.scopes \
+        if current is None or current.to_dict() != fact.to_dict() \
                 or not resolver._fact_live(current) \
                 or scope and current.scopes and scope not in current.scopes:
             continue
-        provenance = {}
+        provenance = {"search": {"scorer": fact_scorer,
+                                  "matched_terms": fact_index.matched_terms(question, fact.statement, fact_scorer)}}
         text = fact.statement
         if fact.evidence_bound:
             # Re-check the fresh snapshot before assembling injection, including
             # a write or revocation that landed after initial candidate ranking.
             if current is None or current.revision != fact.revision or not resolver.assess(fact.id).eligible:
                 continue
-            provenance = {"evidence": [receipt.to_dict() for receipt in fact.evidence],
-                          "assessment": resolver.assess(fact.id).to_dict(),
-                          "claim_revision": fact.evidence_revision}
+            provenance.update({"evidence": [receipt.to_dict() for receipt in fact.evidence],
+                               "assessment": resolver.assess(fact.id).to_dict(),
+                               "claim_revision": fact.evidence_revision})
             if remaining > 1:
                 from commontrace.evidence_context import _explain_snapshot
 
@@ -226,6 +231,7 @@ def _facts(
                     remaining -= tokens(text) - tokens(fact.statement)
         output.append(Item("facts", f"fact:{fact.id}", text, score, fact.valid_from or "",
                            provenance=provenance))
+    current_facts.ensure_current()
     return output
 
 
@@ -373,10 +379,9 @@ def _assess_retrieval(
     """
     from commontrace.conversation.coverage import assess
 
-    query_terms = {term for term in _WORDS.findall(question.lower()) if len(term) > 2}
-    if not items:
-        return RetrievalAssessment(reason="no channel returned relevant evidence", query_terms=len(query_terms))
     evidence = assess(question, [item.text for item in items])
+    if not items:
+        return RetrievalAssessment(reason="no channel returned relevant evidence", query_terms=evidence.query_terms)
     matched = evidence.matched_terms
     coverage = evidence.confidence
     strongest = min(1.0, max(0.0, max((float(item.score) for item in items), default=0.0)))
@@ -387,7 +392,7 @@ def _assess_retrieval(
     diversity = min(1.0, len(channels) / 3.0)
     confidence_raw = 0.55 * strongest + 0.30 * coverage + 0.15 * diversity
     confidence = round(min(1.0, confidence_raw * (0.8 if errors else 1.0)), 4)
-    if not query_terms or matched == 0:
+    if not evidence.query_terms or matched == 0:
         reason = "retrieved items do not cover the query terms"
     elif confidence < 0.2:
         reason = "evidence is weak; use a deeper reader or ask for clarification"
@@ -408,7 +413,7 @@ def _assess_retrieval(
 def recall(root: str, question: str, *, budget: int | None = None, agent: str | None = None,
            channels: tuple[str, ...] = CHANNELS, as_of: str | None = None, weights: dict[str, float] | None = None,
            spaces: list[str] | None = None, embedder: str = "none", per_channel: int = 12,
-           evidence_budget: int = 0, scope: str = "") -> Result:
+           evidence_budget: int = 0, scope: str = "", fact_scorer: str = "overlap-v1") -> Result:
     """Recall across channels; opt into bounded fact source quotes.
 
     Nonempty ``scope`` restricts lessons/facts to that scope or public memory.
@@ -423,12 +428,14 @@ def recall(root: str, question: str, *, budget: int | None = None, agent: str | 
         raise ValueError("evidence_budget must be an integer between 0 and 8192")
     if not isinstance(scope, str) or len(scope) > 256 or any(ord(char) < 32 for char in scope):
         raise ValueError("scope must be a bounded string without control characters")
+    if not isinstance(fact_scorer, str) or fact_scorer not in ("overlap-v1", "bm25-v1"):
+        raise ValueError("fact_scorer must be overlap-v1 or bm25-v1")
 
     question = (question or "").strip()
     if as_of:
         lesson_cache.parse_moment(as_of)  # refuse a bad moment before reading anything
     total, weights = resolve_budget(root, agent, budget, weights)
-    result = Result(question, as_of, total)
+    result = Result(question, as_of, total, fact_scorer=fact_scorer)
     if not question:
         return result
     bad = [c for c in channels if c not in CHANNELS]
@@ -442,7 +449,7 @@ def recall(root: str, question: str, *, budget: int | None = None, agent: str | 
                     if channel == "lessons":
                         found = _lessons(root, question, as_of, per_channel, scope)
                     elif channel == "facts":
-                        found = _facts(root, question, as_of, per_channel, evidence_budget, scope)
+                        found = _facts(root, question, as_of, per_channel, evidence_budget, scope, fact_scorer)
                     elif channel == "graph":
                         found = _graph(root, question, as_of, per_channel) if not scope else []
                     else:

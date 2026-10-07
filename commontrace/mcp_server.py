@@ -1675,11 +1675,13 @@ def build_server(root: str, *, allow_approval: bool = True):
             return _err(f"could not insert archival memory: {type(exc).__name__}: {exc}")
 
     @mcp.tool()
-    def archival_memory_search(query: str, scope: str = "", limit: int | str = 10) -> dict:
+    def archival_memory_search(query: str, scope: str = "", limit: int | str = 10,
+                               scorer: str = "overlap-v1") -> dict:
         """Search long-term archival memory for passages matching `query`.
 
-        Scoped, confidence-weighted lexical search over the same atomic facts
-        `archival_memory_insert` writes. `limit` is clamped to 1..50.
+        Scoped search over the atomic facts `archival_memory_insert` writes.
+        Default overlap ranking is compatible; opt into multilingual BM25
+        with scorer="bm25-v1". `limit` is clamped to 1..50.
         """
         try:
             want = max(1, min(int(limit), 50))
@@ -1687,7 +1689,7 @@ def build_server(root: str, *, allow_approval: bool = True):
             return _err("limit must be a number of facts")
         try:
             results = hierarchical.search_facts(
-                root, query=query, scope=scope, limit=want,
+                root, query=query, scope=scope, limit=want, scorer=scorer,
             )
             return _ok(
                 facts=[{"fact": f.to_dict(), "score": score} for f, score in results],
@@ -1767,31 +1769,39 @@ def build_server(root: str, *, allow_approval: bool = True):
         as_of: str = "",
         limit: int = 10,
         show_expired: bool = False,
+        scorer: str = "overlap-v1",
     ) -> dict:
         """Search distilled atomic facts with bitemporal validity and scoped routing.
 
         Searches high-confidence atomic facts extracted from traces and episodes.
-        Results are scored by lexical overlap and confidence weighting. Supports
+        Results default to compatible overlap and confidence weighting. Optional
+        scorer="bm25-v1" uses stemmed multilingual BM25. Supports
         point-in-time filtering via `as_of` and team/domain routing via `scope`.
         TTL-expired facts are hidden unless `show_expired`.
         """
         try:
+            from commontrace import fact_index
             from commontrace.fact_evidence import EvidenceResolver
 
             results = hierarchical.search_facts(
                 root, query=query, scope=scope, category=category, as_of=as_of or None, limit=limit,
                 show_expired=bool(show_expired),
+                scorer=scorer,
             )
-            resolver = EvidenceResolver(root, hierarchical.load_facts(root), as_of=as_of or None)
+            current_facts = fact_index.snapshot_facts(root)
+            resolver = EvidenceResolver(root, current_facts, as_of=as_of or None)
             facts = []
             for fact, score in results:
                 current = resolver.facts.get(fact.id)
-                if fact.evidence_bound and (current is None or current.revision != fact.revision
-                                            or not resolver.assess(fact.id).eligible):
+                if current is None or current.to_dict() != fact.to_dict():
+                    continue
+                if fact.evidence_bound and (current.revision != fact.revision
+                                           or not resolver.assess(fact.id).eligible):
                     continue
                 facts.append({"fact": fact.to_dict(), "score": score,
                               "evidence_assessment": resolver.assess(fact.id).to_dict()})
-            return _ok(facts=facts, count=len(facts))
+            current_facts.ensure_current()
+            return _ok(facts=facts, count=len(facts), scorer=scorer)
         except Exception as exc:  # noqa: BLE001
             return _err(f"could not query facts: {type(exc).__name__}: {exc}")
 
@@ -1982,19 +1992,22 @@ def build_server(root: str, *, allow_approval: bool = True):
     async def memory_recall(question: str, budget: int = 1500, agent: str = "", as_of: str = "",
                             channels: list[str] | None = None, spaces: list[str] | None = None,
                             evidence_budget: int = 0, scope: str = "",
-                            ctx: Any = None) -> dict:
+                            ctx: Any = None, fact_scorer: str = "overlap-v1") -> dict:
         """One context from every kind of memory: approved lessons, atomic facts, graph
         relations around the entities `question` names, and conversation spaces, fused,
-        de-duplicated and packed into `budget` tokens. `as_of` reads every channel as it
-        stood at that moment. `agent` applies that agent's budget and channel weights from
+        de-duplicated and packed into `budget` tokens. `as_of` selects valid-time
+        memory with current trust and erasure checks. `agent` applies that agent's budget and channel weights from
         memory/budgets.json. `channels` narrows to lessons/facts/graph/conversations.
+        Default fact ranking preserves overlap; fact_scorer="bm25-v1" opts into
+        stemmed multilingual BM25 without changing the other channels.
         """
         from commontrace import recall as recall_mod
 
         def _run():
             return recall_mod.recall(root, question, budget=budget or None, agent=agent or None,
                                      as_of=as_of or None, channels=tuple(channels or recall_mod.CHANNELS),
-                                     spaces=spaces, evidence_budget=evidence_budget, scope=scope).to_dict()
+                                     spaces=spaces, evidence_budget=evidence_budget, scope=scope,
+                                     fact_scorer=fact_scorer).to_dict()
 
         try:
             await _progress(ctx, 0, "Retrieving memory evidence")

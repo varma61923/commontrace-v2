@@ -1050,8 +1050,16 @@ facts retain their existing API and retrieval behavior.
 commontrace fact add "Stripe idempotency keys expire after 24 hours" --category constraint --scope payments
 commontrace fact supersede <fact-id> "Stripe idempotency keys expire after 48 hours"
 commontrace fact search "idempotency key expiry" --scope payments
+commontrace fact search "idempotency keys expire" --scope payments --scorer bm25-v1
 commontrace fact list --as-of 2026-06-01
 ```
+
+Fact search keeps the existing `overlap-v1` ranking by default. Opt into
+`bm25-v1` for term-frequency/rarity weighting, English stemming and Unicode/CJK
+tokenization. Both modes use generation-aware in-memory postings and validate
+current source evidence before returning a fact. Editing, replacing or erasing
+the authoritative fact file invalidates its cached generation; no persistent
+search artifact is required. BM25 scores express ranking, not factual confidence.
 
 **Knowledge graph** (`commontrace graph`, MCP `graph_query` /
 `graph_neighbors`): typed nodes and dated edges. A newer dated assertion of
@@ -1147,7 +1155,9 @@ conversation spaces are each ranked, fused by weighted reciprocal rank,
 de-duplicated across channels, and packed into one token budget (4
 characters per token): each channel with something relevant gets a floor
 share, the rest goes in fused order, and an item that does not fit is cut at a
-sentence boundary. `--as-of` reads every channel as it stood at that moment.
+sentence boundary. `--as-of` selects valid-time memory while current trust and
+erasure checks remain in force. `--fact-scorer bm25-v1` changes only fact ranking;
+the JSON result records the selected mode and each fact's matched search terms.
 Budgets and channel weights per agent live in `memory/budgets.json`:
 
 ```json
@@ -1158,6 +1168,7 @@ Budgets and channel weights per agent live in `memory/budgets.json`:
 commontrace recall "postgres failed over, what now?" --budget 1200
 commontrace recall "where does postgres run?" --as-of 2025-01-01 --channel graph --channel facts
 commontrace recall "review this change" --agent reviewer --json
+commontrace recall "database migrations" --channel facts --fact-scorer bm25-v1 --json
 ```
 
 **Versioned memory** (`commontrace memory`): `memory init` makes the store its

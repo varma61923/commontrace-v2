@@ -39,6 +39,11 @@ jobs:
       - name: Original offline evidence and governed-memory contracts
         run: python -m benchmarks.memory_contracts
 
+      - name: Original offline fact retrieval safety and attribution contracts
+        # Ranking measurements are descriptive. The command fails on safety,
+        # eligibility, attribution, erasure, abstention or execution errors.
+        run: python -m benchmarks.fact_retrieval
+
   test-browser:
     name: console browser contracts (Chromium)
     runs-on: ubuntu-latest
@@ -301,7 +306,9 @@ jobs:
             commontrace/fact_evidence.py commontrace/vector_snapshots.py \
             commontrace/sqlite_vector_snapshots.py commontrace/postgres_vector_snapshots.py \
             commontrace/evidence_context.py commontrace/explorer.py commontrace/vector_scoring.py \
-            benchmarks/memory_contracts.py benchmarks/vector_search.py
+            commontrace/fact_index.py commontrace/runtime_cache.py \
+            benchmarks/memory_contracts.py benchmarks/vector_search.py \
+            benchmarks/fact_search.py benchmarks/fact_retrieval.py
 
       - name: mypy (known findings, informational only)
         continue-on-error: true

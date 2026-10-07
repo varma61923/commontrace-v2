@@ -82,6 +82,34 @@ context and namespaces conversation spaces before opening storage. Container
 routing is not a substitute for independently authenticated tenant identities.
 Valid-time queries continue to enforce current revocation and deletion.
 
+The console's **Fact ranking** control defaults to compatible overlap. Select
+**BM25 · multilingual** to use English stemming, Unicode words and CJK bigrams.
+The response records `fact_scorer`, and fact provenance records matched terms.
+`POST /v1/explore` accepts `fact_scorer: "overlap-v1"` or `"bm25-v1"`; unknown
+or malformed explicit values are rejected. MCP `query_facts` and
+`archival_memory_search` accept `scorer`; `memory_recall` accepts `fact_scorer`.
+CLI equivalents are `fact search --scorer` and `recall --fact-scorer`.
+
+Fact indexes are disposable bounded in-memory state over the authoritative
+`memory/facts/facts.jsonl`. Each request verifies the file generation, including
+inode and change time; it does not wait for a TTL to notice mutation. Current
+source quotations and lesson admission are verified per request. If the source
+changes during assembly, retrieval conservatively withholds that snapshot.
+Retained snapshots are capped at 64 MiB across eight store paths and scoped
+statistics at 8 MiB. Cold builds and source mutation rebuilds read the corpus;
+active request views have their own lifetime. `commontrace.fact_index.clear_cache()`
+releases retained cache state; clearing Python objects is not physical secure erasure.
+BM25 corpus statistics are filtered by routing, lifecycle and validity metadata;
+they do not certify source support. Evidence-ineligible facts can affect ranking
+statistics within the same authorized view, but cannot be returned. Ranking and
+lexical coverage are separate from factual entailment and answer accuracy.
+
+`python -m benchmarks.fact_retrieval` prints original labelled retrieval metrics
+and scope, correction, erasure and abstention contracts. It does not measure
+downstream answers or compare competitors. `python -m benchmarks.fact_search`
+prints reproducible real-store timing and compatibility checks. Both use
+temporary stores and clean up without creating result folders.
+
 Lesson list/detail responses expose a governed-content `revision`. Send it as
 `expected_revision` when editing, approving or rejecting. Comparison, fresh
 scope/status checks and mutation occur under the same lesson lock. Stale

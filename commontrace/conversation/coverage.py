@@ -11,6 +11,7 @@ import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
+from commontrace._lexical import WORD_RE, has_cjk, segment_cjk
 from commontrace.conversation import profile
 
 _WORDS = re.compile(r"[a-z0-9]+")
@@ -42,11 +43,21 @@ class EvidenceCoverage:
 
 
 def _terms(text: str) -> set[str]:
-    return set(_WORDS.findall(text.lower()))
+    # Preserve ASCII identifiers and underscore splitting exactly. Non-ASCII
+    # words stay intact; CJK uses the same bigrams as the sparse retriever.
+    words: set[str] = set()
+    for word in WORD_RE.findall(text.lower()):
+        if word.isascii():
+            words.update(_WORDS.findall(word))
+        else:
+            words.update(segment_cjk(word) if has_cjk(word) else (word,))
+    return words
 
 
 def _covered(term: str, words: set[str]) -> bool:
-    return term in words or len(term) >= 5 and any(len(word) >= 5 and word[:5] == term[:5] for word in words)
+    return term in words or term.isascii() and len(term) >= 5 and any(
+        word.isascii() and len(word) >= 5 and word[:5] == term[:5] for word in words
+    )
 
 
 def assess(question: str, evidence: Sequence[str], *, labels: Iterable[str] = ()) -> EvidenceCoverage:
@@ -57,7 +68,7 @@ def assess(question: str, evidence: Sequence[str], *, labels: Iterable[str] = ()
     not arbitrary substrings. Semantic matches without lexical coverage remain
     available to a deeper reader even when this conservative gate abstains.
     """
-    asked = {word for word in _terms(question) if len(word) > 2
+    asked = {word for word in _terms(question) if (len(word) > 2 or has_cjk(word))
              and word not in profile.STOPWORDS and word not in _QUESTIONS}
     entities = {word for name in profile.entities(question) for word in _terms(name)}
     subjects = asked - _ATTRIBUTES - entities

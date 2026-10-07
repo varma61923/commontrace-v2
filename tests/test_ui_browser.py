@@ -171,6 +171,7 @@ def test_explorer_form_survives_changed_backend_poll_and_route_return(page: Page
     navigate(page, "Explore memory")
     page.get_by_label("Your question", exact=True).fill("Unsubmitted Aster payment investigation")
     page.get_by_label("Context budget", exact=True).fill("777")
+    page.get_by_label("Fact ranking", exact=True).select_option("bm25-v1")
     page.get_by_label("Valid on · optional", exact=True).fill("2026-01-10")
     page.get_by_label("Include conversations", exact=True).check()
     page.get_by_label("Conversation space", exact=True).fill("billing-agent")
@@ -183,9 +184,47 @@ def test_explorer_form_survives_changed_backend_poll_and_route_return(page: Page
     navigate(page, "Review")
     navigate(page, "Explore memory")
     pw.expect(page.get_by_label("Context budget", exact=True)).to_have_value("777")
+    pw.expect(page.get_by_label("Fact ranking", exact=True)).to_have_value("bm25-v1")
     pw.expect(page.get_by_label("Valid on · optional", exact=True)).to_have_value("2026-01-10")
     pw.expect(page.get_by_label("Include conversations", exact=True)).to_be_checked()
     pw.expect(page.get_by_label("Conversation space", exact=True)).to_have_value("billing-agent")
+
+
+@pytest.mark.parametrize("width", [390, 1440])
+def test_fact_ranking_selection_uses_actual_response_profile_without_relabelling_old_results(
+    page: Page, console: Console, width: int,
+) -> None:
+    page.set_viewport_size({"width": width, "height": 1000})
+    connect(page, console)
+    navigate(page, "Explore memory")
+    selector = page.get_by_label("Fact ranking", exact=True)
+    pw.expect(selector).to_have_value("overlap-v1")
+    bounds = selector.bounding_box()
+    assert bounds is not None and bounds["height"] >= 44
+    page.get_by_label("Your question", exact=True).fill("Aster payment idempotency")
+    with page.expect_response(lambda response: response.url.endswith("/v1/explore")) as initial:
+        page.get_by_role("button", name="Retrieve memory", exact=True).click()
+    assert initial.value.status == 200 and initial.value.json()["fact_scorer"] == "overlap-v1"
+    pw.expect(page.locator("#explore-results")).to_contain_text("Fact ranking used: Existing overlap")
+    selector.select_option("bm25-v1")
+    navigate(page, "Review")
+    navigate(page, "Explore memory")
+    pw.expect(selector).to_have_value("bm25-v1")
+    pw.expect(page.locator("#explore-results")).to_contain_text("Fact ranking used: Existing overlap")
+    with page.expect_response(lambda response: response.url.endswith("/v1/explore")) as selected:
+        page.get_by_role("button", name="Retrieve memory", exact=True).click()
+    assert selected.value.status == 200
+    result = selected.value.json()
+    assert result["fact_scorer"] == "bm25-v1"
+    facts = [item for item in result["items"] if item["channel"] == "facts"]
+    assert facts and all(item["provenance"]["search"]["scorer"] == "bm25-v1" for item in facts)
+    assert all(item["provenance"]["search"]["matched_terms"] for item in facts)
+    pw.expect(page.locator("#explore-results")).to_contain_text("Fact ranking used: BM25 · multilingual")
+    fact_card = page.locator(".evidence-card").filter(has_text=facts[0]["id"])
+    fact_card.get_by_text("Evidence and provenance", exact=True).click()
+    pw.expect(fact_card).to_contain_text("Matched stemmed search terms:")
+    assert page.locator("#explore-results img").count() == 0
+    assert not page.evaluate("() => document.documentElement.scrollWidth > innerWidth")
 
 
 @pytest.mark.parametrize("replacement", [False, True])

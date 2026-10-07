@@ -412,6 +412,7 @@ class Gateway:
             "space": "required for the conversations channel",
             "budget": "optional context budget from 50 to 8000 tokens",
             "evidence_budget": "optional fact evidence budget from 0 to 2000 tokens",
+            "fact_scorer": "optional overlap-v1 (default) or bm25-v1 fact ranking",
             "as_of": "optional ISO date or timestamp",
         }, summary="Inspect eligible memory and provenance without recording an occasion or outcome.")
         self._route("POST", "/v1/command", self._command, request={

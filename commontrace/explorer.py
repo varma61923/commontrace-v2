@@ -36,6 +36,9 @@ def inspect(root: str, data: dict[str, Any], *, scope: str = "", space: str | No
         raise ExplorerError("a conversation space is required for conversation exploration")
     budget = _integer(data, "budget", 1500, 50, 8000)
     evidence_budget = _integer(data, "evidence_budget", 512, 0, 2000)
+    fact_scorer = data.get("fact_scorer", "overlap-v1")
+    if not isinstance(fact_scorer, str) or fact_scorer not in ("overlap-v1", "bm25-v1"):
+        raise ExplorerError("fact_scorer must be overlap-v1 or bm25-v1")
     as_of = data.get("as_of")
     if as_of is not None:
         if not isinstance(as_of, str) or len(as_of) > 64:
@@ -47,6 +50,6 @@ def inspect(root: str, data: dict[str, Any], *, scope: str = "", space: str | No
     started = time.perf_counter()
     result = recall.recall(root, question.strip(), budget=budget, channels=tuple(channels),
                            as_of=as_of, spaces=[space] if space else None, embedder="none",
-                           per_channel=12, evidence_budget=evidence_budget, scope=scope)
+                           per_channel=12, evidence_budget=evidence_budget, scope=scope, fact_scorer=fact_scorer)
     return {**result.to_dict(), "elapsed_ms": round((time.perf_counter() - started) * 1000, 3),
             "read_only": True, "scope": scope, "answer_accuracy_measured": False}

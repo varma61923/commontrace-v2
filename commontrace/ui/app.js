@@ -761,7 +761,7 @@
 
   function viewExplore() {
     var x = state.explorer;
-    if (!x) x = state.explorer = { question: "", budget: 1500, space: "", asOf: "", conversations: false, result: null, error: "", busy: false };
+    if (!x) x = state.explorer = { question: "", budget: 1500, space: "", asOf: "", factScorer: "overlap-v1", conversations: false, result: null, error: "", busy: false };
     var root = h("div", { class: "explorer" });
     root.appendChild(h("h1", { text: "Explore memory" }));
     root.appendChild(h("p", { class: "lede", text: "See what your agents can retrieve, where it came from, and when the evidence is insufficient." }));
@@ -782,6 +782,11 @@
     var asOf = h("input", { id: "explore-as-of", type: "date", "aria-describedby": "explore-time-help" });
     asOf.value = x.asOf;
     asOf.addEventListener("input", function () { x.asOf = asOf.value; });
+    var factScorer = h("select", { id: "explore-fact-scorer", "aria-describedby": "explore-ranking-help" },
+      h("option", { value: "overlap-v1", text: "Existing overlap" }),
+      h("option", { value: "bm25-v1", text: "BM25 · multilingual" }));
+    factScorer.value = x.factScorer;
+    factScorer.addEventListener("change", function () { x.factScorer = factScorer.value; });
     var submit = h("button", { id: "explore-submit", class: "btn", type: "submit", disabled: x.busy, text: x.busy ? "Retrieving…" : "Retrieve memory" });
     form.appendChild(h("p", { class: "eyebrow", text: "RETRIEVAL WORKSPACE" }));
     form.appendChild(h("label", { for: "explore-question", text: "Your question" })); form.appendChild(question);
@@ -789,6 +794,8 @@
       h("div", null, h("label", { for: "explore-budget", text: "Context budget" }), budget),
       h("div", null, h("label", { for: "explore-as-of", text: "Valid on · optional" }), asOf)));
     form.appendChild(h("p", { id: "explore-time-help", class: "muted small", text: "Historical dates never restore revoked or deleted memory." }));
+    form.appendChild(h("label", { for: "explore-fact-scorer", text: "Fact ranking" })); form.appendChild(factScorer);
+    form.appendChild(h("p", { id: "explore-ranking-help", class: "muted small", text: "BM25 matches English inflections and multilingual terms. Evidence checks apply to both modes." }));
     form.appendChild(h("label", { class: "check-label", for: "explore-conversations" }, conversation, "Include conversations"));
     form.appendChild(h("label", { for: "explore-space", text: "Conversation space" })); form.appendChild(space);
     form.appendChild(submit);
@@ -814,6 +821,7 @@
         h("div", null, h("strong", { text: num(r.tokens) + " / " + num(r.budget) }), h("span", { text: "context tokens · estimated" })),
         h("div", null, h("strong", { text: Number(r.elapsed_ms).toFixed(1) + " ms" }), h("span", { text: "retrieval" }))));
       summary.appendChild(h("p", { class: "muted small", text: "Evidence coverage is a retrieval signal, not a measure of answer accuracy." }));
+      summary.appendChild(h("p", { class: "muted small", text: "Fact ranking used: " + (r.fact_scorer === "bm25-v1" ? "BM25 · multilingual" : "Existing overlap") }));
       if (r.context) {
         var copy = h("button", { class: "btn secondary", type: "button", text: "Copy agent context" });
         copy.addEventListener("click", function () {
@@ -835,6 +843,8 @@
           h("p", { class: "muted small", text: num(item.tokens) + " tokens" + (item.at ? " · " + item.at : "") + (item.truncated ? " · shortened to fit budget" : "") }));
         if (item.provenance && Object.keys(item.provenance).length) {
           var details = h("details", { class: "evidence-details" }, h("summary", { text: "Evidence and provenance" }));
+          var search = item.provenance.search;
+          if (search) details.appendChild(h("p", { class: "muted small", text: (search.scorer === "bm25-v1" ? "Matched stemmed search terms: " : "Matched search terms: ") + (search.matched_terms || []).join(", ") }));
           var context = item.provenance.evidence_context;
           if (context && context.nodes) {
             context.nodes.forEach(function (source) {
@@ -870,7 +880,8 @@
       x.busy = true; x.error = ""; paint(true);
       post("/v1/explore", { question: x.question, budget: x.budget,
         channels: x.conversations ? ["lessons", "facts", "conversations"] : ["lessons", "facts"],
-        space: x.conversations ? x.space.trim() : undefined, as_of: x.asOf || undefined, evidence_budget: 512 }, controller.signal)
+        space: x.conversations ? x.space.trim() : undefined, as_of: x.asOf || undefined, evidence_budget: 512,
+        fact_scorer: x.factScorer }, controller.signal)
         .then(function (result) { if (state.explorer === x && token === requestedToken && location.hash === requestedHash && navigationGeneration === requestedNavigation) x.result = result; })
         .catch(function (error) {
           if (state.explorer !== x || token !== requestedToken || location.hash !== requestedHash || navigationGeneration !== requestedNavigation) return;

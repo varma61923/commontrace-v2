@@ -208,7 +208,7 @@ main { max-width: 86rem; padding-top: 1.75rem; }
 .console-shell main { width: 100%; min-width: 0; padding: 2rem clamp(1rem, 3vw, 3rem) 3rem; }
 .explore-layout { display: grid; grid-template-columns: minmax(260px, 320px) minmax(0, 1fr); align-items: start; gap: 1.25rem; }
 .explore-controls { position: sticky; top: 5.5rem; }
-.explore-controls input:not([type="checkbox"]) { width: 100%; min-height: 44px; padding: .5rem .65rem; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); font: inherit; margin: 0 0 .75rem; }
+.explore-controls input:not([type="checkbox"]), .explore-controls select { width: 100%; min-height: 44px; padding: .5rem .65rem; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); font: inherit; margin: 0 0 .75rem; }
 .explore-controls textarea { min-height: 9rem; }
 .explore-controls .btn { width: 100%; }
 .explore-options { display: grid; grid-template-columns: 1fr 1fr; gap: .65rem; }
