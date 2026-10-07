@@ -10,7 +10,7 @@ LOCAL_TOOLS = (
     "core_memory_append", "core_memory_replace",
     "archival_memory_insert", "archival_memory_search",
     "conversation_search",
-    "query_facts", "record_fact",
+    "query_facts", "record_fact", "fact_explain",
     "graph_query", "graph_neighbors", "graph_viz_html", "graph_timeline",
     "list_skills", "load_skill",
     "conversation_add", "conversation_recall", "conversation_profile", "conversation_forget",

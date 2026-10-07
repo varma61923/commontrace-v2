@@ -22,6 +22,9 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument("--as-of", default=None, help="Read every channel as it stood at this moment.")
     p.add_argument("--space", action="append", default=None, help="Conversation spaces (default: all).")
     p.add_argument("--embedder", default="none", help="Conversation embedder: none (lexical), auto, or a tag.")
+    p.add_argument("--evidence-budget", type=int, default=0,
+                   help="Expand cited fact source quotes within this token allowance (default: disabled).")
+    p.add_argument("--scope", default="", help="Route lessons/facts to a scope or public memory.")
     p.add_argument("--weight", action="append", default=[], metavar="CHANNEL=W", help="Channel weight override.")
     p.add_argument("--json", action="store_true")
     p.add_argument("--dest", default=None)
@@ -42,7 +45,8 @@ def run(args: argparse.Namespace) -> int:
     try:
         result = recall.recall(paths.resolve_root(args.dest), args.question, budget=args.budget, agent=args.agent,
                                channels=tuple(args.channel) or recall.CHANNELS, as_of=args.as_of,
-                               weights=weights or None, spaces=args.space, embedder=args.embedder)
+                               weights=weights or None, spaces=args.space, embedder=args.embedder,
+                               evidence_budget=args.evidence_budget, scope=args.scope)
     except ValueError as exc:
         print(f"[commontrace] {exc}", file=sys.stderr)
         return 2

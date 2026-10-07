@@ -72,3 +72,30 @@ Batch contributions return ordered independent outcomes: a later refusal does
 not roll back prior successful items. Persist distinct idempotency keys before
 retrying contributions. Batch deletions permanently remove owned chains and
 must not automatically replay ambiguous transport failures.
+
+## Console retrieval and review
+
+`POST /v1/explore` is an authenticated, non-model retrieval inspection. Budgets
+are bounded to 50–8,000 context tokens and 0–2,000 evidence tokens; conversations
+require an explicit space. The gateway derives scope from its existing request
+context and namespaces conversation spaces before opening storage. Container
+routing is not a substitute for independently authenticated tenant identities.
+Valid-time queries continue to enforce current revocation and deletion.
+
+Lesson list/detail responses expose a governed-content `revision`. Send it as
+`expected_revision` when editing, approving or rejecting. Comparison, fresh
+scope/status checks and mutation occur under the same lesson lock. Stale
+content returns `409 stale_review`; read the latest version before retrying.
+The browser always sends a revision, while omitted revisions retain legacy
+client compatibility. Oversized lessons cannot be approved from a truncated
+console view. Generic browser commands cannot admit lessons or apply force
+overrides; without `--allow-approval` they default to audited inspection handlers.
+Container-scoped command sessions expose help only; use routed endpoints for
+scoped reads and decisions.
+
+`python -m benchmarks.vector_search` prints seeded real-engine measurements to
+stdout, including returned-score/order checksums and duplicate-heavy workloads.
+The native dot-product screening optimization applies on supported CPython
+versions; competitive rows retain the original exact scorer. Performance gains
+depend on dimensionality and candidate distribution; no corpus-independent
+speed multiplier or answer-quality improvement is implied.

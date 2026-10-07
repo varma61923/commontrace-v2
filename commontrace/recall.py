@@ -150,11 +150,11 @@ def _rule(body: str) -> str:
     return " ".join((m.group(1) if m else body).split())
 
 
-def _lessons(root: str, question: str, as_of: str | None, k: int) -> list[Item]:
-    from commontrace import frontmatter, lesson_cache, retrieval, retrieval_io
+def _lessons(root: str, question: str, as_of: str | None, k: int, scope: str = "") -> list[Item]:
+    from commontrace import frontmatter, lesson_admission, lesson_cache, retrieval, retrieval_io
 
     active, term_cache = lesson_cache.load_active_with_terms(root, None)
-    active = lesson_cache.filter_eligible(active, as_of=as_of)
+    active = lesson_cache.filter_eligible(active, as_of=as_of, scope=scope)
     if not active:
         return []
     config = retrieval_io.load_config(root)
@@ -166,29 +166,47 @@ def _lessons(root: str, question: str, as_of: str | None, k: int) -> list[Item]:
             fm, body = frontmatter.read(r.path)
         except Exception:  # noqa: BLE001 - an unreadable lesson is skipped, not fatal
             continue
-        if not lesson_cache.fresh_eligible(r.path, fm, r.slug, as_of=as_of, root=root, body=body):
+        if not lesson_cache.fresh_eligible(r.path, fm, r.slug, as_of=as_of, root=root, body=body, scope=scope):
             continue
         text = f"{r.slug}: {fm.get('description', '')}".strip(": ")
         rule = _rule(body)
         if rule:
             text += f" Rule: {rule}"
-        out.append(Item("lessons", f"lesson:{r.slug}", text, r.score))
+        scopes = fm.get("scopes") or []
+        traces = fm.get("source_traces") or []
+        provenance = {
+            "kind": "lesson",
+            "scopes": [value for value in scopes if isinstance(value, str)] if isinstance(scopes, list) else [],
+            "source_traces": ([value for value in traces if isinstance(value, str)][:256]
+                              if isinstance(traces, list) else []),
+            "admission": "verified" if fm.get(lesson_admission.RECEIPT_FIELD) else "legacy_compatible",
+            "revision": lesson_admission.digest_of(fm, body),
+        }
+        out.append(Item("lessons", f"lesson:{r.slug}", text, r.score, provenance=provenance))
     return out
 
 
-def _facts(root: str, question: str, as_of: str | None, k: int) -> list[Item]:
+def _facts(
+    root: str, question: str, as_of: str | None, k: int, evidence_budget: int = 0, scope: str = "",
+) -> list[Item]:
     from commontrace import hierarchical
     from commontrace.fact_evidence import EvidenceResolver
 
-    ranked = hierarchical.search_facts(root, question, as_of=as_of, limit=k)
+    ranked = hierarchical.search_facts(root, question, as_of=as_of, limit=k, scope=scope)
     resolver = EvidenceResolver(root, hierarchical.load_facts(root), as_of=as_of)
     output = []
+    remaining = evidence_budget
     for fact, score in ranked:
         if score <= 0:
             continue
+        current = resolver.facts.get(fact.id)
+        if current is None or current.statement != fact.statement or current.scopes != fact.scopes \
+                or not resolver._fact_live(current) \
+                or scope and current.scopes and scope not in current.scopes:
+            continue
         provenance = {}
+        text = fact.statement
         if fact.evidence_bound:
-            current = resolver.facts.get(fact.id)
             # Re-check the fresh snapshot before assembling injection, including
             # a write or revocation that landed after initial candidate ranking.
             if current is None or current.revision != fact.revision or not resolver.assess(fact.id).eligible:
@@ -196,7 +214,17 @@ def _facts(root: str, question: str, as_of: str | None, k: int) -> list[Item]:
             provenance = {"evidence": [receipt.to_dict() for receipt in fact.evidence],
                           "assessment": resolver.assess(fact.id).to_dict(),
                           "claim_revision": fact.evidence_revision}
-        output.append(Item("facts", f"fact:{fact.id}", fact.statement, score, fact.valid_from or "",
+            if remaining > 1:
+                from commontrace.evidence_context import _explain_snapshot
+
+                proof = _explain_snapshot(resolver, fact.id, budget=remaining - 1, scope=scope)
+                if not proof.assessment.eligible or proof.claim_revision != fact.evidence_revision:
+                    continue
+                provenance["evidence_context"] = proof.to_dict()
+                if proof.context:
+                    text += "\n" + proof.context
+                    remaining -= tokens(text) - tokens(fact.statement)
+        output.append(Item("facts", f"fact:{fact.id}", text, score, fact.valid_from or "",
                            provenance=provenance))
     return output
 
@@ -379,9 +407,22 @@ def _assess_retrieval(
 
 def recall(root: str, question: str, *, budget: int | None = None, agent: str | None = None,
            channels: tuple[str, ...] = CHANNELS, as_of: str | None = None, weights: dict[str, float] | None = None,
-           spaces: list[str] | None = None, embedder: str = "none", per_channel: int = 12) -> Result:
-    """Recall across channels into one budgeted context."""
+           spaces: list[str] | None = None, embedder: str = "none", per_channel: int = 12,
+           evidence_budget: int = 0, scope: str = "") -> Result:
+    """Recall across channels; opt into bounded fact source quotes.
+
+    Nonempty ``scope`` restricts lessons/facts to that scope or public memory.
+    Graph reads are withheld until the graph supports scoped authorization.
+    Conversation spaces must be explicitly selected by the authorized caller
+    for scoped reads; no scoped request enumerates the root's other spaces.
+    Empty scope preserves trusted-local root-wide behavior.
+    """
     from commontrace import lesson_cache
+
+    if isinstance(evidence_budget, bool) or not isinstance(evidence_budget, int) or not 0 <= evidence_budget <= 8192:
+        raise ValueError("evidence_budget must be an integer between 0 and 8192")
+    if not isinstance(scope, str) or len(scope) > 256 or any(ord(char) < 32 for char in scope):
+        raise ValueError("scope must be a bounded string without control characters")
 
     question = (question or "").strip()
     if as_of:
@@ -399,13 +440,14 @@ def recall(root: str, question: str, *, budget: int | None = None, agent: str | 
             try:
                 with telemetry.span(f"recall.{channel}"):
                     if channel == "lessons":
-                        found = _lessons(root, question, as_of, per_channel)
+                        found = _lessons(root, question, as_of, per_channel, scope)
                     elif channel == "facts":
-                        found = _facts(root, question, as_of, per_channel)
+                        found = _facts(root, question, as_of, per_channel, evidence_budget, scope)
                     elif channel == "graph":
-                        found = _graph(root, question, as_of, per_channel)
+                        found = _graph(root, question, as_of, per_channel) if not scope else []
                     else:
-                        found = _conversations(root, question, as_of, int(total * 0.6), spaces, embedder)
+                        found = (_conversations(root, question, as_of, int(total * 0.6), spaces, embedder)
+                                 if not scope or spaces is not None else [])
             except Exception as exc:  # noqa: BLE001 - one broken channel does not sink the others
                 result.errors[channel] = f"{type(exc).__name__}: {exc}"
                 continue

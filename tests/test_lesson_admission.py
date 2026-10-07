@@ -48,6 +48,45 @@ def test_legacy_unsigned_is_compatible_and_read_only(lesson):
     assert not Path(root, "memory", ".approval-key.lock").exists()
 
 
+@pytest.mark.parametrize("target", ["external", "internal"])
+def test_unsigned_symlink_is_not_an_authoritative_source(lesson, tmp_path, target):
+    root, path, fm, body = lesson
+    source = tmp_path / "external.md" if target == "external" else Path(path)
+    if target == "external":
+        frontmatter.write(str(source), fm, "EXTERNAL_PRIVATE_CONTENT\n")
+    link = Path(paths.lessons_dir(root), "lesson_link.md")
+    link.symlink_to(source)
+    assert not admission.eligible(root, str(link), fm, body)
+    with pytest.raises(admission.AdmissionError, match="authoritative"):
+        admission.validate_path(root, str(link))
+    with pytest.raises(admission.AdmissionError, match="authoritative"):
+        admission.issue(root, str(link), fm, body, actor="reviewer")
+    assert not Path(root, "memory", ".approval-key").exists()
+    assert not Path(root, "memory", "lesson_admissions.db").exists()
+
+
+def test_unsigned_external_path_is_rejected_without_a_ledger(lesson, tmp_path):
+    root, _path, fm, body = lesson
+    external = tmp_path / "outside.md"
+    frontmatter.write(str(external), fm, body)
+    assert not admission.eligible(root, str(external), fm, body)
+
+
+def test_parent_symlink_cannot_move_the_lesson_store_outside_root(tmp_path):
+    root = tmp_path / "store"
+    memory = root / "memory"
+    memory.mkdir(parents=True)
+    external = tmp_path / "external"
+    external.mkdir()
+    (memory / "lessons").symlink_to(external, target_is_directory=True)
+    path = memory / "lessons" / "lesson_external.md"
+    fm = {"name": "lesson_external", "status": "active"}
+    frontmatter.write(str(path), fm, "External private content\n")
+    assert not admission.eligible(str(root), str(path), fm, "External private content\n")
+    with pytest.raises(admission.AdmissionError):
+        admission.validate_path(str(root), str(path))
+
+
 def test_explicit_strict_policy_rejects_unsigned(lesson):
     root, path, fm, body = lesson
     Path(root, "memory", "approval-policy.yaml").write_text("require_integrity: true\n")

@@ -11,14 +11,16 @@
   var envChip = document.getElementById("env");
   var tierChip = document.getElementById("tier");
   var commandLaunch = document.getElementById("command-launch");
+  var disconnect = document.getElementById("disconnect");
   var token = "";
   var timer = null;
   var lastOk = 0;
-  var state = { status: null, capabilities: null, memories: null, agents: null, events: null, lessons: null, lesson: null, commandCatalog: null, commandResult: null };
+  var state = { status: null, capabilities: null, memories: null, agents: null, events: null, lessons: null, lesson: null, commandCatalog: null, commandResult: null, explorer: null, reviewDraft: null };
   var selected = {};   // slug -> true, the review queue's bulk selection; survives repaints
   var notice = null;   // { kind: "ok"|"crit", text } shown on the next paint of the review views
   var lastPaint = "";
   var connState = "";
+  var navigationGeneration = 0;
 
   // ---- helpers -------------------------------------------------------------------------
 
@@ -113,8 +115,9 @@
       return r.json();
     });
   }
-  function post(path, body) {
+  function post(path, body, signal) {
     return fetch(path, { method: "POST", cache: "no-store",
+      signal: signal,
       headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
       body: JSON.stringify(body) }).then(function (r) {
       return r.json().catch(function () { return {}; }).then(function (d) {
@@ -130,12 +133,14 @@
     connState = kind + text;
     conn.textContent = text;
     conn.setAttribute("data-state", kind);
+    if (disconnect) disconnect.hidden = !token;
   }
 
   // ---- routing -----------------------------------------------------------------------------------
 
   var ROUTES = [
     { id: "overview", label: "Overview", title: "Overview" },
+    { id: "explore", label: "Explore memory", title: "Explore memory" },
     { id: "memories", label: "Memories", title: "What each memory did" },
     { id: "review", label: "Review", title: "Review queue" },
     { id: "lesson", label: "Review", title: "Lesson", hidden: true },
@@ -146,7 +151,7 @@
   ];
   function hashQuery(name) {
     var m = new RegExp("[?&]" + name + "=([^&]*)").exec(location.hash);
-    return m ? decodeURIComponent(m[1]) : "";
+    try { return m ? decodeURIComponent(m[1]) : ""; } catch (e) { return ""; }
   }
   function currentRoute() {
     var id = (location.hash.replace(/^#\/?/, "").split("?")[0]) || "overview";
@@ -180,9 +185,10 @@
     var hurting = ((m && m.memories) || []).filter(function (x) { return x.verdict === "HURTS"; });
     hurting.forEach(function (x) {
       var withdrawn = x.withdrawn;
+      var sound = !m.integrity || m.integrity.verdict === "SOUND";
       attention.appendChild(h("div", { class: "alert " + (withdrawn ? "warn" : "crit"), role: "group", "aria-label": "Harmful memory" },
-        h("strong", { text: (withdrawn ? "Withdrawn: " : "Still being delivered: ") + x.lesson_slug }),
-        h("span", null, rich("Measured to make outcomes worse (" + pct(x.effect) + ", 95% interval " + pct(x.ci_low) + " to " + pct(x.ci_high) + ")." +
+        h("strong", { text: (withdrawn ? "Withdrawn: " : sound ? "Still being delivered: " : "Flagged memory: ") + x.lesson_slug }),
+        h("span", null, rich((sound ? "Measured to make outcomes worse (" + pct(x.effect) + ", 95% interval " + pct(x.ci_low) + " to " + pct(x.ci_high) + ")." : "The experiment's validity does not support a causal harm claim. Inspect its findings before interpreting this flag.") +
           (withdrawn ? " It is no longer delivered." : " The store's harm policy is " + (s.gateway.harm_policy || "inform") + "; restart the gateway with `--on-harm withdraw` to stop it.")))));
     });
     if (m && m.integrity && m.integrity.verdict !== "SOUND") {
@@ -275,6 +281,14 @@
     var extent = niceExtent(rows);
     var card = h("section", { class: "card wide", "aria-labelledby": "c-mem" }, h("h2", { id: "c-mem", text: "What each memory did" }));
     if (m.integrity) card.appendChild(h("p", null, validityChip(m.integrity.verdict)));
+    if (m.integrity && m.integrity.verdict === "COMPROMISED") {
+      card.appendChild(h("p", { class: "alert warn", text: "Effect estimates are withheld because this experiment is compromised. Fix its findings before quoting a causal effect." }));
+      var flagged = h("ul", { class: "forest" });
+      rows.forEach(function (r) { flagged.appendChild(h("li", null, h("span", { class: "mono", text: r.lesson_slug }),
+        h("p", { class: "muted small", text: num(r.n_injected) + " occasions with memory · " + num(r.n_withheld) + " without memory" }))); });
+      card.appendChild(flagged);
+      return card;
+    }
     var list = h("ul", { class: "forest" });
     rows.forEach(function (r) {
       list.appendChild(h("li", null,
@@ -439,7 +453,12 @@
     if (notice) root.appendChild(noticeBox());
     if (!d.approval_enabled) root.appendChild(approvalOff());
     if (!d.lessons.length) {
-      root.appendChild(empty("Nothing waiting", "Drafts appear here after a distill, a dream pass or a suggested revision.", "commontrace distill --failed --draft"));
+      if (d.total) {
+        var firstPage = h("button", { class: "btn secondary", type: "button", text: "Back to first page" });
+        firstPage.addEventListener("click", function () { location.hash = "#/review?offset=0"; });
+        root.appendChild(empty("No drafts on this page", "The queue changed since this page was opened."));
+        root.appendChild(firstPage);
+      } else root.appendChild(empty("Nothing waiting", "Drafts appear here after a distill, a dream pass or a suggested revision.", "commontrace distill --failed --draft"));
       return root;
     }
     var live = d.lessons.filter(function (l) { return l.checks && l.checks.passes; });
@@ -457,11 +476,11 @@
       if (d.approval_enabled) {
         box = h("input", { type: "checkbox", id: "sel-" + l.slug, disabled: ok ? false : true,
           checked: ok && selected[l.slug] ? true : false, "aria-label": "Select " + l.slug });
-        box.addEventListener("change", function () { selected[l.slug] = box.checked; paint(true); });
+        box.addEventListener("change", function () { selected[l.slug] = box.checked ? l.revision : false; paint(true); });
       }
       var near = l.checks && l.checks.nearest_active;
       list.appendChild(h("li", { class: "card" },
-        h("div", { class: "q-head" }, box,
+        h("div", { class: "q-head" }, box ? h("label", { class: "queue-select", for: "sel-" + l.slug }, box) : null,
           h("a", { class: "q-name mono", href: "#/lesson?slug=" + encodeURIComponent(l.slug), text: l.slug }),
           gateChip(l.checks),
           h("span", { class: "chip" }, l.drafted_by_model ? "Drafted by a model" : "Written by a person")),
@@ -472,14 +491,23 @@
           near ? " (" + Math.round(near.similarity * 100) + "% alike)" : null)));
     });
     root.appendChild(list);
+    var offset = d.offset || 0, total = d.total === undefined ? d.lessons.length : d.total;
+    var previous = h("button", { class: "btn secondary", type: "button", disabled: offset === 0, text: "Previous" });
+    var next = h("button", { class: "btn secondary", type: "button", disabled: offset + 50 >= total, text: "Next" });
+    previous.addEventListener("click", function () { location.hash = "#/review?offset=" + Math.max(0, offset - 50); });
+    next.addEventListener("click", function () { location.hash = "#/review?offset=" + (offset + 50); });
+    root.appendChild(h("div", { class: "toolbar pagination", "aria-label": "Review pages" }, previous,
+      h("span", { class: "muted small", text: (offset + 1) + "–" + Math.min(offset + d.lessons.length, total) + " of " + total + " drafts" }), next));
     return root;
   }
 
   function approveMany(slugs) {
     var out = [], chain = Promise.resolve();
-    slugs.forEach(function (slug) {
+    var approvals = slugs.map(function (slug) { return { slug: slug, revision: selected[slug] }; });
+    approvals.forEach(function (entry) {
+      var slug = entry.slug;
       chain = chain.then(function () {
-        return post("/v1/lesson/approve", { slug: slug, rationale: "approved from the review queue" })
+        return post("/v1/lesson/approve", { slug: slug, expected_revision: entry.revision, rationale: "approved from the review queue" })
           .then(function () { out.push(slug + ": approved"); delete selected[slug]; })
           .catch(function (e) { out.push(slug + ": " + e.message); });
       });
@@ -505,14 +533,29 @@
 
     // The text, editable only for a draft and only when acting is on.
     var fields = [["rule", "Rule"], ["applies_when", "Applies when"], ["do_not_apply_when", "Does not apply when"]];
+    var draft = state.reviewDraft;
+    if (can && (!draft || draft.slug !== d.slug || !draft.dirty && draft.revision !== d.revision)) {
+      draft = state.reviewDraft = { slug: d.slug, revision: d.revision, values: {}, original: {}, dirty: false };
+      fields.forEach(function (f) { draft.values[f[0]] = draft.original[f[0]] = d[f[0]] || ""; });
+    }
     var inputs = {};
     var form = h("form", { class: "card", "aria-label": "Lesson text" });
     form.appendChild(h("h2", { text: "What the agent would be told" }));
+    if (can && draft.revision !== d.revision) {
+      var reload = h("button", { class: "btn secondary", type: "button", text: "Reload latest draft" });
+      reload.addEventListener("click", function () { state.reviewDraft = null; paint(true); refresh(); });
+      form.appendChild(h("div", { class: "alert warn", role: "status" },
+        h("p", { text: "The source changed while you were editing. Your text is preserved. Reload the latest draft before approving or saving." }), reload));
+    }
     fields.forEach(function (f) {
       form.appendChild(h("label", { for: "f-" + f[0], text: f[1] }));
       if (can) {
         inputs[f[0]] = h("textarea", { id: "f-" + f[0], rows: 3, maxlength: 2000, spellcheck: "true" });
-        inputs[f[0]].value = d[f[0]] || "";
+        inputs[f[0]].value = draft.values[f[0]];
+        inputs[f[0]].addEventListener("input", function () {
+          draft.values[f[0]] = inputs[f[0]].value;
+          draft.dirty = fields.some(function (field) { return draft.values[field[0]] !== draft.original[field[0]]; });
+        });
         form.appendChild(inputs[f[0]]);
       } else {
         form.appendChild(h("p", { class: "prose", text: d[f[0]] || "(none)" }));
@@ -523,10 +566,10 @@
       form.appendChild(save);
       form.addEventListener("submit", function (ev) {
         ev.preventDefault();
-        var body = { slug: d.slug };
-        fields.forEach(function (f) { if (inputs[f[0]].value.trim() !== (d[f[0]] || "").trim()) body[f[0]] = inputs[f[0]].value; });
-        if (Object.keys(body).length === 1) { notice = { kind: "ok", text: "Nothing changed." }; paint(true); return; }
-        post("/v1/lesson/edit", body).then(function () { notice = { kind: "ok", text: "Saved. The gates below were re-checked." }; lastPaint = ""; refresh(); })
+        var body = { slug: d.slug, expected_revision: draft.revision };
+        fields.forEach(function (f) { if (inputs[f[0]].value.trim() !== draft.original[f[0]].trim()) body[f[0]] = inputs[f[0]].value; });
+        if (Object.keys(body).length === 2) { notice = { kind: "ok", text: "Nothing changed." }; paint(true); return; }
+        post("/v1/lesson/edit", body).then(function () { state.reviewDraft = null; notice = { kind: "ok", text: "Saved. The gates below were re-checked." }; lastPaint = ""; refresh(); })
           .catch(function (e) { notice = { kind: "crit", text: e.message }; paint(true); });
       });
     }
@@ -576,16 +619,20 @@
 
     if (can) {
       var why = h("input", { id: "why", type: "text", maxlength: 500, "aria-describedby": "why-help" });
-      var approve = h("button", { class: "btn", type: "button", disabled: d.checks && d.checks.passes ? false : true, text: "Approve" });
+      why.value = draft.note || "";
+      why.addEventListener("input", function () { draft.note = why.value; });
+      var approve = h("button", { class: "btn", type: "button", disabled: d.checks && d.checks.passes && !d.body_truncated ? false : true, text: "Approve" });
+      if (d.body_truncated) root.appendChild(h("p", { class: "alert warn", text: "This lesson exceeds the console's readable size. Review its complete contents in the terminal before approving." }));
       var reject = h("button", { class: "btn danger", type: "button", text: "Reject" });
       approve.addEventListener("click", function () {
-        post("/v1/lesson/approve", { slug: d.slug, rationale: why.value || undefined })
+        if (draft.dirty) { notice = { kind: "crit", text: "Save your text changes before approving this lesson." }; paint(true); return; }
+        post("/v1/lesson/approve", { slug: d.slug, expected_revision: draft.revision, rationale: why.value || undefined })
           .then(function () { notice = { kind: "ok", text: d.slug + " is now active." }; location.hash = "#/review"; })
           .catch(function (e) { notice = { kind: "crit", text: e.message }; paint(true); });
       });
       reject.addEventListener("click", function () {
         if (!why.value.trim()) { notice = { kind: "crit", text: "Say why in the box before rejecting." }; paint(true); return; }
-        post("/v1/lesson/reject", { slug: d.slug, reason: why.value })
+        post("/v1/lesson/reject", { slug: d.slug, expected_revision: draft.revision, reason: why.value })
           .then(function () { notice = { kind: "ok", text: d.slug + " was rejected." }; location.hash = "#/review"; })
           .catch(function (e) { notice = { kind: "crit", text: e.message }; paint(true); });
       });
@@ -615,6 +662,10 @@
       root.appendChild(h("div", { class: "card command-loading" }, h("div", { class: "skeleton-line wide" }), h("div", { class: "skeleton-line" })));
       return root;
     }
+    var execution = state.commandCatalog.execution_policy;
+    if (execution) root.appendChild(h("p", { class: "muted small", text: execution.scoped_commands === "help_only"
+      ? "This scoped session can inspect command help. Use the scoped review and exploration pages to access memory."
+      : (execution.read_only ? "This session runs inspection commands. Store changes require an operator-enabled session. " : "Store changes are enabled for this session. ") + "Lesson decisions use the Review page; force overrides stay in the terminal." }));
 
     var search = h("input", { class: "command-search", type: "search", placeholder: "Filter commands…", "aria-label": "Filter commands" });
     var select = h("select", { class: "command-select", "aria-label": "Command" });
@@ -622,7 +673,7 @@
     var description = h("p", { class: "muted command-description" });
     var badge = h("div", { class: "command-badges" });
     var output = h("div", { class: "command-output", "aria-live": "polite" });
-    var selected = catalog[0];
+    var selected = catalog.filter(function (spec) { return spec.name === "doctor"; })[0] || catalog[0];
 
     function visibleSpecs() {
       var query = search.value.trim().toLowerCase();
@@ -708,7 +759,130 @@
     return root;
   }
 
-  var VIEWS = { overview: viewOverview, memories: viewMemories, review: viewReview, lesson: viewLesson, live: viewLive, fleet: viewFleet, commands: viewCommands, safety: viewSafety };
+  function viewExplore() {
+    var x = state.explorer;
+    if (!x) x = state.explorer = { question: "", budget: 1500, space: "", asOf: "", conversations: false, result: null, error: "", busy: false };
+    var root = h("div", { class: "explorer" });
+    root.appendChild(h("h1", { text: "Explore memory" }));
+    root.appendChild(h("p", { class: "lede", text: "See what your agents can retrieve, where it came from, and when the evidence is insufficient." }));
+    var form = h("form", { class: "card explore-controls", "aria-label": "Explore memory" });
+    var question = h("textarea", { id: "explore-question", rows: 5, maxlength: 2000, required: true,
+      placeholder: "What should an agent know before its next decision?" });
+    question.value = x.question;
+    question.addEventListener("input", function () { x.question = question.value; });
+    var budget = h("input", { id: "explore-budget", type: "number", min: 50, max: 8000, step: 1, required: true });
+    budget.value = x.budget;
+    budget.addEventListener("input", function () { x.budget = Number(budget.value); });
+    var conversation = h("input", { id: "explore-conversations", type: "checkbox", checked: x.conversations });
+    var space = h("input", { id: "explore-space", type: "text", maxlength: 128, placeholder: "User, agent or thread", disabled: !x.conversations });
+    space.value = x.space;
+    conversation.addEventListener("change", function () { x.conversations = conversation.checked; space.disabled = !x.conversations; space.required = x.conversations; });
+    space.required = x.conversations;
+    space.addEventListener("input", function () { x.space = space.value; });
+    var asOf = h("input", { id: "explore-as-of", type: "date", "aria-describedby": "explore-time-help" });
+    asOf.value = x.asOf;
+    asOf.addEventListener("input", function () { x.asOf = asOf.value; });
+    var submit = h("button", { id: "explore-submit", class: "btn", type: "submit", disabled: x.busy, text: x.busy ? "Retrieving…" : "Retrieve memory" });
+    form.appendChild(h("p", { class: "eyebrow", text: "RETRIEVAL WORKSPACE" }));
+    form.appendChild(h("label", { for: "explore-question", text: "Your question" })); form.appendChild(question);
+    form.appendChild(h("div", { class: "explore-options" },
+      h("div", null, h("label", { for: "explore-budget", text: "Context budget" }), budget),
+      h("div", null, h("label", { for: "explore-as-of", text: "Valid on · optional" }), asOf)));
+    form.appendChild(h("p", { id: "explore-time-help", class: "muted small", text: "Historical dates never restore revoked or deleted memory." }));
+    form.appendChild(h("label", { class: "check-label", for: "explore-conversations" }, conversation, "Include conversations"));
+    form.appendChild(h("label", { for: "explore-space", text: "Conversation space" })); form.appendChild(space);
+    form.appendChild(submit);
+    form.appendChild(h("p", { class: "muted small explore-note", text: "Read-only exploration. No outcome is recorded and no model is called." }));
+    var results = h("section", { id: "explore-results", class: "explore-results", "aria-label": "Retrieval results", "aria-busy": x.busy ? "true" : "false" });
+    var status = h("p", { class: "sr", role: "status", "aria-live": "polite", text: x.busy ? "Retrieving memory" : x.result ? x.result.items.length + " memories retrieved" : "" });
+    results.appendChild(status);
+    if (x.error) results.appendChild(h("p", { class: "alert crit", role: "alert", text: x.error }));
+    if (!x.result) {
+      results.appendChild(h("div", { class: "card explore-empty" }, h("div", { class: "explore-glyph", "aria-hidden": "true", text: "⌕" }),
+        h("h2", { text: "Understand the context before it reaches an agent" }),
+        h("p", { class: "muted", text: "Retrieve lessons and facts together. Inspect actual supporting sources and spot missing evidence." }),
+        h("div", { class: "explore-steps" }, h("span", null, "01 · Ask"), h("span", null, "02 · Inspect"), h("span", null, "03 · Verify"))));
+    } else {
+      var r = x.result, assessment = r.assessment || {}, evidence = !assessment.abstain;
+      var summary = h("section", { class: "card explore-summary" },
+        h("div", { class: "q-head" }, h("p", { class: "eyebrow", text: "RETRIEVED CONTEXT" }),
+          h("span", { class: "chip " + (evidence ? "good" : "warn"), text: evidence ? "Relevant evidence" : "Insufficient evidence" })),
+        h("h2", { class: "explore-query", text: r.question }),
+        h("p", { class: "muted", text: assessment.reason || "No relevant evidence" }));
+      summary.appendChild(h("div", { class: "explore-metrics" },
+        h("div", null, h("strong", { text: num(r.items.length) }), h("span", { text: "memories" })),
+        h("div", null, h("strong", { text: num(r.tokens) + " / " + num(r.budget) }), h("span", { text: "context tokens · estimated" })),
+        h("div", null, h("strong", { text: Number(r.elapsed_ms).toFixed(1) + " ms" }), h("span", { text: "retrieval" }))));
+      summary.appendChild(h("p", { class: "muted small", text: "Evidence coverage is a retrieval signal, not a measure of answer accuracy." }));
+      if (r.context) {
+        var copy = h("button", { class: "btn secondary", type: "button", text: "Copy agent context" });
+        copy.addEventListener("click", function () {
+          if (!navigator.clipboard) { x.error = "Clipboard access is unavailable in this browser."; paint(true); return; }
+          navigator.clipboard.writeText(r.context).then(function () { copy.textContent = "Copied"; })
+            .catch(function () { x.error = "Could not copy. Open the full context below and select the text."; paint(true); });
+        });
+        summary.appendChild(copy);
+      }
+      results.appendChild(summary);
+      Object.keys(r.errors || {}).forEach(function (channel) {
+        results.appendChild(h("p", { class: "alert warn", text: channel + " could not be searched: " + r.errors[channel] }));
+      });
+      r.items.forEach(function (item, index) {
+        var card = h("article", { class: "card evidence-card" },
+          h("div", { class: "q-head" }, h("span", { class: "evidence-rank", text: String(index + 1).padStart(2, "0") }),
+            h("span", { class: "chip", text: item.channel }), h("h3", { class: "mono evidence-id", text: item.id })),
+          h("p", { class: "prose", text: item.text }),
+          h("p", { class: "muted small", text: num(item.tokens) + " tokens" + (item.at ? " · " + item.at : "") + (item.truncated ? " · shortened to fit budget" : "") }));
+        if (item.provenance && Object.keys(item.provenance).length) {
+          var details = h("details", { class: "evidence-details" }, h("summary", { text: "Evidence and provenance" }));
+          var context = item.provenance.evidence_context;
+          if (context && context.nodes) {
+            context.nodes.forEach(function (source) {
+              var roles = (context.edges || []).filter(function (edge) { return edge.source === source.id; })
+                .map(function (edge) { return edge.polarity; }).filter(function (role, i, all) { return all.indexOf(role) === i; });
+              details.appendChild(h("div", { class: "source-quote" },
+                h("div", { class: "q-head" }, h("span", { class: "chip", text: roles.join(" / ") || "source" }), h("span", { class: "mono small", text: source.source_id })),
+                h("blockquote", { class: "prose", text: source.quote }),
+                source.truncated ? h("p", { class: "muted small", text: "Source quotation shortened to fit the evidence budget." }) : null));
+            });
+            if (context.omissions && context.omissions.length) details.appendChild(h("p", { class: "muted small", text: "Some evidence was unavailable or outside the budget: " + context.omissions.join("; ") }));
+          }
+          else {
+            var provenance = item.provenance;
+            if (provenance.admission) details.appendChild(h("p", { class: "muted small", text: provenance.admission === "verified" ? "Reviewed content verified" : "Legacy content accepted by this store's compatibility policy" }));
+            if (provenance.source_traces) details.appendChild(h("p", { class: "mono small", text: "Source traces: " + provenance.source_traces.join(", ") }));
+            if (provenance.assessment) details.appendChild(h("p", { class: "muted small", text: "Evidence: " + String(provenance.assessment.status || "unverified") + ". Source identities are citations, not independent experiments." }));
+            if (provenance.coverage) details.appendChild(h("p", { class: "muted small", text: provenance.coverage.reason || "Inspect the dated context above for supporting details." }));
+          }
+          card.appendChild(details);
+        }
+        results.appendChild(card);
+      });
+      if (!r.items.length) results.appendChild(empty("No eligible memory found", "Try a more specific question or capture relevant evidence first."));
+      if (r.context) results.appendChild(h("details", { class: "card" }, h("summary", { text: "Full agent context" }), h("pre", { class: "wrap", text: r.context })));
+    }
+    form.addEventListener("submit", function (event) {
+      event.preventDefault();
+      if (x.busy) return;
+      var requestedToken = token, requestedHash = location.hash, requestedNavigation = navigationGeneration;
+      var controller = new AbortController();
+      var deadline = setTimeout(function () { controller.abort(); }, 30000);
+      x.busy = true; x.error = ""; paint(true);
+      post("/v1/explore", { question: x.question, budget: x.budget,
+        channels: x.conversations ? ["lessons", "facts", "conversations"] : ["lessons", "facts"],
+        space: x.conversations ? x.space.trim() : undefined, as_of: x.asOf || undefined, evidence_budget: 512 }, controller.signal)
+        .then(function (result) { if (state.explorer === x && token === requestedToken && location.hash === requestedHash && navigationGeneration === requestedNavigation) x.result = result; })
+        .catch(function (error) {
+          if (state.explorer !== x || token !== requestedToken || location.hash !== requestedHash || navigationGeneration !== requestedNavigation) return;
+          x.error = error.name === "AbortError" ? "Retrieval timed out. Your question is preserved; try again." : error.message;
+        })
+        .then(function () { clearTimeout(deadline); x.busy = false; if (state.explorer === x && token === requestedToken && location.hash === requestedHash && navigationGeneration === requestedNavigation) paint(true); });
+    });
+    root.appendChild(h("div", { class: "explore-layout" }, form, results));
+    return root;
+  }
+
+  var VIEWS = { overview: viewOverview, explore: viewExplore, memories: viewMemories, review: viewReview, lesson: viewLesson, live: viewLive, fleet: viewFleet, commands: viewCommands, safety: viewSafety };
 
   function viewAuth(message) {
     var input = h("input", { id: "tok", type: "password", autocomplete: "off", spellcheck: "false", "aria-describedby": "tok-help" });
@@ -730,14 +904,14 @@
 
   function editing() {
     var a = document.activeElement;
-    return !!a && main.contains(a) && (a.tagName === "TEXTAREA" || a.tagName === "INPUT" && a.type === "text");
+    return !!a && main.contains(a) && (a.tagName === "TEXTAREA" || a.tagName === "SELECT" || a.tagName === "INPUT" && a.type !== "checkbox");
   }
   // Repaint only when what is shown changed, and never under someone's cursor: a poll must not
   // throw away a half-typed edit, a selection or the focus.
   function paint(force) {
     var route = currentRoute();
     var sig = route.id + "|" + location.hash + "|" + JSON.stringify([state.status, state.capabilities, state.memories, state.agents, state.events,
-      state.lessons, state.lesson, state.commandCatalog, state.commandResult, selected, notice]);
+      state.lessons, state.lesson, state.commandCatalog, state.commandResult, state.explorer, state.reviewDraft, selected, notice]);
     if (!force && sig === lastPaint) return;
     if (!force && editing()) return;
     lastPaint = sig;
@@ -799,13 +973,17 @@
     if (route === "overview" || route === "memories" || route === "lesson") wants.push("memories");
     if (route === "overview" || route === "fleet" || route === "safety") wants.push("agents");
     if (route === "live") wants.push("occasions");
-    if (route === "review") wants.push("lessons?status=review");
+    var reviewOffset = Number(hashQuery("offset"));
+    if (!Number.isSafeInteger(reviewOffset) || reviewOffset < 0) reviewOffset = 0;
+    var reviewPath = "lessons?status=review&limit=50&offset=" + reviewOffset;
+    if (route === "review") wants.push(reviewPath);
     if (route === "lesson") wants.push("lesson?slug=" + encodeURIComponent(hashQuery("slug")));
     if (route === "commands") wants.push("command-catalog");
     var keys = {
       capabilities: "capabilities", occasions: "events", "lessons?status=review": "lessons",
       "command-catalog": "commandCatalog"
     };
+    keys[reviewPath] = "lessons";
     return Promise.all(wants.map(function (w) { return api("/v1/" + w).then(function (d) { return [w, d]; }); }))
       .then(function (pairs) {
         // A slow poll from an earlier page or credential must never replace
@@ -841,6 +1019,16 @@
   themeSel.value = saved; applyTheme(saved);
   themeSel.addEventListener("change", function () { store("ct-theme", themeSel.value); applyTheme(themeSel.value); });
   if (commandLaunch) commandLaunch.addEventListener("click", function () { location.hash = "#/commands"; });
+  if (disconnect) disconnect.addEventListener("click", function () {
+    token = "";
+    try { sessionStorage.removeItem("ct-token"); } catch (e) { /* private mode */ }
+    refresh();
+  });
+  if (commandLaunch) {
+    var shortcut = /Mac|iPhone|iPad/.test(navigator.platform || "") ? "⌘K" : "Ctrl K";
+    commandLaunch.querySelector("kbd").textContent = shortcut;
+    commandLaunch.title = "Open command center (" + shortcut + ")";
+  }
   document.addEventListener("keydown", function (event) {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
       event.preventDefault(); location.hash = "#/commands";
@@ -852,7 +1040,7 @@
   (function bootstrapToken() {
     var m = /(?:^|[#&])token=([^&]+)/.exec(location.hash);
     if (m) {
-      token = decodeURIComponent(m[1]);
+      try { token = decodeURIComponent(m[1]); } catch (e) { token = ""; }
       try { sessionStorage.setItem("ct-token", token); } catch (e) { /* ignore */ }
       history.replaceState(null, "", location.pathname + location.search + "#/overview");
     } else {
@@ -860,7 +1048,7 @@
     }
   })();
 
-  window.addEventListener("hashchange", function () { render(); main.focus(); refresh(); });
+  window.addEventListener("hashchange", function () { navigationGeneration++; render(); main.focus(); refresh(); });
   document.addEventListener("visibilitychange", function () { if (!document.hidden) refresh(); });
   setInterval(function () { if (lastOk && connState.indexOf("ok") === 0) setConn("ok", "Live · updated " + ago(new Date(lastOk).toISOString())); }, 1000);
 

@@ -162,6 +162,10 @@ class EvidenceResolver:
         path = lesson_io.lesson_path(self.root, identity)
         if path is not None:
             try:
+                # Validate the canonical store boundary before reading bytes;
+                # legacy-compatible unsigned admission must not follow an
+                # external lesson symlink into a source quotation.
+                lesson_admission.validate_path(self.root, path)
                 fm, body = frontmatter.read(path)
                 name = fm.get("name")
                 if isinstance(name, str) and lesson_io.canonical_slug(name) == identity \
@@ -201,6 +205,7 @@ class EvidenceResolver:
         path = lesson_io.lesson_path(self.root, receipt.source_id)
         if path is not None:
             try:
+                lesson_admission.validate_path(self.root, path)
                 fm, body = frontmatter.read(path)
                 name = fm.get("name")
                 if isinstance(name, str) and lesson_io.canonical_slug(name) == receipt.source_id \

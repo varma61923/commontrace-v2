@@ -327,7 +327,8 @@ def test_store_mode_reuses_the_ranking_index_until_a_lesson_changes(root, monkey
     assert len(builds) == 1
     path = os.path.join(paths.lessons_dir(root), "lesson_check_suppression.md")
     fm, body = frontmatter.read(path)
-    frontmatter.write(path, {**fm, "core": True}, body + "\nEdited.\n")
+    frontmatter.write(path, {**fm, "core": True, "status": "review"}, body + "\nEdited.\n")
+    assert main(["lesson", "approve", "lesson_check_suppression", "--dest", root]) == 0
     for n in range(12):
         r = call(g, "POST", "/v1/recall", {"occasion_id": f"core-{n}", "query": query})[1]
         assert [i["id"] for i in r["deliver"]] == ["lesson_check_suppression"]

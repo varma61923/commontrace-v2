@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 
 from commontrace import hierarchical, paths
@@ -61,6 +62,17 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     p_srch.add_argument("--dest", default=None)
     p_srch.set_defaults(func=run_search)
+
+    p_explain = sub.add_parser("explain", help="Read a fact's bounded source quotes and proof relationships.")
+    p_explain.add_argument("fact_id")
+    p_explain.add_argument("--scope", default="", help="Route to an authorized scope or public memory.")
+    p_explain.add_argument("--as-of", default=None, help="Valid-time query; current trust checks still apply.")
+    p_explain.add_argument("--budget", type=int, default=512, help="Evidence quote token allowance.")
+    p_explain.add_argument("--max-sources", type=int, default=16)
+    p_explain.add_argument("--max-depth", type=int, default=4)
+    p_explain.add_argument("--json", action="store_true")
+    p_explain.add_argument("--dest", default=None)
+    p_explain.set_defaults(func=run_explain)
 
     p_sup = sub.add_parser("supersede", help="Supersede an existing fact with a new one.")
     p_sup.add_argument("old_id", help="ID of the outdated fact.")
@@ -163,6 +175,25 @@ def run_add(args: argparse.Namespace) -> int:
         print(f"{verb} '{fact.id}' (confirmations: {fact.confirmations}, conf: {fact.confidence}).")
     else:
         print(f"Added fact '{fact.id}' (category: {fact.category}, conf: {fact.confidence}).")
+    return 0
+
+
+def run_explain(args: argparse.Namespace) -> int:
+    from commontrace.evidence_context import explain_fact
+
+    try:
+        proof = explain_fact(paths.resolve_root(args.dest), args.fact_id, scope=args.scope, as_of=args.as_of,
+                             budget=args.budget, max_sources=args.max_sources, max_depth=args.max_depth)
+    except ValueError as exc:
+        print(f"[commontrace] {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(proof.to_dict(), indent=2, ensure_ascii=False))
+    else:
+        print(f"{proof.statement}\nEvidence admission: {proof.assessment.status}")
+        print(proof.context or "(no eligible source quotations within the budget)")
+        for reason in proof.omissions:
+            print(f"[commontrace] {reason}", file=sys.stderr)
     return 0
 
 

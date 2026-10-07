@@ -1,9 +1,7 @@
 """SQLite MVCC vector snapshots, fenced publication and bounded reclamation."""
 from __future__ import annotations
 
-import heapq
 import json
-import math
 import secrets
 import sqlite3
 import struct
@@ -11,6 +9,7 @@ from collections.abc import Awaitable, Callable, Iterable, Iterator, Sequence
 from typing import Protocol, TypeVar
 
 from commontrace.conversation.store import write_txn
+from commontrace.vector_scoring import cosine_topk
 from commontrace.vector_snapshots import (
     BuildLease,
     ReadLease,
@@ -264,19 +263,13 @@ class SQLiteSnapshots:
                     statement += " AND key IN (SELECT value FROM json_each(?))"
                     params += (json.dumps(ids),)
                 cursor = self._db.execute(statement, params)
-                def scores() -> Iterator[VectorHit]:
+                def vector_rows() -> Iterator[tuple[str, bytes]]:
                     while rows := cursor.fetchmany(256):
                         for key, blob in rows:
-                            if len(blob) != self._scope[3] * 4:
-                                raise ValueError("stored vector dimension is corrupt")
-                            stored = struct.unpack(f"<{self._scope[3]}f", blob)
-                            norm = math.hypot(*stored) * math.hypot(*query)
-                            if not norm or not math.isfinite(norm):
-                                raise ValueError("stored vector is corrupt")
-                            score = math.fsum(a * b for a, b in zip(stored, query)) / norm
-                            yield VectorHit(key, min(1.0, max(-1.0, score)))
+                            yield key, blob
                 try:
-                    result = heapq.nsmallest(top_k, scores(), key=lambda hit: (-hit.score, hit.key))
+                    result = [VectorHit(key, score) for key, score in cosine_topk(
+                        vector_rows(), query, dimension=self._scope[3], top_k=top_k)]
                 finally:
                     cursor.close()
                 self._db.execute("COMMIT")

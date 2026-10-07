@@ -406,6 +406,14 @@ class Gateway:
         self._route("GET", "/v1/openapi.json", self._openapi, summary="This API's schema.", auth=False)
         self._route("GET", "/v1/command-catalog", self._command_catalog,
                     summary="CLI command catalog for the authenticated console.")
+        self._route("POST", "/v1/explore", self._explore, request={
+            "question": "string: what to retrieve",
+            "channels": "optional list of lessons, facts or conversations",
+            "space": "required for the conversations channel",
+            "budget": "optional context budget from 50 to 8000 tokens",
+            "evidence_budget": "optional fact evidence budget from 0 to 2000 tokens",
+            "as_of": "optional ISO date or timestamp",
+        }, summary="Inspect eligible memory and provenance without recording an occasion or outcome.")
         self._route("POST", "/v1/command", self._command, request={
             "command": "one command name from /v1/command-catalog",
             "args": "optional array of command arguments; the gateway store root is implicit",
@@ -695,6 +703,14 @@ class Gateway:
         return {
             "commands": ui_commands.catalog(),
             "store": os.path.basename(self.root.rstrip(os.sep)) or "store",
+            "approval_enabled": self.allow_approval,
+            "scoped": bool(self._request_scope()),
+            "execution_policy": {
+                "read_only": not self.allow_approval,
+                "scoped_commands": "help_only" if self._request_scope() else "store_admin",
+                "lesson_review": "revision_checked_endpoints",
+                "force_overrides": "terminal_only",
+            },
         }
 
     def _command(self, req: dict, _query) -> dict:
@@ -702,8 +718,11 @@ class Gateway:
 
         command = req.get("command")
         try:
-            return ui_commands.run(self.root, command, req.get("args"))
+            return ui_commands.run(self.root, command, req.get("args"),
+                                   allow_approval=self.allow_approval, scope=self._request_scope())
         except ui_commands.UICommandError as exc:
+            if exc.status != 400:
+                raise ApiError(exc.status, exc.code, str(exc)) from None
             code = "command_unavailable" if "terminal-only" in str(exc) else "bad_request"
             status = 409 if code == "command_unavailable" else 400
             raise ApiError(status, code, str(exc)) from None
@@ -802,9 +821,8 @@ class Gateway:
         scope = self._request_scope()
         if not scope:
             return space
-        scoped = f"{scope}:{space}"
-        if len(scoped) <= 128:
-            return scoped
+        # Store space identifiers disallow ':'. Encode the complete namespace
+        # for every scoped space, including short names, without lossy escaping.
         digest = hashlib.sha256(f"{scope}\x1f{space}".encode("utf-8")).hexdigest()[:32]
         return f"container-{digest}"
 
@@ -847,7 +865,7 @@ class Gateway:
                 return None
 
         active, term_cache = _cached_active(self.root, read)
-        from commontrace import lesson_cache
+        from commontrace import dosage, lesson_admission, lesson_cache
 
         eligible = lesson_cache.filter_eligible(active, scope=scope)
         if len(eligible) != len(active):
@@ -858,12 +876,29 @@ class Gateway:
         out = []
         for hit in ranked:
             try:
+                lesson_admission.validate_path(self.root, hit.path)
                 body = _cached_body(hit.path, expected_identity=term_cache.stamps.get(hit.path))
-            except frontmatter.FrontmatterError:
+                fm, current_body = frontmatter.read(hit.path)
+            except (frontmatter.FrontmatterError, lesson_admission.AdmissionError):
                 continue
-            out.append({"id": hit.slug, "text": body, "protected": bool(projected.get(hit.path, {}).get("core")),
-                        "meta": {"description": hit.description, "relevance": round(hit.relevance, 4)}})
+            if body != current_body or not lesson_cache.fresh_eligible(
+                    hit.path, fm, hit.slug, scope=scope, body=current_body, root=self.root,
+                    expected_core=dosage.is_core(projected.get(hit.path, {}))):
+                continue
+            out.append({"id": hit.slug, "text": current_body, "protected": dosage.is_core(fm),
+                        "meta": {"description": str(fm.get("description", "")),
+                                 "relevance": round(hit.relevance, 4)}})
         return out
+
+    def _explore(self, req: dict, _query) -> dict:
+        from commontrace import explorer
+
+        space = req.get("space")
+        scoped_space = self._scoped_space(_ident(space, "space")) if space is not None else None
+        try:
+            return explorer.inspect(self.root, req, scope=self._request_scope(), space=scoped_space)
+        except explorer.ExplorerError as exc:
+            raise _bad(str(exc)) from None
 
     def _conversation_add(self, req: dict, _query) -> dict:
         from commontrace.conversation import ConversationError, Store
@@ -1097,20 +1132,22 @@ class Gateway:
 
     def _lesson_edit(self, body, _query) -> dict:
         self._acting()
-        fields = {k: v for k, v in body.items() if k != "slug"}
+        fields = {k: v for k, v in body.items() if k not in {"slug", "expected_revision"}}
         scope = self._request_scope()
-        return self._workbench(lambda w: w.edit(self.root, body.get("slug", ""), fields, "console", scope))
+        return self._workbench(lambda w: w.edit(self.root, body.get("slug", ""), fields, "console", scope,
+                                                expected_revision=body.get("expected_revision")))
 
     def _lesson_approve(self, body, _query) -> dict:
         self._acting()
         scope = self._request_scope()
         return self._workbench(lambda w: w.approve(self.root, body.get("slug", ""), body.get("rationale"),
-                                                   "console", scope))
+                                                   "console", scope, expected_revision=body.get("expected_revision")))
 
     def _lesson_reject(self, body, _query) -> dict:
         self._acting()
         scope = self._request_scope()
-        return self._workbench(lambda w: w.reject(self.root, body.get("slug", ""), body.get("reason", ""), scope))
+        return self._workbench(lambda w: w.reject(self.root, body.get("slug", ""), body.get("reason", ""), scope,
+                                                  expected_revision=body.get("expected_revision")))
 
     @staticmethod
     def _limit(query: dict, default: int, cap: int) -> int:

@@ -776,6 +776,21 @@ simulation and reality are never pooled, and nothing is withheld until an experi
 started on purpose. Open the printed console URL for the verdicts, who is calling, and what
 is being withheld or withdrawn (no build step; works at phone width, light or dark).
 
+**Explore memory** retrieves eligible lessons, facts and an optional conversation
+space without recording an occasion or calling a model. Inspect supporting
+quotations, source relationships, context budgets and insufficient-evidence
+signals before copying context. `POST /v1/explore` offers the same authenticated
+operation with `question`, `channels`, `budget`, `evidence_budget` and optional
+`space`/`as_of`. Coverage is a retrieval signal, not an answer-accuracy score.
+For CLI/MCP use, `commontrace recall "question" --evidence-budget 512` expands
+cited premises; `commontrace fact explain FACT_ID` inspects one fact's evidence.
+
+Review pages send the displayed content revision with every decision. A draft
+changed by another writer returns `409 stale_review`; unsaved edits are retained
+until explicitly reloaded. Queues load 50 drafts per page. The command center
+starts with diagnostics, respects the session's write policy, and routes lesson
+decisions through the revision-checked review workflow.
+
 ## Quick Start — Agents with no terminal (MCP)
 
 Everything above is a CLI, which quietly restricts CommonTrace to agents that

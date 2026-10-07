@@ -348,6 +348,9 @@ def run_approve(args: argparse.Namespace) -> int:
 
     with frontmatter.locked(path):
         fm, body = frontmatter.read(path)
+        precondition = getattr(args, "review_precondition", None)
+        if precondition is not None:
+            precondition(path, fm, body)
         if fm.get("status") != "review":
             print(
                 f"[commontrace] {args.slug} has status={fm.get('status')!r}, not 'review' -- "
@@ -529,6 +532,9 @@ def run_reject(args: argparse.Namespace) -> int:
 
     with frontmatter.locked(path):
         fm, body = frontmatter.read(path)
+        precondition = getattr(args, "review_precondition", None)
+        if precondition is not None:
+            precondition(path, fm, body)
         if fm.get("status") != "review":
             print(
                 f"[commontrace] {args.slug} has status={fm.get('status')!r}, not 'review' -- "

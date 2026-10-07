@@ -166,9 +166,15 @@ def _subject(root: str, path: str) -> str:
 
     base = os.path.realpath(paths.lessons_dir(root))
     candidate = os.path.realpath(path)
-    if os.path.dirname(candidate) != base or not candidate.endswith(".md"):
+    if (os.path.islink(path) or not paths.is_within_directory(root, candidate)
+            or os.path.dirname(candidate) != base or not candidate.endswith(".md")):
         raise AdmissionError("lesson admission requires an authoritative local lesson path")
     return canonical_slug(os.path.basename(candidate))
+
+
+def validate_path(root: str, path: str) -> None:
+    """Reject external or aliased lesson sources before opening their contents."""
+    _subject(root, path)
 
 
 def _root_id(root: str) -> str:
@@ -205,8 +211,8 @@ def _open(root: str, *, write: bool = False) -> sqlite3.Connection:
 
 
 def _record_state(root: str, path: str, *, action: str, digest: str, actor: str) -> dict[str, Any]:
-    key_id, keys = _keys(root, create=True)
     subject = _subject(root, path)
+    key_id, keys = _keys(root, create=True)
     payload: dict[str, Any] = {
         "version": 1, "root": _root_id(root), "subject": subject, "id": uuid.uuid4().hex,
         "action": action, "digest": digest, "actor": actor,
@@ -263,6 +269,9 @@ def eligible(root: str, path: str, fm: Mapping[str, Any], body: str, *, as_of: s
 
     del as_of
     try:
+        # Unsigned compatibility permits existing documents, never external
+        # file reads or symlink aliases of a different lesson identity.
+        subject = _subject(root, path)
         strict = approval.load_policy(root).require_integrity
         if fm.get("status", "active") != "active":
             return False
@@ -274,7 +283,7 @@ def eligible(root: str, path: str, fm: Mapping[str, Any], body: str, *, as_of: s
             if os.path.exists(_ledger_path(root)):
                 db = _open(root)
                 try:
-                    bound = db.execute("SELECT 1 FROM admissions WHERE subject=?", (_subject(root, path),)).fetchone()
+                    bound = db.execute("SELECT 1 FROM admissions WHERE subject=?", (subject,)).fetchone()
                 finally:
                     db.close()
                 return bound is None
@@ -282,7 +291,6 @@ def eligible(root: str, path: str, fm: Mapping[str, Any], body: str, *, as_of: s
         if (not isinstance(receipt, dict) or set(receipt) != {"version", "id"}
                 or type(receipt.get("version")) is not int or receipt["version"] != 1):
             return False
-        subject = _subject(root, path)
         _, keys = _keys(root)
         db = _open(root)
         try:
