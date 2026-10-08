@@ -132,7 +132,7 @@ class TestGenericJudge:
 
 class TestLongMemEvalJudge:
     def test_header_references(self):
-        assert "2ec2a557f339b6c0369619b1ed5793734cc87533" in open(longmemeval_mod.__file__).read()
+        assert "9e0b455f4ef0e2ab8f2e582289761153549043fc" in open(longmemeval_mod.__file__).read()
         assert "evaluate_qa.py" in open(longmemeval_mod.__file__).read()
 
     def test_prompt_templates_verbatim(self):
@@ -286,7 +286,7 @@ class TestLoCoMoJudge:
 class TestBEAMJudge:
     def test_header_references(self):
         content = open(beam_mod.__file__).read()
-        assert "85048250af007704feccbb0bc46c6a8240b49a51" in content
+        assert "b2da22eac88bb0874c64665f13457eb99835774a" in content
         assert "compute_metrics.py" in content
         assert "prompts.py" in content
 

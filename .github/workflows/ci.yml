@@ -138,6 +138,91 @@ jobs:
             --cov=commontrace.fact_index --cov-branch --cov-fail-under=95 \
             --cov-report=term-missing -q
 
+  conversation-quality:
+    name: conversation quality (paired public sample)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install core and measurement verification tooling
+        run: python -m pip install -e . "mypy>=1.15,<2.0" "pytest>=9.0.3,<10.0"
+
+      - name: Verify typed measurement contracts
+        run: |
+          python -m mypy --strict --follow-imports=silent --explicit-package-bases \
+            benchmarks/compare.py benchmarks/measurement.py
+          python -m pytest tests/test_benchmark_compare.py tests/test_benchmark_measurement.py -q
+
+      - name: Prepare pinned data and source reference outside the checkout
+        env:
+          REFERENCE_SHA: 973e59979f326559a863ed2dbcc02b187402dad4
+        run: |
+          curl --fail --location --retry 3 \
+            https://raw.githubusercontent.com/snap-research/locomo/cbfbc1dba6bc53d00625212a0f22d55ffee7c1fc/data/locomo10.json \
+            --output "$RUNNER_TEMP/locomo10.json"
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import random
+          from collections import defaultdict
+
+          path = os.path.join(os.environ["RUNNER_TEMP"], "locomo10.json")
+          with open(path, "rb") as source:
+              raw = source.read()
+          expected = "79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4"
+          if hashlib.sha256(raw).hexdigest() != expected:
+              raise SystemExit("public dataset checksum changed")
+          cases = json.loads(raw)
+          categories = defaultdict(list)
+          for case_index, case in enumerate(cases):
+              for question_index, question in enumerate(case["qa"]):
+                  if question["category"] in (1, 2, 3, 4):
+                      categories[question["category"]].append((case_index, question_index))
+          total = sum(map(len, categories.values()))
+          target = total // 10
+          quotas = {c: len(items) * target // total for c, items in categories.items()}
+          remainder = sorted(categories, key=lambda c: (-(len(categories[c]) * target % total), c))
+          for c in remainder[:target - sum(quotas.values())]:
+              quotas[c] += 1
+          rng = random.Random(61923)
+          selected = {pair for c in sorted(categories) for pair in rng.sample(categories[c], quotas[c])}
+          for index, case in enumerate(cases):
+              case["qa"] = [q for n, q in enumerate(case["qa"]) if (index, n) in selected]
+          if sum(len(case["qa"]) for case in cases) != target or target != 154:
+              raise SystemExit("stratified sample size changed")
+          with open(os.path.join(os.environ["RUNNER_TEMP"], "locomo-sample.json"), "w", encoding="utf-8") as output:
+              json.dump(cases, output)
+          print("Pinned LoCoMo sample:", target, "questions; category counts:", quotas)
+          PY
+          git fetch --no-tags --depth=1 origin "$REFERENCE_SHA"
+          git worktree add --detach "$RUNNER_TEMP/measurement-reference" "$REFERENCE_SHA"
+          # Both product revisions use this same corrected evaluation harness.
+          cp benchmarks/conversation_bench.py benchmarks/compare.py benchmarks/measurement.py \
+            "$RUNNER_TEMP/measurement-reference/benchmarks/"
+
+      - name: Require no statistically supported retrieval regression
+        run: |
+          (
+            cd "$RUNNER_TEMP/measurement-reference"
+            python benchmarks/conversation_bench.py --dataset locomo \
+              --data "$RUNNER_TEMP/locomo-sample.json" --root "$RUNNER_TEMP/reference-store" \
+              --budget 1500,4000 --embedder none --rerank none \
+              --out "$RUNNER_TEMP/reference.json"
+          )
+          python benchmarks/conversation_bench.py --dataset locomo \
+            --data "$RUNNER_TEMP/locomo-sample.json" --root "$RUNNER_TEMP/candidate-store" \
+            --budget 1500,4000 --embedder none --rerank none \
+            --out "$RUNNER_TEMP/candidate.json"
+          python -m benchmarks.compare --baseline "$RUNNER_TEMP/reference.json" \
+            --candidate "$RUNNER_TEMP/candidate.json" --check --seed 61923
+
   sdk-typescript:
     name: sdk (typescript)
     runs-on: ubuntu-latest

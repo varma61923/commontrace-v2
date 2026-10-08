@@ -1,7 +1,7 @@
-# Reproduces BEAM official judge prompt and scoring verbatim.
-# Source: https://github.com/mohammadtavakoli78/BEAM/blob/main/src/evaluation/compute_metrics.py
-# Source: https://github.com/mohammadtavakoli78/BEAM/blob/main/src/prompts.py
-# Commit: 85048250af007704feccbb0bc46c6a8240b49a51 (arXiv 2510.27246)
+# BEAM compatibility profile; semantic alignment and official aggregation differ from upstream.
+# Source: https://github.com/mohammadtavakoli78/BEAM/blob/b2da22eac88bb0874c64665f13457eb99835774a/src/evaluation/compute_metrics.py
+# Source: https://github.com/mohammadtavakoli78/BEAM/blob/b2da22eac88bb0874c64665f13457eb99835774a/src/prompts.py
+# Commit: b2da22eac88bb0874c64665f13457eb99835774a (arXiv 2510.27246)
 from __future__ import annotations
 
 import json
@@ -24,7 +24,7 @@ BEAM_ABILITIES: list[str] = [
     "temporal_reasoning",
 ]
 
-# Exact prompt verbatim from https://github.com/mohammadtavakoli78/BEAM/blob/main/src/prompts.py
+# Exact prompt verbatim from https://github.com/mohammadtavakoli78/BEAM/blob/b2da22eac88bb0874c64665f13457eb99835774a/src/prompts.py
 UNIFIED_LLM_JUDGE_BASE_PROMPT = """
 You are an expert evaluator tasked with judging whether the LLM's response demonstrates compliance with the specified RUBRIC CRITERION.
 

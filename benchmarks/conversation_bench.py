@@ -25,14 +25,16 @@ import random
 import re
 import statistics
 import sys
+import tempfile
 import time
 from collections import defaultdict
 from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from benchmarks.bootstrap import bootstrap_ci, compare_runs, format_comparison_markdown  # noqa: E402
 from benchmarks.cache import BenchmarkCache, CostGuard, compute_cost_usd  # noqa: E402
+from benchmarks.compare import clustered_estimates, ranking_metrics
+from benchmarks.compare import compare_runs as paired_compare  # noqa: E402
 from benchmarks.completeness import bucket_counts, grade_context_completeness  # noqa: E402
 from benchmarks.judges import (  # noqa: E402
     BEAM_ABILITIES,
@@ -40,8 +42,20 @@ from benchmarks.judges import (  # noqa: E402
     get_judge,
     is_scorable_category,
 )
+from benchmarks.measurement import (  # noqa: E402
+    SCHEMA_VERSION,
+    adapter_digest,
+    canonical_digest,
+    dataset_digest,
+    gold_sessions,
+    gold_turns,
+    product_digest,
+    question_digest,
+    ranking_fields,
+    shared_source_clusters,
+)
 from commontrace.conversation import Options, Store, recall  # noqa: E402
-from commontrace.conversation.search import assemble, tokens  # noqa: E402
+from commontrace.conversation.search import tokens  # noqa: E402
 
 LOCOMO_CATEGORIES = {1: "multi-hop", 2: "temporal", 3: "open-domain", 4: "single-hop"}
 
@@ -74,7 +88,8 @@ def chunk_fingerprint(dataset: str, data: str, limit: int, seed: int, personas: 
     except OSError:
         size, mtime = -1, -1
     return {"dataset": dataset, "data": path, "size": size, "mtime": mtime,
-            "limit": int(limit or 0), "seed": int(seed or 0), "personas": personas or ""}
+            "limit": int(limit or 0), "seed": int(seed or 0), "personas": personas or "",
+            "dataset_sha256": dataset_digest(path), "adapter_sha256": adapter_digest(__file__)}
 
 
 def _payload_from_cases(cases) -> list[dict]:
@@ -131,6 +146,8 @@ def prepare_chunk_set(args) -> tuple[list, dict]:
     digest = _hashlib.sha256(json.dumps(fingerprint, sort_keys=True).encode("utf-8")).hexdigest()
     name = getattr(args, "chunk_set", None) or f"{args.dataset}-{digest[:8]}"
     name = re.sub(r"[^A-Za-z0-9._-]", "_", name)
+    if name in (".", ".."):
+        raise ValueError("chunk-set name must not be a relative directory")
     fdir = os.path.join(args.root, "runs", "chunk_sets", name)
     manifest_path = os.path.join(fdir, "manifest.json")
     chunks_path = os.path.join(fdir, "chunks.jsonl")
@@ -140,11 +157,13 @@ def prepare_chunk_set(args) -> tuple[list, dict]:
             manifest = json.load(open(manifest_path, encoding="utf-8"))
         except (ValueError, OSError):
             manifest = None
-        if manifest and manifest.get("fingerprint") == fingerprint:
+        if (manifest and manifest.get("fingerprint") == fingerprint
+                and manifest.get("chunks_sha256") == dataset_digest(chunks_path)):
             with open(chunks_path, encoding="utf-8") as fh:
                 payload = [json.loads(line) for line in fh if line.strip()]
             info = dict(manifest.get("info") or {})
-            info.update({"name": name, "path": fdir, "reused": True, "layout": CHUNK_SET_LAYOUT})
+            info.update({"name": name, "path": fdir, "reused": True, "layout": CHUNK_SET_LAYOUT,
+                         "fingerprint": fingerprint})
             return _cases_from_payload(payload), info
 
     cases = _load_cases(args)
@@ -156,9 +175,9 @@ def prepare_chunk_set(args) -> tuple[list, dict]:
             fh.write(json.dumps(case, ensure_ascii=False, default=str) + "\n")
     info = {"name": name, "path": fdir, "reused": False, "layout": CHUNK_SET_LAYOUT,
             "dataset": args.dataset, "cases": len(cases),
-            "questions": sum(len(qs) for _s, _sess, _n, qs in cases)}
+            "questions": sum(len(qs) for _s, _sess, _n, qs in cases), "fingerprint": fingerprint}
     manifest = {"fingerprint": fingerprint, "info": info, "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
-                "layout": CHUNK_SET_LAYOUT}
+                "layout": CHUNK_SET_LAYOUT, "chunks_sha256": dataset_digest(chunks_path)}
     with open(manifest_path, "w", encoding="utf-8") as fh:
         json.dump(manifest, fh, indent=2, sort_keys=True)
     return cases, info
@@ -198,12 +217,11 @@ def locomo_cases(path: str):
                 messages.append({"id": turn["dia_id"], "speaker": turn["speaker"], "text": text})
             sessions.append((f"session {n}", c.get(f"session_{n}_date_time"), messages))
             n += 1
-        refs = {m["id"] for _s, _d, ms in sessions for m in ms}
         questions = []
         for i, qa in enumerate(conv["qa"]):
             if qa.get("category") not in LOCOMO_CATEGORIES:
                 continue
-            gold = {e.strip() for e in qa.get("evidence", []) if e.strip() in refs}
+            gold = {str(e).strip() for e in qa.get("evidence", []) if str(e).strip()}
             questions.append({"id": f"{conv['sample_id']}-{i}", "question": qa["question"],
                               "answer": str(qa.get("answer", "")), "type": LOCOMO_CATEGORIES[qa["category"]],
                               "evidence": gold, "sessions": set()})
@@ -212,13 +230,21 @@ def locomo_cases(path: str):
 
 def longmemeval_cases(path: str, limit: int, seed: int):
     data = json.load(open(path))
-    if limit:
+    if limit and limit < len(data):
         by_type = defaultdict(list)
         for q in data:
             by_type[q["question_type"]].append(q)
         rng = random.Random(seed)
-        share = max(1, limit // len(by_type))
-        data = [q for t in sorted(by_type) for q in rng.sample(by_type[t], min(share, len(by_type[t])))]
+        # Balanced categories with remainder redistribution; exactly limit items.
+        categories = sorted(by_type)
+        for category in categories:
+            rng.shuffle(by_type[category])
+        selected = []
+        while len(selected) < limit:
+            for category in categories:
+                if by_type[category] and len(selected) < limit:
+                    selected.append(by_type[category].pop())
+        data = selected
     for q in data:
         sessions, evidence = [], set()
         for sid, date, session in zip(q["haystack_session_ids"], q["haystack_dates"], q["haystack_sessions"]):
@@ -308,7 +334,6 @@ def beam_cases(path: str, limit: int = 0):
             messages = [{"id": str(m["id"]), "role": m["role"], "speaker": m["role"],
                          "text": BEAM_MARK.sub("", str(m["content"] or ""))} for m in session]
             sessions.append((f"session {n + 1}", when or last, messages))
-        refs = {m["id"] for _s, _d, ms in sessions for m in ms}
         probing = ast.literal_eval(row["probing_questions"]) if isinstance(row["probing_questions"], str) \
             else row["probing_questions"]
         questions = []
@@ -321,7 +346,7 @@ def beam_cases(path: str, limit: int = 0):
                     "question": q["question"],
                     "answer": str(answer),
                     "type": category,
-                    "evidence": _ids(q.get("source_chat_ids")) & refs,
+                    "evidence": _ids(q.get("source_chat_ids")),
                     "sessions": set(),
                     "rubric": q.get("rubric") or [],
                     "raw": q,
@@ -356,8 +381,8 @@ Answer: {answer}
 Reply with exactly one word: CORRECT or WRONG."""
 
 
-def make_full_context(sessions: list, budget: int) -> tuple[str, int]:
-    """Assemble chronological raw session history up to budget tokens."""
+def make_full_context(sessions: list, budget: int | None) -> tuple[str, int]:
+    """Assemble chronological raw history; None retains the entire history."""
     blocks = []
     spent = 0
     for session, date, messages in sessions:
@@ -365,19 +390,19 @@ def make_full_context(sessions: list, budget: int) -> tuple[str, int]:
         header_tok = tokens(header) + 1
         lines = [header]
         spent += header_tok
-        if spent > budget:
+        if budget is not None and spent > budget:
             break
         for m in messages:
             speaker = m.get("speaker") or m.get("role") or "speaker"
             text = m.get("text") or ""
             line = f"{speaker}: {text}"
             cost = tokens(line) + 1
-            if spent + cost > budget:
+            if budget is not None and spent + cost > budget:
                 break
             lines.append(line)
             spent += cost
         blocks.append("\n".join(lines))
-        if spent >= budget:
+        if budget is not None and spent >= budget:
             break
     ctx = "\n\n".join(blocks)
     return ctx, tokens(ctx)
@@ -504,12 +529,42 @@ def grade_answer(
     return res
 
 
+def evaluation_config_binding(config: object) -> dict[str, object]:
+    # Endpoints may embed userinfo or query credentials; bind their exact
+    # configuration without publishing URL bytes or private account metadata.
+    fields = {k: getattr(config, k) for k in ("provider", "model", "base_url", "region", "project")}
+    return {"provider": fields["provider"], "model": fields["model"],
+            "configuration_sha256": question_digest(fields)}
+
+
+def product_digest_for_judges(repository: str) -> str:
+    import hashlib
+
+    directory = os.path.join(repository, "benchmarks", "judges")
+    digest = hashlib.sha256()
+    for name in sorted(os.listdir(directory)):
+        if name.endswith(".py"):
+            digest.update(name.encode("utf-8") + b"\0")
+            with open(os.path.join(directory, name), "rb") as source:
+                digest.update(source.read())
+    return digest.hexdigest()
+
+
 def run(args) -> dict:
-    os.makedirs(args.root, exist_ok=True)
+    repository = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    initial_product = product_digest(repository)
+    if args.limit < 0 or args.seed < 0:
+        raise ValueError("limit and seed must be nonnegative")
     budgets = [int(b) for b in str(args.budget).split(",")]
+    if not budgets or any(b <= 0 for b in budgets) or len(set(budgets)) != len(budgets):
+        raise ValueError("budgets must be distinct positive integers")
     modes = [m.strip() for m in getattr(args, "modes", "memory").split(",") if m.strip()]
     if not modes:
         modes = ["memory"]
+    if len(set(modes)) != len(modes) or any(m not in ("memory", "full-context", "budgeted-history", "no-memory")
+                                          for m in modes):
+        raise ValueError("modes must be distinct supported reference modes")
+    os.makedirs(args.root, exist_ok=True)
 
     judge_choice = getattr(args, "judge", "auto")
     if judge_choice == "auto":
@@ -553,50 +608,94 @@ def run(args) -> dict:
 
     # Cached prep: parse once, then every sweep with the same fingerprint reuses it.
     cases, chunk_info = prepare_chunk_set(args)
+    spaces = [re.sub(r"[^A-Za-z0-9._-]", "_", case[0]) for case in cases]
+    ids = [q["id"] for _space, _sessions, _now, qs in cases for q in qs]
+    if len(set(spaces)) != len(spaces) or len(set(ids)) != len(ids) or not ids:
+        raise ValueError("benchmark cases and questions must have unique, nonempty identities")
+    clusters = shared_source_clusters(cases) if args.dataset == "longmemeval" else {c[0]: c[0] for c in cases}
+    fingerprint = chunk_info["fingerprint"]
+    provenance = {
+        "dataset_sha256": fingerprint["dataset_sha256"],
+        "adapter_sha256": fingerprint["adapter_sha256"],
+        "product_sha256": initial_product,
+        "sampling": {"seed": args.seed, "limit": args.limit, "personas": getattr(args, "personas", "")},
+        "evaluation": {"answer_enabled": args.answer, "token_accounting": "ceil-characters-divided-by-four",
+                       "completeness_sha256": dataset_digest(os.path.join(repository, "benchmarks", "completeness.py"))},
+    }
+
+    if args.answer:
+        cfg_a, cfg_j = _get_llm_config(ans_model), _get_llm_config(j_model)
+        provenance["evaluation"].update({
+            "reader_prompt_sha256": question_digest({"prompt": ANSWER_PROMPT}),
+            "judge_source_sha256": product_digest_for_judges(repository),
+            "completion_source_sha256": dataset_digest(os.path.join(repository, "commontrace", "llm.py")),
+            "reader": evaluation_config_binding(cfg_a),
+            "judge": evaluation_config_binding(cfg_j),
+        })
 
     rows_by_mode = {m: {b: [] for b in budgets} for m in modes}
-    ingest_s, recall_s, full_tokens = 0.0, 0.0, []
+    ingest_s, full_tokens = 0.0, []
+    recall_seconds = {b: 0.0 for b in budgets}
 
     for space, sessions, now, questions in cases:
         with Store(args.root, re.sub(r"[^A-Za-z0-9._-]", "_", space)) as store:
-            t = time.time()
-            if store.stats()["turns"] < sum(len(ms) for _s, _d, ms in sessions):
+            # A same-sized edited corpus must not reuse a stale canonical store.
+            source_hash = question_digest({"sessions": sessions})
+            previous_hash = store.get_meta("benchmark_sources_sha256")
+            if previous_hash is not None and previous_hash != source_hash:
+                raise ValueError("benchmark store contains a different source corpus; use a fresh --root")
+            if previous_hash is None and store.stats()["turns"]:
+                raise ValueError("benchmark store has unverified sources; use a fresh --root")
+            t = time.perf_counter()
+            if previous_hash is None:
                 for session, date, messages in sessions:
                     store.add(session, messages, session_at=date)
-            ingest_s += time.time() - t
+                store.set_meta("benchmark_sources_sha256", source_hash)
+                store.set_meta("benchmark_canonical_sha256", canonical_digest(store))
+            if store.get_meta("benchmark_canonical_sha256") != canonical_digest(store):
+                raise ValueError("benchmark source store was modified; use a fresh --root")
+            initial_canonical = store.get_meta("benchmark_canonical_sha256")
+            ingest_s += time.perf_counter() - t
             full_tokens.append(sum(tokens(m["text"]) for _s, _d, ms in sessions for m in ms))
 
             for q in questions:
-                t = time.time()
-                r = recall(store, q["question"], now=now, options=opts)
-                recall_s += time.time() - t
-
-                # Compute memory contexts for each budget
+                # Each budget follows the entire public recall path, including its
+                # temporal, eligibility, standing-instruction and graph fences.
+                turn_gold = gold_turns(q["evidence"], sessions)
+                session_gold = gold_sessions(turn_gold, q["sessions"], sessions)
                 mem_contexts = {}
                 for budget in budgets:
-                    if budget != budgets[0]:
-                        opts_b = Options(**{**opts.__dict__, "budget": budget})
-                        context, used, n_tokens = assemble(store, q["question"], r.ranked, opts_b)
-                    else:
-                        context, used, n_tokens = r.context, r.turns, r.tokens
-                    kept = store.turns(used).values()
+                    opts_b = Options(**{**opts.__dict__, "budget": budget})
+                    t = time.perf_counter()
+                    r = recall(store, q["question"], now=now, options=opts_b)
+                    elapsed = time.perf_counter() - t
+                    recall_seconds[budget] += elapsed
+                    kept = store.turns(r.turns).values()
                     refs, sess = {tt.ref for tt in kept}, {tt.session for tt in kept}
-                    mem_contexts[budget] = (context, used, n_tokens, refs, sess)
+                    source_ranking = ranking_fields(r.ranked, store.turns(r.ranked), turn_gold, session_gold)
+                    ranking_scores = {
+                        level + "_" + metric: value
+                        for level in ("turn", "session")
+                        for metric, value in ranking_metrics(source_ranking["ranked_" + level + "_ids"],
+                                                            source_ranking["gold_" + level + "_ids"]).items()
+                    }
+                    mem_contexts[budget] = (r, refs, sess, elapsed, source_ranking, ranking_scores)
 
                 for mode in modes:
                     for budget in budgets:
-                        mem_context, used, n_tokens, refs, sess = mem_contexts[budget]
+                        r, refs, sess, recall_elapsed, source_ranking, ranking_scores = mem_contexts[budget]
+                        mem_context, n_tokens = r.context, r.tokens
                         if mode == "memory":
                             ctx = mem_context
                             toks = n_tokens
-                            ev = (len(q["evidence"] & refs) / len(q["evidence"])) if q["evidence"] else None
-                            comp = q["evidence"] <= refs if q["evidence"] else None
-                            ses = (len(q["sessions"] & sess) / len(q["sessions"])) if q["sessions"] else None
+                            ev = (len(turn_gold & refs) / len(turn_gold)) if turn_gold else None
+                            comp = turn_gold <= refs if turn_gold else None
+                            ses = (len(set(session_gold) & sess) / len(session_gold)) if session_gold else None
                             ans_in_ctx = answer_in(ctx, q["answer"])
                             conf = r.explain.get("confidence")
                             rtop = r.explain.get("rerank_top")
-                        elif mode == "full-context":
-                            ctx, toks = make_full_context(sessions, budget)
+                        elif mode in ("full-context", "budgeted-history"):
+                            ctx, toks = make_full_context(sessions, None if mode == "full-context" else budget)
                             ev = None
                             comp = None
                             ses = None
@@ -623,6 +722,16 @@ def run(args) -> dict:
                         row = {
                             "id": q["id"],
                             "type": q["type"],
+                            "cluster_id": clusters[space],
+                            "question_sha256": question_digest(q),
+                            "unresolved_gold_turn_ids": sorted(turn_gold - {
+                                str(message["id"]) for _s, _d, messages in sessions for message in messages}),
+                            **source_ranking,
+                            "recall_latency_s": recall_elapsed if mode == "memory" else None,
+                            "effective_embedders": sorted(store._embedders),
+                            "effective_rerank": r.explain.get("rerank"),
+                            # Reference-mode ranking metrics are intentionally undefined.
+                            **(ranking_scores if mode == "memory" else {}),
                             "tokens": toks,
                             "evidence": ev,
                             "complete": comp,
@@ -653,6 +762,9 @@ def run(args) -> dict:
                             row.update(grade_info)
                         rows_by_mode[mode][budget].append(row)
 
+            if canonical_digest(store) != initial_canonical:
+                raise RuntimeError("canonical sources changed during measurement; discard this run")
+
         if args.limit and args.dataset == "locomo" and len(rows_by_mode[modes[0]][budgets[0]]) >= args.limit:
             break
 
@@ -669,16 +781,19 @@ def run(args) -> dict:
         if len(modes) == 1:
             m = modes[0]
             results[b] = summarize(
-                rows_by_mode[m][b], args, b, ingest_s, recall_s / n, full_tokens, mode=m, judge_info=judge_info
+                rows_by_mode[m][b], args, b, ingest_s, recall_seconds[b] / n, full_tokens, mode=m, judge_info=judge_info
             )
             results[b]["chunk_set"] = chunk_info
+            results[b].update({"comparison_schema": SCHEMA_VERSION, "provenance": provenance})
         else:
             mode_summaries = {
                 m: summarize(
-                    rows_by_mode[m][b], args, b, ingest_s, recall_s / n, full_tokens, mode=m, judge_info=judge_info
+                    rows_by_mode[m][b], args, b, ingest_s, recall_seconds[b] / n, full_tokens, mode=m, judge_info=judge_info
                 )
                 for m in modes
             }
+            for summary in mode_summaries.values():
+                summary.update({"comparison_schema": SCHEMA_VERSION, "provenance": provenance})
             acc_mem = mode_summaries.get("memory", {}).get("overall", {}).get("accuracy")
             acc_nm = mode_summaries.get("no-memory", {}).get("overall", {}).get("accuracy")
             acc_fc = mode_summaries.get("full-context", {}).get("overall", {}).get("accuracy")
@@ -695,6 +810,17 @@ def run(args) -> dict:
                 "memory_lift": lift,
                 "chunk_set": chunk_info,
             }
+    if getattr(args, "bootstrap", False):
+        for summary in results.values():
+            targets = summary.get("modes_detail", {summary["mode"]: summary})
+            for target in targets.values():
+                target["bootstrap_95ci"] = clustered_estimates(target, seed=args.seed)
+            if "modes_detail" in summary:
+                summary["bootstrap_95ci"] = targets[summary["mode"]]["bootstrap_95ci"]
+    if product_digest(repository) != initial_product or adapter_digest(__file__) != provenance["adapter_sha256"]:
+        raise RuntimeError("benchmark source changed during measurement; discard this run")
+    if dataset_digest(args.data) != provenance["dataset_sha256"]:
+        raise RuntimeError("dataset changed during measurement; discard this run")
     return results
 
 
@@ -712,6 +838,12 @@ def summarize(rows, args, budget, ingest_s, recall_s, full_tokens, mode="memory"
             "session": _mean(r["session"] for r in rs),
             "answer_in_context": _mean(r["answer_in_context"] for r in rs),
             "tokens": _mean(r["tokens"] for r in rs),
+            "unresolved_gold_turn_references": sum(len(r.get("unresolved_gold_turn_ids", [])) for r in rs),
+            "recall_latency": _p50_p95([r.get("recall_latency_s") for r in rs]),
+            "ranking": {
+                level + "_" + metric: _mean(r.get(level + "_" + metric) for r in rs)
+                for level in ("turn", "session") for metric in ("recall_at_5", "recall_at_10", "ndcg_at_10")
+            },
             # Lexical completeness grader, alongside the evidence-id `complete` above.
             "completeness_score": _mean(r.get("completeness_score") for r in rs),
             "completeness": bucket_counts(r.get("completeness_bucket") for r in rs),
@@ -744,24 +876,6 @@ def summarize(rows, args, budget, ingest_s, recall_s, full_tokens, mode="memory"
         else:
             b_dict["accuracy"] = None
 
-        if getattr(args, "bootstrap", False):
-            # Compute empirical 95% bootstrap confidence intervals
-            b_dict["bootstrap_95ci"] = {
-                "evidence": bootstrap_ci([r["evidence"] for r in rs if r.get("evidence") is not None]),
-                "complete": bootstrap_ci([r["complete"] for r in rs if r.get("complete") is not None]),
-                "answer_in_context": bootstrap_ci([r["answer_in_context"] for r in rs if r.get("answer_in_context") is not None]),
-                "tokens": bootstrap_ci([r["tokens"] for r in rs if r.get("tokens") is not None]),
-            }
-            if args.answer:
-                b_dict["bootstrap_95ci"]["accuracy"] = bootstrap_ci(
-                    [r["correct"] for r in scorable if r.get("correct") is not None]
-                )
-                b_dict["bootstrap_95ci"]["mean_score"] = bootstrap_ci(
-                    [r["score"] for r in scorable if r.get("score") is not None]
-                )
-            b_dict["bootstrap_95ci"]["completeness_score"] = bootstrap_ci(
-                [r["completeness_score"] for r in rs if r.get("completeness_score") is not None]
-            )
         return b_dict
 
     by_type = defaultdict(list)
@@ -775,6 +889,9 @@ def summarize(rows, args, budget, ingest_s, recall_s, full_tokens, mode="memory"
         "embedder": args.embedder,
         "rerank": args.rerank,
         "neighbours": args.neighbours,
+        "effective_embedders": sorted({tag for row in rows for tag in row.get("effective_embedders", [])}),
+        "recall_timing": "independent public recall per budget; excludes measurement and inference",
+        "context_reference": "entire-raw-history" if mode == "full-context" else mode,
         "overall": block(rows),
         "by_type": {t: block(rs) for t, rs in sorted(by_type.items())},
         "full_history_tokens": _mean(full_tokens),
@@ -820,11 +937,11 @@ def main(argv=None) -> int:
     p.add_argument("--data", required=True)
     p.add_argument(
         "--root",
-        default=os.path.join("benchmarks", ".work"),
+        default=os.path.join(tempfile.gettempdir(), "commontrace-conversation-benchmark"),
         help="store root, reused between runs so ingestion and embeddings are cached",
     )
     p.add_argument("--budget", default="1500", help="tokens; a comma list assembles each ranking at every budget")
-    p.add_argument("--embedder", default="arctic-m", choices=("arctic-m", "minilm", "none"))
+    p.add_argument("--embedder", default="auto", choices=("auto", "arctic-m", "minilm", "none"))
     p.add_argument("--rerank", default="auto", choices=("auto", "none", "cross-encoder", "cross-encoder-fast"))
     p.add_argument("--neighbours", type=int, default=1)
     p.add_argument(
@@ -863,7 +980,7 @@ def main(argv=None) -> int:
     p.add_argument(
         "--modes",
         default="memory",
-        help="comma list of reference modes: memory, full-context, no-memory (default: memory)",
+        help="comma list of reference modes: memory, full-context (entire history), budgeted-history, no-memory",
     )
     p.add_argument(
         "--max-cost",
@@ -902,11 +1019,11 @@ def main(argv=None) -> int:
             for budget, result in results.items():
                 b_str = str(budget)
                 base_run = baseline_data.get(b_str, baseline_data)
-                comp = compare_runs(result, base_run)
+                comp = paired_compare(base_run, result)
                 result["comparison"] = comp
-                print(format_comparison_markdown(comp))
-        except Exception as e:
+        except (OSError, ValueError, TypeError) as e:
             print(f"Comparison error: {e}", file=sys.stderr)
+            return 2
 
     for budget, result in results.items():
         if "rows" in result and not args.out:

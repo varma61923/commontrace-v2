@@ -35,6 +35,33 @@ Use generated [environment reference](environment.md) for source locations;
 never dump the process environment when diagnosing credentials. Tests for local
 SQL enforce read-only statements, result bounds and progress-handler deadlines.
 
+## Reproducible conversation evaluations
+
+Use an evaluation root outside the checkout, with official datasets downloaded
+once outside Git. `conversation_bench --out /tmp/run.json` retains the rows needed
+by `python -m benchmarks.compare`; stdout summaries alone cannot be paired.
+`--bootstrap` resamples conversations/source components, not individual turns.
+A source-bound quality comparison refuses legacy outputs, changed gold labels,
+missing or duplicate questions and different evaluation contracts. `--check`
+fails wholly negative quality intervals and insufficient scored clusters; it
+never treats an unscored evaluation as success.
+
+Parsed cases live in `<root>/runs/chunk_sets`. Content and adapter hashes now
+invalidate them automatically; manifests also verify chunk bytes. Existing
+benchmark stores without source-binding metadata, stores for a changed corpus,
+or externally edited sources require a fresh `--root`. Nothing is automatically
+deleted or overwritten to make them pass. `full-context` includes the entire
+history; choose `budgeted-history` for the former truncated reference. Every
+memory budget invokes public recall independently with the question clock.
+`auto/auto` can fall back to lexical retrieval; inspect `effective_embedders`
+and do not label such a run as a dense-model measurement.
+
+Before paid evaluation, correct the existing multi-call/full-history estimator
+and response-cache endpoint/settings binding, record the proposed call/token/cost
+estimate, and obtain explicit approval. `--max-cost` currently checks an estimate,
+not actual accrued spending. Retrieval evidence and lexical completeness are not
+judged answer accuracy. See the [measurement methods](performance.md).
+
 ## Upgrade and recover
 
 New explicit CLI/MCP lesson approvals bind governed frontmatter and body to a

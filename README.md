@@ -1531,13 +1531,13 @@ python benchmarks/conversation_bench.py --dataset longmemeval --data longmemeval
 
 CommonTrace separates evidence retrieval from end-to-end answer evaluation. Judge profiles are recorded in evaluation output so scores can be compared using the same scoring procedure:
 
-- **LoCoMo** (`--judge locomo`): The downstream binary LLM judge profile `locomo-downstream-binary-v1`, retained for compatibility with earlier CommonTrace and Mem0-style runs, scores categories 1–4 and excludes category 5. This differs from the [primary LoCoMo evaluator](https://github.com/snap-research/locomo/blob/main/task_eval/evaluation.py), which uses task-specific token F1 and abstention checks; the scores are not interchangeable.
+- **LoCoMo** (`--judge locomo`): The downstream binary LLM judge profile `locomo-downstream-binary-v1`, retained for compatibility with earlier CommonTrace runs, scores categories 1–4 and excludes category 5. This differs from the [primary LoCoMo evaluator](https://github.com/snap-research/locomo/blob/main/task_eval/evaluation.py), which uses task-specific token F1 and abstention checks; the scores are not interchangeable.
 - **LongMemEval** (`--judge longmemeval`): Verbatim per-task judge templates (`single-session-user`, `single-session-assistant`, `multi-session`, `temporal-reasoning` with off-by-one day leniency, `knowledge-update`, `single-session-preference` with rubric) and dedicated abstention verification.
-- **BEAM** (`--judge beam`): Unified evaluation prompt with 3-level rubric scoring (1.0, 0.5, 0.0), pure-Python Kendall's tau-b rank correlation combined with F1 for event ordering, and abstention compliance across all 10 abilities.
+- **BEAM** (`--judge beam`): Compatibility profile with three-level rubric scoring and heuristic event alignment. It is not the official BEAM evaluator: semantic event alignment and official aggregate scoring still need implementation and verification before a published score comparison.
 - **Separated Models**: Independent `--answer-model` (generates the answer from recalled context) and `--judge-model` (grades using the selected profile).
-- **Reference Modes (`--modes memory,full-context,no-memory`)**: Evaluates memory lift by comparing recalled context against full raw conversation history and zero memory.
-- **Resumable Disk Cache & Budget Guard**: SQLite disk cache keyed by `(model, prompt_hash)` with interruption resumption; `--max-cost` enforces pre-flight cost limits before model calls.
-- **Statistical Significance & Bootstrap CIs (`--bootstrap`, `--compare`)**: Non-parametric paired bootstrap 95% confidence intervals (B=1,000 resamples) across all recall and judge metrics, with automatic difference CIs and p-values against baseline runs.
+- **Reference modes (`--modes memory,full-context,no-memory`)**: `full-context` now includes the entire normalized raw history, independently of the memory budget. `budgeted-history` preserves the earlier truncated reference. Full history can exceed the reader's context window; select the reference explicitly before any paid run.
+- **Response cache and cost estimates**: The existing response cache supports resumption, but its key does not yet bind provider/endpoint settings. `--max-cost` is an estimate, not an enforced spending cap; full-history and multi-call rubric costs require corrected preflight accounting before approval of a paid evaluation.
+- **Source-bound confidence intervals (`--bootstrap`, `--compare`)**: 2,000 conversation-cluster bootstrap draws produce absolute or paired 95% intervals. Shared LongMemEval answer-source components stay together. Means weight questions equally; intervals are marginal, not simultaneous or causal. Missing, duplicate or changed questions, gold labels, dataset bytes and evaluation profiles are refused. One cluster cannot provide an empirical interval.
 - **Whole-History Episodic Chaining & Interleaving**: `Store.timeline()` builds an episodic chain of conversation sessions with turn bounds. Round-robin session interleaving across candidates prevents single-session budget starvation and ensures multi-session breadth.
 
 #### Answer Evaluation Profile Reference
@@ -1546,26 +1546,56 @@ CommonTrace separates evidence retrieval from end-to-end answer evaluation. Judg
 | --- | --: | --- | --- | --- |
 | LoCoMo | 1,540 | Downstream binary judge (categories 1–4 scored, 5 excluded) | Configured model | Same profile, category mask, reader and dataset |
 | LongMemEval | 120 / 500 | Per-type prompt templates + abstention check | Official default | Same split, prompts, reader and context budget |
-| BEAM 100K | 400 | 3-level rubric (1.0/0.5/0.0) + Kendall tau-b & F1 event ordering | Official default | Same history length, abilities and judge |
+| BEAM 100K | 400 | Compatibility rubric + heuristic event ordering; official parity pending | Configured model | Official semantic alignment and aggregation required for published comparison |
 | DolphinBench | 600 | Task request execution from narrative anchor facts | Official default | Same execution environment and scoring |
 
-#### Measured evidence recall (keyword-only)
+#### Measurement scoreboard (2026-10-08)
 
-Measured on 2026-10-08 on 4 CPU cores, the three benchmarks running at once. "Evidence" is the share of a question's
-cited evidence that lands in the recalled context; "complete" is the share of
-questions with all of it. Recall time is the benchmark's mean per question,
-with one store opened cold per LongMemEval question.
+The corrected harness calls public recall separately at each budget, retains
+unresolved gold references as misses, and records candidate ranking before
+context packing. These are source-ID metrics; selecting an excerpt does not
+prove it contains the answer. No reader or judge service was called.
 
-| Benchmark | Questions | 1,500 tokens (evidence / complete) | 4,000 tokens (evidence / complete) | Recall time |
-| --- | --: | --- | --- | --: |
-| LoCoMo | 1,540 | 79.0% / 72.6% | 86.6% / 80.3% | 17 ms |
-| LongMemEval | 120 | 78.0% / 70.9% | 82.8% / 78.6% | 78 ms |
-| BEAM 100K | 400 | 70.9% / 54.2% | 80.7% / 68.4% | 73 ms |
+| Dataset | Questions | Evidence / complete at 1,500 | Evidence / complete at 4,000 | Turn Recall@5 / @10 / NDCG@10 | Session Recall@5 / @10 / NDCG@10 |
+| --- | --: | --- | --- | --- | --- |
+| LoCoMo, categories 1–4 | 1,540 | 78.69% / 72.33% | 86.31% / 80.01% | 54.78% / 63.04% / 47.47% | 85.26% / 92.03% / 76.81% |
+| LongMemEval-S, complete split | 500 | 79.60% / 69.73% | 85.92% / 79.12% | 66.29% / 76.85% / 60.20% | 89.31% / 93.81% / 87.27% |
+| BEAM 100K | 400 | 70.87% / 54.24% | 80.67% / 68.36% | 30.26% / 41.25% / 29.21% | 100.00% / 100.00% / 85.91% |
 
-*BEAM abilities at 4,000 tokens*: temporal reasoning 98.8%, event ordering 95.5%,
-instruction following 90.2%, contradiction resolution 87.1%, knowledge update 85.8%,
-multi-session reasoning 78.4%, preference following 74.8%, information extraction
-62.9%, summarization 49.7%.
+Measured public-recall p50 / p95 at 1,500 and 4,000 respectively: LoCoMo
+9.4 / 44.4 ms and 15.6 / 53.3 ms; LongMemEval 30.0 / 54.5 ms and
+27.0 / 51.0 ms; BEAM 59.3 / 105.5 ms and 69.2 / 118.8 ms. Runs shared this
+CPU with other evaluations. The second budget reuses the open store's indexes;
+these diagnostics are not a paired latency improvement or an enterprise SLA.
+Context tokens are `ceil(characters / 4)` estimates, not provider usage.
+
+Against the prior harness on the same product revision, LoCoMo evidence changes
+from 78.98% / 86.61% to 78.69% / 86.31% because nine unresolved annotations
+now remain misses. LongMemEval's second-budget evidence changes from 85.85%
+to 85.92% when it follows the complete public recall path. BEAM evidence is
+unchanged. No retrieval default changed. `--limit 500` now actually includes all
+500 LongMemEval cases; the previous sampler returned 400. Full source-bound
+comparisons refuse earlier outputs that lack the required provenance.
+
+Save per-question outputs outside the checkout and compare matched runs:
+
+```bash
+python -m benchmarks.conversation_bench --dataset locomo --data /tmp/locomo10.json \
+  --root /tmp/ct-before --budget 1500,4000 --embedder none --rerank none --bootstrap \
+  --out /tmp/ct-before.json
+# Run the candidate with the same dataset, sampling and evaluator into a fresh root.
+python -m benchmarks.compare --baseline /tmp/ct-before.json --candidate /tmp/ct-after.json --check
+```
+
+The CI sample retains all source histories and stratifies 154 questions (10% of
+LoCoMo categories 1–4). It runs both product revisions through the same corrected
+harness and fails on a wholly negative quality-difference interval or insufficient
+scored clusters. The public file and reference product revision are pinned by hash.
+See [methods, per-category measurements and limitations](docs/performance.md).
+Model-backed answer accuracy, matched competitor results and BEAM 1M/10M remain
+unverified. The `auto/auto` configuration was also run; without the optional
+attention dependencies it records `effective_embedders: []` and uses lexical
+fallback, so this does not verify dense retrieval or cross-encoder quality.
 
 
 ---

@@ -5,6 +5,137 @@ They establish specific workload improvements, not universal 30 ms latency or
 superiority over competitor answer quality. No inference service is used by
 the measured request profiles.
 
+## Source-bound conversation measurement (2026-10-08)
+
+Acceptance criteria: run public recall independently at each budget; retain
+unresolved gold references as misses; distinguish entire history from a truncated
+reference; measure raw-turn and session Recall@5/10 and binary NDCG@10; reject
+unmatched cases, changed labels and incompatible evaluation contracts; resample
+whole conversations/source components; refuse an unscored or statistically unavailable quality
+gate. No production retrieval API, scoring or default changes in this milestone.
+
+Local verification: 5,868 root/end-to-end tests passed, 103 skipped; 105 focused
+comparison/measurement tests passed independently. Ruff, strict typing for the
+two new measurement modules and generated-document consistency checks passed.
+
+Python 3.12.14 / SQLite 3.53.1, keyword-only `none/none`, budgets 1,500 and
+4,000. Complete source inventories: LoCoMo 1,540 questions / ten conversations;
+LongMemEval-S 500 / 495 shared-answer-source components; BEAM 100K 400 / twenty
+conversations. Per-metric scored counts and excluded questions are explicit;
+undefined evidence does not mean zero and does not establish correct abstention.
+Canonical turn IDs are collapsed before session IDs; session gold annotations
+expand to constituent raw turns. NDCG uses binary source relevance and an ideal
+ranking capped at ten. Candidate metrics precede context packing, while evidence
+measures selected source IDs, not semantic entailment of emitted excerpts.
+
+| Dataset | Category | Questions | Evidence at 1,500 | Evidence at 4,000 |
+| --- | --- | --: | --- | --- |
+| locomo | multi-hop | 282 | 52.08% | 66.61% |
+| locomo | open-domain | 96 | 42.61% | 53.94% |
+| locomo | single-hop | 841 | 89.38% | 94.59% |
+| locomo | temporal | 321 | 84.42% | 91.23% |
+| longmemeval | knowledge-update | 72 | 87.04% | 92.36% |
+| longmemeval | knowledge-update-abstain | 6 | undefined | undefined |
+| longmemeval | multi-session | 121 | 70.43% | 79.48% |
+| longmemeval | multi-session-abstain | 12 | 75.00% | 75.00% |
+| longmemeval | single-session-assistant | 56 | 94.64% | 98.21% |
+| longmemeval | single-session-preference | 30 | 61.67% | 66.67% |
+| longmemeval | single-session-user | 64 | 91.41% | 94.53% |
+| longmemeval | single-session-user-abstain | 6 | undefined | undefined |
+| longmemeval | temporal-reasoning | 127 | 75.51% | 83.36% |
+| longmemeval | temporal-reasoning-abstain | 6 | 90.00% | 90.00% |
+| beam | abstention | 40 | undefined | undefined |
+| beam | contradiction_resolution | 40 | 82.33% | 87.08% |
+| beam | event_ordering | 40 | 59.64% | 95.53% |
+| beam | information_extraction | 40 | 57.50% | 62.92% |
+| beam | instruction_following | 40 | 89.58% | 90.21% |
+| beam | knowledge_update | 40 | 80.42% | 85.83% |
+| beam | multi_session_reasoning | 40 | 66.06% | 78.39% |
+| beam | preference_following | 40 | 73.08% | 74.79% |
+| beam | summarization | 40 | 28.49% | 49.66% |
+| beam | temporal_reasoning | 40 | 96.25% | 98.75% |
+
+The [README scoreboard](../README.md#measurement-scoreboard-2026-10-08) records
+aggregate context/ranking results. Against the older harness on the same product,
+LoCoMo's corrected evidence drops 0.29 / 0.30 percentage points as unresolved
+annotations remain misses. LongMemEval's complete second-budget recall changes
+85.85% to 85.92%; BEAM evidence is unchanged. These are measurement corrections,
+not product improvements. Earlier outputs lack the required provenance and are
+intentionally refused by the new comparator.
+
+Fresh ingestion totals are 2.3 / 251.2 / 17.1 seconds for LoCoMo / LongMemEval /
+BEAM; mean estimated context sizes at 1,500 / 4,000 are 1,441.02 / 3,851.58,
+1,463.18 / 3,926.37, and 1,465.24 / 3,923.29. Ingestion includes benchmark
+source binding; recall timers exclude measurement, disk hashing and inference.
+Each store stays open across the two budgets, so its second-budget indexes are
+warm even though public recall executes independently.
+
+`auto/auto` was run on all 2,440 questions at both budgets, with identical
+quality/rank metrics and `effective_embedders: []`. Optional attention dependencies
+are absent; these are lexical fallback checks, not dense/reranker evaluations.
+Under concurrent evaluation and test load, its observed p50 / p95 at the two
+budgets are LoCoMo 16.4 / 58.0 and 29.0 / 78.5 ms; LongMemEval 67.7 / 150.2
+and 62.9 / 118.0 ms; BEAM 69.8 / 152.5 and 81.0 / 173.4 ms. Those slower
+observations are retained; uncontrolled load prevents a causal latency comparison.
+
+The same corrected harness was also run against pinned product source
+`973e59979f326559a863ed2dbcc02b187402dad4` on the complete LoCoMo dataset.
+All compared quality, source-ranking and context-token deltas are zero, including
+every category at both budgets. The 154-question stratified CI fixture likewise
+passes both budget gates, with quotas multi-hop 28, temporal 32, open-domain 10,
+single-hop 84. CI fetches the immutable public dataset revision and verifies its
+SHA-256, keeps all histories, and compares both product revisions through this
+same corrected harness. A wholly negative marginal quality interval fails;
+missing scored quality or fewer than two independent scored clusters also fail.
+These intervals do not implement a simultaneous multiple-comparison correction
+or an anytime-valid sequential test.
+
+Reproduce a comparison using identical dataset/sampling/evaluation settings and
+fresh source stores outside the checkout:
+
+```bash
+python -m benchmarks.conversation_bench --dataset locomo --data /tmp/locomo10.json \
+  --root /tmp/ct-before --budget 1500,4000 --embedder none --rerank none --bootstrap \
+  --out /tmp/ct-before.json
+python -m benchmarks.compare --baseline /tmp/ct-before.json --candidate /tmp/ct-after.json --check
+```
+
+Measurement provenance binds input bytes, adapter/measurement source, the complete
+Python product source, question/answer/rubric hashes, raw gold identities and
+sampling. Judged runs additionally bind reader/judge provider, configured identifiers,
+prompt and completion-source hashes. Endpoint/region/project configuration is
+bound through opaque hashes; URL credentials and private API keys are excluded.
+Parsed-cache manifests bind their chunk-file bytes, and raw canonical turn/session
+hashes catch modified source metadata even without a vector-generation change.
+Caches are disposable; a different or externally edited source store requires a
+fresh `--root`, rather than deleting or silently replacing existing data.
+
+Dataset digests:
+
+- LoCoMo: `79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4`.
+- LongMemEval-S cleaned: `d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442`.
+- BEAM 100K: `c0519be25907005ba873c927c50877471d550873039d96c041554d0075a78ace`.
+
+Measured product digest:
+`90ebdd9d00d5bdfa088f554ccd42d556cd1cccbb16e235f39a8e8634cd315844`;
+adapter/measurement digest:
+`8c13847b937b8c8b837319ac7bb78d757acfabedbd9e727da3eab16628d03493`.
+
+Independent official-source review verified all twelve LongMemEval task/abstention
+prompt combinations against MIT-licensed source revision
+[`9e0b455`](https://github.com/xiaowu0162/longmemeval/blob/9e0b455f4ef0e2ab8f2e582289761153549043fc/src/evaluation/evaluate_qa.py).
+BEAM's MIT-licensed
+[`b2da22e`](https://github.com/Mohammadtavakoli78/BEAM/tree/b2da22eac88bb0874c64665f13457eb99835774a/src/evaluation)
+still requires semantic event alignment and its official report aggregation.
+The Apache-2.0 competitor `memory-benchmarks` revision
+[`4b61c5d`](https://github.com/supermemoryai/memory-benchmarks/tree/4b61c5d31b9c668a12b4f5e78064248a02c82d2b/benchmarks/locomo)
+uses a different binary judge from CommonTrace's legacy LoCoMo profile.
+Supplied-response parser tests are not live official-judge agreement.
+No model-backed accuracy, competitor victory, BEAM 1M/10M result or paid cost
+was measured. Paid evaluation remains blocked pending corrected multi-call/full-
+history estimation, response-cache endpoint binding, a configured service and
+explicit approval. Existing `--max-cost` is not a running spending cap.
+
 ## Large fact-bank retention and disabled embeddings (2026-10-08)
 
 Acceptance criteria: explicit `Options(embedder="none")` never constructs an
