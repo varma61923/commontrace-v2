@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import sqlite3
+import threading
 import time
 from dataclasses import asdict, is_dataclass
 from typing import Any, Callable
@@ -54,7 +56,7 @@ def completion_binding(config: object, *, generation: dict | None = None) -> dic
     return {"schema": 2, "identity_sha256": digest}
 
 
-def get_price(model: str, prices: dict | None = None) -> tuple[float, float]:
+def get_price(model: str, prices: dict | None = None, *, require_known: bool = False) -> tuple[float, float]:
     """Return (input_per_mtok, output_per_mtok) for a model."""
     if prices is None:
         path = os.environ.get("COMMONTRACE_LLM_PRICES", "").strip()
@@ -66,12 +68,17 @@ def get_price(model: str, prices: dict | None = None) -> tuple[float, float]:
                 prices = None
     if isinstance(prices, dict) and model in prices:
         entry = prices[model]
-        return float(entry.get("input_per_mtok", 0.0)), float(entry.get("output_per_mtok", 0.0))
+        rates = float(entry["input_per_mtok"]), float(entry["output_per_mtok"])
+        if any(not math.isfinite(rate) or rate < 0 for rate in rates):
+            raise ValueError("model prices must be finite and nonnegative")
+        return rates
     # Fallback to default prices (match longest prefix first)
     for prefix in sorted(DEFAULT_PRICES.keys(), key=len, reverse=True):
         if model.lower().startswith(prefix.lower()):
             pr = DEFAULT_PRICES[prefix]
             return pr["input_per_mtok"], pr["output_per_mtok"]
+    if require_known:
+        raise ValueError(f"no benchmark price configured for model {model!r}")
     return 0.0, 0.0
 
 
@@ -188,19 +195,60 @@ class BenchmarkCache:
 
 
 class CostGuard:
-    """Pre-run cost estimation and budget enforcement."""
+    """Reserve each bounded request before dispatch; uncertain calls stop the run."""
 
     def __init__(self, max_cost_usd: float | None = None, prices: dict | None = None):
+        if max_cost_usd is not None and (not math.isfinite(max_cost_usd) or max_cost_usd < 0):
+            raise ValueError("maximum cost must be finite and nonnegative")
         self.max_cost_usd = max_cost_usd
         self.prices = prices
         self.total_cost_usd: float = 0.0
         self.call_count: int = 0
         self.cached_count: int = 0
+        self.reserved_cost_usd = 0.0
+        self.uncertain_calls = 0
+        self.cached_cost_usd = 0.0
+        self._lock = threading.RLock()
+
+    def reserve_call(self, model: str, input_upper: int, output_limit: int) -> float:
+        if any(not isinstance(value, int) or isinstance(value, bool) or value < 0
+               for value in (input_upper, output_limit)):
+            raise ValueError("token limits must be nonnegative integers")
+        rates = get_price(model, self.prices, require_known=True)
+        upper_cost = (input_upper * rates[0] + output_limit * rates[1]) / 1_000_000
+        with self._lock:
+            if self.uncertain_calls:
+                raise RuntimeError("benchmark stopped after an uncertain provider charge")
+            if self.max_cost_usd is not None and (
+                    self.total_cost_usd + self.reserved_cost_usd + upper_cost > self.max_cost_usd):
+                raise RuntimeError("next bounded completion exceeds remaining --max-cost budget")
+            self.reserved_cost_usd += upper_cost
+        return upper_cost
+
+    def settle_call(self, reservation: float, cost: float) -> None:
+        with self._lock:
+            if not math.isfinite(cost) or cost < 0 or cost > reservation + 1e-12:
+                raise ValueError("provider cost exceeds its reserved bound")
+            self.reserved_cost_usd = max(0.0, self.reserved_cost_usd - reservation)
+            self.record_call(cost)
+
+    def mark_uncertain(self) -> None:
+        with self._lock:
+            self.uncertain_calls += 1
+
+    def snapshot(self) -> dict:
+        return {"current_run_spend_usd": self.total_cost_usd, "reserved_cost_usd": self.reserved_cost_usd,
+                "historical_cached_cost_usd": self.cached_cost_usd, "calls": self.call_count,
+                "cache_hits": self.cached_count, "uncertain_calls": self.uncertain_calls,
+                "max_cost_usd": self.max_cost_usd}
 
     def record_call(self, cost_usd: float, is_cached: bool = False) -> None:
+        if not math.isfinite(cost_usd) or cost_usd < 0:
+            raise ValueError("reported cost must be finite and nonnegative")
         self.call_count += 1
         if is_cached:
             self.cached_count += 1
+            self.cached_cost_usd += cost_usd
         else:
             self.total_cost_usd += cost_usd
 

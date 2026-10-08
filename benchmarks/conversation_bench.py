@@ -32,7 +32,7 @@ from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from benchmarks.cache import BenchmarkCache, CostGuard, completion_binding, compute_cost_usd  # noqa: E402
+from benchmarks.cache import BenchmarkCache, CostGuard  # noqa: E402
 from benchmarks.compare import clustered_estimates, ranking_metrics
 from benchmarks.compare import compare_runs as paired_compare  # noqa: E402
 from benchmarks.completeness import bucket_counts, grade_context_completeness  # noqa: E402
@@ -54,6 +54,7 @@ from benchmarks.measurement import (  # noqa: E402
     ranking_fields,
     shared_source_clusters,
 )
+from benchmarks.requests import benchmark_binding, bounded_complete, text_tokens  # noqa: E402
 from commontrace.conversation import Options, Store, recall  # noqa: E402
 from commontrace.conversation.search import tokens  # noqa: E402
 
@@ -452,27 +453,30 @@ def grade_answer(
     cache: BenchmarkCache | None,
     cost_guard: CostGuard | None,
     explain: dict | None = None,
+    output_limit: int = 1536,
+    tokenizer: str | None = None,
 ) -> dict:
     """Generate answer from context with ans_model and grade with judge_inst using j_model."""
-    from commontrace import llm
+    guard = cost_guard or CostGuard()
+    calls = []
 
-    def call_cached(prompt: str, model: str) -> tuple[str, dict, float, float]:
-        t0 = time.time()
+    def call_cached(prompt: str, model: str, stage: str) -> tuple[str, dict, float, float]:
+        t0 = time.perf_counter()
         cfg = _get_llm_config(model)
-        binding = completion_binding(cfg) if cache is not None else None
+        binding = benchmark_binding(cfg, output_limit=output_limit) if cache is not None else None
         if cache is not None:
             hit = cache.get(model, prompt, binding=binding)
             if hit is not None:
                 resp, usage, cost = hit
-                if cost_guard:
-                    cost_guard.record_call(cost, is_cached=True)
-                return resp, usage, 0.0, cost
+                guard.record_call(cost, is_cached=True)
+                calls.append({"stage": stage, "model": model, "cache_hit": True,
+                              "usage": usage, "cost_usd": 0.0, "historical_cost_usd": cost})
+                return resp, usage, 0.0, 0.0
 
-        resp, usage = llm.complete(prompt, config=cfg)
-        latency = time.time() - t0
-        cost = compute_cost_usd(usage, model)
-        if cost_guard:
-            cost_guard.record_call(cost, is_cached=False)
+        resp, usage, cost = bounded_complete(prompt, cfg, guard, output_limit=output_limit)
+        latency = time.perf_counter() - t0
+        calls.append({"stage": stage, "model": model, "cache_hit": False, "usage": usage,
+                      "cost_usd": cost, "historical_cost_usd": 0.0})
         if cache is not None:
             cache.put(model, prompt, resp, usage, cost, binding=binding)
         return resp, usage, latency, cost
@@ -487,14 +491,14 @@ def grade_answer(
         question=question["question"],
         now=now or "now",
     )
-    ans_text, ans_usage, ans_lat, ans_cost = call_cached(ans_prompt, ans_model)
+    ans_text, ans_usage, ans_lat, ans_cost = call_cached(ans_prompt, ans_model, "answer")
 
     # Step 2: Judge answer
     judge_latencies = []
     judge_costs = []
 
     def judge_complete(prompt: str) -> tuple[str, dict]:
-        resp, usage, lat, c = call_cached(prompt, j_model)
+        resp, usage, lat, c = call_cached(prompt, j_model, "judge")
         judge_latencies.append(lat)
         judge_costs.append(c)
         return resp, usage
@@ -517,7 +521,8 @@ def grade_answer(
         "score": grade_res.get("score"),
         "answer_tokens_in": ans_in_tok,
         "answer_tokens_out": ans_out_tok,
-        "context_tokens": tokens(context) if context else 0,
+        "context_tokens": text_tokens(context, tokenizer) if tokenizer else tokens(context),
+        "context_token_accounting": tokenizer or "ceil-characters-divided-by-four",
         "answer_latency_s": ans_lat,
         "judge_latency_s": j_lat_total,
         "answer_cost_usd": ans_cost,
@@ -526,6 +531,10 @@ def grade_answer(
         "judge_profile": getattr(judge_inst, "profile", judge_inst.name),
         "judge_model": j_model,
         "answer_model": ans_model,
+        "completion_calls": calls,
+        "answer_cache_hit": calls[0]["cache_hit"],
+        "judge_all_cached": all(c["cache_hit"] for c in calls if c["stage"] == "judge"),
+        "historical_cached_cost_usd": sum(c["historical_cost_usd"] for c in calls),
     }
     if "ability" in grade_res:
         res["beam_ability"] = grade_res["ability"]
@@ -590,16 +599,8 @@ def run(args) -> dict:
             cache = BenchmarkCache(cdir)
         cost_guard = CostGuard(max_cost_usd=getattr(args, "max_cost", None))
 
-        # Pre-flight cost check if --max-cost is passed
-        if cost_guard.max_cost_usd is not None:
-            dataset_q_counts = {"locomo": 1540, "longmemeval": 500, "beam": 400, "dolphin": 600}
-            est_q = args.limit if args.limit else dataset_q_counts.get(args.dataset, 500)
-            cost_guard.check_estimate(
-                num_questions=est_q * len(budgets) * len(modes),
-                answer_model=ans_model,
-                judge_model=j_model,
-                avg_context_tokens=budgets[0],
-            )
+        # Each actual prompt (including full history and every rubric call)
+        # reserves its upper bound immediately before dispatch.
 
     opts = Options(
         budget=budgets[0],
@@ -636,6 +637,9 @@ def run(args) -> dict:
             "completion_source_sha256": dataset_digest(os.path.join(repository, "commontrace", "llm.py")),
             "reader": evaluation_config_binding(cfg_a),
             "judge": evaluation_config_binding(cfg_j),
+            "generation": {"max_tokens": getattr(args, "max_output_tokens", 1536), "temperature": 0,
+                           "retries": 0, "tokenizer": getattr(args, "tokenizer", None)},
+            "bounded_requests_sha256": dataset_digest(os.path.join(repository, "benchmarks", "requests.py")),
         })
 
     rows_by_mode = {m: {b: [] for b in budgets} for m in modes}
@@ -763,6 +767,8 @@ def run(args) -> dict:
                                 cache=cache,
                                 cost_guard=cost_guard,
                                 explain=r.explain if mode == "memory" else None,
+                                output_limit=getattr(args, "max_output_tokens", 1536),
+                                tokenizer=getattr(args, "tokenizer", None),
                             )
                             row.update(grade_info)
                         rows_by_mode[mode][budget].append(row)
@@ -824,6 +830,11 @@ def run(args) -> dict:
                 summary["bootstrap_95ci"] = targets[summary["mode"]]["bootstrap_95ci"]
     if product_digest(repository) != initial_product or adapter_digest(__file__) != provenance["adapter_sha256"]:
         raise RuntimeError("benchmark source changed during measurement; discard this run")
+    if args.answer:
+        if dataset_digest(os.path.join(repository, "benchmarks", "requests.py")) != provenance["evaluation"]["bounded_requests_sha256"]:
+            raise RuntimeError("bounded completion source changed during measurement")
+        for summary in results.values():
+            summary["inference_accounting"] = cost_guard.snapshot()
     if dataset_digest(args.data) != provenance["dataset_sha256"]:
         raise RuntimeError("dataset changed during measurement; discard this run")
     return results
@@ -863,8 +874,10 @@ def summarize(rows, args, budget, ingest_s, recall_s, full_tokens, mode="memory"
             b_dict["mean_score"] = _mean(r["score"] for r in scorable if r.get("score") is not None)
             b_dict["mean_context_tokens"] = _mean(r.get("context_tokens") for r in rs)
             b_dict["mean_answer_tokens_in"] = _mean(r.get("answer_tokens_in") for r in rs)
-            b_dict["answer_latency"] = _p50_p95([r.get("answer_latency_s") for r in rs])
-            b_dict["judge_latency"] = _p50_p95([r.get("judge_latency_s") for r in rs])
+            b_dict["answer_latency"] = _p50_p95([r.get("answer_latency_s") for r in rs if not r.get("answer_cache_hit")])
+            b_dict["judge_latency"] = _p50_p95([r.get("judge_latency_s") for r in rs if not r.get("judge_all_cached")])
+            b_dict["historical_cached_cost_usd"] = sum(r.get("historical_cached_cost_usd", 0) for r in rs)
+            b_dict["cache_hits"] = sum(c["cache_hit"] for r in rs for c in r.get("completion_calls", []))
             b_dict["total_cost_usd"] = round(
                 sum(r.get("answer_cost_usd", 0.0) + r.get("judge_cost_usd", 0.0) for r in rs), 4
             )
@@ -991,8 +1004,10 @@ def main(argv=None) -> int:
         "--max-cost",
         type=float,
         default=None,
-        help="pre-flight check: maximum allowed estimated cost in USD; aborts before model calls if exceeded",
+        help="Reserve each bounded reader/judge request against this USD cap before dispatch; unknown charges abort.",
     )
+    p.add_argument("--max-output-tokens", type=int, default=1536, help="Per-call output cap; applies to reader and every judge call.")
+    p.add_argument("--tokenizer", default=None, help="Optional exact context text counting: tiktoken:<encoding-name>.")
     p.add_argument(
         "--cache-dir",
         default=None,

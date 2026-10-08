@@ -132,9 +132,14 @@ The Apache-2.0 competitor `memory-benchmarks` revision
 uses a different binary judge from CommonTrace's legacy LoCoMo profile.
 Supplied-response parser tests are not live official-judge agreement.
 No model-backed accuracy, competitor victory, BEAM 1M/10M result or paid cost
-was measured. Paid evaluation remains blocked pending corrected multi-call/full-
-history estimation, response-cache endpoint binding, a configured service and
-explicit approval. Existing `--max-cost` is not a running spending cap.
+was measured. Phase 0 now binds response-cache configuration and reserves each
+bounded HTTP reader/rubric request before dispatch, including full-history
+prompts. Requests have an output cap and no hidden retries; absent/overbound usage
+retains its reservation and stops the run. Configured prices and provider limit
+compliance are assumptions, not billing guarantees. Current and cached historical
+costs are separate. A configured reader/judge service and a matched real-data run
+remain necessary before claiming answer accuracy. Bounded cloud SDK calls remain
+unsupported; no earlier score has been retroactively reclassified.
 
 ## Large fact-bank retention and disabled embeddings (2026-10-08)
 
