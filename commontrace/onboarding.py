@@ -7,6 +7,7 @@ import os
 import re
 import shlex
 import subprocess
+import sys
 
 from commontrace import agent_registry, memory_authority, paths, trace_io
 
@@ -46,15 +47,17 @@ def install(root: str, agent_id: str, *, repo: str | None = None, commits: int =
     paths.safe_prepare_output_path(filename)
     with open(filename, "w", encoding="utf-8") as fh:
         fh.write(agent_registry.SDK_SKILL)
+    hook_prefix = (shlex.quote(sys.executable) + " evolve hook" if getattr(sys, "frozen", False)
+                   else shlex.quote(sys.executable) + " -m commontrace.agent_hooks")
     manifest = {"name": "commontrace-" + agent_id, "agent_id": agent_id, "version": "1.0.0",
                 "api": {"version": "v1", "auth": "bearer", "token_env": "COMMONTRACE_AGENT_TOKEN"},
                 "skills": [{"name": "commontrace-sdk",
                 "path": "skills/commontrace-sdk/SKILL.md"}],
                 "hooks": {"session_start": {"module": "commontrace.agent_hooks", "operation": "start",
-                    "command": "python3 -m commontrace.agent_hooks start --agent-id " + shlex.quote(agent_id)
+                    "command": hook_prefix + " start --agent-id " + shlex.quote(agent_id)
                                + " --dest " + shlex.quote(os.path.abspath(root))},
                           "session_end": {"module": "commontrace.agent_hooks", "operation": "end",
-                    "command": "python3 -m commontrace.agent_hooks end --agent-id " + shlex.quote(agent_id)
+                    "command": hook_prefix + " end --agent-id " + shlex.quote(agent_id)
                                + " --dest " + shlex.quote(os.path.abspath(root))}}}
     with open(os.path.join(directory, "plugin.json"), "w", encoding="utf-8") as fh:
         json.dump(manifest, fh, indent=2)

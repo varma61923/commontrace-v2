@@ -14,7 +14,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     sub = p.add_subparsers(dest="operation", required=True)
     for name in ("add", "search", "reflect", "profile", "directive", "question", "foresight", "propose",
                  "models", "proposals", "directives", "offline", "recipes", "install", "heartbeat", "distill-session",
-                 "skills", "skill-review", "skill-publish", "foresight-review"):
+                 "skills", "skill-review", "skill-publish", "foresight-review", "hook"):
         q = sub.add_parser(name)
         q.add_argument("--dest", default=None)
         q.add_argument("--context", action="append", default=[], help="Orthogonal scope label; repeatable.")
@@ -45,8 +45,10 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         if name == "foresight":
             q.add_argument("--valid-from", required=True)
             q.add_argument("--expires-at", required=True)
-        if name in ("install", "heartbeat"):
+        if name in ("install", "heartbeat", "hook"):
             q.add_argument("--agent-id", required=True)
+        if name == "hook":
+            q.add_argument("hook_operation", choices=("start", "end"))
         if name == "install":
             q.add_argument("--repo", default=None)
             q.add_argument("--commits", type=int, default=100)
@@ -76,6 +78,10 @@ def run(args) -> int:
     root, op = paths.resolve_root(args.dest), args.operation
     context = args.context
     try:
+        if op == "hook":
+            from commontrace import agent_hooks
+
+            return agent_hooks.main([args.hook_operation, "--agent-id", args.agent_id, "--dest", root])
         if op == "add":
             result = additive_extract.extract(root, args.text, local=not args.model, scopes=context,
                                                memory_type=args.memory_type, entity_model_path=args.gliner_model)

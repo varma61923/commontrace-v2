@@ -428,3 +428,14 @@ def test_trace_evidence_respects_all_expiry_and_validity_fields(tmp_path, field,
         experience_skills.propose(root, "expired", steps=[{"tool": "review"}],
             cases=[{"trace_id": trace_io.read(filename)[0]["id"], "succeeded": True}],
             applies_when="release", do_not_apply_when="other")
+
+
+def test_frozen_installer_hooks_use_the_native_cli(tmp_path, monkeypatch):
+    import sys
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    root = str(tmp_path)
+    onboarding.install(root, "native")
+    manifest = json.loads((tmp_path / "distribution" / "agents" / "native" / "plugin.json").read_text())
+    assert " evolve hook start " in manifest["hooks"]["session_start"]["command"]
+    assert " -m " not in manifest["hooks"]["session_start"]["command"]

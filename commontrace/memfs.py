@@ -10,6 +10,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import sys
 import time
 from dataclasses import dataclass, field
@@ -88,9 +89,11 @@ def install_hook(root: str) -> str:
         hooks = os.path.join(root, hooks)
     os.makedirs(hooks, exist_ok=True)
     path = os.path.join(hooks, "pre-commit")
+    prefix = shlex.quote(sys.executable)
+    if not getattr(sys, "frozen", False):
+        prefix += " -m commontrace.cli"
     script = ("#!/bin/sh\n# installed by commontrace: validate memory before it is committed\n"
-              f"exec {json.dumps(sys.executable)} -m commontrace.cli memory validate --staged "
-              f"--dest {json.dumps(os.path.abspath(root))}\n")
+              f"exec {prefix} memory validate --staged --dest {shlex.quote(os.path.abspath(root))}\n")
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(script)
     os.chmod(path, 0o755)  # nosec B103 - a git hook must be executable
