@@ -1,5 +1,8 @@
 # Memory evolution validation
 
+This is the historical foundation validation at `b099251`. Subsequent evaluation
+work and its separately scoped checks are in [PHASE0_EXECUTION.md](PHASE0_EXECUTION.md).
+
 Validated on Linux x86-64, Python 3.12, on 2026-10-08. All changes belong to
 `feat/commontrace-memory-evolution`; the eight reference checkouts remain clean.
 

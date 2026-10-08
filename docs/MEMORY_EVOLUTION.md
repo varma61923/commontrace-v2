@@ -252,6 +252,7 @@ credentials; the existing DolphinBench harness remains available.
 
 ## Reference and validation records
 
+- [Subsequent Phase 0 execution and measured limitations](PHASE0_EXECUTION.md)
 - [Pinned upstream checkouts](research/upstream-manifest.json)
 - [2025–2026 research digest](RESEARCH_DIGEST.md)
 - [Resolved arXiv metadata](research/arxiv-metadata.json)
