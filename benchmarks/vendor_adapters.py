@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import datetime as dt
+import hashlib
 import importlib.metadata
 import os
 import tempfile
@@ -135,6 +136,9 @@ class GraphitiEpisodic:
         from redislite.async_falkordb_client import AsyncFalkorDB
 
         self.store, self.refs = store, {}
+        # Falkor fulltext tokenizes punctuation even in escaped group filters.
+        # Bind one punctuation-free namespace to the canonical case identity.
+        self.group_id = hashlib.sha256(store.space.encode("utf-8")).hexdigest()
         turns = eligible_turns(store, now)
         version = importlib.metadata.version("graphiti-core")
         source_binding = package_source("graphiti_core")
@@ -146,7 +150,7 @@ class GraphitiEpisodic:
             self.driver = FalkorDriver(falkor_db=self.client, database="benchmark")
             self.loop.run_until_complete(self.driver.build_indices_and_constraints())
             for turn in turns:
-                node = EpisodicNode(name=str(turn.ref), group_id=store.space,
+                node = EpisodicNode(name=str(turn.ref), group_id=self.group_id,
                     source=EpisodeType.message, source_description="raw conversation turn",
                     content=f"{turn.speaker}: {turn.text}",
                     valid_at=(turn.at or dt.datetime(1970, 1, 1)).replace(tzinfo=dt.timezone.utc))
@@ -156,7 +160,8 @@ class GraphitiEpisodic:
                 "version": version, "upstream_sha256": source_binding, "inference": False,
                 "search": "native-episode-bm25", "reranker": "rrf", "top_k": 200,
                 "backend": "falkordblite", "time_filter": "history-cutoff-before-indexing",
-                "packing": "whole-source-turns", "entity_graph": False}
+                "packing": "whole-source-turns", "entity_graph": False,
+                "group_namespace": "sha256-canonical-space-utf8"}
         except BaseException:
             self.close()
             raise
@@ -167,7 +172,7 @@ class GraphitiEpisodic:
         from graphiti_core.search.search_filters import SearchFilters
 
         episodes, _scores = self.loop.run_until_complete(episode_search(
-            self.driver, None, question, [], [self.store.space],
+            self.driver, None, question, [], [self.group_id],
             EpisodeSearchConfig(search_methods=[EpisodeSearchMethod.bm25]), SearchFilters(), limit=200))
         identities = [self.refs[episode.uuid] for episode in episodes]
         return pack(self.store, identities, budget, profile="graphiti-episodic")

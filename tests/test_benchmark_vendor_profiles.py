@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import os
 
 import pytest
 
@@ -90,6 +91,26 @@ def test_unknown_profile_refused(tmp_path):
         with pytest.raises(ValueError, match="unsupported"):
             with vendor_profile("made-up", store, None):
                 pass
+
+
+@pytest.mark.skipif(os.environ.get("COMMONTRACE_VENDOR_NATIVE_SMOKE") != "1",
+                    reason="opt-in native local Graphiti backend")
+@pytest.mark.parametrize("space", ["demo", "conv-26", "gpt4_93159ced"])
+def test_native_graphiti_case_namespaces_preserve_sources(tmp_path, space):
+    pytest.importorskip("graphiti_core")
+    pytest.importorskip("redislite.async_falkordb_client")
+    with Store(str(tmp_path), space) as store:
+        store.add("s", [{"id": "evidence", "text": "Caroline visited the LGBTQ support group on May 7."}],
+                  session_at="2025-01-01")
+        store.add("future", [{"id": "future", "text": "Caroline visited the LGBTQ group tomorrow."}],
+                  session_at="2027-01-01")
+        with vendor_profile("graphiti-episodic", store, "2026-01-01") as adapter:
+            result = adapter.retrieve("When did Caroline go to the LGBTQ support group?", 1000)
+            assert result.turns == [1]
+            assert result.ranked == [1]
+            assert "May 7" in result.context
+            assert "tomorrow" not in result.context
+            assert adapter.descriptor["group_namespace"] == "sha256-canonical-space-utf8"
 
 
 def test_small_limit_rotates_types_and_conversations():
