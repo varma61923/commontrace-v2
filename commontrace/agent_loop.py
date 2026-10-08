@@ -57,9 +57,18 @@ def _relevant_lessons(root: str, task: str) -> list[tuple[str, str]]:
                                         scorer=config.scorer, term_cache=term_cache)
     except (OSError, ValueError, frontmatter.FrontmatterError):
         return []
-    by_path = {path: fm for path, fm in lessons}
-    items = [{"slug": r.slug, "description": r.description,
-              "applies_when": str(by_path.get(r.path, {}).get("applies_when", ""))} for r in ranked]
+    items = []
+    for ranked_lesson in ranked:
+        try:
+            fm, body = frontmatter.read(ranked_lesson.path)
+        except (OSError, ValueError, frontmatter.FrontmatterError):
+            continue
+        if not lesson_cache.fresh_eligible(
+            ranked_lesson.path, fm, slug=ranked_lesson.slug, body=body, root=root,
+        ):
+            continue
+        items.append({"slug": ranked_lesson.slug, "description": str(fm.get("description", "")),
+                      "applies_when": str(fm.get("applies_when", ""))})
     clean, _quarantined = injection_guard.screen(items)
     return [(i["slug"], i["description"]) for i in clean]
 

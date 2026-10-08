@@ -14,7 +14,6 @@ import json
 import logging
 import os
 import re
-import secrets
 import socket
 import threading
 import time
@@ -36,6 +35,7 @@ from commontrace import (
     retrieval,
     retrieval_io,
 )
+from commontrace.gateway_tokens import load_or_create_token, token_path  # noqa: F401 - public compatibility
 from commontrace.measure import CausalMemory, HarmWatch
 
 API_VERSION = "1"
@@ -239,27 +239,6 @@ def merge_config(root: str, *, env: str | None, protect: list[str]) -> GatewayCo
     return merged
 
 
-def token_path(root: str) -> str:
-    return os.path.join(paths.memory_dir(root), TOKEN_NAME)
-
-
-def load_or_create_token(root: str) -> str:
-    """The store's bearer token, created (0600) on first use."""
-    try:
-        with open(token_path(root), encoding="utf-8") as fh:
-            token = fh.read().strip()
-        if len(token) >= 24:
-            return token
-    except OSError as exc:
-        logger.debug("No existing token found; creating a new one: %s", exc)
-    token = secrets.token_urlsafe(32)
-    os.makedirs(paths.memory_dir(root), exist_ok=True)
-    fd = os.open(token_path(root), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(token + "\n")
-    return token
-
-
 def _text(value, label: str, *, limit: int, required: bool = True) -> str:
     if value is None and not required:
         return ""
@@ -390,10 +369,12 @@ class Gateway:
         self, root: str, *, token: str | None = None, config: GatewayConfig | None = None,
         durable: bool = True, on_harm: str | None = None, check_every: int = 25,
         allowed_hosts: tuple[str, ...] = (), allow_approval: bool = False,
+        token_provider: Callable[[], str | None] | None = None,
     ) -> None:
         self.root = os.path.abspath(root)
         self.allow_approval = allow_approval
         self.token = token
+        self._token_provider = token_provider
         self.config = config if config is not None else load_config(self.root)
         self.durable = durable
         self.allowed_hosts = frozenset(h.lower() for h in allowed_hosts) | LOOPBACK_HOSTS
@@ -425,6 +406,15 @@ class Gateway:
         self._route("GET", "/v1/openapi.json", self._openapi, summary="This API's schema.", auth=False)
         self._route("GET", "/v1/command-catalog", self._command_catalog,
                     summary="CLI command catalog for the authenticated console.")
+        self._route("POST", "/v1/explore", self._explore, request={
+            "question": "string: what to retrieve",
+            "channels": "optional list of lessons, facts or conversations",
+            "space": "required for the conversations channel",
+            "budget": "optional context budget from 50 to 8000 tokens",
+            "evidence_budget": "optional fact evidence budget from 0 to 2000 tokens",
+            "fact_scorer": "optional overlap-v1 (default) or bm25-v1 fact ranking",
+            "as_of": "optional ISO date or timestamp",
+        }, summary="Inspect eligible memory and provenance without recording an occasion or outcome.")
         self._route("POST", "/v1/command", self._command, request={
             "command": "one command name from /v1/command-catalog",
             "args": "optional array of command arguments; the gateway store root is implicit",
@@ -455,6 +445,7 @@ class Gateway:
             "now": "optional date the question is asked",
             "sessions": "optional list of session ids", "speakers": "optional list of speakers",
             "since": "optional date", "until": "optional date",
+            "context_strategy": "optional legacy or coverage-v1 context packing (default legacy)",
         }, summary="The turns that answer a question, as a dated context within a token budget.")
         self._route("GET", "/v1/status", self._status, summary="Experiment and proof progress.")
         self._route("GET", "/v1/memories", self._memories, summary="Each memory's measured verdict.")
@@ -544,13 +535,14 @@ class Gateway:
         return name.lower() in self.allowed_hosts
 
     def _authorised(self, headers: Mapping[str, str]) -> bool:
-        if not self.token:
+        token = self._token_provider() if self._token_provider is not None else self.token
+        if not token:
             return False
         for key, value in headers.items():
             if key.lower() == "authorization":
                 scheme, _, supplied = value.partition(" ")
                 return scheme.lower() == "bearer" and hmac.compare_digest(
-                    supplied.strip().encode("utf-8"), self.token.encode("utf-8"))
+                    supplied.strip().encode("utf-8"), token.encode("utf-8"))
         return False
 
     @staticmethod
@@ -713,6 +705,14 @@ class Gateway:
         return {
             "commands": ui_commands.catalog(),
             "store": os.path.basename(self.root.rstrip(os.sep)) or "store",
+            "approval_enabled": self.allow_approval,
+            "scoped": bool(self._request_scope()),
+            "execution_policy": {
+                "read_only": not self.allow_approval,
+                "scoped_commands": "help_only" if self._request_scope() else "store_admin",
+                "lesson_review": "revision_checked_endpoints",
+                "force_overrides": "terminal_only",
+            },
         }
 
     def _command(self, req: dict, _query) -> dict:
@@ -720,8 +720,11 @@ class Gateway:
 
         command = req.get("command")
         try:
-            return ui_commands.run(self.root, command, req.get("args"))
+            return ui_commands.run(self.root, command, req.get("args"),
+                                   allow_approval=self.allow_approval, scope=self._request_scope())
         except ui_commands.UICommandError as exc:
+            if exc.status != 400:
+                raise ApiError(exc.status, exc.code, str(exc)) from None
             code = "command_unavailable" if "terminal-only" in str(exc) else "bad_request"
             status = 409 if code == "command_unavailable" else 400
             raise ApiError(status, code, str(exc)) from None
@@ -794,10 +797,11 @@ class Gateway:
         from commontrace import telemetry
 
         curr = telemetry.current()
+        token = self._token_provider() if self._token_provider is not None else self.token
         return {
-            "authenticated": bool(self.token is not None),
-            "role": "admin" if self.token else "anonymous",
-            "token_prefix": (self.token[:8] + "...") if self.token and len(self.token) >= 8 else "",
+            "authenticated": bool(token),
+            "role": "admin" if token else "anonymous",
+            "token_prefix": (token[:8] + "...") if token and len(token) >= 8 else "",
             "container_tag": curr.get("container_tag", ""),
             "request_id": curr.get("request_id", ""),
         }
@@ -819,9 +823,8 @@ class Gateway:
         scope = self._request_scope()
         if not scope:
             return space
-        scoped = f"{scope}:{space}"
-        if len(scoped) <= 128:
-            return scoped
+        # Store space identifiers disallow ':'. Encode the complete namespace
+        # for every scoped space, including short names, without lossy escaping.
         digest = hashlib.sha256(f"{scope}\x1f{space}".encode("utf-8")).hexdigest()[:32]
         return f"container-{digest}"
 
@@ -864,7 +867,7 @@ class Gateway:
                 return None
 
         active, term_cache = _cached_active(self.root, read)
-        from commontrace import lesson_cache
+        from commontrace import dosage, lesson_admission, lesson_cache
 
         eligible = lesson_cache.filter_eligible(active, scope=scope)
         if len(eligible) != len(active):
@@ -875,22 +878,37 @@ class Gateway:
         out = []
         for hit in ranked:
             try:
+                lesson_admission.validate_path(self.root, hit.path)
                 body = _cached_body(hit.path, expected_identity=term_cache.stamps.get(hit.path))
-            except frontmatter.FrontmatterError:
+                fm, current_body = frontmatter.read(hit.path)
+            except (frontmatter.FrontmatterError, lesson_admission.AdmissionError):
                 continue
-            out.append({"id": hit.slug, "text": body, "protected": bool(projected.get(hit.path, {}).get("core")),
-                        "meta": {"description": hit.description, "relevance": round(hit.relevance, 4)}})
+            if body != current_body or not lesson_cache.fresh_eligible(
+                    hit.path, fm, hit.slug, scope=scope, body=current_body, root=self.root,
+                    expected_core=dosage.is_core(projected.get(hit.path, {}))):
+                continue
+            out.append({"id": hit.slug, "text": current_body, "protected": dosage.is_core(fm),
+                        "meta": {"description": str(fm.get("description", "")),
+                                 "relevance": round(hit.relevance, 4)}})
         return out
+
+    def _explore(self, req: dict, _query) -> dict:
+        from commontrace import explorer
+
+        space = req.get("space")
+        scoped_space = self._scoped_space(_ident(space, "space")) if space is not None else None
+        try:
+            return explorer.inspect(self.root, req, scope=self._request_scope(), space=scoped_space)
+        except explorer.ExplorerError as exc:
+            raise _bad(str(exc)) from None
 
     def _conversation_add(self, req: dict, _query) -> dict:
         from commontrace.conversation import ConversationError, Store
+        from commontrace.conversation.validation import validate_messages
 
         messages = req.get("messages")
-        if not isinstance(messages, list) or not all(isinstance(m, dict) for m in messages):
-            raise _bad("messages must be a list of objects with text (or content)")
-        if len(messages) > 1000:
-            raise _bad("at most 1000 messages per request")
         try:
+            validate_messages(messages)
             space = self._scoped_space(_ident(req.get("space"), "space"))
             with Store(self.root, space) as store:
                 return store.add(_ident(req.get("session"), "session"), messages,
@@ -911,7 +929,11 @@ class Gateway:
             if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
                 raise _bad(f"{key} must be a list of strings")
             lists[key] = tuple(value)
-        opts = Options(budget=budget, since=req.get("since") or None, until=req.get("until") or None, **lists)
+        strategy = req.get("context_strategy", "legacy")
+        if not isinstance(strategy, str) or strategy not in ("legacy", "coverage-v1"):
+            raise _bad("context_strategy must be legacy or coverage-v1")
+        opts = Options(budget=budget, since=req.get("since") or None, until=req.get("until") or None,
+                       context_strategy=strategy, **lists)
         try:
             space = self._scoped_space(_ident(req.get("space"), "space"))
             with Store(self.root, space, create=False) as store:
@@ -1116,20 +1138,22 @@ class Gateway:
 
     def _lesson_edit(self, body, _query) -> dict:
         self._acting()
-        fields = {k: v for k, v in body.items() if k != "slug"}
+        fields = {k: v for k, v in body.items() if k not in {"slug", "expected_revision"}}
         scope = self._request_scope()
-        return self._workbench(lambda w: w.edit(self.root, body.get("slug", ""), fields, "console", scope))
+        return self._workbench(lambda w: w.edit(self.root, body.get("slug", ""), fields, "console", scope,
+                                                expected_revision=body.get("expected_revision")))
 
     def _lesson_approve(self, body, _query) -> dict:
         self._acting()
         scope = self._request_scope()
         return self._workbench(lambda w: w.approve(self.root, body.get("slug", ""), body.get("rationale"),
-                                                   "console", scope))
+                                                   "console", scope, expected_revision=body.get("expected_revision")))
 
     def _lesson_reject(self, body, _query) -> dict:
         self._acting()
         scope = self._request_scope()
-        return self._workbench(lambda w: w.reject(self.root, body.get("slug", ""), body.get("reason", ""), scope))
+        return self._workbench(lambda w: w.reject(self.root, body.get("slug", ""), body.get("reason", ""), scope,
+                                                  expected_revision=body.get("expected_revision")))
 
     @staticmethod
     def _limit(query: dict, default: int, cap: int) -> int:

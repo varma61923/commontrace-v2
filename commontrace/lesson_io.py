@@ -75,6 +75,13 @@ def write_lesson(
             before = revision.revision_of(before_fm, before_body)
         except Exception:  # noqa: BLE001 - an unreadable prior file has no revision
             before = None
+    if before_fm is not None and before_fm.get("approval_receipt") is not None \
+            and before_fm.get("status") == "active" and fm.get("status") != "active":
+        from commontrace import lesson_admission
+
+        # Revocation commits first: a failed subsequent document write still
+        # cannot leave the old active copy eligible for injection.
+        lesson_admission.revoke(root, path, actor=actor or "unknown")
     after = revision.revision_of(fm, body)
 
     if after != before:

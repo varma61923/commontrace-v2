@@ -361,6 +361,12 @@ def _commit(root: str, payload: dict) -> dict:
     return memfs.commit(root, payload.get("message") or "commontrace: memory update")
 
 
+def _distill(root: str, payload: dict[str, Any]) -> dict[str, Any]:
+    from commontrace.distillation_worker import distill_job
+
+    return distill_job(root, payload)
+
+
 HANDLERS: dict[str, Callable[[str, dict], Any]] = {
     "ingest": _ingest,
     "extract": lambda root, p: _conversation(root, p, "extract"),
@@ -368,4 +374,5 @@ HANDLERS: dict[str, Callable[[str, dict], Any]] = {
     "index": _index,
     "link": _link,
     "commit": _commit,
+    "distill": _distill,
 }

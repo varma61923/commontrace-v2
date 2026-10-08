@@ -47,6 +47,8 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     r.add_argument("--rerank", choices=("auto", "none", "cross-encoder", "cross-encoder-fast"), default="auto",
                    help="second-stage reranker (auto: the accurate one when the attention extra is installed)")
     r.add_argument("--lexical", action="store_true", help="keyword search only, no embedding model")
+    r.add_argument("--context-strategy", choices=("legacy", "coverage-v1"), default="legacy",
+                   help="context packing: preserve ranking or diversify delivered query facets")
     _filters(r)
     r.add_argument("--json", action="store_true")
     r.add_argument("--dest", default=None)
@@ -59,6 +61,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
                    help="up to 4: the model may ask for follow-up searches before answering")
     q.add_argument("--budget", type=int, default=None)
     q.add_argument("--now", default=None)
+    q.add_argument("--context-strategy", choices=("legacy", "coverage-v1"), default="legacy")
     _filters(q)
     q.add_argument("--json", action="store_true")
     q.add_argument("--dest", default=None)
@@ -141,7 +144,8 @@ def _options(args):
 
     opts = Options(rerank=None if getattr(args, "rerank", "auto") == "none" else getattr(args, "rerank", "auto"),
                    embedder=None if getattr(args, "lexical", False) else "auto",
-                   sessions=tuple(args.session), speakers=tuple(args.speaker), since=args.since, until=args.until)
+                   sessions=tuple(args.session), speakers=tuple(args.speaker), since=args.since, until=args.until,
+                   context_strategy=getattr(args, "context_strategy", "legacy"))
     if args.budget is not None:
         if args.budget < 50:
             raise ValueError("--budget must be at least 50 tokens")

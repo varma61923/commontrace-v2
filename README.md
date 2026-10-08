@@ -776,6 +776,21 @@ simulation and reality are never pooled, and nothing is withheld until an experi
 started on purpose. Open the printed console URL for the verdicts, who is calling, and what
 is being withheld or withdrawn (no build step; works at phone width, light or dark).
 
+**Explore memory** retrieves eligible lessons, facts and an optional conversation
+space without recording an occasion or calling a model. Inspect supporting
+quotations, source relationships, context budgets and insufficient-evidence
+signals before copying context. `POST /v1/explore` offers the same authenticated
+operation with `question`, `channels`, `budget`, `evidence_budget` and optional
+`space`/`as_of`. Coverage is a retrieval signal, not an answer-accuracy score.
+For CLI/MCP use, `commontrace recall "question" --evidence-budget 512` expands
+cited premises; `commontrace fact explain FACT_ID` inspects one fact's evidence.
+
+Review pages send the displayed content revision with every decision. A draft
+changed by another writer returns `409 stale_review`; unsaved edits are retained
+until explicitly reloaded. Queues load 50 drafts per page. The command center
+starts with diagnostics, respects the session's write policy, and routes lesson
+decisions through the revision-checked review workflow.
+
 ## Quick Start — Agents with no terminal (MCP)
 
 Everything above is a CLI, which quietly restricts CommonTrace to agents that
@@ -800,6 +815,24 @@ That file is the MCP entry — merge it into your agent platform's config:
 }
 ```
 
+For clients that connect over HTTP, install the optional SDK and choose its
+transport. Stdio remains the default:
+
+```bash
+python -m pip install '.[serve]'
+commontrace serve --dest /abs/path/to/store --transport streamable-http --no-approval
+# Alternative legacy transport: --transport sse
+```
+
+Streamable HTTP uses `/mcp`; SSE uses `/sse` and `/messages/`. Both require the
+store's private file token in `Authorization: Bearer ...` on every request.
+Manage it with `commontrace gateway --rotate-token` or `--revoke-token`;
+`--show-token` explicitly reveals it for client setup. Network listeners default
+to loopback and enforce Host/Origin checks, bounded sessions and request admission.
+Remote listeners require `--allowed-host` and TLS certificate/key flags, or
+explicit `--allow-insecure-http` behind a TLS proxy. This token authorizes one
+fleet's whole local store; use the Hub for organization-scoped access controls.
+
 The agent then has the whole protocol as tools:
 
 | Tool | What the agent does with it |
@@ -818,7 +851,7 @@ The agent then has the whole protocol as tools:
 
 Two things about this are deliberate.
 
-**There is no authentication, because there is no boundary to authenticate.**
+**Stdio uses the launching process's filesystem permissions.**
 The client spawns this process and talks to it over its own stdin/stdout —
 no port, no listener, nothing for another program on the machine to connect
 to. It reads and writes `memory/` with exactly the permissions of the agent
@@ -883,6 +916,11 @@ character-bounded scratchpads such as `persona`, `human` or `project`.
 Every write is all-or-nothing and recorded in `memory/blocks/history.jsonl`
 with a chained revision hash.
 
+To protect against stale edits from concurrent agents, pass the revision read
+from the block as `--expected-revision REV` or MCP `expected_revision=REV`.
+A mismatch returns a conflict without changing the block; omit it to retain
+unconditional legacy writes. An empty expected revision creates only if absent.
+
 ```bash
 commontrace block set persona "Senior systems engineer. Check idempotency first."
 commontrace block append human "Prefers concise answers."
@@ -890,18 +928,138 @@ commontrace block replace human --old "concise" --new "short, concrete"
 commontrace block history persona
 ```
 
+**Evidence-grounded extraction.** `commontrace distill --extract --failed
+--min-validation-score 0.7` writes complete review candidates from corroborated
+resolutions, recording evidence IDs and bounded score components. It never
+activates them. `--semantic-dedup` additionally screens candidate rules against
+existing proposals using local embeddings when the attention extra is available;
+underlying session traces remain intact. MCP exposes these controls through
+`propose_lessons(extract=true, failed_only=true, semantic_dedup=true)`.
+
+The durable queue also supports `commontrace jobs add distill --dedupe-key
+failure-lessons --payload '{"min_validation_score":0.7}'`, followed by
+`commontrace jobs run --kind distill --watch`. The worker defaults to failures,
+has an execution deadline shorter than its lease, and retries the same guarded
+pipeline after crashes. Every candidate still requires independent approval.
+
+**Framework tools and asynchronous storage.** Optional tool factories import
+each framework only when requested. Their space and session are owner settings,
+so model-generated arguments cannot redirect a tool to another namespace:
+
+```python
+from commontrace.frameworks import MemoryTools
+
+tools = MemoryTools("/abs/path/to/store", "customer-123", "session-456")
+langgraph_tools = tools.tools("langgraph")
+# Also: langchain, autogen, crewai, llamaindex; native_tools() needs no SDK.
+```
+
+For sustained asynchronous ingestion, use `async with await
+AsyncStore.open(root, space)` from `commontrace.conversation` and pass the store
+to `MemoryTools(..., async_store=store)`. The bounded writer reuses a dedicated
+SQLite connection, groups writes into commits, isolates failed appends, and
+drains accepted writes when closed. Cancellation stops waiting but does not
+retract an admitted write. MCP blocking store work uses eight shared workers
+and admits at most 32 queued/running operations; overload returns `server_busy`.
+Conversation session routing IDs must be opaque identifiers without credentials,
+PII or forged instruction delimiters; unsafe IDs are refused instead of rerouted.
+
+**Optional vector engines.** `AsyncStore.recall` can use an exact SQLite vector
+index or pooled PostgreSQL/pgvector as its dense arm, fused with the existing
+BM25/RRF pipeline. Source text, expiry, session filters and injection guards
+still come from the canonical conversation store. Install
+`commontrace[vector-postgres,attention]` for PostgreSQL and local embeddings;
+SQLite's vector engine itself uses only the standard library.
+
+```python
+import asyncio
+import os
+
+from commontrace.conversation import AsyncStore, Options
+from commontrace.frameworks import MemoryTools
+from commontrace.vector_store import PostgresVectorIndex, SQLiteVectorIndex
+
+async def main():
+    root = os.environ.get("COMMONTRACE_ROOT", ".")
+    scope = dict(tenant="fleet-a", namespace="memory",
+                 model="sentence-transformers/all-MiniLM-L6-v2", dimension=384)
+    dsn = os.environ.get("COMMONTRACE_VECTOR_DSN")
+    index = (await PostgresVectorIndex.open(dsn, **scope, approximate=False)
+             if dsn else await SQLiteVectorIndex.open(
+                 os.path.join(root, "memory", "vectors.sqlite"), **scope))
+    try:
+        async with await AsyncStore.open(root, "memory", tenant="fleet-a", vector_index=index) as memory:
+            tools = MemoryTools(root, "memory", "example", async_store=memory,
+                                options=Options(embedder="minilm"))
+            await tools.aremember("The upload failed.", "A bounded retry with jitter succeeded.")
+            print(await tools.arecall("How should uploads be retried?"))
+    finally:
+        await index.close()
+
+asyncio.run(main())
+```
+
+The database administrator must install pgvector first. PostgreSQL exact mode
+is the default; `approximate=True` creates an HNSW index and uses pgvector 0.8+
+iterative scanning. Approximate search can return fewer candidates after filters;
+evaluate recall for your workload. Both engines reject nonfinite/zero vectors
+and dimension mismatches, bind owner values as SQL parameters, and pin each scope
+to one canonical database path and identity. Choosing a tenant is application
+configuration, not authentication; authenticate before selecting it.
+
+A source revision invalidates prefetched results. Built-in engines expose
+`index.snapshots`: a persistent head, private staged deltas, leased builders and
+atomic compare-and-swap publication. A bounded canonical change journal supplies
+changed/deleted unit IDs; its retention gaps trigger a full bootstrap. Unchanged
+content reuses model-bound cached embeddings. Concurrent builders can stage
+independently; one publication wins for a given base revision. Readers pin
+immutable revision intervals, and expired or forged leases cannot publish.
+Custom engines without the optional snapshot capability retain bounded legacy
+preparation and search. Moving/copying the canonical database requires a new
+vector scope.
+
+Canonical deletion immediately prevents a source from being injected. External
+physical erasure follows publication of its deletion and reclamation after
+reader/build leases end; it is not immediate. Recall runs bounded snapshot
+collection. Operators can repeatedly call
+`await index.snapshots.collect_garbage(limit=1000)` for further reclamation after
+preparing the current source revision. Legacy CRUD vectors remain in separate
+tables and require their existing scoped `index.delete`/`index.prune` maintenance;
+snapshot collection does not remove those legacy records. Exact SQLite search
+still scans its eligible vectors; incremental publication is not an ANN latency
+claim. Evaluate PostgreSQL HNSW recall and latency on your own workload.
+
 **Atomic facts** (`commontrace fact`, MCP `record_fact` / `query_facts`):
 single statements with a confidence, optional scopes and a validity window.
 Restating a fact reinforces it; `supersede` closes the old one and links the
 replacement; `delete` ends its validity; `forget` hides it reversibly.
 `--as-of` answers what was true at a moment.
 
+Derived facts can bind revision-specific supporting or refuting sources with
+`--evidence fact:ID`, `--evidence lesson:SLUG`, `--refuting-evidence KIND:ID`,
+and `--min-support N`. The same source replay does not increase corroboration.
+Bound facts require current source revisions and enough distinct supporting
+identities; unresolved refutation, missing sources, corrections or revocation
+withhold them from retrieval. Dependencies are checked with bounded depth and
+cycle detection. Structured recall includes source receipts in `provenance`.
+Receipts establish attribution and currency; they do not prove logical entailment
+or that two source identities represent independent experiments. Unbound legacy
+facts retain their existing API and retrieval behavior.
+
 ```bash
 commontrace fact add "Stripe idempotency keys expire after 24 hours" --category constraint --scope payments
 commontrace fact supersede <fact-id> "Stripe idempotency keys expire after 48 hours"
 commontrace fact search "idempotency key expiry" --scope payments
+commontrace fact search "idempotency keys expire" --scope payments --scorer bm25-v1
 commontrace fact list --as-of 2026-06-01
 ```
+
+Fact search keeps the existing `overlap-v1` ranking by default. Opt into
+`bm25-v1` for term-frequency/rarity weighting, English stemming and Unicode/CJK
+tokenization. Both modes use generation-aware in-memory postings and validate
+current source evidence before returning a fact. Editing, replacing or erasing
+the authoritative fact file invalidates its cached generation; no persistent
+search artifact is required. BM25 scores express ranking, not factual confidence.
 
 **Knowledge graph** (`commontrace graph`, MCP `graph_query` /
 `graph_neighbors`): typed nodes and dated edges. A newer dated assertion of
@@ -997,7 +1155,9 @@ conversation spaces are each ranked, fused by weighted reciprocal rank,
 de-duplicated across channels, and packed into one token budget (4
 characters per token): each channel with something relevant gets a floor
 share, the rest goes in fused order, and an item that does not fit is cut at a
-sentence boundary. `--as-of` reads every channel as it stood at that moment.
+sentence boundary. `--as-of` selects valid-time memory while current trust and
+erasure checks remain in force. `--fact-scorer bm25-v1` changes only fact ranking;
+the JSON result records the selected mode and each fact's matched search terms.
 Budgets and channel weights per agent live in `memory/budgets.json`:
 
 ```json
@@ -1008,6 +1168,7 @@ Budgets and channel weights per agent live in `memory/budgets.json`:
 commontrace recall "postgres failed over, what now?" --budget 1200
 commontrace recall "where does postgres run?" --as-of 2025-01-01 --channel graph --channel facts
 commontrace recall "review this change" --agent reviewer --json
+commontrace recall "database migrations" --channel facts --fact-scorer bm25-v1 --json
 ```
 
 **Versioned memory** (`commontrace memory`): `memory init` makes the store its
@@ -1055,6 +1216,20 @@ OpenTelemetry spans. `COMMONTRACE_LOG_FORMAT=json` writes one JSON object per
 log line carrying the request id, tool and command; anything that looks like
 a credential is redacted before it is written. `commontrace doctor` reports
 which of these are on.
+
+Structured log extras, metric labels and span attributes are also scrubbed,
+including credential-named fields with short or numeric values. Structured logs
+bound nested collections and handle cycles. Set `COMMONTRACE_REDACT_PII=1` to
+scrub PII, including IP addresses, during trace capture, import, synchronization
+and structured logging; conversation capture already scrubs PII by default.
+
+Curated commons exports can be authenticated with `HUB_COMMONS_SIGNING_KEY`
+(at least 32 bytes) and `HUB_COMMONS_SIGNING_KEY_ID`. Pin the corresponding
+`COMMONTRACE_COMMONS_VERIFY_KEY` and ID on clients to require verification before
+downloads persist; previous-key settings support rotation. All payload fields
+are authenticated. This HMAC trust group lets verifiers also sign, and does not
+replace independent review. Without a pinned policy, unsigned compatibility is
+preserved. `_FILE` secret sources support external secret management.
 
 **Agent loop** (`commontrace agent run`): runs a task against the configured
 model (`COMMONTRACE_LLM_PROVIDER`), with relevant lessons, blocks, facts and
@@ -1328,9 +1503,9 @@ and the cross-encoder:
 | Summarization | 18% / 18% | 29% / 26% |
 | **All (abstention excluded: it has no evidence)** | **62% / 67%** | **70% / 73%** |
 
-LongMemEval, keyword-only: 77.4% at 1,500 tokens and 84.4% at 4,000
-(knowledge update 89% / 100%, single-session assistant 100% / 100%,
-single-session user 84% / 90%, multi-session 73% / 81%). Abstention is left
+LongMemEval, keyword-only: 78.0% at 1,500 tokens and 82.8% at 4,000
+(knowledge update 92% / 94%, single-session assistant 100% / 100%,
+single-session user 89% / 89%, multi-session 71% / 80%, temporal reasoning 57% / 72%). Abstention is left
 to the answering model: BEAM's unanswerable questions reuse the topic's words,
 so neither `explain.confidence` nor the cross-encoder score separates them, and
 `conversation answer` tells the model to say when memory does not hold the answer.
@@ -1352,38 +1527,75 @@ python benchmarks/conversation_bench.py --dataset locomo --data locomo10.json --
 python benchmarks/conversation_bench.py --dataset longmemeval --data longmemeval_s.json --limit 60
 ```
 
-### Official Benchmark Judges & Answer Accuracy
+### Benchmark Judges & Answer Accuracy
 
-CommonTrace measures end-to-end answer accuracy using the official evaluation protocols and judge rubrics published by each benchmark:
+CommonTrace separates evidence retrieval from end-to-end answer evaluation. Judge profiles are recorded in evaluation output so scores can be compared using the same scoring procedure:
 
-- **LoCoMo** (`--judge locomo`): LLM-as-judge protocol scoring categories 1–4 (multi-hop, temporal, open-domain, single-hop) with generous date and topic matching, excluding adversarial category 5.
+- **LoCoMo** (`--judge locomo`): The downstream binary LLM judge profile `locomo-downstream-binary-v1`, retained for compatibility with earlier CommonTrace runs, scores categories 1–4 and excludes category 5. This differs from the [primary LoCoMo evaluator](https://github.com/snap-research/locomo/blob/main/task_eval/evaluation.py), which uses task-specific token F1 and abstention checks; the scores are not interchangeable.
 - **LongMemEval** (`--judge longmemeval`): Verbatim per-task judge templates (`single-session-user`, `single-session-assistant`, `multi-session`, `temporal-reasoning` with off-by-one day leniency, `knowledge-update`, `single-session-preference` with rubric) and dedicated abstention verification.
-- **BEAM** (`--judge beam`): Unified evaluation prompt with 3-level rubric scoring (1.0, 0.5, 0.0), pure-Python Kendall's tau-b rank correlation combined with F1 for event ordering, and abstention compliance across all 10 abilities.
-- **Separated Models**: Independent `--answer-model` (generates the answer from recalled context) and `--judge-model` (grades using the official protocol, defaulting to each benchmark's official model).
-- **Reference Modes (`--modes memory,full-context,no-memory`)**: Evaluates memory lift by comparing recalled context against full raw conversation history and zero memory.
-- **Resumable Disk Cache & Budget Guard**: SQLite disk cache keyed by `(model, prompt_hash)` with interruption resumption; `--max-cost` enforces pre-flight cost limits before model calls.
-- **Statistical Significance & Bootstrap CIs (`--bootstrap`, `--compare`)**: Non-parametric paired bootstrap 95% confidence intervals (B=1,000 resamples) across all recall and judge metrics, with automatic difference CIs and p-values against baseline runs.
+- **BEAM** (`--judge beam`): Compatibility profile with three-level rubric scoring and heuristic event alignment. It is not the official BEAM evaluator: semantic event alignment and official aggregate scoring still need implementation and verification before a published score comparison.
+- **Separated Models**: Independent `--answer-model` (generates the answer from recalled context) and `--judge-model` (grades using the selected profile).
+- **Reference modes (`--modes memory,full-context,no-memory`)**: `full-context` now includes the entire normalized raw history, independently of the memory budget. `budgeted-history` preserves the earlier truncated reference. Full history can exceed the reader's context window; select the reference explicitly before any paid run.
+- **Response cache and cost estimates**: The existing response cache supports resumption, but its key does not yet bind provider/endpoint settings. `--max-cost` is an estimate, not an enforced spending cap; full-history and multi-call rubric costs require corrected preflight accounting before approval of a paid evaluation.
+- **Source-bound confidence intervals (`--bootstrap`, `--compare`)**: 2,000 conversation-cluster bootstrap draws produce absolute or paired 95% intervals. Shared LongMemEval answer-source components stay together. Means weight questions equally; intervals are marginal, not simultaneous or causal. Missing, duplicate or changed questions, gold labels, dataset bytes and evaluation profiles are refused. One cluster cannot provide an empirical interval.
 - **Whole-History Episodic Chaining & Interleaving**: `Store.timeline()` builds an episodic chain of conversation sessions with turn bounds. Round-robin session interleaving across candidates prevents single-session budget starvation and ensures multi-session breadth.
 
-#### Official Answer Accuracy Protocol Reference
+#### Answer Evaluation Profile Reference
 
-| Benchmark | Questions | Official Judge Protocol | Judge Default Model | Target Accuracy (Competitor SOTA) |
+| Benchmark | Questions | Evaluation Profile | Judge Model | Comparison Requirement |
 | --- | --: | --- | --- | --- |
-| LoCoMo | 1,540 | LLM-as-judge protocol (categories 1–4 scored, 5 excluded) | Official default | 92.5% – 93.6% |
-| LongMemEval | 120 / 500 | Per-type prompt templates + abstention check | Official default | 94.4% – 95.6% |
-| BEAM 100K | 400 | 3-level rubric (1.0/0.5/0.0) + Kendall tau-b & F1 event ordering | Official default | 64.1% – 73.9% |
-| DolphinBench | 600 | Task request execution from narrative anchor facts | Official default | SOTA reference |
+| LoCoMo | 1,540 | Downstream binary judge (categories 1–4 scored, 5 excluded) | Configured model | Same profile, category mask, reader and dataset |
+| LongMemEval | 120 / 500 | Per-type prompt templates + abstention check | Official default | Same split, prompts, reader and context budget |
+| BEAM 100K | 400 | Compatibility rubric + heuristic event ordering; official parity pending | Configured model | Official semantic alignment and aggregation required for published comparison |
+| DolphinBench | 600 | Task request execution from narrative anchor facts | Official default | Same execution environment and scoring |
 
-#### Measured Evidence Recall Scoreboard (Keyword-Only, Zero Regressions)
+#### Measurement scoreboard (2026-10-08)
 
-| Benchmark | Questions | 1,500 tokens (evidence / complete) | 4,000 tokens (evidence / complete) | Recall Latency (p50) | Ingest Time |
-| --- | --: | --- | --- | --: | --: |
-| LoCoMo | 1,540 | 80.3% / 73.4% | 85.0% / 79.2% | 4.0 ms | 1.6 s |
-| LongMemEval | 120 | 74.2% / 68.3% | 78.1% / 70.0% | 22.3 ms | 15.3 s |
-| BEAM 100K | 400 | 63.8% / 48.2% | 72.3% / 58.0% | 24.9 ms | 11.5 s |
-| DolphinBench | 600 | 50.4% / 46.2% | 67.5% / 62.0% | 33.3 ms | 13.6 s |
+The corrected harness calls public recall separately at each budget, retains
+unresolved gold references as misses, and records candidate ranking before
+context packing. These are source-ID metrics; selecting an excerpt does not
+prove it contains the answer. No reader or judge service was called.
 
-*BEAM ability breakdown at 4,000 tokens*: Temporal Reasoning **100.0%**, Instruction Following **95.0%**, Knowledge Update **85.0%**, Multi-Session Reasoning **83.7%** (+10.0%), Event Ordering **72.3%** (+8.0%), Preference Following **70.0%**, Information Extraction **50.0%**, Summarization **27.9%** (+13.8%).
+| Dataset | Questions | Evidence / complete at 1,500 | Evidence / complete at 4,000 | Turn Recall@5 / @10 / NDCG@10 | Session Recall@5 / @10 / NDCG@10 |
+| --- | --: | --- | --- | --- | --- |
+| LoCoMo, categories 1–4 | 1,540 | 78.69% / 72.33% | 86.31% / 80.01% | 54.78% / 63.04% / 47.47% | 85.26% / 92.03% / 76.81% |
+| LongMemEval-S, complete split | 500 | 79.60% / 69.73% | 85.92% / 79.12% | 66.29% / 76.85% / 60.20% | 89.31% / 93.81% / 87.27% |
+| BEAM 100K | 400 | 70.87% / 54.24% | 80.67% / 68.36% | 30.26% / 41.25% / 29.21% | 100.00% / 100.00% / 85.91% |
+
+Measured public-recall p50 / p95 at 1,500 and 4,000 respectively: LoCoMo
+9.4 / 44.4 ms and 15.6 / 53.3 ms; LongMemEval 30.0 / 54.5 ms and
+27.0 / 51.0 ms; BEAM 59.3 / 105.5 ms and 69.2 / 118.8 ms. Runs shared this
+CPU with other evaluations. The second budget reuses the open store's indexes;
+these diagnostics are not a paired latency improvement or an enterprise SLA.
+Context tokens are `ceil(characters / 4)` estimates, not provider usage.
+
+Against the prior harness on the same product revision, LoCoMo evidence changes
+from 78.98% / 86.61% to 78.69% / 86.31% because nine unresolved annotations
+now remain misses. LongMemEval's second-budget evidence changes from 85.85%
+to 85.92% when it follows the complete public recall path. BEAM evidence is
+unchanged. No retrieval default changed. `--limit 500` now actually includes all
+500 LongMemEval cases; the previous sampler returned 400. Full source-bound
+comparisons refuse earlier outputs that lack the required provenance.
+
+Save per-question outputs outside the checkout and compare matched runs:
+
+```bash
+python -m benchmarks.conversation_bench --dataset locomo --data /tmp/locomo10.json \
+  --root /tmp/ct-before --budget 1500,4000 --embedder none --rerank none --bootstrap \
+  --out /tmp/ct-before.json
+# Run the candidate with the same dataset, sampling and evaluator into a fresh root.
+python -m benchmarks.compare --baseline /tmp/ct-before.json --candidate /tmp/ct-after.json --check
+```
+
+The CI sample retains all source histories and stratifies 154 questions (10% of
+LoCoMo categories 1–4). It runs both product revisions through the same corrected
+harness and fails on a wholly negative quality-difference interval or insufficient
+scored clusters. The public file and reference product revision are pinned by hash.
+See [methods, per-category measurements and limitations](docs/performance.md).
+Model-backed answer accuracy, matched competitor results and BEAM 1M/10M remain
+unverified. The `auto/auto` configuration was also run; without the optional
+attention dependencies it records `effective_embedders: []` and uses lexical
+fallback, so this does not verify dense retrieval or cross-encoder quality.
 
 
 ---
@@ -2715,9 +2927,41 @@ commontrace-v2/
 
 ## Contributor and operational references
 
+Research-informed memory contracts now have an offline regression gate:
+`python -m benchmarks.memory_contracts`. Its original fixtures exercise actual
+persistence, reopening, updates, deletion, approval, replay and abstention;
+results go to stdout. Evidence coverage, attribution and leakage are measured
+separately from answer accuracy. Familiar entities cannot satisfy an unrecorded
+identifier; uncertain evidence remains available for a deeper reader.
+
+`python -m benchmarks.fact_mutation` checks complete fact rows, scores and
+ordering against a cold canonical scan across updates, forgetting, erasure,
+temporal correction and restart. It also measures real canonical write plus
+retrieval costs. Warm writes reuse unchanged fact records after verifying the
+exact committed bytes; JSONL rewriting, hashing and snapshot map copies still
+scale with corpus size. See [operational guidance](docs/operations.md) for cache
+bounds and fallback behavior. All output goes to stdout.
+
+The design draws on the evidence/inference separation in
+[Hindsight](https://arxiv.org/abs/2512.12818), temporal knowledge updates in
+[Zep](https://arxiv.org/abs/2501.13956), and abstention in
+[LongMemEval](https://arxiv.org/abs/2410.10813). The consolidation failure study
+[Useful Memories Become Faulty](https://arxiv.org/abs/2605.12978) motivates keeping
+raw episodes and checking derived sources rather than treating repeated rewrites
+as guaranteed learning. [AgentPoison](https://arxiv.org/abs/2407.12784) and
+[MemoryGraft](https://arxiv.org/abs/2512.16962) motivate content-bound approval in
+addition to heuristic injection screening. These are design references, not
+claims that CommonTrace reproduces their experiments or scores.
+
+Incremental indexing and scoped memory have existing published prior art,
+including [US11055286B2](https://patents.google.com/patent/US11055286B2/en) and
+[US12517919B2](https://patents.google.com/patent/US12517919B2/en). The implementation
+does not establish patent novelty or freedom to operate.
+
 [Development and testing](CONTRIBUTING.md) · [Architecture](docs/architecture.md) ·
 [MCP and gateway APIs](docs/api.md) · [Environment reference](docs/environment.md) ·
-[Operations and migration](docs/operations.md) · [Handover audit](docs/implementation-audit.md)
+[Operations and migration](docs/operations.md)
 
-The handover audit records completed work and remaining items separately; it is
-not a claim that every recommendation or unspecified placeholder is implemented.
+[Runtime, security and provider improvements](docs/runtime-upgrade.md) documents
+snapshot-scoped query caching, completion isolation, live gateway token control,
+rotatable secrets and provider circuit breakers, with reproducible measurements.

@@ -1,4 +1,4 @@
-"""Tests for official benchmark judge integration in benchmarks/conversation_bench.py.
+"""Tests for benchmark judge integration in benchmarks/conversation_bench.py.
 
 Verifies:
 1. Reference modes (memory, full-context, no-memory) context building and execution.
@@ -131,6 +131,7 @@ class TestGradeAnswerWithCache:
             assert res["score"] == 1.0
             assert "rock climbing" in res["answer"].lower()
             assert res["judge"] == "locomo"
+            assert res["judge_profile"] == "locomo-downstream-binary-v1"
             assert res["judge_model"] == "gpt-4o"
             assert res["answer_model"] == "claude-sonnet-5"
             assert res["answer_latency_s"] == 0.0  # cached

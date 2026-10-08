@@ -5,6 +5,287 @@ They establish specific workload improvements, not universal 30 ms latency or
 superiority over competitor answer quality. No inference service is used by
 the measured request profiles.
 
+## Source-bound conversation measurement (2026-10-08)
+
+Acceptance criteria: run public recall independently at each budget; retain
+unresolved gold references as misses; distinguish entire history from a truncated
+reference; measure raw-turn and session Recall@5/10 and binary NDCG@10; reject
+unmatched cases, changed labels and incompatible evaluation contracts; resample
+whole conversations/source components; refuse an unscored or statistically unavailable quality
+gate. No production retrieval API, scoring or default changes in this milestone.
+
+Local verification: 5,868 root/end-to-end tests passed, 103 skipped; 105 focused
+comparison/measurement tests passed independently. Ruff, strict typing for the
+two new measurement modules and generated-document consistency checks passed.
+
+Python 3.12.14 / SQLite 3.53.1, keyword-only `none/none`, budgets 1,500 and
+4,000. Complete source inventories: LoCoMo 1,540 questions / ten conversations;
+LongMemEval-S 500 / 495 shared-answer-source components; BEAM 100K 400 / twenty
+conversations. Per-metric scored counts and excluded questions are explicit;
+undefined evidence does not mean zero and does not establish correct abstention.
+Canonical turn IDs are collapsed before session IDs; session gold annotations
+expand to constituent raw turns. NDCG uses binary source relevance and an ideal
+ranking capped at ten. Candidate metrics precede context packing, while evidence
+measures selected source IDs, not semantic entailment of emitted excerpts.
+
+| Dataset | Category | Questions | Evidence at 1,500 | Evidence at 4,000 |
+| --- | --- | --: | --- | --- |
+| locomo | multi-hop | 282 | 52.08% | 66.61% |
+| locomo | open-domain | 96 | 42.61% | 53.94% |
+| locomo | single-hop | 841 | 89.38% | 94.59% |
+| locomo | temporal | 321 | 84.42% | 91.23% |
+| longmemeval | knowledge-update | 72 | 87.04% | 92.36% |
+| longmemeval | knowledge-update-abstain | 6 | undefined | undefined |
+| longmemeval | multi-session | 121 | 70.43% | 79.48% |
+| longmemeval | multi-session-abstain | 12 | 75.00% | 75.00% |
+| longmemeval | single-session-assistant | 56 | 94.64% | 98.21% |
+| longmemeval | single-session-preference | 30 | 61.67% | 66.67% |
+| longmemeval | single-session-user | 64 | 91.41% | 94.53% |
+| longmemeval | single-session-user-abstain | 6 | undefined | undefined |
+| longmemeval | temporal-reasoning | 127 | 75.51% | 83.36% |
+| longmemeval | temporal-reasoning-abstain | 6 | 90.00% | 90.00% |
+| beam | abstention | 40 | undefined | undefined |
+| beam | contradiction_resolution | 40 | 82.33% | 87.08% |
+| beam | event_ordering | 40 | 59.64% | 95.53% |
+| beam | information_extraction | 40 | 57.50% | 62.92% |
+| beam | instruction_following | 40 | 89.58% | 90.21% |
+| beam | knowledge_update | 40 | 80.42% | 85.83% |
+| beam | multi_session_reasoning | 40 | 66.06% | 78.39% |
+| beam | preference_following | 40 | 73.08% | 74.79% |
+| beam | summarization | 40 | 28.49% | 49.66% |
+| beam | temporal_reasoning | 40 | 96.25% | 98.75% |
+
+The [README scoreboard](../README.md#measurement-scoreboard-2026-10-08) records
+aggregate context/ranking results. Against the older harness on the same product,
+LoCoMo's corrected evidence drops 0.29 / 0.30 percentage points as unresolved
+annotations remain misses. LongMemEval's complete second-budget recall changes
+85.85% to 85.92%; BEAM evidence is unchanged. These are measurement corrections,
+not product improvements. Earlier outputs lack the required provenance and are
+intentionally refused by the new comparator.
+
+Fresh ingestion totals are 2.3 / 251.2 / 17.1 seconds for LoCoMo / LongMemEval /
+BEAM; mean estimated context sizes at 1,500 / 4,000 are 1,441.02 / 3,851.58,
+1,463.18 / 3,926.37, and 1,465.24 / 3,923.29. Ingestion includes benchmark
+source binding; recall timers exclude measurement, disk hashing and inference.
+Each store stays open across the two budgets, so its second-budget indexes are
+warm even though public recall executes independently.
+
+`auto/auto` was run on all 2,440 questions at both budgets, with identical
+quality/rank metrics and `effective_embedders: []`. Optional attention dependencies
+are absent; these are lexical fallback checks, not dense/reranker evaluations.
+Under concurrent evaluation and test load, its observed p50 / p95 at the two
+budgets are LoCoMo 16.4 / 58.0 and 29.0 / 78.5 ms; LongMemEval 67.7 / 150.2
+and 62.9 / 118.0 ms; BEAM 69.8 / 152.5 and 81.0 / 173.4 ms. Those slower
+observations are retained; uncontrolled load prevents a causal latency comparison.
+
+The same corrected harness was also run against pinned product source
+`973e59979f326559a863ed2dbcc02b187402dad4` on the complete LoCoMo dataset.
+All compared quality, source-ranking and context-token deltas are zero, including
+every category at both budgets. The 154-question stratified CI fixture likewise
+passes both budget gates, with quotas multi-hop 28, temporal 32, open-domain 10,
+single-hop 84. CI fetches the immutable public dataset revision and verifies its
+SHA-256, keeps all histories, and compares both product revisions through this
+same corrected harness. A wholly negative marginal quality interval fails;
+missing scored quality or fewer than two independent scored clusters also fail.
+These intervals do not implement a simultaneous multiple-comparison correction
+or an anytime-valid sequential test.
+
+Reproduce a comparison using identical dataset/sampling/evaluation settings and
+fresh source stores outside the checkout:
+
+```bash
+python -m benchmarks.conversation_bench --dataset locomo --data /tmp/locomo10.json \
+  --root /tmp/ct-before --budget 1500,4000 --embedder none --rerank none --bootstrap \
+  --out /tmp/ct-before.json
+python -m benchmarks.compare --baseline /tmp/ct-before.json --candidate /tmp/ct-after.json --check
+```
+
+Measurement provenance binds input bytes, adapter/measurement source, the complete
+Python product source, question/answer/rubric hashes, raw gold identities and
+sampling. Judged runs additionally bind reader/judge provider, configured identifiers,
+prompt and completion-source hashes. Endpoint/region/project configuration is
+bound through opaque hashes; URL credentials and private API keys are excluded.
+Parsed-cache manifests bind their chunk-file bytes, and raw canonical turn/session
+hashes catch modified source metadata even without a vector-generation change.
+Caches are disposable; a different or externally edited source store requires a
+fresh `--root`, rather than deleting or silently replacing existing data.
+
+Dataset digests:
+
+- LoCoMo: `79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4`.
+- LongMemEval-S cleaned: `d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442`.
+- BEAM 100K: `c0519be25907005ba873c927c50877471d550873039d96c041554d0075a78ace`.
+
+Measured product digest:
+`90ebdd9d00d5bdfa088f554ccd42d556cd1cccbb16e235f39a8e8634cd315844`;
+adapter/measurement digest:
+`8c13847b937b8c8b837319ac7bb78d757acfabedbd9e727da3eab16628d03493`.
+
+Independent official-source review verified all twelve LongMemEval task/abstention
+prompt combinations against MIT-licensed source revision
+[`9e0b455`](https://github.com/xiaowu0162/longmemeval/blob/9e0b455f4ef0e2ab8f2e582289761153549043fc/src/evaluation/evaluate_qa.py).
+BEAM's MIT-licensed
+[`b2da22e`](https://github.com/Mohammadtavakoli78/BEAM/tree/b2da22eac88bb0874c64665f13457eb99835774a/src/evaluation)
+still requires semantic event alignment and its official report aggregation.
+The Apache-2.0 competitor `memory-benchmarks` revision
+[`4b61c5d`](https://github.com/supermemoryai/memory-benchmarks/tree/4b61c5d31b9c668a12b4f5e78064248a02c82d2b/benchmarks/locomo)
+uses a different binary judge from CommonTrace's legacy LoCoMo profile.
+Supplied-response parser tests are not live official-judge agreement.
+No model-backed accuracy, competitor victory, BEAM 1M/10M result or paid cost
+was measured. Paid evaluation remains blocked pending corrected multi-call/full-
+history estimation, response-cache endpoint binding, a configured service and
+explicit approval. Existing `--max-cost` is not a running spending cap.
+
+## Large fact-bank retention and disabled embeddings (2026-10-08)
+
+Acceptance criteria: explicit `Options(embedder="none")` never constructs an
+encoder; 50,000 seeded facts fit within the unchanged 64 MiB snapshot budget;
+warm overlap and BM25 queries do not rebuild snapshots or scoped statistics;
+ordered facts, scores and final fact-channel contexts match the exact baseline;
+current source, scope and lesson-admission checks remain intact. Default scoring
+and APIs remain compatible.
+
+The maintained benchmark uses actual temporary JSONL stores, scope `alpha`,
+three alternating measured trials after warmup, Python 3.12.14, and a fresh
+core-only installation without NumPy, model dependencies or MCP. Its seeded
+facts are unbound; timings exclude inference and transport. Selective queries
+match 20 records; common-term queries match the entire corpus. Both query types
+and full fact-channel recall are checked, rather than only selective searches.
+
+| Facts | Operation / query | Exact baseline median | Compact index median |
+| ---: | --- | ---: | ---: |
+| 20,000 | Search / selective | 862.123 ms | 0.639 ms |
+| 20,000 | Search / common terms | 936.046 ms | 54.665 ms |
+| 20,000 | Fact recall / selective | 939.620 ms | 1.846 ms |
+| 20,000 | Fact recall / common terms | 929.808 ms | 54.733 ms |
+| 50,000 | Search / selective | 2,818.678 ms | 0.783 ms |
+| 50,000 | Search / common terms | 3,153.048 ms | 155.906 ms |
+| 50,000 | Fact recall / selective | 3,008.459 ms | 1.867 ms |
+| 50,000 | Fact recall / common terms | 3,132.621 ms | 157.106 ms |
+
+The baseline replays the pre-index overlap path. The candidate preserves its
+complete ordered rows and scores, and the recall comparisons preserve final
+contexts. Snapshot retention is 23,477,066 bytes (22.39 MiB) at 20,000 facts and
+61,362,864 bytes (58.52 MiB) at 50,000. Scoped BM25 statistics retain 1,508,891
+and 4,666,219 bytes after mutation, below their independent 8 MiB cap. Both runs
+have zero warm snapshot/statistics loads; post-mutation warm BM25 medians are
+0.529 / 0.615 ms. Cold construction is 2,376.842 / 7,351.969 ms and canonical
+updates are 1,892.927 / 5,813.639 ms. Writes still rewrite and verify JSONL in
+O(N); neither cold startup nor broad-query scoring is sub-millisecond.
+
+A separate same-corpus comparison loads the prior fact-index module from
+`e8de1d8c39be6199fb7784a87e0c929b1a62c7d8` alongside the compact module. Five
+alternating 20,000-fact `bm25-v1` searches for `rarecalibration`, scope `alpha`,
+produce identical complete ordered rows. Prior/current warm medians are
+2,374.558 / 0.955 ms; prior/current cold calls are 2,158.288 / 2,794.437 ms.
+The prior snapshot retains nothing and rebuilds six times; the compact snapshot
+builds once and stays retained. This verifies the reported cliff and also shows
+a cold-build regression, rather than hiding the construction cost.
+
+Reproduce the maintained overlap, recall, mutation and BM25 checks:
+
+```bash
+python -m benchmarks.fact_search --facts 20000 --trials 3 --check
+python -m benchmarks.fact_search --facts 50000 --trials 3 --check
+```
+
+Measured product/harness source fingerprint:
+`b23f21fdcab98a32dac3dedc8fae7503b783fb5ccf6712fcc0bf3f6a2d56341a`.
+The harness rejects source edits during measurement. An independent ownership
+test uses `tracemalloc` to verify that cache weighing covers allocations freed
+with the cache; this is not a process RSS bound. Larger or incompressible banks,
+concurrent builders, decoded request views and multiple large store paths can
+still exceed retention or cause eviction. A persistent index remains a scaling
+opportunity. These are synthetic workload measurements, not competitor latency
+or model-judged answer accuracy.
+
+The isolated core coverage run passed 191 tests, skipped 11 optional integration
+tests, and measured **96.25% branch-inclusive fact-index coverage**. CI now gates
+at 95% and runs the 50,000-fact paired performance/compatibility check. The full
+root/end-to-end suite passed **5,749 tests, with 103 skipped**, in 358.23 seconds;
+all 35 strict typing targets, Ruff, generated documentation and medium/high
+Bandit checks passed. The seven
+reported embedding failures reproduce when availability is enabled and all pass
+with the fix; additional tests verify real writable/read-only stores, private
+speaker filtering and native synchronous/asynchronous tools without loading models.
+
+## Conversation reliability and multilingual retrieval (2026-10-08)
+
+Acceptance criteria: coverage uses emitted source text rather than hidden turns;
+explicit allow-lists constrain assembly; multilingual tail evidence is quoted
+within budget; indexed and streaming Unicode scores match; ASCII behavior and
+canonical hashes/journals remain compatible. The local suite at `da763d0` passed
+**5,688 tests, with 103 skipped**. All 35 strict typing targets, Ruff and generated
+documentation checks passed; 73 additional MCP tests passed against the pinned
+dependency environment. Model-dependent and unconfigured integration tests remain
+among the skips.
+
+The subsequent keyboard-focus correction passed 16 real Chromium contracts and
+19 controller tests. Two new regressions reproduce the old route/form loss and
+refresh focus loss using the previous production JavaScript, then pass with the
+fix. No timing threshold or retry was relaxed.
+
+The measured implementation is `da763d0b9d00942cdab6012d2f939ad1f6c40206`.
+The complete LoCoMo evaluation uses 1,540 questions in categories 1–4 across ten
+conversations, production redaction, lexical retrieval, no reranker or models,
+alternating strategy order and disabled final-response caching. All 1,536
+gold-bearing questions contribute to source metrics, including nine unresolved
+annotations retained as misses. Source retention is not answer accuracy.
+
+| Estimated budget | Legacy whole-source recall | Optional coverage-v1 | Legacy p50 / p95 | Optional p50 / p95 |
+| ---: | ---: | ---: | ---: | ---: |
+| 1,500 | 76.4257% | 75.9655% | 8.083 / 13.313 ms | 14.477 / 20.680 ms |
+| 7,000 | 88.9260% | 88.9239% | 19.657 / 28.721 ms | 25.759 / 36.608 ms |
+
+Conversation-cluster bootstrap intervals (2,000 draws, seed 0) for optional
+minus legacy whole-source recall are [-0.9075, +0.0429] percentage points at
+1,500 and [-0.1267, +0.1573] at 7,000. There is no demonstrated aggregate gain;
+`legacy` remains the default. Mean estimated context sizes are 1,441.79 / 1,441.14
+and 6,478.76 / 6,476.49 respectively. These are `ceil(characters/4)` estimates,
+not provider token counts. Timings exclude ingestion, evaluation and inference.
+The final multilingual implementation reproduces the pre-change English source
+recall and context-size aggregates exactly.
+
+Reproduce with the official `snap-research/locomo` `data/locomo10.json` file:
+
+```bash
+python -m benchmarks.conversation_retrieval --dataset locomo \
+  --data /tmp/commontrace-locomo10.json --budgets 1500,7000 --seed 0
+```
+
+Dataset SHA-256: `79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4`.
+Implementation checksum emitted by this run:
+`bcc514e932056864f12b66d50132ce95df5dc914c6feafbda76478dd743a14e0`.
+Python 3.12.14 / SQLite 3.53.1. Comparing with hosted Mem0's reported scores
+requires matched answer/judge models, actual tokenizer accounting and service
+access; no competitor benchmark has been beaten by this evaluation.
+
+Two isolated CPU/SQLite profiles verify performance changes on the same runtime:
+
+| Component / workload | Reference median | Current median |
+| --- | ---: | ---: |
+| Unicode BM25: 10,000 units, ten matches | 125.085 ms streamed | 0.785 ms indexed |
+| Broad assembly: 10,000 ranked turns | 16.108 ms before set hoist | 0.773 ms |
+| Broad assembly: 20,000 duplicate rank entries | 29.824 ms before set hoist | 1.030 ms |
+
+The Unicode fixture has 10,000 `Agent` messages: `麒麟缓存容量记录。` for ordinals
+divisible by 1,000, otherwise `普通维护状态记录。`, followed by `指标编号{i}。`.
+Seven alternating indexed/streaming queries for `麒麟缓存`, limit 20, return
+identical ordered scores. Initial index build takes 489.015 ms. Source bodies are
+not scanned by the warm indexed arm; statistics still scan Unicode document
+lengths. These figures measure the BM25 component, not complete recall.
+
+Assembly uses a real store with 50 sessions of 200 messages, a 400-token budget,
+100-token excerpts, broad mode, and no profile, summary, neighbors or models.
+The control reverses only the two-line membership-set hoist. Seven alternating
+warm pairs at pools 200 / 2,000 / 10,000 cover ordinary, duplicate and scoped
+rankings: all 63 pairs preserve context, IDs, token counts, withheld sources,
+emitted text and selection diagnostics exactly. Assembly source checksum:
+`4a894de10c75d2b813a38386f7db1b0bb9ac0e351eaa934aaf164b1c4898b76e`.
+Neither component profile establishes a universal latency or speed multiplier.
+
+## Earlier measured operations
+
 | Operation | Baseline | Improved |
 | --- | ---: | ---: |
 | Warm HTTP recall, 6,400 lessons, p95 | 219.922 ms | 22.951 ms |
@@ -41,9 +322,8 @@ source tree. Their complete evidence remains available at immutable revision
 Recover the optional HTTP profiler without restoring the research directory:
 
 ```bash
-mkdir -p scratch
-git show 7376495fb1140cb864a669d2ca9472dad0ce1020:research/profile_latency30_http.py > scratch/profile_http.py
-python scratch/profile_http.py . --lessons 6400 --runs 3 --requests 50
+git show 7376495fb1140cb864a669d2ca9472dad0ce1020:research/profile_latency30_http.py > /tmp/commontrace-profile-http.py
+python /tmp/commontrace-profile-http.py . --lessons 6400 --runs 3 --requests 50
 ```
 
 The maintained local-only evaluation helper lives in `benchmarks/local_eval.py`.
@@ -126,4 +406,46 @@ latency inconclusive. They do not establish a general 20× speedup.
 
 ```bash
 python -m pytest tests/test_conversation_ingestion_performance.py -q
+```
+
+## Repeated lexical ranking and provider isolation (2026-10-06)
+
+Compared with `bf16603eddc6b220efcab95ce4a6912a88e79318`, seven alternating
+baseline/candidate pairs each measure 300 requests per workload. The corpus
+index is warm for both versions. Seed 61923 creates 12 description terms and
+three tags per lesson from a vocabulary of 100 terms; these are synthetic
+frequent-term queries with top-k 10, not an answer-quality benchmark. Repeated
+requests use the same three-term query; distinct requests use seeded four-term
+queries. The table reports the median of each trial's median.
+
+| Lessons | Workload | Baseline median | Candidate median | Change |
+| ---: | --- | ---: | ---: | --- |
+| 1,000 | repeated | 0.189701 ms | 0.020581 ms | 9.22x faster |
+| 1,000 | distinct | 0.287228 ms | 0.310674 ms | 8.2% slower |
+| 10,000 | repeated | 1.852324 ms | 0.020150 ms | 91.93x faster |
+| 10,000 | distinct | 2.605150 ms | 2.682975 ms | 3.0% slower |
+
+All ordered result hashes match across versions and trials. The 50x target is
+exceeded for repeated ranking at 10,000 lessons. It is not met for every
+operation: distinct queries pay cache admission/materialization overhead, and
+the measured regressions above are retained in this guide. These measurements
+exclude file loading, cold indexing, prompt rendering, network transport and
+LLM inference. They do not compare CommonTrace against hosted competitor SLAs.
+
+For predominantly unique workloads, use `COMMONTRACE_QUERY_CACHE=0` or
+`rank_lessons(..., cache_results=False)`. An opt-out comparison can be reproduced with the command
+below; disabling caching removes admission work, though numeric-template
+materialization still has a small cost versus the baseline implementation.
+
+- [Scope, operational controls and remaining gaps](runtime-upgrade.md)
+
+Reproduce from this checkout (Python 3.10+, core dependencies only):
+
+```bash
+git worktree add --detach ../commontrace-baseline bf16603eddc6b220efcab95ce4a6912a88e79318
+python -m benchmarks.runtime_comparison --baseline-checkout ../commontrace-baseline \
+  --trials 7 --runs 300 --output /tmp/retrieval-comparison.json
+COMMONTRACE_QUERY_CACHE=0 python -m benchmarks.runtime_comparison \
+  --baseline-checkout ../commontrace-baseline --trials 5 --runs 300 \
+  --output /tmp/retrieval-disabled-comparison.json
 ```

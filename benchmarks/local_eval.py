@@ -1,4 +1,4 @@
-"""Run unmodified official benchmark protocols against a category-balanced local subset.
+"""Run configured benchmark judge profiles against a balanced local subset.
 
 Only loopback generation/judging endpoints are allowed. Dataset inputs and model
 weights remain outside git; results include input hashes and observable model calls.
@@ -160,7 +160,9 @@ def main(argv=None) -> int:
                 "model": args.model, "model_sha256": sha256(Path(args.model_file)) if args.model_file else None,
                 "endpoint": args.endpoint, "budget": args.budget, "embedder": args.embedder,
                 "timeout_seconds": args.timeout_seconds, "answer_and_judge_enabled": not args.retrieval_only,
-                "judge_model_matches_published_defaults": False, "runs": []}
+                "judge_model_matches_published_defaults": False,
+                "judge_profile": "locomo-downstream-binary-v1" if args.dataset == "locomo" else args.dataset,
+                "runs": []}
     environment = dict(os.environ)
     environment.update(COMMONTRACE_LLM_PROVIDER="openai-compatible", COMMONTRACE_LLM_API_KEY="local-only",
                        COMMONTRACE_LLM_BASE_URL=args.endpoint, COMMONTRACE_LLM_MODEL=args.model,

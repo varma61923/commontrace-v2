@@ -3226,7 +3226,7 @@ async def export_commons(
     ).scalars().all()
 
     now = datetime.now(timezone.utc)
-    return {
+    result = {
         "entries": [
             {
                 "title": t.title,
@@ -3248,6 +3248,14 @@ async def export_commons(
         "n_entries": len(rows),
         "truncated": len(rows) >= limit,
     }
+
+    if config.commons_signing_key:
+        from commontrace.commons_integrity import sign_record
+
+        key = config.commons_signing_key.encode("utf-8")
+        result["entries"] = [sign_record(entry, key, key_id=config.commons_signing_key_id)
+                             for entry in result["entries"]]
+    return result
 
 
 async def browse_commons(

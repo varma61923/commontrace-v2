@@ -38,11 +38,12 @@ function api(path) {requested.push(path); return Promise.resolve({path});}
 
 @pytest.mark.parametrize(("route", "paths"), [
     ("overview", ["status", "memories", "agents"]),
+    ("explore", ["status"]),
     ("memories", ["status", "memories"]),
     ("live", ["status", "occasions"]),
     ("fleet", ["status", "agents"]),
     ("safety", ["status", "agents"]),
-    ("review", ["status", "lessons?status=review"]),
+    ("review", ["status", "lessons?status=review&limit=50&offset=0"]),
     ("lesson", ["status", "memories", "lesson?slug=lesson_one"]),
     ("commands", ["status", "command-catalog"]),
 ])
@@ -54,6 +55,15 @@ def test_each_page_polls_its_sources_and_capabilities_have_a_freshness_window(ro
     assert result["first"] == ["/v1/status", "/v1/capabilities"] + ["/v1/" + p for p in paths[1:]]
     assert result["warm"] == ["/v1/" + p for p in paths]
     assert result["expired"] == result["first"]
+
+
+@pytest.mark.parametrize(("offset", "expected"), [("50", 50), ("0", 0), ("-20", 0),
+                                                  ("1.5", 0), ("invalid", 0), ("9007199254740992", 0)])
+def test_review_poll_preserves_safe_integer_offsets_and_resets_invalid_offsets(offset, expected):
+    result = run(f"route='review'; hashQuery=()=>{json.dumps(offset)}; await refresh(); "
+                 "console.log(JSON.stringify({requested}));")
+    assert result["requested"] == ["/v1/status", "/v1/capabilities",
+                                   f"/v1/lessons?status=review&limit=50&offset={expected}"]
 
 
 def test_older_poll_cannot_overwrite_a_newer_page():
@@ -100,7 +110,7 @@ console.log(JSON.stringify({waiting,requested,capabilities:state.capabilities.ve
 """)
     assert result == {
         "waiting": {"cleared": True, "selected": [], "notice": None, "lastPaint": "", "lastOk": 0},
-        "requested": ["/v1/status", "/v1/capabilities", "/v1/lessons?status=review"],
+        "requested": ["/v1/status", "/v1/capabilities", "/v1/lessons?status=review&limit=50&offset=0"],
         "capabilities": "new", "capabilitiesToken": "new-token", "stateToken": "new-token",
         "agents": None, "memories": None, "lesson": None, "events": None,
         "commandCatalog": None, "commandResult": None,

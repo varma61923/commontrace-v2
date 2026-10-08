@@ -6,12 +6,13 @@ import hashlib
 import json
 import os
 import re
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
 from commontrace import _jsonl, lesson_cache, paths
+from commontrace.fact_evidence import MAX_EVIDENCE, EvidenceError, EvidenceResolver, FactEvidence, claim_revision
 
 DEFAULT_CATEGORY = "general"
 CATEGORIES = (
@@ -56,6 +57,10 @@ class AtomicFact:
     created_at: str = ""
     updated_at: str = ""
     stability: str = ""
+    evidence: list[FactEvidence] = field(default_factory=list)
+    evidence_bound: bool = False
+    min_support: int = 1
+    evidence_revision: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -115,7 +120,7 @@ def _coerce_fact(data: dict[str, Any]) -> AtomicFact:
         raw_sources if isinstance(raw_sources, (list, tuple, set))
         else ([raw_sources] if raw_sources else [])
     )
-    clean = {
+    clean: dict[str, Any] = {
         "id": str(data.get("id") or _fact_id(statement, scopes)),
         "statement": statement,
         "category": str(data.get("category") or DEFAULT_CATEGORY),
@@ -134,6 +139,20 @@ def _coerce_fact(data: dict[str, Any]) -> AtomicFact:
         "updated_at": str(data.get("updated_at") or recorded_fallback or valid_from),
         "stability": data.get("stability") if data.get("stability") in STABILITY_VALUES else "",
     }
+    raw_evidence = data.get("evidence", [])
+    if not isinstance(raw_evidence, list) or len(raw_evidence) > MAX_EVIDENCE:
+        raise TypeError("invalid fact evidence ledger")
+    receipts = [FactEvidence.from_dict(row) for row in raw_evidence]
+    clean["evidence"] = receipts
+    bound = data.get("evidence_bound", bool(raw_evidence))
+    minimum = data.get("min_support", 1)
+    if not isinstance(bound, bool) or not isinstance(minimum, int) or isinstance(minimum, bool) \
+            or not 1 <= minimum <= MAX_EVIDENCE:
+        raise TypeError("invalid fact evidence policy")
+    clean["evidence_bound"], clean["min_support"] = bound, minimum
+    clean["evidence_revision"] = str(data.get("evidence_revision") or "")
+    if bound:
+        clean["confirmations"] = len({(r.kind, r.source_id) for r in receipts if r.polarity == "support"})
     if clean["category"] not in CATEGORIES:
         clean["category"] = DEFAULT_CATEGORY
     fact = AtomicFact(**{k: v for k, v in clean.items() if k in _FACT_FIELDS})
@@ -225,8 +244,38 @@ def load_facts(root: str) -> dict[str, AtomicFact]:
 
 
 def save_facts(root: str, facts: dict[str, AtomicFact]) -> None:
-    """Atomically replace the fact file with *facts*."""
-    _jsonl.write_rows(_facts_file(root), (fact.to_dict() for fact in facts.values()))
+    """Atomically replace facts, reusing a verified warm retrieval snapshot.
+
+    JSONL remains authoritative. Incremental publication is an optimization:
+    a missing base, external edit or cache failure leaves the coherent cold
+    reader available. Exact serialized bytes, not caller-owned mutable facts,
+    bind the publication to its committed source generation.
+    """
+    from commontrace import fact_index
+
+    with _jsonl.locked(_facts_file(root)):
+        try:
+            base = fact_index.capture_for_write(root)
+        except Exception:
+            fact_index.clear_cache()
+            base = None
+        if base is None:
+            _jsonl.write_rows(_facts_file(root), (fact.to_dict() for fact in facts.values()))
+            try:
+                # Withdraw scoped statistics even when an oversized/expired
+                # snapshot was not retained. The no-base path never rebuilds.
+                fact_index.publish_committed(root, None, (), "")
+            except Exception:
+                fact_index.clear_cache()
+            return
+        rows = tuple(json.dumps(fact.to_dict(), ensure_ascii=False) for fact in facts.values())
+        digest = _jsonl.write_serialized_rows(_facts_file(root), rows)
+        try:
+            fact_index.publish_committed(root, base, rows, digest)
+        except Exception:
+            # A durable successful write must not be reported as failed merely
+            # because its optional retrieval acceleration could not publish.
+            fact_index.clear_cache()
 
 
 @contextlib.contextmanager
@@ -270,9 +319,33 @@ def _add_locked(
     source_trace_id: str,
     stability: str = "",
     created_at: str | None = None,
+    evidence: Sequence[FactEvidence] | None = None,
+    min_support: int = 1,
 ) -> tuple[AtomicFact, str]:
     existing = _matching_active(facts, statement, scopes)
     if existing is not None:
+        if existing.evidence_bound or evidence is not None:
+            before = existing.to_dict()
+            ledger = {receipt.key: receipt for receipt in existing.evidence}
+            for receipt in evidence or ():
+                ledger.setdefault(receipt.key, receipt)
+            if len(ledger) > MAX_EVIDENCE:
+                raise EvidenceError(f"a fact may retain at most {MAX_EVIDENCE} evidence receipts")
+            existing.evidence = list(ledger.values())
+            existing.evidence_bound = True
+            if evidence is not None:
+                existing.min_support = min_support
+            existing.confirmations = len({(r.kind, r.source_id) for r in existing.evidence if r.polarity == "support"})
+            if evidence is not None:
+                existing.evidence_revision = claim_revision(existing)
+            # Recorded evidence counts are not a model's probability of truth.
+            # Replays neither boost confidence nor revise the receipt timestamp.
+            if existing.to_dict() != before:
+                _stamp(existing)
+            return existing, "NOOP"
+        if source_trace_id and source_trace_id in existing.source_traces:
+            # Replaying the same named trace is not a new confirmation.
+            return existing, "NOOP"
         existing.confirmations += 1
         existing.confidence = min(1.0, round(existing.confidence + 0.05, 3))
         if source_trace_id and source_trace_id not in existing.source_traces:
@@ -304,7 +377,13 @@ def _add_locked(
         created_at=recorded_at,
         updated_at=now_iso,
         stability=_normalize_stability(stability),
+        evidence=list(dict((receipt.key, receipt) for receipt in evidence or ()).values()),
+        evidence_bound=evidence is not None,
+        min_support=min_support,
     )
+    if fact.evidence_bound:
+        fact.confirmations = len({(r.kind, r.source_id) for r in fact.evidence if r.polarity == "support"})
+        fact.evidence_revision = claim_revision(fact)
     fact.revision = _compute_revision(fact.to_dict())
     facts[fact.id] = fact
     return fact, "ADD"
@@ -336,17 +415,39 @@ def add_fact(
     source_trace_id: str = "",
     stability: str = "",
     created_at: str | None = None,
+    *,
+    evidence: Sequence[FactEvidence] | None = None,
+    min_support: int = 1,
 ) -> tuple[AtomicFact, str]:
-    """Add a fact, or reinforce the matching active one. Returns (fact, 'ADD' | 'NOOP')."""
+    """Add a fact or reinforce a matching active one; return 'ADD' or 'NOOP'.
+
+    Supplying ``evidence`` opts into source-revision admission, whose distinct
+    source counts do not increase confidence. Replay of a named legacy trace is
+    also idempotent; anonymous legacy reinforcement remains compatible.
+    """
     statement, category, valid_from, valid_until, expires_at = prepare_fact(
         statement, category, valid_from, valid_until, expires_at)
+    _validate_evidence_policy(min_support)
     with mutate_facts(root) as facts:
+        clean_scopes = _clean_scopes(scopes)
+        if evidence is not None:
+            existing = _matching_active(facts, statement, clean_scopes)
+            if existing and any(receipt.kind == "fact" and receipt.source_id == existing.id
+                                for receipt in evidence if isinstance(receipt, FactEvidence)):
+                raise EvidenceError("a fact cannot support or refute itself")
+            EvidenceResolver(root, facts).validate_receipts(evidence, existing.scopes if existing else clean_scopes)
         fact, action = _add_locked(
-            facts, statement, category, _clean_scopes(scopes), valid_from, valid_until,
+            facts, statement, category, clean_scopes, valid_from, valid_until,
             expires_at, confidence, source_trace_id, _normalize_stability(stability), created_at,
+            evidence, min_support,
         )
     _link_entities_best_effort(root, [(fact.id, fact.statement)])
     return fact, action
+
+
+def _validate_evidence_policy(min_support: int) -> None:
+    if isinstance(min_support, bool) or not isinstance(min_support, int) or not 1 <= min_support <= MAX_EVIDENCE:
+        raise EvidenceError(f"min_support must be an integer in 1..{MAX_EVIDENCE}")
 
 
 def add_facts(root: str, items: list[dict[str, Any]]) -> list[tuple[AtomicFact, str]]:
@@ -360,12 +461,22 @@ def add_facts(root: str, items: list[dict[str, Any]]) -> list[tuple[AtomicFact, 
                          valid_until, expires_at, float(item.get("confidence", 0.8)),
                          str(item.get("source_trace_id", "") or ""),
                          _normalize_stability(item.get("stability", "")),
-                         item.get("created_at")))
+                         item.get("created_at"), item.get("evidence"), item.get("min_support", 1)))
     if not prepared:
         return []
     with mutate_facts(root) as facts:
-        results = [_add_locked(facts, s, c, sc, vf, vu, ea, conf, src, stab, created)
-                   for s, c, sc, vf, vu, ea, conf, src, stab, created in prepared]
+        results = []
+        for s, c, sc, vf, vu, ea, conf, src, stab, created, receipts, minimum in prepared:
+            _validate_evidence_policy(minimum)
+            if receipts is not None:
+                if not isinstance(receipts, (list, tuple)):
+                    raise EvidenceError("evidence must be a sequence of FactEvidence receipts")
+                existing = _matching_active(facts, s, sc)
+                if existing and any(receipt.kind == "fact" and receipt.source_id == existing.id
+                                    for receipt in receipts if isinstance(receipt, FactEvidence)):
+                    raise EvidenceError("a fact cannot support or refute itself")
+                EvidenceResolver(root, facts).validate_receipts(receipts, existing.scopes if existing else sc)
+            results.append(_add_locked(facts, s, c, sc, vf, vu, ea, conf, src, stab, created, receipts, minimum))
     _link_entities_best_effort(root, [(fact.id, fact.statement) for fact, _ in results])
     return results
 
@@ -432,36 +543,67 @@ def supersede_fact(
     as_of: str | None = None,
 ) -> tuple[AtomicFact, AtomicFact]:
     """End an active fact's validity and point it at its replacement."""
-    when = _moment(as_of, "as_of") or _now()
     with mutate_facts(root) as facts:
-        if old_fact_id not in facts:
-            raise KeyError(f"Old fact '{old_fact_id}' not found")
-        old_fact = facts[old_fact_id]
-        if old_fact.status != "active":
-            raise ValueError(
-                f"fact '{old_fact_id}' is {old_fact.status}, not active; only an active fact can be superseded")
-        target = new_fact_id_or_statement
-        if target in facts:
-            new_fact = facts[target]
-            if new_fact.status != "active":
-                raise ValueError(f"replacement fact '{target}' is {new_fact.status}, not active")
-        else:
-            statement, cat, _vf, _vu, _ea = prepare_fact(target, category or old_fact.category, None, None, None)
-            new_scopes = _clean_scopes(scopes if scopes is not None else old_fact.scopes)
-            same = _matching_active(facts, statement, new_scopes)
-            if same is not None and same.id == old_fact.id:
-                raise ValueError(
-                    f"the replacement restates fact '{old_fact_id}' itself; "
-                    "supersede it with a statement that differs")
-            new_fact, _action = _add_locked(
-                facts, statement, cat, new_scopes, when, None, None, old_fact.confidence, "")
-        if new_fact.id == old_fact.id:
-            raise ValueError(f"fact '{old_fact_id}' cannot supersede itself")
-        old_fact.status = "superseded"
-        old_fact.valid_until = when
-        old_fact.superseded_by = new_fact.id
-        _stamp(old_fact)
-        return old_fact, new_fact
+        return _supersede_locked(facts, old_fact_id, new_fact_id_or_statement,
+                                 scopes=scopes, category=category, as_of=as_of)
+
+
+def _supersede_locked(
+    facts: dict[str, AtomicFact], old_fact_id: str, new_fact_id_or_statement: str, *,
+    scopes: list[str] | None = None, category: str | None = None,
+    as_of: str | None = None, contradiction: bool = False,
+) -> tuple[AtomicFact, AtomicFact]:
+    """Validate and close the old window under the same fact transaction."""
+    explicit = _moment(as_of, "as_of")
+    when = explicit or _now()
+    if old_fact_id not in facts:
+        raise KeyError(f"Old fact '{old_fact_id}' not found")
+    old_fact = facts[old_fact_id]
+    if old_fact.status != "active":
+        raise ValueError(
+            f"fact '{old_fact_id}' is {old_fact.status}, not active; only an active fact can be superseded")
+    target = new_fact_id_or_statement
+    new_fact: AtomicFact | None
+    if target in facts:
+        new_fact = facts[target]
+        if new_fact.status != "active":
+            raise ValueError(f"replacement fact '{target}' is {new_fact.status}, not active")
+        when = explicit or new_fact.valid_from
+    else:
+        statement, cat, _vf, _vu, _ea = prepare_fact(target, category or old_fact.category, None, None, None)
+        new_scopes = _clean_scopes(scopes if scopes is not None else old_fact.scopes)
+        same = _matching_active(facts, statement, new_scopes)
+        if same is not None and same.id == old_fact.id:
+            raise ValueError(f"the replacement restates fact '{old_fact_id}' itself; use a different statement")
+        # The prospective validity must be checked before inserting a replacement.
+        new_fact = same
+        when = explicit or (same.valid_from if same is not None else when)
+    if new_fact is not None and new_fact.id == old_fact.id:
+        raise ValueError(f"fact '{old_fact_id}' cannot supersede itself")
+    if contradiction:
+        old_from = lesson_cache.parse_moment(old_fact.valid_from)
+        new_from = lesson_cache.parse_moment(when)
+        if new_from < old_from:
+            raise ValueError("replacement predates the contradicted fact")
+        if old_fact.valid_until and lesson_cache.parse_moment(old_fact.valid_until) <= new_from:
+            raise ValueError("These cover different windows, not a contradiction.")
+        if new_fact is not None and new_fact.valid_until \
+                and lesson_cache.parse_moment(new_fact.valid_until) <= old_from:
+            raise ValueError("These cover different windows, not a contradiction.")
+        if new_fact is not None and new_fact.scopes != old_fact.scopes:
+            raise ValueError("contradictory facts must have identical scopes")
+        if new_fact is None and new_scopes != old_fact.scopes:
+            raise ValueError("contradictory facts must have identical scopes")
+    if new_fact is None:
+        new_fact, _action = _add_locked(
+            facts, statement, cat, new_scopes, when, None, None, old_fact.confidence, "",
+            evidence=[] if old_fact.evidence_bound else None, min_support=old_fact.min_support,
+        )
+    old_fact.status = "superseded"
+    old_fact.valid_until = when
+    old_fact.superseded_by = new_fact.id
+    _stamp(old_fact)
+    return old_fact, new_fact
 
 
 def _link_entities_best_effort(root: str, pairs: list[tuple[str, str]]) -> None:
@@ -546,58 +688,13 @@ def resolve_contradiction(
     must not be *older* than the fact it invalidates (compared on
     ``valid_from``) and their validity windows must overlap — otherwise this
     refuses instead of expiring a fact that was true in a different window.
-    Delegates the state change to :func:`supersede_fact`.
+    Guard validation and both state changes share one locked transaction.
     """
     with mutate_facts(root) as facts:
-        if old_fact_id not in facts:
-            raise KeyError(f"Old fact '{old_fact_id}' not found")
-        old = facts[old_fact_id]
-        if old.status != "active":
-            raise ValueError(
-                f"fact '{old_fact_id}' is {old.status}, not active; only an active fact can be invalidated")
-        target = new_fact_id_or_statement
-        new_from: str | None = None
-        if target in facts:
-            new = facts[target]
-            if new.status != "active":
-                raise ValueError(f"replacement fact '{target}' is {new.status}, not active")
-            if new.id == old.id:
-                raise ValueError(f"fact '{old_fact_id}' cannot invalidate itself")
-            new_from = new.valid_from
-        else:
-            statement, _cat, vf, _vu, _ea = prepare_fact(
-                target, category or old.category, None, None, None)
-            if not statement:
-                raise ValueError("replacement statement must not be empty")
-            same = _matching_active(facts, statement, _clean_scopes(
-                scopes if scopes is not None else old.scopes))
-            if same is not None and same.id == old.id:
-                raise ValueError(
-                    f"the replacement restates fact '{old_fact_id}' itself; "
-                    "resolve it with a statement that differs")
-            # A fresh statement is present evidence: it takes effect now.
-            new_from = _now()
-    try:
-        old_from = lesson_cache.parse_moment(old.valid_from) if old.valid_from else None
-        new_from_m = lesson_cache.parse_moment(new_from) if new_from else None
-        old_until = lesson_cache.parse_moment(old.valid_until) if old.valid_until else None
-    except ValueError as exc:
-        raise ValueError(f"cannot compare validity windows: {exc}") from exc
-    if old_from is not None and new_from_m is not None:
-        old_naive = old_from.replace(tzinfo=None)
-        new_naive = new_from_m.replace(tzinfo=None)
-        if new_naive < old_naive:
-            raise ValueError(
-                f"refusing to invalidate '{old_fact_id}': the replacement (valid from "
-                f"{new_from}) predates it (valid from {old.valid_from}). "
-                "Close the old fact's window explicitly instead.")
-        if old_until is not None and old_until.replace(tzinfo=None) <= new_naive:
-            raise ValueError(
-                f"refusing to invalidate '{old_fact_id}': its validity already ends "
-                f"({old.valid_until}) before the replacement begins ({new_from}). "
-                "These cover different windows, not a contradiction.")
-    return supersede_fact(root, old_fact_id, new_fact_id_or_statement,
-                          scopes=scopes, category=category, as_of=as_of)
+        return _supersede_locked(
+            facts, old_fact_id, new_fact_id_or_statement, scopes=scopes,
+            category=category, as_of=as_of, contradiction=True,
+        )
 
 
 def forget_fact(root: str, fact_id: str, undo: bool = False) -> AtomicFact:
@@ -717,7 +814,9 @@ def list_facts(
     else:
         reference = reference.astimezone(timezone.utc)
     results: list[AtomicFact] = []
-    for fact in load_facts(root).values():
+    facts = load_facts(root)
+    resolver = EvidenceResolver(root, facts, as_of=as_of)
+    for fact in facts.values():
         if fact.forgotten and not include_forgotten:
             continue
         if stability and fact.stability != stability:
@@ -731,6 +830,8 @@ def list_facts(
         if moment is not None and not _valid_at(fact, moment):
             continue
         if not show_expired and _is_expired(fact, moment or reference):
+            continue
+        if fact.evidence_bound and not resolver.assess(fact.id).eligible:
             continue
         results.append(fact)
     return sorted(results, key=lambda f: (f.category, -f.confidence, f.id))
@@ -769,35 +870,20 @@ def search_facts(
     include_forgotten: bool = False,
     show_expired: bool = False,
     stability: str = "",
+    *,
+    scorer: str = "overlap-v1",
 ) -> list[tuple[AtomicFact, float]]:
-    """Active facts ranked by token overlap with *query*, weighted by confidence.
+    """Fresh governed sparse retrieval; overlap-v1 preserves legacy ranking.
 
-    Expired facts are hidden unless `show_expired` (mem0 semantics).
-    `stability` optionally keeps one tier ("stable"/"dynamic"); "" keeps all,
-    with ranking untouched.
+    Optional bm25-v1 uses scope/time/metadata-filtered corpus statistics and
+    English stemming and Unicode/CJK tokenization. Evidence is revalidated only for candidate results
+    and their dependency ancestry; proof eligibility is never cached.
     """
-    candidates = list_facts(
-        root, status="active", scope=scope, category=category, as_of=as_of,
-        include_forgotten=include_forgotten, show_expired=show_expired, stability=stability,
-    )
-    if not as_of:
-        moment = datetime.now(timezone.utc)
-        candidates = [fact for fact in candidates if _valid_at(fact, moment)]
-    limit = max(0, int(limit))
-    query_tokens = set(_TOKEN_RE.findall(query.lower()))
-    if not candidates or not query_tokens:
-        ranked = sorted(candidates, key=lambda f: (-f.confidence, f.id))
-        return [(c, c.confidence) for c in ranked[:limit]]
-    scored: list[tuple[AtomicFact, float]] = []
-    for fact in candidates:
-        statement_tokens = _fact_tokens(fact)
-        overlap = len(query_tokens & statement_tokens)
-        if not overlap:
-            continue
-        lex_score = overlap / len(query_tokens | statement_tokens)
-        scored.append((fact, round(lex_score * 0.7 + fact.confidence * 0.3, 4)))
-    scored.sort(key=lambda x: (-x[1], x[0].id))
-    return scored[:limit]
+    from commontrace.fact_index import search
+
+    return search(root, query, scope=scope, category=category, as_of=as_of, limit=limit,
+                  include_forgotten=include_forgotten, show_expired=show_expired,
+                  stability=stability, scorer=scorer)
 
 
 @dataclass(frozen=True)

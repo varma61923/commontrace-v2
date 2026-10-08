@@ -22,9 +22,11 @@ import hashlib
 import json
 import os
 import re
+import shutil
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any
+from xml.sax.saxutils import escape
 
 from commontrace import _jsonl, paths
 
@@ -55,6 +57,14 @@ class SubstringNotFoundError(MemoryBlockError):
 
 class ReadOnlyBlockError(MemoryBlockError):
     """Raised when a mutation is attempted on a read-only block."""
+
+
+class RevisionConflictError(MemoryBlockError):
+    """A compare-and-set operation observed a newer working-memory revision."""
+
+    def __init__(self, name: str, expected: str, actual: str) -> None:
+        self.name, self.expected_revision, self.actual_revision = name, expected, actual
+        super().__init__(f"Memory block '{name}' revision conflict: expected {expected!r}, actual {actual!r}")
 
 
 @dataclass
@@ -111,7 +121,12 @@ def _now() -> str:
 
 
 def get_block(root: str, name: str) -> MemoryBlock:
-    """Retrieve an existing memory block by name."""
+    """Retrieve one coherent metadata/content snapshot, serialized with writers."""
+    with _jsonl.locked(_lock_path(root)):
+        return _get_block_locked(root, name)
+
+
+def _get_block_locked(root: str, name: str) -> MemoryBlock:
     clean = _sanitize_name(name)
     meta_path = _meta_file(root, clean)
     content_path = _content_file(root, clean)
@@ -172,8 +187,22 @@ def _read_meta(meta_path: str) -> dict[str, Any]:
 def _log(root: str, entry: dict[str, Any]) -> None:
     path = _history_file(root)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "a", encoding="utf-8") as fh:
-        fh.write(json.dumps(entry) + "\n")
+    had_history = os.path.exists(path)
+    previous_size = os.path.getsize(path) if had_history else 0
+    try:
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+    except BaseException:
+        # All block mutations hold the same lock, so no other append can be
+        # lost when rolling back a partial or non-durable journal write.
+        if had_history:
+            with open(path, "r+b") as journal:
+                journal.truncate(previous_size)
+        else:
+            _discard(path)
+        raise
 
 
 def _discard(*paths_: str) -> None:
@@ -209,30 +238,52 @@ def _write_locked(
         "created_at": created_at, "updated_at": updated_at, "metadata": merged,
         "read_only": effective_read_only,
     }
-    content_tmp, meta_tmp, backup = content_path + ".tmp", meta_path + ".tmp", content_path + ".bak"
+    content_tmp, meta_tmp = content_path + ".tmp", meta_path + ".tmp"
+    backup, meta_backup = content_path + ".bak", meta_path + ".bak"
+    had_content, had_meta = os.path.exists(content_path), os.path.exists(meta_path)
+    content_saved = content_written = meta_written = False
+    cleanup_backups = False
     try:
         with open(content_tmp, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(content)
+            fh.flush()
+            os.fsync(fh.fileno())
         with open(meta_tmp, "w", encoding="utf-8", newline="\n") as fh:
             json.dump(meta, fh, indent=2)
+            fh.flush()
+            os.fsync(fh.fileno())
+        if had_meta:
+            # Preserve the live metadata until its replacement succeeds.
+            shutil.copyfile(meta_path, meta_backup)
+        if had_content:
+            os.replace(content_path, backup)
+            content_saved = True
+        os.replace(content_tmp, content_path)
+        content_written = True
+        os.replace(meta_tmp, meta_path)
+        meta_written = True
         _log(root, {
             "timestamp": updated_at, "block": clean, "action": "set", "actor": actor, "reason": reason,
             "revision": revision, "prev_revision": prev_revision, "char_count": len(content),
         })
-        had_content = os.path.exists(content_path)
-        if had_content:
-            os.replace(content_path, backup)
-        os.replace(content_tmp, content_path)
-        try:
-            os.replace(meta_tmp, meta_path)
-        except BaseException:
-            if had_content:
-                os.replace(backup, content_path)
+        cleanup_backups = True
+    except BaseException:
+        if meta_written:
+            if had_meta:
+                os.replace(meta_backup, meta_path)
             else:
-                _discard(content_path)
-            raise
+                _discard(meta_path)
+        if content_saved:
+            os.replace(backup, content_path)
+        elif content_written:
+            _discard(content_path)
+        cleanup_backups = True
+        raise
     finally:
-        _discard(content_tmp, meta_tmp, backup)
+        _discard(content_tmp, meta_tmp)
+        # If rollback itself failed, retain backups for operator recovery.
+        if cleanup_backups:
+            _discard(backup, meta_backup)
     return MemoryBlock(
         name=clean, content=content, char_count=len(content), max_chars=int(max_chars),
         revision=revision, created_at=created_at, updated_at=updated_at, metadata=merged,
@@ -246,6 +297,12 @@ def _check_mutable(block: MemoryBlock) -> None:
         raise ReadOnlyBlockError(
             f"Memory block '{block.name}' is read-only and cannot be modified."
         )
+
+
+def _check_revision(name: str, actual: str, expected: str | None) -> None:
+    # None preserves unconditional legacy writes. Empty means create-only.
+    if expected is not None and actual != expected:
+        raise RevisionConflictError(name, expected, actual)
 
 
 def strip_line_prefix(text: str) -> str:
@@ -263,19 +320,22 @@ def set_block(
     metadata: dict[str, Any] | None = None,
     *,
     read_only: bool = False,
+    expected_revision: str | None = None,
 ) -> MemoryBlock:
     """Create or overwrite a block; the new content must fit its quota.
 
     Pass ``read_only=True`` to mark the block immutable after creation.
+    ``expected_revision`` compares under the write lock; ``""`` is create-only.
     """
     clean = _sanitize_name(name)
     with _jsonl.locked(_lock_path(root)):
         # Allow overwrite only if the existing block is not read-only.
         try:
             existing = get_block(root, clean)
+            _check_revision(clean, existing.revision, expected_revision)
             _check_mutable(existing)
         except BlockNotFoundError:
-            pass
+            _check_revision(clean, "", expected_revision)
         return _write_locked(root, clean, content.expandtabs().strip(), max_chars, actor, reason,
                              metadata, read_only=read_only)
 
@@ -286,15 +346,19 @@ def append_block(
     text: str,
     actor: str = "agent",
     reason: str = "",
+    *,
+    expected_revision: str | None = None,
 ) -> MemoryBlock:
     """Append a line to a block (creating it), keeping it within its quota."""
     clean = _sanitize_name(name)
     with _jsonl.locked(_lock_path(root)):
         try:
             block = get_block(root, clean)
+            _check_revision(clean, block.revision, expected_revision)
             _check_mutable(block)
             base, max_chars = block.content, block.max_chars
         except BlockNotFoundError:
+            _check_revision(clean, "", expected_revision)
             base, max_chars = "", DEFAULT_MAX_CHARS
         appended = text.expandtabs().strip()
         new_content = f"{base}\n{appended}".strip() if base else appended
@@ -308,6 +372,8 @@ def replace_block(
     new_str: str,
     actor: str = "agent",
     reason: str = "",
+    *,
+    expected_revision: str | None = None,
 ) -> MemoryBlock:
     """Replace the one occurrence of *old_str* in a block.
 
@@ -324,6 +390,7 @@ def replace_block(
     new_str = strip_line_prefix(new_str.expandtabs())
     with _jsonl.locked(_lock_path(root)):
         block = get_block(root, clean)
+        _check_revision(clean, block.revision, expected_revision)
         _check_mutable(block)
         normalised = block.content.expandtabs()
         occurrences = normalised.count(old_str)
@@ -353,6 +420,8 @@ def insert_block(
     line_number: int = -1,
     actor: str = "agent",
     reason: str = "",
+    *,
+    expected_revision: str | None = None,
 ) -> MemoryBlock:
     """Insert *text* at a specific line of a block.
 
@@ -365,10 +434,12 @@ def insert_block(
     with _jsonl.locked(_lock_path(root)):
         try:
             block = get_block(root, clean)
+            _check_revision(clean, block.revision, expected_revision)
             _check_mutable(block)
             lines = block.content.expandtabs().split("\n")
             max_chars = block.max_chars
         except BlockNotFoundError:
+            _check_revision(clean, "", expected_revision)
             lines, max_chars = [], DEFAULT_MAX_CHARS
         n = len(lines)
         insertion = text.expandtabs().rstrip("\n")
@@ -392,36 +463,53 @@ def delete_block(
     name: str,
     actor: str = "agent",
     reason: str = "",
+    *,
+    expected_revision: str | None = None,
 ) -> bool:
     """Delete a block, recording the deletion in its history."""
     clean = _sanitize_name(name)
     with _jsonl.locked(_lock_path(root)):
         meta_path, content_path = _meta_file(root, clean), _content_file(root, clean)
         if not os.path.exists(meta_path) and not os.path.exists(content_path):
+            _check_revision(clean, "", expected_revision)
             return False
         existing = _read_meta(meta_path)
+        _check_revision(clean, str(existing.get("revision", "")), expected_revision)
         if existing.get("read_only"):
             raise ReadOnlyBlockError(
                 f"Memory block '{clean}' is read-only and cannot be deleted."
             )
         prev_revision = str(existing.get("revision", ""))
-        for path in (meta_path, content_path):
-            try:
-                os.remove(path)
-            except FileNotFoundError:
-                pass
-        _log(root, {
-            "timestamp": _now(), "block": clean, "action": "delete", "actor": actor, "reason": reason,
-            "revision": _compute_revision(clean, "", prev_revision), "prev_revision": prev_revision,
-            "char_count": 0,
-        })
+        saved: list[tuple[str, str]] = []
+        cleanup_backups = False
+        try:
+            for path in (meta_path, content_path):
+                if os.path.exists(path):
+                    backup = path + ".bak"
+                    os.replace(path, backup)
+                    saved.append((path, backup))
+            _log(root, {
+                "timestamp": _now(), "block": clean, "action": "delete", "actor": actor, "reason": reason,
+                "revision": _compute_revision(clean, "", prev_revision), "prev_revision": prev_revision,
+                "char_count": 0,
+            })
+            cleanup_backups = True
+        except BaseException:
+            for path, backup in reversed(saved):
+                os.replace(backup, path)
+            cleanup_backups = True
+            raise
+        finally:
+            if cleanup_backups:
+                _discard(*(backup for _path, backup in saved))
         return True
 
 
 def block_history(root: str, name: str = "") -> list[dict[str, Any]]:
     """The audit log for every block, or for *name* only."""
     clean = _sanitize_name(name) if name else ""
-    return [e for e in _jsonl.read_rows(_history_file(root)) if not clean or e.get("block") == clean]
+    with _jsonl.locked(_lock_path(root)):
+        return [e for e in _jsonl.read_rows(_history_file(root)) if not clean or e.get("block") == clean]
 
 
 def render_memory_blocks(blocks: list[MemoryBlock]) -> str:
@@ -444,15 +532,17 @@ def render_memory_blocks(blocks: list[MemoryBlock]) -> str:
         return ""
     lines = ["<memory_blocks>"]
     for block in blocks:
-        tag = block.name
+        tag = _sanitize_name(block.name)
+        # Names may start with digits or hyphens; use a valid XML tag in that case.
+        if not re.match(r"^[A-Za-z_]", tag):
+            tag = "block_" + tag
         ro = "true" if block.read_only else "false"
         lines.append(f"  <{tag}>")
         lines.append(
             f'    <metadata chars_current="{block.char_count}" '
             f'chars_limit="{block.max_chars}" read_only="{ro}"/>'
         )
-        lines.append(f"    <value>{block.content}</value>")
+        lines.append(f"    <value>{escape(block.content)}</value>")
         lines.append(f"  </{tag}>")
     lines.append("</memory_blocks>")
     return "\n".join(lines)
-

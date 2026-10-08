@@ -36,6 +36,42 @@ jobs:
       - name: Run tests
         run: python -m pytest tests/ e2e_tests/ -q
 
+      - name: Original offline evidence and governed-memory contracts
+        run: python -m benchmarks.memory_contracts
+
+      - name: Original offline fact retrieval safety and attribution contracts
+        # Ranking measurements are descriptive. The command fails on safety,
+        # eligibility, attribution, erasure, abstention or execution errors.
+        run: python -m benchmarks.fact_retrieval
+
+      - name: Canonical fact mutation equivalence and evidence contracts
+        # Complete cold-oracle compatibility is required; machine-specific
+        # elapsed times are descriptive, never a portable pass/fail threshold.
+        run: python -m benchmarks.fact_mutation --facts 100 --trials 1
+
+  test-browser:
+    name: console browser contracts (Chromium)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      COMMONTRACE_REQUIRE_BROWSER: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install console test dependencies
+        run: python -m pip install -e ".[dev]" "playwright==1.62.0"
+
+      - name: Install pinned Chromium and system dependencies
+        run: python -m playwright install --with-deps chromium --only-shell
+
+      - name: Exercise the real gateway in desktop and mobile browsers
+        run: python -m pytest tests/test_ui_browser.py -q
+
   test-dev:
     name: test + lint (dev extra, py${{ matrix.python-version }})
     runs-on: ubuntu-latest
@@ -86,6 +122,107 @@ jobs:
             --sizes 100,400,1600,6400 --runs 3 \
             --max-total-ms 500 --max-alpha 1.5
 
+      - name: Large fact banks retain warm generations and beat the exact baseline
+        # Cross the previous 64 MiB cache cliff; require equal scores/context,
+        # bounded retention, no warm rebuilds and paired relative timings.
+        run: python -m benchmarks.fact_search --facts 50000 --trials 3 --check
+
+      - name: Install focused coverage tooling
+        run: python -m pip install "pytest>=9.0.3,<10.0" "pytest-cov>=7.0,<8.0"
+
+      - name: Ratchet branch-inclusive coverage on the governed fact index
+        run: |
+          COVERAGE_FILE=/tmp/commontrace-fact-coverage python -m pytest \
+            tests/test_fact_index*.py tests/test_fact_mutation_interfaces.py \
+            tests/test_evidence_context.py tests/test_fact_search_gate.py \
+            --cov=commontrace.fact_index --cov-branch --cov-fail-under=95 \
+            --cov-report=term-missing -q
+
+  conversation-quality:
+    name: conversation quality (paired public sample)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install core and measurement verification tooling
+        run: python -m pip install -e . "mypy>=1.15,<2.0" "pytest>=9.0.3,<10.0"
+
+      - name: Verify typed measurement contracts
+        run: |
+          python -m mypy --strict --follow-imports=silent --explicit-package-bases \
+            benchmarks/compare.py benchmarks/measurement.py
+          python -m pytest tests/test_benchmark_compare.py tests/test_benchmark_measurement.py -q
+
+      - name: Prepare pinned data and source reference outside the checkout
+        env:
+          REFERENCE_SHA: 973e59979f326559a863ed2dbcc02b187402dad4
+        run: |
+          curl --fail --location --retry 3 \
+            https://raw.githubusercontent.com/snap-research/locomo/cbfbc1dba6bc53d00625212a0f22d55ffee7c1fc/data/locomo10.json \
+            --output "$RUNNER_TEMP/locomo10.json"
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import random
+          from collections import defaultdict
+
+          path = os.path.join(os.environ["RUNNER_TEMP"], "locomo10.json")
+          with open(path, "rb") as source:
+              raw = source.read()
+          expected = "79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4"
+          if hashlib.sha256(raw).hexdigest() != expected:
+              raise SystemExit("public dataset checksum changed")
+          cases = json.loads(raw)
+          categories = defaultdict(list)
+          for case_index, case in enumerate(cases):
+              for question_index, question in enumerate(case["qa"]):
+                  if question["category"] in (1, 2, 3, 4):
+                      categories[question["category"]].append((case_index, question_index))
+          total = sum(map(len, categories.values()))
+          target = total // 10
+          quotas = {c: len(items) * target // total for c, items in categories.items()}
+          remainder = sorted(categories, key=lambda c: (-(len(categories[c]) * target % total), c))
+          for c in remainder[:target - sum(quotas.values())]:
+              quotas[c] += 1
+          rng = random.Random(61923)
+          selected = {pair for c in sorted(categories) for pair in rng.sample(categories[c], quotas[c])}
+          for index, case in enumerate(cases):
+              case["qa"] = [q for n, q in enumerate(case["qa"]) if (index, n) in selected]
+          if sum(len(case["qa"]) for case in cases) != target or target != 154:
+              raise SystemExit("stratified sample size changed")
+          with open(os.path.join(os.environ["RUNNER_TEMP"], "locomo-sample.json"), "w", encoding="utf-8") as output:
+              json.dump(cases, output)
+          print("Pinned LoCoMo sample:", target, "questions; category counts:", quotas)
+          PY
+          git fetch --no-tags --depth=1 origin "$REFERENCE_SHA"
+          git worktree add --detach "$RUNNER_TEMP/measurement-reference" "$REFERENCE_SHA"
+          # Both product revisions use this same corrected evaluation harness.
+          cp benchmarks/conversation_bench.py benchmarks/compare.py benchmarks/measurement.py \
+            "$RUNNER_TEMP/measurement-reference/benchmarks/"
+
+      - name: Require no statistically supported retrieval regression
+        run: |
+          (
+            cd "$RUNNER_TEMP/measurement-reference"
+            python benchmarks/conversation_bench.py --dataset locomo \
+              --data "$RUNNER_TEMP/locomo-sample.json" --root "$RUNNER_TEMP/reference-store" \
+              --budget 1500,4000 --embedder none --rerank none \
+              --out "$RUNNER_TEMP/reference.json"
+          )
+          python benchmarks/conversation_bench.py --dataset locomo \
+            --data "$RUNNER_TEMP/locomo-sample.json" --root "$RUNNER_TEMP/candidate-store" \
+            --budget 1500,4000 --embedder none --rerank none \
+            --out "$RUNNER_TEMP/candidate.json"
+          python -m benchmarks.compare --baseline "$RUNNER_TEMP/reference.json" \
+            --candidate "$RUNNER_TEMP/candidate.json" --check --seed 61923
+
   sdk-typescript:
     name: sdk (typescript)
     runs-on: ubuntu-latest
@@ -107,6 +244,50 @@ jobs:
 
       - name: Build and run the test suite
         run: npm test
+
+  test-vector-engines:
+    name: vector engines (SQLite + pgvector, py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+    services:
+      pgvector:
+        image: pgvector/pgvector:0.8.1-pg16
+        env:
+          POSTGRES_USER: commontrace
+          POSTGRES_PASSWORD: commontrace
+          POSTGRES_DB: commontrace_vector_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      COMMONTRACE_TEST_PGVECTOR_DSN: postgresql://commontrace:commontrace@127.0.0.1:5432/commontrace_vector_test
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install the optional PostgreSQL engine and test runner
+        run: python -m pip install -e ".[dev,vector-postgres]" "numpy>=1.24,<3.0"
+      - name: Provision pgvector as the test database administrator
+        run: >-
+          docker exec ${{ job.services.pgvector.id }}
+          psql -U commontrace -d commontrace_vector_test -v ON_ERROR_STOP=1
+          -c 'CREATE EXTENSION IF NOT EXISTS vector;'
+      - name: Exercise both engines through real retrieval and concurrent ingestion
+        run: >-
+          python -m pytest tests/test_vector_store.py
+          tests/test_conversation_vector_backend.py tests/test_async_conversation_store.py
+          tests/test_concurrent_agent_ingestion.py tests/test_postgres_vector_snapshots.py
+          tests/test_sqlite_vector_snapshots.py tests/test_conversation_incremental_vectors.py
+          tests/test_vector_snapshot_processes.py -q
 
   test-hub:
     name: hub tests (py${{ matrix.python-version }})
@@ -216,6 +397,27 @@ jobs:
 
       - name: pip-audit -- the Hub server's pinned dependencies
         run: pip-audit -r hub/requirements.txt
+
+      - name: Strict types for memory boundaries and async runtime
+        run: |
+          mypy --strict --follow-imports=silent --ignore-missing-imports \
+            commontrace/async_workers.py commontrace/mcp_transport.py \
+            commontrace/commons_integrity.py commontrace/frameworks.py \
+            commontrace/conversation/async_store.py commontrace/conversation/validation.py \
+            commontrace/semantic.py commontrace/vector_store.py \
+            commontrace/distill.py commontrace/distillation_worker.py commontrace/draft_quality.py \
+            commontrace/failure_signals.py commontrace/memory_blocks.py \
+            commontrace/commands/block_cmd.py commontrace/commands/distill_cmd.py \
+            commontrace/conversation/coverage.py commontrace/conversation/context_selection.py \
+            commontrace/conversation/unicode_index.py \
+            commontrace/lesson_admission.py \
+            commontrace/fact_evidence.py commontrace/vector_snapshots.py \
+            commontrace/sqlite_vector_snapshots.py commontrace/postgres_vector_snapshots.py \
+            commontrace/evidence_context.py commontrace/explorer.py commontrace/vector_scoring.py \
+            commontrace/fact_index.py commontrace/runtime_cache.py commontrace/_jsonl.py \
+            benchmarks/memory_contracts.py benchmarks/vector_search.py \
+            benchmarks/fact_search.py benchmarks/fact_retrieval.py benchmarks/fact_mutation.py \
+            benchmarks/conversation_retrieval.py
 
       - name: mypy (known findings, informational only)
         continue-on-error: true

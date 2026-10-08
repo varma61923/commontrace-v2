@@ -102,7 +102,8 @@ def test_active_index_cache_invalidates_on_write(root):
     assert before_body and gateway._BODY_CACHE, "body cache should populate after a store recall"
 
     fm, body = frontmatter.read(path)
-    frontmatter.write(path, {**fm, "core": True}, body + "\nExtra line for invalidation.\n")
+    frontmatter.write(path, {**fm, "core": True, "status": "review"}, body + "\nExtra line for invalidation.\n")
+    assert main(["lesson", "approve", "lesson_cache_me", "--dest", root]) == 0
     second = recall_delivered("customer password reset email never arrived", "second")
     assert "Extra line for invalidation." in second["deliver"][0]["text"]
     assert second["deliver"][0]["text"] != before_body

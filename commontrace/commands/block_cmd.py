@@ -7,7 +7,7 @@ import sys
 from commontrace import memory_blocks, paths
 
 
-def add_parser(subparsers: argparse._SubParsersAction) -> None:
+def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     p = subparsers.add_parser(
         "block",
         help="Manage stateful agent working memory blocks (persona, human, project, guidelines).",
@@ -76,6 +76,12 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p_del.add_argument("--dest", default=None)
     p_del.set_defaults(func=run_delete)
 
+    for mutation in (p_set, p_app, p_rep, p_ins, p_del):
+        mutation.add_argument(
+            "--expected-revision", default=None,
+            help="Only mutate this revision; an empty string requires a missing block.",
+        )
+
 
 def run_list(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
@@ -117,6 +123,7 @@ def run_set(args: argparse.Namespace) -> int:
             actor=args.actor,
             reason=args.reason,
             read_only=bool(getattr(args, "read_only", False)),
+            expected_revision=getattr(args, "expected_revision", None),
         )
     except memory_blocks.MemoryBlockError as exc:
         print(f"[commontrace] {exc}", file=sys.stderr)
@@ -135,6 +142,7 @@ def run_append(args: argparse.Namespace) -> int:
             text=args.text,
             actor=args.actor,
             reason=args.reason,
+            expected_revision=getattr(args, "expected_revision", None),
         )
     except memory_blocks.MemoryBlockError as exc:
         print(f"[commontrace] {exc}", file=sys.stderr)
@@ -154,6 +162,7 @@ def run_replace(args: argparse.Namespace) -> int:
             new_str=args.new,
             actor=args.actor,
             reason=args.reason,
+            expected_revision=getattr(args, "expected_revision", None),
         )
     except memory_blocks.MemoryBlockError as exc:
         print(f"[commontrace] {exc}", file=sys.stderr)
@@ -185,7 +194,14 @@ def run_history(args: argparse.Namespace) -> int:
 
 def run_delete(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
-    ok = memory_blocks.delete_block(root, args.name, actor=args.actor, reason=args.reason)
+    try:
+        ok = memory_blocks.delete_block(
+            root, args.name, actor=args.actor, reason=args.reason,
+            expected_revision=getattr(args, "expected_revision", None),
+        )
+    except memory_blocks.MemoryBlockError as exc:
+        print(f"[commontrace] {exc}", file=sys.stderr)
+        return 1
     if not ok:
         print(f"Block '{args.name}' not found.", file=sys.stderr)
         return 1
@@ -203,6 +219,7 @@ def run_insert(args: argparse.Namespace) -> int:
             line_number=args.line,
             actor=args.actor,
             reason=args.reason,
+            expected_revision=getattr(args, "expected_revision", None),
         )
     except memory_blocks.MemoryBlockError as exc:
         print(f"[commontrace] {exc}", file=sys.stderr)

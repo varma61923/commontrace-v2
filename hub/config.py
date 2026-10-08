@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import ipaddress
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from hub.secrets_provider import env_secret
 
@@ -103,6 +103,8 @@ class HubConfig:
     connectors_enabled: bool = False
     connector_sweep_interval_seconds: int = 300
     commons_export_enabled: bool = False
+    commons_signing_key: str = field(default="", repr=False)
+    commons_signing_key_id: str = "default"
 
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""
@@ -152,6 +154,10 @@ class HubConfig:
             raise ValueError(
                 f"HUB_RATE_LIMIT_BACKEND must be 'memory' or 'postgres', got {self.rate_limit_backend!r}"
             )
+        if self.commons_signing_key and len(self.commons_signing_key.encode("utf-8")) < 32:
+            raise ValueError("HUB_COMMONS_SIGNING_KEY must contain at least 32 bytes")
+        if not self.commons_signing_key_id or len(self.commons_signing_key_id) > 128:
+            raise ValueError("HUB_COMMONS_SIGNING_KEY_ID must be 1 to 128 characters")
         self.cipher()
 
     def cipher(self):
@@ -254,6 +260,8 @@ class HubConfig:
             connector_sweep_interval_seconds=_env_int_in_range(
                 "HUB_CONNECTOR_SWEEP_INTERVAL_SECONDS", 300, 10, 86_400),
             commons_export_enabled=_env_bool("HUB_COMMONS_EXPORT_ENABLED", False),
+            commons_signing_key=env_secret("HUB_COMMONS_SIGNING_KEY"),
+            commons_signing_key_id=os.environ.get("HUB_COMMONS_SIGNING_KEY_ID", "default"),
             stripe_secret_key=env_secret("HUB_STRIPE_SECRET_KEY"),
             stripe_webhook_secret=env_secret("HUB_STRIPE_WEBHOOK_SECRET"),
             stripe_price_team=os.environ.get("HUB_STRIPE_PRICE_TEAM", ""),

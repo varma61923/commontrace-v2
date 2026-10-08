@@ -8,9 +8,9 @@ the budget: every channel that has something relevant gets a floor share, the re
 goes in fused order, and an item that does not fit is cut at a sentence boundary
 rather than dropped when most of it fits.
 
-`as_of` is applied to every channel at once (a "truth subspace"): lessons, facts,
-graph edges and conversation turns are all read as they stood at that moment, so the
-context never mixes a past state of one store with the present state of another.
+`as_of` selects valid-time evidence across channels. Current lesson revocation,
+forgotten/deleted sources and integrity checks still apply to historical recall;
+time travel never restores trust in revoked content.
 
 Budgets can be set per agent in `memory/budgets.json`:
     {"default": 1500, "agents": {"reviewer": {"budget": 800, "weights": {"lessons": 2}}}}"""
@@ -48,11 +48,15 @@ class Item:
     at: str = ""
     fused: float = 0.0
     truncated: bool = False
+    provenance: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
-        return {"channel": self.channel, "id": self.id, "text": self.text, "score": round(self.score, 4),
+        result = {"channel": self.channel, "id": self.id, "text": self.text, "score": round(self.score, 4),
                 "fused": round(self.fused, 5), "at": self.at, "tokens": tokens(self.text),
                 "truncated": self.truncated}
+        if self.provenance:
+            result["provenance"] = self.provenance
+        return result
 
 
 @dataclass(frozen=True)
@@ -92,6 +96,7 @@ class Result:
     considered: dict = field(default_factory=dict)
     errors: dict = field(default_factory=dict)
     assessment: RetrievalAssessment = field(default_factory=RetrievalAssessment)
+    fact_scorer: str = "overlap-v1"
 
     @property
     def tokens(self) -> int:
@@ -113,7 +118,8 @@ class Result:
     def to_dict(self) -> dict:
         return {"question": self.question, "as_of": self.as_of, "budget": self.budget, "tokens": self.tokens,
                 "items": [i.to_dict() for i in self.items], "considered": self.considered,
-                "errors": self.errors, "assessment": self.assessment.to_dict(), "context": self.context}
+                "errors": self.errors, "assessment": self.assessment.to_dict(), "context": self.context,
+                "fact_scorer": self.fact_scorer}
 
 
 # --- budgets ---------------------------------------------------------------------------
@@ -146,11 +152,11 @@ def _rule(body: str) -> str:
     return " ".join((m.group(1) if m else body).split())
 
 
-def _lessons(root: str, question: str, as_of: str | None, k: int) -> list[Item]:
-    from commontrace import frontmatter, lesson_cache, retrieval, retrieval_io
+def _lessons(root: str, question: str, as_of: str | None, k: int, scope: str = "") -> list[Item]:
+    from commontrace import frontmatter, lesson_admission, lesson_cache, retrieval, retrieval_io
 
     active, term_cache = lesson_cache.load_active_with_terms(root, None)
-    active = lesson_cache.filter_eligible(active, as_of=as_of)
+    active = lesson_cache.filter_eligible(active, as_of=as_of, scope=scope)
     if not active:
         return []
     config = retrieval_io.load_config(root)
@@ -159,22 +165,74 @@ def _lessons(root: str, question: str, as_of: str | None, k: int) -> list[Item]:
     out = []
     for r in ranked:
         try:
-            _fm, body = frontmatter.read(r.path)
+            fm, body = frontmatter.read(r.path)
         except Exception:  # noqa: BLE001 - an unreadable lesson is skipped, not fatal
             continue
-        text = f"{r.slug}: {r.description}".strip(": ")
+        if not lesson_cache.fresh_eligible(r.path, fm, r.slug, as_of=as_of, root=root, body=body, scope=scope):
+            continue
+        text = f"{r.slug}: {fm.get('description', '')}".strip(": ")
         rule = _rule(body)
         if rule:
             text += f" Rule: {rule}"
-        out.append(Item("lessons", f"lesson:{r.slug}", text, r.score))
+        scopes = fm.get("scopes") or []
+        traces = fm.get("source_traces") or []
+        provenance = {
+            "kind": "lesson",
+            "scopes": [value for value in scopes if isinstance(value, str)] if isinstance(scopes, list) else [],
+            "source_traces": ([value for value in traces if isinstance(value, str)][:256]
+                              if isinstance(traces, list) else []),
+            "admission": "verified" if fm.get(lesson_admission.RECEIPT_FIELD) else "legacy_compatible",
+            "revision": lesson_admission.digest_of(fm, body),
+        }
+        out.append(Item("lessons", f"lesson:{r.slug}", text, r.score, provenance=provenance))
     return out
 
 
-def _facts(root: str, question: str, as_of: str | None, k: int) -> list[Item]:
-    from commontrace import hierarchical
+def _facts(
+    root: str, question: str, as_of: str | None, k: int, evidence_budget: int = 0, scope: str = "",
+    fact_scorer: str = "overlap-v1",
+) -> list[Item]:
+    from commontrace import fact_index, hierarchical
+    from commontrace.fact_evidence import EvidenceResolver
 
-    return [Item("facts", f"fact:{f.id}", f.statement, score, f.valid_from or "")
-            for f, score in hierarchical.search_facts(root, question, as_of=as_of, limit=k) if score > 0]
+    ranked = hierarchical.search_facts(root, question, as_of=as_of, limit=k, scope=scope, scorer=fact_scorer)
+    current_facts = fact_index.snapshot_facts(root)
+    resolver = EvidenceResolver(root, current_facts, as_of=as_of)
+    output = []
+    remaining = evidence_budget
+    for fact, score in ranked:
+        if score <= 0:
+            continue
+        current = resolver.facts.get(fact.id)
+        if current is None or current.to_dict() != fact.to_dict() \
+                or not resolver._fact_live(current) \
+                or scope and current.scopes and scope not in current.scopes:
+            continue
+        provenance = {"search": {"scorer": fact_scorer,
+                                  "matched_terms": fact_index.matched_terms(question, fact.statement, fact_scorer)}}
+        text = fact.statement
+        if fact.evidence_bound:
+            # Re-check the fresh snapshot before assembling injection, including
+            # a write or revocation that landed after initial candidate ranking.
+            if current is None or current.revision != fact.revision or not resolver.assess(fact.id).eligible:
+                continue
+            provenance.update({"evidence": [receipt.to_dict() for receipt in fact.evidence],
+                               "assessment": resolver.assess(fact.id).to_dict(),
+                               "claim_revision": fact.evidence_revision})
+            if remaining > 1:
+                from commontrace.evidence_context import _explain_snapshot
+
+                proof = _explain_snapshot(resolver, fact.id, budget=remaining - 1, scope=scope)
+                if not proof.assessment.eligible or proof.claim_revision != fact.evidence_revision:
+                    continue
+                provenance["evidence_context"] = proof.to_dict()
+                if proof.context:
+                    text += "\n" + proof.context
+                    remaining -= tokens(text) - tokens(fact.statement)
+        output.append(Item("facts", f"fact:{fact.id}", text, score, fact.valid_from or "",
+                           provenance=provenance))
+    current_facts.ensure_current()
+    return output
 
 
 def _graph(root: str, question: str, as_of: str | None, k: int) -> list[Item]:
@@ -213,7 +271,7 @@ def _conversations(root: str, question: str, as_of: str | None, budget: int, spa
             result = conversation.recall(store, question, now=as_of, options=opts)
         if result.context.strip():
             out.append(Item("conversations", f"space:{space}", f"[{space}]\n{result.context}",
-                            1.0 / (1 + len(out))))
+                            1.0 / (1 + len(out)), provenance={"coverage": result.explain.get("coverage", {})}))
     return out
 
 
@@ -290,7 +348,8 @@ def pack(items: list[Item], budget: int) -> list[Item]:
             chosen.append(item)
             used += need
         elif room >= max(20, min(int(need * MIN_CUT_FRACTION), budget // 4)):
-            cut = Item(item.channel, item.id, truncate(item.text, room), item.score, item.at, item.fused, True)
+            cut = Item(item.channel, item.id, truncate(item.text, room), item.score, item.at, item.fused, True,
+                       provenance=item.provenance)
             chosen.append(cut)
             used += tokens(cut.text)
         seen.add(item.id)
@@ -312,24 +371,28 @@ def _assess_retrieval(
     items: list[Item],
     errors: dict,
 ) -> RetrievalAssessment:
-    """Compute a calibrated-looking, deterministic evidence coverage signal.
+    """Compute a deterministic evidence coverage signal.
 
     It combines lexical query coverage, strongest channel score, and channel
     diversity. The result is intentionally conservative: it is a retrieval
     gate for abstention/deeper reading, not an answer truth score.
     """
-    query_terms = {term for term in _WORDS.findall(question.lower()) if len(term) > 2}
+    from commontrace.conversation.coverage import assess
+
+    evidence = assess(question, [item.text for item in items])
     if not items:
-        return RetrievalAssessment(reason="no channel returned relevant evidence", query_terms=len(query_terms))
-    evidence_terms = {term for item in items for term in _WORDS.findall(item.text.lower())}
-    matched = len(query_terms & evidence_terms)
-    coverage = matched / len(query_terms) if query_terms else 0.0
+        return RetrievalAssessment(reason="no channel returned relevant evidence", query_terms=evidence.query_terms)
+    matched = evidence.matched_terms
+    coverage = evidence.confidence
     strongest = min(1.0, max(0.0, max((float(item.score) for item in items), default=0.0)))
     channels = tuple(sorted({item.channel for item in items}))
+    if evidence.abstain:
+        return RetrievalAssessment(reason=evidence.reason, channels=channels,
+                                   matched_query_terms=matched, query_terms=evidence.query_terms)
     diversity = min(1.0, len(channels) / 3.0)
     confidence_raw = 0.55 * strongest + 0.30 * coverage + 0.15 * diversity
     confidence = round(min(1.0, confidence_raw * (0.8 if errors else 1.0)), 4)
-    if not query_terms or matched == 0:
+    if not evidence.query_terms or matched == 0:
         reason = "retrieved items do not cover the query terms"
     elif confidence < 0.2:
         reason = "evidence is weak; use a deeper reader or ask for clarification"
@@ -343,21 +406,36 @@ def _assess_retrieval(
         reason=reason,
         channels=channels,
         matched_query_terms=matched,
-        query_terms=len(query_terms),
+        query_terms=evidence.query_terms,
     )
 
 
 def recall(root: str, question: str, *, budget: int | None = None, agent: str | None = None,
            channels: tuple[str, ...] = CHANNELS, as_of: str | None = None, weights: dict[str, float] | None = None,
-           spaces: list[str] | None = None, embedder: str = "none", per_channel: int = 12) -> Result:
-    """Recall across channels into one budgeted context."""
+           spaces: list[str] | None = None, embedder: str = "none", per_channel: int = 12,
+           evidence_budget: int = 0, scope: str = "", fact_scorer: str = "overlap-v1") -> Result:
+    """Recall across channels; opt into bounded fact source quotes.
+
+    Nonempty ``scope`` restricts lessons/facts to that scope or public memory.
+    Graph reads are withheld until the graph supports scoped authorization.
+    Conversation spaces must be explicitly selected by the authorized caller
+    for scoped reads; no scoped request enumerates the root's other spaces.
+    Empty scope preserves trusted-local root-wide behavior.
+    """
     from commontrace import lesson_cache
+
+    if isinstance(evidence_budget, bool) or not isinstance(evidence_budget, int) or not 0 <= evidence_budget <= 8192:
+        raise ValueError("evidence_budget must be an integer between 0 and 8192")
+    if not isinstance(scope, str) or len(scope) > 256 or any(ord(char) < 32 for char in scope):
+        raise ValueError("scope must be a bounded string without control characters")
+    if not isinstance(fact_scorer, str) or fact_scorer not in ("overlap-v1", "bm25-v1"):
+        raise ValueError("fact_scorer must be overlap-v1 or bm25-v1")
 
     question = (question or "").strip()
     if as_of:
         lesson_cache.parse_moment(as_of)  # refuse a bad moment before reading anything
     total, weights = resolve_budget(root, agent, budget, weights)
-    result = Result(question, as_of, total)
+    result = Result(question, as_of, total, fact_scorer=fact_scorer)
     if not question:
         return result
     bad = [c for c in channels if c not in CHANNELS]
@@ -369,13 +447,14 @@ def recall(root: str, question: str, *, budget: int | None = None, agent: str | 
             try:
                 with telemetry.span(f"recall.{channel}"):
                     if channel == "lessons":
-                        found = _lessons(root, question, as_of, per_channel)
+                        found = _lessons(root, question, as_of, per_channel, scope)
                     elif channel == "facts":
-                        found = _facts(root, question, as_of, per_channel)
+                        found = _facts(root, question, as_of, per_channel, evidence_budget, scope, fact_scorer)
                     elif channel == "graph":
-                        found = _graph(root, question, as_of, per_channel)
+                        found = _graph(root, question, as_of, per_channel) if not scope else []
                     else:
-                        found = _conversations(root, question, as_of, int(total * 0.6), spaces, embedder)
+                        found = (_conversations(root, question, as_of, int(total * 0.6), spaces, embedder)
+                                 if not scope or spaces is not None else [])
             except Exception as exc:  # noqa: BLE001 - one broken channel does not sink the others
                 result.errors[channel] = f"{type(exc).__name__}: {exc}"
                 continue

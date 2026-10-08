@@ -6,7 +6,10 @@ import os
 from dataclasses import dataclass, field
 
 from commontrace import llm_cache as llm_cache_mod
-from commontrace.retry import call_with_retries
+from commontrace.circuit_breaker import CircuitBreaker, CircuitOpenError
+from commontrace.retry import call_with_retries, is_retryable
+from commontrace.runtime_cache import RuntimeCache
+from commontrace.secrets_provider import env_secret
 
 DEFAULT_PROVIDER = "anthropic"
 DEFAULT_MODEL = "claude-sonnet-5"
@@ -22,6 +25,37 @@ _OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434/v1"
 
 REQUIRED_KEYS = ("rule", "applies_when", "do_not_apply_when", "evidence")
 
+_CIRCUITS = RuntimeCache[CircuitBreaker](max_entries=128, max_bytes=128 * 1024, ttl=3600,
+                                       weigh=lambda _key, _value: 1024)
+
+
+def _transient_provider_failure(error: BaseException) -> bool:
+    seen = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        if is_retryable(error, idempotent=True)[0]:
+            return True
+        response = getattr(error, "response", None)
+        if isinstance(response, dict):
+            metadata = response.get("ResponseMetadata")
+            status = metadata.get("HTTPStatusCode") if isinstance(metadata, dict) else None
+            if isinstance(status, int) and (status == 429 or 500 <= status < 600):
+                return True
+        error = error.__cause__
+    return False
+
+
+def _provider_call(cfg: Config, prompt: str, caller) -> tuple[str, dict]:
+    if os.environ.get("COMMONTRACE_LLM_CIRCUIT_BREAKER", "1").strip().lower() in ("0", "false", "off", "no"):
+        return caller(cfg, prompt)
+    key = (cfg.provider, cfg.model, cfg.base_url, cfg.region, cfg.project, cfg.cache_namespace,
+           hashlib.sha256(cfg.api_key.encode("utf-8")).hexdigest())
+    circuit = _CIRCUITS.get_or_load(key, CircuitBreaker)
+    try:
+        return circuit.call(lambda: caller(cfg, prompt), transient=_transient_provider_failure)
+    except CircuitOpenError as exc:
+        raise LLMUnavailable(f"provider temporarily unavailable; retry in {exc.retry_after:.1f}s") from None
+
 
 class LLMUnavailable(RuntimeError):
     ...
@@ -35,10 +69,11 @@ class LLMDraftRejected(ValueError):
 class Config:
     provider: str
     model: str
-    api_key: str
+    api_key: str = field(repr=False)
     base_url: str | None = None
     region: str | None = None
     project: str | None = None
+    cache_namespace: str | None = None
 
 
 def load_config() -> Config:
@@ -52,12 +87,16 @@ def load_config() -> Config:
     ollama_alias = provider == "ollama"
     if ollama_alias:
         provider = "openai-compatible"
-    api_key = os.environ.get("COMMONTRACE_LLM_API_KEY", "").strip()
+    try:
+        api_key = env_secret("COMMONTRACE_LLM_API_KEY").strip()
+    except RuntimeError:
+        raise LLMUnavailable("configured LLM API secret could not be resolved") from None
     if not api_key and provider not in _CLOUD_PROVIDERS and not ollama_alias:
         raise LLMUnavailable(
             "COMMONTRACE_LLM_API_KEY is not set -- no LLM-assisted draft is possible."
         )
     model = os.environ.get("COMMONTRACE_LLM_MODEL", "").strip() or DEFAULT_MODEL
+    cache_namespace = os.environ.get("COMMONTRACE_LLM_CACHE_NAMESPACE", "").strip() or None
     if provider in _CLOUD_PROVIDERS:
         model = os.environ.get("COMMONTRACE_LLM_MODEL", "").strip()
         region = os.environ.get("COMMONTRACE_LLM_REGION", "").strip()
@@ -69,7 +108,8 @@ def load_config() -> Config:
             *((("COMMONTRACE_LLM_PROJECT", project),) if provider == "vertex" else ())) if not value]
         if missing:
             raise LLMUnavailable(f"COMMONTRACE_LLM_PROVIDER={provider} also needs {', '.join(missing)}.")
-        return Config(provider=provider, model=model, api_key="", region=region, project=project)
+        return Config(provider=provider, model=model, api_key="", region=region,
+                      project=project, cache_namespace=cache_namespace)
     base_url = os.environ.get("COMMONTRACE_LLM_BASE_URL", "").strip() or None
     if provider == "openai-compatible" and not base_url:
         if ollama_alias:
@@ -83,7 +123,8 @@ def load_config() -> Config:
         raise LLMUnavailable(
             f"COMMONTRACE_LLM_BASE_URL must be an http(s) URL, got {base_url!r}."
         )
-    return Config(provider=provider, model=model, api_key=api_key, base_url=base_url)
+    return Config(provider=provider, model=model, api_key=api_key,
+                  base_url=base_url, cache_namespace=cache_namespace)
 
 
 def _is_http_url(url: str) -> bool:
@@ -313,24 +354,30 @@ def _non_empty_str(parsed: dict, key: str) -> str:
 def complete(prompt: str, config: Config | None = None) -> tuple[str, dict]:
     """One completion from the configured provider: (text, usage).
 
-    When ``COMMONTRACE_LLM_CACHE=1``, identical ``(model, prompt)`` calls are
-    served from a local SQLite cache (``commontrace/llm_cache.py``, graphiti's
-    ``LLMCache`` pattern) instead of billed again.
+    When ``COMMONTRACE_LLM_CACHE=1``, provider/account-scoped calls share a
+    bounded SQLite cache and concurrent identical calls share one provider call.
     """
     cfg = config or load_config()
     cache = llm_cache_mod.LLMCache() if llm_cache_mod.enabled() else None
-    key = llm_cache_mod.cache_key(cfg.model, prompt) if cache else ""
-    if cache:
-        hit = cache.get(key)
-        if hit is not None and isinstance(hit.get("text"), str):
-            return hit["text"], hit.get("usage", {})
     caller = {"anthropic": _call_anthropic, "openai-compatible": _call_openai_compatible,
               "ollama": _call_openai_compatible,
               "bedrock": _call_bedrock, "vertex": _call_vertex}[cfg.provider]
-    text, usage = caller(cfg, prompt)
-    if cache:
-        cache.set(key, {"text": text, "usage": usage})
-    return text, usage
+    # IAM/ADC identity may change independently of these routing fields. Require
+    # an owner-supplied tenant/account namespace before caching cloud SDK calls.
+    if cache is None or (cfg.provider in _CLOUD_PROVIDERS and not cfg.cache_namespace):
+        return _provider_call(cfg, prompt, caller)
+    # Provider, endpoint and cloud routing prevent cross-account/provider reuse.
+    # Only a digest of the credential is used; no plaintext enters disk keys.
+    namespace = json.dumps([cfg.provider, cfg.base_url, cfg.region, cfg.project, cfg.cache_namespace,
+                            hashlib.sha256(cfg.api_key.encode("utf-8")).hexdigest()])
+    key = llm_cache_mod.cache_key(cfg.model, prompt, namespace=namespace)
+
+    def compute():
+        text, usage = _provider_call(cfg, prompt, caller)
+        return {"text": text, "usage": usage}
+
+    value = cache.get_or_compute(key, compute)
+    return value["text"], value.get("usage", {})
 
 
 def draft(

@@ -157,3 +157,27 @@ class TestItIsNotMeteredPerFailure:
         async with session_scope(session_factory) as session:
             trace = await session.get(Trace, trace_id)
         assert trace.commons_hits == 0
+
+
+async def test_authenticated_export_binds_content_and_review_metadata(session_factory, config, orgs):
+    import dataclasses
+
+    from commontrace.commons_integrity import CommonsIntegrityError, verify_record
+
+    await _seed(session_factory, orgs["operator"], "Signed knowledge")
+    key = "private-signing-key-" + "x" * 32
+    configured = dataclasses.replace(_exporting(config), commons_signing_key=key, commons_signing_key_id="release")
+    async with session_scope(session_factory) as session:
+        exported = await crud.export_commons(session, orgs["reader"], configured)
+    [entry] = exported["entries"]
+    assert verify_record(entry, {"release": key.encode()}, required=True)
+    entry["standing"] = "forged-review"
+    with pytest.raises(CommonsIntegrityError):
+        verify_record(entry, {"release": key.encode()}, required=True)
+
+
+async def test_unsigned_export_remains_compatible(session_factory, config, orgs):
+    await _seed(session_factory, orgs["operator"], "Legacy knowledge")
+    async with session_scope(session_factory) as session:
+        exported = await crud.export_commons(session, orgs["reader"], _exporting(config))
+    assert "_integrity" not in exported["entries"][0]

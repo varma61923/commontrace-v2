@@ -6,6 +6,7 @@ Candidate generation is approximate; it never makes an unverified lesson active.
 from __future__ import annotations
 
 import hashlib
+import math
 import random
 import re
 from collections import Counter
@@ -211,7 +212,7 @@ def find_clusters(
 
 def propose_domain(cluster: Cluster, agent_type: str) -> str:
     """A domain label for this candidate, from the cluster's own vocabulary."""
-    starter = STARTER_DOMAINS.get(agent_type, [])
+    starter: list[str] = STARTER_DOMAINS.get(agent_type, [])
     cluster_tags = [t for trace in cluster.traces for t in trace.tags]
     tag_set = set(cluster_tags)
     for domain in starter:
@@ -292,3 +293,150 @@ def propose_description(cluster: Cluster) -> str:
         shared = ", ".join(cluster.shared_terms[:5]) or "(no strongly shared terms)"
         return f"Candidate ({n} traces): repeated pattern around {shared}"
     return f"{title} — and {n - 1} more like it" if n > 1 else title
+
+
+@dataclass(frozen=True)
+class ExtractionPolicy:
+    """Evidence admission policy, independent of the human activation gate.
+
+    Scores measure consistency of recorded evidence, never probability that a
+    resolution is correct. Duplicate trace IDs do not increase support.
+    """
+
+    min_validation_score: float = 0.7
+    min_evidence: int = 2
+    min_solution_words: int = 3
+
+    def __post_init__(self) -> None:
+        if isinstance(self.min_validation_score, bool) or not math.isfinite(self.min_validation_score) \
+                or not 0 <= self.min_validation_score <= 1:
+            raise ValueError("min_validation_score must be finite and between 0 and 1")
+        if not isinstance(self.min_evidence, int) or isinstance(self.min_evidence, bool) or self.min_evidence < 2:
+            raise ValueError("min_evidence must be at least 2")
+        if not isinstance(self.min_solution_words, int) or isinstance(self.min_solution_words, bool) \
+                or self.min_solution_words < 1:
+            raise ValueError("min_solution_words must be positive")
+
+
+@dataclass(frozen=True)
+class EvidenceAssessment:
+    """Bounded, explainable quality components for a repeated trace pattern."""
+
+    score: float
+    repetition: float
+    cohesion: float
+    resolution_consensus: float
+    completeness: float
+    supporting_ids: tuple[str, ...]
+    rejection_reasons: tuple[str, ...]
+
+    @property
+    def accepted(self) -> bool:
+        return not self.rejection_reasons
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "score": self.score, "repetition": self.repetition,
+            "cohesion": self.cohesion, "resolution_consensus": self.resolution_consensus,
+            "completeness": self.completeness, "supporting_ids": list(self.supporting_ids),
+            "rejection_reasons": list(self.rejection_reasons),
+        }
+
+
+@dataclass(frozen=True)
+class GroundedDraft:
+    """A deterministic review candidate, quoting recorded evidence only."""
+
+    rule: str
+    applies_when: str
+    do_not_apply_when: str
+    evidence: list[str]
+    unverifiable_evidence: list[str]
+    provenance: dict[str, object]
+
+
+def _unique_members(cluster: Cluster) -> list[TraceCandidate]:
+    # Conflicting copies of an ID cannot provide independent corroboration.
+    by_id: dict[str, TraceCandidate] = {}
+    conflicting: set[str] = set()
+    for trace in cluster.traces:
+        if not trace.id:
+            continue
+        if trace.id in by_id and trace != by_id[trace.id]:
+            conflicting.add(trace.id)
+        else:
+            by_id[trace.id] = trace
+    return [by_id[identity] for identity in sorted(by_id) if identity not in conflicting]
+
+
+def _resolution_key(value: str) -> str:
+    return " ".join(value.split()).casefold().rstrip(".!? ")
+
+
+def _supporting_members(members: list[TraceCandidate]) -> list[TraceCandidate]:
+    counts = Counter(_resolution_key(t.solution_text) for t in members if t.solution_text.strip())
+    if not counts:
+        return []
+    dominant = min(counts, key=lambda key: (-counts[key], key))
+    return [t for t in members if _resolution_key(t.solution_text) == dominant]
+
+
+def assess_cluster(cluster: Cluster, policy: ExtractionPolicy = ExtractionPolicy()) -> EvidenceAssessment:
+    """Assess distinct evidence in linear time against a deterministic medoid.
+
+    Resolution agreement uses normalized exact text: paraphrases are deliberately
+    not assumed equivalent. Cohesion uses the same lexical rule as clustering.
+    """
+    members = _unique_members(cluster)
+    supporting = _supporting_members(members)
+    n = len(members)
+    repetition = min(1.0, len(supporting) / policy.min_evidence)
+    consensus = len(supporting) / n if n else 0.0
+    complete = sum(bool(t.context_text.strip() and t.solution_text.strip()) for t in members)
+    completeness = complete / n if n else 0.0
+    if supporting:
+        typical = representative(Cluster(traces=supporting))
+        anchor = _tokenize(f"{typical.title} {typical.context_text}")
+        cohesion = sum(_jaccard(anchor, _tokenize(f"{t.title} {t.context_text}")) for t in members) / n
+    else:
+        cohesion = 0.0
+    score = 0.15 * repetition + 0.3 * cohesion + 0.35 * consensus + 0.2 * completeness
+    reasons: list[str] = []
+    if len(supporting) < policy.min_evidence:
+        reasons.append("insufficient independent agreeing resolutions")
+    if supporting and len(_WORD_RE.findall(supporting[0].solution_text)) < policy.min_solution_words:
+        reasons.append("resolution is not sufficiently actionable")
+    if not supporting or not any(t.context_text.strip() for t in supporting):
+        reasons.append("missing activation context")
+    if score < policy.min_validation_score:
+        reasons.append("validation score below threshold")
+    return EvidenceAssessment(
+        score=score, repetition=repetition, cohesion=cohesion,
+        resolution_consensus=consensus, completeness=completeness,
+        supporting_ids=tuple(t.id for t in supporting), rejection_reasons=tuple(reasons),
+    )
+
+
+def extract_cluster(cluster: Cluster, policy: ExtractionPolicy = ExtractionPolicy()) -> GroundedDraft | None:
+    """Extract an evidence-bound rule; never activate it or invent a resolution.
+
+    This is a deterministic alternative to model drafting for failure-to-lesson
+    pipelines. The caller must still scan safety and retain status ``review``.
+    """
+    assessment = assess_cluster(cluster, policy)
+    if not assessment.accepted:
+        return None
+    members = _supporting_members(_unique_members(cluster))
+    typical = representative(Cluster(traces=members))
+    situation = " ".join(typical.context_text.split())
+    solution = " ".join(typical.solution_text.split())
+    return GroundedDraft(
+        rule=f"For the recorded situation, use the corroborated resolution: {solution}",
+        applies_when=f"The recorded situation recurs: {situation}",
+        do_not_apply_when=(
+            "The failure's preconditions differ from the cited evidence, the resolution has already failed, "
+            "or a contradictory resolution applies; investigate before reusing this rule."
+        ),
+        evidence=list(assessment.supporting_ids), unverifiable_evidence=[],
+        provenance={"method": "evidence-consensus-v1", "assessment": assessment.to_dict()},
+    )

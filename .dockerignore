@@ -23,10 +23,13 @@ commontrace/**
 !commontrace/value.py
 !commontrace/decay.py
 !commontrace/retrieval.py
+!commontrace/runtime_cache.py
+!commontrace/secrets_provider.py
 !commontrace/corpus_bin.py
 !commontrace/_lexical.py
 !commontrace/_stem.py
 !commontrace/memory_guard.py
+!commontrace/commons_integrity.py
 !commontrace/prereg.py
 !commontrace/raw_export.py
 !commontrace/distill.py

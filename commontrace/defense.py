@@ -171,7 +171,9 @@ _REDACTION_PATTERNS: list[tuple[str, str]] = [
     ("db_url_mysql", r"mysql://[^\s:/@]+:[^\s/@]+@[^\s]+"),
     ("db_url_mongodb", r"mongodb(?:\+srv)?://[^\s:/@]+:[^\s/@]+@[^\s]+"),
     # Private keys & generic tokens
-    ("private_key_pem", r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY( BLOCK)?-----"),
+    ("private_key_pem",
+     r"-----BEGIN (?P<pem_kind>(?:RSA |EC |DSA |OPENSSH |ENCRYPTED |PGP )?PRIVATE KEY(?: BLOCK)?)-----"
+     r"(?:[ \t]*\r?\n[\s\S]*?(?:-----END (?P=pem_kind)-----|\Z))?"),
     ("jwt", _ascii_token_pattern(r"eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}")),
     # PII
     (
@@ -252,6 +254,16 @@ def apply_redaction(content: str) -> RedactionResult:
             hits.append({"detector": label, "preview": _fingerprint_value(raw_str)})
         content = pattern.sub(f"[REDACTED:{label}]", content)
 
+    # Keep the standalone defense API aligned with capture's credential rules
+    # (opaque bearer values, modern Hub keys, and generic assignments).
+    from commontrace.memory_guard import redact_secrets
+
+    content, extra_labels = redact_secrets(content)
+    for label in extra_labels:
+        detector = re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")
+        if detector not in matched:
+            matched.append(detector)
+        hits.append({"detector": detector, "preview": "[redacted]"})
     return RedactionResult(content=content, matched_types=matched, hits=hits)
 
 

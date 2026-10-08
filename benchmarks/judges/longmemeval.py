@@ -1,6 +1,6 @@
-# Reproduces LongMemEval official judge prompt and scoring verbatim.
-# Source: https://github.com/xiaowu0162/longmemeval/blob/main/src/evaluation/evaluate_qa.py
-# Commit: 2ec2a557f339b6c0369619b1ed5793734cc87533
+# LongMemEval task/abstention prompt templates verified against the pinned upstream evaluator.
+# Source: https://github.com/xiaowu0162/longmemeval/blob/9e0b455f4ef0e2ab8f2e582289761153549043fc/src/evaluation/evaluate_qa.py
+# Commit: 9e0b455f4ef0e2ab8f2e582289761153549043fc
 from __future__ import annotations
 
 from typing import Any, Callable

@@ -7,6 +7,7 @@ are catalogued for discoverability but cannot be launched inside a running gatew
 """
 from __future__ import annotations
 
+import argparse
 import contextlib
 import io
 import os
@@ -107,6 +108,51 @@ class CommandSpec:
 class UICommandError(ValueError):
     """A command request is invalid or not safe to run from the console."""
 
+    def __init__(self, message: str, *, status: int = 400, code: str = "bad_request"):
+        super().__init__(message)
+        self.status = status
+        self.code = code
+
+
+# Default-deny unreviewed handlers while the operator has disabled approval.
+# Match the parsed function, so argparse option ordering/abbreviations cannot
+# disguise a write behind a read-only subcommand name. Help exits before a
+# function is selected and remains available for every non-lifecycle command.
+_READ_ONLY_HANDLERS = {
+    "doctor": frozenset({"run"}),
+    "query": frozenset({"run"}),
+    "recall": frozenset({"run"}),
+    "lesson": frozenset({"run_list", "run_validate", "run_history"}),
+    "trace": frozenset({"run_list", "run_validate"}),
+    "fact": frozenset({"run_list", "run_search", "run_explain"}),
+    "conversation": frozenset({"run_spaces", "run_sessions", "run_profile", "run_recall"}),
+    "release": frozenset({"run_list", "run_show", "run_diff", "run_env_current", "run_env_pending"}),
+    "proof": frozenset({"run_status"}),
+}
+_LESSON_REVIEW_HANDLERS = frozenset({"run_approve", "run_reject", "run_revoke", "run_auto_approve"})
+
+
+def _authorize(command: str, parsed: argparse.Namespace, *, allow_approval: bool, scope: str) -> None:
+    fn = getattr(parsed, "func", None)
+    handler = getattr(fn, "__name__", "")
+    module = getattr(fn, "__module__", "")
+    if command not in {"init", "install"} and (
+            getattr(parsed, "dest", None) is not None or getattr(parsed, "root", None) is not None):
+        raise UICommandError("command arguments cannot override the gateway store root")
+    if getattr(parsed, "force", False):
+        raise UICommandError("force overrides are terminal-only", status=409, code="command_unavailable")
+    if command == "lesson" and handler in _LESSON_REVIEW_HANDLERS:
+        raise UICommandError("lesson review actions require the revision-checked review endpoints or a terminal",
+                             status=409, code="command_unavailable")
+    # CLI scopes/spaces are caller-controlled routing parameters. They cannot
+    # inherit the gateway's container namespace safely through an arbitrary CLI.
+    if scope:
+        raise UICommandError("scoped requests must use the scoped API endpoints", status=403, code="forbidden")
+    if not allow_approval and (module != f"commontrace.commands.{command.replace('-', '_')}_cmd"
+                               or handler not in _READ_ONLY_HANDLERS.get(command, ())):
+        raise UICommandError("this command requires a gateway started with --allow-approval",
+                             status=403, code="approval_disabled")
+
 
 _COMMAND_LOCK = threading.RLock()
 
@@ -146,14 +192,17 @@ def _validate_args(args: object) -> list[str]:
     # The browser cannot select a different store or a different process root.
     # All CLI code resolves the authenticated gateway's root through this env.
     for index, value in enumerate(args):
-        if value in ("--dest", "--root") or value.startswith("--dest=") or value.startswith("--root="):
+        option = value.split("=", 1)[0]
+        if option.startswith("--") and len(option) > 2 and any(
+                reserved.startswith(option) for reserved in ("--dest", "--root")):
             raise UICommandError(f"args[{index}] cannot override the gateway store root")
     return list(args)
 
 
-def run(root: str, command: object, args: object = None) -> dict[str, Any]:
+def run(root: str, command: object, args: object = None, *, allow_approval: bool = False,
+        scope: str = "") -> dict[str, Any]:
     """Run one allowlisted CLI command against *root* and capture its output."""
-    from commontrace.cli import _COMMANDS, main
+    from commontrace.cli import _COMMANDS, build_parser, main
 
     if not isinstance(command, str) or command not in _COMMANDS:
         raise UICommandError("unknown CommonTrace command")
@@ -170,6 +219,18 @@ def run(root: str, command: object, args: object = None) -> dict[str, Any]:
         os.environ["COMMONTRACE_ROOT"] = os.path.abspath(root)
         try:
             with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                # Parse exactly what will execute, then clear parser output so
+                # the ordinary CLI help/errors are emitted only once by main.
+                try:
+                    parsed = build_parser(only=command).parse_args([command, *argv])
+                except SystemExit:
+                    parsed = None  # Help or a parse error cannot invoke a handler.
+                stdout.seek(0)
+                stdout.truncate(0)
+                stderr.seek(0)
+                stderr.truncate(0)
+                if parsed is not None:
+                    _authorize(command, parsed, allow_approval=allow_approval, scope=scope)
                 try:
                     exit_code = int(main([command, *command_args]))
                 except SystemExit as exc:

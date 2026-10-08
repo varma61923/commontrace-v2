@@ -35,6 +35,9 @@ serve = [
 otel = [
     "opentelemetry-sdk>=1.20,<2.0",
 ]
+vector-postgres = [
+    "asyncpg>=0.31,<1.0",
+]
 dev = [
     "pytest>=9.0.3,<10.0",
     "ruff>=0.4,<1.0",
@@ -72,4 +75,3 @@ select = ["E", "F", "W", "I"]
 addopts = "--import-mode=importlib"
 pythonpath = ["."]
 testpaths = ["tests"]
-

@@ -450,6 +450,9 @@ def _load_corpus(path: str) -> list[dict]:
             records.append(rec)
     if not records:
         raise ValueError(f"{path}: no records")
+    from commontrace.commons_integrity import verify_records
+
+    verify_records(records)
     return records
 
 

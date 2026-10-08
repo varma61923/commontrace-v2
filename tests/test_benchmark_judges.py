@@ -1,11 +1,11 @@
-"""Unit tests for official benchmark judges under benchmarks/judges/
+"""Unit tests for benchmark judge profiles under benchmarks/judges/
 
 Verifies:
 1. Dispatcher and registry (get_judge, default models, dataset mappings).
 2. Generic judge prompt verbatim reproduction, parsing, and scoring.
 3. LongMemEval official prompts verbatim reproduction, per-question-type templates,
    off-by-one leniency, abstention, and official 'yes' scoring rule.
-4. LoCoMo official judge prompt verbatim reproduction, JSON output parsing,
+4. LoCoMo downstream binary prompt compatibility, JSON output parsing,
    generous date handling, categories 1-4 inclusion and category 5 exclusion.
 5. BEAM official prompt verbatim reproduction, 3-level rubric scoring (1.0, 0.5, 0.0),
    pure-Python Kendall's tau-b correlation, event_ordering combined with F1,
@@ -132,7 +132,7 @@ class TestGenericJudge:
 
 class TestLongMemEvalJudge:
     def test_header_references(self):
-        assert "2ec2a557f339b6c0369619b1ed5793734cc87533" in open(longmemeval_mod.__file__).read()
+        assert "9e0b455f4ef0e2ab8f2e582289761153549043fc" in open(longmemeval_mod.__file__).read()
         assert "evaluate_qa.py" in open(longmemeval_mod.__file__).read()
 
     def test_prompt_templates_verbatim(self):
@@ -208,6 +208,12 @@ class TestLongMemEvalJudge:
 
 
 class TestLoCoMoJudge:
+    def test_profile_identifies_downstream_scoring_without_changing_legacy_name(self):
+        judge = get_judge("locomo")
+        assert judge.name == "locomo"
+        assert judge.profile == "locomo-downstream-binary-v1"
+        assert locomo_mod.PRIMARY_SCORING_URL.endswith("task_eval/evaluation.py")
+
     def test_header_references(self):
         content = open(locomo_mod.__file__).read()
         assert "2402.17753" in content
@@ -280,7 +286,7 @@ class TestLoCoMoJudge:
 class TestBEAMJudge:
     def test_header_references(self):
         content = open(beam_mod.__file__).read()
-        assert "85048250af007704feccbb0bc46c6a8240b49a51" in content
+        assert "b2da22eac88bb0874c64665f13457eb99835774a" in content
         assert "compute_metrics.py" in content
         assert "prompts.py" in content
 
@@ -460,4 +466,3 @@ class TestBEAMJudge:
         assert res["abstention"] is True
         assert res["correct"] is True
         assert res["score"] == 1.0
-

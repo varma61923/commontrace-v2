@@ -227,32 +227,93 @@ def _withdraw_from_semantic(
     return "\n".join(lines) + ("\n" if stdout.endswith("\n") else ""), removed_slugs
 
 
-def _screen_semantic(stdout: str, root: str) -> str:
-    ldir = paths.lessons_dir(root)
-    verdicts: dict[str, bool] = {}
+def _semantic_lines(stdout: str) -> list[str]:
+    """Keep ranking rows and bounded numeric headers, never arbitrary stdout prose."""
     lines = []
     for line in stdout.splitlines():
+        if _slug_of_semantic_line(line) is not None or re.fullmatch(
+            r"# Top-[0-9]{1,9} retrieval \((?:\+ importance>=[0-9]{1,9} override|override disabled)\)", line,
+        ) or re.fullmatch(r"# Index: [0-9]{1,12} lessons, model=[A-Za-z0-9_./-]{1,200}", line):
+            lines.append(line)
+    return lines
+
+
+def _semantic_row(line: str, fm: dict) -> str:
+    """Retain numeric ranking metadata; lesson prose comes from verified content."""
+    fields = [str(fm.get("name", ""))]
+    has_prose = False
+    for raw in line.split("|")[1:]:
+        value = raw.strip()
+        if value == "core":
+            if dosage.is_core(fm):
+                fields.append(value)
+        elif re.fullmatch(r"importance=[0-9]{1,9}", value):
+            fields.append(f"importance={int(fm.get('importance') or 0)}")
+        elif re.fullmatch(r"(?:cosine|rank|score|relevance)=(?:N/A|[-+]?[0-9]{1,12}(?:\.[0-9]{1,12})?)", value):
+            fields.append(value)
+        else:
+            has_prose = True
+    if has_prose:
+        fields.append(" ".join(str(fm.get("description", "")).split()))
+    return " | ".join(fields)
+
+
+def _semantic_query_header(text: str, task: str | None) -> str:
+    if task is None:
+        return text
+    lines = text.splitlines()
+    first_row = next((index for index, line in enumerate(lines) if not line.startswith("#")), len(lines))
+    lines.insert(first_row, f"# Query: {task!r}")
+    return "\n".join(lines) + ("\n" if text.endswith("\n") else "")
+
+
+def _screen_semantic(
+    stdout: str, root: str, *, active: list[tuple[str, dict]], scope: str = "", as_of: str = "",
+    agent_type: str | None = None, show_expired: bool = False,
+) -> str:
+    by_slug = {str(fm.get("name", "")): (path, fm) for path, fm in active}
+    verdicts: dict[str, dict | None] = {}
+    lines = []
+    for line in _semantic_lines(stdout):
         slug = _slug_of_semantic_line(line)
         if slug is not None:
             if slug not in verdicts:
-                path = os.path.join(ldir, f"{slug}.md")
-                parsed = read_or_warn(frontmatter.read, path) if os.path.isfile(path) else ({}, "")
-                labels = [] if parsed is None else injection_guard.injection_labels({
-                    "description": parsed[0].get("description"), "applies_when": parsed[0].get("applies_when"),
-                    "do_not_apply_when": parsed[0].get("do_not_apply_when"), "body": parsed[1]})
-                verdicts[slug] = parsed is not None and not labels
+                verdicts[slug] = None
+                entry = by_slug.get(slug)
+                if entry is None:
+                    continue
+                path, cached = entry
+                parsed = read_or_warn(frontmatter.read, path)
+                if parsed is None:
+                    continue
+                fm, body = parsed
+                if not lesson_cache._fresh_metadata_eligible(
+                    path, fm, slug, scope=scope, as_of=as_of or None, agent_type=agent_type,
+                    expected_core=dosage.is_core(cached), show_expired=show_expired,
+                ):
+                    continue
+                labels = injection_guard.injection_labels({
+                    "description": fm.get("description"), "applies_when": fm.get("applies_when"),
+                    "do_not_apply_when": fm.get("do_not_apply_when"), "body": body})
                 if labels:
                     print(f"[commontrace] quarantined {slug}: injection screen: {', '.join(labels)}",
                           file=sys.stderr)
-            if not verdicts[slug]:
+                elif lesson_cache.fresh_eligible(
+                    path, fm, slug, scope=scope, as_of=as_of or None, agent_type=agent_type,
+                    expected_core=dosage.is_core(cached), show_expired=show_expired, body=body, root=root,
+                ):
+                    verdicts[slug] = fm
+            current = verdicts[slug]
+            if current is None:
                 continue
+            line = _semantic_row(line, current)
         lines.append(line)
     return "\n".join(lines) + ("\n" if stdout.endswith("\n") else "")
 
 
 def _semantic_dose_or_pinned(
     stdout: str, root: str, agent_type: str | None, config: retrieval_io.RetrievalConfig, dosed: bool,
-    scope: str = "", as_of: str = "", show_expired: bool = False,
+    scope: str = "", as_of: str = "", show_expired: bool = False, *, task: str | None = None,
 ) -> tuple[str, list[str], str]:
     active = _iter_active_lessons(root, agent_type, scope, as_of, show_expired)
     notice = ""
@@ -266,23 +327,20 @@ def _semantic_dose_or_pinned(
         if notice:
             notice = "\n" + notice + "\n"
     if dosed:
-        text, eligible, note = _dose_semantic(stdout, root, agent_type, config, active=active)
-        return text, eligible, note + notice
-    stdout = _screen_semantic(stdout, root)
-    allowed = {str(fm.get("name", "")) for _path, fm in active}
-    lines = [
-        line for line in stdout.splitlines()
-        if (slug := _slug_of_semantic_line(line)) is None or slug in allowed
-    ]
-    stdout = "\n".join(lines) + ("\n" if stdout.endswith("\n") else "")
-    return stdout, _slugs_from_semantic_output(stdout), notice
+        text, eligible, note = _dose_semantic(stdout, root, agent_type, config, active=active,
+                                             scope=scope, as_of=as_of, show_expired=show_expired)
+        return _semantic_query_header(text, task), eligible, note + notice
+    stdout = _screen_semantic(stdout, root, active=active, scope=scope, as_of=as_of,
+                              agent_type=agent_type, show_expired=show_expired)
+    return _semantic_query_header(stdout, task), _slugs_from_semantic_output(stdout), notice
 
 
 def _dose_semantic(
     stdout: str, root: str, agent_type: str | None, config: retrieval_io.RetrievalConfig,
     active: list[tuple[str, dict]] | None = None,
+    *, scope: str = "", as_of: str = "", show_expired: bool = False,
 ) -> tuple[str, list[str], str]:
-    lines = stdout.splitlines()
+    lines = _semantic_lines(stdout)
     order = list(dict.fromkeys(_slugs_from_semantic_output(stdout)))
     active = _iter_active_lessons(root, agent_type) if active is None else active
     on_disk = {str(fm.get("name", "")) for _p, fm in active}
@@ -290,24 +348,27 @@ def _dose_semantic(
     for line in lines:
         slug = _slug_of_semantic_line(line)
         if slug is not None and slug not in cosine:
-            match = re.search(r"cosine=([-0-9.]+)", line)
+            match = re.search(r"(?:^|\|)\s*cosine=(-?[0-9]+(?:\.[0-9]+)?)(?:\s*\||\s*$)", line)
             cosine[slug] = float(match.group(1)) if match else 0.0
     ranked = [(slug, cosine.get(slug, 0.0)) for slug in order if slug in on_disk]
-    passthrough = {slug for slug in order if slug not in on_disk}
 
     window = max(2 * config.max_lessons, config.max_lessons + 8)
     while True:
-        considered, dose = _apply_dosage(active, ranked[:window], config)
+        considered, dose = _apply_dosage(active, ranked[:window], config, scope=scope,
+                                         as_of=as_of, agent_type=agent_type, show_expired=show_expired)
         if window >= len(ranked) or len(dose.admitted) >= config.max_lessons:
             break
         window *= 2
     unread = len(ranked) - min(window, len(ranked))
 
     admitted = {c.slug: c for c in dose.admitted}
-    out = [
-        line for line in lines
-        if (slug := _slug_of_semantic_line(line)) is None or slug in admitted or slug in passthrough
-    ]
+    out = []
+    for line in lines:
+        slug = _slug_of_semantic_line(line)
+        if slug is None:
+            out.append(line)
+        elif slug in admitted:
+            out.append(_semantic_row(line, considered[slug]["fm"]))
     listed = set(order)
     for c in dose.admitted:
         if c.slug not in listed:
@@ -315,7 +376,7 @@ def _dose_semantic(
     text = "\n".join(out) + ("\n" if out and (stdout.endswith("\n") or not stdout) else "")
     eligible = [
         slug for slug in order
-        if slug in passthrough or (slug in admitted and not admitted[slug].core)
+        if slug in admitted and not admitted[slug].core
     ]
     dropped = [f"{d.slug} ({d.reason})" for d in dose.dropped]
     if unread:
@@ -333,6 +394,7 @@ def _apply_dosage(
     active: list[tuple[str, dict]],
     ranked: list[tuple[str, float]],
     config: retrieval_io.RetrievalConfig,
+    *, scope: str = "", as_of: str = "", agent_type: str | None = None, show_expired: bool = False,
 ) -> tuple[dict[str, dict], "dosage.Dose"]:
     path_by_slug = {str(fm.get("name", "")): path for path, fm in active}
     core_slugs_all = {str(fm.get("name", "")) for path, fm in active if dosage.is_core(fm)}
@@ -350,6 +412,10 @@ def _apply_dosage(
         if parsed is None:
             return
         fm, body = parsed
+        if not lesson_cache._fresh_metadata_eligible(path, fm, slug, scope=scope, as_of=as_of or None,
+                                          agent_type=agent_type, expected_core=slug in core_slugs_all,
+                                          show_expired=show_expired):
+            return
         labels = injection_guard.injection_labels({
             "description": fm.get("description"), "applies_when": fm.get("applies_when"),
             "do_not_apply_when": fm.get("do_not_apply_when"), "body": body,
@@ -359,6 +425,10 @@ def _apply_dosage(
                 f"[commontrace] quarantined {slug}: injection screen: {', '.join(labels)}",
                 file=sys.stderr,
             )
+            return
+        if not lesson_cache.fresh_eligible(path, fm, slug, scope=scope, as_of=as_of or None,
+                                          agent_type=agent_type, expected_core=slug in core_slugs_all,
+                                          show_expired=show_expired, body=body):
             return
         considered[slug] = {
             "slug": slug, "path": path, "relevance": relevance,
@@ -564,7 +634,9 @@ def _run_lexical(args: argparse.Namespace, root: str) -> int:
         return 0
 
     ranked_by_slug = {r.slug: r for r in ranked}
-    considered, dose = _apply_dosage(lessons, page, config)
+    considered, dose = _apply_dosage(lessons, page, config, scope=getattr(args, "scope", ""),
+                                     as_of=getattr(args, "as_of", ""), agent_type=args.agent_type,
+                                     show_expired=getattr(args, "show_expired", False))
     if not dose.admitted:
         if notice:
             print(notice)
@@ -602,7 +674,8 @@ def _run_lexical(args: argparse.Namespace, root: str) -> int:
         r = ranked_by_slug.get(c.slug)
         if r is not None:
             ce = f" ce={c.relevance:+5.2f}" if reranked is not None else ""
-            print(f"{c.slug:45s} rel={r.relevance:4.2f}{ce}  {r.description}")
+            description = considered[c.slug]["fm"].get("description", "")
+            print(f"{c.slug:45s} rel={r.relevance:4.2f}{ce}  {description}")
             print(f"  matched: {', '.join(r.matched_terms)}  ({r.path})")
         else:
             item = considered[c.slug]
@@ -770,12 +843,10 @@ def _run_hybrid(args: argparse.Namespace, root: str, missing_hint: str) -> int:
         return 0
 
     by_slug = {r.slug: r for r in lexical}
-    described = {
-        str(fm.get("name", "")): (str(fm.get("description", "") or ""), path)
-        for path, fm in lessons
-    }
 
-    _considered, dose = _apply_dosage(lessons, fused, config)
+    _considered, dose = _apply_dosage(lessons, fused, config, scope=getattr(args, "scope", ""),
+                                      as_of=getattr(args, "as_of", ""), agent_type=args.agent_type,
+                                      show_expired=getattr(args, "show_expired", False))
     if not dose.admitted:
         if notice:
             print(notice)
@@ -812,7 +883,8 @@ def _run_hybrid(args: argparse.Namespace, root: str, missing_hint: str) -> int:
         if slug in withheld:
             print(f"{slug:45s} [WITHHELD - holdout]")
             continue
-        description, path = described.get(slug, ("", ""))
+        current = _considered[slug]
+        description, path = current["fm"].get("description", ""), current["path"]
         arms = []
         if slug in by_slug:
             arms.append("lexical")
@@ -987,6 +1059,7 @@ def _run(args: argparse.Namespace) -> int:
             stdout, root, args.agent_type, config, dosed,
             getattr(args, "scope", ""), getattr(args, "as_of", ""),
             bool(getattr(args, "show_expired", False)),
+            task=args.task,
         )
         sys.stdout.write(stdout + note)
         _print_withdrawn(withdrawn, harmful)
@@ -1009,6 +1082,7 @@ def _run(args: argparse.Namespace) -> int:
         stdout, root, args.agent_type, config, dosed,
         getattr(args, "scope", ""), getattr(args, "as_of", ""),
         bool(getattr(args, "show_expired", False)),
+        task=args.task,
     )
     if not slugs:
         sys.stdout.write(stdout + note)

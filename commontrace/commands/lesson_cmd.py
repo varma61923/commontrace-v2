@@ -96,6 +96,12 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     ap.add_argument("--dest", default=None)
     ap.set_defaults(func=run_approve)
 
+    withdraw = sub.add_parser("revoke", help="Durably revoke a lesson approval and archive it.")
+    withdraw.add_argument("slug")
+    withdraw.add_argument("--reason", default="approval revoked")
+    withdraw.add_argument("--dest", default=None)
+    withdraw.set_defaults(func=run_revoke)
+
     rj = sub.add_parser(
         "reject",
         help="Validator step: status review -> archived. Refuses a lesson that isn't 'review'.",
@@ -342,6 +348,9 @@ def run_approve(args: argparse.Namespace) -> int:
 
     with frontmatter.locked(path):
         fm, body = frontmatter.read(path)
+        precondition = getattr(args, "review_precondition", None)
+        if precondition is not None:
+            precondition(path, fm, body)
         if fm.get("status") != "review":
             print(
                 f"[commontrace] {args.slug} has status={fm.get('status')!r}, not 'review' -- "
@@ -414,6 +423,13 @@ def run_approve(args: argparse.Namespace) -> int:
         fm.update(getattr(args, "extra_frontmatter", None) or {})
         if args.rationale:
             body = _append_body_note(body, "Approved", args.rationale)
+        from commontrace import lesson_admission
+
+        try:
+            fm[lesson_admission.RECEIPT_FIELD] = lesson_admission.issue(root, path, fm, body, actor=approver)
+        except (lesson_admission.AdmissionError, OSError) as exc:
+            print(f"[commontrace] approval receipt could not be recorded: {type(exc).__name__}.", file=sys.stderr)
+            return 1
         lesson_io.write_lesson(path, fm, body, root=root, actor=approver,
                                reason=args.rationale or "approved")
     if unfilled:
@@ -436,6 +452,27 @@ def run_approve(args: argparse.Namespace) -> int:
         )
     print(f"[commontrace] approved {args.slug} (status: review -> active)")
     print("  `commontrace release cut` records the active set as a rollback point.")
+    return 0
+
+
+def run_revoke(args: argparse.Namespace) -> int:
+    from commontrace import lesson_admission
+
+    root = paths.resolve_root(args.dest)
+    path = lesson_io.lesson_path(root, args.slug)
+    if path is None:
+        print("[commontrace] no lesson found to revoke.", file=sys.stderr)
+        return 1
+    with frontmatter.locked(path):
+        fm, body = frontmatter.read(path)
+        try:
+            lesson_admission.revoke(root, path, actor=_actor())
+        except (lesson_admission.AdmissionError, OSError) as exc:
+            print(f"[commontrace] approval revocation could not be recorded: {type(exc).__name__}.", file=sys.stderr)
+            return 1
+        fm["status"] = "archived"
+        lesson_io.write_lesson(path, fm, body, root=root, actor=_actor(), reason=args.reason)
+    print(f"[commontrace] revoked approval for {args.slug}")
     return 0
 
 
@@ -495,6 +532,9 @@ def run_reject(args: argparse.Namespace) -> int:
 
     with frontmatter.locked(path):
         fm, body = frontmatter.read(path)
+        precondition = getattr(args, "review_precondition", None)
+        if precondition is not None:
+            precondition(path, fm, body)
         if fm.get("status") != "review":
             print(
                 f"[commontrace] {args.slug} has status={fm.get('status')!r}, not 'review' -- "

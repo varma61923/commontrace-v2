@@ -5,14 +5,15 @@ import datetime
 import glob
 import os
 import sys
+from collections.abc import Iterator
 
-from commontrace import distill, frontmatter, lesson_io, paths, templates, trace_io
+from commontrace import _jsonl, distill, draft_quality, frontmatter, lesson_io, llm, paths, templates, trace_io
 from commontrace.commands import _llm_draft
 from commontrace.commands._validators import similarity_threshold as _similarity_threshold
 from commontrace.frontmatter import FrontmatterError
 
 
-def add_parser(subparsers: argparse._SubParsersAction) -> None:
+def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     p = subparsers.add_parser(
         "distill",
         help="Curator step: find repeated patterns across memory/traces/ and propose "
@@ -29,6 +30,21 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         "reason, if no provider is configured or it refuses.",
     )
     p.add_argument(
+        "--extract", action="store_true",
+        help="Extract a complete evidence-consensus rule without a model. Requires corroborated "
+        "resolutions and writes review candidates only; combines with --failed.",
+    )
+    p.add_argument(
+        "--min-validation-score", type=_validation_score, default=0.7,
+        help="Minimum evidence consistency score for --extract (0..1, default 0.7); "
+        "does not replace approval.",
+    )
+    p.add_argument(
+        "--semantic-dedup", action="store_true",
+        help="Screen candidate rules against active/review lessons with local embeddings when "
+        "available; always retains source traces and falls back to lexical screening.",
+    )
+    p.add_argument(
         "--failed", action="store_true",
         help="Only cluster traces recorded as failures (outcome.resolved false or repeated_error): "
         "a lesson drafted from what went wrong, not from everything that happened.",
@@ -42,11 +58,18 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p.set_defaults(func=run)
 
 
+def _validation_score(raw: str) -> float:
+    try:
+        return distill.ExtractionPolicy(min_validation_score=float(raw)).min_validation_score
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
 def _safe_tags(raw: object) -> list[str]:
     return [str(t) for t in raw if t is not None] if isinstance(raw, (list, tuple)) else []
 
 
-def _iter_trace_paths(root: str):
+def _iter_trace_paths(root: str) -> Iterator[str]:
     tdir = paths.traces_dir(root)
     for p in sorted(glob.glob(os.path.join(tdir, "*.md"))):
         if os.path.basename(p) == "README.md":
@@ -54,7 +77,7 @@ def _iter_trace_paths(root: str):
         yield p
 
 
-def _iter_lesson_paths(root: str):
+def _iter_lesson_paths(root: str) -> Iterator[str]:
     ldir = paths.lessons_dir(root)
     for p in sorted(glob.glob(os.path.join(ldir, "lesson_*.md"))):
         if os.path.basename(p) == "lesson_template.md":
@@ -113,6 +136,18 @@ def _existing_source_traces(root: str) -> list[list[str]]:
     return out
 
 
+def _existing_proposals(root: str) -> list[tuple[str, str]]:
+    existing: list[tuple[str, str]] = []
+    for path in _iter_lesson_paths(root):
+        try:
+            fm, body = frontmatter.read(path)
+        except FrontmatterError:
+            continue  # _existing_source_traces has already emitted a warning.
+        if fm.get("status", "active") in ("review", "active"):
+            existing.append((str(fm.get("name") or os.path.basename(path)), draft_quality.candidate_text(fm, body)))
+    return existing
+
+
 def _unique_candidate_slug(ldir: str, date: str, n: int) -> str:
     i = n
     while True:
@@ -133,7 +168,7 @@ def _evidence_lines(cluster: distill.Cluster) -> list[str]:
     return lines
 
 
-def _candidate_body(cluster: distill.Cluster, llm_draft=None) -> list[str]:
+def _candidate_body(cluster: distill.Cluster, llm_draft: llm.Draft | distill.GroundedDraft | None = None) -> list[str]:
     n = len(cluster.traces)
     contexts = distill.variants([t.context_text for t in cluster.traces])
     solutions = distill.variants([t.solution_text for t in cluster.traces])
@@ -169,7 +204,8 @@ def _candidate_body(cluster: distill.Cluster, llm_draft=None) -> list[str]:
         llm_draft.do_not_apply_when if llm_draft else "TODO: cases where the rule does NOT apply.",
     ]
     if llm_draft is not None:
-        lines += ["", "## LLM draft evidence", f"Cited: {', '.join(llm_draft.evidence) or '(none)'}"]
+        heading = "## Extraction evidence" if isinstance(llm_draft, distill.GroundedDraft) else "## LLM draft evidence"
+        lines += ["", heading, f"Cited: {', '.join(llm_draft.evidence) or '(none)'}"]
         if llm_draft.unverifiable_evidence:
             lines += [
                 f"Cited but NOT among this cluster's traces (review before trusting): "
@@ -189,7 +225,20 @@ def _variant_lines(items: list[tuple[str, int]], total: int) -> list[str]:
 
 
 def run(args: argparse.Namespace) -> int:
+    if getattr(args, "extract", False) and args.draft:
+        print("[commontrace] choose either --extract or --draft.", file=sys.stderr)
+        return 2
+    if args.min_cluster_size < 2:
+        print("[commontrace] --min-cluster-size must be at least 2.", file=sys.stderr)
+        return 2
     root = paths.resolve_root(args.dest)
+    # Serialize proposal admission with re-reading source IDs, so concurrent
+    # curator jobs cannot duplicate evidence or overwrite a candidate slug.
+    with _jsonl.locked(os.path.join(paths.memory_dir(root), "distillation")):
+        return _run_locked(args, root)
+
+
+def _run_locked(args: argparse.Namespace, root: str) -> int:
     traces = _load_traces(root, args.agent_type)
     if args.failed or args.signal:
         keep, error = _failure_scope(root, args)
@@ -244,11 +293,28 @@ def run(args: argparse.Namespace) -> int:
     date = datetime.date.today().strftime("%Y%m%d")
 
     print(f"[commontrace] {len(traces)} trace(s) considered, {len(clusters)} candidate cluster(s) found:\n")
+    screen_duplicates = getattr(args, "extract", False) or getattr(args, "semantic_dedup", False)
+    existing_proposals = _existing_proposals(root) if screen_duplicates else []
+    if getattr(args, "semantic_dedup", False):
+        from commontrace import semantic
+
+        if not semantic.available():
+            print("[commontrace] local semantic model stack unavailable; using lexical candidate screening.",
+                  file=sys.stderr)
+    written = 0
     for n, cluster in enumerate(clusters, start=1):
         agent_type = cluster.traces[0].agent_type or (args.agent_type or paths.GENERAL_AGENT_TYPE)
         slug = _unique_candidate_slug(ldir, date, n)
 
-        llm_draft = None
+        llm_draft: distill.GroundedDraft | llm.Draft | None = None
+        if getattr(args, "extract", False):
+            policy = distill.ExtractionPolicy(min_validation_score=getattr(args, "min_validation_score", 0.7))
+            llm_draft = distill.extract_cluster(cluster, policy)
+            if llm_draft is None:
+                assessment = distill.assess_cluster(cluster, policy)
+                print(f"  [{n}] skipped: {', '.join(assessment.rejection_reasons)} "
+                      f"(score={assessment.score:.3f})")
+                continue
         if args.draft:
             llm_draft = _llm_draft.try_draft(
                 instruction=(
@@ -286,29 +352,52 @@ def run(args: argparse.Namespace) -> int:
             source_traces=[t.id for t in cluster.traces],
             status="review",
         )
-        if llm_draft is not None:
+        if isinstance(llm_draft, distill.GroundedDraft):
+            fm["distillation"] = dict(llm_draft.provenance, cited_evidence=llm_draft.evidence)
+            fm["importance_rationale"] = (
+                "Evidence-consensus extraction from repeated traces; importance requires human calibration."
+            )
+        elif llm_draft is not None:
             fm["llm_draft"] = dict(
                 llm_draft.provenance,
                 cited_evidence=llm_draft.evidence,
                 unverifiable_evidence=llm_draft.unverifiable_evidence,
             )
         body_lines = _candidate_body(cluster, llm_draft=llm_draft)
+        if isinstance(llm_draft, distill.GroundedDraft):
+            failed = draft_quality.gate_failures(fm, "\n".join(body_lines), [])
+            if failed:
+                print(f"  [{n}] skipped: candidate failed {', '.join(failed)} gate(s)")
+                continue
+        comparable = draft_quality.candidate_text(fm, "\n".join(body_lines))
+        if screen_duplicates:
+            duplicate = draft_quality.find_candidate_duplicate(
+                comparable, existing_proposals, semantic_dedup=getattr(args, "semantic_dedup", False),
+            )
+            if duplicate is not None:
+                print(f"  [{n}] skipped: {duplicate.method} duplicate of {duplicate.identity} "
+                      f"(similarity={duplicate.similarity:.3f}); source traces retained")
+                continue
         out_path = os.path.join(ldir, f"{slug}.md")
+        method = " (evidence-consensus)" if isinstance(llm_draft, distill.GroundedDraft) else (
+            " (LLM-assisted)" if llm_draft else ""
+        )
         lesson_io.write_lesson(
             out_path, fm, "\n".join(body_lines) + "\n", root=root,
-            actor="distill", reason=(
-                f"auto-proposed from {len(cluster.traces)} traces" + (" (LLM-assisted)" if llm_draft else "")
-            ),
+            actor="distill", reason=f"auto-proposed from {len(cluster.traces)} traces" + method,
         )
+        written += 1
+        if screen_duplicates:
+            existing_proposals.append((slug, comparable))
 
         print(
             f"  [{n}] {slug} <- {len(cluster.traces)} traces, shared terms: "
-            f"{', '.join(cluster.shared_terms[:5])}" + (" [LLM-assisted]" if llm_draft else "")
+            f"{', '.join(cluster.shared_terms[:5])}" + method.replace("(", "[").replace(")", "]")
         )
         print(f"      wrote {out_path}")
 
     print(
-        f"\n[commontrace] {len(clusters)} candidate lesson(s) written at status=review. "
+        f"\n[commontrace] {written} candidate lesson(s) written at status=review. "
         "Review each with `commontrace lesson list --status review`, then "
         "`commontrace lesson approve <slug>` or `commontrace lesson reject <slug> --reason ...`."
     )

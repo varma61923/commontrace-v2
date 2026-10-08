@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 
 from commontrace import hierarchical, paths
+from commontrace.fact_evidence import EvidenceKind, EvidencePolarity, FactEvidence, bind_evidence
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -39,6 +41,12 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p_add.add_argument("--valid-until", default=None, help="End date (YYYY-MM-DD or ISO 8601).")
     p_add.add_argument("--expires-at", default=None, help="TTL expiry instant (YYYY-MM-DD or ISO 8601).")
     p_add.add_argument("--source-trace", default="", help="Trace ID where this was observed.")
+    p_add.add_argument("--evidence", action="append", default=[], metavar="KIND:ID",
+                       help="Bind supporting fact:ID or lesson:SLUG evidence (repeatable).")
+    p_add.add_argument("--refuting-evidence", action="append", default=[], metavar="KIND:ID",
+                       help="Bind refuting evidence; unresolved conflicts are withheld from recall.")
+    p_add.add_argument("--min-support", type=int, default=1,
+                       help="Required distinct supporting sources for bound facts (default 1).")
     p_add.add_argument("--dest", default=None)
     p_add.set_defaults(func=run_add)
 
@@ -47,6 +55,8 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p_srch.add_argument("--scope", default="", help="Filter by scope.")
     p_srch.add_argument("--category", default="", choices=("", *hierarchical.CATEGORIES))
     p_srch.add_argument("--limit", type=int, default=10)
+    p_srch.add_argument("--scorer", default="overlap-v1", choices=("overlap-v1", "bm25-v1"),
+                        help="Fact ranking: compatible overlap or stemmed multilingual BM25.")
     p_srch.add_argument("--as-of", default="", help="Point-in-time date.")
     p_srch.add_argument(
         "--show-expired", action="store_true",
@@ -54,6 +64,17 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     p_srch.add_argument("--dest", default=None)
     p_srch.set_defaults(func=run_search)
+
+    p_explain = sub.add_parser("explain", help="Read a fact's bounded source quotes and proof relationships.")
+    p_explain.add_argument("fact_id")
+    p_explain.add_argument("--scope", default="", help="Route to an authorized scope or public memory.")
+    p_explain.add_argument("--as-of", default=None, help="Valid-time query; current trust checks still apply.")
+    p_explain.add_argument("--budget", type=int, default=512, help="Evidence quote token allowance.")
+    p_explain.add_argument("--max-sources", type=int, default=16)
+    p_explain.add_argument("--max-depth", type=int, default=4)
+    p_explain.add_argument("--json", action="store_true")
+    p_explain.add_argument("--dest", default=None)
+    p_explain.set_defaults(func=run_explain)
 
     p_sup = sub.add_parser("supersede", help="Supersede an existing fact with a new one.")
     p_sup.add_argument("old_id", help="ID of the outdated fact.")
@@ -116,6 +137,19 @@ def run_list(args: argparse.Namespace) -> int:
 def run_add(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
     try:
+        receipts: list[FactEvidence] | None = None
+        if args.evidence or args.refuting_evidence:
+            receipts = []
+            polarized: tuple[tuple[list[str], EvidencePolarity], ...] = (
+                (args.evidence, "support"), (args.refuting_evidence, "refute"),
+            )
+            for values, polarity in polarized:
+                for value in values:
+                    kind, _, identity = value.partition(":")
+                    if kind not in ("fact", "lesson") or not identity:
+                        raise ValueError("evidence must name fact:ID or lesson:SLUG")
+                    source_kind: EvidenceKind = "fact" if kind == "fact" else "lesson"
+                    receipts.append(bind_evidence(root, source_kind, identity, polarity=polarity))
         fact, action = hierarchical.add_fact(
             root=root,
             statement=args.statement,
@@ -126,15 +160,42 @@ def run_add(args: argparse.Namespace) -> int:
             expires_at=args.expires_at,
             confidence=args.confidence,
             source_trace_id=args.source_trace,
+            evidence=receipts,
+            min_support=args.min_support,
         )
     except Exception as exc:
         print(f"[commontrace] {exc}", file=sys.stderr)
         return 1
 
     if action == "NOOP":
-        print(f"Reinforced existing fact '{fact.id}' (confirmations: {fact.confirmations}, conf: {fact.confidence}).")
+        if fact.evidence_bound:
+            verb = "Retained source-bound fact (NOOP)"
+        elif args.source_trace:
+            verb = "Existing fact (NOOP)"
+        else:
+            verb = "Reinforced existing fact"
+        print(f"{verb} '{fact.id}' (confirmations: {fact.confirmations}, conf: {fact.confidence}).")
     else:
         print(f"Added fact '{fact.id}' (category: {fact.category}, conf: {fact.confidence}).")
+    return 0
+
+
+def run_explain(args: argparse.Namespace) -> int:
+    from commontrace.evidence_context import explain_fact
+
+    try:
+        proof = explain_fact(paths.resolve_root(args.dest), args.fact_id, scope=args.scope, as_of=args.as_of,
+                             budget=args.budget, max_sources=args.max_sources, max_depth=args.max_depth)
+    except ValueError as exc:
+        print(f"[commontrace] {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(proof.to_dict(), indent=2, ensure_ascii=False))
+    else:
+        print(f"{proof.statement}\nEvidence admission: {proof.assessment.status}")
+        print(proof.context or "(no eligible source quotations within the budget)")
+        for reason in proof.omissions:
+            print(f"[commontrace] {reason}", file=sys.stderr)
     return 0
 
 
@@ -148,6 +209,7 @@ def run_search(args: argparse.Namespace) -> int:
         as_of=args.as_of or None,
         limit=args.limit,
         show_expired=bool(getattr(args, "show_expired", False)),
+        scorer=getattr(args, "scorer", "overlap-v1"),
     )
     if not scored:
         print(f"No facts found matching '{args.query}'.")

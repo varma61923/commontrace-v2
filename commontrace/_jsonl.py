@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import tempfile
 import threading
-from collections.abc import Iterable, Iterator
-from typing import Any
+from collections.abc import Callable, Iterable, Iterator
+from typing import Any, TextIO
 
 from commontrace import frontmatter
 
@@ -52,7 +53,7 @@ def read_rows(path: str) -> list[dict[str, Any]]:
     return rows
 
 
-def _replace(path: str, write) -> None:
+def _replace(path: str, write: Callable[[TextIO], None]) -> None:
     directory = os.path.dirname(os.path.abspath(path))
     os.makedirs(directory, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=directory, prefix="." + os.path.basename(path) + ".", suffix=".tmp")
@@ -70,16 +71,35 @@ def _replace(path: str, write) -> None:
 
 def write_rows(path: str, rows: Iterable[dict[str, Any]]) -> None:
     """Atomically replace *path* with one JSON object per line."""
-    def _write(fh) -> None:
+    def _write(fh: TextIO) -> None:
         for row in rows:
             fh.write(json.dumps(row, ensure_ascii=False) + "\n")
 
     _replace(path, _write)
 
 
+def write_serialized_rows(path: str, rows: tuple[str, ...]) -> str:
+    """Atomically write frozen JSON object lines and return their byte checksum.
+
+    Internal canonical writers supply JSON-encoded rows, with escaped embedded
+    newlines. The checksum includes each terminating newline and describes the
+    exact UTF-8 bytes passed to the atomic writer; it is not an admission proof.
+    """
+    digest = hashlib.sha256()
+
+    def _write(fh: TextIO) -> None:
+        for row in rows:
+            line = row + "\n"
+            fh.write(line)
+            digest.update(line.encode("utf-8"))
+
+    _replace(path, _write)
+    return digest.hexdigest()
+
+
 def write_json(path: str, value: Any) -> None:
     """Atomically replace *path* with *value* as pretty JSON."""
-    def _write(fh) -> None:
+    def _write(fh: TextIO) -> None:
         json.dump(value, fh, indent=2, sort_keys=True, ensure_ascii=False)
         fh.write("\n")
 

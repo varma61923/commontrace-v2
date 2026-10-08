@@ -18,16 +18,23 @@
     <span class="spacer"></span>
     <button id="command-launch" class="command-launch" type="button" title="Open command center (⌘K)"><kbd>⌘K</kbd><span>Command center</span></button>
     <p id="conn" class="conn" role="status" aria-live="polite">Connecting…</p>
+    <button id="disconnect" class="btn secondary" type="button" hidden>Disconnect</button>
     <label class="theme"><span class="sr">Theme</span>
-      <select id="theme">
+      <select id="theme" aria-label="Theme">
         <option value="system">System</option>
         <option value="light">Light</option>
         <option value="dark">Dark</option>
       </select>
     </label>
   </header>
-  <nav class="tabs" aria-label="Console sections" id="nav"></nav>
-  <main id="main" tabindex="-1"></main>
+  <div class="console-shell">
+    <aside class="console-sidebar">
+      <p class="nav-label">WORKSPACE</p>
+      <nav class="tabs" aria-label="Console sections" id="nav"></nav>
+      <div class="sidebar-note"><span class="status-dot" aria-hidden="true"></span><span>Local memory workspace</span></div>
+    </aside>
+    <main id="main" tabindex="-1"></main>
+  </div>
   <script src="/ui/app.js"></script>
 </body>
 </html>

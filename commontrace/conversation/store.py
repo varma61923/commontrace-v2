@@ -21,7 +21,7 @@ from dataclasses import dataclass
 
 from commontrace import memory_guard, paths
 from commontrace._stem import stem
-from commontrace.conversation import profile, timeparse
+from commontrace.conversation import profile, timeparse, unicode_index
 
 SPACE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 SESSION_RE = re.compile(r"^[^\x00-\x1f]{1,200}$")
@@ -32,12 +32,39 @@ UNIT_CHARS = 700
 SCHEMA_VERSION = 3
 TURN_CACHE_SIZE = 2048
 TURN_CACHE_BYTES = 16 * 1024 * 1024
+UNIT_JOURNAL_LIMIT = 100_000
 FACT_KINDS = ("instruction", "preference", "dislike", "favorite", "identity", "habit", "plan", "possession",
               "event", "fact", "relationship")
 
 
 class ConversationError(ValueError):
     """A request the conversation store refuses."""
+
+
+def _safe_label(value: str, *, limit: int = 120) -> tuple[str, int]:
+    """Scrub external labels without collapsing distinct private identities.
+
+    Stable names are retained. Sensitive names receive a deterministic opaque
+    suffix so replay and owner attribution remain stable after redaction. Role
+    forgery is refused before any label can enter retrieval or profile units.
+    """
+    if memory_guard.scan_injection(value):
+        raise ConversationError("conversation metadata contains unsafe role or instruction delimiters")
+    clean, secrets = memory_guard.redact_secrets(value)
+    clean, pii = memory_guard.redact_pii(clean)
+    count = len(secrets) + len(pii)
+    if count:
+        suffix = "#" + hashlib.sha256(value.lower().encode("utf-8")).hexdigest()[:16]
+        return clean[:max(0, limit - len(suffix))] + suffix, count
+    return clean[:limit], 0
+
+
+def _validate_session_metadata(session: str) -> None:
+    # Routing IDs are never rewritten: changing one would redirect operations
+    # and break callers' idempotency. Reject sensitive/forged IDs instead.
+    if (memory_guard.scan_injection(session) or memory_guard.redact_secrets(session)[1]
+            or memory_guard.redact_pii(session)[1]):
+        raise ConversationError("session id must not contain credentials, PII, or instruction delimiters")
 
 
 def conversations_dir(root: str) -> str:
@@ -60,7 +87,8 @@ def spaces(root: str) -> list[str]:
 
 def _fts5_available() -> bool:
     try:
-        sqlite3.connect(":memory:").execute("CREATE VIRTUAL TABLE t USING fts5(x)")
+        with contextlib.closing(sqlite3.connect(":memory:")) as db:
+            db.execute("CREATE VIRTUAL TABLE t USING fts5(x)")
     except sqlite3.OperationalError:
         return False
     return True
@@ -187,6 +215,20 @@ class Turn:
                     self.role, self.text, self.ref,
                     [[g.start, g.end, g.label, g.lo.isoformat(), g.hi.isoformat()] for g in self.dates]]
         return hashlib.sha256(json.dumps(evidence, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True)
+class UnitChange:
+    """One revision cursor with its unit's state in the current read snapshot.
+
+    A missing body is a tombstone. Recycled unit IDs and repeated updates are
+    resolved against the target canonical snapshot, never an old event body.
+    """
+
+    revision: int
+    unit: int
+    body: str | None
+    checksum: str | None
 
 
 def _iso(moment: dt.datetime | None) -> str | None:
@@ -318,6 +360,7 @@ class Store:
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA foreign_keys=ON")
         self._migrate()
+        self._init_unit_journal()
         self._inspect_schema()
 
     def _inspect_schema(self) -> None:
@@ -326,6 +369,42 @@ class Store:
             "SELECT 1 FROM sqlite_master WHERE name='fact_sources'").fetchone())
         self._has_expiry = "expires" in {r[1] for r in self.db.execute("PRAGMA table_info(turns)")}
         self._units_identity = self.get_meta("units_identity")
+        self._has_unit_journal = self.get_meta("unit_journal") == "1"
+
+    def _init_unit_journal(self) -> None:
+        """Add a bounded durable change cursor without rewriting source units."""
+        if self.get_meta("unit_journal") == "1":
+            return
+        with self._lock, write_txn(self.db):
+            if self.get_meta("unit_journal") == "1":
+                return
+            self.db.execute("CREATE TABLE IF NOT EXISTS unit_changes "
+                            "(revision INTEGER PRIMARY KEY, unit INTEGER NOT NULL)")
+            revision = self.get_meta("units_revision") or "0"
+            self.db.execute("INSERT OR REPLACE INTO meta VALUES ('unit_journal_floor', ?)", (revision,))
+            for operation in ("INSERT", "UPDATE", "DELETE"):
+                reference = "old" if operation == "DELETE" else "new"
+                moved = (
+                    "UPDATE meta SET value=CAST(value AS INTEGER)+1 "
+                    "WHERE key='units_revision' AND old.id<>new.id; "
+                    "INSERT INTO unit_changes SELECT CAST(value AS INTEGER),old.id "
+                    "FROM meta WHERE key='units_revision' AND old.id<>new.id; "
+                ) if operation == "UPDATE" else ""
+                self.db.execute(f"DROP TRIGGER IF EXISTS units_revision_{operation.lower()}")
+                # Operations/references are fixed, and the retention literal is
+                # an internal integer constant. All source data stays bound.
+                self.db.execute(  # nosec B608
+                    f"CREATE TRIGGER units_revision_{operation.lower()} AFTER {operation} ON units BEGIN "
+                    + moved +
+                    "UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='units_revision'; "  # nosec B608
+                    f"INSERT INTO unit_changes SELECT CAST(value AS INTEGER), {reference}.id "
+                    "FROM meta WHERE key='units_revision'; "
+                    f"DELETE FROM unit_changes WHERE revision<=(SELECT CAST(value AS INTEGER)-{UNIT_JOURNAL_LIMIT} "
+                    "FROM meta WHERE key='units_revision'); "
+                    "UPDATE meta SET value=MAX(CAST(value AS INTEGER),"
+                    f"(SELECT CAST(value AS INTEGER)-{UNIT_JOURNAL_LIMIT} "
+                    "FROM meta WHERE key='units_revision')) WHERE key='unit_journal_floor'; END")
+            self.db.execute("INSERT OR REPLACE INTO meta VALUES ('unit_journal', '1')")
 
     def _migrate(self) -> None:
         """Bring a file written by an older version up to this schema, in place."""
@@ -412,6 +491,27 @@ class Store:
         """Dense index generation, changing only when retrieval units change."""
         return (self.get_meta("units_revision"),) if self._units_identity else self.read_stamp()
 
+    def unit_journal_floor(self) -> int:
+        """Revisions below this cursor require a complete snapshot bootstrap."""
+        return int(self.get_meta("unit_journal_floor") or self.get_meta("units_revision") or 0)
+
+    def unit_changes(self, after_revision: int, through_revision: int, *, limit: int = 512) -> list[UnitChange]:
+        """A bounded keyset page; call inside ``read_snapshot`` for target binding."""
+        if isinstance(after_revision, bool) or not isinstance(after_revision, int) or after_revision < 0 \
+                or isinstance(through_revision, bool) or not isinstance(through_revision, int) \
+                or through_revision < after_revision:
+            raise ValueError("journal cursors must be nonnegative ordered integers")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 10_000:
+            raise ValueError("journal page limit must be an integer from 1 to 10000")
+        if after_revision < self.unit_journal_floor():
+            raise ConversationError("unit change journal has a retention gap; rebuild the vector snapshot")
+        if not self._has_unit_journal:
+            return []
+        return [UnitChange(int(row[0]), int(row[1]), row[2], row[3]) for row in self.db.execute(
+            "SELECT c.revision,c.unit,u.body,u.hash FROM unit_changes c LEFT JOIN units u ON u.id=c.unit "
+            "WHERE c.revision>? AND c.revision<=? ORDER BY c.revision LIMIT ?",
+            (after_revision, through_revision, limit))]
+
     @contextlib.contextmanager
     def read_snapshot(self):
         """Keep all reads in one recall on the same committed SQLite snapshot."""
@@ -454,8 +554,9 @@ class Store:
         """Append messages to a session. Re-adding a message already stored is a no-op."""
         if not SESSION_RE.match(session or ""):
             raise ConversationError("session id must be 1-200 printable characters")
+        _validate_session_metadata(session)
         started = _moment(session_at)
-        users = {s.lower() for s in user_speakers}
+        users = {_safe_label(str(s).strip())[0].lower() for s in user_speakers}
         added = skipped = redacted = 0
         with self._lock, write_txn(self.db):
             row = self.db.execute("SELECT started_at FROM sessions WHERE id=?", (session,)).fetchone()
@@ -481,16 +582,25 @@ class Store:
                 if pii_found:
                     text = pii_text
                     redacted += len(pii_found)
-                role = str(message.get("role") or "").strip().lower()
-                speaker = str(message.get("speaker") or message.get("name") or role or "user").strip()[:120]
+                raw_role = str(message.get("role") or "").strip().lower()
+                role, role_redacted = _safe_label(raw_role)
+                role = role.lower()
+                raw_speaker = str(message.get("speaker") or message.get("name") or raw_role or "user").strip()
+                speaker, speaker_redacted = _safe_label(raw_speaker)
+                redacted += role_redacted + speaker_redacted
                 if not role:
                     role = "user" if not users or speaker.lower() in users else "other"
                 at = _moment(message.get("at") or message.get("timestamp")) or started
                 expires = _moment(message.get("expires"))
                 ref = message.get("id")
-                ref = str(ref)[:200] if ref not in (None, "") else None
-                key = _hash("\x1f".join([session, "ref", ref]) if ref else
-                            "\x1f".join([session, speaker, _iso(at) or "", text]))
+                key_ref = str(ref)[:200] if ref not in (None, "") else None
+                if ref not in (None, ""):
+                    ref, ref_redacted = _safe_label(str(ref), limit=200)
+                    redacted += ref_redacted
+                else:
+                    ref = None
+                key = _hash("\x1f".join([session, "ref", key_ref]) if key_ref else
+                            "\x1f".join([session, raw_speaker[:120], _iso(at) or "", text]))
                 if self.db.execute("SELECT 1 FROM turns WHERE key=?", (key,)).fetchone():
                     skipped += 1
                     continue
@@ -674,7 +784,7 @@ class Store:
                 else:
                     source_ids, anchor = [row["id"]], row
                 slot = str(m["slot"]).strip().lower()[:80] if m.get("slot") else None
-                owner = str(m.get("owner") or row["speaker"]).strip().lower()[:120]
+                owner = _safe_label(str(m.get("owner") or row["speaker"]).strip())[0].lower()
                 # Deduplicate within an owner's live beliefs. A repeated old
                 # statement after an update is a reversion, not a duplicate.
                 if self.db.execute(
@@ -835,6 +945,9 @@ class Store:
         while rows := cursor.fetchmany(size):
             yield [tuple(r) for r in rows]
 
+    def turn_count(self) -> int:
+        return self.db.execute("SELECT COUNT(*) FROM turns").fetchone()[0]
+
     def unit_turns(self, unit_ids: Iterable[int]) -> dict[int, int]:
         ids = list(unit_ids)
         if not ids:
@@ -842,7 +955,51 @@ class Store:
         return dict(self.db.execute("SELECT id, turn FROM units WHERE id IN (SELECT value FROM json_each(?))",
                                     (json.dumps(ids),)).fetchall())
 
+    def prepare_lexical(self, query: str) -> None:
+        """Refresh derived Unicode postings before opening a recall snapshot.
+
+        ASCII-only workloads install no additional index. Read-only banks are
+        never modified; a dirty snapshot retains exact streaming fallback.
+        """
+        if self.read_only or not unicode_index.relevant(query) or self.db.in_transaction:
+            return
+        with self._lock:
+            if unicode_index.installed(self.db) and not unicode_index.dirty(self.db):
+                return
+            with write_txn(self.db):
+                unicode_index.initialize(self.db)
+                unicode_index.refresh(self.db)
+
     def lexical(self, query: str, limit: int, *, allowed: set[int] | None = None) -> list[tuple[int, float]]:
+        """Eligible lexical candidates; ASCII compatibility plus Unicode BM25.
+
+        Mixed-language queries fuse the two ordered arms with RRF. Pure ASCII
+        queries retain the original porter scores and order without index work.
+        """
+        if not unicode_index.relevant(query):
+            return self._ascii_lexical(query, limit, allowed=allowed)
+        if limit <= 0 or allowed == set():
+            return []
+        with self._lock:
+            self.prepare_lexical(query)
+            with self.read_snapshot():
+                if unicode_index.installed(self.db) and not unicode_index.dirty(self.db):
+                    unicode = unicode_index.rank(self.db, query, limit, allowed)
+                else:
+                    units = (unit for batch in self.unit_batches(allowed=allowed) for unit in batch)
+                    unicode = unicode_index.stream_rank(units, query, limit)
+                ascii_hits = self._ascii_lexical(unicode_index.ascii_query(query), limit, allowed=allowed)
+        if not ascii_hits:
+            return unicode
+        if not unicode:
+            return ascii_hits
+        fused: dict[int, float] = {}
+        for arm in (ascii_hits, unicode):
+            for position, (uid, _score) in enumerate(arm, 1):
+                fused[uid] = fused.get(uid, 0.0) + 30.0 / (60 + position)
+        return sorted(fused.items(), key=lambda hit: (-hit[1], hit[0]))[:limit]
+
+    def _ascii_lexical(self, query: str, limit: int, *, allowed: set[int] | None = None) -> list[tuple[int, float]]:
         """(unit id, score) by BM25, best first.
 
         Scores are sigmoid-normalized to [0, 1] (see :func:`sigmoid_bm25`,
@@ -854,12 +1011,24 @@ class Store:
             return []
         n_terms = len(match.split(" OR "))
         if FTS5:
+            if allowed is not None:
+                # Over-fetch the unfiltered ranking and keep eligible units: an id-list
+                # filter inside the FTS query costs far more than ranking a few extra rows.
+                # Only when too few survive does the exact filtered query run.
+                fetch = limit * 4
+                rows = self.db.execute(
+                    "SELECT rowid, bm25(units_fts) FROM units_fts WHERE units_fts MATCH ? "
+                    "ORDER BY bm25(units_fts), rowid LIMIT ?", (match, fetch)).fetchall()
+                owner = self.unit_turns([r[0] for r in rows])
+                kept = [(r[0], sigmoid_bm25(-r[1], n_terms)) for r in rows if owner.get(r[0]) in allowed]
+                if len(kept) >= limit or len(rows) < fetch:
+                    return kept[:limit]
             eligible = (" AND rowid IN (SELECT id FROM units WHERE turn IN "
                         "(SELECT value FROM json_each(?)))") if allowed is not None else ""
             params = (match, json.dumps(sorted(allowed)), limit) if allowed is not None else (match, limit)
             rows = self.db.execute(
                 "SELECT rowid, bm25(units_fts) FROM units_fts WHERE units_fts MATCH ? "  # nosec B608 - fixed eligibility SQL
-                + eligible + " ORDER BY bm25(units_fts) LIMIT ?", params)
+                + eligible + " ORDER BY bm25(units_fts), rowid LIMIT ?", params)
             return [(r[0], sigmoid_bm25(-r[1], n_terms)) for r in rows]
         units = (unit for batch in self.unit_batches(allowed=allowed) for unit in batch)
         return _python_bm25(units, query, limit)
@@ -1067,7 +1236,7 @@ class Store:
     def allowed(self, *, sessions: Iterable[str] = (), speakers: Iterable[str] = (), since=None, until=None,
                 now: dt.datetime | None = None) -> set[int] | None:
         """The turns a filtered recall may use, or None when nothing is filtered out."""
-        sessions, speakers = list(sessions), [s.lower() for s in speakers]
+        sessions, speakers = list(sessions), [_safe_label(str(s).strip())[0].lower() for s in speakers]
         clauses, args = [], []
         if sessions:
             clauses.append("session IN (SELECT value FROM json_each(?))")

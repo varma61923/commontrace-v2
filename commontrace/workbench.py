@@ -11,7 +11,7 @@ import re
 import threading
 from collections import OrderedDict
 
-from commontrace import approval, draft_quality, frontmatter, lesson_io, paths, redundancy
+from commontrace import approval, draft_quality, frontmatter, lesson_admission, lesson_io, paths, redundancy
 from commontrace.commands import lesson_cmd
 
 MAX_BODY_CHARS = 20_000
@@ -102,6 +102,8 @@ def _lessons(root: str, *, isolated: bool = True) -> list[tuple[str, dict, str]]
                 if entry.name == "lesson_template.md":
                     continue
                 try:
+                    if not entry.is_file(follow_symlinks=False):
+                        continue
                     files.append((entry.name, entry.path, _identity(entry.stat())))
                 except OSError:
                     continue
@@ -110,10 +112,16 @@ def _lessons(root: str, *, isolated: bool = True) -> list[tuple[str, dict, str]]
         return out
     for name, path, stamp in files:
         try:
+            lesson_admission.validate_path(root, path)
             fm, body = _cached_lesson(os.path.abspath(path), stamp, isolated=isolated)
         except Exception:  # noqa: BLE001 - an unreadable lesson is skipped, not fatal to the queue
             continue
-        out.append((str(fm.get("name") or name.removesuffix(".md")), fm, body))
+        slug = str(fm.get("name") or name.removesuffix(".md"))
+        # Routing must identify the file read, rather than another lesson named
+        # by untrusted metadata. Approval resolves this same canonical filename.
+        if not lesson_io.SLUG_RE.fullmatch(slug) or lesson_io.canonical_slug(slug) != lesson_io.canonical_slug(name):
+            continue
+        out.append((slug, fm, body))
     return out
 
 
@@ -167,7 +175,8 @@ def _summary(slug: str, fm: dict, body: str, active) -> dict:
     row = {"slug": slug, "status": str(fm.get("status", "")), "description": str(fm.get("description", ""))[:300],
            "domain": str(fm.get("domain", "")), "importance": copy.deepcopy(fm.get("importance")),
            "drafted_by_model": isinstance(fm.get("llm_draft"), dict),
-           "source_traces": len(fm.get("source_traces") or []), "revises": copy.deepcopy(fm.get("revises")) or None}
+           "source_traces": len(fm.get("source_traces") or []), "revises": copy.deepcopy(fm.get("revises")) or None,
+           "revision": lesson_admission.digest_of(fm, body)}
     if row["status"] == "review":
         row["checks"] = _checks(slug, fm, body, active)
     return row
@@ -275,26 +284,55 @@ def _clean(value, field: str) -> str:
     return value.strip()
 
 
-def edit(root: str, slug: str, fields: dict, actor: str, scope: str = "") -> dict:
-    (name, fm, body), _rows = _find(root, slug, scope)
+def _expected_revision(value: str | None) -> str | None:
+    if value is not None and (not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None):
+        raise WorkbenchError(400, "bad_request", "expected_revision must be a lowercase SHA256 digest")
+    return value
+
+
+def _review_path(root: str, path: str) -> None:
+    try:
+        lesson_admission.validate_path(root, path)
+    except lesson_admission.AdmissionError:
+        raise WorkbenchError(404, "not_found", "lesson is unavailable") from None
+
+
+def _review_precondition(root: str, slug: str, scope: str, expected_revision: str | None,
+                         path: str, fm: dict, body: str) -> None:
+    """Check authoritative bytes while holding their write lock, before gates/signing."""
+    _review_path(root, path)
+    name = str(fm.get("name") or os.path.basename(path).removesuffix(".md"))
+    if lesson_io.canonical_slug(name) != lesson_io.canonical_slug(slug) or not _scope_allowed(fm, scope):
+        raise WorkbenchError(404, "not_found", "lesson is unavailable")
+    if expected_revision is not None and lesson_admission.digest_of(fm, body) != expected_revision:
+        raise WorkbenchError(409, "stale_review", "lesson changed since it was reviewed; reload before acting")
     if fm.get("status") != "review":
-        raise WorkbenchError(409, "not_in_review", "only a lesson in review can be edited here")
+        raise WorkbenchError(409, "not_in_review", "only a lesson in review can be changed here")
+
+
+def edit(root: str, slug: str, fields: dict, actor: str, scope: str = "",
+         expected_revision: str | None = None) -> dict:
+    expected_revision = _expected_revision(expected_revision)
+    (name, _fm, _body), _rows = _find(root, slug, scope)
     allowed = {"rule", "applies_when", "do_not_apply_when", "description"}
     unknown = set(fields) - allowed
     if unknown or not fields:
         raise WorkbenchError(400, "bad_request", f"give one or more of: {', '.join(sorted(allowed))}")
-    if "description" in fields:
-        fm["description"] = _clean(fields["description"], "description")
-    if "applies_when" in fields:
-        fm["applies_when"] = _clean(fields["applies_when"], "applies_when")
-        body = _replace_section(body, "How to apply", fm["applies_when"])
-    if "do_not_apply_when" in fields:
-        fm["do_not_apply_when"] = _clean(fields["do_not_apply_when"], "do_not_apply_when")
-        body = _replace_section(body, "Counter-examples", fm["do_not_apply_when"])
-    if "rule" in fields:
-        body = _replace_section(body, "Rule", _clean(fields["rule"], "rule"))
+    clean = {key: _clean(value, key) for key, value in fields.items()}
     path = lesson_io.lesson_path(root, name)
+    if path is None:
+        raise WorkbenchError(404, "not_found", "lesson is unavailable")
     with frontmatter.locked(path):
+        _review_path(root, path)
+        fm, body = frontmatter.read(path)
+        _review_precondition(root, name, scope, expected_revision, path, fm, body)
+        for field in ("description", "applies_when", "do_not_apply_when"):
+            if field in clean:
+                fm[field] = clean[field]
+        for field, section in (("rule", "Rule"), ("applies_when", "How to apply"),
+                               ("do_not_apply_when", "Counter-examples")):
+            if field in clean:
+                body = _replace_section(body, section, clean[field])
         lesson_io.write_lesson(path, fm, body, root=root, actor=actor, reason="edited in the console")
     return detail(root, name, scope)
 
@@ -307,29 +345,43 @@ def _replace_section(body: str, name: str, text: str) -> str:
 
 
 def _run(fn, ns: argparse.Namespace) -> tuple[int, str]:
+    from commontrace.ui_commands import _COMMAND_LOCK
+
     err = io.StringIO()
-    with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+    # Both console entry points redirect process-global streams. Share their
+    # lock so simultaneous commands cannot disclose output to another request.
+    with _COMMAND_LOCK, contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
         code = fn(ns)
     return code, err.getvalue().strip()
 
 
-def approve(root: str, slug: str, rationale: str | None, actor: str, scope: str = "") -> dict:
-    (name, fm, _body), _rows = _find(root, slug, scope)
-    if fm.get("status") != "review":
-        raise WorkbenchError(409, "not_in_review", "only a lesson in review can be approved")
+def approve(root: str, slug: str, rationale: str | None, actor: str, scope: str = "",
+            expected_revision: str | None = None) -> dict:
+    expected_revision = _expected_revision(expected_revision)
+    if rationale is not None and not isinstance(rationale, str):
+        raise WorkbenchError(400, "bad_request", "rationale must be a string")
+    (name, _fm, _body), _rows = _find(root, slug, scope)
+    def precondition(path: str, current: dict, body: str) -> None:
+        _review_precondition(root, name, scope, expected_revision, path, current, body)
+        if len(body) > MAX_BODY_CHARS:
+            raise WorkbenchError(409, "review_truncated",
+                                 "lesson exceeds the console review limit; review it in the terminal")
+
     ns = argparse.Namespace(slug=name, dest=root, force=False, rationale=(rationale or "").strip() or None,
-                            approver=actor, scope=scope)
+                            approver=actor, scope=scope,
+                            review_precondition=precondition)
     code, message = _run(lesson_cmd.run_approve, ns)
     if code != 0:
         raise WorkbenchError(409, "refused", message or "the approval gates refused this lesson")
     return {"slug": name, "status": "active"}
 
 
-def reject(root: str, slug: str, reason: str, scope: str = "") -> dict:
-    (name, fm, _body), _rows = _find(root, slug, scope)
-    if fm.get("status") != "review":
-        raise WorkbenchError(409, "not_in_review", "only a lesson in review can be rejected")
-    ns = argparse.Namespace(slug=name, dest=root, reason=_clean(reason, "reason"))
+def reject(root: str, slug: str, reason: str, scope: str = "", expected_revision: str | None = None) -> dict:
+    expected_revision = _expected_revision(expected_revision)
+    (name, _fm, _body), _rows = _find(root, slug, scope)
+    ns = argparse.Namespace(slug=name, dest=root, reason=_clean(reason, "reason"),
+                            review_precondition=lambda path, current, body: _review_precondition(
+                                root, name, scope, expected_revision, path, current, body))
     code, message = _run(lesson_cmd.run_reject, ns)
     if code != 0:
         raise WorkbenchError(409, "refused", message or "could not reject")

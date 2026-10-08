@@ -283,12 +283,14 @@ def test_exclude_shown_drops_a_lesson_already_injected_for_that_occasion(server,
 
 
 def test_exclude_shown_never_drops_a_core_lesson(server, store):
-    from commontrace import frontmatter, holdout_io, lesson_io
+    from commontrace import frontmatter, holdout_io, lesson_admission, lesson_io
 
     slug = _curate(server)
     lesson_path = lesson_io.lesson_path(store, slug)
     fm, body = frontmatter.read(lesson_path)
     fm["core"] = True
+    assert not lesson_admission.eligible(store, lesson_path, fm, body)
+    fm["approval_receipt"] = lesson_admission.issue(store, lesson_path, fm, body, actor="test-reviewer")
     lesson_io.write_lesson(lesson_path, fm, body, root=store, actor="test", reason="mark core")
     holdout_io.assign_and_log(store, [slug], occasion_id="occ-1", rate=0.0, salt="s")
 

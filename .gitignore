@@ -2,6 +2,9 @@
 memory/attention/index.npz
 memory/.cache/
 memory/*.jsonl
+# Private approval authority and durable local admission/revocation state.
+memory/.approval-key*
+memory/lesson_admissions.db*
 
 # Benchmark HTML / JSON reports (generated, not source)
 memory/benchmark_reports/
@@ -52,3 +55,7 @@ htmlcov/
 # Machine-local lint caches and generated evaluation outputs
 .ruff_cache/
 /benchmark-results/
+
+# Disposable benchmark output and type-checker cache
+/benchmarks/results/
+.mypy_cache/

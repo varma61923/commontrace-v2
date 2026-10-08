@@ -29,13 +29,14 @@ class ApprovalPolicy:
     mode: str = POLICY_SINGLE
     require_human: bool = False
     auto_approve_drafts: bool = False
+    require_integrity: bool = False
 
     @property
     def separation_required(self) -> bool:
         return self.mode == POLICY_TWO_PERSON
 
 
-ALLOWED_KEYS = frozenset({"mode", "require_human", "auto_approve_drafts"})
+ALLOWED_KEYS = frozenset({"mode", "require_human", "auto_approve_drafts", "require_integrity"})
 AUTO_APPROVE_MIN_HOLDOUT = 0.05
 AUTO_APPROVER = "auto-approve"
 VALID_BOOL_STRINGS = frozenset({"true", "yes", "1", "false", "no", "0"})
@@ -57,7 +58,7 @@ def validate_policy(raw: dict, path: str = "approval-policy.yaml") -> None:
         if mode not in POLICIES:
             raise PolicyError(f"{path}: mode must be one of {', '.join(POLICIES)}, got {mode!r}")
 
-    for key in ("require_human", "auto_approve_drafts"):
+    for key in ("require_human", "auto_approve_drafts", "require_integrity"):
         if key not in raw:
             continue
         value = raw[key]
@@ -100,6 +101,7 @@ def load_policy(root: str) -> ApprovalPolicy:
         mode=mode,
         require_human=_as_bool(raw.get("require_human", False)),
         auto_approve_drafts=_as_bool(raw.get("auto_approve_drafts", False)),
+        require_integrity=_as_bool(raw.get("require_integrity", False)),
     )
 
 

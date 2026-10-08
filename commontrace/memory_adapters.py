@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import copy
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 from commontrace import holdout_io, memory_sources, paths
 from commontrace.measure import DEFAULT_CHECK_EVERY, CausalMemory, Recall
@@ -15,16 +16,36 @@ class Item:
     raw: Any = None
 
 
+class MemoryAdapter(Protocol):
+    """Structural contract for provider adapters; no SDK dependency in the core."""
+
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def can_delete(self) -> bool: ...
+
+    def search(self, query: str, **kwargs: Any) -> list[Item]: ...
+
+    def delete(self, item_id: str) -> None: ...
+
+
+_SCOPE_KEYS = frozenset({"user_id", "agent_id", "session_id", "run_id", "org_id", "tenant_id", "filters"})
+
+
 class Mem0Adapter:
     name = "mem0"
     can_delete = True
 
     def __init__(self, client: Any, **search_kwargs: Any) -> None:
         self.client = client
-        self.search_kwargs = search_kwargs
+        self.search_kwargs = copy.deepcopy(search_kwargs)
 
     def search(self, query: str, **kwargs: Any) -> list[Item]:
-        response = self.client.search(query, **{**self.search_kwargs, **kwargs})
+        for key in _SCOPE_KEYS & self.search_kwargs.keys() & kwargs.keys():
+            if kwargs[key] != self.search_kwargs[key]:
+                raise ValueError(f"cannot override pinned memory scope {key!r}")
+        response = self.client.search(query, **copy.deepcopy({**self.search_kwargs, **kwargs}))
         rows = response.get("results", []) if isinstance(response, dict) else response or []
         return [Item(str(r["id"]), str(r.get("memory") or ""), r) for r in rows if r.get("id")]
 
@@ -227,7 +248,7 @@ class MeasuredMemory:
     """Any adapter above, with holdout, outcome recording and withdrawal."""
 
     def __init__(
-        self, adapter: Any, *, root: str | None = None, source_key: str | None = None,
+        self, adapter: MemoryAdapter, *, root: str | None = None, source_key: str | None = None,
         pinned: Iterable[str] = (), on_harm: str | None = None, delete_harmful: bool = False,
         check_every: int = DEFAULT_CHECK_EVERY, screen_injection: bool = True,
     ) -> None:

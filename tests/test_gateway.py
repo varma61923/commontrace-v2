@@ -327,7 +327,8 @@ def test_store_mode_reuses_the_ranking_index_until_a_lesson_changes(root, monkey
     assert len(builds) == 1
     path = os.path.join(paths.lessons_dir(root), "lesson_check_suppression.md")
     fm, body = frontmatter.read(path)
-    frontmatter.write(path, {**fm, "core": True}, body + "\nEdited.\n")
+    frontmatter.write(path, {**fm, "core": True, "status": "review"}, body + "\nEdited.\n")
+    assert main(["lesson", "approve", "lesson_check_suppression", "--dest", root]) == 0
     for n in range(12):
         r = call(g, "POST", "/v1/recall", {"occasion_id": f"core-{n}", "query": query})[1]
         assert [i["id"] for i in r["deliver"]] == ["lesson_check_suppression"]
@@ -519,6 +520,12 @@ def test_conversation_routes_remember_and_recall(gw, monkeypatch):
     status, got = call(gw, "POST", "/v1/conversation/recall",
                        {"space": "robot-7", "question": "When did the conveyor jam?"})
     assert status == 200 and "jammed yesterday [7 May 2023] at bay 4" in got["context"]
+    status, diversified = call(gw, "POST", "/v1/conversation/recall", {
+        "space": "robot-7", "question": "When did the conveyor jam?", "context_strategy": "coverage-v1"})
+    assert status == 200 and "jammed yesterday [7 May 2023] at bay 4" in diversified["context"]
+    for invalid in ("unknown", None, [], True):
+        assert call(gw, "POST", "/v1/conversation/recall", {
+            "space": "robot-7", "question": "conveyor", "context_strategy": invalid})[0] == 400
     assert call(gw, "POST", "/v1/conversation/recall", {"space": "nobody", "question": "x"})[0] == 404
     status, none = call(gw, "POST", "/v1/conversation/recall",
                         {"space": "robot-7", "question": "conveyor", "speakers": ["nobody"]})
