@@ -37,6 +37,7 @@ from benchmarks.cache import BenchmarkCache, CostGuard  # noqa: E402
 from benchmarks.compare import clustered_estimates, ranking_metrics
 from benchmarks.compare import compare_runs as paired_compare  # noqa: E402
 from benchmarks.completeness import bucket_counts, grade_context_completeness  # noqa: E402
+from benchmarks.context_budget import retrieve_with_cap
 from benchmarks.judges import (  # noqa: E402
     BEAM_ABILITIES,
     get_default_judge_for_dataset,
@@ -55,10 +56,10 @@ from benchmarks.measurement import (  # noqa: E402
     ranking_fields,
     shared_source_clusters,
 )
-from benchmarks.requests import benchmark_binding, bounded_complete, text_tokens  # noqa: E402
+from benchmarks.requests import benchmark_binding, bounded_complete, text_counter_binding, text_tokens  # noqa: E402
 from benchmarks.vendor_adapters import PROFILES, vendor_profile  # noqa: E402
 from commontrace.conversation import Options, Store, recall  # noqa: E402
-from commontrace.conversation.search import tokens  # noqa: E402
+from commontrace.conversation.search import Recall, tokens  # noqa: E402
 
 LOCOMO_CATEGORIES = {1: "multi-hop", 2: "temporal", 3: "open-domain", 4: "single-hop"}
 
@@ -596,6 +597,13 @@ def product_digest_for_judges(repository: str) -> str:
 def run(args) -> dict:
     repository = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     initial_product = product_digest(repository)
+    strict_budget = getattr(args, "strict_context_budget", False)
+    tokenizer = getattr(args, "tokenizer", None)
+    counter_binding = None
+    if strict_budget:
+        if not tokenizer:
+            raise ValueError("strict context budgets require --tokenizer")
+        counter_binding = text_counter_binding(tokenizer)
     if args.limit < 0 or args.seed < 0:
         raise ValueError("limit and seed must be nonnegative")
     budgets = [int(b) for b in str(args.budget).split(",")]
@@ -686,6 +694,13 @@ def run(args) -> dict:
                 [rerank_arm.MODELS[args.rerank][0]] if args.rerank in rerank_arm.MODELS else []):
             model_bindings[name] = model_artifact(name)
     provenance["evaluation"]["context_text_tokenizer"] = getattr(args, "tokenizer", None)
+    if strict_budget:
+        provenance["evaluation"]["context_budget"] = {
+            "unit": "selected-tokenizer-context-text", "counter": counter_binding,
+            "max_attempts": 16, "full_context": "uncapped",
+            "helper_sha256": dataset_digest(os.path.join(repository, "benchmarks", "context_budget.py")),
+            "counter_source_sha256": dataset_digest(os.path.join(repository, "benchmarks", "requests.py")),
+        }
     rows_by_mode = {m: {b: [] for b in budgets} for m in modes}
     ingest_s, full_tokens = 0.0, []
     recall_seconds = {b: 0.0 for b in budgets}
@@ -726,10 +741,19 @@ def run(args) -> dict:
                     session_gold = gold_sessions(turn_gold, q["sessions"], sessions)
                     mem_contexts = {}
                     for budget in budgets:
-                        opts_b = Options(**{**opts.__dict__, "budget": budget})
                         t = time.perf_counter()
-                        r = (adapter.retrieve(q["question"], budget) if adapter is not None
-                                 else recall(store, q["question"], now=now, options=opts_b))
+                        def retrieve(native_budget):
+                            opts_b = Options(**{**opts.__dict__, "budget": native_budget})
+                            return (adapter.retrieve(q["question"], native_budget) if adapter is not None
+                                    else recall(store, q["question"], now=now, options=opts_b))
+
+                        if "memory" not in modes:
+                            r, accounting = Recall(q["question"], "", 0, [], [], None), None
+                        elif strict_budget:
+                            r, accounting = retrieve_with_cap(
+                                retrieve, budget, lambda ctx: text_tokens(ctx, tokenizer))
+                        else:
+                            r, accounting = retrieve(budget), None
                         elapsed = time.perf_counter() - t
                         recall_seconds[budget] += elapsed
                         kept = store.turns(r.turns).values()
@@ -741,11 +765,12 @@ def run(args) -> dict:
                             for metric, value in ranking_metrics(source_ranking["ranked_" + level + "_ids"],
                                                                 source_ranking["gold_" + level + "_ids"]).items()
                         }
-                        mem_contexts[budget] = (r, refs, sess, elapsed, source_ranking, ranking_scores)
+                        mem_contexts[budget] = (r, refs, sess, elapsed, source_ranking, ranking_scores, accounting)
 
                     for mode in modes:
                         for budget in budgets:
-                            r, refs, sess, recall_elapsed, source_ranking, ranking_scores = mem_contexts[budget]
+                            r, refs, sess, recall_elapsed, source_ranking, ranking_scores, accounting = mem_contexts[budget]
+                            context_accounting = accounting if mode == "memory" else None
                             mem_context, n_tokens = r.context, r.tokens
                             if mode == "memory":
                                 ctx = mem_context
@@ -757,7 +782,16 @@ def run(args) -> dict:
                                 conf = r.explain.get("confidence")
                                 rtop = r.explain.get("rerank_top")
                             elif mode in ("full-context", "budgeted-history"):
-                                ctx, toks = make_full_context(sessions, None if mode == "full-context" else budget)
+                                if mode == "budgeted-history" and strict_budget:
+                                    def history(native_budget):
+                                        context, estimated = make_full_context(sessions, native_budget)
+                                        return Recall("", context, estimated, [], [], None, {})
+
+                                    h, context_accounting = retrieve_with_cap(
+                                        history, budget, lambda ctx: text_tokens(ctx, tokenizer))
+                                    ctx, toks = h.context, h.tokens
+                                else:
+                                    ctx, toks = make_full_context(sessions, None if mode == "full-context" else budget)
                                 ev = None
                                 comp = None
                                 ses = None
@@ -798,6 +832,7 @@ def run(args) -> dict:
                                 # Reference-mode ranking metrics are intentionally undefined.
                                 **(ranking_scores if mode == "memory" else {}),
                                 "tokens": toks,
+                                **({"context_budget": context_accounting} if strict_budget else {}),
                                 "context_text_tokens": (text_tokens(ctx, args.tokenizer)
                                                         if getattr(args, "tokenizer", None) else None),
                                 "evidence": ev,
@@ -896,6 +931,12 @@ def run(args) -> dict:
         raise RuntimeError("vendor adapter changed during measurement")
     if dataset_digest(os.path.join(repository, "benchmarks", "artifacts.py")) != provenance["artifacts_source_sha256"]:
         raise RuntimeError("artifact binding code changed during measurement")
+    if strict_budget:
+        contract = provenance["evaluation"]["context_budget"]
+        if (dataset_digest(os.path.join(repository, "benchmarks", "context_budget.py")) != contract["helper_sha256"]
+                or dataset_digest(os.path.join(repository, "benchmarks", "requests.py")) != contract["counter_source_sha256"]
+                or text_counter_binding(tokenizer) != counter_binding):
+            raise RuntimeError("strict context budget implementation or counter changed during measurement")
     if args.answer:
         if dataset_digest(os.path.join(repository, "benchmarks", "requests.py")) != provenance["evaluation"]["bounded_requests_sha256"]:
             raise RuntimeError("bounded completion source changed during measurement")
@@ -1080,6 +1121,8 @@ def main(argv=None) -> int:
     )
     p.add_argument("--max-output-tokens", type=int, default=1536, help="Per-call output cap; applies to reader and every judge call.")
     p.add_argument("--tokenizer", default=None, help="Optional exact context text counting: tiktoken:<encoding-name>.")
+    p.add_argument("--strict-context-budget", action="store_true",
+                   help="Reassemble capped contexts until selected tokenizer text count fits; requires --tokenizer.")
     p.add_argument(
         "--cache-dir",
         default=None,

@@ -36,6 +36,21 @@ def text_tokens(text: str, tokenizer: str) -> int:
     return len(_encoding(tokenizer).encode(text, disallowed_special=()))
 
 
+def text_counter_binding(tokenizer: str) -> dict:
+    """Pin the loaded tokenizer's vocabulary, regex and special-token mapping."""
+    import hashlib
+    import importlib.metadata
+
+    encoding = _encoding(tokenizer)
+    digest = hashlib.sha256()
+    digest.update(json.dumps({"pattern": encoding._pat_str, "special": encoding._special_tokens},
+                             sort_keys=True).encode("utf-8"))
+    for word, rank in sorted(encoding._mergeable_ranks.items()):
+        digest.update(len(word).to_bytes(8, "big") + word + rank.to_bytes(8, "big"))
+    return {"name": tokenizer, "package_version": importlib.metadata.version("tiktoken"),
+            "encoding_sha256": digest.hexdigest(), "disallowed_special": []}
+
+
 def benchmark_binding(config: llm.Config, *, output_limit: int = 1536) -> dict:
     import hashlib
 
