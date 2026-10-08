@@ -10,12 +10,13 @@ the measured request profiles.
 Acceptance criteria: coverage uses emitted source text rather than hidden turns;
 explicit allow-lists constrain assembly; multilingual tail evidence is quoted
 within budget; indexed and streaming Unicode scores match; ASCII behavior and
-canonical hashes/journals remain compatible. The final local suite passed
+canonical hashes/journals remain compatible. The local suite at `da763d0` passed
 **5,688 tests, with 103 skipped**. All 35 strict typing targets, Ruff and generated
 documentation checks passed; 73 additional MCP tests passed against the pinned
 dependency environment. Model-dependent and unconfigured integration tests remain
 among the skips.
 
+The measured implementation is `da763d0b9d00942cdab6012d2f939ad1f6c40206`.
 The complete LoCoMo evaluation uses 1,540 questions in categories 1–4 across ten
 conversations, production redaction, lexical retrieval, no reranker or models,
 alternating strategy order and disabled final-response caching. All 1,536

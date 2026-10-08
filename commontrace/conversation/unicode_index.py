@@ -21,6 +21,27 @@ VERSION = "1"
 MAX_QUERY_TERMS = 256
 MAX_QUERY_CHARS = 16384
 
+# Both routing forms are complete constant SQL; source/query values are bound.
+_GLOBAL_QUERIES = (
+    "SELECT COUNT(*),AVG(d.length) FROM unicode_documents d JOIN units u ON u.id=d.unit WHERE 1",
+    "SELECT p.term,COUNT(*) FROM unicode_postings p JOIN units u ON u.id=p.unit "
+    "WHERE p.term IN (SELECT value FROM json_each(?)) AND 1 GROUP BY p.term",
+    "SELECT p.unit,d.length,p.term,p.frequency FROM unicode_postings p "
+    "JOIN unicode_documents d ON d.unit=p.unit JOIN units u ON u.id=p.unit "
+    "WHERE p.term IN (SELECT value FROM json_each(?)) AND 1 ORDER BY p.unit,p.term",
+)
+_SCOPED_QUERIES = (
+    "SELECT COUNT(*),AVG(d.length) FROM unicode_documents d JOIN units u ON u.id=d.unit "
+    "WHERE u.turn IN (SELECT value FROM json_each(?))",
+    "SELECT p.term,COUNT(*) FROM unicode_postings p JOIN units u ON u.id=p.unit "
+    "WHERE p.term IN (SELECT value FROM json_each(?)) AND "
+    "u.turn IN (SELECT value FROM json_each(?)) GROUP BY p.term",
+    "SELECT p.unit,d.length,p.term,p.frequency FROM unicode_postings p "
+    "JOIN unicode_documents d ON d.unit=p.unit JOIN units u ON u.id=p.unit "
+    "WHERE p.term IN (SELECT value FROM json_each(?)) AND "
+    "u.turn IN (SELECT value FROM json_each(?)) ORDER BY p.unit,p.term",
+)
+
 
 def terms(text: str) -> list[str]:
     """Unicode words and CJK n-grams; ASCII words belong to the legacy arm."""
@@ -131,29 +152,20 @@ def rank(db: sqlite3.Connection, query: str, limit: int,
     wanted = query_terms(query)
     if not wanted or limit <= 0 or allowed == set():
         return []
-    scope = "u.turn IN (SELECT value FROM json_each(?))" if allowed is not None else "1"
+    stats_sql, frequency_sql, postings_sql = _SCOPED_QUERIES if allowed is not None else _GLOBAL_QUERIES
     scope_params: tuple[str, ...] = (json.dumps(sorted(allowed)),) if allowed is not None else ()
-    size, average = db.execute(  # nosec B608 - fixed eligibility SQL, bound scope
-        "SELECT COUNT(*),AVG(d.length) FROM unicode_documents d JOIN units u ON u.id=d.unit WHERE "
-        + scope, scope_params).fetchone()
+    size, average = db.execute(stats_sql, scope_params).fetchone()
     if not size:
         return []
     # One indexed seek per query term. Scope is applied before statistics and
     # limiting, so hidden tenants cannot crowd out or reweight visible evidence.
     idfs: dict[str, float] = {}
     query_json = json.dumps(wanted)
-    dfs = dict(db.execute(  # nosec B608 - fixed eligibility SQL, bound terms and scope
-        "SELECT p.term,COUNT(*) FROM unicode_postings p JOIN units u ON u.id=p.unit "
-        "WHERE p.term IN (SELECT value FROM json_each(?)) AND " + scope + " GROUP BY p.term",
-        (query_json, *scope_params)))
+    dfs = dict(db.execute(frequency_sql, (query_json, *scope_params)))
     for term in wanted:
         df = dfs.get(term, 0)
         idfs[term] = math.log(1 + (size - df + 0.5) / (df + 0.5))
-    rows = db.execute(  # nosec B608 - fixed eligibility SQL, bound terms and scope
-        "SELECT p.unit,d.length,p.term,p.frequency FROM unicode_postings p "
-        "JOIN unicode_documents d ON d.unit=p.unit JOIN units u ON u.id=p.unit "
-        "WHERE p.term IN (SELECT value FROM json_each(?)) AND " + scope + " ORDER BY p.unit,p.term",
-        (query_json, *scope_params))
+    rows = db.execute(postings_sql, (query_json, *scope_params))
 
     def scores() -> Iterable[tuple[int, float]]:
         previous: int | None = None
