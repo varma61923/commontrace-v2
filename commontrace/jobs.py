@@ -368,6 +368,8 @@ def _distill(root: str, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 HANDLERS: dict[str, Callable[[str, dict], Any]] = {
+    "mental-model": lambda root, payload: __import__(
+        "commontrace.memory_control", fromlist=["refresh_model"]).refresh_model(root, payload["id"]),
     "ingest": _ingest,
     "extract": lambda root, p: _conversation(root, p, "extract"),
     "summarize": lambda root, p: _conversation(root, p, "summarize"),

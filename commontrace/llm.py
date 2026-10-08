@@ -357,6 +357,11 @@ def complete(prompt: str, config: Config | None = None) -> tuple[str, dict]:
     When ``COMMONTRACE_LLM_CACHE=1``, provider/account-scoped calls share a
     bounded SQLite cache and concurrent identical calls share one provider call.
     """
+    from commontrace.llm_runtime import ACTIVE, PURPOSE
+
+    runtime = ACTIVE.get()
+    if runtime is not None:
+        return runtime.complete(prompt, purpose=PURPOSE.get(), config=config)
     cfg = config or load_config()
     cache = llm_cache_mod.LLMCache() if llm_cache_mod.enabled() else None
     caller = {"anthropic": _call_anthropic, "openai-compatible": _call_openai_compatible,

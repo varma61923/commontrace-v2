@@ -6,6 +6,13 @@ CommonTrace is an **agent-agnostic protocol** for turning agent experience into
 validated, reusable lessons: Capture → Structure → Extract → Validate → Store →
 Inject → Measure. The full spec lives in [`protocol/PROTOCOL.md`](protocol/PROTOCOL.md).
 
+**Markdown is the source of truth; indexes are rebuildable.** CommonTrace's
+append-only, bi-temporal approach now includes named search recipes, scoped
+agent signup, standing questions, a Memory Palace console, budgeted dreaming,
+signed shared memory and a reproducible causal benchmark fixture. Start with
+the [memory evolution guide](docs/MEMORY_EVOLUTION.md) for the local/HTTP SDK,
+two-line completion wrapper, standalone binary and exact feature limitations.
+
 This repo ships two things:
 
 1. **The `commontrace` CLI** (`pip install -e .`) — client-installable, works with

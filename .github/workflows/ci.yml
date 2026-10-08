@@ -39,6 +39,9 @@ jobs:
       - name: Original offline evidence and governed-memory contracts
         run: python -m benchmarks.memory_contracts
 
+      - name: Independently reproduce the causal memory fixture
+        run: bash reproduce.sh
+
       - name: Original offline fact retrieval safety and attribution contracts
         # Ranking measurements are descriptive. The command fails on safety,
         # eligibility, attribution, erasure, abstention or execution errors.

@@ -715,6 +715,32 @@ def get_neighbors(
     return results
 
 
+def feedback_edge(root: str, source: str, target: str, relation: str, *, event_id: str, helpful: bool) -> GraphEdge:
+    """Feedback-weighted edge revisions; replay of one outcome cannot add weight."""
+    if not event_id or not isinstance(helpful, bool):
+        raise ValueError("feedback needs an event id and a boolean outcome")
+    with batch(root) as txn:
+        edges = txn.by_key.get((_clean_id(source), _clean_id(target), relation), [])
+        active = [edge for edge in edges if edge.invalid_at is None]
+        if not active:
+            raise ValueError("no active edge matches feedback")
+        prior = active[-1]
+        outcomes = dict(prior.properties.get("feedback_outcomes", {}))
+        if event_id in outcomes:
+            if outcomes[event_id] != helpful:
+                raise ValueError("feedback outcome is immutable")
+            return prior
+        if len(outcomes) >= 2000:
+            raise ValueError("edge feedback ledger reached its configured bound")
+        outcomes[event_id] = helpful
+        successes = sum(outcomes.values())
+        # Beta(1,1) reliability; feedback is a ranking weight, not causal proof.
+        weight = (1 + successes) / (2 + len(outcomes))
+        return add_edge(root, source, target, relation, weight=weight, valid_at=_now(),
+                        properties={**prior.properties, "feedback_outcomes": outcomes},
+                        provenance={"kind": "feedback", "event_id": event_id})
+
+
 def multi_hop_subgraph(
     root: str,
     start_node_ids: list[str],

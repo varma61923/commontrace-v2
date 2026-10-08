@@ -481,6 +481,62 @@ def add_facts(root: str, items: list[dict[str, Any]]) -> list[tuple[AtomicFact, 
     return results
 
 
+def append_facts(root: str, items: list[dict[str, Any]]) -> list[tuple[AtomicFact, str]]:
+    """Strict ADD-only admission: replay never changes an existing fact.
+
+    Contrary statements coexist with their valid/recorded times. Superseding,
+    reinforcing or forgetting remains an explicit governed operation. All
+    items are validated before the batch can write anything.
+    """
+    import math
+
+    from commontrace import injection_guard, memory_guard
+
+    if not isinstance(items, list) or len(items) > 200:
+        raise ValueError("append batch must be a list of at most 200 facts")
+    prepared = []
+    for item in items:
+        if not isinstance(item, dict) or set(item) - {
+                "statement", "category", "scopes", "valid_from", "valid_until", "expires_at",
+                "confidence", "source_trace_id", "stability"}:
+            raise ValueError("unsupported ADD-only fact fields")
+        statement, category, start, end, expiry = prepare_fact(
+            item.get("statement", ""), item.get("category", DEFAULT_CATEGORY),
+            item.get("valid_from"), item.get("valid_until"), item.get("expires_at"))
+        statement = memory_guard.sanitize_metadata(
+            {"statement": statement}, pii=memory_guard.privacy_redaction_enabled())[0]["statement"]
+        if injection_guard.injection_labels({"text": statement}):
+            raise ValueError("fact failed the injection screen")
+        confidence = float(item.get("confidence", 0.8))
+        if not math.isfinite(confidence) or not 0 <= confidence <= 1:
+            raise ValueError("confidence must be finite in [0, 1]")
+        labels = item.get("scopes", [])
+        if not isinstance(labels, list) or any(not isinstance(s, str) for s in labels):
+            raise ValueError("scopes must be a list of strings")
+        prepared.append((statement, category, _clean_scopes(labels), start, end, expiry,
+                         confidence, str(item.get("source_trace_id", "")), item.get("stability", "")))
+    results = []
+    with mutate_facts(root) as facts:
+        for statement, category, labels, start, end, expiry, confidence, source, stability in prepared:
+            duplicate = next((f for f in facts.values() if f.status == "active" and not f.forgotten
+                              and _normalize_statement(f.statement) == _normalize_statement(statement)
+                              and f.scopes == labels and (start is None or f.valid_from == start)
+                              and f.valid_until == end and f.expires_at == expiry), None)
+            if duplicate:
+                results.append((duplicate, "NOOP"))
+                continue
+            # _add_locked reinforces overlapping scope sets. Use a fresh map
+            # to construct only the new record, then allocate an unused ID.
+            fact, action = _add_locked({}, statement, category, labels, start, end, expiry,
+                                       confidence, source, stability)
+            fact.id = _free_id(fact.id, facts)
+            fact.revision = _compute_revision(fact.to_dict())
+            facts[fact.id] = fact
+            results.append((fact, action))
+    _link_entities_best_effort(root, [(fact.id, fact.statement) for fact, action in results if action == "ADD"])
+    return results
+
+
 _UNSET: Any = object()
 
 

@@ -140,6 +140,7 @@
 
   var ROUTES = [
     { id: "overview", label: "Overview", title: "Overview" },
+    { id: "palace", label: "Memory Palace", title: "Memory Palace" },
     { id: "explore", label: "Explore memory", title: "Explore memory" },
     { id: "memories", label: "Memories", title: "What each memory did" },
     { id: "review", label: "Review", title: "Review queue" },
@@ -249,6 +250,49 @@
     if (m && m.memories && m.memories.length) root.appendChild(memoriesPanel(m, true));
     else root.appendChild(empty("No measurements yet", "Verdicts appear once recalls are made with an occasion id and outcomes are reported under the same id.",
       "curl -H \"Authorization: Bearer $TOKEN\" -d '{\"occasion_id\":\"ep-1\",\"items\":[{\"id\":\"m1\",\"text\":\"…\"}]}' \\\n  -H 'Content-Type: application/json' http://localhost:8787/v1/recall"));
+    return root;
+  }
+
+  function viewPalace() {
+    var root = h("div", null, h("h1", { text: "Memory Palace" }),
+      h("p", { class: "lede", text: "Standing questions, hard rules, and experience awaiting review." }));
+    var data = state.palace;
+    if (!data) return root.appendChild(h("p", { text: "Loading…" })), root;
+    var attention = data.needs_attention || {};
+    root.appendChild(h("section", { class: "card" }, h("h2", { text: "Needs attention" }),
+      h("p", { text: num(attention.proposals || 0) + " suggestions awaiting review; " +
+        num((attention.jobs || {}).dead || 0) + " jobs exhausted their retries." })));
+    (data.models || []).forEach(function (model) {
+      var button = h("button", { type: "button", text: "Refresh answer" });
+      button.addEventListener("click", function () {
+        button.disabled = true;
+        post("/v1/control/refresh", { id: model.id }).then(function () {
+          button.textContent = "Refresh queued";
+        }).catch(function (e) { button.textContent = e.message; button.disabled = false; });
+      });
+      root.appendChild(h("section", { class: "card" }, h("h2", { text: model.text }),
+        h("pre", { text: ((model.data || {}).answer || {}).context || "Waiting for the offline memory engine." }), button));
+    });
+    var rules = h("section", { class: "card" }, h("h2", { text: "Hard rules" }));
+    (data.directives || []).forEach(function (rule) { rules.appendChild(h("p", { text: rule.text })); });
+    root.appendChild(rules);
+    (data.suggestions || []).forEach(function (proposal) {
+      var details = h("details", null, h("summary", { text: "Inspect evidence and applicability" }),
+        h("pre", { text: JSON.stringify(proposal.data || {}, null, 2) }));
+      var reject = h("button", { type: "button", text: "Reject suggestion" });
+      reject.addEventListener("click", function () {
+        var reason = window.prompt("Why should this suggestion be rejected?");
+        if (!reason) return;
+        reject.disabled = true;
+        post("/v1/control/reject-proposal", { id: proposal.id, expected_revision: proposal.revision, reason: reason })
+          .then(function () { reject.textContent = "Rejected"; })
+          .catch(function (e) { reject.textContent = e.message; reject.disabled = false; });
+      });
+      root.appendChild(h("section", { class: "card" }, h("h2", { text: proposal.text }), details, reject));
+    });
+    if (!(data.models || []).length && !(data.suggestions || []).length) {
+      root.appendChild(empty("Build your memory palace", "Add a standing question to refresh its evidence in the background."));
+    }
     return root;
   }
 
@@ -900,7 +944,7 @@
     return root;
   }
 
-  var VIEWS = { overview: viewOverview, explore: viewExplore, memories: viewMemories, review: viewReview, lesson: viewLesson, live: viewLive, fleet: viewFleet, commands: viewCommands, safety: viewSafety };
+  var VIEWS = { overview: viewOverview, palace: viewPalace, explore: viewExplore, memories: viewMemories, review: viewReview, lesson: viewLesson, live: viewLive, fleet: viewFleet, commands: viewCommands, safety: viewSafety };
 
   function viewAuth(message) {
     var input = h("input", { id: "tok", type: "password", autocomplete: "off", spellcheck: "false", "aria-describedby": "tok-help" });
@@ -991,6 +1035,7 @@
     if (route === "overview" || route === "memories" || route === "lesson") wants.push("memories");
     if (route === "overview" || route === "fleet" || route === "safety") wants.push("agents");
     if (route === "live") wants.push("occasions");
+    if (route === "palace") wants.push("palace");
     var reviewOffset = Number(hashQuery("offset"));
     if (!Number.isSafeInteger(reviewOffset) || reviewOffset < 0) reviewOffset = 0;
     var reviewPath = "lessons?status=review&limit=50&offset=" + reviewOffset;

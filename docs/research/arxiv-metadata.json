@@ -1,0 +1,296 @@
+{
+  "checked_at": "2026-10-08",
+  "requested_ids": [
+    "2610.02070",
+    "2608.29605",
+    "2606.16285",
+    "2609.02074",
+    "2609.37544",
+    "2606.08151",
+    "2512.10696",
+    "2602.01869",
+    "2512.18950",
+    "2603.29093",
+    "2511.20297",
+    "2607.16621",
+    "2608.16114",
+    "2609.12655",
+    "2605.24117",
+    "2604.15877",
+    "2504.13171",
+    "2605.20616",
+    "2508.19828",
+    "2509.25911",
+    "2601.03192",
+    "2601.23014",
+    "2603.00680",
+    "2607.03726",
+    "2606.24322",
+    "2606.12703",
+    "2605.23723",
+    "2605.01970",
+    "2605.29960",
+    "2608.01637",
+    "2607.05029",
+    "2605.15338",
+    "2606.18829",
+    "2607.05318",
+    "2609.12320",
+    "2606.24535",
+    "2605.04264",
+    "2610.01195",
+    "2605.22721",
+    "2608.04746",
+    "2507.05257",
+    "2602.16313",
+    "2602.22769",
+    "2605.20833",
+    "2609.24971",
+    "2511.20857",
+    "2510.27246",
+    "2605.29341"
+  ],
+  "entries": [
+    {
+      "id": "http://arxiv.org/abs/2509.25911v1",
+      "title": "Mem-\u03b1: Learning Memory Construction via Reinforcement Learning",
+      "published": "2025-09-30T08:02:34Z"
+    },
+    {
+      "id": "http://arxiv.org/abs/2603.00680v4",
+      "title": "MemPO: Self-Memory Policy Optimization for Long-Horizon Agents",
+      "published": "2026-02-28T14:43:02Z"
+    },
+    {
+      "id": "http://arxiv.org/abs/2606.24322v1",
+      "title": "Securing LLM-Agent Long-Term Memory Against Poisoning: Non-Malleable, Origin-Bound Authority with Machine-Checked Guarantees",
+      "published": "2026-06-23T08:57:50Z"
+    },
+    {
+      "id": "http://arxiv.org/abs/2605.20833v1",
+      "title": "MemGym: a Long-Horizon Memory Environment for LLM Agents",
+      "published": "2026-05-20T07:25:33Z"
+    },
+    {
+      "id": "http://arxiv.org/abs/2605.29341v2",
+      "title": "WorldMemArena: Evaluating Multimodal Agent Memory Through Action-World Interaction",
+      "published": "2026-05-28T04:27:20Z"
+    },
+    {
+      "id": "http://arxiv.org/abs/2605.04264v1",
+      "title": "Governed Collaborative Memory as Artificial Selection in LLM-Based Multi-Agent Systems",
+      "published": "2026-05-05T19:58:10Z"
+    },
+    {
+      "id": "http://arxiv.org/abs/2608.16114v1",
+      "title": "HyperSkill: Self-Evolving LLM Agents via Hypergraph-Structured Skill Memory",
+      "published": "2026-08-17T05:10:27Z"
+    },
+    {
+      "id": "http://arxiv.org/abs/2607.05029v1",
+      "title": "Your Agent's Memories Are Not Its Own: Forged Reasoning Attacks on LLM Agent Memory and Defenses",
+      "published": "2026-07-06T13:10:13Z"
+    },
+    {
+      "id": "http://arxiv.org/abs/2605.01970v4",
+      "title": "Trojan Hippo Bench: A Dynamic Benchmark for Persistent Memory Attacks and Defenses in LLM Agents",
+      "published": "2026-05-03T17:07:20Z"
+    },
+    {
+      "id": "http://arxiv.org/abs/2605.23723v1",
+      "title": "MemAudit: Post-hoc Auditing of Poisoned Agent Memory via Causal Attribution and Structural Anomaly Detection",
+      "published": "2026-05-22T15:03:13Z"
+    },
+    {
+      "id": "http://arxiv.org/abs/2511.20857v2",
+      "title": "Evo-Memory: Benchmarking LLM Agent Test-time Learning with Self-Evolving Memory",
+      "published": "2025-11-25T21:08:07Z"
+    },
+    {
+      "id": "http://arxiv.org/abs/2508.19828v5",
+      "title": "Memory-R1: Enhancing Large Language Model Agents to Manage and Utilize Memories via Reinforcement Learning",
+      "published": "2025-08-27T12:26:55Z"
+    },
+    {
+      "id": "http://arxiv.org/abs/2507.05257v4",
+      "title": "Evaluating Memory in LLM Agents via Incremental Multi-Turn Interactions",
+      "published": "2025-07-07T17:59:54Z"
+    },
+    {
+      "id": "http://arxiv.org/abs/2602.01869v3",
+      "title": "Skill-Pro: Learning Reusable Skills from Experience via Non-Parametric PPO for LLM Agents",
+      "published": "2026-02-02T09:43:12Z"
+    },
+    {
+      "id": "http://arxiv.org/abs/2605.24117v1",
+      "title": "SkillEvolBench: Benchmarking the Evolution from Episodic Experience to Procedural Skills",
+      "published": "2026-05-22T18:23:31Z"
+    },
+    {
+      "id": "http://arxiv.org/abs/2605.20616v1",
+      "title": "Auto-Dreamer: Learning Offline Memory Consolidation for Language Agents",
+      "published": "2026-05-20T02:03:34Z"
+    },
+    {
+      "id": "http://arxiv.org/abs/2605.22721v1",
+      "title": "Self-Evolving Multi-Agent Systems via Decentralized Memory",
+      "published": "2026-05-21T16:55:40Z"
+    },
+    {
+      "id": "http://arxiv.org/abs/2512.18950v1",
+      "title": "Learning Hierarchical Procedural Memory for LLM Agents through Bayesian Selection and Contrastive Refinement",
+      "published": "2025-12-22T01:56:28Z"
+    },
+    {
+      "id": "http://arxiv.org/abs/2601.03192v2",
+      "title": "MemRL: Self-Evolving Agents via Runtime Reinforcement Learning on Episodic Memory",
+      "published": "2026-01-06T17:14:50Z"
+    },
+    {
+      "id": "http://arxiv.org/abs/2601.23014v2",
+      "title": "Mem-T: Densifying Rewards for Long-Horizon Memory Agents",
+      "published": "2026-01-30T14:23:33Z"
+    },
+    {
+      "id": "http://arxiv.org/abs/2512.10696v2",
+      "title": "Remember Me, Refine Me: A Dynamic Procedural Memory Framework for Experience-Driven Agent Evolution",
+      "published": "2025-12-11T14:40:01Z"
+    },
+    {
+      "id": "http://arxiv.org/abs/2606.24535v1",
+      "title": "Governed Shared Memory for Multi-Agent LLM Systems",
+      "published": "2026-06-23T13:04:14Z"
+    },
+    {
+      "id": "http://arxiv.org/abs/2511.20297v2",
+      "title": "Improving Language Agents through BREW: Bootstrapping expeRientially-learned Environmental knoWledge",
+      "published": "2025-11-25T13:34:54Z"
+    },
+    {
+      "id": "http://arxiv.org/abs/2607.16621v1",
+      "title": "From Memory to Skills: Evidence-Grounded Co-Evolution Governance for Long-Horizon LLM Agents",
+      "published": "2026-07-18T03:46:22Z"
+    },
+    {
+      "id": "http://arxiv.org/abs/2603.29093v3",
+      "title": "APEX-EM: Non-Parametric Online Learning for Autonomous Agents via Structured Procedural-Episodic Experience Replay",
+      "published": "2026-03-31T00:24:56Z"
+    },
+    {
+      "id": "http://arxiv.org/abs/2606.16285v2",
+      "title": "HiMPO: Hindsight-Informed Memory Policy Optimization for Less-Entangled Credit in Long-Horizon Agents",
+      "published": "2026-06-15T06:49:18Z"
+    },
+    {
+      "id": "http://arxiv.org/abs/2609.12655v1",
+      "title": "LifeMem: Enabling Lifelong Experience Reuse for LLM Agents",
+      "published": "2026-09-11T10:00:43Z"
+    },
+    {
+      "id": "http://arxiv.org/abs/2609.02074v1",
+      "title": "CHIME: Credit-Aware Hierarchical Memory Evolution for Long-Horizon Agentic Planning",
+      "published": "2026-09-02T03:59:21Z"
+    },
+    {
+      "id": "http://arxiv.org/abs/2608.01637v1",
+      "title": "Salami Attack: Stealthy Collusive Memory Poisoning against OpenClaw",
+      "published": "2026-08-03T03:17:26Z"
+    },
+    {
+      "id": "http://arxiv.org/abs/2608.04746v1",
+      "title": "Caching for the Future: Scrub Jay Episodic Memory Principles for Agent Memory Systems",
+      "published": "2026-08-05T12:12:44Z"
+    },
+    {
+      "id": "http://arxiv.org/abs/2604.15877v2",
+      "title": "Experience Compression Spectrum: Unifying Memory, Skills, and Rules in LLM Agents",
+      "published": "2026-04-17T09:26:25Z"
+    },
+    {
+      "id": "http://arxiv.org/abs/2609.12320v1",
+      "title": "AIM: A Privacy-Aware Interoperable Memory Framework for Multi-Agent Multi-User LLM Systems",
+      "published": "2026-09-11T01:00:09Z"
+    },
+    {
+      "id": "http://arxiv.org/abs/2609.24971v2",
+      "title": "DolphinBench: Mapping the Pareto Frontier of Agent Memory",
+      "published": "2026-09-21T17:54:35Z"
+    },
+    {
+      "id": "http://arxiv.org/abs/2602.16313v2",
+      "title": "MemoryArena: Benchmarking Agent Memory in Interdependent Multi-Session Agentic Tasks",
+      "published": "2026-02-18T09:49:14Z"
+    },
+    {
+      "id": "http://arxiv.org/abs/2504.13171v1",
+      "title": "Sleep-time Compute: Beyond Inference Scaling at Test-time",
+      "published": "2025-04-17T17:59:25Z"
+    },
+    {
+      "id": "http://arxiv.org/abs/2510.27246v2",
+      "title": "Beyond a Million Tokens: Benchmarking and Enhancing Long-Term Memory in LLMs",
+      "published": "2025-10-31T07:29:52Z"
+    },
+    {
+      "id": "http://arxiv.org/abs/2602.22769v4",
+      "title": "AMA-Bench: Evaluating Long-Horizon Memory for Agentic Applications",
+      "published": "2026-02-26T08:59:31Z"
+    },
+    {
+      "id": "http://arxiv.org/abs/2605.15338v2",
+      "title": "Hidden in Memory: Sleeper Memory Poisoning in LLM Agents",
+      "published": "2026-05-14T19:06:10Z"
+    },
+    {
+      "id": "http://arxiv.org/abs/2607.05318v1",
+      "title": "PiSAs: Benchmarking Contextual Integrity in Multi-User Agentic Systems",
+      "published": "2026-07-06T16:57:24Z"
+    },
+    {
+      "id": "http://arxiv.org/abs/2605.29960v2",
+      "title": "MemPoison: Bypassing Selective Memory Mechanisms to Plant Backdoors in LLM Agents",
+      "published": "2026-05-28T14:02:00Z"
+    },
+    {
+      "id": "http://arxiv.org/abs/2606.18829v1",
+      "title": "GateMem: Benchmarking Memory Governance in Multi-Principal Shared-Memory Agents",
+      "published": "2026-06-17T09:06:15Z"
+    },
+    {
+      "id": "http://arxiv.org/abs/2607.03726v1",
+      "title": "SelfMem: Self-Optimizing Memory for AI Agents",
+      "published": "2026-07-04T06:27:19Z"
+    },
+    {
+      "id": "http://arxiv.org/abs/2606.12703v1",
+      "title": "SMSR: Certified Defence Against Runtime Memory Poisoning in Persistent LLM Agent Systems",
+      "published": "2026-06-10T21:45:52Z"
+    },
+    {
+      "id": "http://arxiv.org/abs/2608.29605v1",
+      "title": "Hindsight Memory-PRM: Supervising Memory Management with Auditable Hindsight Credit",
+      "published": "2026-08-30T06:53:13Z"
+    },
+    {
+      "id": "http://arxiv.org/abs/2606.08151v4",
+      "title": "Decision-Aware Memory Cards: Counterfactual-Inspired Context Selection and Compression for Tool-Using LLM Agents",
+      "published": "2026-06-06T13:02:28Z"
+    },
+    {
+      "id": "http://arxiv.org/abs/2609.37544v2",
+      "title": "How Can Recommendation Feedback Evolve Agent Memory?",
+      "published": "2026-09-29T13:22:20Z"
+    },
+    {
+      "id": "http://arxiv.org/abs/2610.01195v1",
+      "title": "Federated Agent Optimization",
+      "published": "2026-10-01T07:06:00Z"
+    },
+    {
+      "id": "http://arxiv.org/abs/2610.02070v2",
+      "title": "Causal Memory Policy: Making Memory Utility Identifiable by Intervening on Retrieval",
+      "published": "2026-10-01T17:11:25Z"
+    }
+  ],
+  "error": null
+}

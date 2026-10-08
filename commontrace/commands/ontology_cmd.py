@@ -24,6 +24,35 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p_set.add_argument("--dest", default=None)
     p_set.add_argument("--force", action="store_true", help="Overwrite an existing ontology file.")
     p_set.set_defaults(func=run_set_starter)
+    p_learn = sub.add_parser("propose", help="Learn a review-only ontology from observed graph structure.")
+    p_learn.add_argument("--dest", default=None)
+    p_learn.set_defaults(func=run_propose)
+    p_schema = sub.add_parser("schema", help="Install a prescribed JSON-schema ontology.")
+    p_schema.add_argument("schema_file")
+    p_schema.add_argument("--replace", action="store_true")
+    p_schema.add_argument("--dest", default=None)
+    p_schema.set_defaults(func=run_schema)
+
+
+def run_propose(args):
+    import json
+
+    from commontrace import ontology_learning
+
+    print(json.dumps(ontology_learning.propose(paths.resolve_root(args.dest)), indent=2))
+    return 0
+
+
+def run_schema(args):
+    import json
+
+    from commontrace import ontology_learning
+
+    with open(args.schema_file, encoding="utf-8") as fh:
+        schema = json.load(fh)
+    result = ontology_learning.prescribe(paths.resolve_root(args.dest), schema, replace=args.replace)
+    print(json.dumps(result, indent=2))
+    return 0
 
 
 def run_show(args: argparse.Namespace) -> int:

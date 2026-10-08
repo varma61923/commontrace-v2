@@ -145,7 +145,9 @@ def test_command_catalog_and_store_scoped_runner(tmp_path):
 
     status, catalog, _ = _call(gw, "GET", "/v1/command-catalog", headers=auth)
     assert status == 200
-    assert len(catalog["commands"]) == 59
+    from commontrace.cli import _COMMANDS
+
+    assert {item["name"] for item in catalog["commands"]} == set(_COMMANDS)
     assert any(item["name"] == "query" and item["runnable"] for item in catalog["commands"])
     assert any(item["name"] == "gateway" and not item["runnable"] for item in catalog["commands"])
 

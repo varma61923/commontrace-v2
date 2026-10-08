@@ -7,6 +7,24 @@ from typing import Any
 EXPIRES_FIELD = "expires"
 
 
+def expiry_for_type(memory_type: str, *, valid_from: str | None = None,
+                    ttl_hours: float | None = None) -> str | None:
+    """An explicit temporary assertion expires automatically; stable facts do not.
+
+    This is a write-time default, not a retrospective rewrite of old records.
+    Unknown/general types require an explicit TTL rather than guessing retention.
+    """
+    import math
+
+    hours = ttl_hours if ttl_hours is not None else {"temporary": 24.0, "environment": 720.0}.get(memory_type)
+    if hours is None:
+        return None
+    if not math.isfinite(hours) or hours <= 0:
+        raise ValueError("TTL hours must be finite and positive")
+    start = _moment(valid_from)
+    return (start + datetime.timedelta(hours=hours)).isoformat()
+
+
 def parse_expiry(value: str | datetime.date | datetime.datetime) -> datetime.datetime:
     """Parse an ``expires``/``expires_at`` value into an aware UTC datetime."""
     if isinstance(value, datetime.datetime):

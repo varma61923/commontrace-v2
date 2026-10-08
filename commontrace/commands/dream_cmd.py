@@ -6,6 +6,7 @@ import datetime
 import io
 import os
 import sys
+import time
 from contextlib import redirect_stderr, redirect_stdout
 
 from commontrace import failure_signals, frontmatter, paths
@@ -26,6 +27,11 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
                    help="Print the schedule entry for this runner and exit; installs nothing.")
     p.add_argument("--every", choices=("daily", "weekly"), default="weekly", help="With --recipe.")
     p.add_argument("--dest", default=None)
+    p.add_argument("--max-model-calls", type=int, default=10)
+    p.add_argument("--max-tokens", type=int, default=50000)
+    p.add_argument("--max-cost-usd", type=float, default=None)
+    p.add_argument("--max-seconds", type=float, default=120,
+                   help="Stop starting work after this budget; an in-flight provider call may finish later.")
     p.set_defaults(func=run)
 
 
@@ -66,12 +72,32 @@ def _llm_configured() -> bool:
 
 
 def run(args: argparse.Namespace) -> int:
+    from commontrace import _jsonl
+    from commontrace.llm_runtime import Budget, LLMRuntime
+
+    if args.recipe:
+        print(recipe(args.recipe, args.every, args.dest), end="")
+        return 0
+    root = paths.resolve_root(args.dest)
+    runtime = LLMRuntime(root, "dream-" + str(time.time_ns()), budget=Budget(
+        calls=getattr(args, "max_model_calls", 10), tokens=getattr(args, "max_tokens", 50000),
+        cost_usd=getattr(args, "max_cost_usd", None), seconds=getattr(args, "max_seconds", 120)))
+    try:
+        with runtime.scope():
+            return _run_pass(args)
+    finally:
+        _jsonl.append_row(os.path.join(paths.memory_dir(root), "dream_runs.jsonl"), runtime.manifest())
+
+
+def _run_pass(args: argparse.Namespace) -> int:
     if args.recipe:
         print(recipe(args.recipe, args.every, args.dest), end="")
         return 0
     from commontrace.cli import main as cli
 
     root = paths.resolve_root(args.dest)
+    started = time.monotonic()
+    max_seconds = getattr(args, "max_seconds", 120)
     draft = not args.no_draft and _llm_configured()
     now = datetime.datetime.now(datetime.timezone.utc)
     lines = [f"# Dream pass {now.strftime('%Y-%m-%d %H:%M')}Z", ""]
@@ -83,14 +109,20 @@ def run(args: argparse.Namespace) -> int:
     lines.append("")
     if signals and draft:
         for s in signals:
-            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            if time.monotonic() - started >= max_seconds:
+                break
+            from commontrace.llm_runtime import purpose
+
+            with purpose("distill"), redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
                 cli(["distill", "--draft", "--signal", s.name, "--dest", root])
     elif signals:
         lines += ["_No model configured, so nothing was drafted. Run `commontrace distill --failed` for "
                   "evidence-only candidates._", ""]
 
     out = io.StringIO()
-    with redirect_stdout(out), redirect_stderr(io.StringIO()):
+    from commontrace.llm_runtime import purpose
+
+    with purpose("consolidate"), redirect_stdout(out), redirect_stderr(io.StringIO()):
         cli(["consolidate", *(["--draft"] if draft else []), "--dest", root])
     lines += ["## Consolidation", "", "```", out.getvalue().strip(), "```", ""]
 
@@ -101,6 +133,8 @@ def run(args: argparse.Namespace) -> int:
     linked_edges = 0
     with graph_mod.batch(root):
         for trace in load_trace_instances(root):
+            if time.monotonic() - started >= max_seconds:
+                break
             tid = str(trace.get("id") or "").strip()
             tags = trace.get("tags") if isinstance(trace.get("tags"), list) else []
             if not tid or not tags:
@@ -157,6 +191,19 @@ def run(args: argparse.Namespace) -> int:
         pf.write("\n".join(profile_lines) + "\n")
 
     lines += ["## Active Space Profile", f"- Synthesized to `{profile_path}`", ""]
+    from commontrace import memory_control, observations
+
+    if time.monotonic() - started < max_seconds:
+        consolidated = observations.consolidate_facts(root)
+        offline = memory_control.offline_pass(root, max_jobs=20,
+                    seconds=max(0, max_seconds - (time.monotonic() - started)))
+        lines += ["## Standing questions and observations",
+                  f"- Observations consolidated: {len(consolidated)}", f"- Model refresh jobs: {offline}", ""]
+    if time.monotonic() - started < max_seconds:
+        from commontrace import experience_skills
+
+        skills = experience_skills.cluster_agent_cases(root)
+        lines += ["## Skills", f"- Evidence-linked skill proposals: {len(skills)}", ""]
 
     after = _review(root)
     new = sorted(set(after) - before)

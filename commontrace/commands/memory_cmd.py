@@ -32,6 +32,12 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     q = cmd("commit", "Validate and commit every memory change.", run_commit)
     q.add_argument("-m", "--message", default="commontrace: memory update")
     q.add_argument("--no-verify", action="store_true", help="Skip validation and the pre-commit hook.")
+    q = cmd("sign", "Sign the current committed memory tree with a detached HMAC receipt.", run_sign)
+    q.add_argument("--issuer", required=True)
+    q = cmd("attach", "Attach shared read-only memory using an audience-bound handoff.", run_attach)
+    q.add_argument("shared_root")
+    q.add_argument("--agent-id", required=True)
+    q.add_argument("--handoff", required=True)
     q = cmd("restore", "Put memory/ back to a revision as a new commit (history is kept).", run_restore)
     q.add_argument("rev")
     q = cmd("validate", "Check memory files against the limits in memory/memfs.json.", run_validate)
@@ -112,6 +118,20 @@ def run_diff(args, root) -> int:
 def run_commit(args, root) -> int:
     out = memfs.commit(root, args.message, verify=not args.no_verify)
     _emit(args, out, f"committed {out['commit'][:12]}" if out.get("committed") else "nothing to commit")
+    return 0
+
+
+@_guard
+def run_sign(args, root) -> int:
+    out = memfs.sign_snapshot(root, issuer=args.issuer)
+    _emit(args, out, f"signed memory commit {out['commit']}")
+    return 0
+
+
+@_guard
+def run_attach(args, root) -> int:
+    out = memfs.attach(root, args.shared_root, agent_id=args.agent_id, token=args.handoff)
+    _emit(args, out, f"attached shared memory at {out['commit']} for {args.agent_id}")
     return 0
 
 

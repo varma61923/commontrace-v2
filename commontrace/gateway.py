@@ -395,6 +395,18 @@ class Gateway:
             "summary": summary, "auth": auth, "request": request, "response": response})
 
     def _register(self) -> None:
+        self._route("POST", "/v1/agent/signup", self._agent_signup, summary="Register one scoped agent.")
+        self._route("POST", "/v1/agent/plugin", self._agent_plugin, summary="SDK skill and per-agent manifest.")
+        self._route("POST", "/v1/agent/heartbeat", self._agent_heartbeat, summary="Record agent liveness.")
+        for operation in ("add", "batch", "profile", "reflect", "search", "check-action", "propose", "outcome"):
+            self._route("POST", "/v1/memory/" + operation,
+                        lambda body, query, op=operation: self._memory_operation(op, body),
+                        summary="Scoped memory " + operation + ".")
+        self._route("GET", "/v1/palace", self._palace, summary="Overview, attention and memory suggestions.")
+        for operation in ("directive", "question", "refresh", "reject-proposal"):
+            self._route("POST", "/v1/control/" + operation,
+                        lambda body, query, op=operation: self._control_operation(op, body),
+                        summary="Governed memory " + operation + ".")
         self._route("GET", "/v1/health", self._health, summary="Liveness.", auth=False)
         self._route("GET", "/v1/capabilities", self._capabilities, summary="Tier and capability matrix.", auth=False)
         self._route("GET", "/v1/whoami", self._whoami, summary="Caller identity and scope.")
@@ -492,6 +504,10 @@ class Gateway:
             path = split.path
             if not trusted and not self._host_ok(headers):
                 raise ApiError(403, "bad_host", "the Host header is not allowed")
+            if path in ("/benchmarks", "/benchmarks/", "/benchmarks/run.json") and method == "GET":
+                if path == "/benchmarks":
+                    return Response(301, b"", headers={"Location": "/benchmarks/"})
+                return self._benchmark_site(path)
             if path in ("/", "/index.html", "/ui/app.js", "/ui/app.css", "/ui/tokens.css",
                         "/ui/favicon.svg") and method == "GET":
                 return self._static(path)
@@ -501,8 +517,20 @@ class Gateway:
                     raise ApiError(405, "method_not_allowed", f"{method} is not allowed on {path}")
                 raise ApiError(404, "not_found", f"no such endpoint: {path}")
             handler, spec = entry
+            if self._request_scope() and (path.startswith("/v1/memory/") or path.startswith("/v1/control/")
+                    or path.startswith("/v1/agent/") or path == "/v1/palace"):
+                raise ApiError(403, "container_scope", "memory evolution routes require a dedicated store; "
+                               "container-scoped requests use the existing recall and review routes")
+            principal = None
             if spec["auth"] and not trusted and not self._authorised(headers):
-                raise ApiError(401, "unauthorized", "a valid Authorization: Bearer token is required")
+                from commontrace import agent_registry
+
+                bearer = next((v for k, v in headers.items() if k.lower() == "authorization"), "")
+                principal = agent_registry.authenticate(self.root, bearer.removeprefix("Bearer "))
+                if principal is None:
+                    raise ApiError(401, "unauthorized", "a valid Authorization: Bearer token is required")
+                if not (path.startswith("/v1/memory/") or path in ("/v1/agent/plugin", "/v1/agent/heartbeat")):
+                    raise ApiError(403, "agent_scope", "agent credential does not grant this operation")
             container_tag = next((
                 v for k, v in headers.items()
                 if k.lower() in ("x-container-tag", "container-tag")
@@ -512,6 +540,10 @@ class Gateway:
             payload: dict = {}
             if method == "POST":
                 payload = self._parse_body(body)
+                # Never accept caller-supplied internal authorization context.
+                payload.pop("_principal", None)
+                if principal is not None:
+                    payload["_principal"] = principal
             result = handler(payload, parse_qs(split.query))
             if isinstance(result, Response):
                 return result
@@ -576,9 +608,146 @@ class Gateway:
             "Referrer-Policy": "no-referrer", "X-Frame-Options": "DENY",
         })
 
+    def _benchmark_site(self, path: str) -> Response:
+        directory = os.path.join(self.root, "benchmark-results", "evolution", "second")
+        try:
+            with open(os.path.join(directory, "run.json"), encoding="utf-8") as fh:
+                report = json.load(fh)
+            if report.get("synthetic") is not True:
+                raise ApiError(403, "private_benchmark", "only the synthetic showcase can be served publicly")
+            name = "run.json" if path.endswith("run.json") else "index.html"
+            with open(os.path.join(directory, name), "rb") as fh:
+                data = fh.read()
+        except (OSError, ValueError):
+            raise ApiError(404, "no_benchmark", "run ./reproduce.sh to generate the benchmark showcase") from None
+        return Response(200, data, "application/json" if name.endswith("json") else "text/html; charset=utf-8",
+                        {"Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'",
+                         "X-Content-Type-Options": "nosniff"})
+
 
     def _events_path(self) -> str:
         return os.path.join(paths.memory_dir(self.root), EVENTS_NAME)
+
+    def _agent_signup(self, body, _query) -> dict:
+        from commontrace import agent_registry
+
+        try:
+            return agent_registry.signup(self.root, body.get("agent_id", ""), labels=body.get("scopes"))
+        except ValueError as exc:
+            raise _bad(str(exc)) from exc
+
+    def _agent_plugin(self, body, _query) -> dict:
+        from commontrace import agent_registry
+
+        agent_id = body.get("_principal", {}).get("id", body.get("agent_id", ""))
+        try:
+            return agent_registry.plugin(self.root, agent_id)
+        except ValueError as exc:
+            raise _bad(str(exc)) from exc
+
+    def _agent_heartbeat(self, body, _query) -> dict:
+        from commontrace import agent_registry
+
+        agent_id = body.get("_principal", {}).get("id", body.get("agent_id", ""))
+        try:
+            return agent_registry.heartbeat(self.root, agent_id)
+        except ValueError as exc:
+            raise _bad(str(exc)) from exc
+
+    def _memory_operation(self, operation: str, body: dict) -> dict:
+        from commontrace import additive_extract, memory_control
+        from commontrace.search_recipes import REGISTRY
+
+        principal = body.get("_principal")
+        context = principal["scopes"] if principal else body.get("context", [])
+        if not isinstance(context, list) or any(not isinstance(s, str) for s in context):
+            raise _bad("context must be a list of scope labels")
+        try:
+            if operation == "batch":
+                from commontrace import ingestion_contract
+
+                return ingestion_contract.batch(self.root, body.get("items"), context=context)
+            if operation == "add":
+                local = body.get("local", True)
+                if not isinstance(local, bool) or (principal and not local):
+                    raise _bad("agent writes use local ADD-only admission")
+                return additive_extract.extract(self.root, body.get("text", ""), scopes=context, local=local,
+                                                 memory_type=body.get("memory_type", "general"))
+            query = body.get("query", "")
+            if not isinstance(query, str) or len(query) > MAX_TEXT_CHARS:
+                raise _bad("query must be bounded text")
+            if operation == "profile":
+                occasion_id = body.get("occasion_id")
+                if principal:
+                    occasion_id = principal["id"] + ":" + str(occasion_id or time.time_ns())
+                return memory_control.profile(self.root, query, context=context, limit=body.get("limit", 10),
+                                               occasion_id=occasion_id)
+            if operation == "reflect":
+                occasion_id = body.get("occasion_id")
+                if principal:
+                    occasion_id = principal["id"] + ":" + str(occasion_id or time.time_ns())
+                return memory_control.reflect(self.root, query, context=context, budget=body.get("budget", 600),
+                                               occasion_id=occasion_id)
+            if operation == "outcome":
+                occasion_id = _ident(body.get("occasion_id"), "occasion_id")
+                if principal and not occasion_id.startswith(principal["id"] + ":"):
+                    raise ApiError(403, "agent_scope", "occasion belongs to another principal")
+                if not isinstance(body.get("succeeded"), bool):
+                    raise _bad("succeeded must be boolean")
+                return {"recorded": holdout_io.record_outcome(self.root, occasion_id, body["succeeded"])}
+            if operation == "search":
+                return {"results": REGISTRY.retrieve(body.get("retriever", "hybrid"), self.root, query,
+                        recipe=body.get("recipe", "balanced"), context=context, limit=body.get("limit", 10),
+                        center=body.get("center", ""), as_of=body.get("as_of"))}
+            if operation == "check-action":
+                memory_control.check_action(self.root, body.get("tool", ""), context=context, tags=body.get("tags", []))
+                return {"allowed": True}
+            if operation == "propose":
+                return memory_control.proposal(self.root, body.get("text", ""),
+                        sources=body.get("sources", []), context=context)
+        except (ValueError, TypeError) as exc:
+            raise _bad(str(exc)) from exc
+        except PermissionError as exc:
+            raise ApiError(403, "directive", str(exc)) from exc
+        raise _bad("unknown operation")
+
+    def _control_operation(self, operation: str, body: dict) -> dict:
+        from commontrace import jobs, memory_control
+
+        try:
+            if operation == "directive":
+                if not self.allow_approval:
+                    raise ApiError(403, "approval_disabled", "rule creation requires --allow-approval")
+                return memory_control.directive(self.root, body.get("text", ""),
+                        deny_tools=body.get("deny_tools", []), required_tags=body.get("required_tags", []),
+                        labels=body.get("context", []))
+            if operation == "question":
+                return memory_control.standing_question(self.root, body.get("text", ""),
+                        context=body.get("context", []), budget=body.get("budget", 600),
+                        refresh_seconds=body.get("refresh_seconds", 3600))
+            if operation == "refresh":
+                model_id = _ident(body.get("id"), "id")
+                return {"job_id": jobs.enqueue(self.root, "mental-model", {"id": model_id}).id}
+            if operation == "reject-proposal":
+                if not self.allow_approval:
+                    raise ApiError(403, "approval_disabled", "proposal rejection requires --allow-approval")
+                return memory_control.reject_proposal(self.root, body.get("id", ""),
+                        body.get("expected_revision", ""), body.get("reason", ""))
+        except (ValueError, TypeError) as exc:
+            raise _bad(str(exc)) from exc
+        raise _bad("unknown operation")
+
+    def _palace(self, _body, _query) -> dict:
+        from commontrace import agent_registry, jobs, memory_control
+
+        proposals = memory_control.records(self.root, "proposal")
+        return {"models": memory_control.records(self.root, "mental-model"),
+                "directives": memory_control.records(self.root, "directive"),
+                "suggestions": [r for r in proposals if r["data"].get("status") == "review"],
+                "needs_attention": {"proposals": sum(r["data"].get("status") == "review" for r in proposals),
+                                    "jobs": jobs.counts(self.root)},
+                "agents": [{k: v for k, v in row.items() if k != "token_hash"}
+                           for row in agent_registry.load(self.root).values()]}
 
     def _log_event(self, event: dict) -> None:
         path = self._events_path()

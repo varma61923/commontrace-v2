@@ -28,6 +28,7 @@ attention/*.bin
 embeddings-*.db
 jobs.db
 .handoff_key
+attachments.jsonl
 """
 KEY_FILE = ".handoff_key"
 TEXT_SUFFIXES = (".md", ".jsonl", ".json", ".yaml", ".yml", ".txt")
@@ -370,3 +371,62 @@ def verify_handoff(root: str, token: str, *, audience: str | None = None) -> dic
     drift = head != claims["commit"] and bool(_git(root, "diff", "--name-only", claims["commit"], head, "--",
                                                    *claims["scope"]).strip())
     return {**claims, "head": head, "drift": drift}
+
+
+def sign_snapshot(root: str, *, issuer: str) -> dict:
+    """Detached HMAC attestation of a committed memory tree, stored in git metadata."""
+    from commontrace import _jsonl
+
+    require_repo(root)
+    commit_id = memory_git.head_hash(root)
+    if not commit_id or status(root)["changed"]:
+        raise MemfsError("commit memory before signing its snapshot")
+    claims = {"version": 1, "commit": commit_id, "tree": _tree_digest(root, commit_id, ["memory"]),
+              "issuer": issuer, "scope": ["memory"]}
+    signature = hmac.new(_key(root), json.dumps(claims, sort_keys=True).encode(), hashlib.sha256).hexdigest()
+    row = {**claims, "signature": signature}
+    filename = _git(root, "rev-parse", "--git-path", "commontrace-attestations").strip()
+    if not os.path.isabs(filename):
+        filename = os.path.join(root, filename)
+    _jsonl.write_json(os.path.join(filename, commit_id + ".json"), row)
+    return row
+
+
+def verify_snapshot(root: str, attestation: dict) -> bool:
+    try:
+        claims = {k: v for k, v in attestation.items() if k != "signature"}
+        signature = hmac.new(_key(root), json.dumps(claims, sort_keys=True).encode(), hashlib.sha256).hexdigest()
+        return (hmac.compare_digest(signature, attestation["signature"])
+                and _tree_digest(root, claims["commit"], claims["scope"]) == claims["tree"])
+    except (KeyError, ValueError, MemfsError):
+        return False
+
+
+def attach(root: str, shared_root: str, *, agent_id: str, token: str) -> dict:
+    """Attach a read-only shared repository using an audience-bound handoff."""
+    from commontrace import _jsonl
+
+    shared_root = os.path.realpath(shared_root)
+    claims = verify_handoff(shared_root, token, audience=agent_id)
+    if claims["drift"] or status(shared_root)["changed"] or claims["scope"] != ["memory"]:
+        raise MemfsError("shared memory changed; create a fresh handoff")
+    path = os.path.join(paths.memory_dir(root), "attachments.jsonl")
+    row = {"shared_root": shared_root, "agent_id": agent_id, "handoff": token, "commit": claims["commit"]}
+    with _jsonl.locked(path):
+        _jsonl.append_row(path, row)
+    os.chmod(path, 0o600)
+    return {k: v for k, v in row.items() if k != "handoff"}
+
+
+def attached_roots(root: str, *, agent_id: str) -> list[str]:
+    from commontrace import _jsonl
+
+    latest = {row["shared_root"]: row for row in _jsonl.read_rows(
+        os.path.join(paths.memory_dir(root), "attachments.jsonl")) if row["agent_id"] == agent_id}
+    result = []
+    for shared_root, row in latest.items():
+        claims = verify_handoff(shared_root, row["handoff"], audience=agent_id)
+        if claims["drift"] or status(shared_root)["changed"] or claims["scope"] != ["memory"]:
+            raise MemfsError("shared memory attachment drifted; refresh its handoff")
+        result.append(shared_root)
+    return result
