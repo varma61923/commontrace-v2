@@ -157,13 +157,20 @@
     var id = (location.hash.replace(/^#\/?/, "").split("?")[0]) || "overview";
     return ROUTES.filter(function (r) { return r.id === id; })[0] || ROUTES[0];
   }
+  var navLinks = {};
   function renderNav() {
     var cur = currentRoute().id;
-    nav.textContent = "";
     ROUTES.forEach(function (r) {
       if (r.hidden) return;
       var here = r.id === cur || (r.id === "review" && cur === "lesson");
-      nav.appendChild(h("a", { href: "#/" + r.id, "aria-current": here ? "page" : false, text: r.label }));
+      // Data refreshes must not remove a focused link between focus and Enter.
+      var link = navLinks[r.id];
+      if (!link) {
+        link = navLinks[r.id] = h("a", { href: "#/" + r.id, text: r.label });
+        nav.appendChild(link);
+      }
+      if (here) link.setAttribute("aria-current", "page");
+      else link.removeAttribute("aria-current");
     });
   }
 
@@ -1059,6 +1066,12 @@
     }
   })();
 
+  // Skipping changes focus, not the application route. A native #main jump
+  // would enqueue a hashchange that can steal focus from the next link.
+  var skipLink = document.querySelector(".skip");
+  if (skipLink) skipLink.addEventListener("click", function (event) {
+    event.preventDefault(); main.focus();
+  });
   window.addEventListener("hashchange", function () { navigationGeneration++; render(); main.focus(); refresh(); });
   document.addEventListener("visibilitychange", function () { if (!document.hidden) refresh(); });
   setInterval(function () { if (lastOk && connState.indexOf("ok") === 0) setConn("ok", "Live · updated " + ago(new Date(lastOk).toISOString())); }, 1000);

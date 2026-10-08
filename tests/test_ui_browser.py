@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Iterator
 
 import pytest
 
-from commontrace import frontmatter, functions, gateway, hierarchical, paths, proof, templates
+from commontrace import frontmatter, functions, gateway, hierarchical, holdout_io, paths, proof, templates
 from commontrace.fact_evidence import bind_evidence
 
 if TYPE_CHECKING:
@@ -129,9 +129,11 @@ def test_navigation_keyboard_theme_and_literal_review_evidence(page: Page, conso
     page.get_by_label("Theme", exact=True).select_option("dark")
     pw.expect(page.locator("html")).to_have_attribute("data-theme", "dark")
     skip = page.get_by_role("link", name="Skip to content", exact=True)
+    route_before_skip = page.url
     skip.focus()
     skip.press("Enter")
     pw.expect(page.locator("main")).to_be_focused()
+    assert page.url == route_before_skip
     review = page.get_by_role("navigation", name="Console sections").get_by_role("link", name="Review", exact=True)
     review.focus()
     review.press("Enter")
@@ -141,6 +143,38 @@ def test_navigation_keyboard_theme_and_literal_review_evidence(page: Page, conso
     assert page.evaluate("() => window.auditExecuted === undefined")
     assert not page.evaluate("() => document.documentElement.scrollWidth > innerWidth")
     assert not errors
+
+
+def test_skip_to_content_preserves_current_route_and_unsent_form(page: Page, console: Console) -> None:
+    connect(page, console)
+    navigate(page, "Explore memory")
+    question = page.get_by_label("Your question", exact=True)
+    question.fill("An unsent investigation must survive keyboard navigation")
+    route_before_skip = page.url
+    skip = page.get_by_role("link", name="Skip to content", exact=True)
+    skip.focus()
+    skip.press("Enter")
+    pw.expect(page.locator("main")).to_be_focused()
+    assert page.url == route_before_skip
+    pw.expect(page.get_by_role("heading", name="Explore memory", exact=True)).to_be_visible()
+    pw.expect(question).to_have_value("An unsent investigation must survive keyboard navigation")
+
+
+def test_changed_backend_refresh_preserves_keyboard_navigation_focus(page: Page, console: Console) -> None:
+    connect(page, console)
+    experiment = page.locator("#c-exp").locator("..").locator(".big")
+    pw.expect(experiment).to_have_text("Not started")
+    holdout_io.configure(console.root, rate=0.2)
+    review = page.get_by_role("navigation", name="Console sections").get_by_role("link", name="Review", exact=True)
+    review.focus()
+    # Exercise the production refresh handler, then await an observable repaint
+    # caused by new backend data before checking the focused navigation link.
+    page.evaluate("() => document.dispatchEvent(new Event('visibilitychange'))")
+    pw.expect(experiment).to_have_text("20%")
+    pw.expect(review).to_be_focused()
+    review.press("Enter")
+    pw.expect(review).to_have_attribute("aria-current", "page")
+    pw.expect(page.get_by_role("heading", name="Review queue", exact=True)).to_be_visible()
 
 
 @pytest.mark.parametrize("width", [390, 1440])

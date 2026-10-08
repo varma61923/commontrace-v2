@@ -16,6 +16,11 @@ documentation checks passed; 73 additional MCP tests passed against the pinned
 dependency environment. Model-dependent and unconfigured integration tests remain
 among the skips.
 
+The subsequent keyboard-focus correction passed 16 real Chromium contracts and
+19 controller tests. Two new regressions reproduce the old route/form loss and
+refresh focus loss using the previous production JavaScript, then pass with the
+fix. No timing threshold or retry was relaxed.
+
 The measured implementation is `da763d0b9d00942cdab6012d2f939ad1f6c40206`.
 The complete LoCoMo evaluation uses 1,540 questions in categories 1–4 across ten
 conversations, production redaction, lexical retrieval, no reranker or models,

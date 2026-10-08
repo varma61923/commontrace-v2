@@ -134,6 +134,10 @@ overrides; without `--allow-approval` they default to audited inspection handler
 Container-scoped command sessions expose help only; use routed endpoints for
 scoped reads and decisions.
 
+Skip to content moves focus without changing the current route or discarding an
+unsent form. Background data refreshes update navigation state in place, so a
+focused section link remains active until the user presses Enter.
+
 `python -m benchmarks.vector_search` prints seeded real-engine measurements to
 stdout, including returned-score/order checksums and duplicate-heavy workloads.
 The native dot-product screening optimization applies on supported CPython
