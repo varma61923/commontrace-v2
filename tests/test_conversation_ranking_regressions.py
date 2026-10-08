@@ -78,9 +78,9 @@ def test_filtered_keyword_search_matches_the_exact_sql_filter(tmp_path):
     rng = random.Random(7)
     words = "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima".split()
     with Store(str(tmp_path), "s") as store:
-        for i in range(120):
-            store.add(f"s{i % 9}", [{"role": "user", "text": " ".join(rng.choice(words) for _ in range(12))}],
-                      session_at=f"2024-01-{i % 28 + 1:02d}")
+        for day in range(1, 9):
+            store.add(f"s{day}", [{"role": "user", "text": " ".join(rng.choice(words) for _ in range(12))}
+                                  for _ in range(15)], session_at=f"2024-01-{day:02d}")
         turns = [r[0] for r in store.db.execute("SELECT id FROM turns")]
         for size in (3, 30, 110):
             allowed = set(rng.sample(turns, size))
