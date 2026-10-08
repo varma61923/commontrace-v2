@@ -246,6 +246,9 @@ class TestAtomicWritingAndCleanup:
 
     def test_build_index_atomic_write_and_cleanup(self, tmp_path, monkeypatch, attention_modules):
         build_index, _ = attention_modules
+        encoder = types.SimpleNamespace(encode=lambda texts, **kwargs:
+                                        np.zeros((len(texts), build_index.EMBEDDING_DIM), dtype=np.float32))
+        monkeypatch.setattr(build_index, "SentenceTransformer", lambda *args, **kwargs: encoder)
         index_path = tmp_path / "index.npz"
 
         np.savez(str(index_path), slugs=np.array(["test"]), embeddings=np.zeros((1, 4)))
