@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Bounded real-data reproduction runner.** Pinned LoCoMo/LongMemEval development selections, matched original/current product harness, dense/reranker ablations, local vendor attempts, per-case failures and cluster comparisons; exact context-text counts report estimated-budget exceedances separately.
+
 - **Executable local vendor benchmark profiles.** Mem0 raw-memory/Qdrant and Graphiti episodic/FalkorDBLite paths share source-bound evidence and bounded reader/judge accounting; their limited configurations are explicit. LoCoMo development limits select exact seeded question counts.
 
 - **Bounded benchmark inference.** HTTP reader and multi-call judge requests reserve cost before dispatch, send output caps and avoid hidden retries. Missing or overbound usage invalidates the run; cache history is reported separately from current spend. Optional tokenizer counts and source-bound generation settings expose the measurement contract.

@@ -32,6 +32,7 @@ from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from benchmarks.artifacts import model_artifact
 from benchmarks.cache import BenchmarkCache, CostGuard  # noqa: E402
 from benchmarks.compare import clustered_estimates, ranking_metrics
 from benchmarks.compare import compare_runs as paired_compare  # noqa: E402
@@ -677,6 +678,14 @@ def run(args) -> dict:
         })
 
     profile_config = None
+    model_bindings = {}
+    if memory_adapter == "commontrace":
+        from commontrace import rerank_arm
+        from commontrace.conversation import embed
+        for name in ([embed.MODELS[args.embedder][0]] if args.embedder in embed.MODELS else []) + (
+                [rerank_arm.MODELS[args.rerank][0]] if args.rerank in rerank_arm.MODELS else []):
+            model_bindings[name] = model_artifact(name)
+    provenance["evaluation"]["context_text_tokenizer"] = getattr(args, "tokenizer", None)
     rows_by_mode = {m: {b: [] for b in budgets} for m in modes}
     ingest_s, full_tokens = 0.0, []
     recall_seconds = {b: 0.0 for b in budgets}
@@ -784,10 +793,13 @@ def run(args) -> dict:
                                 "effective_embedders": ([adapter.descriptor["embedder"]] if adapter is not None
                                                            and "embedder" in adapter.descriptor else sorted(store._embedders)),
                                 "memory_adapter": memory_adapter,
-                                "effective_rerank": r.explain.get("rerank"),
+                                "effective_rerank": (r.explain.get("rerank")
+                                                     if "rerank_top" in r.explain else None),
                                 # Reference-mode ranking metrics are intentionally undefined.
                                 **(ranking_scores if mode == "memory" else {}),
                                 "tokens": toks,
+                                "context_text_tokens": (text_tokens(ctx, args.tokenizer)
+                                                        if getattr(args, "tokenizer", None) else None),
                                 "evidence": ev,
                                 "complete": comp,
                                 "session": ses,
@@ -866,7 +878,7 @@ def run(args) -> dict:
                 "chunk_set": chunk_info,
             }
     for summary in results.values():
-        summary["retrieval_profile"] = profile_config or {"profile": "commontrace"}
+        summary["retrieval_profile"] = profile_config or {"profile": "commontrace", "model_artifacts": model_bindings}
     if getattr(args, "bootstrap", False):
         for summary in results.values():
             targets = summary.get("modes_detail", {summary["mode"]: summary})
@@ -876,6 +888,8 @@ def run(args) -> dict:
                 summary["bootstrap_95ci"] = targets[summary["mode"]]["bootstrap_95ci"]
     if product_digest(repository) != initial_product or adapter_digest(__file__) != provenance["adapter_sha256"]:
         raise RuntimeError("benchmark source changed during measurement; discard this run")
+    if any(model_artifact(name) != binding for name, binding in model_bindings.items()):
+        raise RuntimeError("retrieval model artifacts changed during measurement")
     if dataset_digest(__file__) != provenance["harness_sha256"]:
         raise RuntimeError("benchmark harness changed during measurement")
     if dataset_digest(os.path.join(repository, "benchmarks", "vendor_adapters.py")) != provenance["vendor_adapters_sha256"]:
@@ -906,6 +920,10 @@ def summarize(rows, args, budget, ingest_s, recall_s, full_tokens, mode="memory"
             "session": _mean(r["session"] for r in rs),
             "answer_in_context": _mean(r["answer_in_context"] for r in rs),
             "tokens": _mean(r["tokens"] for r in rs),
+            "context_text_tokens": _mean(r.get("context_text_tokens") for r in rs),
+            "exact_budget_exceedances": (sum(r["context_text_tokens"] > budget for r in rs)
+                                         if rs and all(r.get("context_text_tokens") is not None for r in rs)
+                                         and mode in ("memory", "budgeted-history") else None),
             "unresolved_gold_turn_references": sum(len(r.get("unresolved_gold_turn_ids", [])) for r in rs),
             "recall_latency": _p50_p95([r.get("recall_latency_s") for r in rs]),
             "ranking": {

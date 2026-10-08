@@ -170,3 +170,23 @@ def test_model_binding_includes_nested_pooling_configuration(tmp_path, monkeypat
     config.write_text('{"mean":false}')
     assert model_artifact("fixture") != before
     assert "1_Pooling/config.json" in before["artifacts_sha256"]
+
+
+def test_exact_context_text_counts_report_without_answering(tmp_path, monkeypatch):
+    args = _args(tmp_path, tokenizer="tiktoken:fixture", budget="100")
+    monkeypatch.setattr(bench, "text_tokens", lambda context, tokenizer: 101 if context else 0)
+    summary = bench.run(args)[100]
+    assert summary["overall"]["accuracy"] is None
+    assert summary["overall"]["context_text_tokens"] == 101
+    assert summary["overall"]["exact_budget_exceedances"] == 3
+    assert summary["provenance"]["evaluation"]["context_text_tokenizer"] == "tiktoken:fixture"
+
+
+def test_unavailable_requested_reranker_is_not_reported_as_effective(tmp_path, monkeypatch):
+    from commontrace import rerank_arm
+
+    args = _args(tmp_path, rerank="cross-encoder")
+    monkeypatch.setattr(bench, "model_artifact", lambda name: {"fixture": name})
+    monkeypatch.setattr(rerank_arm, "ready", lambda mode: "model unavailable")
+    summary = bench.run(args)[1500]
+    assert all(row["effective_rerank"] is None for row in summary["rows"])
