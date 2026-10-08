@@ -389,7 +389,7 @@ def _embedder(store: Store, choice: str | None):
     from commontrace.conversation import embed
 
     tag = embed.configured() if choice == "auto" else choice
-    if not tag:
+    if not tag or tag == "none":
         return None
     if not embed.available():
         return None

@@ -5,13 +5,17 @@ replays pre-index overlap selection/ranking; recall comparisons use the same
 current quote assembly with that baseline search, conservatively excluding the
 old second full-corpus load. Alternating trials require identical ranked scores
 and recalled context. Cold builds, mutation rebuilds, broad queries and retained
-cache bytes are reported separately. No timing assertion or external LLM is used.
+cache bytes are reported separately. ``--check`` requires warm generations to
+remain retained without rebuilding and indexed medians to beat the exact
+baseline. Timings compare alternating arms on this host, not absolute latency
+or a competitor service. No external LLM is used.
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
+import math
 import platform
 import re
 import statistics
@@ -19,6 +23,7 @@ import tempfile
 import time
 from collections.abc import Callable
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
@@ -74,6 +79,17 @@ def _rows(rows: Rows) -> str:
     return _digest([(fact.to_dict(), score) for fact, score in rows])
 
 
+def _implementation_sha256() -> str:
+    """Bind measurements to this harness and the complete Python product source."""
+    repository = Path(__file__).resolve().parent.parent
+    paths = sorted((repository / 'commontrace').rglob('*.py')) + [Path(__file__).resolve()]
+    digest = hashlib.sha256()
+    for path in paths:
+        digest.update(str(path.relative_to(repository)).encode('utf-8') + b'\0')
+        digest.update(path.read_bytes() + b'\0')
+    return digest.hexdigest()
+
+
 def _recall(root: str, query: str, baseline: bool) -> str:
     if baseline:
         with patch.object(hierarchical, 'search_facts', original_search):
@@ -95,9 +111,11 @@ def _compare(root: str, query: str, trials: int, channel: str) -> dict[str, Any]
                  'candidate': lambda: _recall(root, query, False)}
     samples: dict[str, list[float]] = {name: [] for name in calls}
     checksums: dict[str, str] = {}
+    warm_snapshot_loads = 0
     for trial in range(trials + 1):
         order = ('baseline', 'candidate') if trial % 2 == 0 else ('candidate', 'baseline')
         for name in order:
+            before = fact_index.cache_info()['snapshots']['misses']
             started = time.perf_counter_ns()
             digest = calls[name]()
             elapsed_ms = (time.perf_counter_ns() - started) / 1_000_000
@@ -106,16 +124,53 @@ def _compare(root: str, query: str, trials: int, channel: str) -> dict[str, Any]
             checksums[name] = digest
             if trial:
                 samples[name].append(elapsed_ms)
+                warm_snapshot_loads += fact_index.cache_info()['snapshots']['misses'] - before
     if checksums['baseline'] != checksums['candidate']:
         raise RuntimeError('indexed search changed exact scores, ordering or recalled context')
     medians = {name: statistics.median(values) for name, values in samples.items()}
     return {'operation': channel, 'query': query, 'trials': trials,
             'baseline_median_ms': medians['baseline'], 'candidate_median_ms': medians['candidate'],
             'speedup': medians['baseline'] / medians['candidate'],
+            'warm_snapshot_loads': warm_snapshot_loads, 'cache': fact_index.cache_info(),
             'scores_and_context_sha256': checksums['candidate']}
 
 
+def check(outputs: list[dict[str, Any]]) -> None:
+    """Fail on loss of bounded retention, warm rebuilds or measured regression.
+
+    Exact ordered rows, scores and final context have already been compared by
+    ``measure``. This gate uses the same host and fixture for both timing arms.
+    Cold build and canonical writes remain separate, explicitly O(N) operations.
+    """
+    comparisons = [row for row in outputs if row['operation'] in ('search', 'recall')]
+    if {(row['operation'], row['query']) for row in comparisons} != {
+        (channel, query) for channel in ('search', 'recall')
+        for query in ('rarecalibration', 'service timeout')
+    }:
+        raise RuntimeError('missing selective or broad search/recall measurements')
+    for row in comparisons:
+        cache = row['cache']['snapshots']
+        if not cache['entries'] or not 0 < cache['bytes'] <= fact_index.MAX_SNAPSHOT_BYTES:
+            raise RuntimeError('fact generation was not retained within the snapshot budget')
+        if row['warm_snapshot_loads']:
+            raise RuntimeError('stable warm queries rebuilt a fact generation')
+        timings = (row['baseline_median_ms'], row['candidate_median_ms'], row['speedup'])
+        if any(isinstance(value, bool) or not isinstance(value, (int, float))
+               or not math.isfinite(value) or value <= 0 for value in timings):
+            raise RuntimeError('benchmark timings must be finite and positive')
+        if row['candidate_median_ms'] > row['baseline_median_ms'] or row['speedup'] < 1:
+            raise RuntimeError(f"indexed {row['operation']} regressed for {row['query']!r}")
+    bm25 = next((row for row in outputs if row['operation'] == 'bm25-scoped-statistics'), None)
+    if bm25 is None:
+        raise RuntimeError('missing warm BM25 measurements')
+    if bm25['warm_snapshot_loads'] or bm25['warm_statistics_loads']:
+        raise RuntimeError('stable warm BM25 queries rebuilt a generation or scoped statistics')
+    if not bm25['cache']['statistics']['entries']:
+        raise RuntimeError('scoped BM25 statistics were not retained')
+
+
 def measure(*, facts: int, trials: int) -> list[dict[str, Any]]:
+    implementation = _implementation_sha256()
     with tempfile.TemporaryDirectory(prefix='commontrace-fact-benchmark-') as root:
         seed(root, facts)
         fact_index.clear_cache()
@@ -147,26 +202,38 @@ def measure(*, facts: int, trials: int) -> list[dict[str, Any]]:
         hierarchical.search_facts(root, 'rarecalibration', scope='alpha', scorer='bm25-v1')
         first_bm25_ms = (time.perf_counter_ns() - started) / 1_000_000
         warm_bm25: list[float] = []
+        before_warm = fact_index.cache_info()
         for _ in range(trials):
             started = time.perf_counter_ns()
             hierarchical.search_facts(root, 'rarecalibration', scope='alpha', scorer='bm25-v1')
             warm_bm25.append((time.perf_counter_ns() - started) / 1_000_000)
         outputs.append({'operation': 'bm25-scoped-statistics', 'first_search_ms': first_bm25_ms,
-                        'warm_median_ms': statistics.median(warm_bm25), 'cache': fact_index.cache_info()})
+                        'warm_median_ms': statistics.median(warm_bm25),
+                        'warm_snapshot_loads': fact_index.cache_info()['snapshots']['misses']
+                            - before_warm['snapshots']['misses'],
+                        'warm_statistics_loads': fact_index.cache_info()['statistics']['misses']
+                            - before_warm['statistics']['misses'],
+                        'cache': fact_index.cache_info()})
         fact_index.clear_cache()
+        if _implementation_sha256() != implementation:
+            raise RuntimeError('product or benchmark source changed during measurement')
         return [{**output, 'facts': facts, 'python': platform.python_version(),
-                 'proof_bound_facts': 0, 'scope': 'alpha'} for output in outputs]
+                 'proof_bound_facts': 0, 'scope': 'alpha', 'implementation_sha256': implementation} for output in outputs]
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--facts', type=int, default=10000)
     parser.add_argument('--trials', type=int, default=5)
+    parser.add_argument('--check', action='store_true', help='require bounded warm retention and baseline parity')
     args = parser.parse_args()
     if not 20 <= args.facts <= 100000 or not 1 <= args.trials <= 100:
         parser.error('facts=20..100000 and trials=1..100 required')
-    for output in measure(facts=args.facts, trials=args.trials):
+    outputs = measure(facts=args.facts, trials=args.trials)
+    for output in outputs:
         print(json.dumps(output, sort_keys=True))
+    if args.check:
+        check(outputs)
 
 
 if __name__ == '__main__':

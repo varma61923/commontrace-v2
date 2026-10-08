@@ -3,10 +3,15 @@
 Fact-file identity, not TTL, selects every snapshot. Retention is bounded to
 64 MiB/eight generations; scoped BM25 metadata statistics retain at most 8 MiB.
 Oversized filter strings are evaluated without retaining their statistics keys.
+Posting/term sets use sorted immutable tuples and singleton values rather than
+per-document hash tables. Payloads are individually compressed with a fixed
+public-schema dictionary; snapshot-local value pools are discarded after build.
 Cold builders necessarily read the source corpus once. Proof eligibility is
 never cached: only ranked candidates and their dependency ancestry are checked.
 Retention budgets exclude active builders/request views. Cold indexing uses
 O(N) time and memory; banks exceeding the budget are served without retention.
+Decoded request payloads can exceed their retained compressed size; the budget
+does not impose a new size or eligibility limit on legacy fact rows.
 Coherent-read attempts are capped at three, rather than looping under mutation.
 BM25 statistics include metadata-eligible facts whose proofs may be ineligible;
 private facts outside the requested scope never affect those statistics.
@@ -22,12 +27,14 @@ import os
 import re
 import sys
 import threading
+import zlib
+from bisect import bisect_left
 from collections import Counter, OrderedDict
-from collections.abc import Hashable, Iterable, Iterator, Mapping
+from collections.abc import Hashable, Iterable, Iterator, Mapping, Set
 from dataclasses import dataclass, fields, is_dataclass, replace
 from datetime import datetime
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Generic, Literal, TypeVar, cast
 
 from commontrace import _jsonl, lesson_cache, retrieval
 from commontrace._lexical import STOPWORDS, WORD_RE
@@ -41,6 +48,104 @@ Scorer = Literal['overlap-v1', 'bm25-v1']
 _OVERLAP = re.compile(r'[a-z0-9]+')
 MAX_SNAPSHOT_BYTES = 64 * 1024 * 1024
 MAX_RETRIES = 3
+K = TypeVar('K')
+V = TypeVar('V')
+S = TypeVar('S')
+# Fixed public schema vocabulary only: no corpus or tenant text enters a
+# process-wide compression dictionary or intern table.
+_PAYLOAD_DICTIONARY = (
+    b'{"id": "", "statement": "", "category": "general", "scopes": [], "confidence": 0.8, '
+    b'"confirmations": 1, "valid_from": "", "valid_until": null, '
+    b'"expires_at": null, "forgotten": false, "source_traces": [], "status": "active", '
+    b'"superseded_by": null, "revision": "", "created_at": "", '
+    b'"updated_at": "", "stability": "stable", "evidence": [], '
+    b'"evidence_bound": false, "min_support": 1, "evidence_revision": ""}'
+)
+
+
+@dataclass(frozen=True, slots=True, init=False, eq=False)
+class _FrozenMap(Mapping[K, V], Generic[K, V]):
+    """Privately owned immutable dict with its actual table allocation known."""
+
+    _data: Mapping[K, V]
+    _table_bytes: int
+
+    def __init__(self, values: Mapping[K, V]) -> None:
+        table = dict(values)
+        object.__setattr__(self, '_data', MappingProxyType(table))
+        object.__setattr__(self, '_table_bytes', sys.getsizeof(table))
+
+    def __getitem__(self, key: K) -> V:
+        return self._data[key]
+
+    def __iter__(self) -> Iterator[K]:
+        return iter(self._data)
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class _CompactSet(Set[str]):
+    """Sorted immutable strings without a separate per-set hash table."""
+
+    values: tuple[str, ...] | str
+
+    def __iter__(self) -> Iterator[str]:
+        return iter((self.values,)) if isinstance(self.values, str) else iter(self.values)
+
+    def __len__(self) -> int:
+        return 1 if isinstance(self.values, str) else len(self.values)
+
+    def __contains__(self, value: object) -> bool:
+        if not isinstance(value, str):
+            return False
+        if isinstance(self.values, str):
+            return value == self.values
+        position = bisect_left(self.values, value)
+        return position < len(self.values) and self.values[position] == value
+
+    @classmethod
+    def _from_iterable(cls, values: Iterable[S]) -> frozenset[S]:
+        return frozenset(values)
+
+
+def _compact_set(values: Iterable[str]) -> _CompactSet:
+    """Freeze a unique term/ID iterable; callers supply sets or unique tuples."""
+    ordered = tuple(sorted(values))
+    return _CompactSet(ordered[0] if len(ordered) == 1 else ordered)
+
+
+@dataclass(frozen=True, slots=True)
+class _Frequencies:
+    """Sorted terms and lossless arbitrary-size unsigned varint frequencies."""
+
+    terms: tuple[str, ...]
+    counts: bytes
+
+    def __iter__(self) -> Iterator[tuple[str, int]]:
+        position = 0
+        for term in self.terms:
+            count, shift = 0, 0
+            while True:
+                octet = self.counts[position]
+                position += 1
+                count |= (octet & 127) << shift
+                if octet < 128:
+                    break
+                shift += 7
+            yield term, count
+
+
+def _frequencies(counts: Counter[str]) -> _Frequencies:
+    terms, packed = tuple(sorted(counts)), bytearray()
+    for term in terms:
+        count = counts[term]
+        while count >= 128:
+            packed.append((count & 127) | 128)
+            count >>= 7
+        packed.append(count)
+    return _Frequencies(terms, bytes(packed))
 
 
 class FactSnapshotChanged(RuntimeError):
@@ -96,7 +201,9 @@ def matched_terms(query: str, statement: str, scorer: str = 'overlap-v1') -> lis
 @dataclass(frozen=True, slots=True)
 class _Record:
     id: str
-    payload: str
+    compressed_payload: bytes
+    payload_size: int
+    payload_digest: bytes
     category: str
     scopes: tuple[str, ...]
     confidence: float
@@ -107,11 +214,24 @@ class _Record:
     valid_until: datetime | None
     expires_at: datetime | None
     bound: bool
-    overlap: frozenset[str]
-    bm25: tuple[tuple[str, int], ...]
+    overlap: _CompactSet
+    bm25: _Frequencies
     length: int
-    source_digest: str
+    source_digest: bytes
     stable_time: bool
+
+    @property
+    def payload(self) -> str:
+        try:
+            decoder = zlib.decompressobj(zdict=_PAYLOAD_DICTIONARY)
+            raw = decoder.decompress(self.compressed_payload, self.payload_size + 1)
+        except zlib.error as error:
+            raise ValueError('stored fact payload is corrupt') from error
+        if len(raw) != self.payload_size or not decoder.eof or decoder.unused_data or decoder.unconsumed_tail:
+            raise ValueError('stored fact payload is corrupt')
+        if hashlib.sha256(raw).digest() != self.payload_digest:
+            raise ValueError('stored fact payload checksum mismatch')
+        return raw.decode('utf-8')
 
     def copy(self) -> AtomicFact:
         from commontrace.hierarchical import _coerce_fact
@@ -123,8 +243,8 @@ class _Snapshot:
     path: str
     generation: FileIdentity | None
     records: Mapping[str, _Record]
-    overlap: Mapping[str, frozenset[str]]
-    bm25: Mapping[str, frozenset[str]]
+    overlap: Mapping[str, _CompactSet]
+    bm25: Mapping[str, _CompactSet]
     confidence_order: tuple[str, ...]
     boundaries: tuple[datetime, ...]
     stable_time: bool
@@ -141,7 +261,7 @@ def _snapshot_bytes(_key: Hashable, snapshot: _Snapshot) -> int:
         # Legacy rows deriving valid_from from the wall clock must be coerced
         # afresh on each request, preserving migration-by-read semantics.
         return MAX_SNAPSHOT_BYTES + 1
-    return _retained_bytes((_key, snapshot))
+    return _retained_bytes((_key, snapshot, _PAYLOAD_DICTIONARY))
 
 
 def _retained_bytes(value: object) -> int:
@@ -154,10 +274,15 @@ def _retained_bytes(value: object) -> int:
             continue
         seen.add(identity)
         size += sys.getsizeof(item)
-        if isinstance(item, Mapping):
+        if isinstance(item, _FrozenMap):
+            size += item._table_bytes + sys.getsizeof(item._data) + sys.getsizeof(item._table_bytes)
+            pending.extend(item.keys())
+            pending.extend(item.values())
+        elif isinstance(item, Mapping):
             # A mapping proxy hides the dict allocation; include a conservative
             # table-capacity allowance as well as the actual keys/values.
-            size += 128 * len(item)
+            if not isinstance(item, dict):
+                size += 128 * len(item)
             pending.extend(item.keys())
             pending.extend(item.values())
         elif isinstance(item, (tuple, frozenset)):
@@ -212,30 +337,31 @@ def _build(path: str, identity: FileIdentity | None) -> _Snapshot:
             continue
         records[record.id] = record
         stable_time = stable_time and record.stable_time
+    records = _pool_records(records)
     overlap: dict[str, set[str]] = {}
     bm25: dict[str, set[str]] = {}
     boundaries: set[datetime] = set()
     for record in records.values():
         for term in record.overlap:
             overlap.setdefault(term, set()).add(record.id)
-        for term, _count in record.bm25:
+        for term in record.bm25.terms:
             bm25.setdefault(term, set()).add(record.id)
         boundaries.update(time for time in (record.valid_from, record.valid_until, record.expires_at)
                           if time is not None)
-    snapshot = _Snapshot(path, identity, MappingProxyType(records),
-                         MappingProxyType({term: frozenset(ids) for term, ids in overlap.items()}),
-                         MappingProxyType({term: frozenset(ids) for term, ids in bm25.items()}),
+    snapshot = _Snapshot(path, identity, _FrozenMap(records),
+                         _FrozenMap({term: _compact_set(ids) for term, ids in overlap.items()}),
+                         _FrozenMap({term: _compact_set(ids) for term, ids in bm25.items()}),
                          tuple(sorted(records, key=lambda key: (-records[key].confidence, key))),
                          tuple(sorted(boundaries)), stable_time)
     snapshot.ensure_current()
     return snapshot
 
 
-def _line_digest(line: str) -> str:
-    return hashlib.sha256(line.encode('utf-8')).hexdigest()
+def _line_digest(line: str) -> bytes:
+    return hashlib.sha256(line.encode('utf-8')).digest()
 
 
-def _record(row: Mapping[str, object], digest: str, previous: _Record | None = None) -> _Record:
+def _record(row: Mapping[str, object], digest: bytes, previous: _Record | None = None) -> _Record:
     from commontrace.hierarchical import _coerce_fact
 
     fact = _coerce_fact(dict(row))
@@ -253,13 +379,70 @@ def _record(row: Mapping[str, object], digest: str, previous: _Record | None = N
         overlap, bm25, length = previous.overlap, previous.bm25, previous.length
     else:
         counts = Counter(_bm25_tokens(fact.statement))
-        overlap = _terms(fact.statement, 'overlap-v1')
-        bm25, length = tuple(sorted(counts.items())), sum(counts.values())
-    return _Record(fact.id, payload, fact.category, tuple(fact.scopes), fact.confidence, fact.forgotten,
+        overlap = _compact_set(_terms(fact.statement, 'overlap-v1'))
+        bm25, length = _frequencies(counts), sum(counts.values())
+    raw = payload.encode('utf-8')
+    encoder = zlib.compressobj(level=1, zdict=_PAYLOAD_DICTIONARY)
+    packed = encoder.compress(raw) + encoder.flush()
+    return _Record(fact.id, packed, len(raw), hashlib.sha256(raw).digest(),
+                   fact.category, tuple(fact.scopes), fact.confidence, fact.forgotten,
                    fact.status, fact.stability, lesson_cache.parse_moment(fact.valid_from),
                    lesson_cache.parse_moment(fact.valid_until) if fact.valid_until else None,
                    lesson_cache.parse_moment(fact.expires_at) if fact.expires_at else None, fact.evidence_bound,
                    overlap, bm25, length, digest, stable_time)
+
+
+def _pool_records(records: dict[str, _Record], previous: Mapping[str, _Record] | None = None) -> dict[str, _Record]:
+    """Share equal immutable values within this snapshot; discard the pools.
+
+    No process-wide intern table retains sensitive text after invalidation.
+    Already pooled COW records are preserved when all identities still match.
+    """
+    strings: dict[str, str] = {}
+    scopes: dict[tuple[str, ...], tuple[str, ...]] = {}
+    moments: dict[datetime, datetime] = {}
+    numbers: dict[float, float] = {}
+    buffers: dict[bytes, bytes] = {}
+    def text(value: str) -> str:
+        return strings.setdefault(value, value)
+    def moment(value: datetime | None) -> datetime | None:
+        return moments.setdefault(value, value) if value is not None else None
+    if previous is not None:
+        for record in previous.values():
+            for value in (record.category, record.status, record.stability, *record.scopes,
+                          *record.overlap, *record.bm25.terms):
+                text(value)
+            scopes.setdefault(record.scopes, record.scopes)
+            numbers.setdefault(record.confidence, record.confidence)
+            moment(record.valid_from)
+            moment(record.valid_until)
+            moment(record.expires_at)
+            buffers.setdefault(record.bm25.counts, record.bm25.counts)
+    for key, record in records.items():
+        terms = tuple(text(term) for term in record.overlap)
+        bm25_terms = tuple(text(term) for term in record.bm25.terms)
+        row_scopes = tuple(text(scope) for scope in record.scopes)
+        category, status, stability = text(record.category), text(record.status), text(record.stability)
+        row_scopes = record.scopes if all(left is right for left, right in zip(row_scopes, record.scopes)) \
+            else row_scopes
+        pooled_scopes = scopes.setdefault(row_scopes, row_scopes)
+        confidence = numbers.setdefault(record.confidence, record.confidence)
+        first, until, expiry = moment(record.valid_from), moment(record.valid_until), moment(record.expires_at)
+        assert first is not None
+        packed = buffers.setdefault(record.bm25.counts, record.bm25.counts)
+        overlap = record.overlap if all(left is right for left, right in zip(terms, record.overlap)) \
+            else _compact_set(terms)
+        frequencies = record.bm25 if packed is record.bm25.counts and all(
+            left is right for left, right in zip(bm25_terms, record.bm25.terms)) else _Frequencies(bm25_terms, packed)
+        if category is record.category and status is record.status and stability is record.stability \
+                and pooled_scopes is record.scopes and confidence is record.confidence \
+                and first is record.valid_from and until is record.valid_until and expiry is record.expires_at \
+                and overlap is record.overlap and frequencies is record.bm25:
+            continue
+        records[key] = replace(record, category=category, status=status, stability=stability,
+                               scopes=pooled_scopes, confidence=confidence, valid_from=first,
+                               valid_until=until, expires_at=expiry, overlap=overlap, bm25=frequencies)
+    return records
 
 
 def capture_for_write(root: str) -> _Snapshot | None:
@@ -302,13 +485,13 @@ def _committed_identity(path: str, rows: tuple[str, ...], digest: str) -> FileId
     return identity if actual.hexdigest() == digest and file_identity(path) == identity else None
 
 
-def _patch_postings(previous: Mapping[str, frozenset[str]], before: Mapping[str, _Record],
-                    after: Mapping[str, _Record], *, bm25: bool) -> Mapping[str, frozenset[str]]:
+def _patch_postings(previous: Mapping[str, _CompactSet], before: Mapping[str, _Record],
+                    after: Mapping[str, _Record], *, bm25: bool) -> Mapping[str, _CompactSet]:
     postings = dict(previous)
     removed: dict[str, set[str]] = {}
     added: dict[str, set[str]] = {}
     def terms(record: _Record) -> frozenset[str]:
-        return frozenset(term for term, _count in record.bm25) if bm25 else record.overlap
+        return frozenset(record.bm25.terms if bm25 else record.overlap)
     for key in before.keys() | after.keys():
         old, new = before.get(key), after.get(key)
         if old is new or (old is not None and new is not None and
@@ -320,12 +503,12 @@ def _patch_postings(previous: Mapping[str, frozenset[str]], before: Mapping[str,
         for term in new_terms - old_terms:
             added.setdefault(term, set()).add(key)
     for term in removed.keys() | added.keys():
-        ids = (previous.get(term, frozenset()) - removed.get(term, set())) | added.get(term, set())
+        ids = (set(previous.get(term, _CompactSet(()))) - removed.get(term, set())) | added.get(term, set())
         if ids:
-            postings[term] = frozenset(ids)
+            postings[term] = _compact_set(ids)
         else:
             postings.pop(term, None)
-    return MappingProxyType(postings)
+    return _FrozenMap(postings)
 
 
 def publish_committed(root: str, base: _Snapshot | None, rows: tuple[str, ...], digest: str) -> bool:
@@ -350,10 +533,10 @@ def publish_committed(root: str, base: _Snapshot | None, rows: tuple[str, ...], 
     if identity is None:
         _remember(path, file_identity(path))
         return False
-    reuse: dict[str, _Record] = {}
+    reuse: dict[bytes, _Record] = {}
     for previous in base.records.values():
         reuse[previous.source_digest] = previous
-        reuse[_line_digest(previous.payload)] = previous
+        reuse[previous.payload_digest] = previous
     records: dict[str, _Record] = {}
     for line in rows:
         checksum = _line_digest(line)
@@ -373,7 +556,8 @@ def publish_committed(root: str, base: _Snapshot | None, rows: tuple[str, ...], 
         if not record.stable_time:
             return False
         records[record.id] = record
-    snapshot = _Snapshot(path, identity, MappingProxyType(records),
+    records = _pool_records(records, base.records)
+    snapshot = _Snapshot(path, identity, _FrozenMap(records),
                          _patch_postings(base.overlap, base.records, records, bm25=False),
                          _patch_postings(base.bm25, base.records, records, bm25=True),
                          tuple(sorted(records, key=lambda key: (-records[key].confidence, key))),
@@ -466,7 +650,7 @@ class _Filter:
 
 @dataclass(frozen=True, slots=True)
 class _Statistics:
-    ids: frozenset[str]
+    document_count: int
     frequencies: Mapping[str, int]
     average_length: float
 
@@ -497,15 +681,16 @@ def _statistics(snapshot: _Snapshot, filters: _Filter, moment: datetime) -> _Sta
     boundary = bisect_right(snapshot.boundaries, moment)
     def build() -> _Statistics:
         snapshot.ensure_current()
-        ids: set[str] = set()
+        document_count = 0
         frequencies: Counter[str] = Counter()
         total = 0
         for record in snapshot.records.values():
             if filters.allows(record, moment):
-                ids.add(record.id)
+                document_count += 1
                 total += record.length
-                frequencies.update(term for term, _count in record.bm25)
-        statistics = _Statistics(frozenset(ids), MappingProxyType(dict(frequencies)), total / len(ids) if ids else 0)
+                frequencies.update(record.bm25.terms)
+        statistics = _Statistics(document_count, _FrozenMap(frequencies),
+                                 total / document_count if document_count else 0)
         snapshot.ensure_current()
         return statistics
     key = (snapshot.path, snapshot.generation, filters, boundary)
@@ -559,9 +744,10 @@ def search(root: str, query: str, *, scope: str = '', category: str = '', as_of:
                     if not filters.allows(record, moment):
                         continue
                     if stats is None:
-                        raw = len(query_terms & record.overlap) / len(query_terms | record.overlap)
+                        overlap = sum(term in record.overlap for term in query_terms)
+                        raw = overlap / (len(query_terms) + len(record.overlap) - overlap)
                     else:
-                        n = len(stats.ids)
+                        n = stats.document_count
                         raw = sum(retrieval._bm25_term(count, retrieval._idf(n, stats.frequencies[term]),
                                                       record.length, stats.average_length)
                                   for term, count in record.bm25 if term in query_terms)

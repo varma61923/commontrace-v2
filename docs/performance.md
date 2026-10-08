@@ -5,6 +5,79 @@ They establish specific workload improvements, not universal 30 ms latency or
 superiority over competitor answer quality. No inference service is used by
 the measured request profiles.
 
+## Large fact-bank retention and disabled embeddings (2026-10-08)
+
+Acceptance criteria: explicit `Options(embedder="none")` never constructs an
+encoder; 50,000 seeded facts fit within the unchanged 64 MiB snapshot budget;
+warm overlap and BM25 queries do not rebuild snapshots or scoped statistics;
+ordered facts, scores and final fact-channel contexts match the exact baseline;
+current source, scope and lesson-admission checks remain intact. Default scoring
+and APIs remain compatible.
+
+The maintained benchmark uses actual temporary JSONL stores, scope `alpha`,
+three alternating measured trials after warmup, Python 3.12.14, and a fresh
+core-only installation without NumPy, model dependencies or MCP. Its seeded
+facts are unbound; timings exclude inference and transport. Selective queries
+match 20 records; common-term queries match the entire corpus. Both query types
+and full fact-channel recall are checked, rather than only selective searches.
+
+| Facts | Operation / query | Exact baseline median | Compact index median |
+| ---: | --- | ---: | ---: |
+| 20,000 | Search / selective | 862.123 ms | 0.639 ms |
+| 20,000 | Search / common terms | 936.046 ms | 54.665 ms |
+| 20,000 | Fact recall / selective | 939.620 ms | 1.846 ms |
+| 20,000 | Fact recall / common terms | 929.808 ms | 54.733 ms |
+| 50,000 | Search / selective | 2,818.678 ms | 0.783 ms |
+| 50,000 | Search / common terms | 3,153.048 ms | 155.906 ms |
+| 50,000 | Fact recall / selective | 3,008.459 ms | 1.867 ms |
+| 50,000 | Fact recall / common terms | 3,132.621 ms | 157.106 ms |
+
+The baseline replays the pre-index overlap path. The candidate preserves its
+complete ordered rows and scores, and the recall comparisons preserve final
+contexts. Snapshot retention is 23,477,066 bytes (22.39 MiB) at 20,000 facts and
+61,362,864 bytes (58.52 MiB) at 50,000. Scoped BM25 statistics retain 1,508,891
+and 4,666,219 bytes after mutation, below their independent 8 MiB cap. Both runs
+have zero warm snapshot/statistics loads; post-mutation warm BM25 medians are
+0.529 / 0.615 ms. Cold construction is 2,376.842 / 7,351.969 ms and canonical
+updates are 1,892.927 / 5,813.639 ms. Writes still rewrite and verify JSONL in
+O(N); neither cold startup nor broad-query scoring is sub-millisecond.
+
+A separate same-corpus comparison loads the prior fact-index module from
+`e8de1d8c39be6199fb7784a87e0c929b1a62c7d8` alongside the compact module. Five
+alternating 20,000-fact `bm25-v1` searches for `rarecalibration`, scope `alpha`,
+produce identical complete ordered rows. Prior/current warm medians are
+2,374.558 / 0.955 ms; prior/current cold calls are 2,158.288 / 2,794.437 ms.
+The prior snapshot retains nothing and rebuilds six times; the compact snapshot
+builds once and stays retained. This verifies the reported cliff and also shows
+a cold-build regression, rather than hiding the construction cost.
+
+Reproduce the maintained overlap, recall, mutation and BM25 checks:
+
+```bash
+python -m benchmarks.fact_search --facts 20000 --trials 3 --check
+python -m benchmarks.fact_search --facts 50000 --trials 3 --check
+```
+
+Measured product/harness source fingerprint:
+`b23f21fdcab98a32dac3dedc8fae7503b783fb5ccf6712fcc0bf3f6a2d56341a`.
+The harness rejects source edits during measurement. An independent ownership
+test uses `tracemalloc` to verify that cache weighing covers allocations freed
+with the cache; this is not a process RSS bound. Larger or incompressible banks,
+concurrent builders, decoded request views and multiple large store paths can
+still exceed retention or cause eviction. A persistent index remains a scaling
+opportunity. These are synthetic workload measurements, not competitor latency
+or model-judged answer accuracy.
+
+The isolated core coverage run passed 191 tests, skipped 11 optional integration
+tests, and measured **96.25% branch-inclusive fact-index coverage**. CI now gates
+at 95% and runs the 50,000-fact paired performance/compatibility check. The full
+root/end-to-end suite passed **5,749 tests, with 103 skipped**, in 358.23 seconds;
+all 35 strict typing targets, Ruff, generated documentation and medium/high
+Bandit checks passed. The seven
+reported embedding failures reproduce when availability is enabled and all pass
+with the fix; additional tests verify real writable/read-only stores, private
+speaker filtering and native synchronous/asynchronous tools without loading models.
+
 ## Conversation reliability and multilingual retrieval (2026-10-08)
 
 Acceptance criteria: coverage uses emitted source text rather than hidden turns;

@@ -96,7 +96,12 @@ inode and change time; it does not wait for a TTL to notice mutation. Current
 source quotations and lesson admission are verified per request. If the source
 changes during assembly, retrieval conservatively withholds that snapshot.
 Retained snapshots are capped at 64 MiB across eight store paths and scoped
-statistics at 8 MiB. Canonical locked fact writes can advance an already warm
+statistics at 8 MiB. Snapshot-local sharing, immutable compact postings and
+losslessly compressed payloads reduce retention without increasing these limits.
+Only returned records are decoded into request-local fact objects. Large or
+incompressible banks can still exceed the budget and use cold reconciliation;
+active builders and decoded request views are outside the retention limit.
+Canonical locked fact writes can advance an already warm
 snapshot by reusing unchanged normalized records and token postings. Publication
 is bound to the exact serialized bytes: a coherent read-back checksum verifies
 the committed file before its generation can be cached. External replacement,
@@ -118,6 +123,9 @@ and scope, correction, erasure and abstention contracts. It does not measure
 downstream answers or compare competitors. `python -m benchmarks.fact_search`
 prints reproducible real-store timing and compatibility checks. Both use
 temporary stores and clean up without creating result folders.
+`python -m benchmarks.fact_search --facts 50000 --trials 3 --check` crosses the
+previous large-bank cliff and fails on lost retention, warm snapshot rebuilds,
+changed results or slower indexed medians against the same-host exact baseline.
 `python -m benchmarks.fact_mutation` compares canonical write-plus-search paths
 and full cold-oracle results across mutation, correction, erasure and restart.
 It emits timings and compatibility contracts to stdout; elapsed times are
@@ -151,6 +159,12 @@ Conversation recall now assesses lexical coverage from the exact bodies and
 profile statements delivered to the reader. Hidden portions of an excerpt,
 speaker names and session headers cannot establish a missing subject or
 identifier. Coverage remains a heuristic, not an answer probability.
+
+Python callers can disable the optional embedding arm with either
+`Options(embedder=None)` or `Options(embedder="none")`, even when model
+dependencies are installed. `Options(embedder="auto")` follows the environment
+configuration; `COMMONTRACE_CONVERSATION_EMBEDDER=none` disables that default.
+These choices retain ordinary lexical retrieval and authorization checks.
 
 The default `legacy` context strategy preserves existing ranking and packing.
 Opt into `coverage-v1` to prioritize additional query facets per quoted token

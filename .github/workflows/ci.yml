@@ -122,6 +122,22 @@ jobs:
             --sizes 100,400,1600,6400 --runs 3 \
             --max-total-ms 500 --max-alpha 1.5
 
+      - name: Large fact banks retain warm generations and beat the exact baseline
+        # Cross the previous 64 MiB cache cliff; require equal scores/context,
+        # bounded retention, no warm rebuilds and paired relative timings.
+        run: python -m benchmarks.fact_search --facts 50000 --trials 3 --check
+
+      - name: Install focused coverage tooling
+        run: python -m pip install "pytest>=9.0.3,<10.0" "pytest-cov>=7.0,<8.0"
+
+      - name: Ratchet branch-inclusive coverage on the governed fact index
+        run: |
+          COVERAGE_FILE=/tmp/commontrace-fact-coverage python -m pytest \
+            tests/test_fact_index*.py tests/test_fact_mutation_interfaces.py \
+            tests/test_evidence_context.py tests/test_fact_search_gate.py \
+            --cov=commontrace.fact_index --cov-branch --cov-fail-under=95 \
+            --cov-report=term-missing -q
+
   sdk-typescript:
     name: sdk (typescript)
     runs-on: ubuntu-latest

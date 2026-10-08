@@ -327,6 +327,35 @@ def test_scope_change_after_ranking_does_not_leak_a_formerly_public_fact(root, m
     assert recall.recall(root, "Lumen", channels=("facts",), scope="payments").items == []
 
 
+@pytest.mark.parametrize("evidence_budget", [0, 512])
+def test_lesson_revocation_after_ranking_withholds_fact_even_with_unchanged_fact_generation(
+    root, monkeypatch, evidence_budget,
+):
+    from commontrace import fact_index
+
+    path = Path(root, "memory", "lessons", "lesson_lumen.md")
+    path.parent.mkdir(parents=True)
+    fm = {"name": "lesson_lumen", "status": "active"}
+    body = "The approved instrument measured a five second Lumen timeout.\n"
+    fm[lesson_admission.RECEIPT_FIELD] = lesson_admission.issue(root, str(path), fm, body, actor="reviewer")
+    frontmatter.write(str(path), fm, body)
+    target, _ = hierarchical.add_fact(root, "Lumen timeout is five seconds",
+                                      evidence=[bind_evidence(root, "lesson", "lesson_lumen")])
+    generation = fact_index.snapshot_facts(root).generation
+    original = hierarchical.search_facts
+
+    def ranked_then_revoked(*args, **kwargs):
+        ranked = original(*args, **kwargs)
+        assert target.id in {fact.id for fact, _ in ranked}
+        lesson_admission.revoke(root, str(path), actor="reviewer")
+        assert fact_index.snapshot_facts(root).generation == generation
+        return ranked
+
+    monkeypatch.setattr(hierarchical, "search_facts", ranked_then_revoked)
+    result = recall.recall(root, "Lumen timeout", channels=("facts",), evidence_budget=evidence_budget)
+    assert not result.items and "five seconds" not in result.context
+
+
 def test_cli_explanation_and_expanded_recall_use_production_sources(root):
     assert cli(root, "init", "--agent-type", "coding").returncode == 0
     premise = add(root, "Instrument logged a 5 second Lumen timeout")
