@@ -11,6 +11,16 @@ def propose(root: str) -> dict:
     counts = Counter(node.entity_type for node in nodes.values())
     definitions = {name: {"type": "object", "description": f"Observed on {count} graph nodes"}
                    for name, count in counts.items()}
+    property_types = {}
+    for node in nodes.values():
+        types = property_types.setdefault(node.entity_type, {})
+        for key, value in node.properties.items():
+            kind = ("null" if value is None else "boolean" if isinstance(value, bool)
+                    else "integer" if isinstance(value, int) else "number" if isinstance(value, float)
+                    else "string" if isinstance(value, str) else "array" if isinstance(value, list) else "object")
+            types.setdefault(key, set()).add(kind)
+    for name, properties in property_types.items():
+        definitions[name]["properties"] = {key: {"type": sorted(types)} for key, types in properties.items()}
     relations = {}
     for edge in edges:
         spec = relations.setdefault(edge.relation, {"domain": set(), "range": set()})

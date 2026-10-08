@@ -95,7 +95,11 @@ def heartbeat(root: str, agent_id: str) -> dict:
             raise ValueError("unknown agent")
         agents[agent_id]["heartbeat_at"] = datetime.now(timezone.utc).isoformat()
         _jsonl.write_json(path, agents)
-        return {"agent_id": agent_id, "heartbeat_at": agents[agent_id]["heartbeat_at"]}
+        scopes = agents[agent_id]["scopes"]
+    from commontrace import memory_control
+
+    queued = memory_control.enqueue_refreshes(root, context=scopes)
+    return {"agent_id": agent_id, "heartbeat_at": agents[agent_id]["heartbeat_at"], "refreshes_queued": queued}
 
 
 def revoke(root: str, agent_id: str) -> None:
@@ -103,4 +107,67 @@ def revoke(root: str, agent_id: str) -> None:
     with _jsonl.locked(path):
         agents = load(root)
         agents[agent_id]["revoked"] = True
+        _jsonl.write_json(path, agents)
+
+
+def rotate(root: str, agent_id: str) -> dict:
+    """Local/owner credential recovery: revoke the old key and return a new key once."""
+    path = _path(root)
+    with _jsonl.locked(path):
+        agents = load(root)
+        if agent_id not in agents:
+            raise ValueError("unknown agent")
+        token = "cta_" + secrets.token_urlsafe(32)
+        agents[agent_id].update(token_hash=hashlib.sha256(token.encode()).hexdigest(), revoked=False,
+                               rotated_at=datetime.now(timezone.utc).isoformat())
+        _jsonl.write_json(path, agents)
+    return {"agent_id": agent_id, "token": token, "scopes": agents[agent_id]["scopes"],
+            "plugin": plugin(root, agent_id)}
+
+
+def enroll(root: str) -> dict:
+    """Opt-in public signup into a new isolated agent scope, with a durable daily cap."""
+    path = _path(root)
+    now = datetime.now(timezone.utc)
+    with _jsonl.locked(path):
+        agents = load(root)
+        public = [r for r in agents.values() if r.get("self_enrolled")]
+        if len(public) >= 100 or sum(r["created_at"][:10] == now.date().isoformat() for r in public) >= 10:
+            raise PermissionError("self-signup quota exhausted")
+        agent_id = "agent-" + secrets.token_hex(8)
+        result = signup(root, agent_id)
+        agents = load(root)
+        agents[agent_id].update(self_enrolled=True, claimed_by=None)
+        _jsonl.write_json(path, agents)
+    return result
+
+
+def claim(root: str, agent_id: str, *, owner: str) -> dict:
+    if not isinstance(owner, str) or not owner.strip() or len(owner) > 128:
+        raise ValueError("claim requires a bounded owner identity")
+    path = _path(root)
+    with _jsonl.locked(path):
+        agents = load(root)
+        if agent_id not in agents or not agents[agent_id].get("self_enrolled"):
+            raise ValueError("unknown self-enrolled agent")
+        if agents[agent_id].get("claimed_by") not in (None, owner):
+            raise ValueError("agent already claimed by another owner")
+        agents[agent_id]["claimed_by"] = owner
+        _jsonl.write_json(path, agents)
+    return {"agent_id": agent_id, "claimed_by": owner}
+
+
+def admit(root: str, agent_id: str) -> None:
+    """Bound unclaimed agents to 60 operations/day; claiming never expands scopes."""
+    path = _path(root)
+    with _jsonl.locked(path):
+        agents = load(root)
+        row = agents[agent_id]
+        if not row.get("self_enrolled") or row.get("claimed_by"):
+            return
+        day = datetime.now(timezone.utc).date().isoformat()
+        count = row.get("operations", 0) if row.get("operations_day") == day else 0
+        if count >= 60:
+            raise PermissionError("unclaimed agent daily quota exhausted")
+        row.update(operations_day=day, operations=count + 1)
         _jsonl.write_json(path, agents)

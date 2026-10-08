@@ -394,7 +394,7 @@ def test_shared_directives_are_enforced_even_when_context_budget_is_full(tmp_pat
 
 def test_skill_proposal_retains_raw_sources_and_requires_causal_gate(tmp_path):
     root = str(tmp_path)
-    trace_io.write_new(root, title="release", context="review required", solution="asked gatekeeper", tags=[], trace_id="t1")
+    trace_io.write_new(root, title="release", context="review required", solution="asked gatekeeper", tags=[], trace_id="t1", outcome={"resolved": True})
     result = experience_skills.propose(root, "release-review", steps=[{"tool": "review", "inputs": {"branch": "main"}}],
               cases=[{"trace_id": "t1", "succeeded": True}], applies_when="release", do_not_apply_when="read-only")
     assert result["data"]["status"] == "review" and result["data"]["sources"] == ["t1"]

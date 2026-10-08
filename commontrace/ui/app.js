@@ -276,6 +276,24 @@
     var rules = h("section", { class: "card" }, h("h2", { text: "Hard rules" }));
     (data.directives || []).forEach(function (rule) { rules.appendChild(h("p", { text: rule.text })); });
     root.appendChild(rules);
+    (data.foresight || []).forEach(function (note) {
+      var inspect = h("pre", { text: JSON.stringify(note.data || {}, null, 2) });
+      var card = h("section", { class: "card" }, h("h2", { text: "Anticipatory note" }),
+        h("p", { text: note.text }), inspect);
+      if ((note.data || {}).status === "review") {
+        [true, false].forEach(function (approve) {
+          var button = h("button", { type: "button", text: approve ? "Approve note" : "Reject note" });
+          button.addEventListener("click", function () {
+            button.disabled = true;
+            post("/v1/control/review-foresight", { id: note.id, expected_revision: note.revision, approve: approve })
+              .then(function () { button.textContent = approve ? "Approved" : "Rejected"; })
+              .catch(function (e) { button.textContent = e.message; button.disabled = false; });
+          });
+          card.appendChild(button);
+        });
+      }
+      root.appendChild(card);
+    });
     (data.suggestions || []).forEach(function (proposal) {
       var details = h("details", null, h("summary", { text: "Inspect evidence and applicability" }),
         h("pre", { text: JSON.stringify(proposal.data || {}, null, 2) }));

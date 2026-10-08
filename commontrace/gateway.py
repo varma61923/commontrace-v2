@@ -369,10 +369,11 @@ class Gateway:
         self, root: str, *, token: str | None = None, config: GatewayConfig | None = None,
         durable: bool = True, on_harm: str | None = None, check_every: int = 25,
         allowed_hosts: tuple[str, ...] = (), allow_approval: bool = False,
-        token_provider: Callable[[], str | None] | None = None,
+        token_provider: Callable[[], str | None] | None = None, allow_self_signup: bool = False,
     ) -> None:
         self.root = os.path.abspath(root)
         self.allow_approval = allow_approval
+        self.allow_self_signup = allow_self_signup
         self.token = token
         self._token_provider = token_provider
         self.config = config if config is not None else load_config(self.root)
@@ -395,6 +396,10 @@ class Gateway:
             "summary": summary, "auth": auth, "request": request, "response": response})
 
     def _register(self) -> None:
+        self._route("POST", "/v1/agent/enroll", self._agent_enroll,
+                    summary="Opt-in, rate-limited signup into a new isolated agent scope.", auth=False)
+        self._route("POST", "/v1/agent/claim", self._agent_claim, summary="Owner claim of a self-enrolled agent.")
+        self._route("POST", "/v1/agent/rotate", self._agent_rotate, summary="Owner-only scoped key rotation.")
         self._route("POST", "/v1/agent/signup", self._agent_signup, summary="Register one scoped agent.")
         self._route("POST", "/v1/agent/plugin", self._agent_plugin, summary="SDK skill and per-agent manifest.")
         self._route("POST", "/v1/agent/heartbeat", self._agent_heartbeat, summary="Record agent liveness.")
@@ -403,7 +408,7 @@ class Gateway:
                         lambda body, query, op=operation: self._memory_operation(op, body),
                         summary="Scoped memory " + operation + ".")
         self._route("GET", "/v1/palace", self._palace, summary="Overview, attention and memory suggestions.")
-        for operation in ("directive", "question", "refresh", "reject-proposal"):
+        for operation in ("directive", "question", "refresh", "reject-proposal", "review-foresight", "skill-review"):
             self._route("POST", "/v1/control/" + operation,
                         lambda body, query, op=operation: self._control_operation(op, body),
                         summary="Governed memory " + operation + ".")
@@ -504,6 +509,14 @@ class Gateway:
             path = split.path
             if not trusted and not self._host_ok(headers):
                 raise ApiError(403, "bad_host", "the Host header is not allowed")
+            if not trusted and method == "POST" and path.startswith(("/v1/agent/", "/v1/memory/", "/v1/control/")):
+                lowered = {k.lower(): v for k, v in headers.items()}
+                request_origin = lowered.get("origin")
+                host = lowered.get("host", "").lower()
+                if (lowered.get("sec-fetch-site") == "cross-site" or request_origin
+                        and (urlsplit(request_origin).scheme not in ("http", "https")
+                             or urlsplit(request_origin).netloc.lower() != host)):
+                    raise ApiError(403, "bad_origin", "cross-origin memory operations are refused")
             if path in ("/benchmarks", "/benchmarks/", "/benchmarks/run.json") and method == "GET":
                 if path == "/benchmarks":
                     return Response(301, b"", headers={"Location": "/benchmarks/"})
@@ -531,6 +544,10 @@ class Gateway:
                     raise ApiError(401, "unauthorized", "a valid Authorization: Bearer token is required")
                 if not (path.startswith("/v1/memory/") or path in ("/v1/agent/plugin", "/v1/agent/heartbeat")):
                     raise ApiError(403, "agent_scope", "agent credential does not grant this operation")
+                try:
+                    agent_registry.admit(self.root, principal["id"])
+                except PermissionError as exc:
+                    raise ApiError(429, "agent_quota", str(exc)) from exc
             container_tag = next((
                 v for k, v in headers.items()
                 if k.lower() in ("x-container-tag", "container-tag")
@@ -636,6 +653,34 @@ class Gateway:
         except ValueError as exc:
             raise _bad(str(exc)) from exc
 
+    def _agent_enroll(self, body, _query) -> dict:
+        from commontrace import agent_registry
+
+        if not self.allow_self_signup:
+            raise ApiError(403, "signup_disabled", "public agent signup is disabled")
+        if body:
+            raise _bad("self-signup assigns its own identity and isolated scope")
+        try:
+            return agent_registry.enroll(self.root)
+        except PermissionError as exc:
+            raise ApiError(429, "signup_quota", str(exc)) from exc
+
+    def _agent_claim(self, body, _query) -> dict:
+        from commontrace import agent_registry
+
+        try:
+            return agent_registry.claim(self.root, body.get("agent_id", ""), owner=body.get("owner", ""))
+        except ValueError as exc:
+            raise _bad(str(exc)) from exc
+
+    def _agent_rotate(self, body, _query) -> dict:
+        from commontrace import agent_registry
+
+        try:
+            return agent_registry.rotate(self.root, body.get("agent_id", ""))
+        except ValueError as exc:
+            raise _bad(str(exc)) from exc
+
     def _agent_plugin(self, body, _query) -> dict:
         from commontrace import agent_registry
 
@@ -655,6 +700,19 @@ class Gateway:
             raise _bad(str(exc)) from exc
 
     def _memory_operation(self, operation: str, body: dict) -> dict:
+        from commontrace import memory_authority, memory_control
+
+        principal = body.get("_principal")
+        with memory_authority.writer(principal["id"] if principal else "gateway-owner",
+                                     "agent" if principal else "operator"):
+            scope_token = memory_control.REQUIRED_PRINCIPAL_SCOPE.set(
+                "agent:" + principal["id"] if principal and principal.get("self_enrolled") else "")
+            try:
+                return self._memory_operation_inner(operation, body)
+            finally:
+                memory_control.REQUIRED_PRINCIPAL_SCOPE.reset(scope_token)
+
+    def _memory_operation_inner(self, operation: str, body: dict) -> dict:
         from commontrace import additive_extract, memory_control
         from commontrace.search_recipes import REGISTRY
 
@@ -672,33 +730,40 @@ class Gateway:
                 if not isinstance(local, bool) or (principal and not local):
                     raise _bad("agent writes use local ADD-only admission")
                 return additive_extract.extract(self.root, body.get("text", ""), scopes=context, local=local,
-                                                 memory_type=body.get("memory_type", "general"))
+                                                 memory_type=body.get("memory_type", "general"),
+                                                 entity_model_path=os.environ.get("COMMONTRACE_GLINER_MODEL_PATH"))
             query = body.get("query", "")
             if not isinstance(query, str) or len(query) > MAX_TEXT_CHARS:
                 raise _bad("query must be bounded text")
             if operation == "profile":
-                occasion_id = body.get("occasion_id")
-                if principal:
-                    occasion_id = principal["id"] + ":" + str(occasion_id or time.time_ns())
+                occasion_id = memory_control.occasion(body.get("occasion_id"),
+                                                       principal=principal["id"] if principal else "")
                 return memory_control.profile(self.root, query, context=context, limit=body.get("limit", 10),
-                                               occasion_id=occasion_id)
+                                               occasion_id=occasion_id, action_class=body.get("action_class", ""))
             if operation == "reflect":
-                occasion_id = body.get("occasion_id")
-                if principal:
-                    occasion_id = principal["id"] + ":" + str(occasion_id or time.time_ns())
+                occasion_id = memory_control.occasion(body.get("occasion_id"),
+                                                       principal=principal["id"] if principal else "")
                 return memory_control.reflect(self.root, query, context=context, budget=body.get("budget", 600),
-                                               occasion_id=occasion_id)
+                                               occasion_id=occasion_id,
+                                               exploration_slots=body.get("exploration_slots", 0),
+                                               action_class=body.get("action_class", ""))
             if operation == "outcome":
-                occasion_id = _ident(body.get("occasion_id"), "occasion_id")
+                occasion_id = memory_control.occasion(body.get("occasion_id"), generate=False)
                 if principal and not occasion_id.startswith(principal["id"] + ":"):
-                    raise ApiError(403, "agent_scope", "occasion belongs to another principal")
+                    if ":" in occasion_id:
+                        raise ApiError(403, "agent_scope", "occasion belongs to another principal")
+                    occasion_id = memory_control.occasion(occasion_id, principal=principal["id"])
                 if not isinstance(body.get("succeeded"), bool):
                     raise _bad("succeeded must be boolean")
-                return {"recorded": holdout_io.record_outcome(self.root, occasion_id, body["succeeded"])}
+                from commontrace import causal_policy
+
+                explored = causal_policy.record_outcome(self.root, occasion_id, float(body["succeeded"]))
+                return {"recorded": holdout_io.record_outcome(self.root, occasion_id, body["succeeded"]) or explored}
             if operation == "search":
                 return {"results": REGISTRY.retrieve(body.get("retriever", "hybrid"), self.root, query,
                         recipe=body.get("recipe", "balanced"), context=context, limit=body.get("limit", 10),
-                        center=body.get("center", ""), as_of=body.get("as_of"))}
+                        center=body.get("center", ""), as_of=body.get("as_of"),
+                        action_class=body.get("action_class", ""))}
             if operation == "check-action":
                 memory_control.check_action(self.root, body.get("tool", ""), context=context, tags=body.get("tags", []))
                 return {"allowed": True}
@@ -733,6 +798,16 @@ class Gateway:
                     raise ApiError(403, "approval_disabled", "proposal rejection requires --allow-approval")
                 return memory_control.reject_proposal(self.root, body.get("id", ""),
                         body.get("expected_revision", ""), body.get("reason", ""))
+            if operation in ("review-foresight", "skill-review"):
+                if not self.allow_approval:
+                    raise ApiError(403, "approval_disabled", "review requires --allow-approval")
+                if operation == "review-foresight":
+                    return memory_control.review_foresight(self.root, body.get("id", ""),
+                        body.get("expected_revision", ""), actor="gateway-owner", approve=body.get("approve"))
+                from commontrace import experience_skills
+
+                return experience_skills.review(self.root, body.get("id", ""), body.get("expected_revision", ""),
+                    actor="gateway-owner", verdict=body.get("verdict", ""), evidence=body.get("evidence", {}))
         except (ValueError, TypeError) as exc:
             raise _bad(str(exc)) from exc
         raise _bad("unknown operation")
@@ -742,6 +817,7 @@ class Gateway:
 
         proposals = memory_control.records(self.root, "proposal")
         return {"models": memory_control.records(self.root, "mental-model"),
+                "foresight": memory_control.records(self.root, "foresight"),
                 "directives": memory_control.records(self.root, "directive"),
                 "suggestions": [r for r in proposals if r["data"].get("status") == "review"],
                 "needs_attention": {"proposals": sum(r["data"].get("status") == "review" for r in proposals),

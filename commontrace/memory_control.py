@@ -10,6 +10,7 @@ import json
 import os
 import re
 import uuid
+from contextvars import ContextVar
 from datetime import datetime, timezone
 
 from commontrace import _jsonl, frontmatter, hierarchical, lesson_cache, observations, paths
@@ -17,6 +18,19 @@ from commontrace.search_recipes import search, terms
 
 KINDS = ("directive", "mental-model", "proposal", "foresight", "watermark")
 DIMENSIONS = ("user", "agent", "app", "project", "session")
+REQUIRED_PRINCIPAL_SCOPE: ContextVar[str] = ContextVar("commontrace_required_principal_scope", default="")
+
+
+def occasion(value: str | None, *, principal: str = "", generate: bool = True) -> str:
+    if value is None and generate:
+        value = uuid.uuid4().hex
+    if not isinstance(value, str) or not value or any(ord(c) < 32 or ord(c) == 127 for c in value):
+        raise ValueError("occasion_id must be nonempty text without control characters")
+    if principal and not value.startswith(principal + ":"):
+        value = principal + ":" + value
+    if len(value) > 256:
+        raise ValueError("occasion_id including principal prefix must fit 256 characters")
+    return value
 
 
 def scopes(values: dict[str, str]) -> list[str]:
@@ -28,8 +42,10 @@ def scopes(values: dict[str, str]) -> list[str]:
     return sorted(f"{k}:{v}" for k, v in values.items())
 
 
-def matches(labels: list[str], context: list[str]) -> bool:
+def matches(labels: list[str], context: list[str], *, governed: bool = True) -> bool:
     """Every declared orthogonal dimension must match; plain legacy scopes are OR."""
+    if governed and REQUIRED_PRINCIPAL_SCOPE.get() and REQUIRED_PRINCIPAL_SCOPE.get() not in labels:
+        return False
     orthogonal = [s for s in labels if s.split(":", 1)[0] in DIMENSIONS and ":" in s]
     legacy = [s for s in labels if s not in orthogonal]
     return set(orthogonal) <= set(context) and (not legacy or bool(set(legacy) & set(context)))
@@ -45,6 +61,13 @@ def put(root: str, kind: str, text: str, *, record_id: str | None = None,
         labels: list[str] | None = None, actor: str = "local", data: dict | None = None) -> dict:
     if not isinstance(text, str) or not text.strip() or len(text) > 20000:
         raise ValueError("text must contain 1-20000 characters")
+    if labels is not None and (not isinstance(labels, list) or any(not isinstance(s, str) for s in labels)):
+        raise ValueError("scope labels must be strings")
+    from commontrace import memory_authority, memory_guard
+
+    clean, _ = memory_guard.sanitize_metadata({"text": text, "data": data or {}},
+                                             pii=memory_guard.privacy_redaction_enabled())
+    text, data = clean["text"], clean["data"]
     rid = record_id or uuid.uuid4().hex
     if not re.fullmatch(r"[a-zA-Z0-9_.-]{1,128}", rid):
         raise ValueError("invalid record id")
@@ -52,6 +75,8 @@ def put(root: str, kind: str, text: str, *, record_id: str | None = None,
     row = {"id": rid, "kind": kind, "recorded_at": datetime.now(timezone.utc).isoformat(),
            "revision": uuid.uuid4().hex, "scopes": sorted(set(labels or [])), "actor": actor,
            "data": data or {}}
+    row["origin"] = memory_authority.bind(root, {**row, "text": text.strip()},
+                                         sources=(data or {}).get("sources", []))
     filename = os.path.join(directory, row["revision"] + ".md")
     with _jsonl.locked(directory):
         frontmatter.write(filename, row, text.strip() + "\n")
@@ -70,10 +95,19 @@ def records(root: str, kind: str, *, context: list[str] | None = None) -> list[d
         if not isinstance(fm.get("id"), str) or not isinstance(fm.get("recorded_at"), str):
             raise ValueError("invalid control revision")
         row = {**fm, "text": text.strip()}
+        from commontrace import memory_authority
+
+        if ((row.get("origin") and not memory_authority.verify(root, row["origin"],
+                        {k: v for k, v in row.items() if k != "origin"}))
+                or (not row.get("origin") and memory_authority.previously_bound(root, row["id"]))):
+            if kind == "directive":
+                raise PermissionError("mandatory directive has an invalid origin receipt")
+            continue
         before = latest.get(row["id"])
         if before is None or (row["recorded_at"], row["revision"]) > (before["recorded_at"], before["revision"]):
             latest[row["id"]] = row
-    return [row for row in latest.values() if context is None or matches(row.get("scopes", []), context)]
+    return [row for row in latest.values() if context is None
+            or matches(row.get("scopes", []), context, governed=kind != "directive")]
 
 
 def directive(root: str, text: str, *, deny_tools: list[str] | None = None,
@@ -96,13 +130,16 @@ def check_action(root: str, tool: str, *, tags: list[str] | None = None, context
 
 
 def profile(root: str, query: str, *, context: list[str] | None = None, limit: int = 10,
-            occasion_id: str | None = None) -> dict:
+            occasion_id: str | None = None, action_class: str = "") -> dict:
     if not isinstance(limit, int) or isinstance(limit, bool) or not 0 <= limit <= 1000:
         raise ValueError("profile limit must be in 0..1000")
     # One canonical read supplies both stable and changing facts.
     now = datetime.now(timezone.utc).isoformat()
+    from commontrace import memory_authority
+
     facts = [f for f in hierarchical.list_facts(root, as_of=now)
-             if f.status == "active" and matches(f.scopes, context or [])]
+             if f.status == "active" and matches(f.scopes, context or [])
+             and memory_authority.permits(root, f, action_class=action_class)]
     q = set(terms(query))
     facts.sort(key=lambda f: (-len(q & set(terms(f.statement))), -f.confidence, f.id))
     def render(f):
@@ -112,27 +149,35 @@ def profile(root: str, query: str, *, context: list[str] | None = None, limit: i
         f for f in facts if f.stability != "stable"][:limit]
     from commontrace.measure import CausalMemory
 
-    occasion = occasion_id or "profile-" + uuid.uuid4().hex
+    occasion_id = occasion(occasion_id)
+    occasion_value = occasion_id
     recalled = CausalMemory(lambda _query: selected, root=root, key=lambda f: f.id,
                            text=lambda f: f.statement, screen=True, check_every=1).recall_detailed(
-                               query, occasion_id=occasion)
+                               query, occasion_id=occasion_value)
     eligible = {f.id for f in recalled.items}
     return {"static": [render(f) for f in selected if f.stability == "stable" and f.id in eligible],
             "dynamic": [render(f) for f in selected if f.stability != "stable" and f.id in eligible],
-            "directives": records(root, "directive", context=context or []), "occasion_id": occasion,
+            "directives": records(root, "directive", context=context or []), "occasion_id": occasion_value,
             "withheld": [f.id for f in selected if f.id not in eligible and f.id not in recalled.withdrawn]}
 
 
 def reflect(root: str, query: str, *, context: list[str] | None = None, budget: int = 600,
-            occasion_id: str | None = None, causal: bool = True) -> dict:
+            occasion_id: str | None = None, causal: bool = True, exploration_slots: int = 0,
+            action_class: str = "") -> dict:
     """Curated → consolidated → raw, with one shared conservative token budget."""
     if not isinstance(budget, int) or isinstance(budget, bool) or not 0 <= budget <= 100000:
         raise ValueError("budget must be an integer in 0..100000")
+    if (not isinstance(exploration_slots, int) or isinstance(exploration_slots, bool)
+            or not 0 <= exploration_slots <= 100):
+        raise ValueError("exploration slots must be an integer in 0..100")
+    if exploration_slots and not causal:
+        raise ValueError("exploration requires a measured retrieval")
+    occasion_id = occasion(occasion_id)
     context = context or []
     q = set(terms(query))
     layers: list[tuple[str, list[dict]]] = []
     curated = []
-    from commontrace import injection_guard, lesson_admission, ttl
+    from commontrace import injection_guard, lesson_admission, memory_authority, ttl
 
     # Recall may target a signed read-only attachment. Scan source files without
     # materializing the regular retrieval cache inside that repository.
@@ -145,12 +190,16 @@ def reflect(root: str, query: str, *, context: list[str] | None = None, budget: 
             continue
         if not lesson_cache.fresh_eligible(filename, fm, str(fm.get("name", "")), body=body, root=root):
             continue
+        if not memory_authority.permits_record(root, fm.get("origin", {}),
+                        {"id": str(fm.get("name", "")), "text": body}, action_class=action_class):
+            continue
         if matches(fm.get("scopes", []), context) and q & set(terms(body)):
             curated.append({"id": str(fm.get("name") or os.path.basename(filename)), "text": body,
                             "sources": fm.get("source_traces", [])})
     now = datetime.now(timezone.utc).isoformat()
     current_facts = {f.id: f for f in hierarchical.list_facts(root, as_of=now)
-                     if f.status == "active" and matches(f.scopes, context)}
+                     if f.status == "active" and matches(f.scopes, context)
+                     and memory_authority.permits(root, f, action_class=action_class)}
     consolidated = [{"id": o.id, "text": o.statement, "proof_count": o.proof_count,
                      "sources": o.source_fact_ids} for o in observations.load_observations(root).values()
                     if matches(o.scopes, context) and q & set(terms(o.statement)) and o.source_fact_ids
@@ -160,10 +209,50 @@ def reflect(root: str, query: str, *, context: list[str] | None = None, budget: 
     raw = [r for r in search(root, query, limit=1000, context=context) if r["id"] in eligible]
     from commontrace.commands._traces import load_trace_instances
 
+    live_ids = set(current_facts)
     for trace in load_trace_instances(root):
+        receipt = trace.get("extensions", {}).get("profile", {}).get("origin", {})
+        record = memory_authority.trace_record(trace)
+        if not memory_authority.permits_record(root, receipt, record, action_class=action_class):
+            continue
+        if ttl.trace_is_live(trace, now) and matches(trace.get("scopes", []), context):
+            live_ids.add(str(trace["id"]))
         text = str(trace.get("context_text", "")) + "\n" + str(trace.get("solution_text", ""))
-        if matches(trace.get("scopes", []), context) and q & set(terms(text)) and not ttl.lesson_is_expired(trace):
+        if matches(trace.get("scopes", []), context) and q & set(terms(text)) and ttl.trace_is_live(trace, now):
             raw.append({"id": str(trace["id"]), "text": text, "sources": [str(trace["id"])]})
+    from commontrace import experience_skills
+
+    for skill in experience_skills.active(root, context=context, action_class=action_class):
+        if not memory_authority.permits_record(root, skill.get("origin", {}),
+                    {k: v for k, v in skill.items() if k != "origin"}, action_class=action_class):
+            continue
+        if q & set(terms(skill["text"] + " " + skill["data"]["applies_when"])):
+            text = skill["text"] + "\n" + "\n".join(
+                f"{i + 1}. {s.get('tool', 'action')}: {s.get('description', '')}"
+                for i, s in enumerate(skill["data"]["steps"]))
+            curated.append({"id": skill["id"], "text": text, "sources": skill["data"]["sources"]})
+    # Reuse only fresh model snapshots whose selected evidence is still live.
+    # The snapshot is a cache of evidence, never a new fact or a directive.
+    live_rows = {r["id"]: r for r in [*curated, *raw]}
+    for model in records(root, "mental-model", context=context):
+        last = model["data"].get("refreshed_at")
+        age = (lesson_cache.parse_moment(now) - lesson_cache.parse_moment(last)).total_seconds() if last else None
+        if age is None or age > model["data"]["refresh_seconds"]:
+            continue
+        evidence = model["data"].get("answer", {}).get("evidence", [])
+        if evidence and all(r["id"] in live_rows and live_rows[r["id"]]["text"] == r["text"] for r in evidence):
+            text = "\n".join(r["text"] for r in evidence)
+            if q & set(terms(model["text"] + text)):
+                consolidated.append({"id": model["id"], "text": text, "sources": [r["id"] for r in evidence]})
+    for note in records(root, "foresight", context=context):
+        data = note["data"]
+        if (data.get("status") == "active" and q & set(terms(note["text"]))
+                and lesson_cache.parse_moment(data["valid_from"]) <= lesson_cache.parse_moment(now)
+                < lesson_cache.parse_moment(data["expires_at"]) and set(data["sources"]) <= live_ids
+                and memory_authority.permits_record(root, note.get("origin", {}),
+                    {k: v for k, v in note.items() if k != "origin"}, action_class=action_class)):
+            consolidated.append({"id": note["id"], "text": "Anticipatory note: " + note["text"],
+                                 "sources": data["sources"]})
     layers.extend((("curated", curated), ("consolidated", consolidated), ("raw", raw)))
     selected, rendered = [], []
     # Directives never silently disappear to satisfy a context cap.
@@ -172,6 +261,21 @@ def reflect(root: str, query: str, *, context: list[str] | None = None, budget: 
     used = sum((len(t.encode()) + 3) // 4 for t in rendered)
     if used > budget:
         raise ValueError("token budget cannot fit mandatory directives")
+    occasion_value = occasion_id
+    exploration_pool = []
+    if exploration_slots:
+        from commontrace.measure import HarmWatch
+
+        harmful = HarmWatch(root, check_every=1).current()
+        per_slot = (budget - used) // exploration_slots
+        for fact in current_facts.values():
+            line = f"[exploration:{fact.id}] {fact.statement}"
+            cost = (len(line.encode()) + 3) // 4 + 1
+            if (cost <= per_slot and fact.id not in harmful
+                    and not injection_guard.injection_labels({"text": fact.statement})):
+                exploration_pool.append((fact, cost))
+    reserve = max((cost for _fact, cost in exploration_pool), default=0) * min(
+        exploration_slots, len(exploration_pool))
     consumed: set[str] = set()
     selected_texts: set[str] = set()
     directive_text = list(rendered)
@@ -184,27 +288,64 @@ def reflect(root: str, query: str, *, context: list[str] | None = None, budget: 
                 continue
             text = f"[{layer}:{row['id']}] {row['text']}"
             cost = (len(text.encode()) + 3) // 4 + (1 if rendered else 0)
-            if used + cost <= budget:
+            if used + cost <= budget - reserve:
                 rendered.append(text)
                 selected.append({**row, "layer": layer})
                 used += cost
                 consumed.update(row.get("sources", []))
                 selected_texts.add(row["text"])
-    occasion = occasion_id or "reflect-" + uuid.uuid4().hex
     withheld, withdrawn = [], {}
+    ranked_ids = {r["id"] for r in selected}
     if causal:
         from commontrace.measure import CausalMemory
 
         memory = CausalMemory(lambda _query: selected, root=root, screen=True, check_every=1, scorer="hierarchy-v1")
-        recalled = memory.recall_detailed(query, occasion_id=occasion)
+        recalled = memory.recall_detailed(query, occasion_id=occasion_value)
         kept = {r["id"] for r in recalled.items}
         withdrawn = recalled.withdrawn
         withheld = [r["id"] for r in selected if r["id"] not in kept and r["id"] not in withdrawn]
         selected = recalled.items
         rendered = directive_text + [f"[{r['layer']}:{r['id']}] {r['text']}" for r in selected]
         used = (len("\n".join(rendered).encode()) + 3) // 4
+    assignments = []
+    if exploration_slots:
+        from commontrace import causal_policy, holdout_io
+
+        available = {fact.id: fact for fact, _cost in exploration_pool
+                     if fact.id not in consumed and fact.id not in ranked_ids}
+        pool_digest = hashlib.sha256(json.dumps(sorted(available)).encode()).hexdigest()
+        salt = holdout_io.load_config(root).salt
+        seed_bytes = hashlib.sha256((salt + "\0" + occasion_value + "\0exploration-v1").encode()).digest()
+        seed = int.from_bytes(seed_bytes, "big")
+        assignments = causal_policy.explore(sorted(available), [], slots=exploration_slots, seed=seed)
+        for row in assignments:
+            fact = available[row["memory_id"]]
+            row.update(pool_sha256=pool_digest, query_sha256=hashlib.sha256(query.encode()).hexdigest(),
+                       source_sha256=hashlib.sha256(json.dumps(fact.to_dict(), sort_keys=True).encode()).hexdigest())
+        # Commit immutable assignments before exposing any explored content.
+        causal_policy.record(root, occasion_value, assignments)
+        for row in assignments:
+            if row["delivered"]:
+                fact = available[row["memory_id"]]
+                selected.append({"id": fact.id, "text": fact.statement, "sources": fact.source_traces,
+                                 "layer": "exploration"})
+                rendered.append(f"[exploration:{fact.id}] {fact.statement}")
+            else:
+                withheld.append(row["memory_id"])
+        used = (len("\n".join(rendered).encode()) + 3) // 4
+    if causal and query.strip():
+        from commontrace import memory_guard
+
+        query_text = memory_guard.sanitize_metadata({"query": query},
+                            pii=memory_guard.privacy_redaction_enabled())[0]["query"]
+        query_path = os.path.join(paths.memory_dir(root), "queries.jsonl")
+        with _jsonl.locked(query_path):
+            if not any(r["occasion_id"] == occasion_value for r in _jsonl.read_rows(query_path)):
+                _jsonl.append_row(query_path, {"occasion_id": occasion_value, "query": query_text, "scopes": context,
+                    "sources": [r["id"] for r in selected], "recorded_at": now})
     return {"context": "\n".join(rendered), "tokens_estimate": used, "budget": budget,
-            "evidence": selected, "occasion_id": occasion, "withheld": withheld, "withdrawn": withdrawn}
+            "evidence": selected, "occasion_id": occasion_value, "withheld": withheld, "withdrawn": withdrawn,
+            "exploration": assignments}
 
 
 def refresh_model(root: str, model_id: str) -> dict:
@@ -229,12 +370,12 @@ def standing_question(root: str, question: str, *, context: list[str] | None = N
     return model
 
 
-def enqueue_refreshes(root: str) -> int:
+def enqueue_refreshes(root: str, *, context: list[str] | None = None) -> int:
     from commontrace import jobs
 
     now = datetime.now(timezone.utc)
     queued = 0
-    for row in records(root, "mental-model"):
+    for row in records(root, "mental-model", context=context):
         last = row["data"].get("refreshed_at")
         if last is None or (now - lesson_cache.parse_moment(last)).total_seconds() >= row["data"]["refresh_seconds"]:
             jobs.enqueue(root, "mental-model", {"id": row["id"]},
@@ -261,13 +402,50 @@ def reject_proposal(root: str, proposal_id: str, expected_revision: str, reason:
 
 
 def foresight(root: str, text: str, *, valid_from: str, expires_at: str, sources: list[str],
-              context: list[str] | None = None) -> dict:
+              context: list[str] | None = None, record_id: str | None = None) -> dict:
     start, end = lesson_cache.parse_moment(valid_from), lesson_cache.parse_moment(expires_at)
     if end <= start or not sources:
         raise ValueError("foresight requires evidence and an increasing validity window")
-    return put(root, "foresight", text, labels=context,
+    return put(root, "foresight", text, labels=context, record_id=record_id,
                data={"valid_from": start.isoformat(), "expires_at": end.isoformat(), "sources": sources,
                      "status": "review"})
+
+
+def review_foresight(root: str, note_id: str, expected_revision: str, *, actor: str, approve: bool) -> dict:
+    from commontrace import approval
+
+    with _jsonl.locked(_directory(root, "foresight")):
+        old = next((r for r in records(root, "foresight") if r["id"] == note_id), None)
+        if not old or old["revision"] != expected_revision or old["data"].get("status") != "review":
+            raise ValueError("foresight changed or is no longer in review")
+        approval.check(approval.load_policy(root), slug=note_id, approver=actor, authors=(old["actor"],))
+        if not isinstance(approve, bool):
+            raise ValueError("approval must be boolean")
+        return put(root, "foresight", old["text"], record_id=note_id, actor=actor, labels=old["scopes"],
+                   data={**old["data"], "status": "active" if approve else "archived"})
+
+
+def anticipate(root: str, *, limit: int = 10) -> list[dict]:
+    """Draft recurring-query briefs offline; source links and review remain mandatory."""
+    from datetime import timedelta
+
+    existing = {r["id"] for r in records(root, "foresight")}
+    rows = _jsonl.read_rows(os.path.join(paths.memory_dir(root), "queries.jsonl"))[-1000:]
+    proposals = []
+    for row in reversed(rows):
+        if len(proposals) >= limit:
+            break
+        if not row["sources"]:
+            continue
+        rid = hashlib.sha256(json.dumps([row["query"], sorted(row["scopes"])], ensure_ascii=False).encode()).hexdigest()
+        if rid in existing:
+            continue
+        now = datetime.now(timezone.utc)
+        proposals.append(foresight(root, "Revisit likely next request: " + row["query"],
+            valid_from=now.isoformat(), expires_at=(now + timedelta(days=1)).isoformat(),
+            sources=row["sources"], context=row["scopes"], record_id=rid))
+        existing.add(rid)
+    return proposals
 
 
 def distill_session(root: str, session_id: str, entries: list[dict], complete) -> dict:
@@ -304,4 +482,5 @@ def offline_pass(root: str, *, max_jobs: int = 20, seconds: float = 30) -> dict:
 
     queued = enqueue_refreshes(root)
     report = jobs.run_pending(root, limit=max_jobs, kinds=["mental-model"], time_budget=seconds)
-    return {"models_queued": queued, **report}
+    notes = anticipate(root, limit=min(10, max_jobs))
+    return {"models_queued": queued, "foresight_proposals": len(notes), **report}

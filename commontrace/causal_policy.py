@@ -58,10 +58,21 @@ def snipw(rows: Sequence[dict]) -> dict:
 
 
 def record(root: str, occasion_id: str, assignments: list[dict], outcome: float | None = None) -> None:
+    if not isinstance(occasion_id, str) or not 1 <= len(occasion_id) <= 256:
+        raise ValueError("occasion_id must be bounded nonempty text")
+    if outcome is not None and (not math.isfinite(outcome) or not 0 <= outcome <= 1):
+        raise ValueError("outcome must be finite in [0, 1]")
+    if len({a.get("memory_id") for a in assignments}) != len(assignments):
+        raise ValueError("assignment memory ids must be unique")
     path = os.path.join(paths.memory_dir(root), "exploration.jsonl")
     with _jsonl.locked(path):
         prior = {(r["occasion_id"], r["memory_id"]): r for r in read(root)}
+        pending = []
         for assignment in assignments:
+            if not isinstance(assignment.get("memory_id"), str) or not assignment["memory_id"]:
+                raise ValueError("assignments require memory ids")
+            # Validate before any append; no partially recorded assignment batch.
+            snipw([{**assignment, "outcome": outcome if outcome is not None else 0}])
             row = {**assignment, "occasion_id": occasion_id, "outcome": outcome}
             key = (occasion_id, row["memory_id"])
             if key in prior:
@@ -73,10 +84,21 @@ def record(root: str, occasion_id: str, assignments: list[dict], outcome: float 
                     if before["outcome"] is not None and before["outcome"] != outcome:
                         raise ValueError("recorded outcome is immutable")
                     if before["outcome"] is None:
-                        _jsonl.append_row(path, {"event": "outcome", "occasion_id": occasion_id,
-                                               "memory_id": row["memory_id"], "outcome": outcome})
+                        pending.append({"event": "outcome", "occasion_id": occasion_id,
+                                        "memory_id": row["memory_id"], "outcome": outcome})
             else:
-                _jsonl.append_row(path, row)
+                pending.append(row)
+        for row in pending:
+            _jsonl.append_row(path, row)
+
+
+def record_outcome(root: str, occasion_id: str, outcome: float) -> bool:
+    assignments = [{k: v for k, v in row.items() if k not in ("occasion_id", "outcome")}
+                   for row in read(root) if row["occasion_id"] == occasion_id]
+    if not assignments:
+        return False
+    record(root, occasion_id, assignments, outcome)
+    return True
 
 
 def read(root: str) -> list[dict]:

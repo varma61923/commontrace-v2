@@ -13,7 +13,8 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p = subparsers.add_parser("evolve", help="Search recipes, standing questions, rules, profiles and SDK onboarding.")
     sub = p.add_subparsers(dest="operation", required=True)
     for name in ("add", "search", "reflect", "profile", "directive", "question", "foresight", "propose",
-                 "models", "proposals", "directives", "offline", "recipes", "install", "heartbeat", "distill-session"):
+                 "models", "proposals", "directives", "offline", "recipes", "install", "heartbeat", "distill-session",
+                 "skills", "skill-review", "skill-publish", "foresight-review"):
         q = sub.add_parser(name)
         q.add_argument("--dest", default=None)
         q.add_argument("--context", action="append", default=[], help="Orthogonal scope label; repeatable.")
@@ -22,13 +23,18 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         if name == "add":
             q.add_argument("--model", action="store_true",
                            help="One-pass model extraction; default explicit assertion.")
-            q.add_argument("--memory-type", default="general", choices=("general", "temporary", "environment"))
+            from commontrace.decay import HALF_LIVES_DAYS
+
+            q.add_argument("--memory-type", default="general", choices=sorted(HALF_LIVES_DAYS))
+            q.add_argument("--gliner-model", default=None, help="Optional existing local GLiNER weights directory.")
         if name == "search":
             q.add_argument("--recipe", default="balanced")
             q.add_argument("--retriever", default="hybrid", choices=REGISTRY.names())
             q.add_argument("--center", default="")
         if name in ("question", "reflect"):
             q.add_argument("--budget", type=int, default=600)
+        if name == "reflect":
+            q.add_argument("--exploration-slots", type=int, default=0)
         if name == "question":
             q.add_argument("--refresh-seconds", type=int, default=3600)
         if name == "directive":
@@ -44,12 +50,25 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         if name == "install":
             q.add_argument("--repo", default=None)
             q.add_argument("--commits", type=int, default=100)
+            q.add_argument("--rotate", action="store_true", help="Owner-authorized reinstall with a fresh scoped key.")
         if name == "offline":
             q.add_argument("--max-jobs", type=int, default=20)
             q.add_argument("--seconds", type=float, default=30)
         if name == "distill-session":
             q.add_argument("--session-id", required=True)
             q.add_argument("--entries", required=True, help="JSON file of sequenced entries.")
+        if name in ("skill-review", "skill-publish", "foresight-review"):
+            q.add_argument("--id", required=True)
+        if name in ("skill-review", "foresight-review"):
+            q.add_argument("--expected-revision", required=True)
+            q.add_argument("--actor", required=True)
+            if name == "skill-review":
+                q.add_argument("--verdict", choices=("HELPS", "HURTS", "NO_MEASURABLE_EFFECT"), required=True)
+                q.add_argument("--evidence", required=True, help="JSON paired abstraction-vs-raw experiment evidence.")
+            else:
+                q.add_argument("--approve", action="store_true")
+        if name == "skill-publish":
+            q.add_argument("--directory", required=True, help="Explicit target assistant skills directory.")
         q.set_defaults(func=run)
 
 
@@ -59,12 +78,13 @@ def run(args) -> int:
     try:
         if op == "add":
             result = additive_extract.extract(root, args.text, local=not args.model, scopes=context,
-                                               memory_type=args.memory_type)
+                                               memory_type=args.memory_type, entity_model_path=args.gliner_model)
         elif op == "search":
             result = REGISTRY.retrieve(args.retriever, root, args.text, recipe=args.recipe,
                                        context=context, center=args.center)
         elif op == "reflect":
-            result = memory_control.reflect(root, args.text, context=context, budget=args.budget)
+            result = memory_control.reflect(root, args.text, context=context, budget=args.budget,
+                                             exploration_slots=args.exploration_slots)
         elif op == "profile":
             result = memory_control.profile(root, args.text, context=context)
         elif op == "directive":
@@ -86,7 +106,7 @@ def run(args) -> int:
         elif op == "recipes":
             result = recipe_manifest()
         elif op == "install":
-            result = onboarding.install(root, args.agent_id, repo=args.repo, commits=args.commits)
+            result = onboarding.install(root, args.agent_id, repo=args.repo, commits=args.commits, rotate=args.rotate)
         elif op == "heartbeat":
             result = agent_registry.heartbeat(root, args.agent_id)
         elif op == "distill-session":
@@ -95,6 +115,21 @@ def run(args) -> int:
             with open(args.entries, encoding="utf-8") as fh:
                 entries = json.load(fh)
             result = memory_control.distill_session(root, args.session_id, entries, llm.complete)
+        elif op in ("skills", "skill-review", "skill-publish"):
+            from commontrace import experience_skills
+
+            if op == "skills":
+                result = experience_skills.active(root, context=context or None)
+            elif op == "skill-review":
+                with open(args.evidence, encoding="utf-8") as fh:
+                    evidence = json.load(fh)
+                result = experience_skills.review(root, args.id, args.expected_revision,
+                    actor=args.actor, verdict=args.verdict, evidence=evidence)
+            else:
+                result = {"path": experience_skills.publish(root, args.id, args.directory, context=context or None)}
+        elif op == "foresight-review":
+            result = memory_control.review_foresight(root, args.id, args.expected_revision,
+                       actor=args.actor, approve=args.approve)
         else:
             raise ValueError("unknown memory evolution command")
         print(json.dumps(result, indent=2, ensure_ascii=False))

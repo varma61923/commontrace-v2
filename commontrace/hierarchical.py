@@ -61,6 +61,8 @@ class AtomicFact:
     evidence_bound: bool = False
     min_support: int = 1
     evidence_revision: str = ""
+    memory_type: str = "general"
+    origin: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -138,6 +140,8 @@ def _coerce_fact(data: dict[str, Any]) -> AtomicFact:
         "created_at": recorded_fallback or valid_from,
         "updated_at": str(data.get("updated_at") or recorded_fallback or valid_from),
         "stability": data.get("stability") if data.get("stability") in STABILITY_VALUES else "",
+        "memory_type": str(data.get("memory_type") or "general"),
+        "origin": data.get("origin") if isinstance(data.get("origin"), dict) else {},
     }
     raw_evidence = data.get("evidence", [])
     if not isinstance(raw_evidence, list) or len(raw_evidence) > MAX_EVIDENCE:
@@ -498,11 +502,18 @@ def append_facts(root: str, items: list[dict[str, Any]]) -> list[tuple[AtomicFac
     for item in items:
         if not isinstance(item, dict) or set(item) - {
                 "statement", "category", "scopes", "valid_from", "valid_until", "expires_at",
-                "confidence", "source_trace_id", "stability"}:
+                "confidence", "source_trace_id", "stability", "memory_type"}:
             raise ValueError("unsupported ADD-only fact fields")
+        from commontrace.decay import HALF_LIVES_DAYS
+        from commontrace.ttl import expiry_for_type
+
+        memory_type = item.get("memory_type", "general")
+        if memory_type not in HALF_LIVES_DAYS:
+            raise ValueError("unknown memory type")
+        expiry_input = item.get("expires_at") or expiry_for_type(memory_type, valid_from=item.get("valid_from"))
         statement, category, start, end, expiry = prepare_fact(
             item.get("statement", ""), item.get("category", DEFAULT_CATEGORY),
-            item.get("valid_from"), item.get("valid_until"), item.get("expires_at"))
+            item.get("valid_from"), item.get("valid_until"), expiry_input)
         statement = memory_guard.sanitize_metadata(
             {"statement": statement}, pii=memory_guard.privacy_redaction_enabled())[0]["statement"]
         if injection_guard.injection_labels({"text": statement}):
@@ -514,10 +525,10 @@ def append_facts(root: str, items: list[dict[str, Any]]) -> list[tuple[AtomicFac
         if not isinstance(labels, list) or any(not isinstance(s, str) for s in labels):
             raise ValueError("scopes must be a list of strings")
         prepared.append((statement, category, _clean_scopes(labels), start, end, expiry,
-                         confidence, str(item.get("source_trace_id", "")), item.get("stability", "")))
+                         confidence, str(item.get("source_trace_id", "")), item.get("stability", ""), memory_type))
     results = []
     with mutate_facts(root) as facts:
-        for statement, category, labels, start, end, expiry, confidence, source, stability in prepared:
+        for statement, category, labels, start, end, expiry, confidence, source, stability, memory_type in prepared:
             duplicate = next((f for f in facts.values() if f.status == "active" and not f.forgotten
                               and _normalize_statement(f.statement) == _normalize_statement(statement)
                               and f.scopes == labels and (start is None or f.valid_from == start)
@@ -530,6 +541,10 @@ def append_facts(root: str, items: list[dict[str, Any]]) -> list[tuple[AtomicFac
             fact, action = _add_locked({}, statement, category, labels, start, end, expiry,
                                        confidence, source, stability)
             fact.id = _free_id(fact.id, facts)
+            fact.memory_type = memory_type
+            from commontrace import memory_authority
+
+            fact.origin = memory_authority.bind(root, memory_authority.fact_record(fact), sources=fact.source_traces)
             fact.revision = _compute_revision(fact.to_dict())
             facts[fact.id] = fact
             results.append((fact, action))

@@ -28,9 +28,21 @@ def propose(root: str, name: str, *, steps: list[dict], cases: list[dict], appli
         raise ValueError("cases require source traces and explicit boolean outcomes")
     from commontrace.commands._traces import load_trace_instances
 
-    traces = {str(t["id"]) for t in load_trace_instances(root)}
+    traces = {str(t["id"]): t for t in load_trace_instances(root)}
     if any(c["trace_id"] not in traces for c in cases):
         raise ValueError("skill cites an unavailable raw trace")
+    if any(traces[c["trace_id"]].get("outcome", {}).get("resolved") is not c["succeeded"] for c in cases):
+        raise ValueError("skill outcomes must match explicit source outcomes")
+    from commontrace import memory_authority, origin, ttl
+
+    for trace_id in {c["trace_id"] for c in cases}:
+        trace = traces[trace_id]
+        receipt = trace.get("extensions", {}).get("profile", {}).get("origin", {})
+        if (not ttl.trace_is_live(trace) or not memory_control.matches(trace.get("scopes", []), context or [])
+                or not memory_authority.permits_record(root, receipt, memory_authority.trace_record(trace))):
+            raise ValueError("skill source evidence is ineligible")
+    source_digests = {tid: hashlib.sha256(origin._bytes(memory_authority.trace_record(traces[tid]))).hexdigest()
+                      for tid in {c["trace_id"] for c in cases}}
     # Repeated case rows do not become independent reliability evidence.
     outcomes = {}
     for case in cases:
@@ -39,7 +51,8 @@ def propose(root: str, name: str, *, steps: list[dict], cases: list[dict], appli
         outcomes[case["trace_id"]] = case["succeeded"]
     successes = sum(outcomes.values())
     failures = len(outcomes) - successes
-    data = {"status": "review", "name": name, "steps": steps, "sources": sorted(outcomes),
+    data = {"status": "review", "authors": ["local"], "name": name, "description": "Evidence-linked procedure " + name,
+            "steps": steps, "sources": sorted(outcomes), "source_digests": source_digests,
             "applies_when": applies_when, "do_not_apply_when": do_not_apply_when,
             "signature": structural_signature(steps), "beta_alpha": 1 + successes, "beta_beta": 1 + failures,
             "reliability_mean": (1 + successes) / (2 + successes + failures),
@@ -47,12 +60,86 @@ def propose(root: str, name: str, *, steps: list[dict], cases: list[dict], appli
     row = memory_control.put(root, "proposal", "Procedure " + name, labels=context, data=data)
     directory = os.path.join(paths.memory_dir(root), "skill_proposals", name, row["revision"])
     body = "\n".join([f"# {name}", "", f"Applies when: {applies_when}",
-                      f"Do not apply when: {do_not_apply_when}", "", "## Steps",
+                      f"Do not apply when: {do_not_apply_when}", "", "## Activation",
+                      "Check applicability and tool authority before executing any step.", "", "## Steps",
                       *[f"{i + 1}. {step.get('tool', 'action')}: {step.get('description', '')}"
-                        for i, step in enumerate(steps)], "", "## Evidence",
+                        for i, step in enumerate(steps)], "", "## Termination",
+                      "Stop if an applicability bound, action directive or step guard fails.",
+                      "", "## Verification",
+                      "Verify the task outcome independently and record it with the occasion id.",
+                      "", "## Evidence",
                       *["- " + source for source in sorted(outcomes)]])
     frontmatter.write(os.path.join(directory, "SKILL.md"), data, body + "\n")
     return row
+
+
+def review(root: str, proposal_id: str, expected_revision: str, *, actor: str,
+           verdict: str, evidence: dict) -> dict:
+    """Operator review of a paired abstraction-vs-raw experiment; never self-approve."""
+    from commontrace import approval
+
+    with _jsonl.locked(os.path.join(paths.memory_dir(root), "controls", "proposal")):
+        old = next((r for r in memory_control.records(root, "proposal") if r["id"] == proposal_id), None)
+        if not old or old["revision"] != expected_revision or old["data"].get("level") != "skill":
+            raise ValueError("skill proposal changed or is unavailable")
+        approval.check(approval.load_policy(root), slug=proposal_id, approver=actor,
+                       authors=tuple(old["data"].get("authors", [old["actor"]])))
+        if actor in old["data"].get("authors", [old["actor"]]):
+            raise PermissionError("skill review must be independent of its author")
+        if verdict == "HELPS":
+            gate = causal_gate(raw_effect=evidence.get("raw_effect"), abstract_effect=evidence.get("abstract_effect"),
+                    ci_low=evidence.get("ci_low"), independent_review=True,
+                    effective_samples=evidence.get("effective_samples", 0))
+            if not gate["admit"]:
+                raise ValueError(gate["reason"])
+            status, level = "active", "skill"
+        elif verdict in ("HURTS", "NO_MEASURABLE_EFFECT"):
+            status, level = "archived", "trace"
+        else:
+            raise ValueError("unknown causal verdict")
+        change_level(root, proposal_id, level, verdict=verdict, evidence=evidence)
+        return memory_control.put(root, "proposal", old["text"], record_id=proposal_id, labels=old["scopes"],
+            actor=actor, data={**old["data"], "status": status, "verdict": verdict, "causal_evidence": evidence})
+
+
+def active(root: str, *, context: list[str] | None = None, action_class: str = "") -> list[dict]:
+    """Recheck the current causal decision and live evidence every time a skill is used."""
+    from commontrace import memory_authority, origin, ttl
+    from commontrace.commands._traces import load_trace_instances
+
+    live = {}
+    for trace in load_trace_instances(root):
+        record = memory_authority.trace_record(trace)
+        receipt = trace.get("extensions", {}).get("profile", {}).get("origin", {})
+        if (memory_control.matches(trace.get("scopes", []), context or [])
+                and not not ttl.trace_is_live(trace)
+                and memory_authority.permits_record(root, receipt, record, action_class=action_class)):
+            live[str(trace["id"])] = hashlib.sha256(origin._bytes(record)).hexdigest()
+    levels = {r["memory_id"]: r for r in _jsonl.read_rows(
+              os.path.join(paths.memory_dir(root), "compression_policy.jsonl"))}
+    return [r for r in memory_control.records(root, "proposal", context=context)
+            if r["data"].get("status") == "active" and r["data"].get("level") == "skill"
+            and r["data"].get("sources") and set(r["data"]["sources"]) <= live.keys()
+            and all(live.get(tid) == digest for tid, digest in r["data"].get("source_digests", {}).items())
+            and levels.get(r["id"], {}).get("level") == "skill"
+            and levels[r["id"]]["verdict"] == "HELPS"]
+
+
+def publish(root: str, proposal_id: str, destination: str, *, context: list[str] | None = None) -> str:
+    """Publish only a currently admitted skill to an explicit assistant skill folder."""
+    row = next((r for r in active(root, context=context) if r["id"] == proposal_id), None)
+    if row is None:
+        raise PermissionError("skill is not currently causally admitted")
+    data = row["data"]
+    filename = os.path.join(destination, data["name"], "SKILL.md")
+    paths.enforce_boundary(destination, filename)
+    body = "\n".join(["# " + data["name"], "", "## Activation", data["applies_when"],
+        "Stop when: " + data["do_not_apply_when"], "", "## Steps",
+        *[f"{i + 1}. {s.get('tool', 'action')}: {s.get('description', '')}" for i, s in enumerate(data["steps"])],
+        "", "## Verification", "Report independently evaluated outcomes using the occasion id.",
+        "", "## Evidence", *["- " + tid for tid in data["sources"]]])
+    frontmatter.write(filename, data, body + "\n")
+    return filename
 
 
 def causal_gate(*, raw_effect: float | None, abstract_effect: float | None, ci_low: float | None,
@@ -65,8 +152,12 @@ def causal_gate(*, raw_effect: float | None, abstract_effect: float | None, ci_l
     import math
 
     evidence = (raw_effect, abstract_effect, ci_low, effective_samples)
-    if any(v is None or not math.isfinite(v) for v in evidence):
+    if any(v is None or isinstance(v, bool) or not isinstance(v, (int, float))
+           or not math.isfinite(v) for v in evidence):
         return {"admit": False, "reason": "causal evidence incomplete"}
+    if (not -1 <= raw_effect <= 1 or not -1 <= abstract_effect <= 1 or effective_samples < 0
+            or ci_low > abstract_effect - raw_effect + 1e-12):
+        return {"admit": False, "reason": "inconsistent causal comparison"}
     admit = independent_review and effective_samples >= min_samples and ci_low > 0
     return {"admit": admit, "reason": "causal and review gates passed" if admit else "keep raw trace available",
             "raw_effect": raw_effect, "abstract_effect": abstract_effect, "ci_low": ci_low}

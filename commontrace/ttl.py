@@ -73,6 +73,22 @@ def lesson_is_expired(
         return True
 
 
+def trace_is_live(trace: dict[str, Any], as_of=None) -> bool:
+    """Trace evidence shares expiry aliases and inclusive/exclusive validity gates."""
+    moment = _moment(as_of)
+    try:
+        for field in ("expires", "expires_at", "valid_until"):
+            value = trace.get(field)
+            if value is not None and value != "" and moment >= parse_expiry(value):
+                return False
+        start = trace.get("valid_from")
+        if start is not None and start != "" and moment < parse_expiry(start):
+            return False
+    except (ValueError, TypeError):
+        return False
+    return True
+
+
 def count_expired(
     lessons: list[tuple[str, dict[str, Any]]],
     as_of: str | datetime.date | datetime.datetime | None = None,

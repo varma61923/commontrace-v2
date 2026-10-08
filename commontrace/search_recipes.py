@@ -77,14 +77,16 @@ def _bm25(query: list[str], documents: list[list[str]]) -> list[float]:
     return scores
 
 
-def _distances(backend: GraphBackend, center: str, as_of: str | None) -> dict[str, int]:
+def _distances(backend: GraphBackend, center: str, as_of: str | None, *, depth: int = 4) -> dict[str, int]:
     distances = {center: 0}
     queue = deque([center])
     while queue and len(distances) < 2000:
         current = queue.popleft()
-        if distances[current] >= 4:
+        if distances[current] >= depth:
             continue
         for row in backend.neighbors(current, as_of=as_of):
+            if len(distances) >= 2000:
+                break
             nid = row["neighbor_id"]
             if nid not in distances:
                 distances[nid] = distances[current] + 1
@@ -95,7 +97,8 @@ def _distances(backend: GraphBackend, center: str, as_of: str | None) -> dict[st
 def search(root: str, query: str, *, recipe: str = "balanced", scope: str = "", limit: int = 10,
            as_of: str | None = None, dense_scores: dict[str, float] | None = None,
            entity_ids: Sequence[str] = (), center: str = "", backend: GraphBackend | None = None,
-           utility: dict[str, float] | None = None, context: list[str] | None = None) -> list[dict[str, Any]]:
+           utility: dict[str, float] | None = None, context: list[str] | None = None,
+           action_class: str = "", embedder=None) -> list[dict[str, Any]]:
     if recipe not in RECIPES:
         raise ValueError(f"unknown search recipe: {recipe}")
     if not isinstance(limit, int) or isinstance(limit, bool) or not 0 <= limit <= 1000:
@@ -113,22 +116,39 @@ def search(root: str, query: str, *, recipe: str = "balanced", scope: str = "", 
         from commontrace.memory_control import matches
 
         facts = [f for f in facts if matches(f.scopes, context)]
+    from commontrace import memory_authority
+
+    facts = [f for f in facts if memory_authority.permits(root, f, action_class=action_class)]
+    if dense_scores is None:
+        from commontrace import fact_embeddings
+
+        dense_scores = fact_embeddings.scores(query, facts, model=embedder)
     documents = [terms(f.statement) for f in facts]
     sparse = _bm25(terms(query), documents)
     backend = backend or LocalGraph(root)
     nearby = _distances(backend, center, as_of) if center else {}
-    entity_memories = {r["neighbor_id"] for entity in entity_ids for r in backend.neighbors(entity, as_of=as_of)}
+    entity_memories = {}
+    for entity in entity_ids:
+        for row in backend.neighbors(entity, as_of=as_of):
+            weight = float(row.get("weight", 1))
+            if not math.isfinite(weight):
+                raise ValueError("graph weights must be finite")
+            node = row["neighbor_id"]
+            entity_memories[node] = max(entity_memories.get(node, 0), max(0, min(1, weight)))
     rows = []
     for fact, lexical in zip(facts, sparse):
         dense = float((dense_scores or {}).get(fact.id, 0))
         if not math.isfinite(dense) or not -1 <= dense <= 1:
             raise ValueError("dense cosine scores must be finite in [-1, 1]")
         dense = max(0.0, dense)
-        entity = float(fact.id in entity_memories or f"memory:{fact.id}" in entity_memories)
+        entity = max(entity_memories.get(fact.id, 0), entity_memories.get(f"memory:{fact.id}", 0))
         if not lexical and not dense and not entity:
             continue
         age = max(0.0, (reference - lesson_cache.parse_moment(fact.valid_from)).total_seconds() / 86400)
-        temporal = math.exp(-math.log(2) * age / cfg.half_life_days)
+        from commontrace.decay import perishability
+
+        temporal = perishability(fact.memory_type, age,
+                    half_life_days=cfg.half_life_days if fact.memory_type == "general" else None)
         prior = float((utility or {}).get(fact.id, 0))
         if not math.isfinite(prior) or not -1 <= prior <= 1:
             raise ValueError("causal utility must be finite in [-1, 1]")
@@ -197,8 +217,16 @@ def decomposition(root: str, query: str, **options) -> list[dict]:
 
 def graph_completion(root: str, query: str, **options) -> list[dict]:
     """Expand entity seeds using bounded graph walks; emits evidence, no hidden CoT."""
-    entities = graph.extract_entities_from_text(root, query)
-    return search(root, query, entity_ids=entities, **options)
+    backend = options.get("backend") or LocalGraph(root)
+    seeds = options.pop("entity_ids", None)
+    seeds = seeds if seeds is not None else graph.extract_entities_from_text(root, query)
+    # Include intermediate entities, not arbitrary unfiltered graph content.
+    # search applies canonical proof, validity and scope admission to every hit.
+    entities = set(seeds)
+    for seed in seeds[:32]:
+        entities.update(node for node, distance in _distances(backend, seed, options.get("as_of"), depth=1).items()
+                        if distance == 1)
+    return search(root, query, entity_ids=sorted(entities)[:2000], **options)
 
 
 def nl_query(root: str, query: str, **options) -> list[dict]:

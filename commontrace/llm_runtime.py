@@ -58,6 +58,7 @@ class LLMRuntime:
         self.cost = 0.0
         self.failed = 0
         self.unpriced = False
+        self.accounting_unknown = False
         self.started = time.monotonic()
         self._lock = threading.Lock()
 
@@ -71,7 +72,7 @@ class LLMRuntime:
 
     def complete(self, prompt: str, *, purpose: str = "default", config: llm.Config | None = None) -> tuple[str, dict]:
         with self._lock:
-            if self.calls >= self.budget.calls or self.tokens >= self.budget.tokens or (
+            if self.accounting_unknown or self.calls >= self.budget.calls or self.tokens >= self.budget.tokens or (
                     self.budget.cost_usd is not None and (self.unpriced or self.cost >= self.budget.cost_usd)) or (
                     time.monotonic() - self.started >= self.budget.seconds):
                 raise BudgetExceeded("LLM budget exhausted")
@@ -82,13 +83,17 @@ class LLMRuntime:
                 text, usage = self.caller(prompt, config=cfg)
             except Exception:
                 self.failed += 1
+                self.accounting_unknown = self.unpriced = True
                 raise
             finally:
                 ACTIVE.reset(token)
-            input_tokens = int(usage.get("prompt_tokens", usage.get("input_tokens", 0)))
-            output_tokens = int(usage.get("completion_tokens", usage.get("output_tokens", 0)))
-            if input_tokens < 0 or output_tokens < 0:
-                raise ValueError("provider reported negative usage")
+            input_tokens = usage.get("prompt_tokens", usage.get("input_tokens")) if isinstance(usage, dict) else None
+            output_tokens = (usage.get("completion_tokens", usage.get("output_tokens"))
+                             if isinstance(usage, dict) else None)
+            if any(not isinstance(v, int) or isinstance(v, bool) or v < 0 for v in (input_tokens, output_tokens)):
+                self.accounting_unknown = self.unpriced = True
+                self.failed += 1
+                raise llm.LLMUnavailable("provider usage is missing or invalid; further dispatch stopped")
             self.tokens += input_tokens + output_tokens
             cost = llm.cost_usd({"input_tokens": input_tokens, "output_tokens": output_tokens}, cfg.model)
             if cost is None:
@@ -106,4 +111,5 @@ class LLMRuntime:
                            for key, cfg in self.routes.items()},
                 "calls": self.calls, "failed_calls": self.failed, "tokens": self.tokens,
                 "known_cost_usd": self.cost, "unpriced_calls": self.unpriced,
+                "accounting_unknown": self.accounting_unknown,
                 "elapsed_seconds": time.monotonic() - self.started}

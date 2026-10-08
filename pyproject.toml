@@ -16,6 +16,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+ontology = [
+    "jsonschema>=4.23,<5.0",
+]
+security = [
+    "cryptography>=44,<47",
+]
+extraction = [
+    "gliner>=0.2,<1.0",
+]
 attention = [
     "numpy>=1.24,<3.0",
     "sentence-transformers>=6.0,<7.0",

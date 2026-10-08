@@ -28,6 +28,7 @@ attention/*.bin
 embeddings-*.db
 jobs.db
 .handoff_key
+.origin-key
 attachments.jsonl
 """
 KEY_FILE = ".handoff_key"

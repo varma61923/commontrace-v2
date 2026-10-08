@@ -14,6 +14,11 @@ class MemoryClient:
         self.root, self.url, self.token, self.agent_id = root, url, token, agent_id
         self.context = memory_control.scopes({**(context or {}), **({"agent": agent_id} if agent_id else {})})
 
+    def _occasion(self, occasion_id: str | None) -> str | None:
+        if not self.agent_id and occasion_id is None:
+            return None
+        return memory_control.occasion(occasion_id, principal=self.agent_id)
+
     def _request(self, operation: str, payload: dict) -> dict:
         if not self.url:
             raise RuntimeError("HTTP URL not configured")
@@ -21,26 +26,79 @@ class MemoryClient:
                                      data=json.dumps(payload).encode(),
                                      headers={"Content-Type": "application/json",
                                               "Authorization": "Bearer " + self.token})
-        with urllib.request.urlopen(req, timeout=60) as response:  # nosec B310 - user-configured gateway
-            return json.load(response)
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                return None  # A gateway redirect must never forward the bearer key.
 
-    def add(self, text: str, *, local: bool = True, complete=None, memory_type: str = "general") -> dict:
+        with urllib.request.build_opener(NoRedirect()).open(req, timeout=60) as response:
+            data = response.read(8 * 1024 * 1024 + 1)
+            if len(data) > 8 * 1024 * 1024:
+                raise ValueError("gateway response exceeds 8 MiB")
+            result = json.loads(data)
+            if not isinstance(result, dict):
+                raise ValueError("gateway response must be an object")
+            return result
+
+    def add(self, text: str, *, local: bool = True, complete=None, memory_type: str = "general",
+            entity_model=None, entity_model_path: str | None = None) -> dict:
         if self.url:
+            if entity_model is not None or entity_model_path:
+                raise ValueError("local extraction adapters must be configured on the gateway host")
             return self._request("add", {"text": text, "local": local, "context": self.context,
                                          "memory_type": memory_type})
-        return additive_extract.extract(self.root, text, local=local, complete=complete,
-                                         scopes=self.context, memory_type=memory_type)
+        from commontrace import memory_authority
 
-    def profile(self, query: str = "", *, limit: int = 10) -> dict:
+        with memory_authority.writer(self.agent_id or "local", "agent" if self.agent_id else "operator"):
+            return additive_extract.extract(self.root, text, local=local, complete=complete,
+                                             scopes=self.context, memory_type=memory_type,
+                                             entity_model=entity_model, entity_model_path=entity_model_path)
+
+    def profile(self, query: str = "", *, limit: int = 10, occasion_id: str | None = None,
+                action_class: str = "") -> dict:
+        occasion_id = self._occasion(occasion_id)
         if self.url:
-            return self._request("profile", {"query": query, "limit": limit, "context": self.context})
-        return memory_control.profile(self.root, query, context=self.context, limit=limit)
+            return self._request("profile", {"query": query, "limit": limit, "context": self.context,
+                                             "occasion_id": occasion_id, "action_class": action_class})
+        return memory_control.profile(self.root, query, context=self.context, limit=limit,
+                                      occasion_id=occasion_id, action_class=action_class)
 
-    def reflect(self, query: str, *, budget: int = 600, occasion_id: str | None = None) -> dict:
+    def search(self, query: str, *, recipe: str = "balanced", retriever: str = "hybrid",
+               limit: int = 10, center: str = "", as_of: str | None = None, action_class: str = "",
+               **local_options) -> list[dict]:
+        if self.url:
+            if local_options:
+                raise ValueError("injected adapters are local-only")
+            return self._request("search", {"query": query, "recipe": recipe, "retriever": retriever,
+                "limit": limit, "center": center, "as_of": as_of, "context": self.context,
+                "action_class": action_class})["results"]
+        from commontrace.search_recipes import REGISTRY
+
+        return REGISTRY.retrieve(retriever, self.root, query, recipe=recipe, limit=limit, center=center,
+                                 as_of=as_of, context=self.context, action_class=action_class, **local_options)
+
+    def batch(self, items: list[dict]) -> dict:
+        if self.url:
+            return self._request("batch", {"items": items, "context": self.context})
+        from commontrace import ingestion_contract, memory_authority
+
+        with memory_authority.writer(self.agent_id or "local", "agent" if self.agent_id else "operator"):
+            return ingestion_contract.batch(self.root, items, context=self.context)
+
+    def propose(self, text: str, *, sources: list[str]) -> dict:
+        if self.url:
+            return self._request("propose", {"text": text, "sources": sources, "context": self.context})
+        return memory_control.proposal(self.root, text, sources=sources, context=self.context)
+
+    def reflect(self, query: str, *, budget: int = 600, occasion_id: str | None = None,
+                exploration_slots: int = 0, action_class: str = "") -> dict:
+        occasion_id = self._occasion(occasion_id)
         if self.url:
             return self._request("reflect", {"query": query, "budget": budget, "context": self.context,
-                                             "occasion_id": occasion_id})
-        result = memory_control.reflect(self.root, query, context=self.context, budget=budget, occasion_id=occasion_id)
+                                             "occasion_id": occasion_id, "exploration_slots": exploration_slots,
+                                             "action_class": action_class})
+        result = memory_control.reflect(self.root, query, context=self.context, budget=budget,
+                                        occasion_id=occasion_id, exploration_slots=exploration_slots,
+                                        action_class=action_class)
         if self.agent_id:
             import hashlib
 
@@ -55,7 +113,7 @@ class MemoryClient:
                         raise ValueError("shared mandatory directives exceed the token budget")
                     continue
                 recalled = memory_control.reflect(shared_root, query, context=self.context, budget=remaining,
-                                                    occasion_id=occasion_id, causal=False)
+                                                    occasion_id=occasion_id, causal=False, action_class=action_class)
                 namespace = "shared:" + hashlib.sha256(shared_root.encode()).hexdigest()[:12] + ":"
                 candidates = [{**r, "id": namespace + r["id"]} for r in recalled["evidence"]]
                 rules = memory_control.records(shared_root, "directive", context=self.context)
@@ -86,11 +144,15 @@ class MemoryClient:
         return result
 
     def outcome(self, occasion_id: str, succeeded: bool) -> bool:
+        occasion_id = self._occasion(occasion_id)
         if self.url:
             return self._request("outcome", {"occasion_id": occasion_id, "succeeded": succeeded})["recorded"]
-        from commontrace import holdout_io
+        from commontrace import causal_policy, holdout_io
 
-        return holdout_io.record_outcome(self.root, occasion_id, succeeded)
+        if not isinstance(succeeded, bool):
+            raise ValueError("succeeded must be boolean")
+        exploration = causal_policy.record_outcome(self.root, occasion_id, float(succeeded))
+        return holdout_io.record_outcome(self.root, occasion_id, succeeded) or exploration
 
     def check_action(self, tool: str, *, tags: list[str] | None = None) -> None:
         if self.url:
@@ -128,7 +190,11 @@ def wrap(completion: Callable, *, root: str = ".", budget: int = 600, agent_id: 
             if not answer and getattr(response, "choices", None):
                 answer = getattr(response.choices[0].message, "content", "") or ""
             if answer:
-                trace_io.write_new(root, title=query[:200], context=query, solution=answer,
-                                   tags=["completion"], extra={"scopes": memory.context})
+                from commontrace import memory_authority
+
+                with memory_authority.writer(agent_id or "completion", "agent"):
+                    trace_io.write_new(root, title=query[:200], context=query, solution=answer,
+                                       tags=["completion"], extra={"scopes": memory.context,
+                                       "extensions": {"profile": {"occasion_id": recalled["occasion_id"]}}})
         return response
     return remembered

@@ -4,6 +4,7 @@ memory/.cache/
 memory/*.jsonl
 # Private approval authority and durable local admission/revocation state.
 memory/.approval-key*
+memory/.origin-key
 memory/lesson_admissions.db*
 
 # Benchmark HTML / JSON reports (generated, not source)

@@ -233,6 +233,16 @@ def _put_node(
     entity_type = txn.onto.entity_type(entity_type)
     now_iso = _now()
     node = txn.nodes.get(clean_id)
+    schema_type = node.entity_type if node else entity_type
+    if schema_type not in txn.onto.entity_types:
+        from commontrace.ontology import OntologyError
+
+        raise OntologyError("existing entity type is absent from the current ontology: " + schema_type)
+    schema = txn.onto.entity_types[schema_type].schema
+    if schema:
+        from commontrace.schema_properties import validate_properties
+
+        validate_properties({**(node.properties if node else {}), **(properties or {})}, schema)
     if node is not None:
         changed = False
         if name and name.strip() != node.name:

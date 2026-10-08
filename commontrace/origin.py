@@ -23,13 +23,28 @@ class Principal:
     organization: str
     authority: str
     key: bytes
+    algorithm: str = "hmac-sha256"
+    public_key: bytes = b""
 
 
 def bind(record: dict, principal: Principal) -> dict:
     if len(principal.key) < 32:
         raise ValueError("origin signing key must be at least 32 bytes")
-    body = {"record": record, "principal": principal.id, "organization": principal.organization,
+    # Detach shared object identities: strict Markdown frontmatter forbids YAML aliases.
+    body = {"record": json.loads(_bytes(record)), "principal": principal.id, "organization": principal.organization,
             "authority": principal.authority, "digest": hashlib.sha256(_bytes(record)).hexdigest()}
+    if principal.algorithm == "ed25519":
+        import base64
+
+        try:
+            from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        except ImportError:
+            raise RuntimeError("Ed25519 signing requires commontrace[security]") from None
+        body["algorithm"] = "ed25519"
+        signature = Ed25519PrivateKey.from_private_bytes(principal.key).sign(_bytes(body))
+        return {**body, "signature": base64.b64encode(signature).decode("ascii")}
+    if principal.algorithm != "hmac-sha256":
+        raise ValueError("unsupported signing algorithm")
     return {**body, "signature": hmac.new(principal.key, _bytes(body), hashlib.sha256).hexdigest()}
 
 
@@ -37,13 +52,28 @@ def verify(receipt: dict, principals: dict[str, Principal], *, authority: str | 
     try:
         principal = principals[receipt["principal"]]
         body = {key: value for key, value in receipt.items() if key != "signature"}
-        expected = hmac.new(principal.key, _bytes(body), hashlib.sha256).hexdigest()
-        return (hmac.compare_digest(expected, receipt["signature"])
+        if receipt.get("algorithm", "hmac-sha256") != principal.algorithm:
+            return False
+        if principal.algorithm == "ed25519":
+            import base64
+
+            from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+            try:
+                Ed25519PublicKey.from_public_bytes(principal.public_key).verify(
+                    base64.b64decode(receipt["signature"], validate=True), _bytes(body))
+            except Exception:
+                return False
+            signature_valid = True
+        else:
+            expected = hmac.new(principal.key, _bytes(body), hashlib.sha256).hexdigest()
+            signature_valid = hmac.compare_digest(expected, receipt["signature"])
+        return (signature_valid
                 and receipt["organization"] == principal.organization
                 and receipt["authority"] == principal.authority
                 and (authority is None or authority == principal.authority)
                 and receipt["digest"] == hashlib.sha256(_bytes(receipt["record"])).hexdigest())
-    except (KeyError, TypeError, ValueError):
+    except (KeyError, TypeError, ValueError, ImportError):
         return False
 
 
