@@ -225,6 +225,8 @@ def confidence(store: Store, question: str, turn_ids: list[int]) -> float:
 _REFERS_BACK = re.compile(r"\b(?:remind me|you (?:said|mentioned|told|suggested|recommended|gave|listed|explained|"
                           r"provided|shared)|(?:our|the) (?:previous|earlier|last) (?:chat|conversation|discussion))\b",
                           re.I)
+ORDERING_TURNS = 2000  # user turns an ordering question may list
+ORDERING_EXCERPT = 24  # the shortest passage per turn when they do not all fit
 _ORDERING = re.compile(r"\b(?:in (?:what|which) order|order in which|sequence|chronolog\w*|timeline)\b", re.I)
 
 
@@ -1031,6 +1033,16 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
     about_user_only = broad and bool(re.search(
         r"\b(?:i (?:brought up|raised|mentioned|asked|said|wanted)|my questions?)\b", question or "", re.I
     ))
+    # "In what order did I bring up X": the answer is the user's own turns, in order. Every
+    # one is a candidate, after the ranked ones, each cut to its passage nearest the
+    # question so the whole sequence fits; similarity alone misses the later aspects.
+    raised: list[int] = []
+    if about_user_only and _ORDERING.search(question or "") and not opts.excerpt_tokens:
+        raised = [r[0] for r in store.db.execute(
+            "SELECT id FROM turns WHERE role IN ('user', '') ORDER BY at, id LIMIT ?", (ORDERING_TURNS,))
+            if allowed is None or r[0] in allowed]
+        if raised:
+            cap = min(cap, max(ORDERING_EXCERPT, int(budget * 0.9) // len(raised)))
     rendered: dict[int, str] = {}
     # One injection screen per turn per recall: neighbours re-fetch turns the
     # primary pass already screened, so memoize by turn id (single-run scope,
@@ -1109,6 +1121,9 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
                     diversified.append(tids[d])
         diversified_set = set(diversified)
         stream = diversified + [t for t in ranked if t not in diversified_set]
+    if raised:
+        listed = set(stream)
+        stream += [t for t in raised if t not in listed]
 
     priority_quota = 0
     if strategy == "coverage-v1":

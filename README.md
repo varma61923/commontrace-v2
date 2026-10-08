@@ -1560,12 +1560,12 @@ with one store opened cold per LongMemEval question.
 | --- | --: | --- | --- | --: |
 | LoCoMo | 1,540 | 79.0% / 72.6% | 86.6% / 80.3% | 17 ms |
 | LongMemEval | 120 | 78.0% / 70.9% | 82.8% / 78.6% | 78 ms |
-| BEAM 100K | 400 | 67.5% / 53.1% | 73.7% / 59.0% | 73 ms |
+| BEAM 100K | 400 | 69.5% / 53.7% | 78.7% / 67.0% | 73 ms |
 
-*BEAM abilities at 4,000 tokens*: temporal reasoning 98.8%, instruction following
-90.2%, contradiction resolution 87.1%, knowledge update 85.8%, preference following
-74.8%, multi-session reasoning 71.7%, information extraction 62.9%, event ordering
-50.4%, summarization 37.5%.
+*BEAM abilities at 4,000 tokens*: temporal reasoning 98.8%, event ordering 95.5%,
+instruction following 90.2%, contradiction resolution 87.1%, knowledge update 85.8%,
+preference following 74.8%, multi-session reasoning 71.7%, information extraction
+62.9%, summarization 37.5%.
 
 
 ---

@@ -127,3 +127,21 @@ def test_frequency_lookup_matches_full_decoding():
         packed = _frequencies(counts)
         assert {term: packed.get(term) for term in counts} == dict(packed) == dict(counts)
         assert packed.get("delta") == 0 and packed.get("") == 0
+
+
+def test_ordering_questions_list_every_aspect_the_user_raised(tmp_path):
+    aspects = ["setting up the repository", "choosing a charting library", "writing unit tests for parsing",
+               "adding dark mode", "deploying to a cheap host", "fixing a memory leak in the worker",
+               "localising dates for Japan", "tuning the database indexes"]
+    with Store(str(tmp_path), "s") as store:
+        for day, aspect in enumerate(aspects, 1):
+            store.add(f"s{day}", [{"role": "user", "text": f"Today I want help with {aspect} in my budget app."},
+                                  {"role": "assistant", "text": "Sure, here is a detailed walkthrough. " * 30}],
+                      session_at=f"2024-03-{day:02d}")
+        question = "Can you list the order in which I brought up different aspects of my budget app?"
+        result = recall(store, question, options=Options(budget=600, **LEX))
+        positions = [result.context.find(aspect) for aspect in aspects]
+        assert all(p >= 0 for p in positions) and positions == sorted(positions)
+        assert "walkthrough" not in result.context  # the user's own turns only
+        plain = recall(store, "What did I want help with on the charting library?", options=Options(budget=600, **LEX))
+        assert "walkthrough" in plain.context  # other questions still read the assistant's replies
