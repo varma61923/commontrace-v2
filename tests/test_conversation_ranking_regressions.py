@@ -145,3 +145,17 @@ def test_ordering_questions_list_every_aspect_the_user_raised(tmp_path):
         assert "walkthrough" not in result.context  # the user's own turns only
         plain = recall(store, "What did I want help with on the charting library?", options=Options(budget=600, **LEX))
         assert "walkthrough" in plain.context  # other questions still read the assistant's replies
+
+
+def test_summary_questions_read_each_ask_with_its_answer(tmp_path):
+    steps = ["schema design", "login flow", "payment webhooks", "rate limiting", "audit logging",
+             "backup policy", "load testing", "launch checklist"]
+    with Store(str(tmp_path), "s") as store:
+        for day, step in enumerate(steps, 1):
+            store.add(f"s{day}", [{"role": "user", "text": f"For my shop project, how should I handle {step}?"},
+                                  {"role": "assistant", "text": f"For {step}, start with answer-{day}. " + "Detail. " * 80}],
+                      session_at=f"2024-04-{day:02d}")
+        result = recall(store, "Can you give me a summary of how my shop project progressed?",
+                        options=Options(budget=1500, **LEX))
+        answered = [day for day in range(1, 9) if f"answer-{day}" in result.context]
+        assert len(answered) >= 7  # nearly every exchange, ask and answer, within the budget

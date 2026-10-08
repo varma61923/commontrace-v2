@@ -225,6 +225,7 @@ def confidence(store: Store, question: str, turn_ids: list[int]) -> float:
 _REFERS_BACK = re.compile(r"\b(?:remind me|you (?:said|mentioned|told|suggested|recommended|gave|listed|explained|"
                           r"provided|shared)|(?:our|the) (?:previous|earlier|last) (?:chat|conversation|discussion))\b",
                           re.I)
+SUMMARY_EXCERPT = 40  # the passage per turn a summary question reads
 ORDERING_TURNS = 2000  # user turns an ordering question may list
 ORDERING_EXCERPT = 24  # the shortest passage per turn when they do not all fit
 _ORDERING = re.compile(r"\b(?:in (?:what|which) order|order in which|sequence|chronolog\w*|timeline)\b", re.I)
@@ -1030,6 +1031,8 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
     broad = is_broad(question) if opts.broad is None else opts.broad
     cap = opts.excerpt_tokens or (max(60, min(120, budget // 30)) if broad else max(200, budget // 5))
     summary = broad and bool(_SUMMARY.search(question or ""))
+    if summary and not opts.excerpt_tokens:
+        cap = max(SUMMARY_EXCERPT, budget // 60)  # many short exchanges over a few long ones
     about_user_only = broad and bool(re.search(
         r"\b(?:i (?:brought up|raised|mentioned|asked|said|wanted)|my questions?)\b", question or "", re.I
     ))
@@ -1169,6 +1172,8 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
             selection["skipped_oversized_groups"] = skipped_oversized
 
     with_context = opts.neighbour_hits if opts.neighbour_hits is not None else max(5, budget // 400)
+    if summary and opts.neighbour_hits is None:
+        with_context = len(stream)  # a summary reads each ask together with its answer
     # the best hits go in first, on their own: context around one hit must never push a
     # better-ranked hit out of the budget
     primary: set[int] = set()
