@@ -228,6 +228,8 @@ _REFERS_BACK = re.compile(r"\b(?:remind me|you (?:said|mentioned|told|suggested|
 SUMMARY_EXCERPT = 40  # the passage per turn a summary question reads
 ORDERING_TURNS = 2000  # user turns an ordering question may list
 ORDERING_EXCERPT = 24  # the shortest passage per turn when they do not all fit
+_COUNTING = re.compile(r"\bhow many (?:different |distinct |unique |separate )?(?!(?:days|weeks|months|years|hours|"
+                       r"minutes)\b)", re.I)
 _ORDERING = re.compile(r"\b(?:in (?:what|which) order|order in which|sequence|chronolog\w*|timeline)\b", re.I)
 
 
@@ -377,7 +379,18 @@ def subqueries(question: str) -> list[str]:
                     out.append(" ".join(words))
                 if topic:
                     out.append(" ".join(topic + words))
+    lead = _CONSIDERING.match(question)
+    if lead:  # "Considering A, B and C, how ...": each named aspect is searched on its own
+        for aspect in re.split(r",\s*(?:and\s+)?|\s+and\s+", lead.group(1)):
+            words = [w for w in re.findall(r"[A-Za-z0-9][A-Za-z0-9'-]+", aspect)
+                     if w.lower() not in profile.STOPWORDS and w.lower() not in _FRAME_WORDS]
+            if len(words) >= 2:
+                out.append(" ".join(words))
     return list(dict.fromkeys(out))[:12]
+
+
+_CONSIDERING = re.compile(r"^(?:considering|given|taking into account|based on)\s+(.+?),\s*(?:how|what|which|can|could|"
+                          r"should|would|will|do|does|is|are)\b", re.I)
 
 
 def _rrf(rankings: list[tuple[list[int], float]]) -> dict[int, float]:
@@ -1034,13 +1047,15 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
     if summary and not opts.excerpt_tokens:
         cap = max(SUMMARY_EXCERPT, budget // 60)  # many short exchanges over a few long ones
     about_user_only = broad and bool(re.search(
-        r"\b(?:i (?:brought up|raised|mentioned|asked|said|wanted)|my questions?)\b", question or "", re.I
+        r"\b(?:i (?:brought up|raised|mentioned|asked|said|wanted)|my questions?|"
+        r"(?:did|have|do) i (?:ever )?(?:mention|bring up|raise|ask about|talk about))\b", question or "", re.I
     ))
     # "In what order did I bring up X": the answer is the user's own turns, in order. Every
     # one is a candidate, after the ranked ones, each cut to its passage nearest the
     # question so the whole sequence fits; similarity alone misses the later aspects.
     raised: list[int] = []
-    if about_user_only and _ORDERING.search(question or "") and not opts.excerpt_tokens:
+    if about_user_only and (_ORDERING.search(question or "") or _COUNTING.search(question or "")) \
+            and not opts.excerpt_tokens:
         raised = [r[0] for r in store.db.execute(
             "SELECT id FROM turns WHERE role IN ('user', '') ORDER BY at, id LIMIT ?", (ORDERING_TURNS,))
             if allowed is None or r[0] in allowed]

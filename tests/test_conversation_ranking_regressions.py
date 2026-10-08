@@ -159,3 +159,21 @@ def test_summary_questions_read_each_ask_with_its_answer(tmp_path):
                         options=Options(budget=1500, **LEX))
         answered = [day for day in range(1, 9) if f"answer-{day}" in result.context]
         assert len(answered) >= 7  # nearly every exchange, ask and answer, within the budget
+
+
+def test_considering_questions_search_each_named_aspect():
+    subs = search.subqueries("Considering my form validation code, lazy loading setup, GA4 anonymized tracking, "
+                             "and bounce rate monitoring, how can I improve conversions?")
+    assert {"form validation code", "lazy loading setup", "GA4 anonymized tracking", "bounce rate monitoring"} <= set(subs)
+
+
+def test_counting_what_the_user_mentioned_lists_their_turns(tmp_path):
+    sizes = ["size 9 trail runners", "size 9.5 sandals", "size 10 boots", "size 8 slippers"]
+    with Store(str(tmp_path), "s") as store:
+        for day, size in enumerate(sizes, 1):
+            store.add(f"s{day}", [{"role": "user", "text": f"I just ordered {size} for the trip."},
+                                  {"role": "assistant", "text": "Great choice for walking. " * 40}],
+                      session_at=f"2024-05-{day:02d}")
+        result = recall(store, "How many different shoe sizes did I mention across my conversations?",
+                        options=Options(budget=400, **LEX))
+        assert all(size in result.context for size in sizes)
