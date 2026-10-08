@@ -63,7 +63,7 @@ def test_all_delivered_evidence_counts_including_turns_after_first_five(tmp_path
             store.add(f"new{i}", [{"speaker": "Nia", "text": f"Bicycle maintenance notes {i}."}],
                       session_at=f"2025-02-0{i + 1}")
         result = recall(store, "What is Nia bicycle serial number now?", options=options(
-            budget=600, recency_boost=100, primary_hits=0))
+            budget=600, recency_boost=100, recency_pool=10, primary_hits=0))
         assert len(result.turns) == 6 and result.turns[-1] == 1
         assert "CT-492" in result.context
         assert not result.explain["coverage"]["abstain"]

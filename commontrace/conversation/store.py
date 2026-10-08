@@ -945,6 +945,9 @@ class Store:
         while rows := cursor.fetchmany(size):
             yield [tuple(r) for r in rows]
 
+    def turn_count(self) -> int:
+        return self.db.execute("SELECT COUNT(*) FROM turns").fetchone()[0]
+
     def unit_turns(self, unit_ids: Iterable[int]) -> dict[int, int]:
         ids = list(unit_ids)
         if not ids:
@@ -1008,12 +1011,24 @@ class Store:
             return []
         n_terms = len(match.split(" OR "))
         if FTS5:
+            if allowed is not None:
+                # Over-fetch the unfiltered ranking and keep eligible units: an id-list
+                # filter inside the FTS query costs far more than ranking a few extra rows.
+                # Only when too few survive does the exact filtered query run.
+                fetch = limit * 4
+                rows = self.db.execute(
+                    "SELECT rowid, bm25(units_fts) FROM units_fts WHERE units_fts MATCH ? "
+                    "ORDER BY bm25(units_fts), rowid LIMIT ?", (match, fetch)).fetchall()
+                owner = self.unit_turns([r[0] for r in rows])
+                kept = [(r[0], sigmoid_bm25(-r[1], n_terms)) for r in rows if owner.get(r[0]) in allowed]
+                if len(kept) >= limit or len(rows) < fetch:
+                    return kept[:limit]
             eligible = (" AND rowid IN (SELECT id FROM units WHERE turn IN "
                         "(SELECT value FROM json_each(?)))") if allowed is not None else ""
             params = (match, json.dumps(sorted(allowed)), limit) if allowed is not None else (match, limit)
             rows = self.db.execute(
                 "SELECT rowid, bm25(units_fts) FROM units_fts WHERE units_fts MATCH ? "  # nosec B608 - fixed eligibility SQL
-                + eligible + " ORDER BY bm25(units_fts) LIMIT ?", params)
+                + eligible + " ORDER BY bm25(units_fts), rowid LIMIT ?", params)
             return [(r[0], sigmoid_bm25(-r[1], n_terms)) for r in rows]
         units = (unit for batch in self.unit_batches(allowed=allowed) for unit in batch)
         return _python_bm25(units, query, limit)

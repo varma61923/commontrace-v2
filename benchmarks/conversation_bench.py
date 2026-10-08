@@ -233,7 +233,11 @@ def longmemeval_cases(path: str, limit: int, seed: int):
         kind = q["question_type"] + ("-abstain" if q["question_id"].endswith("_abs") else "")
         question = {"id": q["question_id"], "question": q["question"], "answer": str(q["answer"]),
                     "type": kind, "evidence": evidence, "sessions": set(q["answer_session_ids"])}
-        yield q["question_id"], sessions, q["question_date"], [question]
+        # LongMemEval treats every haystack session as history, but 43 of its 500
+        # questions carry a clock time earlier than an evidence session on the same
+        # day. Asking at the end of the question's day keeps recall's point-in-time
+        # cutoff (nothing said after `now`) from hiding that history.
+        yield q["question_id"], sessions, q["question_date"].split(" ")[0] + " 23:59", [question]
 
 
 def dolphin_cases(path: str, personas: str = "", limit: int = 0):

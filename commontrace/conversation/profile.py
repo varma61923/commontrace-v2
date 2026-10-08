@@ -100,6 +100,10 @@ def subject_of(text: str, limit: int = 6) -> str:
     return " ".join(words[:limit])
 
 
+_SELF_COMMITMENT = re.compile(r"\b(?:I|we)(?:'ll| will| shall|'m going to| am going to| need to| have to| should| must"
+                              r"| want to| plan to| try to| hope to)\s*(?:also\s+|really\s+|definitely\s+)?$", re.I)
+
+
 def extract(text: str) -> list[Fact]:
     """Self-descriptive sentences from one user message, at most one fact per sentence."""
     out: list[Fact] = []
@@ -111,6 +115,8 @@ def extract(text: str) -> list[Fact]:
             m = pattern.search(sentence)
             if not m:
                 continue
+            if kind == "instruction" and _SELF_COMMITMENT.search(sentence[:m.start("what")]):
+                continue  # "I'll make sure to prune the basil": a plan of the user's, not a rule for the assistant
             subject = subject_of(m.group("what"))
             if subject:
                 out.append(Fact(kind, subject, sentence[:MAX_STATEMENT], slot_of(kind, sentence, m.group("what"))))

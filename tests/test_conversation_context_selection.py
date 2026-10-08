@@ -277,7 +277,9 @@ def test_reopened_real_recall_preserves_more_facets_at_the_same_smaller_budget(t
         assert selected.tokens < legacy.tokens <= budget
         assert not {"retention", "recovery"}.intersection(selected.explain["coverage"]["missing_subject_terms"])
         assert "recovery" in legacy.explain["coverage"]["missing_subject_terms"]
-        assert selected.explain["context_selection"]["priority"] == [3, 4, 5]
+        # one of the three equivalent timeout turns, then the retention and recovery turns
+        priority = selected.explain["context_selection"]["priority"]
+        assert priority[0] in {1, 2, 3} and priority[1:] == [4, 5]
         sources = store.turns(selected.turns)
         assert {turn.session for turn in sources.values()} == {"timeouts", "retention", "recovery"}
         assert all(turn.text in selected.context for turn in sources.values())

@@ -1503,9 +1503,9 @@ and the cross-encoder:
 | Summarization | 18% / 18% | 29% / 26% |
 | **All (abstention excluded: it has no evidence)** | **62% / 67%** | **70% / 73%** |
 
-LongMemEval, keyword-only: 77.4% at 1,500 tokens and 84.4% at 4,000
-(knowledge update 89% / 100%, single-session assistant 100% / 100%,
-single-session user 84% / 90%, multi-session 73% / 81%). Abstention is left
+LongMemEval, keyword-only: 78.0% at 1,500 tokens and 82.8% at 4,000
+(knowledge update 92% / 94%, single-session assistant 100% / 100%,
+single-session user 89% / 89%, multi-session 71% / 80%, temporal reasoning 57% / 72%). Abstention is left
 to the answering model: BEAM's unanswerable questions reuse the topic's words,
 so neither `explain.confidence` nor the cross-encoder score separates them, and
 `conversation answer` tells the model to say when memory does not hold the answer.
@@ -1549,16 +1549,23 @@ CommonTrace separates evidence retrieval from end-to-end answer evaluation. Judg
 | BEAM 100K | 400 | 3-level rubric (1.0/0.5/0.0) + Kendall tau-b & F1 event ordering | Official default | Same history length, abilities and judge |
 | DolphinBench | 600 | Task request execution from narrative anchor facts | Official default | Same execution environment and scoring |
 
-#### Measured Evidence Recall Scoreboard (Keyword-Only, Zero Regressions)
+#### Measured evidence recall (keyword-only)
 
-| Benchmark | Questions | 1,500 tokens (evidence / complete) | 4,000 tokens (evidence / complete) | Recall Latency (p50) | Ingest Time |
-| --- | --: | --- | --- | --: | --: |
-| LoCoMo | 1,540 | 80.3% / 73.4% | 85.0% / 79.2% | 4.0 ms | 1.6 s |
-| LongMemEval | 120 | 74.2% / 68.3% | 78.1% / 70.0% | 22.3 ms | 15.3 s |
-| BEAM 100K | 400 | 63.8% / 48.2% | 72.3% / 58.0% | 24.9 ms | 11.5 s |
-| DolphinBench | 600 | 50.4% / 46.2% | 67.5% / 62.0% | 33.3 ms | 13.6 s |
+Measured on 2026-10-08 on 4 CPU cores, the three benchmarks running at once. "Evidence" is the share of a question's
+cited evidence that lands in the recalled context; "complete" is the share of
+questions with all of it. Recall time is the benchmark's mean per question,
+with one store opened cold per LongMemEval question.
 
-*BEAM ability breakdown at 4,000 tokens*: Temporal Reasoning **100.0%**, Instruction Following **95.0%**, Knowledge Update **85.0%**, Multi-Session Reasoning **83.7%** (+10.0%), Event Ordering **72.3%** (+8.0%), Preference Following **70.0%**, Information Extraction **50.0%**, Summarization **27.9%** (+13.8%).
+| Benchmark | Questions | 1,500 tokens (evidence / complete) | 4,000 tokens (evidence / complete) | Recall time |
+| --- | --: | --- | --- | --: |
+| LoCoMo | 1,540 | 79.0% / 72.6% | 86.6% / 80.3% | 17 ms |
+| LongMemEval | 120 | 78.0% / 70.9% | 82.8% / 78.6% | 78 ms |
+| BEAM 100K | 400 | 67.5% / 53.1% | 73.7% / 59.0% | 73 ms |
+
+*BEAM abilities at 4,000 tokens*: temporal reasoning 98.8%, instruction following
+90.2%, contradiction resolution 87.1%, knowledge update 85.8%, preference following
+74.8%, multi-session reasoning 71.7%, information extraction 62.9%, event ordering
+50.4%, summarization 37.5%.
 
 
 ---

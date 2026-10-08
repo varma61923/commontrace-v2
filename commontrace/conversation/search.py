@@ -51,6 +51,7 @@ class Options:
     instructions: int = 6
     broad: bool | None = None  # None: detect summary / ordering / across-session questions
     recency_boost: float = 0.3
+    recency_pool: int = 4  # "current/latest" questions: how many top matches compete on time
     primary_hits: int | None = None  # best hits placed before any neighbours (default 3)
     embedder: str | None = "auto"
     summaries: bool = True
@@ -115,8 +116,9 @@ _BROAD = re.compile(
     r"\b(?:summar(?:y|ise|ize|ies)|overview|recap|progress(?:ed)?|evolv(?:e|ed)|over time|so far|timeline|"
     r"in (?:what|which) order|order in which|sequence|chronolog\w*|throughout|across (?:our|my|all|the|these|"
     r"different) (?:conversations?|sessions?|chats?|discussions?|requests?)|walk me through|history of|"
-    r"all (?:the )?(?:times|things|steps|changes|features|issues)|every (?:time|change|step)|how many\b|"
-    r"total (?:number|count|amount)|list (?:all|every))\b", re.I)
+    r"all (?:the )?(?:times|things|steps|changes|features|issues)|every (?:time|change|step)|"
+    r"how many (?!(?:days|weeks|months|years|hours|minutes)\b)|"
+    r"total (?:number|count|amount)|in total|altogether|combined|list (?:all|every))\b", re.I)
 
 
 _ABOUT_ASSISTANT = re.compile(r"\b(?:you (?:said|told|suggested|recommended|mentioned|gave|listed|provided|wrote|"
@@ -133,7 +135,9 @@ _CURRENT = re.compile(
 )
 
 _ASKS_WHEN = re.compile(
-    r"\b(?:when|what (?:time|date|day|month|year)|how (?:long|many (?:days|weeks|months|years))|how much time)\b",
+    r"\b(?:when|what (?:date|day|month|year)|how long (?:ago|since|before|after|had|have|did|was|were)|"
+    r"how many (?:days|weeks|months|years) (?:ago|since|before|after|between|had|have|passed|did|was|were|"
+    r"until|from))\b",
     re.I,
 )
 
@@ -218,10 +222,19 @@ def confidence(store: Store, question: str, turn_ids: list[int]) -> float:
                   labels=[turn.speaker for turn in turns.values()]).confidence
 
 
+_REFERS_BACK = re.compile(r"\b(?:remind me|you (?:said|mentioned|told|suggested|recommended|gave|listed|explained|"
+                          r"provided|shared)|(?:our|the) (?:previous|earlier|last) (?:chat|conversation|discussion))\b",
+                          re.I)
+_ORDERING = re.compile(r"\b(?:in (?:what|which) order|order in which|sequence|chronolog\w*|timeline)\b", re.I)
+
+
 def is_broad(question: str) -> bool:
     """A question about a whole topic across sessions (a summary, an order of events, a
     count across conversations): it needs coverage more than the single best passage."""
-    return bool(_BROAD.search(question or ""))
+    question = question or ""
+    if _REFERS_BACK.search(question) and not _SUMMARY.search(question) and not _ORDERING.search(question):
+        return False  # "remind me what you said about X": one earlier answer, not the whole history
+    return bool(_BROAD.search(question)) or bool(gap_events(question))
 
 
 _ADVICE = re.compile(r"\b(?:recommend|suggest|suggestions?|ideas?|tips?|advice|should I|what should|"
@@ -279,7 +292,7 @@ _CORE_STRIP_ASPECT2 = re.compile(r"^(?:different aspects of|aspects of)\s+", re.
 _CLAUSE_SPLIT = re.compile(r"\s*(?:;|,\s*and\b|\band then\b|\balso\b)\s*")
 _WORD3 = re.compile(r"[A-Za-z]{3,}")
 _COORD = re.compile(
-    r"\b([a-z0-9_-]+(?:\s+[a-z0-9_-]+)?)\s+(?:or|and)\s+([a-z0-9_-]+(?:\s+[a-z0-9_-]+)?)\b",
+    r"\b([a-z0-9_-]+(?:\s+[a-z0-9_-]+)?)\s+or\s+([a-z0-9_-]+(?:\s+[a-z0-9_-]+)?)\b",
     re.I,
 )
 
@@ -294,6 +307,35 @@ def _core_topic(question: str) -> str:
     return cleaned.strip(" ?,.:;")
 
 
+_GAP_FRAME = re.compile(r"^(?:how (?:many|much|long)\b.*?\b(?:between|from)|"
+                        r"what (?:is|was) the (?:gap|time|difference) between)\s+", re.I)
+_GAP_SPLIT = re.compile(r"\s+(?:and|to|until)\s+(?=(?:when|the|my|i|a|an|what|where|how|our)\b)", re.I)
+_GAP_ORDER = re.compile(r"^how (?:many|much|long)\b[\w\s]*?\b(after|before|since)\s+(.+?)\s+"
+                        r"(?:did|do|was|were|had|have|could|would|when)\s+(?:i|we)\s+(.+)$", re.I)
+_GAP_SINCE = re.compile(r"^how (?:many|much|long)\b.*?\b(?:had|have) (?:i|we) been\s+(.+?)\s+"
+                        r"(?:when|before|by the time)\s+(?:i|we)\s+(.+)$", re.I)
+_EVENT_LEAD = re.compile(r"^(?:when|the (?:day|time|week|moment) (?:when )?|the date )\s*", re.I)
+
+
+def gap_events(question: str) -> list[str]:
+    """The two events a date-gap question measures between, each searched on its own:
+    "how many days passed between when I got my API key and when I finished the
+    wireframe" also searches "I got my API key" and "I finished the wireframe"."""
+    text = question.strip().rstrip("?.! ")
+    frame = _GAP_FRAME.match(text)
+    if frame:
+        parts = _GAP_SPLIT.split(text[frame.end():], maxsplit=1)
+        if len(parts) == 2:
+            return [e for e in (_EVENT_LEAD.sub("", p).strip(" ,") for p in parts) if len(_WORD3.findall(e)) >= 2]
+    order = _GAP_ORDER.match(text)
+    if order:
+        return [e for e in (order.group(2).strip(" ,"), order.group(3).strip(" ,")) if len(_WORD3.findall(e)) >= 2]
+    since = _GAP_SINCE.match(text)
+    if since:
+        return [e for e in (since.group(1).strip(" ,"), since.group(2).strip(" ,")) if len(_WORD3.findall(e)) >= 2]
+    return []
+
+
 def subqueries(question: str) -> list[str]:
     """The question, plus each clause of a compound one, plus each aspect of a list
     ("a summary of X, including A, B and C" also searches "X A", "X B", "X C")."""
@@ -302,6 +344,7 @@ def subqueries(question: str) -> list[str]:
     q_norm = question.rstrip(" ?,.:;").lower()
     if core and core.lower() != q_norm and len(core) >= 4:
         out.append(core)
+    out += gap_events(question)
     parts = _CLAUSE_SPLIT.split(question)
     if len(parts) > 1:
         out += [p for p in parts if len(_WORD3.findall(p)) >= 2]
@@ -558,7 +601,7 @@ def _recall_key(store: Store, question: str, now, opts: Options,
         store.cache_identity, store.path, question, str(moment or ""),
         opts.budget, opts.pool, opts.neighbours_before, opts.neighbours_after,
         opts.neighbour_hits, opts.neighbour_minutes, opts.excerpt_tokens,
-        opts.window_boost, opts.entity_boost, opts.lexical_weight, opts.rerank,
+        opts.window_boost, opts.entity_boost, opts.lexical_weight, opts.rerank, opts.recency_pool,
         opts.rerank_depth, opts.rerank_blend, opts.profile_facts, opts.instructions,
         opts.broad, opts.recency_boost, opts.primary_hits, opts.embedder,
         opts.summaries, opts.sessions, opts.speakers, opts.since, opts.until, opts.graph_hops,
@@ -640,6 +683,10 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
         until = min(parsed_until, moment)
     allowed = store.allowed(sessions=opts.sessions, speakers=opts.speakers, since=opts.since,
                             until=until, now=moment if now is not None else None)
+    if allowed is not None and len(allowed) == store.turn_count():
+        # a filter that excludes nothing is no filter: every search arm would otherwise
+        # carry the whole id list into each full-text query
+        allowed = None
     pool = opts.pool
     queries = list(dict.fromkeys(subqueries(question) + [q.strip() for q in extra_queries if q and q.strip()]))
     dense_rankings: dict[str, list[int]] = {
@@ -680,17 +727,6 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
         explain["filtered_to"] = len(allowed)
     if opts.entity_boost and scores:
         named = set(profile.entities(question))
-        if not named:
-            entity_query = unicode_index.ascii_query(question) if unicode_index.relevant(question) else question
-            q_words = {w for w in re.findall(r"[a-z0-9_-]+", entity_query.lower())
-                       if len(w) >= 3 and w not in profile.STOPWORDS and w not in _QUESTION_WORDS}
-            for w in q_words:
-                found = store.db.execute(
-                    "SELECT 1 FROM entities WHERE name=? UNION SELECT 1 FROM turns WHERE LOWER(speaker)=? LIMIT 1",
-                    (w, w)
-                ).fetchone()
-                if found:
-                    named.add(w)
         try:
             from commontrace import entity_store as _entity_store
 
@@ -719,9 +755,13 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
                 scores[turn] += opts.window_boost * top * 0.5
     if opts.recency_boost and scores and asks_current(question):
         # knowledge updates: among comparable matches the later statement wins
+        # Only near-equal matches compete on time: a boost spread over every
+        # scored turn lets recent chatter outrank the one turn that answers.
         top = max(scores.values())
-        candidates = store.turns(scores)
-        order = sorted(scores, key=lambda t: (candidates[t].at or dt.datetime.min, t))
+        comparable = sorted(scores, key=lambda t: (-scores[t], t))[:max(1, opts.recency_pool)]
+        candidates = store.turns(comparable)
+        order = sorted(comparable, key=lambda t: (candidates[t].at if t in candidates and candidates[t].at
+                                                  else dt.datetime.min, t))
         for position, turn in enumerate(order):
             scores[turn] += opts.recency_boost * top * (position / max(1, len(order) - 1))
         explain["recency"] = True
@@ -736,7 +776,8 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
         ):
             dated_turns.add(r[0])
         for turn in dated_turns:
-            scores[turn] += 0.4 * top
+            # proportional: a dated turn rises among its peers instead of jumping irrelevant ones
+            scores[turn] += 0.4 * scores[turn]
         explain["asks_when"] = True
     ranked = sorted(scores, key=lambda t: (-scores[t], t))
     ranked, n_self = filter_self_turns(store, question, ranked)
