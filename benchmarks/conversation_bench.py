@@ -127,6 +127,24 @@ def _cases_from_payload(payload) -> list:
 
 
 def _load_cases(args) -> list:
+    exclusion_path = getattr(args, "question_exclusions", None)
+    if exclusion_path:
+        if args.dataset not in ("locomo", "longmemeval"):
+            raise ValueError("question exclusions support LoCoMo and LongMemEval only")
+        with open(exclusion_path, encoding="utf-8") as source:
+            exclusions = json.load(source)
+        if (not isinstance(exclusions, list) or any(not isinstance(q, str) or not q for q in exclusions)
+                or len(set(exclusions)) != len(exclusions)):
+            raise ValueError("question exclusions must be a list of distinct nonempty identities")
+        cases = (list(locomo_cases(args.data)) if args.dataset == "locomo"
+                 else list(longmemeval_cases(args.data, 0, args.seed)))
+        identities = {q["id"] for _s, _ss, _now, qs in cases for q in qs}
+        if set(exclusions) - identities:
+            raise ValueError("question exclusions contain identities outside this dataset")
+        excluded = set(exclusions)
+        filtered = [(s, ss, now, [q for q in qs if q["id"] not in excluded])
+                    for s, ss, now, qs in cases]
+        return sample_cases([case for case in filtered if case[3]], args.limit, args.seed)
     if args.dataset == "dolphin":
         return list(dolphin_cases(args.data, args.personas, args.limit))
     if args.dataset == "beam":
@@ -147,6 +165,8 @@ def prepare_chunk_set(args) -> tuple[list, dict]:
 
     fingerprint = chunk_fingerprint(args.dataset, args.data, args.limit, args.seed,
                                     getattr(args, "personas", ""))
+    if getattr(args, "question_exclusions", None):
+        fingerprint["question_exclusions_sha256"] = dataset_digest(args.question_exclusions)
     digest = _hashlib.sha256(json.dumps(fingerprint, sort_keys=True).encode("utf-8")).hexdigest()
     name = getattr(args, "chunk_set", None) or f"{args.dataset}-{digest[:8]}"
     name = re.sub(r"[^A-Za-z0-9._-]", "_", name)
@@ -671,6 +691,8 @@ def run(args) -> dict:
         "evaluation": {"answer_enabled": args.answer, "token_accounting": "ceil-characters-divided-by-four",
                        "completeness_sha256": dataset_digest(os.path.join(repository, "benchmarks", "completeness.py"))},
     }
+    if "question_exclusions_sha256" in fingerprint:
+        provenance["sampling"]["question_exclusions_sha256"] = fingerprint["question_exclusions_sha256"]
 
     if args.answer:
         cfg_a, cfg_j = _get_llm_config(ans_model), _get_llm_config(j_model)
@@ -944,6 +966,9 @@ def run(args) -> dict:
             summary["inference_accounting"] = cost_guard.snapshot()
     if dataset_digest(args.data) != provenance["dataset_sha256"]:
         raise RuntimeError("dataset changed during measurement; discard this run")
+    if (getattr(args, "question_exclusions", None)
+            and dataset_digest(args.question_exclusions) != fingerprint["question_exclusions_sha256"]):
+        raise RuntimeError("question exclusions changed during measurement")
     return results
 
 
@@ -1084,6 +1109,7 @@ def main(argv=None) -> int:
     p.add_argument("--profile-facts", type=int, default=4)
     p.add_argument("--limit", type=int, default=0)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--question-exclusions", help="JSON list of question IDs excluded before stratified sampling")
     p.add_argument("--answer", action="store_true", help="answer and judge with COMMONTRACE_LLM_*")
     p.add_argument(
         "--chunk-set",

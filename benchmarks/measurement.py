@@ -18,6 +18,7 @@ SCHEMA_VERSION = 1
 _ADAPTER_NAMES = frozenset({
     "locomo_cases", "sample_cases", "longmemeval_cases", "beam_cases", "dolphin_cases", "_ids",
     "_payload_from_cases", "_cases_from_payload", "BEAM_MARK", "LOCOMO_CATEGORIES",
+    "_load_cases",
 })
 
 
