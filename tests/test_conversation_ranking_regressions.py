@@ -116,3 +116,14 @@ def test_a_users_own_plans_are_not_standing_instructions():
     assert kinds("Make sure to always cite sources in your answers.") == ["instruction"]
     assert kinds("Remember to keep answers under 100 words.") == ["instruction"]
     assert kinds("From now on, use metric units.") == ["instruction"]
+
+
+def test_frequency_lookup_matches_full_decoding():
+    from collections import Counter
+
+    from commontrace.fact_index import _frequencies
+
+    for counts in (Counter({"alpha": 1, "beta": 3, "gamma": 2}), Counter({"alpha": 1, "beta": 300, "gamma": 2})):
+        packed = _frequencies(counts)
+        assert {term: packed.get(term) for term in counts} == dict(packed) == dict(counts)
+        assert packed.get("delta") == 0 and packed.get("") == 0

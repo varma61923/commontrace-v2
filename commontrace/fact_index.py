@@ -136,6 +136,16 @@ class _Frequencies:
                 shift += 7
             yield term, count
 
+    def get(self, term: str) -> int:
+        """One term's count, 0 when absent. Without a multi-byte count (the common
+        case) the count is read in place instead of decoding every earlier term."""
+        position = bisect_left(self.terms, term)
+        if position == len(self.terms) or self.terms[position] != term:
+            return 0
+        if len(self.counts) == len(self.terms):
+            return self.counts[position]
+        return next(count for name, count in self if name == term)
+
 
 def _frequencies(counts: Counter[str]) -> _Frequencies:
     terms, packed = tuple(sorted(counts)), bytearray()
@@ -739,6 +749,8 @@ def search(root: str, query: str, *, scope: str = '', category: str = '', as_of:
                 ids = set().union(*(postings.get(term, frozenset()) for term in query_terms))
                 scores: list[tuple[float, str]] = []
                 stats = _statistics(snapshot, filters, moment) if selected == 'bm25-v1' else None
+                idf = [(term, retrieval._idf(stats.document_count, stats.frequencies[term]))
+                       for term in sorted(query_terms) if term in stats.frequencies] if stats is not None else []
                 for key in ids:
                     record = snapshot.records[key]
                     if not filters.allows(record, moment):
@@ -747,10 +759,13 @@ def search(root: str, query: str, *, scope: str = '', category: str = '', as_of:
                         overlap = sum(term in record.overlap for term in query_terms)
                         raw = overlap / (len(query_terms) + len(record.overlap) - overlap)
                     else:
-                        n = stats.document_count
-                        raw = sum(retrieval._bm25_term(count, retrieval._idf(n, stats.frequencies[term]),
-                                                      record.length, stats.average_length)
-                                  for term, count in record.bm25 if term in query_terms)
+                        # same terms in the same (sorted) order as iterating the record, so
+                        # scores are bit-identical; only the lookups and IDFs are cheaper
+                        raw = 0.0
+                        for term, weight in idf:
+                            count = record.bm25.get(term)
+                            if count:
+                                raw += retrieval._bm25_term(count, weight, record.length, stats.average_length)
                         raw = raw / (1 + raw)
                     scores.append((-round(raw * 0.7 + record.confidence * 0.3, 4), key))
                 heapq.heapify(scores)
