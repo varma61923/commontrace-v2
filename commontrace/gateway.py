@@ -445,6 +445,7 @@ class Gateway:
             "now": "optional date the question is asked",
             "sessions": "optional list of session ids", "speakers": "optional list of speakers",
             "since": "optional date", "until": "optional date",
+            "context_strategy": "optional legacy or coverage-v1 context packing (default legacy)",
         }, summary="The turns that answer a question, as a dated context within a token budget.")
         self._route("GET", "/v1/status", self._status, summary="Experiment and proof progress.")
         self._route("GET", "/v1/memories", self._memories, summary="Each memory's measured verdict.")
@@ -928,7 +929,11 @@ class Gateway:
             if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
                 raise _bad(f"{key} must be a list of strings")
             lists[key] = tuple(value)
-        opts = Options(budget=budget, since=req.get("since") or None, until=req.get("until") or None, **lists)
+        strategy = req.get("context_strategy", "legacy")
+        if not isinstance(strategy, str) or strategy not in ("legacy", "coverage-v1"):
+            raise _bad("context_strategy must be legacy or coverage-v1")
+        opts = Options(budget=budget, since=req.get("since") or None, until=req.get("until") or None,
+                       context_strategy=strategy, **lists)
         try:
             space = self._scoped_space(_ident(req.get("space"), "space"))
             with Store(self.root, space, create=False) as store:

@@ -1958,13 +1958,16 @@ def build_server(root: str, *, allow_approval: bool = True):
     @mcp.tool()
     async def conversation_recall(space: str, question: str, budget: int = 1500, now: str = "",
                                   sessions: list[str] | None = None, speakers: list[str] | None = None,
-                                  since: str = "", until: str = "", ctx: Any = None) -> dict:
+                                  since: str = "", until: str = "", ctx: Any = None,
+                                  context_strategy: str = "legacy") -> dict:
         """What was said that answers `question`: the matching turns with their neighbours,
         grouped by session with dates, within `budget` tokens, plus what the user has said
         about themselves when it bears on the question. Pass `now` when the question is
         asked at a different time than the last message. `sessions`, `speakers`, `since`
         and `until` narrow what may be recalled. Turns the injection screen flags are
         withheld and listed under explain.withheld.
+        `context_strategy=coverage-v1` prioritizes distinct query facets within
+        the same evidence budget; the default preserves existing ranking.
         """
         from commontrace.conversation import ConversationError, Options, Store, recall
 
@@ -1974,7 +1977,7 @@ def build_server(root: str, *, allow_approval: bool = True):
             return _err("budget must be a number of tokens")
 
         opts = Options(budget=budget, sessions=tuple(sessions or ()), speakers=tuple(speakers or ()),
-                       since=since or None, until=until or None)
+                       since=since or None, until=until or None, context_strategy=context_strategy)
 
         def _run():
             with Store(root, space, create=False) as store:

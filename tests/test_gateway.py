@@ -520,6 +520,12 @@ def test_conversation_routes_remember_and_recall(gw, monkeypatch):
     status, got = call(gw, "POST", "/v1/conversation/recall",
                        {"space": "robot-7", "question": "When did the conveyor jam?"})
     assert status == 200 and "jammed yesterday [7 May 2023] at bay 4" in got["context"]
+    status, diversified = call(gw, "POST", "/v1/conversation/recall", {
+        "space": "robot-7", "question": "When did the conveyor jam?", "context_strategy": "coverage-v1"})
+    assert status == 200 and "jammed yesterday [7 May 2023] at bay 4" in diversified["context"]
+    for invalid in ("unknown", None, [], True):
+        assert call(gw, "POST", "/v1/conversation/recall", {
+            "space": "robot-7", "question": "conveyor", "context_strategy": invalid})[0] == 400
     assert call(gw, "POST", "/v1/conversation/recall", {"space": "nobody", "question": "x"})[0] == 404
     status, none = call(gw, "POST", "/v1/conversation/recall",
                         {"space": "robot-7", "question": "conveyor", "speakers": ["nobody"]})

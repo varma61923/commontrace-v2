@@ -11,12 +11,15 @@ import json
 import math
 import re
 import threading
+import unicodedata
 from collections import OrderedDict
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from itertools import chain
 
 from commontrace import injection_guard
-from commontrace.conversation import profile, timeparse
+from commontrace._lexical import WORD_RE, has_cjk, segment_cjk
+from commontrace.conversation import profile, timeparse, unicode_index
 from commontrace.conversation.store import (  # noqa: F401 - re-exported (canonical home: store)
     ConversationError,
     Store,
@@ -56,6 +59,7 @@ class Options:
     since: str | None = None
     until: str | None = None
     graph_hops: int | None = None  # None: adapt to relational clauses; 0 disables; maximum 2
+    context_strategy: str = "legacy"  # coverage-v1 prioritizes marginal excerpt facets per quoted token
 
 
 @dataclass
@@ -71,6 +75,14 @@ class Recall:
     def as_dict(self) -> dict:
         return {"question": self.question, "context": self.context, "tokens": self.tokens,
                 "turns": self.turns, "window": self.window, "explain": self.explain}
+
+
+@dataclass(frozen=True)
+class _EmittedText:
+    """Body bytes actually delivered, with only their displayed attribution."""
+
+    body: str
+    speaker: str = ""
 
 
 @dataclass(frozen=True)
@@ -91,6 +103,12 @@ class DenseCandidates:
 def tokens(text: str) -> int:
     """The context's size in tokens, estimated the way most tokenizers land: ~4 chars each."""
     return max(1, math.ceil(len(text) / 4)) if text else 0
+
+
+def _context_strategy(value: object) -> str:
+    if not isinstance(value, str) or value not in ("legacy", "coverage-v1"):
+        raise ConversationError("context_strategy must be legacy or coverage-v1")
+    return value
 
 
 _BROAD = re.compile(
@@ -150,7 +168,7 @@ def _graph_candidates(store: Store, question: str, ranked: list[int], allowed: s
             "SELECT name, turn FROM entities WHERE turn IN (SELECT value FROM json_each(?)) "
             "ORDER BY name, turn LIMIT 96",
             (json.dumps(seeds),)))
-        origins = {}
+        origins: dict[str, int] = {}
         for name, turn in entities:
             if name not in seen_entities and len(origins) < 16:
                 origins.setdefault(name, turn)
@@ -217,6 +235,9 @@ _ABOUT_SELF = re.compile(r"\b(?:profession|occupation|job|career|for a living|my
 
 
 def _stems(text: str) -> set[str]:
+    if unicode_index.relevant(text):
+        return {w if has_cjk(w) else w[:5] for w in _unicode_words(text)
+                if (len(w) > 2 or has_cjk(w)) and w not in profile.STOPWORDS}
     return {w[:5] for w in re.findall(r"[a-z0-9]+", text.lower()) if len(w) > 2 and w not in profile.STOPWORDS}
 
 
@@ -296,10 +317,15 @@ def subqueries(question: str) -> list[str]:
     if question.count(",") >= 2 or re.search(r"\bincluding\b|:", question):
         head = re.split(r"\bincluding\b|:", question, maxsplit=1)[0]
         rest = question[len(head):]
-        topic = [w for w in re.findall(r"[A-Za-z][A-Za-z'-]{2,}", head)
+        multilingual = unicode_index.relevant(question)
+        head_words = [w for w in WORD_RE.findall(head) if len(w) >= 3 or has_cjk(w)] if multilingual \
+            else re.findall(r"[A-Za-z][A-Za-z'-]{2,}", head)
+        topic = [w for w in head_words
                  if w.lower() not in profile.STOPWORDS and w.lower() not in _FRAME_WORDS][:4]
         for aspect in re.split(r",\s*(?:and\s+)?|\band\b|\bincluding\b|:", rest):
-            words = [w for w in re.findall(r"[A-Za-z][A-Za-z'-]{2,}", aspect) if w.lower() not in profile.STOPWORDS]
+            aspect_words = [w for w in WORD_RE.findall(aspect) if len(w) >= 3 or has_cjk(w)] if multilingual \
+                else re.findall(r"[A-Za-z][A-Za-z'-]{2,}", aspect)
+            words = [w for w in aspect_words if w.lower() not in profile.STOPWORDS]
             if words:
                 if len(words) >= 2:
                     out.append(" ".join(words))
@@ -337,6 +363,9 @@ def relative_time_delta(moment: dt.datetime, now: dt.datetime | None = None) -> 
 
 def _normalize_text(text: str) -> str:
     """Lowercased, punctuation-stripped, whitespace-collapsed form for equality checks."""
+    if text and unicode_index.relevant(text):
+        normalized = unicodedata.normalize("NFC", text).lower()
+        return re.sub(r"\s+", " ", re.sub(r"[^\w\s]|_", "", normalized)).strip()
     return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9\s]", "", (text or "").lower())).strip()
 
 
@@ -390,6 +419,61 @@ def _line(turn: Turn) -> str:
 
 
 _WINDOW = re.compile(r"(?<=[.!?\n])\s+")
+_UNICODE_WINDOW = re.compile(r"(?<=[。！？\n])\s*|(?<=[.!?])\s+")
+
+
+def _unicode_words(text: str) -> set[str]:
+    """Bounded-window terms shared with Unicode sparse evidence matching."""
+    normalized = unicodedata.normalize("NFC", text).lower()
+    return {term for match in WORD_RE.finditer(normalized) for term in segment_cjk(match.group())}
+
+
+def _unicode_excerpt(turn: Turn, question: str, cap: int) -> str:
+    """Select an exact source span, retaining sentence boundaries when possible.
+
+    Overlapping windows keep relevant tails searchable even without spaces or
+    punctuation. Ellipses mark every omitted edge; attribution and those marks
+    count toward the same character-based token budget as the quoted body.
+    """
+    limit = max(0, cap) * 4
+    prefix = turn.speaker + ": "
+    text = turn.annotated()
+    # Reserve both omission marks before scoring, rather than clipping a
+    # selected passage afterwards and accidentally dropping its matching tail.
+    width = limit - len(prefix) - 4
+    if width <= 0:
+        return prefix[:limit]
+    asked = {w for w in _unicode_words(question)
+             if (len(w) > 2 or has_cjk(w)) and w not in profile.STOPWORDS}
+    singletons = {w for w in asked if len(w) == 1 and has_cjk(w)}
+    best: tuple[int, bool, int] | None = None
+    selected = (0, min(width, len(text)))
+    start = 0
+    boundaries = (match.end() for match in _UNICODE_WINDOW.finditer(text))
+    for end in chain(boundaries, (len(text),)):
+        # Only a single bounded span is materialized per comparison. Long turns
+        # do not create a corpus-sized token set or a list of overlapping text.
+        span_start, span_end = start, end
+        while span_start < span_end and text[span_start].isspace():
+            span_start += 1
+        while span_end > span_start and text[span_end - 1].isspace():
+            span_end -= 1
+        complete = span_end - span_start <= width
+        offset = span_start
+        while offset < span_end:
+            stop = min(span_end, offset + width)
+            passage = text[offset:stop]
+            matching = asked & _unicode_words(passage)
+            matching.update(word for word in singletons if word in passage)
+            score = (len(matching), complete, -offset)
+            if best is None or score > best:
+                best, selected = score, (offset, stop)
+            if stop == span_end:
+                break
+            offset = min(offset + max(1, width // 2), span_end - width)
+        start = end
+    lo, hi = selected
+    return prefix + ("… " if lo else "") + text[lo:hi] + (" …" if hi < len(text) else "")
 
 
 def _excerpt(turn: Turn, question: str, cap: int) -> str:
@@ -398,6 +482,8 @@ def _excerpt(turn: Turn, question: str, cap: int) -> str:
     full = _line(turn)
     if tokens(full) <= cap:
         return full
+    if unicode_index.relevant(question) or unicode_index.relevant(full):
+        return _unicode_excerpt(turn, question, cap)
     asked = {w for w in re.findall(r"[a-z0-9_]+", question.lower()) if len(w) > 2 and w not in profile.STOPWORDS}
     pieces, buf = [], ""
     for part in _WINDOW.split(turn.annotated()):
@@ -409,7 +495,8 @@ def _excerpt(turn: Turn, question: str, cap: int) -> str:
         pieces.append(buf)
     scored = sorted(range(len(pieces)), key=lambda i: (
         -len(asked & set(re.findall(r"[a-z0-9_]+", pieces[i].lower()))), i))
-    keep, spent = set(), tokens(turn.speaker) + 4
+    keep: set[int] = set()
+    spent = tokens(turn.speaker) + 4
     for i in scored:
         cost = tokens(pieces[i]) + 1
         if spent + cost > cap and keep:
@@ -449,7 +536,7 @@ def forget_store(store: Store) -> None:
 
 
 def _recall_key(store: Store, question: str, now, opts: Options,
-                extra_queries: list[str]) -> tuple | None:
+                extra_queries: Sequence[str]) -> tuple | None:
     """Cache key for a recall, or None when the call must not be cached.
 
     Includes local change count and SQLite data_version: deletions, profile
@@ -475,12 +562,12 @@ def _recall_key(store: Store, question: str, now, opts: Options,
         opts.rerank_depth, opts.rerank_blend, opts.profile_facts, opts.instructions,
         opts.broad, opts.recency_boost, opts.primary_hits, opts.embedder,
         opts.summaries, opts.sessions, opts.speakers, opts.since, opts.until, opts.graph_hops,
-        tuple(extra_queries), stamp,
+        opts.context_strategy, tuple(extra_queries), stamp,
     )
 
 
 def recall(store: Store, question: str, *, now=None, options: Options | None = None,
-           extra_queries: list[str] = (), dense_candidates: DenseCandidates | None = None) -> Recall:
+           extra_queries: Sequence[str] = (), dense_candidates: DenseCandidates | None = None) -> Recall:
     """`extra_queries` are searched beside the question, each keeping its own best
     ranks (a follow-up search that finds a missing fact first is not diluted).
 
@@ -489,9 +576,13 @@ def recall(store: Store, question: str, *, now=None, options: Options | None = N
     """
     from commontrace import telemetry
 
+    if question and unicode_index.relevant(question):
+        _context_strategy((options or Options()).context_strategy)
+        store.prepare_lexical(question)
     with store.read_snapshot(), telemetry.span(
             "conversation.recall", space=store.space, queries=1 + len(extra_queries)) as handle:
         opts = options or Options()
+        _context_strategy(opts.context_strategy)
         key = _recall_key(store, question, now, opts, extra_queries) if dense_candidates is None else None
         if key is not None:
             with _RECALL_LOCK:
@@ -519,8 +610,9 @@ def recall(store: Store, question: str, *, now=None, options: Options | None = N
 
 
 def _recall(store: Store, question: str, *, now=None, options: Options | None = None,
-            extra_queries: list[str] = (), dense_candidates: DenseCandidates | None = None) -> Recall:
+            extra_queries: Sequence[str] = (), dense_candidates: DenseCandidates | None = None) -> Recall:
     opts = options or Options()
+    _context_strategy(opts.context_strategy)
     question = (question or "").strip()
     if not question:
         return Recall(question, "", 0, [], [], None)
@@ -540,9 +632,9 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
                 or dense_candidates.stamp != store.unit_stamp() or dense_candidates.model != expected_model:
             raise ConversationError("external vector candidates are stale or use a different embedding model")
     embedder = _embedder(store, opts.embedder) if dense_candidates is None else None
-    until = opts.until
+    until: str | dt.datetime | None = opts.until
     if now is not None and moment is not None:
-        parsed_until = timeparse.parse_moment(until) if until else moment
+        parsed_until = timeparse.parse_moment(opts.until) if opts.until else moment
         if parsed_until is None:
             raise ConversationError(f"unrecognised date {until!r}")
         until = min(parsed_until, moment)
@@ -589,7 +681,8 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
     if opts.entity_boost and scores:
         named = set(profile.entities(question))
         if not named:
-            q_words = {w for w in re.findall(r"[a-z0-9_-]+", question.lower())
+            entity_query = unicode_index.ascii_query(question) if unicode_index.relevant(question) else question
+            q_words = {w for w in re.findall(r"[a-z0-9_-]+", entity_query.lower())
                        if len(w) >= 3 and w not in profile.STOPWORDS and w not in _QUESTION_WORDS}
             for w in q_words:
                 found = store.db.execute(
@@ -684,18 +777,21 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
     if belief_at is None and window is not None and moment is not None and window[1] < moment.date():
         belief_at = dt.datetime.combine(window[1], dt.time(23, 59, 59))
         explain["belief_as_of"] = belief_at.isoformat()
+    emitted: list[_EmittedText] = []
+    selection: dict = {}
     context, used, n_tokens = assemble(store, question, ranked, opts, withheld, allowed, now=show_now,
                                      as_of=belief_at, current_instructions=now is None and belief_at is not None,
-                                     evidence_paths=explain.get("graph_paths", ()))
+                                     evidence_paths=explain.get("graph_paths", ()), emitted=emitted,
+                                     selection=selection)
+    explain["context_selection"] = selection
     if explain.get("graph_paths"):
         chosen = set(used)
         explain["selected_graph_paths"] = [p for p in explain["graph_paths"]
                                            if p["source"] in chosen and p["turn"] in chosen]
     from commontrace.conversation.coverage import assess
 
-    coverage_turns = store.turns(used[:5]) if context else {}
-    coverage = assess(question, [turn.annotated() for turn in coverage_turns.values()],
-                      labels=[turn.speaker for turn in coverage_turns.values()])
+    coverage = assess(question, [part.body for part in emitted if part.body],
+                      labels=[part.speaker for part in emitted if part.body and part.speaker])
     conf = coverage.confidence
     explain["confidence"] = conf
     explain["coverage"] = coverage.as_dict()
@@ -739,7 +835,8 @@ _GLOBAL_RULE = re.compile(r"\b(?:format\w*|style|length|short|shorter|concise|br
 
 
 def _instruction_lines(store: Store, limit: int, question: str = "", *,
-                       facts: list[dict] | None = None) -> list[tuple[str, int]]:
+                       facts: list[dict] | None = None,
+                       emissions: dict[tuple[str, int], _EmittedText] | None = None) -> list[tuple[str, int]]:
     """Standing instructions the user gave the assistant: they apply to every answer, so
     they are shown whatever the question, the ones touching its subject and the rules
     about how to answer (format, length, tone, units, code) first."""
@@ -765,12 +862,16 @@ def _instruction_lines(store: Store, limit: int, question: str = "", *,
     out = []
     for _overlap, f in picked[:limit]:
         day = f"({f['at'][:10]}) " if f["at"] else ""
-        out.append((f"- {day}{f['statement']}", f["turn"]))
+        item = (f"- {day}{f['statement']}", f["turn"])
+        out.append(item)
+        if emissions is not None:
+            emissions[item] = _EmittedText(f["statement"])
     return out
 
 
 def _profile_lines(store: Store, question: str, limit: int, *,
-                   facts: list[dict] | None = None) -> list[tuple[str, int]]:
+                   facts: list[dict] | None = None,
+                   emissions: dict[tuple[str, int], _EmittedText] | None = None) -> list[tuple[str, int]]:
     if limit <= 0:
         return []
     facts = [f for f in (facts if facts is not None else store.facts()) if f["kind"] != "instruction"]
@@ -801,7 +902,10 @@ def _profile_lines(store: Store, question: str, limit: int, *,
         seen.add(identity)
         day = f"({f['at'][:10]}) " if f["at"] else ""
         owner = f["speaker"] if f["speaker"].lower() == f["owner"] else f["owner"]
-        out.append((f"- {day}{owner}: {f['statement']}", f["turn"]))
+        item = (f"- {day}{owner}: {f['statement']}", f["turn"])
+        out.append(item)
+        if emissions is not None:
+            emissions[item] = _EmittedText(f["statement"], owner)
         if len(out) >= limit:
             break
     return out
@@ -814,10 +918,18 @@ def _flagged(turn: Turn) -> bool:
 def assemble(store: Store, question: str, ranked: list[int], opts: Options,
              withheld: list[int] | None = None, allowed: set[int] | None = None,
              now: dt.datetime | None = None, as_of=None,
-             current_instructions: bool = False, evidence_paths=()) -> tuple[str, list[int], int]:
+             current_instructions: bool = False, evidence_paths=(),
+             emitted: list[_EmittedText] | None = None,
+             selection: dict | None = None) -> tuple[str, list[int], int]:
     """Fill the budget best-first, each hit with its neighbours, then render by time.
     A turn the injection screen flags is never shown; its id goes to `withheld`."""
+    strategy = _context_strategy(opts.context_strategy)
+    if selection is not None:
+        selection.clear()
+        selection["strategy"] = strategy
     withheld = [] if withheld is None else withheld
+    if emitted is not None:
+        emitted.clear()
     budget = max(0, opts.budget)
     facts = store.recall_facts(question, as_of=as_of, allowed=allowed,
                               instructions=bool(opts.instructions), profile_facts=bool(opts.profile_facts)) \
@@ -834,17 +946,23 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
     facts = [f for f in facts if sources.get(f["id"]) and not flagged.intersection(sources[f["id"]])
              and not injection_guard.injection_labels({"text": f["statement"]})
              and _normalize_text(f["statement"]) != _normalize_text(question)]
-    instruction_lines = _instruction_lines(store, opts.instructions, question, facts=facts)
+    profile_emissions: dict[tuple[str, int], _EmittedText] = {}
+    instruction_lines = _instruction_lines(store, opts.instructions, question, facts=facts,
+                                           emissions=profile_emissions)
     instruction_block = ("[Standing instructions from the user]\n" + "\n".join(t for t, _ in instruction_lines)
                          + "\n\n") if instruction_lines else ""
     while instruction_lines and tokens(instruction_block) > budget // 6:
         instruction_lines.pop()
         instruction_block = ("[Standing instructions from the user]\n" + "\n".join(t for t, _ in instruction_lines)
                              + "\n\n") if instruction_lines else ""
-    profile_lines = _profile_lines(store, question, opts.profile_facts, facts=facts)
+    profile_lines = _profile_lines(store, question, opts.profile_facts, facts=facts,
+                                   emissions=profile_emissions)
     profile_title = "What the user has said about themselves"
     if as_of is not None:
-        profile_title += f"; beliefs as of {timeparse.parse_moment(as_of).isoformat()}"
+        profile_at = timeparse.parse_moment(as_of)
+        if profile_at is None:
+            raise ConversationError("unrecognised belief date")
+        profile_title += f"; beliefs as of {profile_at.isoformat()}"
     profile_block = (f"[{profile_title}]\n" + "\n".join(t for t, _ in profile_lines)
                      + "\n\n") if profile_lines else ""
     if tokens(profile_block) > budget // 4:
@@ -892,8 +1010,9 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
         return rendered[turn.id]
 
     parents = {p["turn"]: p["source"] for p in evidence_paths}
+    question_norm = _normalize_text(question)
 
-    def evidence_group(tid):
+    def evidence_ids(tid: int) -> list[int]:
         # A graph answer and its connecting passages are one evidence unit.
         # Keep at most the two traversed ancestors, with cycle protection.
         ids = [tid]
@@ -902,11 +1021,14 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
             if parent is None or parent in ids:
                 break
             ids.append(parent)
+        return ids
+
+    def evidence_group(tid):
+        ids = evidence_ids(tid)
         turns = store.turns(ids)
-        norm = _normalize_text(question)
         for i in ids:
             t = turns.get(i)
-            if t is None or (allowed is not None and i not in allowed) or _normalize_text(t.text) == norm:
+            if t is None or (allowed is not None and i not in allowed) or _normalize_text(t.text) == question_norm:
                 return {}
             if _is_flagged(t):
                 if i not in withheld:
@@ -944,13 +1066,58 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
             for sess, tids in session_to_tids.items():
                 if d < len(tids):
                     diversified.append(tids[d])
-        stream = diversified + [t for t in ranked if t not in set(diversified)]
+        diversified_set = set(diversified)
+        stream = diversified + [t for t in ranked if t not in diversified_set]
+
+    priority_quota = 0
+    if strategy == "coverage-v1":
+        from commontrace.conversation.context_selection import (
+            MAX_CANDIDATES,
+            MAX_PASSAGE_CHARS,
+            MAX_TOKEN_COST,
+            Candidate,
+            prioritize,
+        )
+
+        candidates: list[Candidate] = []
+        seen_candidates: set[int] = set()
+        skipped_oversized = 0
+        # Hydrate at most 200 candidates and their two graph ancestors in one
+        # bounded query. Each group still passes its own eligibility screen;
+        # hydration never makes foreign or unsafe evidence deliverable.
+        prefetch_ids = dict.fromkeys(source for tid in stream[:MAX_CANDIDATES] for source in evidence_ids(tid))
+        store.turns(prefetch_ids)
+        for tid in stream[:MAX_CANDIDATES]:
+            if tid in seen_candidates:
+                continue
+            seen_candidates.add(tid)
+            evidence = evidence_group(tid)
+            if not evidence or about_user_only and evidence[tid].role not in ("user", ""):
+                continue
+            passages = tuple(line_of(turn).removeprefix(turn.speaker + ": ") for turn in evidence.values())
+            cost = evidence_cost(evidence)
+            if sum(map(len, passages)) > MAX_PASSAGE_CHARS or cost > MAX_TOKEN_COST:
+                skipped_oversized += 1
+                continue
+            candidates.append(Candidate(tid, passages, max(1, cost)))
+        try:
+            anchor_count = opts.primary_hits if opts.primary_hits is not None else 3
+            plan = prioritize(question, candidates, anchor_count=min(MAX_CANDIDATES, max(0, anchor_count)))
+        except ValueError as exc:
+            raise ConversationError(str(exc)) from exc
+        planned = set(plan.order)
+        stream = list(plan.order) + [tid for tid in stream if tid not in planned]
+        priority_quota = len(plan.priority)
+        if selection is not None:
+            selection.update(plan.as_dict())
+            selection["skipped_oversized_groups"] = skipped_oversized
 
     with_context = opts.neighbour_hits if opts.neighbour_hits is not None else max(5, budget // 400)
     # the best hits go in first, on their own: context around one hit must never push a
     # better-ranked hit out of the budget
     primary: set[int] = set()
     primary_hits = opts.primary_hits if opts.primary_hits is not None else 3
+    primary_hits = max(primary_hits, priority_quota)
     head = store.turns(stream[:primary_hits * 3])
     for tid in stream[:primary_hits * 3]:
         turn = head.get(tid)
@@ -979,7 +1146,8 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
         full = False
         for tid in batch:
             turn = turns.get(tid)
-            if turn is None or (tid in chosen and tid not in primary):
+            if turn is None or (allowed is not None and tid not in allowed) \
+                    or (tid in chosen and tid not in primary):
                 continue
             first = tid in primary
             primary.discard(tid)
@@ -1009,7 +1177,6 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
             group_turns = store.turns(group)
             # anti-recursion holds for neighbours too: a turn restating the
             # question is never context for its own answer, however adjacent.
-            question_norm = _normalize_text(question)
             group = [g for g in group
                      if g == tid or g not in group_turns
                      or _normalize_text(group_turns[g].text) != question_norm]
@@ -1017,8 +1184,9 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
                 # a neighbour is context only when it was said close to the hit: turns of one
                 # dialogue share a moment, separate notes made hours apart on one day do not
                 gap = dt.timedelta(minutes=opts.neighbour_minutes)
-                group = [g for g in group if g == tid or g not in group_turns or group_turns[g].at is None
-                         or abs(group_turns[g].at - turn.at) <= gap]
+                anchor_at: dt.datetime = turn.at
+                group = [g for g in group if g == tid or g not in group_turns
+                         or (neighbour_at := group_turns[g].at) is None or abs(neighbour_at - anchor_at) <= gap]
             for g in list(group):
                 if g in group_turns and _is_flagged(group_turns[g]):
                     group.remove(g)
@@ -1049,16 +1217,20 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
     for turn in sorted(chosen.values(), key=lambda t: (t.at or dt.datetime.min, t.session, t.idx)):
         by_session.setdefault(turn.session, []).append(turn)
     blocks = []
-    for session, turns in sorted(by_session.items(), key=lambda kv: (kv[1][0].at or dt.datetime.min, kv[0])):
-        lines = [_header(session, turns[0].at, now)]
+    delivered = [profile_emissions[item] for item in instruction_lines + profile_lines]
+    for session, session_turns in sorted(by_session.items(), key=lambda kv: (kv[1][0].at or dt.datetime.min, kv[0])):
+        lines = [_header(session, session_turns[0].at, now)]
         if session in summaries:
             lines.append(_summary_line(summaries[session]["text"]))
-        previous = None
-        for turn in sorted(turns, key=lambda t: t.idx):
-            if previous is not None and turn.idx > previous + 1:
+            delivered.append(_EmittedText(summaries[session]["text"]))
+        previous: int | None = None
+        for displayed_turn in sorted(session_turns, key=lambda t: t.idx):
+            if previous is not None and displayed_turn.idx > previous + 1:
                 lines.append("…")
-            lines.append(line_of(turn))
-            previous = turn.idx
+            lines.append(line_of(displayed_turn))
+            delivered.append(_EmittedText(line_of(displayed_turn).removeprefix(displayed_turn.speaker + ": "),
+                                          displayed_turn.speaker))
+            previous = displayed_turn.idx
         blocks.append("\n".join(lines))
     context = profile_block + "\n\n".join(blocks)
     if not chosen and ranked and budget > 0 and ranked[0] not in parents:
@@ -1066,10 +1238,19 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
         top = store.turns(ranked[:1])
         if ranked[0] in top and (allowed is None or ranked[0] in allowed) and not _is_flagged(top[ranked[0]]):
             snippet = _excerpt(top[ranked[0]], question, budget)
+            prefix = top[ranked[0]].speaker + ": "
+            displayed_speaker = top[ranked[0]].speaker
             if tokens(snippet) > budget:
-                snippet = snippet.removeprefix(top[ranked[0]].speaker + ": ")
+                snippet = snippet.removeprefix(prefix)
+                displayed_speaker = ""
             snippet = snippet[:budget * 4]
             chosen[ranked[0]] = top[ranked[0]]
             context = snippet
             pinned = []
+            body = snippet.removeprefix(prefix) if displayed_speaker else snippet
+            if displayed_speaker and prefix.startswith(snippet):
+                body, displayed_speaker = "", ""
+            delivered = [_EmittedText(body, displayed_speaker)]
+    if emitted is not None:
+        emitted.extend(delivered)
     return context, list(chosen) + [t for t in dict.fromkeys(pinned) if t not in chosen], tokens(context)

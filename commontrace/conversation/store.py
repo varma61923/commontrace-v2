@@ -21,7 +21,7 @@ from dataclasses import dataclass
 
 from commontrace import memory_guard, paths
 from commontrace._stem import stem
-from commontrace.conversation import profile, timeparse
+from commontrace.conversation import profile, timeparse, unicode_index
 
 SPACE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 SESSION_RE = re.compile(r"^[^\x00-\x1f]{1,200}$")
@@ -952,7 +952,51 @@ class Store:
         return dict(self.db.execute("SELECT id, turn FROM units WHERE id IN (SELECT value FROM json_each(?))",
                                     (json.dumps(ids),)).fetchall())
 
+    def prepare_lexical(self, query: str) -> None:
+        """Refresh derived Unicode postings before opening a recall snapshot.
+
+        ASCII-only workloads install no additional index. Read-only banks are
+        never modified; a dirty snapshot retains exact streaming fallback.
+        """
+        if self.read_only or not unicode_index.relevant(query) or self.db.in_transaction:
+            return
+        with self._lock:
+            if unicode_index.installed(self.db) and not unicode_index.dirty(self.db):
+                return
+            with write_txn(self.db):
+                unicode_index.initialize(self.db)
+                unicode_index.refresh(self.db)
+
     def lexical(self, query: str, limit: int, *, allowed: set[int] | None = None) -> list[tuple[int, float]]:
+        """Eligible lexical candidates; ASCII compatibility plus Unicode BM25.
+
+        Mixed-language queries fuse the two ordered arms with RRF. Pure ASCII
+        queries retain the original porter scores and order without index work.
+        """
+        if not unicode_index.relevant(query):
+            return self._ascii_lexical(query, limit, allowed=allowed)
+        if limit <= 0 or allowed == set():
+            return []
+        with self._lock:
+            self.prepare_lexical(query)
+            with self.read_snapshot():
+                if unicode_index.installed(self.db) and not unicode_index.dirty(self.db):
+                    unicode = unicode_index.rank(self.db, query, limit, allowed)
+                else:
+                    units = (unit for batch in self.unit_batches(allowed=allowed) for unit in batch)
+                    unicode = unicode_index.stream_rank(units, query, limit)
+                ascii_hits = self._ascii_lexical(unicode_index.ascii_query(query), limit, allowed=allowed)
+        if not ascii_hits:
+            return unicode
+        if not unicode:
+            return ascii_hits
+        fused: dict[int, float] = {}
+        for arm in (ascii_hits, unicode):
+            for position, (uid, _score) in enumerate(arm, 1):
+                fused[uid] = fused.get(uid, 0.0) + 30.0 / (60 + position)
+        return sorted(fused.items(), key=lambda hit: (-hit[1], hit[0]))[:limit]
+
+    def _ascii_lexical(self, query: str, limit: int, *, allowed: set[int] | None = None) -> list[tuple[int, float]]:
         """(unit id, score) by BM25, best first.
 
         Scores are sigmoid-normalized to [0, 1] (see :func:`sigmoid_bm25`,

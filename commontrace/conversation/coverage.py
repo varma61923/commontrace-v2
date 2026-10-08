@@ -8,6 +8,7 @@ it does not infer an answer or claim a calibrated probability.
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
@@ -46,7 +47,7 @@ def _terms(text: str) -> set[str]:
     # Preserve ASCII identifiers and underscore splitting exactly. Non-ASCII
     # words stay intact; CJK uses the same bigrams as the sparse retriever.
     words: set[str] = set()
-    for word in WORD_RE.findall(text.lower()):
+    for word in WORD_RE.findall(unicodedata.normalize("NFC", text).lower()):
         if word.isascii():
             words.update(_WORDS.findall(word))
         else:

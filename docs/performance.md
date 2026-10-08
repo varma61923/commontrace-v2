@@ -5,6 +5,77 @@ They establish specific workload improvements, not universal 30 ms latency or
 superiority over competitor answer quality. No inference service is used by
 the measured request profiles.
 
+## Conversation reliability and multilingual retrieval (2026-10-08)
+
+Acceptance criteria: coverage uses emitted source text rather than hidden turns;
+explicit allow-lists constrain assembly; multilingual tail evidence is quoted
+within budget; indexed and streaming Unicode scores match; ASCII behavior and
+canonical hashes/journals remain compatible. The final local suite passed
+**5,688 tests, with 103 skipped**. All 35 strict typing targets, Ruff and generated
+documentation checks passed; 73 additional MCP tests passed against the pinned
+dependency environment. Model-dependent and unconfigured integration tests remain
+among the skips.
+
+The complete LoCoMo evaluation uses 1,540 questions in categories 1–4 across ten
+conversations, production redaction, lexical retrieval, no reranker or models,
+alternating strategy order and disabled final-response caching. All 1,536
+gold-bearing questions contribute to source metrics, including nine unresolved
+annotations retained as misses. Source retention is not answer accuracy.
+
+| Estimated budget | Legacy whole-source recall | Optional coverage-v1 | Legacy p50 / p95 | Optional p50 / p95 |
+| ---: | ---: | ---: | ---: | ---: |
+| 1,500 | 76.4257% | 75.9655% | 8.083 / 13.313 ms | 14.477 / 20.680 ms |
+| 7,000 | 88.9260% | 88.9239% | 19.657 / 28.721 ms | 25.759 / 36.608 ms |
+
+Conversation-cluster bootstrap intervals (2,000 draws, seed 0) for optional
+minus legacy whole-source recall are [-0.9075, +0.0429] percentage points at
+1,500 and [-0.1267, +0.1573] at 7,000. There is no demonstrated aggregate gain;
+`legacy` remains the default. Mean estimated context sizes are 1,441.79 / 1,441.14
+and 6,478.76 / 6,476.49 respectively. These are `ceil(characters/4)` estimates,
+not provider token counts. Timings exclude ingestion, evaluation and inference.
+The final multilingual implementation reproduces the pre-change English source
+recall and context-size aggregates exactly.
+
+Reproduce with the official `snap-research/locomo` `data/locomo10.json` file:
+
+```bash
+python -m benchmarks.conversation_retrieval --dataset locomo \
+  --data /tmp/commontrace-locomo10.json --budgets 1500,7000 --seed 0
+```
+
+Dataset SHA-256: `79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4`.
+Implementation checksum emitted by this run:
+`bcc514e932056864f12b66d50132ce95df5dc914c6feafbda76478dd743a14e0`.
+Python 3.12.14 / SQLite 3.53.1. Comparing with hosted Mem0's reported scores
+requires matched answer/judge models, actual tokenizer accounting and service
+access; no competitor benchmark has been beaten by this evaluation.
+
+Two isolated CPU/SQLite profiles verify performance changes on the same runtime:
+
+| Component / workload | Reference median | Current median |
+| --- | ---: | ---: |
+| Unicode BM25: 10,000 units, ten matches | 125.085 ms streamed | 0.785 ms indexed |
+| Broad assembly: 10,000 ranked turns | 16.108 ms before set hoist | 0.773 ms |
+| Broad assembly: 20,000 duplicate rank entries | 29.824 ms before set hoist | 1.030 ms |
+
+The Unicode fixture has 10,000 `Agent` messages: `麒麟缓存容量记录。` for ordinals
+divisible by 1,000, otherwise `普通维护状态记录。`, followed by `指标编号{i}。`.
+Seven alternating indexed/streaming queries for `麒麟缓存`, limit 20, return
+identical ordered scores. Initial index build takes 489.015 ms. Source bodies are
+not scanned by the warm indexed arm; statistics still scan Unicode document
+lengths. These figures measure the BM25 component, not complete recall.
+
+Assembly uses a real store with 50 sessions of 200 messages, a 400-token budget,
+100-token excerpts, broad mode, and no profile, summary, neighbors or models.
+The control reverses only the two-line membership-set hoist. Seven alternating
+warm pairs at pools 200 / 2,000 / 10,000 cover ordinary, duplicate and scoped
+rankings: all 63 pairs preserve context, IDs, token counts, withheld sources,
+emitted text and selection diagnostics exactly. Assembly source checksum:
+`4a894de10c75d2b813a38386f7db1b0bb9ac0e351eaa934aaf164b1c4898b76e`.
+Neither component profile establishes a universal latency or speed multiplier.
+
+## Earlier measured operations
+
 | Operation | Baseline | Improved |
 | --- | ---: | ---: |
 | Warm HTTP recall, 6,400 lessons, p95 | 219.922 ms | 22.951 ms |
@@ -41,9 +112,8 @@ source tree. Their complete evidence remains available at immutable revision
 Recover the optional HTTP profiler without restoring the research directory:
 
 ```bash
-mkdir -p scratch
-git show 7376495fb1140cb864a669d2ca9472dad0ce1020:research/profile_latency30_http.py > scratch/profile_http.py
-python scratch/profile_http.py . --lessons 6400 --runs 3 --requests 50
+git show 7376495fb1140cb864a669d2ca9472dad0ce1020:research/profile_latency30_http.py > /tmp/commontrace-profile-http.py
+python /tmp/commontrace-profile-http.py . --lessons 6400 --runs 3 --requests 50
 ```
 
 The maintained local-only evaluation helper lives in `benchmarks/local_eval.py`.

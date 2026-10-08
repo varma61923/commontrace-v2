@@ -140,3 +140,84 @@ The native dot-product screening optimization applies on supported CPython
 versions; competitive rows retain the original exact scorer. Performance gains
 depend on dimensionality and candidate distribution; no corpus-independent
 speed multiplier or answer-quality improvement is implied.
+
+## Budgeted conversation evidence
+
+Conversation recall now assesses lexical coverage from the exact bodies and
+profile statements delivered to the reader. Hidden portions of an excerpt,
+speaker names and session headers cannot establish a missing subject or
+identifier. Coverage remains a heuristic, not an answer probability.
+
+The default `legacy` context strategy preserves existing ranking and packing.
+Opt into `coverage-v1` to prioritize additional query facets per quoted token
+after the existing strongest primary candidates (three by default). It considers at most 200 candidates,
+keeps graph supporting passages together, and uses the existing scope, time,
+injection and budget checks. Candidate-plan diagnostics describe available
+excerpts; `explain.coverage` describes final delivered evidence. This strategy
+can trade latency and ranking quality for diversity and should be evaluated on
+your workload before enabling it.
+
+```bash
+commontrace conversation recall user "timeout retention recovery" \
+  --context-strategy coverage-v1 --budget 1500 --lexical --json
+python -m benchmarks.conversation_retrieval --dataset locomo \
+  --data /tmp/locomo10.json --budgets 1500,7000
+```
+
+Python callers use `Options(context_strategy="coverage-v1")`; HTTP
+`POST /v1/conversation/recall` and MCP `conversation_recall` accept the same
+optional field. Unknown strategies fail explicitly. Cache entries are isolated
+by strategy and retain the existing revision and expiry invalidation rules.
+
+The maintained public-dataset evaluator uses fresh temporary production stores
+with redaction enabled and prints JSON to stdout. It compares the two CommonTrace
+strategies with identical histories and estimated budgets, disables final-response
+caching, and alternates execution order. It records dataset, selection and source
+checksums, category breakdowns, p50/p95 latency and conversation-cluster intervals.
+Malformed gold references remain misses. Selecting a source and retaining its
+entire canonical text are separate metrics; neither measures answer correctness.
+Budgets currently estimate tokens as `ceil(characters/4)`, which is not provider
+tokenization. LoCoMo categories 1–4 are evaluated; category 5 is excluded.
+
+Acceptance gates cover unchanged default context behavior, bounded opt-in
+selection, atomic graph support, scope/time/injection safety, actual delivered
+coverage, fair matched budgets and absence of gold-label ingestion. Public-data
+gains and regressions must both be reviewed; no fixed improvement is promised.
+The [LongMemEval paper](https://arxiv.org/abs/2410.10813) motivates separating
+indexing, retrieval and reading. Comparing downstream scores with
+[Mem0's published evaluation](https://mem0.ai/blog/mem0-the-token-efficient-memory-algorithm)
+requires matched models, judges, actual token accounting and service access.
+
+## Multilingual conversation search
+
+Conversation lexical recall supports NFC-normalized Unicode words and overlapping
+Chinese, Japanese and Korean bigrams. Single-character CJK queries use separate
+unigram postings. A non-ASCII word cannot become an unrelated ASCII substring;
+mixed-language queries fuse complete ASCII words with Unicode candidates.
+ASCII-only queries keep their existing porter/BM25 ranking and install no
+additional tables.
+
+The first Unicode query on a writable bank installs and builds a derived SQLite
+postings index. Later ingestion queues changed non-ASCII units; SQL triggers also
+invalidate updates, moved IDs and deletes made by other SQLite writers. Refresh
+uses 256-unit batches before the recall snapshot, preserving canonical unit
+hashes and the vector change journal. Frozen legacy banks and dirty read snapshots
+fall back to source streaming without modifying the database. This fallback scans
+eligible units and retains matching candidates, so its memory and latency costs
+depend on corpus size. Unicode BM25 statistics use the authorized source scope;
+the ASCII arm of a mixed query retains the legacy FTS corpus statistics.
+The Unicode arm considers the first 16,384 query characters and at most 256
+distinct terms; source passage sizes retain the existing ingestion limits.
+
+Unicode excerpts select a bounded contiguous source span, prefer complete
+sentences when they fit, and mark omitted edges. They can retrieve a relevant
+tail from long text without spaces. Quotation, attribution and omission marks
+count toward the same estimated token budget. These lexical mechanisms do not
+translate text, establish entailment, or cover every Unicode script variant;
+supplemental Han ranges and language-specific morphology remain limitations.
+
+```bash
+commontrace conversation recall user "北辰缓存容量" --lexical --budget 1500 --json
+python -m pytest tests/test_conversation_unicode_index.py \
+  tests/test_conversation_multilingual_excerpts.py -q
+```
