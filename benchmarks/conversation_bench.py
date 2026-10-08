@@ -55,6 +55,7 @@ from benchmarks.measurement import (  # noqa: E402
     shared_source_clusters,
 )
 from benchmarks.requests import benchmark_binding, bounded_complete, text_tokens  # noqa: E402
+from benchmarks.vendor_adapters import PROFILES, vendor_profile  # noqa: E402
 from commontrace.conversation import Options, Store, recall  # noqa: E402
 from commontrace.conversation.search import tokens  # noqa: E402
 
@@ -129,7 +130,7 @@ def _load_cases(args) -> list:
     if args.dataset == "beam":
         return list(beam_cases(args.data, args.limit))
     if args.dataset == "locomo":
-        return list(locomo_cases(args.data))
+        return sample_cases(list(locomo_cases(args.data)), args.limit, args.seed)
     return list(longmemeval_cases(args.data, args.limit, args.seed))
 
 
@@ -202,6 +203,33 @@ def _evidence_texts(sessions, evidence_ids) -> dict[str, str]:
         if texts:
             out[str(eid)] = "\n".join(texts)
     return out
+
+
+def sample_cases(cases, limit, seed):
+    """Exactly limit questions, round-robin across type and conversation strata."""
+    strata = defaultdict(list)
+    for index, (_space, _sessions, _now, questions) in enumerate(cases):
+        for question in questions:
+            strata[(question["type"], index)].append(question)
+    if not limit or limit >= sum(map(len, strata.values())):
+        return cases
+    rng = random.Random(seed)
+    for key in sorted(strata):
+        rng.shuffle(strata[key])
+    categories = sorted({kind for kind, _index in strata})
+    indices = sorted({index for _kind, index in strata})
+    # Rotate category across conversations before revisiting either dimension.
+    schedule = [(categories[(i + phase) % len(categories)], index)
+                for phase in range(len(categories)) for i, index in enumerate(indices)]
+    selected = defaultdict(list)
+    count = 0
+    while count < limit:
+        for key in schedule:
+            if strata[key] and count < limit:
+                selected[key[1]].append(strata[key].pop())
+                count += 1
+    return [(space, sessions, now, selected[i])
+            for i, (space, sessions, now, _qs) in enumerate(cases) if selected[i]]
 
 
 def locomo_cases(path: str):
@@ -602,6 +630,9 @@ def run(args) -> dict:
         # Each actual prompt (including full history and every rubric call)
         # reserves its upper bound immediately before dispatch.
 
+    memory_adapter = getattr(args, "memory_adapter", "commontrace")
+    if memory_adapter not in PROFILES:
+        raise ValueError("unsupported memory adapter")
     opts = Options(
         budget=budgets[0],
         embedder=None if args.embedder == "none" else args.embedder,
@@ -624,6 +655,9 @@ def run(args) -> dict:
         "dataset_sha256": fingerprint["dataset_sha256"],
         "adapter_sha256": fingerprint["adapter_sha256"],
         "product_sha256": initial_product,
+        "harness_sha256": dataset_digest(__file__),
+        "vendor_adapters_sha256": dataset_digest(os.path.join(repository, "benchmarks", "vendor_adapters.py")),
+        "artifacts_source_sha256": dataset_digest(os.path.join(repository, "benchmarks", "artifacts.py")),
         "sampling": {"seed": args.seed, "limit": args.limit, "personas": getattr(args, "personas", "")},
         "evaluation": {"answer_enabled": args.answer, "token_accounting": "ceil-characters-divided-by-four",
                        "completeness_sha256": dataset_digest(os.path.join(repository, "benchmarks", "completeness.py"))},
@@ -642,6 +676,7 @@ def run(args) -> dict:
             "bounded_requests_sha256": dataset_digest(os.path.join(repository, "benchmarks", "requests.py")),
         })
 
+    profile_config = None
     rows_by_mode = {m: {b: [] for b in budgets} for m in modes}
     ingest_s, full_tokens = 0.0, []
     recall_seconds = {b: 0.0 for b in budgets}
@@ -667,117 +702,126 @@ def run(args) -> dict:
             ingest_s += time.perf_counter() - t
             full_tokens.append(sum(tokens(m["text"]) for _s, _d, ms in sessions for m in ms))
 
-            for q in questions:
-                # Each budget follows the entire public recall path, including its
-                # temporal, eligibility, standing-instruction and graph fences.
-                turn_gold = gold_turns(q["evidence"], sessions)
-                session_gold = gold_sessions(turn_gold, q["sessions"], sessions)
-                mem_contexts = {}
-                for budget in budgets:
-                    opts_b = Options(**{**opts.__dict__, "budget": budget})
-                    t = time.perf_counter()
-                    r = recall(store, q["question"], now=now, options=opts_b)
-                    elapsed = time.perf_counter() - t
-                    recall_seconds[budget] += elapsed
-                    kept = store.turns(r.turns).values()
-                    refs, sess = {tt.ref for tt in kept}, {tt.session for tt in kept}
-                    source_ranking = ranking_fields(r.ranked, store.turns(r.ranked), turn_gold, session_gold)
-                    ranking_scores = {
-                        level + "_" + metric: value
-                        for level in ("turn", "session")
-                        for metric, value in ranking_metrics(source_ranking["ranked_" + level + "_ids"],
-                                                            source_ranking["gold_" + level + "_ids"]).items()
-                    }
-                    mem_contexts[budget] = (r, refs, sess, elapsed, source_ranking, ranking_scores)
-
-                for mode in modes:
+            t = time.perf_counter()
+            with vendor_profile(memory_adapter, store, now) as adapter:
+                if adapter is not None:
+                    ingest_s += time.perf_counter() - t
+                    descriptor = adapter.descriptor
+                    if profile_config is not None and profile_config != descriptor:
+                        raise RuntimeError("vendor configuration changed between cases")
+                    profile_config = descriptor
+                for q in questions:
+                    # Each budget follows the entire public recall path, including its
+                    # temporal, eligibility, standing-instruction and graph fences.
+                    turn_gold = gold_turns(q["evidence"], sessions)
+                    session_gold = gold_sessions(turn_gold, q["sessions"], sessions)
+                    mem_contexts = {}
                     for budget in budgets:
-                        r, refs, sess, recall_elapsed, source_ranking, ranking_scores = mem_contexts[budget]
-                        mem_context, n_tokens = r.context, r.tokens
-                        if mode == "memory":
-                            ctx = mem_context
-                            toks = n_tokens
-                            ev = (len(turn_gold & refs) / len(turn_gold)) if turn_gold else None
-                            comp = turn_gold <= refs if turn_gold else None
-                            ses = (len(set(session_gold) & sess) / len(session_gold)) if session_gold else None
-                            ans_in_ctx = answer_in(ctx, q["answer"])
-                            conf = r.explain.get("confidence")
-                            rtop = r.explain.get("rerank_top")
-                        elif mode in ("full-context", "budgeted-history"):
-                            ctx, toks = make_full_context(sessions, None if mode == "full-context" else budget)
-                            ev = None
-                            comp = None
-                            ses = None
-                            ans_in_ctx = answer_in(ctx, q["answer"])
-                            conf = None
-                            rtop = None
-                        elif mode == "no-memory":
-                            ctx = ""
-                            toks = 0
-                            ev = None
-                            comp = None
-                            ses = None
-                            ans_in_ctx = False
-                            conf = None
-                            rtop = None
-                        else:
-                            raise ValueError(f"Unknown mode: {mode}")
-
-                        # Lexical completeness grader: a second, model-free read on the
-                        # same retrieved context, alongside the evidence-id metric above.
-                        comp_lex = grade_context_completeness(
-                            ctx, _evidence_texts(sessions, q["evidence"]), answer=q["answer"])
-
-                        row = {
-                            "id": q["id"],
-                            "type": q["type"],
-                            "cluster_id": clusters[space],
-                            "question_sha256": question_digest(q),
-                            "unresolved_gold_turn_ids": sorted(turn_gold - {
-                                str(message["id"]) for _s, _d, messages in sessions for message in messages}),
-                            **source_ranking,
-                            "recall_latency_s": recall_elapsed if mode == "memory" else None,
-                            "effective_embedders": sorted(store._embedders),
-                            "effective_rerank": r.explain.get("rerank"),
-                            # Reference-mode ranking metrics are intentionally undefined.
-                            **(ranking_scores if mode == "memory" else {}),
-                            "tokens": toks,
-                            "evidence": ev,
-                            "complete": comp,
-                            "session": ses,
-                            "answer_in_context": ans_in_ctx,
-                            "confidence": conf,
-                            "rerank_top": rtop,
-                            "mode": mode,
-                            "completeness_bucket": comp_lex["bucket"],
-                            "completeness_score": comp_lex["score"],
-                            "completeness_present": comp_lex["present"],
-                            "completeness_missing": comp_lex["missing"],
+                        opts_b = Options(**{**opts.__dict__, "budget": budget})
+                        t = time.perf_counter()
+                        r = (adapter.retrieve(q["question"], budget) if adapter is not None
+                                 else recall(store, q["question"], now=now, options=opts_b))
+                        elapsed = time.perf_counter() - t
+                        recall_seconds[budget] += elapsed
+                        kept = store.turns(r.turns).values()
+                        refs, sess = {tt.ref for tt in kept}, {tt.session for tt in kept}
+                        source_ranking = ranking_fields(r.ranked, store.turns(r.ranked), turn_gold, session_gold)
+                        ranking_scores = {
+                            level + "_" + metric: value
+                            for level in ("turn", "session")
+                            for metric, value in ranking_metrics(source_ranking["ranked_" + level + "_ids"],
+                                                                source_ranking["gold_" + level + "_ids"]).items()
                         }
-                        if "rubric" in q:
-                            row["rubric"] = q["rubric"]
-                        if args.answer:
-                            grade_info = grade_answer(
-                                question=q,
-                                context=ctx,
-                                now=now,
-                                ans_model=ans_model,
-                                j_model=j_model,
-                                judge_inst=judge_inst,
-                                cache=cache,
-                                cost_guard=cost_guard,
-                                explain=r.explain if mode == "memory" else None,
-                                output_limit=getattr(args, "max_output_tokens", 1536),
-                                tokenizer=getattr(args, "tokenizer", None),
-                            )
-                            row.update(grade_info)
-                        rows_by_mode[mode][budget].append(row)
+                        mem_contexts[budget] = (r, refs, sess, elapsed, source_ranking, ranking_scores)
+
+                    for mode in modes:
+                        for budget in budgets:
+                            r, refs, sess, recall_elapsed, source_ranking, ranking_scores = mem_contexts[budget]
+                            mem_context, n_tokens = r.context, r.tokens
+                            if mode == "memory":
+                                ctx = mem_context
+                                toks = n_tokens
+                                ev = (len(turn_gold & refs) / len(turn_gold)) if turn_gold else None
+                                comp = turn_gold <= refs if turn_gold else None
+                                ses = (len(set(session_gold) & sess) / len(session_gold)) if session_gold else None
+                                ans_in_ctx = answer_in(ctx, q["answer"])
+                                conf = r.explain.get("confidence")
+                                rtop = r.explain.get("rerank_top")
+                            elif mode in ("full-context", "budgeted-history"):
+                                ctx, toks = make_full_context(sessions, None if mode == "full-context" else budget)
+                                ev = None
+                                comp = None
+                                ses = None
+                                ans_in_ctx = answer_in(ctx, q["answer"])
+                                conf = None
+                                rtop = None
+                            elif mode == "no-memory":
+                                ctx = ""
+                                toks = 0
+                                ev = None
+                                comp = None
+                                ses = None
+                                ans_in_ctx = False
+                                conf = None
+                                rtop = None
+                            else:
+                                raise ValueError(f"Unknown mode: {mode}")
+
+                            # Lexical completeness grader: a second, model-free read on the
+                            # same retrieved context, alongside the evidence-id metric above.
+                            comp_lex = grade_context_completeness(
+                                ctx, _evidence_texts(sessions, q["evidence"]), answer=q["answer"])
+
+                            row = {
+                                "id": q["id"],
+                                "type": q["type"],
+                                "cluster_id": clusters[space],
+                                "question_sha256": question_digest(q),
+                                "unresolved_gold_turn_ids": sorted(turn_gold - {
+                                    str(message["id"]) for _s, _d, messages in sessions for message in messages}),
+                                **source_ranking,
+                                "recall_latency_s": recall_elapsed if mode == "memory" else None,
+                                "effective_embedders": ([adapter.descriptor["embedder"]] if adapter is not None
+                                                           and "embedder" in adapter.descriptor else sorted(store._embedders)),
+                                "memory_adapter": memory_adapter,
+                                "effective_rerank": r.explain.get("rerank"),
+                                # Reference-mode ranking metrics are intentionally undefined.
+                                **(ranking_scores if mode == "memory" else {}),
+                                "tokens": toks,
+                                "evidence": ev,
+                                "complete": comp,
+                                "session": ses,
+                                "answer_in_context": ans_in_ctx,
+                                "confidence": conf,
+                                "rerank_top": rtop,
+                                "mode": mode,
+                                "completeness_bucket": comp_lex["bucket"],
+                                "completeness_score": comp_lex["score"],
+                                "completeness_present": comp_lex["present"],
+                                "completeness_missing": comp_lex["missing"],
+                            }
+                            if "rubric" in q:
+                                row["rubric"] = q["rubric"]
+                            if args.answer:
+                                grade_info = grade_answer(
+                                    question=q,
+                                    context=ctx,
+                                    now=now,
+                                    ans_model=ans_model,
+                                    j_model=j_model,
+                                    judge_inst=judge_inst,
+                                    cache=cache,
+                                    cost_guard=cost_guard,
+                                    explain=r.explain if mode == "memory" else None,
+                                    output_limit=getattr(args, "max_output_tokens", 1536),
+                                    tokenizer=getattr(args, "tokenizer", None),
+                                )
+                                row.update(grade_info)
+                            rows_by_mode[mode][budget].append(row)
 
             if canonical_digest(store) != initial_canonical:
                 raise RuntimeError("canonical sources changed during measurement; discard this run")
 
-        if args.limit and args.dataset == "locomo" and len(rows_by_mode[modes[0]][budgets[0]]) >= args.limit:
-            break
 
     n = max(1, len(rows_by_mode[modes[0]][budgets[0]]))
     judge_info = {
@@ -821,6 +865,8 @@ def run(args) -> dict:
                 "memory_lift": lift,
                 "chunk_set": chunk_info,
             }
+    for summary in results.values():
+        summary["retrieval_profile"] = profile_config or {"profile": "commontrace"}
     if getattr(args, "bootstrap", False):
         for summary in results.values():
             targets = summary.get("modes_detail", {summary["mode"]: summary})
@@ -830,6 +876,12 @@ def run(args) -> dict:
                 summary["bootstrap_95ci"] = targets[summary["mode"]]["bootstrap_95ci"]
     if product_digest(repository) != initial_product or adapter_digest(__file__) != provenance["adapter_sha256"]:
         raise RuntimeError("benchmark source changed during measurement; discard this run")
+    if dataset_digest(__file__) != provenance["harness_sha256"]:
+        raise RuntimeError("benchmark harness changed during measurement")
+    if dataset_digest(os.path.join(repository, "benchmarks", "vendor_adapters.py")) != provenance["vendor_adapters_sha256"]:
+        raise RuntimeError("vendor adapter changed during measurement")
+    if dataset_digest(os.path.join(repository, "benchmarks", "artifacts.py")) != provenance["artifacts_source_sha256"]:
+        raise RuntimeError("artifact binding code changed during measurement")
     if args.answer:
         if dataset_digest(os.path.join(repository, "benchmarks", "requests.py")) != provenance["evaluation"]["bounded_requests_sha256"]:
             raise RuntimeError("bounded completion source changed during measurement")
@@ -959,6 +1011,8 @@ def main(argv=None) -> int:
         help="store root, reused between runs so ingestion and embeddings are cached",
     )
     p.add_argument("--budget", default="1500", help="tokens; a comma list assembles each ranking at every budget")
+    p.add_argument("--memory-adapter", choices=PROFILES, default="commontrace",
+                   help="Optional local raw-source vendor profile (excludes managed APIs/LLM extraction)")
     p.add_argument("--embedder", default="auto", choices=("auto", "arctic-m", "minilm", "none"))
     p.add_argument("--rerank", default="auto", choices=("auto", "none", "cross-encoder", "cross-encoder-fast"))
     p.add_argument("--neighbours", type=int, default=1)

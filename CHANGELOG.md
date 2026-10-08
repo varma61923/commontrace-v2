@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Executable local vendor benchmark profiles.** Mem0 raw-memory/Qdrant and Graphiti episodic/FalkorDBLite paths share source-bound evidence and bounded reader/judge accounting; their limited configurations are explicit. LoCoMo development limits select exact seeded question counts.
+
 - **Bounded benchmark inference.** HTTP reader and multi-call judge requests reserve cost before dispatch, send output caps and avoid hidden retries. Missing or overbound usage invalidates the run; cache history is reported separately from current spend. Optional tokenizer counts and source-bound generation settings expose the measurement contract.
 - **Configuration-bound benchmark caching.** Completion reuse binds opaque provider/account routing, generation settings and the completion implementation; legacy unbound rows cannot satisfy judged harness lookups. Endpoint and credential values are excluded from persisted identities.
 - **Memory evolution interfaces.** Append-only extraction, governed multi-signal search recipes, scoped agent SDK distribution, standing-question refresh jobs, hard directives, a Memory Palace console, signed shared MemFS snapshots and budgeted offline consolidation. Experimental causal exploration, structural skill proposals and approved abstract experience exports retain evidence and explicit limitations. The Linux binary builder and independently reproduced synthetic benchmark are documented in `docs/MEMORY_EVOLUTION.md`; the research digest separates paper metadata from unverified performance claims.
