@@ -144,7 +144,23 @@ def _load_cases(args) -> list:
         excluded = set(exclusions)
         filtered = [(s, ss, now, [q for q in qs if q["id"] not in excluded])
                     for s, ss, now, qs in cases]
-        return sample_cases([case for case in filtered if case[3]], args.limit, args.seed)
+        filtered = [case for case in filtered if case[3]]
+        if args.dataset == "longmemeval" and args.limit and args.limit < len(filtered):
+            # Each question owns a history: conversation strata would have one
+            # item each, eliminating seeded shuffling and skewing type coverage.
+            by_type = defaultdict(list)
+            for case in filtered:
+                by_type[case[3][0]["type"].removesuffix("-abstain")].append(case)
+            rng = random.Random(args.seed)
+            for kind in sorted(by_type):
+                rng.shuffle(by_type[kind])
+            selected = []
+            while len(selected) < args.limit:
+                for kind in sorted(by_type):
+                    if by_type[kind] and len(selected) < args.limit:
+                        selected.append(by_type[kind].pop())
+            return selected
+        return sample_cases(filtered, args.limit, args.seed)
     if args.dataset == "dolphin":
         return list(dolphin_cases(args.data, args.personas, args.limit))
     if args.dataset == "beam":

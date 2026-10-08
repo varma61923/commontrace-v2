@@ -65,6 +65,27 @@ def test_development_exclusions_require_bound_unique_identities():
         confirmation.development_exclusions(manifest, "locomo")
 
 
+def test_excluded_longmemeval_questions_keep_seeded_type_balance(tmp_path, monkeypatch):
+    import argparse
+    from collections import Counter
+
+    cases = [(f"{kind}-{i}", [("history", "2025-01-01", [{"text": str(i)}])], None,
+              [{"id": f"{kind}-{i}", "type": kind + ("-abstain" if i == 1 else "")}])
+             for kind in ("a", "b", "c", "d", "e", "f") for i in range(10)]
+    monkeypatch.setattr(bench, "longmemeval_cases", lambda *args: cases)
+    path = tmp_path / "exclusions.json"
+    path.write_text(json.dumps([f"{kind}-0" for kind in ("a", "b", "c", "d", "e", "f")]))
+    args = argparse.Namespace(dataset="longmemeval", data="unused", question_exclusions=str(path), limit=12, seed=1)
+    selected = bench._load_cases(args)
+    assert len(selected) == 12
+    assert Counter(c[3][0]["type"].removesuffix("-abstain") for c in selected) == dict.fromkeys("abcdef", 2)
+    assert all(c[3][0]["id"] not in json.loads(path.read_text()) for c in selected)
+    assert selected == bench._load_cases(args)
+    args.seed = 2
+    assert selected != bench._load_cases(args)
+    assert all(c in cases for c in selected)
+
+
 @pytest.mark.parametrize("fault", ["estimated", "counter", "attempts", "exclusions", "reference", "excess", "boolean", "disagreement"])
 def test_completed_confirmation_requires_actual_fitting_text_count(fault):
     payload = {"1000": {"budget": 1000,
