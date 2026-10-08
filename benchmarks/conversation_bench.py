@@ -32,7 +32,7 @@ from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from benchmarks.cache import BenchmarkCache, CostGuard, compute_cost_usd  # noqa: E402
+from benchmarks.cache import BenchmarkCache, CostGuard, completion_binding, compute_cost_usd  # noqa: E402
 from benchmarks.compare import clustered_estimates, ranking_metrics
 from benchmarks.compare import compare_runs as paired_compare  # noqa: E402
 from benchmarks.completeness import bucket_counts, grade_context_completeness  # noqa: E402
@@ -430,12 +430,16 @@ def _get_llm_config(model: str):
             base_url=base.base_url,
             region=base.region,
             project=base.project,
+            cache_namespace=base.cache_namespace,
         )
     except Exception:
         provider = os.environ.get("COMMONTRACE_LLM_PROVIDER", "openai-compatible")
         api_key = os.environ.get("COMMONTRACE_LLM_API_KEY", "")
         base_url = os.environ.get("COMMONTRACE_LLM_BASE_URL", "")
-        return llm.Config(provider=provider, model=model, api_key=api_key, base_url=base_url or None)
+        return llm.Config(provider=provider, model=model, api_key=api_key, base_url=base_url or None,
+                          region=os.environ.get("COMMONTRACE_LLM_REGION") or os.environ.get("AWS_REGION") or None,
+                          project=os.environ.get("COMMONTRACE_LLM_PROJECT") or None,
+                          cache_namespace=os.environ.get("COMMONTRACE_LLM_CACHE_NAMESPACE") or None)
 
 
 def grade_answer(
@@ -454,22 +458,23 @@ def grade_answer(
 
     def call_cached(prompt: str, model: str) -> tuple[str, dict, float, float]:
         t0 = time.time()
+        cfg = _get_llm_config(model)
+        binding = completion_binding(cfg) if cache is not None else None
         if cache is not None:
-            hit = cache.get(model, prompt)
+            hit = cache.get(model, prompt, binding=binding)
             if hit is not None:
                 resp, usage, cost = hit
                 if cost_guard:
                     cost_guard.record_call(cost, is_cached=True)
                 return resp, usage, 0.0, cost
 
-        cfg = _get_llm_config(model)
         resp, usage = llm.complete(prompt, config=cfg)
         latency = time.time() - t0
         cost = compute_cost_usd(usage, model)
         if cost_guard:
             cost_guard.record_call(cost, is_cached=False)
         if cache is not None:
-            cache.put(model, prompt, resp, usage, cost)
+            cache.put(model, prompt, resp, usage, cost, binding=binding)
         return resp, usage, latency, cost
 
     # Step 1: Generate answer

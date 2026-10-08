@@ -1,6 +1,6 @@
 """Disk cache and cost accounting for benchmark answer generation and judging.
 
-Caches LLM completions keyed by (model, sha256(prompt)).
+Caches LLM completions keyed by configuration, generation settings and prompt.
 Allows interrupted benchmark runs to resume without re-running or re-paying for calls.
 Enforces --max-cost USD budget limits before starting.
 """
@@ -11,6 +11,7 @@ import json
 import os
 import sqlite3
 import time
+from dataclasses import asdict, is_dataclass
 from typing import Any, Callable
 
 # Default pricing in USD per million tokens (input / output)
@@ -29,6 +30,28 @@ DEFAULT_PRICES: dict[str, dict[str, float]] = {
 def prompt_hash(prompt: str) -> str:
     """Deterministic sha256 hex digest of the prompt text."""
     return hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+
+
+def completion_binding(config: object, *, generation: dict | None = None) -> dict:
+    """Opaque identity for provider/account routing and request implementation.
+
+    Never persist configuration values, credentials, or credential-bearing URLs.
+    Old unbound responses cannot satisfy a configuration-bound lookup.
+    """
+    from commontrace import llm
+
+    fields = asdict(config) if is_dataclass(config) else dict(vars(config))
+    if fields.get("provider") in ("bedrock", "vertex") and not fields.get("cache_namespace"):
+        raise ValueError("benchmark caching with ambient cloud credentials requires COMMONTRACE_LLM_CACHE_NAMESPACE")
+    credential = str(fields.pop("api_key", ""))
+    fields["credential_sha256"] = prompt_hash(credential)
+    with open(llm.__file__, "rb") as source:
+        implementation = hashlib.sha256(source.read()).hexdigest()
+    payload = {"schema": 2, "configuration": fields, "generation": generation or {},
+               "completion_source_sha256": implementation}
+    digest = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":"),
+                                       allow_nan=False).encode()).hexdigest()
+    return {"schema": 2, "identity_sha256": digest}
 
 
 def get_price(model: str, prices: dict | None = None) -> tuple[float, float]:
@@ -65,7 +88,7 @@ class BenchmarkCache:
 
     def __init__(self, cache_dir: str):
         self.cache_dir = cache_dir
-        os.makedirs(cache_dir, exist_ok=True)
+        os.makedirs(cache_dir, mode=0o700, exist_ok=True)
         self.db_path = os.path.join(cache_dir, "llm_cache.sqlite3")
         self._init_db()
 
@@ -78,7 +101,8 @@ class BenchmarkCache:
         with self._get_conn() as conn:
             conn.execute(
                 """
-                CREATE TABLE IF NOT EXISTS completions (
+                CREATE TABLE IF NOT EXISTS completions_v2 (
+                    binding_sha256 TEXT NOT NULL,
                     model TEXT NOT NULL,
                     prompt_hash TEXT NOT NULL,
                     prompt TEXT NOT NULL,
@@ -86,19 +110,21 @@ class BenchmarkCache:
                     usage_json TEXT NOT NULL,
                     cost_usd REAL NOT NULL,
                     created_at REAL NOT NULL,
-                    PRIMARY KEY (model, prompt_hash)
+                    PRIMARY KEY (binding_sha256, model, prompt_hash)
                 )
                 """
             )
+        os.chmod(self.db_path, 0o600)
 
-    def get(self, model: str, prompt: str) -> tuple[str, dict, float] | None:
+    def get(self, model: str, prompt: str, *, binding: dict | None = None) -> tuple[str, dict, float] | None:
         """Lookup cached completion. Returns (response, usage, cost_usd) or None."""
         p_hash = prompt_hash(prompt)
         with self._get_conn() as conn:
             cur = conn.cursor()
             cur.execute(
-                "SELECT response, usage_json, cost_usd FROM completions WHERE model = ? AND prompt_hash = ?",
-                (model, p_hash),
+                "SELECT response, usage_json, cost_usd FROM completions_v2 "
+                "WHERE binding_sha256 = ? AND model = ? AND prompt_hash = ?",
+                (self._binding_hash(binding), model, p_hash),
             )
             row = cur.fetchone()
             if row:
@@ -110,7 +136,13 @@ class BenchmarkCache:
                 return resp, usage, cost
         return None
 
-    def put(self, model: str, prompt: str, response: str, usage: dict, cost_usd: float | None = None) -> None:
+    @staticmethod
+    def _binding_hash(binding: dict | None) -> str:
+        return prompt_hash(json.dumps(binding if binding is not None else {"unbound": True, "schema": 2},
+                                      sort_keys=True, separators=(",", ":"), allow_nan=False))
+
+    def put(self, model: str, prompt: str, response: str, usage: dict, cost_usd: float | None = None,
+            *, binding: dict | None = None) -> None:
         """Store completion in cache."""
         p_hash = prompt_hash(prompt)
         if cost_usd is None:
@@ -118,10 +150,11 @@ class BenchmarkCache:
         with self._get_conn() as conn:
             conn.execute(
                 """
-                INSERT OR REPLACE INTO completions (model, prompt_hash, prompt, response, usage_json, cost_usd, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO completions_v2
+                (binding_sha256, model, prompt_hash, prompt, response, usage_json, cost_usd, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (model, p_hash, prompt, response, json.dumps(usage), cost_usd, time.time()),
+                (self._binding_hash(binding), model, p_hash, prompt, response, json.dumps(usage), cost_usd, time.time()),
             )
 
     def complete_cached(
@@ -129,26 +162,27 @@ class BenchmarkCache:
         model: str,
         prompt: str,
         complete_fn: Callable[[str, str], tuple[str, dict]],
+        *, binding: dict | None = None,
     ) -> tuple[str, dict, float, bool]:
         """Get from cache or invoke complete_fn(prompt, model).
 
         Returns: (response_text, usage, cost_usd, is_cached)
         """
-        hit = self.get(model, prompt)
+        hit = self.get(model, prompt, binding=binding)
         if hit is not None:
             resp, usage, cost = hit
             return resp, usage, cost, True
 
         resp, usage = complete_fn(prompt, model)
         cost = compute_cost_usd(usage, model)
-        self.put(model, prompt, resp, usage, cost)
+        self.put(model, prompt, resp, usage, cost, binding=binding)
         return resp, usage, cost, False
 
     def stats(self) -> dict[str, Any]:
         """Return total cached entries and total cost."""
         with self._get_conn() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT count(*), coalesce(sum(cost_usd), 0.0) FROM completions")
+            cur.execute("SELECT count(*), coalesce(sum(cost_usd), 0.0) FROM completions_v2")
             count, total_cost = cur.fetchone()
             return {"entries": count, "total_cost_usd": round(total_cost, 4)}
 

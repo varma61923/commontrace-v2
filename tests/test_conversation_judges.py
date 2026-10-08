@@ -15,8 +15,9 @@ import tempfile
 
 import pytest
 
-from benchmarks.cache import BenchmarkCache, CostGuard
+from benchmarks.cache import BenchmarkCache, CostGuard, completion_binding
 from benchmarks.conversation_bench import (
+    _get_llm_config,
     _p50_p95,
     grade_answer,
     make_full_context,
@@ -101,6 +102,7 @@ class TestGradeAnswerWithCache:
                 "Your hobby is rock climbing.",
                 {"input_tokens": 120, "output_tokens": 10},
                 cost_usd=0.0005,
+                binding=completion_binding(_get_llm_config("claude-sonnet-5")),
             )
 
             j_prompt = judge.format_prompt(
@@ -114,6 +116,7 @@ class TestGradeAnswerWithCache:
                 '{"label": "CORRECT"}',
                 {"input_tokens": 200, "output_tokens": 8},
                 cost_usd=0.0006,
+                binding=completion_binding(_get_llm_config("gpt-4o")),
             )
 
             res = grade_answer(
