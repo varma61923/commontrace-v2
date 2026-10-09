@@ -158,6 +158,14 @@ dated user/assistant sessions instead of 2,000-character blobs raised that
 slice from 37.13% / 42.57% (fixed) and 40.59% / 52.48% (adaptive) to the
 numbers above, and the scorable total from 58.04% / 64.07%.
 
+The Conflict Resolution split (FactConsolidation, later facts supersede earlier
+ones) also loads, one ordered turn per fact, but containment cannot score it:
+its answers are entity names that recur in a median of 1-24 unrelated facts per
+context, so "answer present" says nothing about whether the latest fact was
+found (it reads 100% on single-hop). It is supported for model-judged runs
+(`--answer`) only. Test-Time Learning (label and item ids) and Long-Range
+Understanding (summaries) are not supported for the same reason.
+
 Neither is the benchmarks' official, model-judged score.
 
 Dense retrieval closes most of the preference gap the report identified; the
