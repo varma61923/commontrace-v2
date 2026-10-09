@@ -371,11 +371,34 @@ _MAB_DOC = re.compile(r"(?=\bDocument \d+:)")
 MAB_CHUNK_CHARS = 2000
 
 
+def _mab_chat_sessions(space: str, context: str) -> list | None:
+    """LongMemEval-derived contexts are a repr'd list alternating 'Chat Time: ...' and turn lists."""
+    import ast
+
+    if not context.startswith("['Chat Time: "):
+        return None
+    try:
+        parsed = ast.literal_eval(context)
+    except (ValueError, SyntaxError, MemoryError, RecursionError):
+        return None
+    sessions = []
+    for k in range(0, len(parsed) - 1, 2):
+        stamp, turns = parsed[k], parsed[k + 1]
+        if not (isinstance(stamp, str) and stamp.startswith("Chat Time: ") and isinstance(turns, list)):
+            return None
+        messages = [{"id": f"{space}-s{k // 2}-t{j}", "role": t.get("role", "user"),
+                     "speaker": t.get("role", "user"), "text": str(t.get("content", ""))}
+                    for j, t in enumerate(turns) if isinstance(t, dict) and str(t.get("content", "")).strip()]
+        sessions.append((f"session-{k // 2}", stamp[len("Chat Time: "):], messages))
+    return sessions or None
+
+
 def mab_cases(path: str, limit: int = 0):
     """MemoryAgentBench (arXiv 2507.05257) contexts as one long memory each.
 
-    A context is split at its "Document N:" markers (or into ~2,000-character
-    passages when it has none). The benchmark ships accepted answer strings but no
+    A context is split at its "Document N:" markers, read as dated chat sessions
+    when it is a LongMemEval-style history, or cut into ~2,000-character passages
+    otherwise. The benchmark ships accepted answer strings but no
     evidence labels, so only answer-in-context is scored: whether any accepted
     answer appears in the delivered context. Evidence metrics stay undefined.
     EventQA is multiple choice over paraphrased event summaries that never appear
@@ -390,11 +413,13 @@ def mab_cases(path: str, limit: int = 0):
         source = str(meta.get("source") or f"row{index}")
         space = re.sub(r"[^A-Za-z0-9._-]", "_", f"mab-{source}-{index}")
         context = str(row["context"])
-        parts = [p.strip() for p in _MAB_DOC.split(context) if p.strip()]
-        if len(parts) < 2:
-            parts = [context[i:i + MAB_CHUNK_CHARS] for i in range(0, len(context), MAB_CHUNK_CHARS)]
-        messages = [{"id": f"{space}-d{i}", "role": "user", "speaker": "document", "text": text}
-                    for i, text in enumerate(parts)]
+        sessions = _mab_chat_sessions(space, context)
+        if sessions is None:
+            parts = [p.strip() for p in _MAB_DOC.split(context) if p.strip()]
+            if len(parts) < 2:
+                parts = [context[i:i + MAB_CHUNK_CHARS] for i in range(0, len(context), MAB_CHUNK_CHARS)]
+            sessions = [("context", None, [{"id": f"{space}-d{i}", "role": "user", "speaker": "document",
+                                            "text": text} for i, text in enumerate(parts)])]
         ids = list(meta.get("qa_pair_ids") if meta.get("qa_pair_ids") is not None else [])
         questions = []
         for i, (question, answers) in enumerate(zip(row["questions"], row["answers"])):
@@ -404,7 +429,7 @@ def mab_cases(path: str, limit: int = 0):
                               "type": source.split("_")[0] if "_" in source else source,
                               "answer_scorable": not source.startswith("eventqa"),
                               "evidence": set(), "sessions": set()})
-        yield space, [("context", None, messages)], None, questions
+        yield space, sessions, None, questions
         limit -= 1
         if limit == 0:
             break

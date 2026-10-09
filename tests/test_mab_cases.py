@@ -52,3 +52,16 @@ def test_eventqa_is_left_unscored_rather_than_counted_as_a_miss(tmp_path):
     [(_space, _sessions, _now, [q])] = list(cb.mab_cases(path))
     assert q["answer_scorable"] is False
     assert cb.answer_in_any("Debbie waited.", q) is None
+
+
+def test_longmemeval_style_contexts_become_dated_chat_sessions(tmp_path):
+    history = [ "Chat Time: 2022/11/17 (Thu) 12:04", [{"role": "user", "content": "I adopted a cat named Miso."},
+                                                    {"role": "assistant", "content": "Congratulations!"}],
+                "Chat Time: 2022/12/01 (Thu) 09:00", [{"role": "user", "content": "Miso likes tuna."}]]
+    path = _write(tmp_path, [{"context": repr(history), "questions": ["Cat's name?"], "answers": [["Miso"]],
+                              "metadata": {"source": "longmemeval_s*"}}])
+    [(space, sessions, _now, [q])] = list(cb.mab_cases(path))
+    assert [(name, date, len(m)) for name, date, m in sessions] == [
+        ("session-0", "2022/11/17 (Thu) 12:04", 2), ("session-1", "2022/12/01 (Thu) 09:00", 1)]
+    assert sessions[0][2][1]["role"] == "assistant" and sessions[1][2][0]["id"] == f"{space}-s1-t0"
+    assert q["type"] == "longmemeval" and q["answer_scorable"] is True
