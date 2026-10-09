@@ -37,7 +37,7 @@ Legend: **Done** · **Done (this pass)** (added or fixed in this audit) ·
 | WS6 Foresight and sleep-time refresh | **Done** | `memory_control.offline_pass`, `dream` |
 | WS7 PyPI and npm publishing | **Done (this pass)** (workflow; first publish needs registry configuration) | `.github/workflows/release.yml` |
 | WS7 Agent self-signup, LLM wrappers, hooks, frameworks, connectors, generated SDKs | **Done** | `onboarding.py`, `completion_wrappers.py`, `frameworks.py`, `connectors/`, `sdk/` |
-| WS7 Remote MCP with OAuth 2.1 | **Not done**: bearer tokens only; see `hub/README.md` "OAuth/JWT" | - |
+| WS7 Remote MCP with OAuth 2.1 | **Done (this pass)**: JWT access-token resource server (RS256/PS256/ES256/EdDSA, issuer/audience/expiry/scope, JWKS rotation), RFC 9728 metadata, for the gateway and HTTP MCP; the Hub keeps API keys | `oauth.py`, `mcp_transport.py` |
 | WS8 Console, Memory Palace, Needs Attention | **Done** | `ui/`, `/v1/palace` |
 | WS9 CausalMemBench | **Done (this pass)** | `benchmarks/causalmembench.py`, `docs/benchmarks/causalmembench.md` |
 | WS10 Embodied fleets (sim/real separation, protected memories) | **Done**; multimodal episodes via ingestion | `fleet.py`, `gateway.py`, `ingest/multimodal.py` |

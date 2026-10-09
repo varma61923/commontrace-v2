@@ -300,3 +300,15 @@ and `/v1/health/ready` (store, schemas, free disk; 503 when not ready) without a
 token. `commontrace lesson edit SLUG` opens a lesson in `$VISUAL`/`$EDITOR`, then
 validates, screens and journals the change; a hand-edited active lesson returns to
 review. `commontrace init --agent-caller NAME` mints a scoped agent key in one step.
+
+Remote clients can authenticate with your own OAuth 2.1 authorization server
+instead of the store's file token. Set `COMMONTRACE_OAUTH_ISSUER`,
+`COMMONTRACE_OAUTH_AUDIENCE` (this resource's URL) and `COMMONTRACE_OAUTH_JWKS_URL`
+(or `COMMONTRACE_OAUTH_JWKS_FILE` on air-gapped hosts), and install
+`commontrace[security]`. JWT access tokens are verified locally (RS256, PS256,
+ES256 or EdDSA; issuer, audience, expiry and scope checked). `commontrace:admin`
+acts as the operator, `commontrace:memory` as an agent confined to its own
+`agent:<id>` scope, and `commontrace:mcp` grants the HTTP MCP transport. Both the
+gateway and `commontrace serve --transport streamable-http` publish RFC 9728
+metadata at `/.well-known/oauth-protected-resource` and name it in every 401.
+CommonTrace never issues tokens or runs a login flow.

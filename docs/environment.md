@@ -25,7 +25,7 @@ Dynamic provider prefixes and test-only variables are described in the relevant 
 | `COMMONTRACE_DEFAULT_FUSION` | [commontrace/retrieval_io.py:33](../commontrace/retrieval_io.py#L33) |
 | `COMMONTRACE_DEFAULT_RERANK` | [commontrace/retrieval_io.py:30](../commontrace/retrieval_io.py#L30) |
 | `COMMONTRACE_FACT_EMBEDDER_PATH` | [commontrace/fact_embeddings.py:16](../commontrace/fact_embeddings.py#L16) |
-| `COMMONTRACE_GLINER_MODEL_PATH` | [commontrace/gateway.py:765](../commontrace/gateway.py#L765) |
+| `COMMONTRACE_GLINER_MODEL_PATH` | [commontrace/gateway.py:808](../commontrace/gateway.py#L808) |
 | `COMMONTRACE_HANDOFF_KEY` | [commontrace/memfs.py:291](../commontrace/memfs.py#L291) |
 | `COMMONTRACE_HUB_API_KEY` | [commontrace/commands/_format.py:17](../commontrace/commands/_format.py#L17) |
 | `COMMONTRACE_HUB_API_KEY_FILE` | [commontrace/commands/_format.py:17](../commontrace/commands/_format.py#L17) |
@@ -46,6 +46,12 @@ Dynamic provider prefixes and test-only variables are described in the relevant 
 | `COMMONTRACE_LOG_FORMAT` | [commontrace/cli.py:202](../commontrace/cli.py#L202) |
 | `COMMONTRACE_LOG_LEVEL` | [commontrace/cli.py:203](../commontrace/cli.py#L203) |
 | `COMMONTRACE_MCP_WARM` | [commontrace/mcp_server.py:2616](../commontrace/mcp_server.py#L2616) |
+| `COMMONTRACE_OAUTH_ALGORITHMS` | [commontrace/oauth.py:135](../commontrace/oauth.py#L135) |
+| `COMMONTRACE_OAUTH_AUDIENCE` | [commontrace/oauth.py:22](../commontrace/oauth.py#L22) |
+| `COMMONTRACE_OAUTH_ISSUER` | [commontrace/commands/doctor_cmd.py:42](../commontrace/commands/doctor_cmd.py#L42) |
+| `COMMONTRACE_OAUTH_JWKS_FILE` | [commontrace/oauth.py:24](../commontrace/oauth.py#L24) |
+| `COMMONTRACE_OAUTH_JWKS_URL` | [commontrace/oauth.py:23](../commontrace/oauth.py#L23) |
+| `COMMONTRACE_OAUTH_LEEWAY` | [commontrace/oauth.py:135](../commontrace/oauth.py#L135) |
 | `COMMONTRACE_OFFLINE` | [commontrace/cli.py:114](../commontrace/cli.py#L114) |
 | `COMMONTRACE_OTEL` | [commontrace/cli.py:204](../commontrace/cli.py#L204) |
 | `COMMONTRACE_QUERY_CACHE` | [commontrace/retrieval.py:395](../commontrace/retrieval.py#L395) |

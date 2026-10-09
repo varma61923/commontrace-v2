@@ -26,12 +26,17 @@ class BearerBoundary:
     Admission never allocates an unbounded queue of waiting requests.
     """
 
-    def __init__(self, app: ASGIApp, token_provider: Callable[[], str | None], *, max_connections: int = 128):
+    def __init__(self, app: ASGIApp, token_provider: Callable[[], str | None], *, max_connections: int = 128,
+                 oauth_server=None):
+        """`oauth_server`: an optional `commontrace.oauth.ResourceServer`. When set, a JWT access
+        token carrying ``commontrace:mcp`` or ``commontrace:admin`` is accepted beside the file
+        token, and the RFC 9728 metadata document is served without authentication."""
         if isinstance(max_connections, bool) or not isinstance(max_connections, int) or max_connections < 1:
             raise ValueError("max_connections must be a positive integer")
         self.app = app
         self.token_provider = token_provider
         self.max_connections = max_connections
+        self.oauth_server = oauth_server
         self._active = 0
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
@@ -42,6 +47,18 @@ class BearerBoundary:
             if scope["type"] == "websocket":
                 await send({"type": "websocket.close", "code": 1008})
             return
+        if self.oauth_server is not None and scope.get("method") == "GET":
+            from commontrace import oauth
+
+            if scope.get("path") in oauth.metadata_paths(self.oauth_server.config):
+                import json
+
+                body = json.dumps(self.oauth_server.config.metadata()).encode("utf-8")
+                await send({"type": "http.response.start", "status": 200, "headers": [
+                    (b"content-type", b"application/json"), (b"cache-control", b"max-age=300"),
+                    (b"content-length", str(len(body)).encode("ascii"))]})
+                await send({"type": "http.response.body", "body": body})
+                return
         if self._active >= self.max_connections:
             await self._deny(send, 503, b'{"error":"server_busy"}')
             return
@@ -61,18 +78,37 @@ class BearerBoundary:
                     expected = await asyncio.to_thread(self.token_provider)
                 except Exception:
                     expected = None
-            if not expected or supplied is None or not secrets.compare_digest(supplied, expected.encode("utf-8")):
+            accepted = bool(expected) and supplied is not None and secrets.compare_digest(
+                supplied, expected.encode("utf-8"))
+            if not accepted and supplied is not None and self.oauth_server is not None:
+                accepted = await asyncio.to_thread(self._oauth_ok, supplied)
+            if not accepted:
                 await self._deny(send, 401, b'{"error":"unauthorized"}')
                 return
             await self.app(scope, receive, send)
         finally:
             self._active -= 1
 
-    @staticmethod
-    async def _deny(send: Send, status: int, body: bytes) -> None:
+    def _oauth_ok(self, supplied: bytes) -> bool:
+        from commontrace import oauth
+
+        try:
+            claims = self.oauth_server.verify(supplied.decode("ascii"))
+        except (oauth.InvalidToken, UnicodeDecodeError):
+            return False
+        except Exception:  # noqa: BLE001 - an unavailable JWKS or missing extra fails closed
+            return False
+        return claims.is_admin or oauth.SCOPE_MCP in claims.scopes
+
+    async def _deny(self, send: Send, status: int, body: bytes) -> None:
         headers = [(b"content-type", b"application/json"), (b"cache-control", b"no-store"),
                    (b"content-length", str(len(body)).encode("ascii"))]
-        if status == 401:
+        if status == 401 and self.oauth_server is not None:
+            from commontrace import oauth
+
+            challenge = oauth.www_authenticate(oauth.metadata_url(self.oauth_server.config))
+            headers.append((b"www-authenticate", challenge.encode("ascii")))
+        elif status == 401:
             headers.append((b"www-authenticate", b'Bearer realm="commontrace-local"'))
         else:
             headers.append((b"retry-after", b"1"))
@@ -136,4 +172,7 @@ def build_http_app(
     if token_provider is None:
         gateway_tokens.load_or_create_token(root)
         token_provider = gateway_tokens.FileTokenProvider(root)
-    return BearerBoundary(app, token_provider, max_connections=max_connections)
+    from commontrace import oauth
+
+    return BearerBoundary(app, token_provider, max_connections=max_connections,
+                          oauth_server=oauth.resource_server(root))

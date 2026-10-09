@@ -536,6 +536,8 @@ class Gateway:
             if path in ("/", "/index.html", "/ui/app.js", "/ui/app.css", "/ui/tokens.css",
                         "/ui/favicon.svg") and method == "GET":
                 return self._static(path)
+            if path.startswith("/.well-known/oauth-protected-resource") and method == "GET":
+                return self._oauth_metadata(path)
             entry = self.routes.get((method, path))
             if entry is None:
                 if any(p == path for (_m, p) in self.routes):
@@ -548,18 +550,40 @@ class Gateway:
                                "container-scoped requests use the existing recall and review routes")
             principal = None
             if spec["auth"] and not trusted and not self._authorised(headers):
-                from commontrace import agent_registry
+                from commontrace import agent_registry, oauth
 
                 bearer = next((v for k, v in headers.items() if k.lower() == "authorization"), "")
-                principal = agent_registry.authenticate(self.root, bearer.removeprefix("Bearer "))
-                if principal is None:
+                supplied = bearer[7:].strip() if bearer[:7].lower() == "bearer " else ""
+                server = oauth.resource_server(self.root)
+                operator = False
+                if server is not None and oauth.looks_like_jwt(supplied):
+                    try:
+                        claims = server.verify(supplied)
+                    except oauth.InvalidToken:
+                        return self._oauth_challenge(server, 401, "invalid_token",
+                                                     "the access token is invalid or expired")
+                    if claims.is_admin:
+                        operator = True
+                    elif oauth.SCOPE_MEMORY in claims.scopes:
+                        principal = claims.principal()
+                    else:
+                        return self._oauth_challenge(server, 403, "insufficient_scope",
+                                                     "the access token grants no CommonTrace scope")
+                elif supplied.startswith("cta_"):
+                    principal = agent_registry.authenticate(self.root, supplied)
+                if principal is None and not operator:
+                    if server is not None:
+                        return self._oauth_challenge(server, 401, None,
+                                                     "a valid Authorization: Bearer token is required")
                     raise ApiError(401, "unauthorized", "a valid Authorization: Bearer token is required")
-                if not (path.startswith("/v1/memory/") or path in ("/v1/agent/plugin", "/v1/agent/heartbeat")):
-                    raise ApiError(403, "agent_scope", "agent credential does not grant this operation")
-                try:
-                    agent_registry.admit(self.root, principal["id"])
-                except PermissionError as exc:
-                    raise ApiError(429, "agent_quota", str(exc)) from exc
+                if principal is not None:
+                    if not (path.startswith("/v1/memory/") or path in ("/v1/agent/plugin", "/v1/agent/heartbeat")):
+                        raise ApiError(403, "agent_scope", "agent credential does not grant this operation")
+                    if not principal.get("oauth"):
+                        try:
+                            agent_registry.admit(self.root, principal["id"])
+                        except PermissionError as exc:
+                            raise ApiError(429, "agent_quota", str(exc)) from exc
             container_tag = next((
                 v for k, v in headers.items()
                 if k.lower() in ("x-container-tag", "container-tag")
@@ -598,6 +622,25 @@ class Gateway:
         except Exception as exc:  # noqa: BLE001 - never leak a traceback to a client
             logger.error("Gateway %s request failed (%s)", method, type(exc).__name__)
             return _json(500, {"error": {"code": "internal", "message": f"{type(exc).__name__}"}})
+
+    def _oauth_metadata(self, path: str) -> Response:
+        from commontrace import oauth
+
+        config = oauth.load_config(self.root)
+        if config is None or path not in oauth.metadata_paths(config):
+            raise ApiError(404, "not_found", f"no such endpoint: {path}")
+        response = _json(200, config.metadata())
+        response.headers["Cache-Control"] = "max-age=300"
+        return response
+
+    @staticmethod
+    def _oauth_challenge(server, status: int, error: str | None, message: str) -> Response:
+        from commontrace import oauth
+
+        response = _json(status, {"error": {"code": error or "unauthorized", "message": message}})
+        response.headers["WWW-Authenticate"] = oauth.www_authenticate(oauth.metadata_url(server.config),
+                                                                     error=error)
+        return response
 
     def _host_ok(self, headers: Mapping[str, str]) -> bool:
         host = next((v for k, v in headers.items() if k.lower() == "host"), "")
