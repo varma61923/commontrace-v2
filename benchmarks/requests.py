@@ -141,7 +141,7 @@ def _gemini_complete(prompt: str, config: llm.Config, guard: CostGuard, *, outpu
         guard.release_call(reservation)
         raise llm.LLMUnavailable(f"{exc}; nothing was charged") from None
     except Exception as exc:
-        guard.mark_uncertain()
+        guard.mark_uncertain(reservation)
         if isinstance(exc, llm.LLMUnavailable):
             raise llm.LLMUnavailable(f"{exc}; charge remains uncertain") from None
         raise
@@ -200,7 +200,7 @@ def bounded_complete(prompt: str, config: llm.Config, guard: CostGuard, *, outpu
         guard.settle_call(reservation, cost)
         return answer, {"input_tokens": input_tokens, "output_tokens": output_tokens}, cost
     except Exception as exc:
-        guard.mark_uncertain()
+        guard.mark_uncertain(reservation)
         if isinstance(exc, llm.LLMUnavailable):
             raise llm.LLMUnavailable("benchmark provider request failed; no retries; charge remains uncertain") from None
         raise

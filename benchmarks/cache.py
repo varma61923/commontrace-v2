@@ -208,6 +208,7 @@ class CostGuard:
         self.reserved_cost_usd = 0.0
         self.uncertain_calls = 0
         self.refused_calls = 0
+        self.free_uncertain_calls = 0
         self.cached_cost_usd = 0.0
         self._lock = threading.RLock()
 
@@ -239,14 +240,19 @@ class CostGuard:
             self.reserved_cost_usd = max(0.0, self.reserved_cost_usd - reservation)
             self.refused_calls += 1
 
-    def mark_uncertain(self) -> None:
+    def mark_uncertain(self, reservation: float | None = None) -> None:
+        """A call whose charge cannot be known. It stops the run, unless its upper bound
+        was zero (a zero-priced model): then the charge is known to be zero after all."""
         with self._lock:
+            if reservation is not None and reservation == 0.0:
+                self.free_uncertain_calls += 1
+                return
             self.uncertain_calls += 1
 
     def snapshot(self) -> dict:
         return {"current_run_spend_usd": self.total_cost_usd, "reserved_cost_usd": self.reserved_cost_usd,
                 "historical_cached_cost_usd": self.cached_cost_usd, "calls": self.call_count,
-                "refused_calls": self.refused_calls,
+                "refused_calls": self.refused_calls, "free_uncertain_calls": self.free_uncertain_calls,
                 "cache_hits": self.cached_count, "uncertain_calls": self.uncertain_calls,
                 "max_cost_usd": self.max_cost_usd}
 

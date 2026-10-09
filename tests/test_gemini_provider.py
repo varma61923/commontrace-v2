@@ -109,3 +109,22 @@ def test_quota_errors_wait_the_suggested_delay():
     assert bench_requests._retry_delay(body) == pytest.approx(22.9)
     assert bench_requests._retry_delay(b"not json") is None
     assert bench_requests._retry_delay(b'{"error": {}}') is None
+
+
+def test_a_lost_connection_on_a_zero_priced_model_cannot_overspend_and_does_not_stop_the_run(monkeypatch):
+    opener, _guard, cfg = _bounded(monkeypatch, [])
+    guard = CostGuard(prices={"gemma-4-31b-it": {"input_per_mtok": 0, "output_per_mtok": 0}})
+    calls = {"n": 0}
+
+    def flaky(request, timeout):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("read timed out")
+        return io.BytesIO(json.dumps(_reply()).encode())
+
+    opener.open = flaky
+    with pytest.raises(llm.LLMUnavailable):
+        bench_requests._gemini_complete("q", cfg, guard, output_limit=4096, temperature=0.0, sleep=lambda _s: None)
+    assert guard.uncertain_calls == 0 and guard.free_uncertain_calls == 1
+    assert bench_requests._gemini_complete("q", cfg, guard, output_limit=4096, temperature=0.0,
+                                           sleep=lambda _s: None)[0] == "Paris"
