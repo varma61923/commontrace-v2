@@ -56,20 +56,26 @@ python scripts/generate_sdks.py --languages typescript go rust java kotlin
 The [OpenAPI contract](sdk/openapi.json) uses Swagger-compatible OpenAPI 3.0.
 A checksum-pinned OpenAPI Generator produces the clients into `sdk/generated/`.
 CI validates the contract, compiles all five clients and publishes build artifacts.
-See [SDK instructions](sdk/README.md). Package registry publication and hosted
-service deployment are separate release steps.
+See [SDK instructions](sdk/README.md). Tagging `vX.Y.Z` runs the release workflow,
+which publishes to PyPI and npm through trusted publishing once those registries are
+configured for this repository; hosted service deployment is a separate step.
 
 ## Verify
 
 ```bash
 python -m pytest tests/ e2e_tests/ -q
 bash reproduce.sh
+python -m benchmarks.causalmembench --seeds 10
 ```
 
 Benchmark manifests bind source, data, configuration and seeds. Published retrieval
 metrics are evidence measurements; model-backed competitor accuracy and research
 performance targets remain unverified. See the [scoreboard and reproduction
-commands](docs/REFERENCE.md#measurement-scoreboard-2026-10-08).
+commands](docs/REFERENCE.md#measurement-scoreboard-2026-10-08), the dense,
+reranked and adaptive-budget measurements in the [implementation
+status](docs/strategy/implementation-status.md#measured-results), and
+[CausalMemBench](docs/benchmarks/causalmembench.md), which scores whether a memory
+system stops delivering harmful memories without discarding helpful ones.
 
 The protocol is Capture → Structure → Extract → Validate → Store → Inject → Measure.
 Read the [protocol](protocol/PROTOCOL.md), [full reference](docs/REFERENCE.md),
