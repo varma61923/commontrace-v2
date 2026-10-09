@@ -41,6 +41,10 @@ class Options:
     neighbours_after: int = 2
     neighbour_hits: int | None = None
     neighbour_minutes: float | None = 60.0
+    # Fill the gap between a hit and an already-chosen turn of the same session
+    # when at most this many turns lie between them ("steps 20 to 23" retrieves
+    # 20 and 23; the span in between is the context). 0 turns it off.
+    bridge_turns: int = 0
     excerpt_tokens: int | None = None  # longest a single turn may show; default budget/5, at least 200
     window_boost: float = 1.0
     entity_boost: float = 0.1
@@ -619,7 +623,7 @@ def _recall_key(store: Store, question: str, now, opts: Options,
     return (
         store.cache_identity, store.path, question, str(moment or ""),
         opts.budget, opts.pool, opts.neighbours_before, opts.neighbours_after,
-        opts.neighbour_hits, opts.neighbour_minutes, opts.excerpt_tokens,
+        opts.neighbour_hits, opts.neighbour_minutes, opts.bridge_turns, opts.excerpt_tokens,
         opts.window_boost, opts.entity_boost, opts.lexical_weight, opts.rerank, opts.recency_pool,
         opts.rerank_depth, opts.rerank_blend, opts.profile_facts, opts.instructions,
         opts.broad, opts.recency_boost, opts.primary_hits, opts.embedder,
@@ -1025,6 +1029,18 @@ def _flagged(turn: Turn) -> bool:
     return bool(injection_guard.injection_labels({"text": turn.text}))
 
 
+def _bridge(store, turn, chosen: dict, span: int) -> list[int]:
+    """Turns between `turn` and the nearest chosen turns of its session within `span` turns."""
+    window = store.neighbours(turn, span + 1, span + 1)
+    around = store.turns(window)
+    placed = [around[w].idx for w in window if w in chosen and w in around]
+    below = max((i for i in placed if i < turn.idx), default=None)
+    above = min((i for i in placed if i > turn.idx), default=None)
+    return [w for w in window if w in around and w not in chosen and (
+        (below is not None and below < around[w].idx < turn.idx)
+        or (above is not None and turn.idx < around[w].idx < above))]
+
+
 def assemble(store: Store, question: str, ranked: list[int], opts: Options,
              withheld: list[int] | None = None, allowed: set[int] | None = None,
              now: dt.datetime | None = None, as_of=None,
@@ -1300,6 +1316,9 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
                 near = store.neighbours(turn, opts.neighbours_before, opts.neighbours_after) \
                     if hits <= with_context else []
             group = [tid] + [n for n in near if allowed is None or n in allowed]
+            if opts.bridge_turns > 0 and hits <= with_context and not broad:
+                group += [b for b in _bridge(store, turn, chosen, opts.bridge_turns)
+                          if b not in group and (allowed is None or b in allowed)]
             # A graph discovery enters through its complete evidence group,
             # rather than as an incidental neighbour with missing ancestors.
             group = [g for g in group if g == tid or g not in parents or g in chosen]

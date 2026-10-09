@@ -833,6 +833,7 @@ def run(args) -> dict:
         rerank=None if args.rerank == "none" else args.rerank,
         neighbours_before=args.neighbours,
         neighbours_after=args.neighbours,
+        bridge_turns=getattr(args, "bridge_turns", 0),
         profile_facts=args.profile_facts,
         rerank_blend=args.rerank_blend,
         adaptive_budget=bool(getattr(args, "adaptive_budget", False)),
@@ -1216,6 +1217,7 @@ def summarize(rows, args, budget, ingest_s, recall_s, full_tokens, mode="memory"
         "embedder": args.embedder,
         "rerank": args.rerank,
         "neighbours": args.neighbours,
+        "bridge_turns": getattr(args, "bridge_turns", 0),
         "effective_embedders": sorted({tag for row in rows for tag in row.get("effective_embedders", [])}),
         "recall_timing": "independent public recall per budget; excludes measurement and inference",
         "context_reference": "entire-raw-history" if mode == "full-context" else mode,
@@ -1273,6 +1275,8 @@ def main(argv=None) -> int:
     p.add_argument("--embedder", default="auto", choices=("auto", "arctic-m", "minilm", "none"))
     p.add_argument("--rerank", default="auto", choices=("auto", "none", "cross-encoder", "cross-encoder-fast"))
     p.add_argument("--neighbours", type=int, default=1)
+    p.add_argument("--bridge-turns", type=int, default=0,
+                   help="fill gaps of up to N turns between a hit and an already-chosen turn (0: off)")
     p.add_argument(
         "--rerank-blend",
         type=float,
