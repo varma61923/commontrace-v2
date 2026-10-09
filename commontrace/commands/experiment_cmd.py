@@ -100,6 +100,18 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
              "store has ever done is in the log; the default is the one configured now, "
              "because pooling two is not a bigger experiment, it is a broken one.",
     )
+    p.add_argument(
+        "--by", choices=("agent_type", "agent_id"), default=None,
+        help="Exploratory subgroup reading: each lesson's randomized effect per agent type or "
+             "agent, plus a test of whether the effect differs between them (flags a lesson "
+             "that helps one context and hurts another). Pre-treatment fields only.",
+    )
+    p.add_argument(
+        "--covariates", default=None, metavar="FILE",
+        help="With --by omitted: JSONL {occasion_id, group} subgroups you supply. They must "
+             "be fixed before the lesson could act (a customer tier, a robot model), never "
+             "something recorded after the task.",
+    )
     p.add_argument("--dest", default=None)
     p.set_defaults(func=run)
 
@@ -439,6 +451,9 @@ def run(args: argparse.Namespace) -> int:
         )
         return 0
 
+    if getattr(args, "by", None) or getattr(args, "covariates", None):
+        return _run_subgroups(args, root, obs, report)
+
     effects = experiment.analyze(
         obs, min_arm=args.min_arm, alpha=args.alpha, detectable=args.detect,
         sequential=not args.fixed_horizon)
@@ -522,4 +537,34 @@ def run(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 1
+    return 0
+
+
+def _run_subgroups(args, root, obs, report) -> int:
+    from commontrace import heterogeneity
+
+    if args.by and args.covariates:
+        print("[commontrace] use --by or --covariates, not both.", file=sys.stderr)
+        return 2
+    if report.verdict == integrity.VERDICT_COMPROMISED:
+        print("[commontrace] the experiment's audit is COMPROMISED; subgroup effects from it would be "
+              "as unreliable as the overall ones. Run `commontrace experiment` for the reasons.",
+              file=sys.stderr)
+        return 1
+    try:
+        groups = (heterogeneity.occasion_groups_from_file(args.covariates) if args.covariates
+                  else heterogeneity.occasion_groups_from_traces(root, args.by))
+        results = heterogeneity.analyze(obs, groups, min_arm=args.min_arm, alpha=args.alpha)
+    except (OSError, ValueError) as exc:
+        print(f"[commontrace] subgroup analysis refused: {exc}", file=sys.stderr)
+        return 2
+    label = args.by or "covariates"
+    if args.json:
+        print(json.dumps({"by": label, "exploratory": True, "reading": "fixed-horizon",
+                          "labelled_occasions": len(groups),
+                          "lessons": [h.as_dict() for h in results]}, indent=2))
+    else:
+        print(heterogeneity.render(results, label))
+    if args.strict and any(h.flag == heterogeneity.FLAG_CROSSING for h in results):
+        return 1
     return 0
