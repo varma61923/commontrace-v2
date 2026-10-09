@@ -13,7 +13,17 @@ from typing import TYPE_CHECKING, Iterator
 
 import pytest
 
-from commontrace import frontmatter, functions, gateway, hierarchical, holdout_io, paths, proof, templates
+from commontrace import (
+    frontmatter,
+    functions,
+    gateway,
+    hierarchical,
+    holdout_io,
+    memory_control,
+    paths,
+    proof,
+    templates,
+)
 from commontrace.fact_evidence import bind_evidence
 
 if TYPE_CHECKING:
@@ -113,6 +123,28 @@ def draft(console: Console, slug: str, description: str = "Prevent duplicate pay
             "## How to apply\nPersist a stable request identifier before retrying.\n\n"
             "## Counter-examples\nThe call is naturally idempotent.\n")
     frontmatter.write(os.path.join(paths.lessons_dir(console.root), slug + ".md"), fm, body)
+
+
+@pytest.mark.parametrize("width", [390, 1440])
+def test_memory_palace_guarded_actions_and_literal_evidence(page: Page, console: Console, width: int) -> None:
+    page.set_viewport_size({"width": width, "height": 1000})
+    memory_control.directive(console.root, "Do not deploy " + MARKUP, deny_tools=["deploy"])
+    memory_control.standing_question(console.root, "Which release risks need attention?")
+    suggestion = memory_control.proposal(console.root, "Inspect a suggested procedure", sources=["trace-1"])
+    connect(page, console)
+    navigate(page, "Memory Palace")
+    pw.expect(page.get_by_text("Do not deploy " + MARKUP, exact=True)).to_be_visible()
+    assert page.locator("main img").count() == 0
+    page.get_by_role("button", name="Refresh answer", exact=True).click()
+    pw.expect(page.get_by_role("button", name="Refresh queued", exact=True)).to_be_visible()
+    page.get_by_text("Inspect evidence and applicability", exact=True).click()
+    page.once("dialog", lambda dialog: dialog.accept("Insufficient supporting evidence"))
+    page.get_by_role("button", name="Reject suggestion", exact=True).click()
+    pw.expect(page.get_by_role("button", name="Rejected", exact=True)).to_be_visible()
+    revision = next(row for row in memory_control.records(console.root, "proposal") if row["id"] == suggestion["id"])
+    assert revision["data"]["status"] == "archived"
+    assert revision["data"]["reason"] == "Insufficient supporting evidence"
+    assert not page.evaluate("() => document.documentElement.scrollWidth > innerWidth")
 
 
 @pytest.mark.parametrize("width", [390, 1440])
@@ -233,6 +265,7 @@ def test_fact_ranking_selection_uses_actual_response_profile_without_relabelling
     navigate(page, "Explore memory")
     selector = page.get_by_label("Fact ranking", exact=True)
     pw.expect(selector).to_have_value("overlap-v1")
+    pw.expect(selector).to_be_visible()
     bounds = selector.bounding_box()
     assert bounds is not None and bounds["height"] >= 44
     page.get_by_label("Your question", exact=True).fill("Aster payment idempotency")

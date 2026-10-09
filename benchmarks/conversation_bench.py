@@ -32,10 +32,12 @@ from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from benchmarks.cache import BenchmarkCache, CostGuard, compute_cost_usd  # noqa: E402
+from benchmarks.artifacts import model_artifact
+from benchmarks.cache import BenchmarkCache, CostGuard  # noqa: E402
 from benchmarks.compare import clustered_estimates, ranking_metrics
 from benchmarks.compare import compare_runs as paired_compare  # noqa: E402
 from benchmarks.completeness import bucket_counts, grade_context_completeness  # noqa: E402
+from benchmarks.context_budget import retrieve_with_cap
 from benchmarks.judges import (  # noqa: E402
     BEAM_ABILITIES,
     get_default_judge_for_dataset,
@@ -54,8 +56,10 @@ from benchmarks.measurement import (  # noqa: E402
     ranking_fields,
     shared_source_clusters,
 )
+from benchmarks.requests import benchmark_binding, bounded_complete, text_counter_binding, text_tokens  # noqa: E402
+from benchmarks.vendor_adapters import PROFILES, vendor_profile  # noqa: E402
 from commontrace.conversation import Options, Store, recall  # noqa: E402
-from commontrace.conversation.search import tokens  # noqa: E402
+from commontrace.conversation.search import Recall, tokens  # noqa: E402
 
 LOCOMO_CATEGORIES = {1: "multi-hop", 2: "temporal", 3: "open-domain", 4: "single-hop"}
 
@@ -123,12 +127,46 @@ def _cases_from_payload(payload) -> list:
 
 
 def _load_cases(args) -> list:
+    exclusion_path = getattr(args, "question_exclusions", None)
+    if exclusion_path:
+        if args.dataset not in ("locomo", "longmemeval"):
+            raise ValueError("question exclusions support LoCoMo and LongMemEval only")
+        with open(exclusion_path, encoding="utf-8") as source:
+            exclusions = json.load(source)
+        if (not isinstance(exclusions, list) or any(not isinstance(q, str) or not q for q in exclusions)
+                or len(set(exclusions)) != len(exclusions)):
+            raise ValueError("question exclusions must be a list of distinct nonempty identities")
+        cases = (list(locomo_cases(args.data)) if args.dataset == "locomo"
+                 else list(longmemeval_cases(args.data, 0, args.seed)))
+        identities = {q["id"] for _s, _ss, _now, qs in cases for q in qs}
+        if set(exclusions) - identities:
+            raise ValueError("question exclusions contain identities outside this dataset")
+        excluded = set(exclusions)
+        filtered = [(s, ss, now, [q for q in qs if q["id"] not in excluded])
+                    for s, ss, now, qs in cases]
+        filtered = [case for case in filtered if case[3]]
+        if args.dataset == "longmemeval" and args.limit and args.limit < len(filtered):
+            # Each question owns a history: conversation strata would have one
+            # item each, eliminating seeded shuffling and skewing type coverage.
+            by_type = defaultdict(list)
+            for case in filtered:
+                by_type[case[3][0]["type"].removesuffix("-abstain")].append(case)
+            rng = random.Random(args.seed)
+            for kind in sorted(by_type):
+                rng.shuffle(by_type[kind])
+            selected = []
+            while len(selected) < args.limit:
+                for kind in sorted(by_type):
+                    if by_type[kind] and len(selected) < args.limit:
+                        selected.append(by_type[kind].pop())
+            return selected
+        return sample_cases(filtered, args.limit, args.seed)
     if args.dataset == "dolphin":
         return list(dolphin_cases(args.data, args.personas, args.limit))
     if args.dataset == "beam":
         return list(beam_cases(args.data, args.limit))
     if args.dataset == "locomo":
-        return list(locomo_cases(args.data))
+        return sample_cases(list(locomo_cases(args.data)), args.limit, args.seed)
     return list(longmemeval_cases(args.data, args.limit, args.seed))
 
 
@@ -143,6 +181,8 @@ def prepare_chunk_set(args) -> tuple[list, dict]:
 
     fingerprint = chunk_fingerprint(args.dataset, args.data, args.limit, args.seed,
                                     getattr(args, "personas", ""))
+    if getattr(args, "question_exclusions", None):
+        fingerprint["question_exclusions_sha256"] = dataset_digest(args.question_exclusions)
     digest = _hashlib.sha256(json.dumps(fingerprint, sort_keys=True).encode("utf-8")).hexdigest()
     name = getattr(args, "chunk_set", None) or f"{args.dataset}-{digest[:8]}"
     name = re.sub(r"[^A-Za-z0-9._-]", "_", name)
@@ -201,6 +241,33 @@ def _evidence_texts(sessions, evidence_ids) -> dict[str, str]:
         if texts:
             out[str(eid)] = "\n".join(texts)
     return out
+
+
+def sample_cases(cases, limit, seed):
+    """Exactly limit questions, round-robin across type and conversation strata."""
+    strata = defaultdict(list)
+    for index, (_space, _sessions, _now, questions) in enumerate(cases):
+        for question in questions:
+            strata[(question["type"], index)].append(question)
+    if not limit or limit >= sum(map(len, strata.values())):
+        return cases
+    rng = random.Random(seed)
+    for key in sorted(strata):
+        rng.shuffle(strata[key])
+    categories = sorted({kind for kind, _index in strata})
+    indices = sorted({index for _kind, index in strata})
+    # Rotate category across conversations before revisiting either dimension.
+    schedule = [(categories[(i + phase) % len(categories)], index)
+                for phase in range(len(categories)) for i, index in enumerate(indices)]
+    selected = defaultdict(list)
+    count = 0
+    while count < limit:
+        for key in schedule:
+            if strata[key] and count < limit:
+                selected[key[1]].append(strata[key].pop())
+                count += 1
+    return [(space, sessions, now, selected[i])
+            for i, (space, sessions, now, _qs) in enumerate(cases) if selected[i]]
 
 
 def locomo_cases(path: str):
@@ -430,12 +497,16 @@ def _get_llm_config(model: str):
             base_url=base.base_url,
             region=base.region,
             project=base.project,
+            cache_namespace=base.cache_namespace,
         )
     except Exception:
         provider = os.environ.get("COMMONTRACE_LLM_PROVIDER", "openai-compatible")
         api_key = os.environ.get("COMMONTRACE_LLM_API_KEY", "")
         base_url = os.environ.get("COMMONTRACE_LLM_BASE_URL", "")
-        return llm.Config(provider=provider, model=model, api_key=api_key, base_url=base_url or None)
+        return llm.Config(provider=provider, model=model, api_key=api_key, base_url=base_url or None,
+                          region=os.environ.get("COMMONTRACE_LLM_REGION") or os.environ.get("AWS_REGION") or None,
+                          project=os.environ.get("COMMONTRACE_LLM_PROJECT") or None,
+                          cache_namespace=os.environ.get("COMMONTRACE_LLM_CACHE_NAMESPACE") or None)
 
 
 def grade_answer(
@@ -448,28 +519,32 @@ def grade_answer(
     cache: BenchmarkCache | None,
     cost_guard: CostGuard | None,
     explain: dict | None = None,
+    output_limit: int = 1536,
+    tokenizer: str | None = None,
 ) -> dict:
     """Generate answer from context with ans_model and grade with judge_inst using j_model."""
-    from commontrace import llm
+    guard = cost_guard or CostGuard()
+    calls = []
 
-    def call_cached(prompt: str, model: str) -> tuple[str, dict, float, float]:
-        t0 = time.time()
+    def call_cached(prompt: str, model: str, stage: str) -> tuple[str, dict, float, float]:
+        t0 = time.perf_counter()
+        cfg = _get_llm_config(model)
+        binding = benchmark_binding(cfg, output_limit=output_limit) if cache is not None else None
         if cache is not None:
-            hit = cache.get(model, prompt)
+            hit = cache.get(model, prompt, binding=binding)
             if hit is not None:
                 resp, usage, cost = hit
-                if cost_guard:
-                    cost_guard.record_call(cost, is_cached=True)
-                return resp, usage, 0.0, cost
+                guard.record_call(cost, is_cached=True)
+                calls.append({"stage": stage, "model": model, "cache_hit": True,
+                              "usage": usage, "cost_usd": 0.0, "historical_cost_usd": cost})
+                return resp, usage, 0.0, 0.0
 
-        cfg = _get_llm_config(model)
-        resp, usage = llm.complete(prompt, config=cfg)
-        latency = time.time() - t0
-        cost = compute_cost_usd(usage, model)
-        if cost_guard:
-            cost_guard.record_call(cost, is_cached=False)
+        resp, usage, cost = bounded_complete(prompt, cfg, guard, output_limit=output_limit)
+        latency = time.perf_counter() - t0
+        calls.append({"stage": stage, "model": model, "cache_hit": False, "usage": usage,
+                      "cost_usd": cost, "historical_cost_usd": 0.0})
         if cache is not None:
-            cache.put(model, prompt, resp, usage, cost)
+            cache.put(model, prompt, resp, usage, cost, binding=binding)
         return resp, usage, latency, cost
 
     # Step 1: Generate answer
@@ -482,14 +557,14 @@ def grade_answer(
         question=question["question"],
         now=now or "now",
     )
-    ans_text, ans_usage, ans_lat, ans_cost = call_cached(ans_prompt, ans_model)
+    ans_text, ans_usage, ans_lat, ans_cost = call_cached(ans_prompt, ans_model, "answer")
 
     # Step 2: Judge answer
     judge_latencies = []
     judge_costs = []
 
     def judge_complete(prompt: str) -> tuple[str, dict]:
-        resp, usage, lat, c = call_cached(prompt, j_model)
+        resp, usage, lat, c = call_cached(prompt, j_model, "judge")
         judge_latencies.append(lat)
         judge_costs.append(c)
         return resp, usage
@@ -512,7 +587,8 @@ def grade_answer(
         "score": grade_res.get("score"),
         "answer_tokens_in": ans_in_tok,
         "answer_tokens_out": ans_out_tok,
-        "context_tokens": tokens(context) if context else 0,
+        "context_tokens": text_tokens(context, tokenizer) if tokenizer else tokens(context),
+        "context_token_accounting": tokenizer or "ceil-characters-divided-by-four",
         "answer_latency_s": ans_lat,
         "judge_latency_s": j_lat_total,
         "answer_cost_usd": ans_cost,
@@ -521,6 +597,10 @@ def grade_answer(
         "judge_profile": getattr(judge_inst, "profile", judge_inst.name),
         "judge_model": j_model,
         "answer_model": ans_model,
+        "completion_calls": calls,
+        "answer_cache_hit": calls[0]["cache_hit"],
+        "judge_all_cached": all(c["cache_hit"] for c in calls if c["stage"] == "judge"),
+        "historical_cached_cost_usd": sum(c["historical_cost_usd"] for c in calls),
     }
     if "ability" in grade_res:
         res["beam_ability"] = grade_res["ability"]
@@ -553,6 +633,13 @@ def product_digest_for_judges(repository: str) -> str:
 def run(args) -> dict:
     repository = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     initial_product = product_digest(repository)
+    strict_budget = getattr(args, "strict_context_budget", False)
+    tokenizer = getattr(args, "tokenizer", None)
+    counter_binding = None
+    if strict_budget:
+        if not tokenizer:
+            raise ValueError("strict context budgets require --tokenizer")
+        counter_binding = text_counter_binding(tokenizer)
     if args.limit < 0 or args.seed < 0:
         raise ValueError("limit and seed must be nonnegative")
     budgets = [int(b) for b in str(args.budget).split(",")]
@@ -585,17 +672,12 @@ def run(args) -> dict:
             cache = BenchmarkCache(cdir)
         cost_guard = CostGuard(max_cost_usd=getattr(args, "max_cost", None))
 
-        # Pre-flight cost check if --max-cost is passed
-        if cost_guard.max_cost_usd is not None:
-            dataset_q_counts = {"locomo": 1540, "longmemeval": 500, "beam": 400, "dolphin": 600}
-            est_q = args.limit if args.limit else dataset_q_counts.get(args.dataset, 500)
-            cost_guard.check_estimate(
-                num_questions=est_q * len(budgets) * len(modes),
-                answer_model=ans_model,
-                judge_model=j_model,
-                avg_context_tokens=budgets[0],
-            )
+        # Each actual prompt (including full history and every rubric call)
+        # reserves its upper bound immediately before dispatch.
 
+    memory_adapter = getattr(args, "memory_adapter", "commontrace")
+    if memory_adapter not in PROFILES:
+        raise ValueError("unsupported memory adapter")
     opts = Options(
         budget=budgets[0],
         embedder=None if args.embedder == "none" else args.embedder,
@@ -618,10 +700,15 @@ def run(args) -> dict:
         "dataset_sha256": fingerprint["dataset_sha256"],
         "adapter_sha256": fingerprint["adapter_sha256"],
         "product_sha256": initial_product,
+        "harness_sha256": dataset_digest(__file__),
+        "vendor_adapters_sha256": dataset_digest(os.path.join(repository, "benchmarks", "vendor_adapters.py")),
+        "artifacts_source_sha256": dataset_digest(os.path.join(repository, "benchmarks", "artifacts.py")),
         "sampling": {"seed": args.seed, "limit": args.limit, "personas": getattr(args, "personas", "")},
         "evaluation": {"answer_enabled": args.answer, "token_accounting": "ceil-characters-divided-by-four",
                        "completeness_sha256": dataset_digest(os.path.join(repository, "benchmarks", "completeness.py"))},
     }
+    if "question_exclusions_sha256" in fingerprint:
+        provenance["sampling"]["question_exclusions_sha256"] = fingerprint["question_exclusions_sha256"]
 
     if args.answer:
         cfg_a, cfg_j = _get_llm_config(ans_model), _get_llm_config(j_model)
@@ -631,8 +718,27 @@ def run(args) -> dict:
             "completion_source_sha256": dataset_digest(os.path.join(repository, "commontrace", "llm.py")),
             "reader": evaluation_config_binding(cfg_a),
             "judge": evaluation_config_binding(cfg_j),
+            "generation": {"max_tokens": getattr(args, "max_output_tokens", 1536), "temperature": 0,
+                           "retries": 0, "tokenizer": getattr(args, "tokenizer", None)},
+            "bounded_requests_sha256": dataset_digest(os.path.join(repository, "benchmarks", "requests.py")),
         })
 
+    profile_config = None
+    model_bindings = {}
+    if memory_adapter == "commontrace":
+        from commontrace import rerank_arm
+        from commontrace.conversation import embed
+        for name in ([embed.MODELS[args.embedder][0]] if args.embedder in embed.MODELS else []) + (
+                [rerank_arm.MODELS[args.rerank][0]] if args.rerank in rerank_arm.MODELS else []):
+            model_bindings[name] = model_artifact(name)
+    provenance["evaluation"]["context_text_tokenizer"] = getattr(args, "tokenizer", None)
+    if strict_budget:
+        provenance["evaluation"]["context_budget"] = {
+            "unit": "selected-tokenizer-context-text", "counter": counter_binding,
+            "max_attempts": 16, "full_context": "uncapped",
+            "helper_sha256": dataset_digest(os.path.join(repository, "benchmarks", "context_budget.py")),
+            "counter_source_sha256": dataset_digest(os.path.join(repository, "benchmarks", "requests.py")),
+        }
     rows_by_mode = {m: {b: [] for b in budgets} for m in modes}
     ingest_s, full_tokens = 0.0, []
     recall_seconds = {b: 0.0 for b in budgets}
@@ -658,115 +764,149 @@ def run(args) -> dict:
             ingest_s += time.perf_counter() - t
             full_tokens.append(sum(tokens(m["text"]) for _s, _d, ms in sessions for m in ms))
 
-            for q in questions:
-                # Each budget follows the entire public recall path, including its
-                # temporal, eligibility, standing-instruction and graph fences.
-                turn_gold = gold_turns(q["evidence"], sessions)
-                session_gold = gold_sessions(turn_gold, q["sessions"], sessions)
-                mem_contexts = {}
-                for budget in budgets:
-                    opts_b = Options(**{**opts.__dict__, "budget": budget})
-                    t = time.perf_counter()
-                    r = recall(store, q["question"], now=now, options=opts_b)
-                    elapsed = time.perf_counter() - t
-                    recall_seconds[budget] += elapsed
-                    kept = store.turns(r.turns).values()
-                    refs, sess = {tt.ref for tt in kept}, {tt.session for tt in kept}
-                    source_ranking = ranking_fields(r.ranked, store.turns(r.ranked), turn_gold, session_gold)
-                    ranking_scores = {
-                        level + "_" + metric: value
-                        for level in ("turn", "session")
-                        for metric, value in ranking_metrics(source_ranking["ranked_" + level + "_ids"],
-                                                            source_ranking["gold_" + level + "_ids"]).items()
-                    }
-                    mem_contexts[budget] = (r, refs, sess, elapsed, source_ranking, ranking_scores)
-
-                for mode in modes:
+            t = time.perf_counter()
+            with vendor_profile(memory_adapter, store, now) as adapter:
+                if adapter is not None:
+                    ingest_s += time.perf_counter() - t
+                    descriptor = adapter.descriptor
+                    if profile_config is not None and profile_config != descriptor:
+                        raise RuntimeError("vendor configuration changed between cases")
+                    profile_config = descriptor
+                for q in questions:
+                    # Each budget follows the entire public recall path, including its
+                    # temporal, eligibility, standing-instruction and graph fences.
+                    turn_gold = gold_turns(q["evidence"], sessions)
+                    session_gold = gold_sessions(turn_gold, q["sessions"], sessions)
+                    mem_contexts = {}
                     for budget in budgets:
-                        r, refs, sess, recall_elapsed, source_ranking, ranking_scores = mem_contexts[budget]
-                        mem_context, n_tokens = r.context, r.tokens
-                        if mode == "memory":
-                            ctx = mem_context
-                            toks = n_tokens
-                            ev = (len(turn_gold & refs) / len(turn_gold)) if turn_gold else None
-                            comp = turn_gold <= refs if turn_gold else None
-                            ses = (len(set(session_gold) & sess) / len(session_gold)) if session_gold else None
-                            ans_in_ctx = answer_in(ctx, q["answer"])
-                            conf = r.explain.get("confidence")
-                            rtop = r.explain.get("rerank_top")
-                        elif mode in ("full-context", "budgeted-history"):
-                            ctx, toks = make_full_context(sessions, None if mode == "full-context" else budget)
-                            ev = None
-                            comp = None
-                            ses = None
-                            ans_in_ctx = answer_in(ctx, q["answer"])
-                            conf = None
-                            rtop = None
-                        elif mode == "no-memory":
-                            ctx = ""
-                            toks = 0
-                            ev = None
-                            comp = None
-                            ses = None
-                            ans_in_ctx = False
-                            conf = None
-                            rtop = None
+                        t = time.perf_counter()
+                        def retrieve(native_budget):
+                            opts_b = Options(**{**opts.__dict__, "budget": native_budget})
+                            return (adapter.retrieve(q["question"], native_budget) if adapter is not None
+                                    else recall(store, q["question"], now=now, options=opts_b))
+
+                        if "memory" not in modes:
+                            r, accounting = Recall(q["question"], "", 0, [], [], None), None
+                        elif strict_budget:
+                            r, accounting = retrieve_with_cap(
+                                retrieve, budget, lambda ctx: text_tokens(ctx, tokenizer))
                         else:
-                            raise ValueError(f"Unknown mode: {mode}")
-
-                        # Lexical completeness grader: a second, model-free read on the
-                        # same retrieved context, alongside the evidence-id metric above.
-                        comp_lex = grade_context_completeness(
-                            ctx, _evidence_texts(sessions, q["evidence"]), answer=q["answer"])
-
-                        row = {
-                            "id": q["id"],
-                            "type": q["type"],
-                            "cluster_id": clusters[space],
-                            "question_sha256": question_digest(q),
-                            "unresolved_gold_turn_ids": sorted(turn_gold - {
-                                str(message["id"]) for _s, _d, messages in sessions for message in messages}),
-                            **source_ranking,
-                            "recall_latency_s": recall_elapsed if mode == "memory" else None,
-                            "effective_embedders": sorted(store._embedders),
-                            "effective_rerank": r.explain.get("rerank"),
-                            # Reference-mode ranking metrics are intentionally undefined.
-                            **(ranking_scores if mode == "memory" else {}),
-                            "tokens": toks,
-                            "evidence": ev,
-                            "complete": comp,
-                            "session": ses,
-                            "answer_in_context": ans_in_ctx,
-                            "confidence": conf,
-                            "rerank_top": rtop,
-                            "mode": mode,
-                            "completeness_bucket": comp_lex["bucket"],
-                            "completeness_score": comp_lex["score"],
-                            "completeness_present": comp_lex["present"],
-                            "completeness_missing": comp_lex["missing"],
+                            r, accounting = retrieve(budget), None
+                        elapsed = time.perf_counter() - t
+                        recall_seconds[budget] += elapsed
+                        kept = store.turns(r.turns).values()
+                        refs, sess = {tt.ref for tt in kept}, {tt.session for tt in kept}
+                        source_ranking = ranking_fields(r.ranked, store.turns(r.ranked), turn_gold, session_gold)
+                        ranking_scores = {
+                            level + "_" + metric: value
+                            for level in ("turn", "session")
+                            for metric, value in ranking_metrics(source_ranking["ranked_" + level + "_ids"],
+                                                                source_ranking["gold_" + level + "_ids"]).items()
                         }
-                        if "rubric" in q:
-                            row["rubric"] = q["rubric"]
-                        if args.answer:
-                            grade_info = grade_answer(
-                                question=q,
-                                context=ctx,
-                                now=now,
-                                ans_model=ans_model,
-                                j_model=j_model,
-                                judge_inst=judge_inst,
-                                cache=cache,
-                                cost_guard=cost_guard,
-                                explain=r.explain if mode == "memory" else None,
-                            )
-                            row.update(grade_info)
-                        rows_by_mode[mode][budget].append(row)
+                        mem_contexts[budget] = (r, refs, sess, elapsed, source_ranking, ranking_scores, accounting)
+
+                    for mode in modes:
+                        for budget in budgets:
+                            r, refs, sess, recall_elapsed, source_ranking, ranking_scores, accounting = mem_contexts[budget]
+                            context_accounting = accounting if mode == "memory" else None
+                            mem_context, n_tokens = r.context, r.tokens
+                            if mode == "memory":
+                                ctx = mem_context
+                                toks = n_tokens
+                                ev = (len(turn_gold & refs) / len(turn_gold)) if turn_gold else None
+                                comp = turn_gold <= refs if turn_gold else None
+                                ses = (len(set(session_gold) & sess) / len(session_gold)) if session_gold else None
+                                ans_in_ctx = answer_in(ctx, q["answer"])
+                                conf = r.explain.get("confidence")
+                                rtop = r.explain.get("rerank_top")
+                            elif mode in ("full-context", "budgeted-history"):
+                                if mode == "budgeted-history" and strict_budget:
+                                    def history(native_budget):
+                                        context, estimated = make_full_context(sessions, native_budget)
+                                        return Recall("", context, estimated, [], [], None, {})
+
+                                    h, context_accounting = retrieve_with_cap(
+                                        history, budget, lambda ctx: text_tokens(ctx, tokenizer))
+                                    ctx, toks = h.context, h.tokens
+                                else:
+                                    ctx, toks = make_full_context(sessions, None if mode == "full-context" else budget)
+                                ev = None
+                                comp = None
+                                ses = None
+                                ans_in_ctx = answer_in(ctx, q["answer"])
+                                conf = None
+                                rtop = None
+                            elif mode == "no-memory":
+                                ctx = ""
+                                toks = 0
+                                ev = None
+                                comp = None
+                                ses = None
+                                ans_in_ctx = False
+                                conf = None
+                                rtop = None
+                            else:
+                                raise ValueError(f"Unknown mode: {mode}")
+
+                            # Lexical completeness grader: a second, model-free read on the
+                            # same retrieved context, alongside the evidence-id metric above.
+                            comp_lex = grade_context_completeness(
+                                ctx, _evidence_texts(sessions, q["evidence"]), answer=q["answer"])
+
+                            row = {
+                                "id": q["id"],
+                                "type": q["type"],
+                                "cluster_id": clusters[space],
+                                "question_sha256": question_digest(q),
+                                "unresolved_gold_turn_ids": sorted(turn_gold - {
+                                    str(message["id"]) for _s, _d, messages in sessions for message in messages}),
+                                **source_ranking,
+                                "recall_latency_s": recall_elapsed if mode == "memory" else None,
+                                "effective_embedders": ([adapter.descriptor["embedder"]] if adapter is not None
+                                                           and "embedder" in adapter.descriptor else sorted(store._embedders)),
+                                "memory_adapter": memory_adapter,
+                                "effective_rerank": (r.explain.get("rerank")
+                                                     if "rerank_top" in r.explain else None),
+                                # Reference-mode ranking metrics are intentionally undefined.
+                                **(ranking_scores if mode == "memory" else {}),
+                                "tokens": toks,
+                                **({"context_budget": context_accounting} if strict_budget else {}),
+                                "context_text_tokens": (text_tokens(ctx, args.tokenizer)
+                                                        if getattr(args, "tokenizer", None) else None),
+                                "evidence": ev,
+                                "complete": comp,
+                                "session": ses,
+                                "answer_in_context": ans_in_ctx,
+                                "confidence": conf,
+                                "rerank_top": rtop,
+                                "mode": mode,
+                                "completeness_bucket": comp_lex["bucket"],
+                                "completeness_score": comp_lex["score"],
+                                "completeness_present": comp_lex["present"],
+                                "completeness_missing": comp_lex["missing"],
+                            }
+                            if "rubric" in q:
+                                row["rubric"] = q["rubric"]
+                            if args.answer:
+                                grade_info = grade_answer(
+                                    question=q,
+                                    context=ctx,
+                                    now=now,
+                                    ans_model=ans_model,
+                                    j_model=j_model,
+                                    judge_inst=judge_inst,
+                                    cache=cache,
+                                    cost_guard=cost_guard,
+                                    explain=r.explain if mode == "memory" else None,
+                                    output_limit=getattr(args, "max_output_tokens", 1536),
+                                    tokenizer=getattr(args, "tokenizer", None),
+                                )
+                                row.update(grade_info)
+                            rows_by_mode[mode][budget].append(row)
 
             if canonical_digest(store) != initial_canonical:
                 raise RuntimeError("canonical sources changed during measurement; discard this run")
 
-        if args.limit and args.dataset == "locomo" and len(rows_by_mode[modes[0]][budgets[0]]) >= args.limit:
-            break
 
     n = max(1, len(rows_by_mode[modes[0]][budgets[0]]))
     judge_info = {
@@ -810,6 +950,8 @@ def run(args) -> dict:
                 "memory_lift": lift,
                 "chunk_set": chunk_info,
             }
+    for summary in results.values():
+        summary["retrieval_profile"] = profile_config or {"profile": "commontrace", "model_artifacts": model_bindings}
     if getattr(args, "bootstrap", False):
         for summary in results.values():
             targets = summary.get("modes_detail", {summary["mode"]: summary})
@@ -819,8 +961,30 @@ def run(args) -> dict:
                 summary["bootstrap_95ci"] = targets[summary["mode"]]["bootstrap_95ci"]
     if product_digest(repository) != initial_product or adapter_digest(__file__) != provenance["adapter_sha256"]:
         raise RuntimeError("benchmark source changed during measurement; discard this run")
+    if any(model_artifact(name) != binding for name, binding in model_bindings.items()):
+        raise RuntimeError("retrieval model artifacts changed during measurement")
+    if dataset_digest(__file__) != provenance["harness_sha256"]:
+        raise RuntimeError("benchmark harness changed during measurement")
+    if dataset_digest(os.path.join(repository, "benchmarks", "vendor_adapters.py")) != provenance["vendor_adapters_sha256"]:
+        raise RuntimeError("vendor adapter changed during measurement")
+    if dataset_digest(os.path.join(repository, "benchmarks", "artifacts.py")) != provenance["artifacts_source_sha256"]:
+        raise RuntimeError("artifact binding code changed during measurement")
+    if strict_budget:
+        contract = provenance["evaluation"]["context_budget"]
+        if (dataset_digest(os.path.join(repository, "benchmarks", "context_budget.py")) != contract["helper_sha256"]
+                or dataset_digest(os.path.join(repository, "benchmarks", "requests.py")) != contract["counter_source_sha256"]
+                or text_counter_binding(tokenizer) != counter_binding):
+            raise RuntimeError("strict context budget implementation or counter changed during measurement")
+    if args.answer:
+        if dataset_digest(os.path.join(repository, "benchmarks", "requests.py")) != provenance["evaluation"]["bounded_requests_sha256"]:
+            raise RuntimeError("bounded completion source changed during measurement")
+        for summary in results.values():
+            summary["inference_accounting"] = cost_guard.snapshot()
     if dataset_digest(args.data) != provenance["dataset_sha256"]:
         raise RuntimeError("dataset changed during measurement; discard this run")
+    if (getattr(args, "question_exclusions", None)
+            and dataset_digest(args.question_exclusions) != fingerprint["question_exclusions_sha256"]):
+        raise RuntimeError("question exclusions changed during measurement")
     return results
 
 
@@ -838,6 +1002,10 @@ def summarize(rows, args, budget, ingest_s, recall_s, full_tokens, mode="memory"
             "session": _mean(r["session"] for r in rs),
             "answer_in_context": _mean(r["answer_in_context"] for r in rs),
             "tokens": _mean(r["tokens"] for r in rs),
+            "context_text_tokens": _mean(r.get("context_text_tokens") for r in rs),
+            "exact_budget_exceedances": (sum(r["context_text_tokens"] > budget for r in rs)
+                                         if rs and all(r.get("context_text_tokens") is not None for r in rs)
+                                         and mode in ("memory", "budgeted-history") else None),
             "unresolved_gold_turn_references": sum(len(r.get("unresolved_gold_turn_ids", [])) for r in rs),
             "recall_latency": _p50_p95([r.get("recall_latency_s") for r in rs]),
             "ranking": {
@@ -858,8 +1026,10 @@ def summarize(rows, args, budget, ingest_s, recall_s, full_tokens, mode="memory"
             b_dict["mean_score"] = _mean(r["score"] for r in scorable if r.get("score") is not None)
             b_dict["mean_context_tokens"] = _mean(r.get("context_tokens") for r in rs)
             b_dict["mean_answer_tokens_in"] = _mean(r.get("answer_tokens_in") for r in rs)
-            b_dict["answer_latency"] = _p50_p95([r.get("answer_latency_s") for r in rs])
-            b_dict["judge_latency"] = _p50_p95([r.get("judge_latency_s") for r in rs])
+            b_dict["answer_latency"] = _p50_p95([r.get("answer_latency_s") for r in rs if not r.get("answer_cache_hit")])
+            b_dict["judge_latency"] = _p50_p95([r.get("judge_latency_s") for r in rs if not r.get("judge_all_cached")])
+            b_dict["historical_cached_cost_usd"] = sum(r.get("historical_cached_cost_usd", 0) for r in rs)
+            b_dict["cache_hits"] = sum(c["cache_hit"] for r in rs for c in r.get("completion_calls", []))
             b_dict["total_cost_usd"] = round(
                 sum(r.get("answer_cost_usd", 0.0) + r.get("judge_cost_usd", 0.0) for r in rs), 4
             )
@@ -941,6 +1111,8 @@ def main(argv=None) -> int:
         help="store root, reused between runs so ingestion and embeddings are cached",
     )
     p.add_argument("--budget", default="1500", help="tokens; a comma list assembles each ranking at every budget")
+    p.add_argument("--memory-adapter", choices=PROFILES, default="commontrace",
+                   help="Optional local raw-source vendor profile (excludes managed APIs/LLM extraction)")
     p.add_argument("--embedder", default="auto", choices=("auto", "arctic-m", "minilm", "none"))
     p.add_argument("--rerank", default="auto", choices=("auto", "none", "cross-encoder", "cross-encoder-fast"))
     p.add_argument("--neighbours", type=int, default=1)
@@ -953,6 +1125,7 @@ def main(argv=None) -> int:
     p.add_argument("--profile-facts", type=int, default=4)
     p.add_argument("--limit", type=int, default=0)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--question-exclusions", help="JSON list of question IDs excluded before stratified sampling")
     p.add_argument("--answer", action="store_true", help="answer and judge with COMMONTRACE_LLM_*")
     p.add_argument(
         "--chunk-set",
@@ -986,8 +1159,12 @@ def main(argv=None) -> int:
         "--max-cost",
         type=float,
         default=None,
-        help="pre-flight check: maximum allowed estimated cost in USD; aborts before model calls if exceeded",
+        help="Reserve each bounded reader/judge request against this USD cap before dispatch; unknown charges abort.",
     )
+    p.add_argument("--max-output-tokens", type=int, default=1536, help="Per-call output cap; applies to reader and every judge call.")
+    p.add_argument("--tokenizer", default=None, help="Optional exact context text counting: tiktoken:<encoding-name>.")
+    p.add_argument("--strict-context-budget", action="store_true",
+                   help="Reassemble capped contexts until selected tokenizer text count fits; requires --tokenizer.")
     p.add_argument(
         "--cache-dir",
         default=None,

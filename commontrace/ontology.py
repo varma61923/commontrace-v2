@@ -58,6 +58,7 @@ class EntityType:
     name: str
     description: str = ""
     parent: str | None = None
+    schema: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -82,6 +83,39 @@ class Ontology:
     entity_aliases: dict[str, tuple[str, ...]] = field(default_factory=dict)
     strict: bool = False
     source: str = "built-in"
+
+    @classmethod
+    def from_json_schema(cls, schema: dict) -> Ontology:
+        """Import prescribed entity models without making Pydantic mandatory."""
+        definitions = schema.get("$defs", schema.get("definitions", {}))
+        if not definitions and schema.get("title"):
+            definitions = {schema["title"]: schema}
+        if not isinstance(definitions, dict) or not definitions:
+            raise OntologyError("ontology schema needs named object definitions")
+        base = cls.default()
+        base.source = "json-schema"
+        for name, spec in definitions.items():
+            if isinstance(spec, dict) and spec.get("type") == "object":
+                key = _key(name)
+                base.entity_types[key] = EntityType(key, str(spec.get("description", "")),
+                                                   schema={**spec, "$defs": definitions})
+        if schema.get("x-commontrace-relations"):
+            base = _from_mapping({"entity_types": base.to_dict()["entity_types"],
+                                  "relations": schema["x-commontrace-relations"]}, "json-schema")
+        return base
+
+    @classmethod
+    def from_models(cls, models: list) -> Ontology:
+        """Accept Pydantic v2/v1 models through their public JSON-schema API."""
+        definitions = {}
+        for model in models:
+            factory = getattr(model, "model_json_schema", None) or getattr(model, "schema", None)
+            if factory is None:
+                raise OntologyError("model does not expose a JSON schema")
+            schema = factory()
+            definitions[schema.get("title", model.__name__)] = schema
+            definitions.update(schema.get("$defs", schema.get("definitions", {})))
+        return cls.from_json_schema({"$defs": definitions})
 
     @classmethod
     def default(cls) -> Ontology:
@@ -164,7 +198,7 @@ class Ontology:
     def to_dict(self) -> dict:
         return {
             "source": self.source, "strict": self.strict,
-            "entity_types": {n: {"description": t.description, "parent": t.parent}
+            "entity_types": {n: {"description": t.description, "parent": t.parent, "schema": t.schema}
                              for n, t in sorted(self.entity_types.items())},
             "relations": {n: {"description": r.description, "domain": list(r.domain), "range": list(r.range),
                               "exclusive": r.exclusive, "symmetric": r.symmetric, "inverse": r.inverse}
@@ -183,7 +217,8 @@ def _from_mapping(data: dict, source: str) -> Ontology:
     for name, spec in (data.get("entity_types") or {}).items():
         spec = spec if isinstance(spec, dict) else {}
         base.entity_types[_key(name)] = EntityType(_key(name), str(spec.get("description", "")),
-                                                   _key(spec["parent"]) if spec.get("parent") else None)
+                                                   _key(spec["parent"]) if spec.get("parent") else None,
+                                                   spec.get("schema", {}))
     for name, spec in (data.get("relations") or {}).items():
         spec = spec if isinstance(spec, dict) else {}
         as_tuple = lambda v: tuple(_key(x) for x in ([v] if isinstance(v, str) else (v or ())))  # noqa: E731

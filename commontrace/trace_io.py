@@ -58,7 +58,8 @@ def write_new(
     from commontrace.commands.capture_cmd import _free_path, _id_suffix, _slugify
 
     clean, _ = memory_guard.sanitize_metadata(
-        {"title": title, "context": context, "solution": solution, "tags": tags, "extra": extra or {}},
+        {"title": title, "context": context, "solution": solution, "tags": tags,
+         "extra": extra or {}, "outcome": outcome},
         pii=memory_guard.privacy_redaction_enabled(),
     )
     title = clean["title"].strip()[:200] or "Trace"
@@ -66,6 +67,7 @@ def write_new(
     solution = clean["solution"].strip()
     tags = clean["tags"]
     extra = clean["extra"]
+    outcome = clean["outcome"]
     tid = trace_id or str(uuid.uuid4())
     tdir = paths.traces_dir(root)
     os.makedirs(tdir, exist_ok=True)
@@ -80,10 +82,23 @@ def write_new(
         [str(t).strip() for t in tags if str(t).strip()], "", outcome,
     )
     fm.update(extra or {})
+    from commontrace import memory_authority
+
     instance = {**fm, "context_text": context, "solution_text": solution}
     errors = validate.validate(instance, validate.load_schema("trace.schema.json"))
+    if fm.get("id") != tid:
+        errors.append("extra metadata cannot replace the trace identity")
+    if not isinstance(fm.get("extensions", {}), dict):
+        errors.append("extensions must be an object")
+    elif not isinstance(fm.get("extensions", {}).get("profile", {}), dict):
+        errors.append("extensions.profile must be an object")
     if errors:
         raise ValueError("invalid trace: " + "; ".join(errors))
+    profile = fm.setdefault("extensions", {}).setdefault("profile", {})
+    # The authenticated writer replaces any payload-supplied origin receipt.
+    profile["origin"] = memory_authority.bind(
+        root, memory_authority.trace_record(fm, context=context, solution=solution),
+        sources=fm.get("source_traces", []))
     out_path = _free_path(os.path.join(tdir, f"{date}_{_slugify(title)}_{suffix}.md"), tid)
     frontmatter_io.write(out_path, fm, templates.trace_body(context, solution))
     return out_path

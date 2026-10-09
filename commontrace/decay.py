@@ -7,6 +7,24 @@ from dataclasses import dataclass
 
 DEFAULT_HORIZON_DAYS = 180
 
+# Explicit type-conditioned half-lives; identity does not decay by default.
+HALF_LIVES_DAYS = {"identity": None, "preference": 365.0, "environment": 30.0,
+                   "temporary": 1.0, "procedure": 180.0, "general": 90.0}
+
+
+def perishability(memory_type: str, age_days: float, *, half_life_days: float | None = None) -> float:
+    """Ranking freshness in [0,1], independent of evidence or forgetting."""
+    import math
+
+    if not math.isfinite(age_days) or age_days < 0:
+        raise ValueError("age must be finite and nonnegative")
+    half_life = half_life_days if half_life_days is not None else HALF_LIVES_DAYS.get(memory_type, 90.0)
+    if half_life is None:
+        return 1.0
+    if not math.isfinite(half_life) or half_life <= 0:
+        raise ValueError("half-life must be positive and finite")
+    return math.exp(-math.log(2) * age_days / half_life)
+
 FRESH = "fresh"
 STALE = "stale"
 UNDATED = "undated"

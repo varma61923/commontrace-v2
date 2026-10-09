@@ -17,12 +17,14 @@ import pytest
 
 from benchmarks.cache import BenchmarkCache, CostGuard
 from benchmarks.conversation_bench import (
+    _get_llm_config,
     _p50_p95,
     grade_answer,
     make_full_context,
     summarize,
 )
 from benchmarks.judges import LoCoMoJudge
+from benchmarks.requests import benchmark_binding
 
 
 class TestMakeFullContext:
@@ -101,6 +103,7 @@ class TestGradeAnswerWithCache:
                 "Your hobby is rock climbing.",
                 {"input_tokens": 120, "output_tokens": 10},
                 cost_usd=0.0005,
+                binding=benchmark_binding(_get_llm_config("claude-sonnet-5")),
             )
 
             j_prompt = judge.format_prompt(
@@ -114,6 +117,7 @@ class TestGradeAnswerWithCache:
                 '{"label": "CORRECT"}',
                 {"input_tokens": 200, "output_tokens": 8},
                 cost_usd=0.0006,
+                binding=benchmark_binding(_get_llm_config("gpt-4o")),
             )
 
             res = grade_answer(
@@ -136,8 +140,10 @@ class TestGradeAnswerWithCache:
             assert res["answer_model"] == "claude-sonnet-5"
             assert res["answer_latency_s"] == 0.0  # cached
             assert res["judge_latency_s"] == 0.0  # cached
-            assert res["answer_cost_usd"] == 0.0005
-            assert res["judge_cost_usd"] == 0.0006
+            assert res["answer_cost_usd"] == 0.0
+            assert res["judge_cost_usd"] == 0.0
+            assert res["historical_cached_cost_usd"] == pytest.approx(0.0011)
+            assert cost_guard.total_cost_usd == 0
 
 
 class TestSummarizeAndProtocolExclusions:

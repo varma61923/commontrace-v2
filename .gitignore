@@ -4,6 +4,8 @@ memory/.cache/
 memory/*.jsonl
 # Private approval authority and durable local admission/revocation state.
 memory/.approval-key*
+memory/.origin-key
+.origin-ed25519-key
 memory/lesson_admissions.db*
 
 # Benchmark HTML / JSON reports (generated, not source)
@@ -59,3 +61,9 @@ htmlcov/
 # Disposable benchmark output and type-checker cache
 /benchmarks/results/
 .mypy_cache/
+
+# SDK build products
+sdk/rust/target/
+sdk/jvm/target/
+sdk/generated/
+coverage.xml

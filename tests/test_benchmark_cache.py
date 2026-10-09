@@ -4,6 +4,70 @@ import pytest
 from benchmarks.cache import BenchmarkCache, CostGuard, compute_cost_usd, get_price, prompt_hash
 
 
+def test_bound_cache_isolates_provider_account_endpoint_and_generation(tmp_path):
+    from dataclasses import replace
+
+    from benchmarks.cache import completion_binding
+    from commontrace.llm import Config
+
+    cache = BenchmarkCache(str(tmp_path))
+    config = Config("openai-compatible", "same-model", "private-credential", base_url="https://a.example/v1")
+    binding = completion_binding(config, generation={"temperature": 0, "max_tokens": 100})
+    cache.put(config.model, "same-prompt", "response-a", {}, 0, binding=binding)
+    assert cache.get(config.model, "same-prompt") is None
+    for candidate in (replace(config, base_url="https://b.example/v1"),
+                      replace(config, api_key="other-account"), replace(config, provider="anthropic"),
+                      replace(config, cache_namespace="other-tenant")):
+        other = completion_binding(candidate, generation={"temperature": 0, "max_tokens": 100})
+        assert cache.get(candidate.model, "same-prompt", binding=other) is None
+    assert cache.get(config.model, "same-prompt", binding=completion_binding(
+        config, generation={"temperature": 1, "max_tokens": 100})) is None
+    assert BenchmarkCache(str(tmp_path)).get(config.model, "same-prompt", binding=binding)[0] == "response-a"
+    persisted = (tmp_path / "llm_cache.sqlite3").read_bytes()
+    assert b"private-credential" not in persisted
+    assert b"https://a.example" not in persisted
+
+
+def test_unbound_v1_database_cannot_satisfy_new_lookup(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "llm_cache.sqlite3"
+    with sqlite3.connect(path) as db:
+        db.execute("CREATE TABLE completions (model TEXT, prompt_hash TEXT, response TEXT)")
+        db.execute("INSERT INTO completions VALUES (?, ?, ?)", ("model", prompt_hash("prompt"), "stale"))
+    assert BenchmarkCache(str(tmp_path)).get("model", "prompt") is None
+
+
+def test_ambient_cloud_auth_requires_explicit_account_namespace():
+    from benchmarks.cache import completion_binding
+    from commontrace.llm import Config
+
+    for provider in ("bedrock", "vertex"):
+        with pytest.raises(ValueError, match="CACHE_NAMESPACE"):
+            completion_binding(Config(provider, "model", ""))
+        assert completion_binding(Config(provider, "model", "", cache_namespace="account-a")) != completion_binding(
+            Config(provider, "model", "", cache_namespace="account-b"))
+
+
+def test_cached_offline_config_keeps_explicit_routing_namespace(monkeypatch):
+    from benchmarks.cache import completion_binding
+    from benchmarks.conversation_bench import _get_llm_config
+    from commontrace import llm
+
+    def unavailable():
+        raise llm.LLMUnavailable("no credentials")
+    monkeypatch.setattr(llm, "load_config", unavailable)
+    monkeypatch.setenv("COMMONTRACE_LLM_CACHE_NAMESPACE", "tenant-a")
+    monkeypatch.setenv("COMMONTRACE_LLM_REGION", "region-a")
+    monkeypatch.setenv("COMMONTRACE_LLM_PROJECT", "project-a")
+    config_a = _get_llm_config("model")
+    monkeypatch.setenv("COMMONTRACE_LLM_CACHE_NAMESPACE", "tenant-b")
+    config_b = _get_llm_config("model")
+    assert config_a.region == "region-a" and config_a.project == "project-a"
+    assert config_a.cache_namespace == "tenant-a"
+    assert completion_binding(config_a) != completion_binding(config_b)
+
+
 def test_prompt_hash():
     p1 = "What is the capital of France?"
     p2 = "What is the capital of France?"

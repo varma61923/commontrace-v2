@@ -54,17 +54,21 @@ class JsonLogFormatter(logging.Formatter):
                     payload[key] = value
                 except (TypeError, ValueError):
                     payload[key] = repr(value)
-        return json.dumps(payload, default=str)
+        from commontrace.telemetry import _safe_fields
+
+        return json.dumps(_safe_fields(payload), default=str)
 
 
 def configure_logging(level: str = "INFO") -> None:
-    handler = logging.StreamHandler()
-    handler.setFormatter(JsonLogFormatter())
+    from commontrace import telemetry
+
     root = logging.getLogger()
     for existing in list(root.handlers):
         root.removeHandler(existing)
-    root.addHandler(handler)
-    root.setLevel(level.upper())
+        existing.close()
+    telemetry.configure_logging("json", level, _logger_name="")
+    for handler in root.handlers:
+        handler.setFormatter(JsonLogFormatter())
 
 
 _MAX_CLIENT_REQUEST_ID_LEN = 128

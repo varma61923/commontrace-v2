@@ -7,6 +7,24 @@ from typing import Any
 EXPIRES_FIELD = "expires"
 
 
+def expiry_for_type(memory_type: str, *, valid_from: str | None = None,
+                    ttl_hours: float | None = None) -> str | None:
+    """An explicit temporary assertion expires automatically; stable facts do not.
+
+    This is a write-time default, not a retrospective rewrite of old records.
+    Unknown/general types require an explicit TTL rather than guessing retention.
+    """
+    import math
+
+    hours = ttl_hours if ttl_hours is not None else {"temporary": 24.0, "environment": 720.0}.get(memory_type)
+    if hours is None:
+        return None
+    if not math.isfinite(hours) or hours <= 0:
+        raise ValueError("TTL hours must be finite and positive")
+    start = _moment(valid_from)
+    return (start + datetime.timedelta(hours=hours)).isoformat()
+
+
 def parse_expiry(value: str | datetime.date | datetime.datetime) -> datetime.datetime:
     """Parse an ``expires``/``expires_at`` value into an aware UTC datetime."""
     if isinstance(value, datetime.datetime):
@@ -53,6 +71,22 @@ def lesson_is_expired(
         return _moment(as_of) >= parse_expiry(raw)
     except ValueError:
         return True
+
+
+def trace_is_live(trace: dict[str, Any], as_of=None) -> bool:
+    """Trace evidence shares expiry aliases and inclusive/exclusive validity gates."""
+    moment = _moment(as_of)
+    try:
+        for field in ("expires", "expires_at", "valid_until"):
+            value = trace.get(field)
+            if value is not None and value != "" and moment >= parse_expiry(value):
+                return False
+        start = trace.get("valid_from")
+        if start is not None and start != "" and moment < parse_expiry(start):
+            return False
+    except (ValueError, TypeError):
+        return False
+    return True
 
 
 def count_expired(

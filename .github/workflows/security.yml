@@ -1,0 +1,84 @@
+name: Supply chain and CodeQL
+on:
+  push:
+    paths: ['commontrace/**', 'hub/**', 'sdk/**', 'pyproject.toml', '.github/workflows/**']
+  pull_request:
+    paths: ['commontrace/**', 'hub/**', 'sdk/**', 'pyproject.toml', '.github/workflows/**']
+  schedule:
+    - cron: '23 4 * * 1'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: security-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  codeql:
+    name: CodeQL (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [python, javascript-typescript]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+          queries: security-extended
+      - uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2
+        with:
+          category: /language:${{ matrix.language }}
+  scorecard:
+    name: OpenSSF Scorecard
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc # v2.4.4
+        if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        with:
+          results_file: scorecard.json
+          results_format: json
+          publish_results: false
+      - name: Scan tracked branch files with checksum-pinned Scorecard
+        if: github.ref != format('refs/heads/{0}', github.event.repository.default_branch)
+        run: |
+          curl --fail --location --retry 3 --output "$RUNNER_TEMP/scorecard.tar.gz" \
+            https://github.com/ossf/scorecard/releases/download/v5.5.0/scorecard_5.5.0_linux_amd64.tar.gz
+          echo "83b90a05c1540ef1390db1cd5711e5fd04be9c1d8537fb84d39d02092d6a8dff  $RUNNER_TEMP/scorecard.tar.gz" | sha256sum --check
+          mkdir "$RUNNER_TEMP/scorecard-tool" "$RUNNER_TEMP/scorecard-source"
+          tar -xzf "$RUNNER_TEMP/scorecard.tar.gz" -C "$RUNNER_TEMP/scorecard-tool"
+          git archive HEAD | tar -x -C "$RUNNER_TEMP/scorecard-source"
+          "$RUNNER_TEMP/scorecard-tool/scorecard" --local="$RUNNER_TEMP/scorecard-source" \
+            --format=json --output=scorecard.json
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: scorecard-${{ github.sha }}
+          path: scorecard.json
+  sbom:
+    name: Python dependency SBOM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -e '.[dev,code,security,graph,vector-lance,vector-postgres,llm,otel]' cyclonedx-bom==7.5.0
+      - run: python -m cyclonedx_py environment --pyproject pyproject.toml --output-reproducible --of JSON -o sbom.json
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: python-sbom-${{ github.sha }}
+          path: sbom.json

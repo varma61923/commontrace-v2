@@ -40,6 +40,24 @@ cut from it. This is a young project with no long-term-support branch yet;
 if that changes, this section will say so and name which versions still get
 fixes.
 
+## Triage and AI-assisted reports
+
+Maintainers assess impact using CVSS alongside reachability, tenant isolation,
+credential exposure and exploit evidence. Critical authentication or cross-tenant
+failures take priority over lower-impact findings. Acknowledgement and patch dates
+are coordinated privately; this policy does not introduce a response-time SLA.
+
+AI-assisted reports are welcome when they include reproducible evidence. Disclose
+which tools generated a finding, remove real credentials and customer data, and
+validate the exploit independently before reporting. Generated claims alone do
+not establish a vulnerability or justify changing the security boundary.
+
+Memory authority binds the authenticated writer to immutable records. Summaries
+inherit the least authority of their sources; retrieved text cannot approve a
+tool action. Principal scopes, live-source admission and directive checks belong
+at the action boundary. Forgetting receipts attest local non-delivery and lineage
+revocation; they do not assert historical Git-byte or remote-replica erasure.
+
 ## What is, and is not, in scope
 
 **In scope**: anything that would let one organization's API key read,

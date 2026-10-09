@@ -94,6 +94,16 @@ class TestImageCarriesEveryImportedClientModule:
         )
 
 
+def _required_import_nodes(tree):
+    optional = set()
+    for block in ast.walk(tree):
+        if isinstance(block, ast.Try) and any(isinstance(h.type, ast.Name) and h.type.id == "ImportError"
+                                             for h in block.handlers):
+            for statement in block.body:
+                optional.update(ast.walk(statement))
+    return [node for node in ast.walk(tree) if isinstance(node, (ast.Import, ast.ImportFrom)) and node not in optional]
+
+
 class TestImportedModulesAreStdlibOnly:
     def test_no_shipped_client_module_needs_a_dependency_the_image_lacks(self):
         import sys
@@ -108,7 +118,7 @@ class TestImportedModulesAreStdlibOnly:
         for module in sorted(_allowlisted_modules()):
             path = REPO_ROOT / "commontrace" / f"{module}.py"
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-            for node in ast.walk(tree):
+            for node in _required_import_nodes(tree):
                 names = []
                 if isinstance(node, ast.Import):
                     names = [a.name.split(".")[0] for a in node.names]
@@ -120,6 +130,37 @@ class TestImportedModulesAreStdlibOnly:
                         f"{name!r}, which is neither stdlib nor in hub/requirements.txt. "
                         "The container would start and then fail on this import."
                     )
+
+
+def test_only_explicit_optional_import_guards_exempt_dependencies():
+    tree = ast.parse("import required\ntry:\n import optional\nexcept ImportError:\n import fallback\n"
+                     "try:\n import still_required\nexcept ValueError:\n pass\n")
+    assert {node.names[0].name for node in _required_import_nodes(tree)} == {
+        "required", "fallback", "still_required"}
+
+
+def test_image_telemetry_runs_with_no_optional_packages(tmp_path):
+    import json
+    import os
+    import shutil
+    import subprocess
+    import sys
+
+    package = tmp_path / "commontrace"
+    package.mkdir()
+    for name in ("__init__.py", "telemetry.py", "memory_guard.py", "paths.py"):
+        shutil.copyfile(REPO_ROOT / "commontrace" / name, package / name)
+    code = ("from commontrace import telemetry; import logging; "
+            "telemetry.configure_logging('json', 'INFO', log_file='private.jsonl'); "
+            "logging.getLogger('commontrace').info('Bearer fake-credential'); "
+            "assert not telemetry.status()['otel_installed']")
+    result = subprocess.run([sys.executable, "-S", "-c", code], cwd=tmp_path,
+                            env={**os.environ, "PYTHONPATH": str(tmp_path), "COMMONTRACE_OTEL": "1"},
+                            capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    row = json.loads((tmp_path / "private.jsonl").read_text())
+    assert "fake-credential" not in json.dumps(row)
+    assert row["level"] == "info"
 
 
 def test_packaged_theme_loads_without_installed_client_or_dependencies(tmp_path):

@@ -250,6 +250,10 @@ def run(args: argparse.Namespace) -> int:
             )
             return 1
 
+        from commontrace import memory_authority
+
+        fm.setdefault("extensions", {}).setdefault("profile", {})["origin"] = memory_authority.bind(
+            root, memory_authority.trace_record(fm, context=context, solution=solution))
         frontmatter.write(out_path, fm, body)
 
     print(f"[commontrace] captured trace {trace_id} -> {out_path}", file=sys.stderr)
