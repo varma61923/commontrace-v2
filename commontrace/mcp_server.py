@@ -1959,7 +1959,7 @@ def build_server(root: str, *, allow_approval: bool = True):
     async def conversation_recall(space: str, question: str, budget: int = 1500, now: str = "",
                                   sessions: list[str] | None = None, speakers: list[str] | None = None,
                                   since: str = "", until: str = "", ctx: Any = None,
-                                  context_strategy: str = "legacy") -> dict:
+                                  context_strategy: str = "legacy", adaptive_budget: bool = False) -> dict:
         """What was said that answers `question`: the matching turns with their neighbours,
         grouped by session with dates, within `budget` tokens, plus what the user has said
         about themselves when it bears on the question. Pass `now` when the question is
@@ -1968,6 +1968,9 @@ def build_server(root: str, *, allow_approval: bool = True):
         withheld and listed under explain.withheld.
         `context_strategy=coverage-v1` prioritizes distinct query facets within
         the same evidence budget; the default preserves existing ranking.
+        `adaptive_budget=true` treats `budget` as a floor and sizes it by the
+        question's shape (summaries, orderings, counts and lists get up to 3x,
+        capped at 12000); explain.budget reports what was used and why.
         """
         from commontrace.conversation import ConversationError, Options, Store, recall
 
@@ -1977,7 +1980,8 @@ def build_server(root: str, *, allow_approval: bool = True):
             return _err("budget must be a number of tokens")
 
         opts = Options(budget=budget, sessions=tuple(sessions or ()), speakers=tuple(speakers or ()),
-                       since=since or None, until=until or None, context_strategy=context_strategy)
+                       since=since or None, until=until or None, context_strategy=context_strategy,
+                       adaptive_budget=bool(adaptive_budget), max_budget=max(budget, 12_000))
 
         def _run():
             with Store(root, space, create=False) as store:

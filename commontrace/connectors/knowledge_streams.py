@@ -26,6 +26,9 @@ def _request(origin: str, token: str, fetch=None):
         if fetch is not None:
             raw = fetch(url)
         else:
+            from commontrace import offline
+
+            offline.check_url(url, "a knowledge stream")
             request = urllib.request.Request(url, headers={"Authorization": "Bearer "+token,
                                                           "Accept": "application/json"})
             with opener.open(request, timeout=30) as response:

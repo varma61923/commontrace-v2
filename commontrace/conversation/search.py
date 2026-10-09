@@ -6,6 +6,7 @@ each hit's neighbouring turns, then shown in the order things were said."""
 from __future__ import annotations
 
 import copy
+import dataclasses
 import datetime as dt
 import json
 import math
@@ -60,6 +61,8 @@ class Options:
     since: str | None = None
     until: str | None = None
     graph_hops: int | None = None  # None: adapt to relational clauses; 0 disables; maximum 2
+    adaptive_budget: bool = False  # True: scale `budget` by question shape (see budget_for), up to max_budget
+    max_budget: int = 12_000
     context_strategy: str = "legacy"  # coverage-v1 prioritizes marginal excerpt facets per quoted token
 
 
@@ -625,6 +628,46 @@ def _recall_key(store: Store, question: str, now, opts: Options,
     )
 
 
+AUTO_BUDGET_FACTORS = {"summary": 3.0, "ordering": 3.0, "counting": 3.0, "broad": 2.0,
+                       "multi-facet": 2.0, "list": 2.0, "focused": 1.0}
+_LIST_QUESTION = re.compile(
+    r"^\s*(?:what|which)\s+(?:(?:kinds?|types?|sorts?)\s+of\s+[a-z][a-z-]*"
+    r"|(?!(?:is|was|does|has|this|these|those|its)\b)[a-z][a-z-]{2,}s)\s+(?:do|does|did|has|have|had|are|were)\b"
+    r"|\b(?:both|in common|all of (?:the|my|his|her|their))\b"
+    r"|^\s*(?:what|which|where|who)\b[^?]*\b(?:has|have)\s+\w+\s+(?:\w+\s+)?(?:done|made|seen|visited|read|"
+    r"bought|tried|painted|attended|played|taken|used|owned|written|watched|met)\b", re.I)
+
+
+def budget_for(question: str, base: int, cap: int = 12_000) -> tuple[int, str]:
+    """A context budget sized to the question's shape, never below `base`.
+
+    A focused question ("where does Ana work?") keeps `base`. One that needs
+    coverage rather than the single best passage -- a summary, an order of events,
+    a count, a list across sessions, several facets at once -- gets a multiple of
+    it, capped at `cap`. Deterministic: the same question always gets the same size.
+    """
+    if not isinstance(base, int) or base <= 0:
+        raise ConversationError("budget must be a positive integer")
+    if not isinstance(cap, int) or cap < base:
+        raise ConversationError("max_budget must be an integer no smaller than budget")
+    q = question or ""
+    if _SUMMARY.search(q):
+        reason = "summary"
+    elif _ORDERING.search(q):
+        reason = "ordering"
+    elif _COUNTING.search(q) or gap_events(q):
+        reason = "counting"
+    elif is_broad(q):
+        reason = "broad"
+    elif len(subqueries(q)) > 2 or _RELATIONAL.search(q):
+        reason = "multi-facet"
+    elif _LIST_QUESTION.search(q):
+        reason = "list"
+    else:
+        reason = "focused"
+    return min(cap, int(base * AUTO_BUDGET_FACTORS[reason])), reason
+
+
 def recall(store: Store, question: str, *, now=None, options: Options | None = None,
            extra_queries: Sequence[str] = (), dense_candidates: DenseCandidates | None = None) -> Recall:
     """`extra_queries` are searched beside the question, each keeping its own best
@@ -632,7 +675,17 @@ def recall(store: Store, question: str, *, now=None, options: Options | None = N
 
     Repeat questions use a bounded LRU invalidated by local and external writes.
     Results are independent copies; closing the store releases its cached data.
+
+    With ``Options(adaptive_budget=True)`` the budget is resolved first by
+    `budget_for`; ``explain["budget"]`` records what was asked, used and why.
     """
+    if options is not None and options.adaptive_budget:
+        effective, reason = budget_for(question, options.budget, options.max_budget)
+        resolved = dataclasses.replace(options, budget=effective, adaptive_budget=False)
+        result = recall(store, question, now=now, options=resolved, extra_queries=extra_queries,
+                        dense_candidates=dense_candidates)
+        result.explain["budget"] = {"requested": options.budget, "effective": effective, "reason": reason}
+        return result
     from commontrace import telemetry
 
     if question and unicode_index.relevant(question):

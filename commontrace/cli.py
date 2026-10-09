@@ -108,6 +108,11 @@ def build_parser(only: str | None = None) -> argparse.ArgumentParser:
         "--version", action="version",
         version=f"commontrace {__version__} (protocol {PROTOCOL_VERSION})",
     )
+    parser.add_argument(
+        "--offline", action="store_true",
+        help="Air-gapped mode (first argument only): refuse non-loopback network calls and load "
+             "models from the local cache only. Same as COMMONTRACE_OFFLINE=1.",
+    )
     subparsers = parser.add_subparsers(dest="command", required=_MISSING_DEPENDENCY is None)
     clean_only = only.replace("-", "_") if isinstance(only, str) else None
     if clean_only in _COMMANDS:
@@ -155,6 +160,12 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if argv is None:
         argv = sys.argv[1:]
+    from commontrace import offline
+
+    if argv and argv[0] == "--offline":
+        argv = argv[1:]
+        offline.enable()
+    offline.apply_environment()
     answered = _from_worker(argv)
     if answered is not None:
         return answered

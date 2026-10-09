@@ -100,6 +100,9 @@ def sync(root: str, provider: str, resource: str, *, token: str, context: list[s
             raise ValueError("provider resource must be a tenant subdomain")
     base = host.format(resource=encoded)
     url = base+route.format(resource=encoded)
+    from commontrace import offline
+
+    offline.check_url(url, "the " + provider + " knowledge connector")
     key = hashlib.sha256((provider+"\0"+resource+"\0"+json.dumps(context)).encode()).hexdigest()
     statefile = os.path.join(paths.memory_dir(root), "connectors", "knowledge-"+key+".json")
     paths.enforce_boundary(root, statefile)

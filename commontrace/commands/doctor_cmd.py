@@ -296,6 +296,11 @@ def run(args: argparse.Namespace) -> int:
     else:
         print("  [info] telemetry: metrics in-process (gateway /v1/metrics); set COMMONTRACE_OTEL=1 or "
               "OTEL_EXPORTER_OTLP_ENDPOINT to export traces")
+    from commontrace import offline
+
+    if offline.enabled():
+        print("  [info] offline mode: non-loopback network calls are refused and models load from the "
+              "local cache only (COMMONTRACE_OFFLINE)")
 
     has_mem = os.path.isdir(paths.memory_dir(root))
     _check("memory/ store present", has_mem,

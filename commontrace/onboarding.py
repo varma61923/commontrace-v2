@@ -12,7 +12,7 @@ from commontrace import agent_registry, memory_authority, paths, trace_io
 
 
 def install(root: str, agent_id: str, *, repo: str | None = None, commits: int = 100,
-            rotate: bool = False) -> dict:
+            rotate: bool = False, labels: list[str] | None = None) -> dict:
     if not isinstance(commits, int) or isinstance(commits, bool) or not 0 <= commits <= 1000:
         raise ValueError("commits must be in 0..1000")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", agent_id or ""):
@@ -65,6 +65,7 @@ def install(root: str, agent_id: str, *, repo: str | None = None, commits: int =
     paths.safe_prepare_output_path(manifest_path)
     _jsonl.write_json(manifest_path, manifest)
     # All potentially failing filesystem/git work precedes credential issuance.
-    signup = agent_registry.rotate(root, agent_id) if exists else agent_registry.signup(root, agent_id)
+    signup = agent_registry.rotate(root, agent_id) if exists else \
+        agent_registry.signup(root, agent_id, labels=labels)
     # Never write the token into the plugin, git history or returned file paths.
     return {**signup, "traces_imported": captured, "skill_path": filename}

@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import socket
 import threading
 import time
@@ -49,6 +50,7 @@ MAX_TEXT_CHARS = 20_000
 MAX_ID_CHARS = 128
 MAX_SIGNALS = 16
 EVENTS_NAME = "gateway_events.jsonl"
+READY_MIN_FREE_BYTES = 64 * 1024 * 1024  # below this, durable writes are likely to fail mid-request
 CONFIG_NAME = "gateway.json"
 logger = logging.getLogger("commontrace.gateway")
 TOKEN_NAME = "gateway.token"
@@ -414,6 +416,10 @@ class Gateway:
                         lambda body, query, op=operation: self._control_operation(op, body),
                         summary="Governed memory " + operation + ".")
         self._route("GET", "/v1/health", self._health, summary="Liveness.", auth=False)
+        self._route("GET", "/v1/health/live", self._health_live,
+                    summary="Process liveness only; touches no storage.", auth=False)
+        self._route("GET", "/v1/health/ready", self._health_ready,
+                    summary="Readiness: store, schemas and free disk; 503 when not ready.", auth=False)
         self._route("GET", "/v1/capabilities", self._capabilities, summary="Tier and capability matrix.", auth=False)
         self._route("GET", "/v1/whoami", self._whoami, summary="Caller identity and scope.")
         self._route("POST", "/v1/resolve_tag", self._resolve_tag, request={
@@ -1055,6 +1061,37 @@ class Gateway:
             "tier": capabilities["tier"],
             "capabilities": capabilities,
         }
+
+    def _health_live(self, _body, _query) -> dict:
+        return {"ok": True, "status": "live", "version": __version__}
+
+    def _health_ready(self, _body, _query) -> Response:
+        """Each check names a cause, never a path or exception text, because this
+        route is unauthenticated and an orchestrator log travels further than the store."""
+        checks: dict[str, str] = {}
+        memory = paths.memory_dir(self.root)
+        if not os.path.isdir(memory):
+            checks["store"] = "missing"
+        elif not os.access(memory, os.R_OK | os.W_OK | os.X_OK):
+            checks["store"] = "not_writable"
+        else:
+            checks["store"] = "ok"
+        try:
+            from commontrace.validate import load_schema
+
+            load_schema("trace.schema.json")
+            load_schema("lesson.schema.json")
+            checks["schemas"] = "ok"
+        except Exception:  # noqa: BLE001 -- a readiness probe reports, it never raises
+            checks["schemas"] = "unavailable"
+        try:
+            free = shutil.disk_usage(memory if os.path.isdir(memory) else self.root).free
+            checks["disk"] = "ok" if free >= READY_MIN_FREE_BYTES else "low"
+        except OSError:
+            checks["disk"] = "unknown"
+        ready = all(value == "ok" for key, value in checks.items() if key != "disk") and checks["disk"] != "low"
+        return _json(200 if ready else 503, {"ok": ready, "status": "ready" if ready else "not_ready",
+                                             "checks": checks, "version": __version__})
 
     def _github_push(self, body, _query):
         from commontrace.connectors import knowledge_streams

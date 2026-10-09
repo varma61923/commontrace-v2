@@ -41,7 +41,11 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     r = sub.add_parser("recall", help="The turns that answer a question, as a dated, budgeted context.")
     r.add_argument("space", help=SPACE_HELP)
     r.add_argument("question")
-    r.add_argument("--budget", type=int, default=None, help="context size in tokens (default 1500)")
+    r.add_argument("--budget", type=_budget_arg, default=None,
+                   help="context size in tokens (default 1500), or 'auto' to size it by the question's shape "
+                        "(summaries, orderings, counts and lists get more; see --max-budget)")
+    r.add_argument("--max-budget", type=int, default=None,
+                   help="with --budget auto: the most an adaptive budget may grow to (default 12000)")
     r.add_argument("--now", default=None,
                    help="historical cutoff and reference time (default: the latest message, without a cutoff)")
     r.add_argument("--rerank", choices=("auto", "none", "cross-encoder", "cross-encoder-fast"), default="auto",
@@ -59,7 +63,8 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     q.add_argument("question")
     q.add_argument("--rounds", type=int, default=1,
                    help="up to 4: the model may ask for follow-up searches before answering")
-    q.add_argument("--budget", type=int, default=None)
+    q.add_argument("--budget", type=_budget_arg, default=None, help="tokens, or 'auto' (see recall)")
+    q.add_argument("--max-budget", type=int, default=None)
     q.add_argument("--now", default=None)
     q.add_argument("--context-strategy", choices=("legacy", "coverage-v1"), default="legacy")
     _filters(q)
@@ -139,6 +144,16 @@ def _filters(p) -> None:
     p.add_argument("--until", default=None, help="only messages said at or before this date")
 
 
+def _budget_arg(value: str):
+    """`--budget N` or `--budget auto` (adaptive, from the default 1500)."""
+    if value.strip().lower() == "auto":
+        return "auto"
+    try:
+        return int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("budget must be a number of tokens or 'auto'") from None
+
+
 def _options(args):
     from commontrace.conversation import Options
 
@@ -146,10 +161,19 @@ def _options(args):
                    embedder=None if getattr(args, "lexical", False) else "auto",
                    sessions=tuple(args.session), speakers=tuple(args.speaker), since=args.since, until=args.until,
                    context_strategy=getattr(args, "context_strategy", "legacy"))
-    if args.budget is not None:
+    if args.budget == "auto":
+        opts.adaptive_budget = True
+    elif args.budget is not None:
         if args.budget < 50:
             raise ValueError("--budget must be at least 50 tokens")
         opts.budget = args.budget
+    max_budget = getattr(args, "max_budget", None)
+    if max_budget is not None:
+        if args.budget != "auto":
+            raise ValueError("--max-budget only applies with --budget auto")
+        if not opts.budget <= max_budget <= 32_000:
+            raise ValueError("--max-budget must be between the base budget and 32000 tokens")
+        opts.max_budget = max_budget
     return opts
 
 

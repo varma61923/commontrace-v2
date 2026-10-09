@@ -166,6 +166,10 @@ def _post_json(url: str, headers: dict, payload: dict) -> dict:
 
     if not _is_http_url(url):
         raise LLMUnavailable(f"refusing a non-http(s) URL: {url!r}")
+    from commontrace import offline
+
+    if offline.enabled() and not offline.is_loopback(url):
+        raise LLMUnavailable("offline mode: hosted model providers are disabled (COMMONTRACE_OFFLINE)")
     body = json.dumps(payload).encode("utf-8")
     class NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, req, fp, code, msg, hdrs, newurl):

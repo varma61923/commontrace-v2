@@ -22,6 +22,9 @@ class MemoryClient:
     def _request(self, operation: str, payload: dict) -> dict:
         if not self.url:
             raise RuntimeError("HTTP URL not configured")
+        from commontrace import offline
+
+        offline.check_url(self.url, "the remote memory API")
         req = urllib.request.Request(self.url.rstrip("/") + "/v1/memory/" + operation,
                                      data=json.dumps(payload).encode(),
                                      headers={"Content-Type": "application/json",

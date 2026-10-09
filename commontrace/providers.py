@@ -37,6 +37,92 @@ LLMS = ProviderRegistry()
 LLM_CREDENTIALS: dict[str, bool] = {}
 EMBEDDERS = ProviderRegistry()
 VECTORS = ProviderRegistry()
+RERANKERS = ProviderRegistry()
+MMR_LAMBDA = 0.7
+
+
+def register_reranker(name: str, factory: Callable) -> None:
+    """Register trusted code: ``factory()`` returns ``reranker(task, ranked) -> ranked``.
+
+    The callable has the shape `commontrace.retrieval.apply_reranker` accepts, so a
+    registered name and a hand-built function are interchangeable at that seam.
+    """
+    RERANKERS.register(name, factory)
+
+
+def reranker(name: str):
+    """Resolve a reranker by name; built-ins are registered on first use."""
+    register_builtin_rerankers()
+    return RERANKERS.create(name)
+
+
+def _terms(text: str) -> set[str]:
+    return {w for w in re.findall(r"[a-z0-9]+", (text or "").lower()) if len(w) > 2}
+
+
+def mmr_reranker(lam: float = MMR_LAMBDA):
+    """Maximal marginal relevance over lesson descriptions and matched terms.
+
+    Dependency-free: relevance is the first-stage score scaled to [0, 1] and
+    redundancy is the highest Jaccard overlap with an already selected lesson.
+    Order is a pure function of the input, so ties keep first-stage order.
+    """
+    if not 0.0 <= lam <= 1.0:
+        raise ConfigurationError("MMR lambda must be between 0 and 1")
+
+    def rerank(task: str, ranked: list) -> list:
+        if len(ranked) < 3:
+            return list(ranked)
+        top = max((r.score for r in ranked), default=0.0) or 1.0
+        bags = [_terms(r.description) | {t.lower() for t in r.matched_terms} for r in ranked]
+        chosen: list[int] = []
+        remaining = list(range(len(ranked)))
+        while remaining:
+            def value(i: int) -> float:
+                overlap = max((len(bags[i] & bags[j]) / (len(bags[i] | bags[j]) or 1) for j in chosen), default=0.0)
+                return lam * (ranked[i].score / top) - (1.0 - lam) * overlap
+            best = max(remaining, key=lambda i: (value(i), -i))
+            chosen.append(best)
+            remaining.remove(best)
+        return [ranked[i] for i in chosen]
+
+    return rerank
+
+
+def cross_encoder_reranker(mode: str = "cross-encoder"):
+    """Second-stage cross-encoder over each lesson's full text (attention extra)."""
+    from commontrace import frontmatter, rerank_arm
+
+    if mode not in rerank_arm.MODELS:
+        raise ConfigurationError("unknown cross-encoder mode")
+    if not rerank_arm.available():
+        raise CapabilityError("cross-encoder reranking needs the attention extra")
+
+    def rerank(task: str, ranked: list) -> list:
+        if len(ranked) < 2:
+            return list(ranked)
+        path_of = {r.slug: r.path for r in ranked}
+        text_of = rerank_arm.texts([r.slug for r in ranked], path_of, frontmatter.read)
+        page, _unused = rerank_arm.rerank(task, [r.slug for r in ranked], text_of, len(ranked), mode=mode)
+        order = {slug: i for i, (slug, _score) in enumerate(page)}
+        # Lessons the model could not read keep their first-stage order, after the scored ones.
+        return sorted(ranked, key=lambda r: (order.get(r.slug, len(order)), ranked.index(r)))
+
+    return rerank
+
+
+def register_builtin_rerankers() -> None:
+    with _RERANK_LOCK:
+        if _RERANK_REGISTERED[0]:
+            return
+        RERANKERS.register("mmr", mmr_reranker)
+        RERANKERS.register("cross-encoder", lambda: cross_encoder_reranker("cross-encoder"))
+        RERANKERS.register("cross-encoder-fast", lambda: cross_encoder_reranker("cross-encoder-fast"))
+        _RERANK_REGISTERED[0] = True
+
+
+_RERANK_LOCK = threading.Lock()
+_RERANK_REGISTERED = [False]
 
 
 def register_llm(name: str, complete: Callable, *, requires_api_key: bool = False) -> None:

@@ -50,6 +50,9 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     p.add_argument("--dest", default=".", help="Directory to scaffold into (default: current directory)")
     p.add_argument("--agent", nargs="?", const="new", help="Mint a scoped local agent key after initialization.")
+    p.add_argument("--agent-caller", default=None, metavar="NAME",
+                   help="With --agent: which assistant is signing up (e.g. claude-code). Names a new "
+                        "agent '<NAME>-<random>' and records the scope 'caller:<NAME>'. The key prints once.")
     p.set_defaults(func=run)
 
 
@@ -200,14 +203,27 @@ def run(args: argparse.Namespace) -> int:
             print(f"  `commontrace function forecast {kit.key} --daily <occasions per day>` "
                   "says how long a verdict takes at your volume.")
 
+    if getattr(args, "agent_caller", None) and not getattr(args, "agent", None):
+        args.agent = "new"  # naming the caller is asking for a new agent key
     if getattr(args, "agent", None):
         import json
+        import re
         import uuid
 
         from commontrace import onboarding
 
-        agent_id = "agent-"+uuid.uuid4().hex[:12] if args.agent == "new" else args.agent
-        result = onboarding.install(root, agent_id, commits=0)
+        caller = getattr(args, "agent_caller", None)
+        if caller is not None and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,40}", caller):
+            print("[commontrace] --agent-caller must be 1-41 letters, digits, '.', '_' or '-'.", file=sys.stderr)
+            return 2
+        prefix = caller or "agent"
+        agent_id = prefix+"-"+uuid.uuid4().hex[:12] if args.agent == "new" else args.agent
+        try:
+            result = onboarding.install(root, agent_id, commits=0,
+                                        labels=["caller:" + caller] if caller else None)
+        except ValueError as exc:
+            print(f"[commontrace] --agent refused: {exc}", file=sys.stderr)
+            return 2
         print(json.dumps(result))
 
     if getattr(args, "git", False):
