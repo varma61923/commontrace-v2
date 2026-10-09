@@ -62,3 +62,17 @@ def test_cli_flag_sets_model_hub_cache_only_switches(tmp_path, monkeypatch):
     assert main(["--offline", "init", "--dest", str(tmp_path)]) == 0
     assert offline.status() == {"offline": True, "model_hub_cache_only": True}
     assert all(os.environ[name] == "1" for name in offline.MODEL_HUB_SWITCHES)
+
+
+def test_hub_api_key_can_come_from_a_mounted_file(tmp_path, monkeypatch):
+    import argparse
+
+    from commontrace.commands._format import resolve_hub
+
+    secret = tmp_path / "hub_key"
+    secret.write_text("ct_from_file\n")
+    monkeypatch.delenv("COMMONTRACE_HUB_API_KEY", raising=False)
+    monkeypatch.setenv("COMMONTRACE_HUB_API_KEY_FILE", str(secret))
+    monkeypatch.setenv("COMMONTRACE_HUB_URL", "https://hub.example.com/mcp")
+    resolved = resolve_hub(argparse.Namespace(hub_url=None, hub_api_key=None))
+    assert resolved == ("https://hub.example.com/mcp", "ct_from_file")

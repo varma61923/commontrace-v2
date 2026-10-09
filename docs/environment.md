@@ -27,7 +27,8 @@ Dynamic provider prefixes and test-only variables are described in the relevant 
 | `COMMONTRACE_FACT_EMBEDDER_PATH` | [commontrace/fact_embeddings.py:16](../commontrace/fact_embeddings.py#L16) |
 | `COMMONTRACE_GLINER_MODEL_PATH` | [commontrace/gateway.py:763](../commontrace/gateway.py#L763) |
 | `COMMONTRACE_HANDOFF_KEY` | [commontrace/memfs.py:291](../commontrace/memfs.py#L291) |
-| `COMMONTRACE_HUB_API_KEY` | [commontrace/commands/_format.py:12](../commontrace/commands/_format.py#L12) |
+| `COMMONTRACE_HUB_API_KEY` | [commontrace/commands/_format.py:17](../commontrace/commands/_format.py#L17) |
+| `COMMONTRACE_HUB_API_KEY_FILE` | [commontrace/commands/_format.py:17](../commontrace/commands/_format.py#L17) |
 | `COMMONTRACE_HUB_URL` | [commontrace/commands/_format.py:11](../commontrace/commands/_format.py#L11) |
 | `COMMONTRACE_JOBS_SECONDS` | [commontrace/daemon.py:210](../commontrace/daemon.py#L210) |
 | `COMMONTRACE_LLM_API_KEY` | [commontrace/commands/agent_cmd.py:56](../commontrace/commands/agent_cmd.py#L56) |
