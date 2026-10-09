@@ -80,7 +80,7 @@ Legend: **Done** · **Done (this pass)** (added or fixed in this audit) ·
 | Tiered tests, 80% coverage gate, Makefile | **Done** | `pyproject.toml`, `Makefile`, CI |
 | `_FILE` secrets | **Done**; Hub client API key now honours it **(this pass)** | `secrets_provider.py` |
 | Rate-limit auto-detection | **Done** | `overload.py` |
-| CI path filtering | **Partial**: security workflow is path-filtered; main CI runs everything on purpose so generated-doc and benchmark gates cannot be skipped | - |
+| CI path filtering | **Done (this pass)**: a `changes` job classifies the diff; documentation-only changes skip the 13 expensive jobs (SDK builds, images, compose stack, optional engines, perf and quality gates). Core, dev, Hub, coverage, security and deploy-asset jobs always run, since tests read the docs; unknown history never skips | `scripts/ci_changes.py`, `.github/workflows/ci.yml` |
 
 ### Benchmark recommendations
 

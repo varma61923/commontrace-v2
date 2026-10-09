@@ -12,6 +12,24 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    # Documentation-only changes skip the expensive builds below. Core, dev, Hub,
+    # coverage, security and deploy-asset jobs always run: some of their tests
+    # read the docs, and generated references are checked there.
+    name: classify changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.classify.outputs.code }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - id: classify
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.sha }}
+        run: python3 scripts/ci_changes.py "$BASE" "$HEAD" >> "$GITHUB_OUTPUT"
+
   test-core:
     name: test (core install, py${{ matrix.python-version }})
     runs-on: ubuntu-latest
@@ -53,6 +71,8 @@ jobs:
         run: python -m benchmarks.fact_mutation --facts 100 --trials 1
 
   test-browser:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     name: console browser contracts (Chromium)
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -109,6 +129,8 @@ jobs:
         run: python -m pytest hub/tests/test_image_contents.py -q --noconftest
 
   perf-gate:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     name: perf gate (local-tier retrieval latency)
     runs-on: ubuntu-latest
     steps:
@@ -145,6 +167,8 @@ jobs:
             --cov-report=term-missing -q
 
   conversation-quality:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     name: conversation quality (paired public sample)
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -229,6 +253,8 @@ jobs:
             --candidate "$RUNNER_TEMP/candidate.json" --check --seed 61923
 
   sdk-typescript:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     name: sdk (typescript)
     runs-on: ubuntu-latest
     defaults:
@@ -259,6 +285,8 @@ jobs:
         run: node ../../tests/test_typescript_frameworks.mjs
 
   test-vector-engines:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     name: vector engines (SQLite + pgvector, py${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
@@ -469,6 +497,8 @@ jobs:
           done
 
   docker-build:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     name: docker image builds and starts
     runs-on: ubuntu-latest
     steps:
@@ -530,6 +560,8 @@ jobs:
         run: docker rm -f hub-ci local-ci || true
 
   compose-stack:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     name: docker compose stack serves real MCP traffic
     runs-on: ubuntu-latest
     steps:
@@ -680,6 +712,8 @@ jobs:
         run: docker compose down -v
 
   sdk-go:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     name: sdk (go)
     runs-on: ubuntu-latest
     steps:
@@ -692,6 +726,8 @@ jobs:
         working-directory: sdk/go
 
   test-graph-lance:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     name: optional memory engines (Neo4j, FalkorDB, LanceDB)
     runs-on: ubuntu-latest
     services:
@@ -725,6 +761,8 @@ jobs:
       - run: python -m pytest tests/test_optional_memory_backends.py -q
 
   sdk-rust:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     name: sdk (rust)
     runs-on: ubuntu-latest
     container: rust:1.91-slim
@@ -734,6 +772,8 @@ jobs:
         working-directory: sdk/rust
 
   sdk-jvm:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     name: sdk (java + kotlin)
     runs-on: ubuntu-latest
     steps:
@@ -746,6 +786,8 @@ jobs:
         working-directory: sdk/jvm
 
   test-new-frameworks:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     name: native framework tools (Google ADK, Strands, AG2)
     runs-on: ubuntu-latest
     steps:
@@ -757,6 +799,8 @@ jobs:
       - run: python -m pytest tests/test_new_framework_sdks.py -q
 
   generated-sdks:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     name: OpenAPI generated SDK (${{ matrix.language }})
     runs-on: ubuntu-latest
     strategy:
