@@ -56,6 +56,14 @@ async def run(dsn: str, *, n: int, dim: int, queries: int, top_k: int, clusters:
     report: dict = {"benchmark": "vector-scale", "n": n, "dim": dim, "queries": queries, "top_k": top_k,
                     "clusters": clusters, "spread": spread, "seed": seed, "cpu_count": os.cpu_count()}
     try:
+        digest = hashlib.sha256(str(dim).encode()).hexdigest()[:16]
+        connection = await asyncpg.connect(dsn)
+        try:
+            if await connection.fetchval("SELECT to_regclass($1)", f"commontrace_vectors_hnsw_{digest}"):
+                raise RuntimeError(f"an HNSW index for dimension {dim} already exists; loading would insert into "
+                                   "it row by row instead of building it in bulk. Use a fresh database.")
+        finally:
+            await connection.close()
         started = time.perf_counter()
         sample = []
         for start in range(0, n, batch):
@@ -70,7 +78,6 @@ async def run(dsn: str, *, n: int, dim: int, queries: int, top_k: int, clusters:
         try:
             await connection.execute("SET maintenance_work_mem='3GB'")
             await connection.execute(f"SET max_parallel_maintenance_workers={max(0, (os.cpu_count() or 1) - 1)}")
-            digest = hashlib.sha256(str(dim).encode()).hexdigest()[:16]
             started = time.perf_counter()
             # The DDL PostgresVectorIndex.open(approximate=True) declares, built in bulk after loading.
             await connection.execute(
