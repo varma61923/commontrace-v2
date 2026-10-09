@@ -175,3 +175,18 @@ def test_cli_round_trip(market, tmp_path, capsys):
                      "--dest", other]) == 0
     card_path.write_text(capsys.readouterr().out)
     assert cli.main(["market", "trust", str(card_path), "--role", "publisher", "--dest", buyer]) == 0
+
+
+def test_a_signed_but_schema_invalid_lesson_is_refused(market, tmp_path):
+    from commontrace import market_listing, origin
+
+    pub = market["ids"]["pub"]
+    record = json.loads(json.dumps(market["listing"]["record"]))
+    del record["lesson"]["frontmatter"]["applies_when"]
+    record["lesson"]["frontmatter"]["importance"] = 9
+    record["lesson_sha256"] = market_listing.lesson_digest(record["lesson"])
+    resigned = origin.bind(record, pub)  # a real publisher signing a malformed lesson
+    report = marketplace.verify(resigned, marketplace.load_trust(market["buyer"]))
+    assert not report["ok"]
+    assert any("lacks applies_when" in p for p in report["problems"])
+    assert any("importance" in p for p in report["problems"])

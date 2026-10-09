@@ -27,6 +27,22 @@ class MarketError(ValueError):
     pass
 
 
+def _lesson_problems(fm: dict) -> list[str]:
+    """The lesson schema's constraints on the portable keys, without loading the schema file."""
+    problems = [f"the listed lesson lacks {k}" for k in PORTABLE_KEYS if k not in fm]
+    for key in ("name", "description", "agent_type", "domain", "importance_rationale",
+                "applies_when", "do_not_apply_when"):
+        if key in fm and (not isinstance(fm[key], str) or not fm[key].strip()):
+            problems.append(f"the listed lesson's {key} must be non-empty text")
+    if "tags" in fm and (not isinstance(fm["tags"], list) or not all(isinstance(t, str) for t in fm["tags"])):
+        problems.append("the listed lesson's tags must be a list of text")
+    importance = fm.get("importance")
+    if "importance" in fm and (isinstance(importance, bool) or not isinstance(importance, int)
+                               or not 1 <= importance <= 5):
+        problems.append("the listed lesson's importance must be an integer from 1 to 5")
+    return problems
+
+
 def lesson_digest(portable: dict) -> str:
     return hashlib.sha256(origin._bytes(portable)).hexdigest()
 
@@ -100,6 +116,7 @@ def verify(listing: dict, trusted: dict[str, dict[str, origin.Principal]]) -> di
             or set(portable["frontmatter"]) - set(PORTABLE_KEYS)):
         problems.append("the listed lesson is malformed")
         return {"ok": False, "problems": problems, "lift": None}
+    problems += _lesson_problems(portable["frontmatter"])
     digest = lesson_digest(portable)
     if record.get("lesson_sha256") != digest:
         problems.append("the lesson text does not match its digest")
