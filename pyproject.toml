@@ -20,7 +20,7 @@ ontology = [
     "jsonschema>=4.23,<5.0",
 ]
 security = [
-    "cryptography>=44,<47",
+    "cryptography>=50.0.2,<51",
 ]
 extraction = [
     "gliner>=0.2,<1.0",

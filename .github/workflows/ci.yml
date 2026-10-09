@@ -207,8 +207,7 @@ jobs:
           git fetch --no-tags --depth=1 origin "$REFERENCE_SHA"
           git worktree add --detach "$RUNNER_TEMP/measurement-reference" "$REFERENCE_SHA"
           # Both product revisions use this same corrected evaluation harness.
-          cp benchmarks/conversation_bench.py benchmarks/compare.py benchmarks/measurement.py \
-            "$RUNNER_TEMP/measurement-reference/benchmarks/"
+          cp benchmarks/*.py "$RUNNER_TEMP/measurement-reference/benchmarks/"
 
       - name: Require no statistically supported retrieval regression
         run: |

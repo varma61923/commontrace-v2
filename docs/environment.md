@@ -8,6 +8,7 @@ Dynamic provider prefixes and test-only variables are described in the relevant 
 
 | Name | First source reference |
 | --- | --- |
+| `COMMONTRACE_AGENT_TOKEN` | [commontrace/agent_registry.py:87](../commontrace/agent_registry.py#L87) |
 | `COMMONTRACE_ALLOW_STORE_SCRIPTS` | [commontrace/commands/_shellout.py:25](../commontrace/commands/_shellout.py#L25) |
 | `COMMONTRACE_APPROVAL_KEY` | [commontrace/lesson_admission.py:134](../commontrace/lesson_admission.py#L134) |
 | `COMMONTRACE_APPROVAL_KEY_FILE` | [commontrace/lesson_admission.py:9](../commontrace/lesson_admission.py#L9) |
@@ -23,7 +24,9 @@ Dynamic provider prefixes and test-only variables are described in the relevant 
 | `COMMONTRACE_CONVERSATION_EMBEDDER` | [commontrace/commands/conversation_cmd.py:35](../commontrace/commands/conversation_cmd.py#L35) |
 | `COMMONTRACE_DEFAULT_FUSION` | [commontrace/retrieval_io.py:33](../commontrace/retrieval_io.py#L33) |
 | `COMMONTRACE_DEFAULT_RERANK` | [commontrace/retrieval_io.py:30](../commontrace/retrieval_io.py#L30) |
-| `COMMONTRACE_HANDOFF_KEY` | [commontrace/memfs.py:285](../commontrace/memfs.py#L285) |
+| `COMMONTRACE_FACT_EMBEDDER_PATH` | [commontrace/fact_embeddings.py:16](../commontrace/fact_embeddings.py#L16) |
+| `COMMONTRACE_GLINER_MODEL_PATH` | [commontrace/gateway.py:734](../commontrace/gateway.py#L734) |
+| `COMMONTRACE_HANDOFF_KEY` | [commontrace/memfs.py:290](../commontrace/memfs.py#L290) |
 | `COMMONTRACE_HUB_API_KEY` | [commontrace/commands/_format.py:12](../commontrace/commands/_format.py#L12) |
 | `COMMONTRACE_HUB_URL` | [commontrace/commands/_format.py:11](../commontrace/commands/_format.py#L11) |
 | `COMMONTRACE_JOBS_SECONDS` | [commontrace/daemon.py:210](../commontrace/daemon.py#L210) |
@@ -34,7 +37,7 @@ Dynamic provider prefixes and test-only variables are described in the relevant 
 | `COMMONTRACE_LLM_CACHE_PATH` | [commontrace/llm_cache.py:24](../commontrace/llm_cache.py#L24) |
 | `COMMONTRACE_LLM_CIRCUIT_BREAKER` | [commontrace/llm.py:49](../commontrace/llm.py#L49) |
 | `COMMONTRACE_LLM_MODEL` | [commontrace/llm.py:98](../commontrace/llm.py#L98) |
-| `COMMONTRACE_LLM_PRICES` | [commontrace/llm.py:449](../commontrace/llm.py#L449) |
+| `COMMONTRACE_LLM_PRICES` | [commontrace/llm.py:454](../commontrace/llm.py#L454) |
 | `COMMONTRACE_LLM_PROJECT` | [commontrace/llm.py:105](../commontrace/llm.py#L105) |
 | `COMMONTRACE_LLM_PROVIDER` | [commontrace/commands/agent_cmd.py:56](../commontrace/commands/agent_cmd.py#L56) |
 | `COMMONTRACE_LLM_REGION` | [commontrace/llm.py:102](../commontrace/llm.py#L102) |
