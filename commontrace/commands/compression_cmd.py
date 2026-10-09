@@ -28,6 +28,9 @@ def add_parser(subparsers):
             child.add_argument("--trials", type=int, default=300)
         if name == "outcome":
             child.add_argument("value", type=float)
+        if name == "export-training":
+            child.add_argument("--format", choices=("sft", "dpo"), default="sft",
+                               help="sft: admitted texts; dpo: preference pairs from decisive randomized trials")
         if name == "review":
             child.add_argument("--experiment", required=True)
             child.add_argument("--actor", required=True)
@@ -55,6 +58,8 @@ def run(args):
                                         expected_revision=args.expected_revision)
         elif op == "active":
             result = compression.active(root)
+        elif getattr(args, "format", "sft") == "dpo":
+            result = compression.export_preferences(root)
         else:
             result = compression.export_training(root)
         print(json.dumps(result, indent=2, ensure_ascii=False))

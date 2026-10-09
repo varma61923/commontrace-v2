@@ -218,3 +218,43 @@ def export_training(root: str, *, context: list[str] | None = None) -> dict:
     examples = [{"prompt": r["data"]["applies_when"], "chosen": r["text"],
                  "sources": r["data"]["sources"], "experiment": r["data"]["experiment"]} for r in rows]
     return {"format": "evidence-linked-sft", "examples": examples, "training_performed": False}
+
+
+def export_preferences(root: str, *, context: list[str] | None = None) -> dict:
+    """DPO-style (prompt, chosen, rejected) pairs, each backed by a randomized comparison.
+
+    Every registered compression trial randomizes a candidate against its
+    adjacent parent and the raw source evidence. Where an arm comparison is
+    decisive (its interval excludes zero), the better text is ``chosen`` and the
+    worse ``rejected``, with the measured effect attached. Undecided
+    comparisons yield nothing: a preference the evidence does not support is
+    noise in a training set. Records or sources that were forgotten are left
+    out. No training is performed.
+    """
+    pairs = []
+    rows = {r["id"]: r for r in memory_control.records(root, "compression")}
+    for experiment in (r for r in _events(root) if r["event"] == "register"):
+        row = rows.get(experiment["proposal_id"])
+        if row is None or memory_authority.lineage_blocked(root, row["id"]) or any(
+                memory_authority.lineage_blocked(root, sid) for sid in row["data"]["sources"]):
+            continue
+        if context is not None and not memory_control.matches(row["scopes"], context):
+            continue
+        report = evaluate(root, experiment["id"])
+        for arm, comparison in (report.get("comparisons") or {}).items():
+            if comparison["ci_low"] > 0:
+                chosen, rejected = experiment["contexts"]["candidate"], experiment["contexts"][arm]
+            elif comparison["ci_high"] < 0:
+                chosen, rejected = experiment["contexts"][arm], experiment["contexts"]["candidate"]
+            else:
+                continue
+            if chosen == rejected:
+                continue
+            pairs.append({
+                "prompt": row["data"]["applies_when"], "chosen": chosen, "rejected": rejected,
+                "evidence": {"experiment": experiment["id"], "proposal": row["id"], "level": row["data"]["level"],
+                             "against": arm, "effect": comparison["effect"],
+                             "ci": [comparison["ci_low"], comparison["ci_high"]],
+                             "counts": report.get("counts"), "interval": report.get("interval"),
+                             "randomized": True}})
+    return {"format": "evidence-linked-dpo", "pairs": pairs, "training_performed": False}
