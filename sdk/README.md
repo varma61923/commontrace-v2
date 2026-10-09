@@ -19,7 +19,7 @@ every language and provides source packages as artifacts.
 
 | Language | Generated package | Build |
 | --- | --- | --- |
-| TypeScript | `sdk/generated/typescript` | `npm install` |
+| TypeScript | `sdk/generated/typescript` | `npm install && npm run build` |
 | Go | `sdk/generated/go` | `go test ./...` |
 | Rust | `sdk/generated/rust` | `cargo check` |
 | Java | `sdk/generated/java` | `mvn -B -DskipTests package` |
