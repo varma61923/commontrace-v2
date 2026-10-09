@@ -987,7 +987,8 @@ def run_edit(args: argparse.Namespace) -> int:
     with open(path, encoding="utf-8") as fh:
         original = fh.read()
     editor = args.editor or os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
-    fd, draft = tempfile.mkstemp(prefix="lesson-edit-", suffix=".md", dir=paths.memory_dir(root))
+    # A private (0600) file outside the store, so no store scanner ever sees the draft.
+    fd, draft = tempfile.mkstemp(prefix="commontrace-lesson-edit-", suffix=".md")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(original)

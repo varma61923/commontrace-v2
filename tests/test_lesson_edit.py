@@ -89,5 +89,7 @@ def test_failed_editor_and_missing_lesson(tmp_path, capsys):
     root = _store(tmp_path)
     assert main(["lesson", "edit", "edit_me", "--dest", root, "--editor", f"{sys.executable} -c 'import sys; sys.exit(3)'"]) == 1
     assert main(["lesson", "edit", "nope", "--dest", root, "--editor", "true"]) == 1
-    leftovers = [n for n in os.listdir(os.path.join(root, "memory")) if n.startswith("lesson-edit-")]
-    assert leftovers == []
+    import tempfile
+
+    assert not [n for n in os.listdir(tempfile.gettempdir()) if n.startswith("commontrace-lesson-edit-")]
+    assert not [n for n in os.listdir(os.path.join(root, "memory")) if "edit" in n]
