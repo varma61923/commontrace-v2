@@ -505,9 +505,29 @@ jobs:
           test "$code" = "503" || { echo "expected 503 from /readyz, got $code"; exit 1; }
           echo "readyz correctly reports 503 with no database"
 
+      - name: Build the local runtime image (CLI, gateway, MCP)
+        run: docker build -f Dockerfile.local -t commontrace-local:ci .
+
+      - name: Scan the local image for critical vulnerabilities (Trivy)
+        run: |
+          TRIVY=aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock "$TRIVY" \
+            image --scanners vuln --ignore-unfixed --severity CRITICAL --exit-code 1 \
+            --no-progress commontrace-local:ci
+
+      - name: Local gateway starts read-only and reports ready
+        run: |
+          docker run -d --name local-ci --read-only --tmpfs /tmp --cap-drop ALL \
+            -p 127.0.0.1:8787:8787 commontrace-local:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8787/v1/health/ready; then echo " ready OK"; exit 0; fi
+            sleep 1
+          done
+          echo "--- container logs ---"; docker logs local-ci; exit 1
+
       - name: Clean up
         if: always()
-        run: docker rm -f hub-ci || true
+        run: docker rm -f hub-ci local-ci || true
 
   compose-stack:
     name: docker compose stack serves real MCP traffic

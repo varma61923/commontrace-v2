@@ -71,5 +71,66 @@ services:
       start_period: 15s
     restart: unless-stopped
 
+  # Local runtime, opt-in: `docker compose --profile local up`. The gateway serves the
+  # console and API on :8787; the MCP server shares its store and bearer token.
+  # Settings (e.g. COMMONTRACE_LLM_PROVIDER) come from an optional .env file;
+  # see .env.example.
+  gateway:
+    profiles: ["local"]
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+    env_file:
+      - path: .env
+        required: false
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    command: ["gateway", "--host", "0.0.0.0", "--port", "8787"]
+    volumes:
+      - local_store:/data
+    ports:
+      - "127.0.0.1:8787:8787"
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8787/v1/health/ready', timeout=5).status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  mcp:
+    profiles: ["local"]
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+    env_file:
+      - path: .env
+        required: false
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # Plain HTTP is published on loopback only; put TLS in front for anything wider.
+    command: ["serve", "--transport", "streamable-http", "--host", "0.0.0.0", "--port", "8421",
+              "--allow-insecure-http", "--allowed-host", "localhost:8421", "--allowed-host", "127.0.0.1:8421"]
+    volumes:
+      - local_store:/data
+    ports:
+      - "127.0.0.1:8421:8421"
+    depends_on:
+      gateway:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   hub_pgdata18:
+  local_store:

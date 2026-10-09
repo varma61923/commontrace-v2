@@ -1,0 +1,40 @@
+# The local CommonTrace runtime: CLI, gateway + console, and the MCP server over
+# streamable HTTP, on one store volume. The Hub image (Dockerfile) is separate and
+# deliberately ships only the client modules the server imports.
+#
+#   docker compose --profile local up        # gateway on :8787, MCP on :8421
+#   docker run --rm -v ct:/data commontrace-local query "release checklist"
+
+FROM python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f AS builder
+
+ENV PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /build
+COPY pyproject.toml README.md LICENSE ./
+COPY commontrace/ ./commontrace/
+COPY protocol/ ./protocol/
+RUN pip install --prefix=/install ".[serve,security]"
+
+FROM python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f AS runtime
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    COMMONTRACE_ROOT=/data
+
+COPY --from=builder /install /usr/local
+RUN useradd --create-home --uid 10001 commontrace \
+    && mkdir -p /data && chown commontrace:commontrace /data
+COPY --chmod=0755 deploy/docker/local-entrypoint.sh /usr/local/bin/commontrace-entrypoint
+
+USER commontrace
+WORKDIR /data
+VOLUME ["/data"]
+EXPOSE 8787 8421
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+    CMD python -c "import urllib.request,sys; \
+sys.exit(0) if urllib.request.urlopen('http://127.0.0.1:8787/v1/health/live', timeout=2).status == 200 else sys.exit(1)"
+
+ENTRYPOINT ["commontrace-entrypoint"]
+CMD ["gateway", "--host", "0.0.0.0", "--port", "8787"]

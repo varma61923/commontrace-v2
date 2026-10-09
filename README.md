@@ -24,6 +24,8 @@ Open the printed console URL. The gateway requires its bearer token for memory
 operations; Swagger UI is at `/v1/docs`, and its schema is at `/v1/openapi.json`.
 For a scoped agent key, run `commontrace init --agent reviewer --dest STORE_ROOT`.
 The key is returned once. See [installation and scope rules](docs/MEMORY_EVOLUTION.md).
+In containers, `docker compose --profile local up` runs the gateway on `:8787` and
+the MCP server on `:8421` over one store volume (`Dockerfile.local`).
 
 ## Add memory to your agent
 
