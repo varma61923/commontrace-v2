@@ -107,6 +107,14 @@ Ed25519 primitives. Batch ingestion enforces 200 items, bounded statements,
 explicit-timezone timestamps and aliases. Temporary facts default to 24-hour
 expiry; environment facts to 30 days. Typed decay never deletes history.
 
+Conversation recall can size its own context. `commontrace conversation recall
+SPACE "QUESTION" --budget auto` (MCP and gateway: `adaptive_budget`) keeps a
+focused question at its base budget and gives summaries, orderings and counts up
+to 3x and lists or multi-facet questions 2x, capped at `--max-budget` (default
+12,000); `explain.budget` records the decision. Second-stage rerankers resolve by
+name: `retrieval.apply_reranker(task, ranked, providers.reranker("mmr"))`, with
+`cross-encoder` and `cross-encoder-fast` built in and `register_reranker` for your own.
+
 ## Causal decisions and governance
 
 Reserved exploration slots log sampling propensities and assignment before
@@ -176,6 +184,17 @@ procedure structure; it does not protect those public fields or participant
 membership. `replicated_lift` authenticates distinct configured organizations,
 enforces artifact/comparison/metric and sim/real agreement, and reports descriptive
 random-effects pooling with I-squared. It is not a verified billing proof.
+
+
+`commontrace experiment --by agent_type` (or `agent_id`, or `--covariates FILE`
+with your own pre-treatment groups) reads each lesson's randomized effect per
+subgroup, Benjamini-Hochberg corrected, with Cochran's Q for heterogeneity. A
+lesson that helps one subgroup and hurts another is flagged `CROSSING`; narrow its
+`applies_when`. These readings are exploratory and fixed-horizon, never the billing
+verdict. `CausalMemory(..., graduate=True)` stops randomizing a memory once its
+anytime-valid verdict is HELPS, so proven memories stop paying for their holdout.
+`python -m benchmarks.causalmembench` scores this layer against seeded ground truth
+([results](benchmarks/causalmembench.md)).
 
 ## Standard API and integrations
 
@@ -272,3 +291,12 @@ existing stricter fact-index gate, scans Python/TypeScript with CodeQL, and expo
 an OpenSSF Scorecard and dependency SBOM. Branch Scorecards scan tracked files;
 the default-branch job also evaluates repository-wide policy and history. Generated TypeScript additionally calls
 all eight memory operations against a live isolated gateway in CI.
+
+`commontrace --offline <command>` (or `COMMONTRACE_OFFLINE=1`) refuses every
+non-loopback network call -- hosted model providers, connectors, crawling, Hub sync,
+remote memory clients -- and loads models from the local cache only; a model runtime
+on localhost stays reachable. The gateway serves `/v1/health/live` (process only)
+and `/v1/health/ready` (store, schemas, free disk; 503 when not ready) without a
+token. `commontrace lesson edit SLUG` opens a lesson in `$VISUAL`/`$EDITOR`, then
+validates, screens and journals the change; a hand-edited active lesson returns to
+review. `commontrace init --agent-caller NAME` mints a scoped agent key in one step.
