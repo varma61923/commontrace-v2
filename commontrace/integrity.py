@@ -385,7 +385,7 @@ def check_assignment_drift(rows: list[Assignment], schedules: list | None = None
             "", numbers,
         )
     if len(salts) <= 1:
-        from commontrace import allocation
+        from commontrace import allocation_schedule as allocation
 
         if schedules:
             free = [r for r in rows if r.at is None

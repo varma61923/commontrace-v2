@@ -543,7 +543,7 @@ def analyze(
                 if len({r.rate for r in rows if r.rate is not None}) > 1 or any(r.scheduled for r in rows)}
     aipw: dict = {}
     if weighted:
-        from commontrace import allocation
+        from commontrace import aipw as allocation
 
         for slug, s_inj, n_inj, s_wit, n_wit in testable:
             if slug not in weighted:
