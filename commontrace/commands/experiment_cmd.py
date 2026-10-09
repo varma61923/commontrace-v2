@@ -112,6 +112,16 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
              "be fixed before the lesson could act (a customer tier, a robot model), never "
              "something recorded after the task.",
     )
+    p.add_argument(
+        "--draft-revisions", action="store_true",
+        help="With --by/--covariates: for each CROSSING lesson, write a review-status revision whose "
+             "applies_when keeps only the subgroups where it significantly helps.",
+    )
+    p.add_argument(
+        "--interactions", action="store_true",
+        help="Exploratory factorial reading: for lessons eligible on the same occasions, does one change "
+             "the other's effect (SYNERGY / INTERFERENCE)? Uses their independent randomizations.",
+    )
     p.add_argument("--dest", default=None)
     p.set_defaults(func=run)
 
@@ -451,8 +461,13 @@ def run(args: argparse.Namespace) -> int:
         )
         return 0
 
+    if getattr(args, "interactions", False):
+        return _run_interactions(args, obs, report)
     if getattr(args, "by", None) or getattr(args, "covariates", None):
         return _run_subgroups(args, root, obs, report)
+    if getattr(args, "draft_revisions", False):
+        print("[commontrace] --draft-revisions needs --by or --covariates.", file=sys.stderr)
+        return 2
 
     effects = experiment.analyze(
         obs, min_arm=args.min_arm, alpha=args.alpha, detectable=args.detect,
@@ -540,6 +555,24 @@ def run(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_interactions(args, obs, report) -> int:
+    from commontrace import interactions
+
+    if report.verdict == integrity.VERDICT_COMPROMISED:
+        print("[commontrace] the experiment's audit is COMPROMISED; interaction readings from it would be "
+              "unreliable. Run `commontrace experiment` for the reasons.", file=sys.stderr)
+        return 1
+    results = interactions.analyze(obs, alpha=args.alpha)
+    if args.json:
+        print(json.dumps({"exploratory": True, "reading": "fixed-horizon",
+                          "pairs": [p.as_dict() for p in results]}, indent=2))
+    else:
+        print(interactions.render(results))
+    if args.strict and any(p.flag == interactions.FLAG_INTERFERENCE for p in results):
+        return 1
+    return 0
+
+
 def _run_subgroups(args, root, obs, report) -> int:
     from commontrace import heterogeneity
 
@@ -559,12 +592,17 @@ def _run_subgroups(args, root, obs, report) -> int:
         print(f"[commontrace] subgroup analysis refused: {exc}", file=sys.stderr)
         return 2
     label = args.by or "covariates"
+    drafted = []
+    if getattr(args, "draft_revisions", False):
+        drafted = [d for d in (heterogeneity.draft_narrowing(root, h, label) for h in results) if d]
     if args.json:
         print(json.dumps({"by": label, "exploratory": True, "reading": "fixed-horizon",
                           "labelled_occasions": len(groups),
-                          "lessons": [h.as_dict() for h in results]}, indent=2))
+                          "lessons": [h.as_dict() for h in results], "drafted": drafted}, indent=2))
     else:
         print(heterogeneity.render(results, label))
+        for path in drafted:
+            print(f"[commontrace] drafted {path} (status=review); approve it to replace the broad version.")
     if args.strict and any(h.flag == heterogeneity.FLAG_CROSSING for h in results):
         return 1
     return 0

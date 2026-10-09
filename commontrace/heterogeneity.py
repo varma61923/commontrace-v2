@@ -255,6 +255,70 @@ def occasion_groups_from_file(path: str) -> dict[str, str]:
     return out
 
 
+def narrowing(h: LessonHeterogeneity) -> tuple[list[SubgroupEffect], list[SubgroupEffect]]:
+    """(subgroups where the lesson significantly helps, where it significantly hurts)."""
+    return ([g for g in h.groups if g.significant and g.effect > 0],
+            [g for g in h.groups if g.significant and g.effect < 0])
+
+
+def _effect_text(g: SubgroupEffect) -> str:
+    return (f"{g.group} ({g.effect:+.1%} [{g.ci_low:+.1%}, {g.ci_high:+.1%}], "
+            f"n={g.n_injected}/{g.n_withheld})")
+
+
+def draft_narrowing(root: str, h: LessonHeterogeneity, by: str, *, actor: str = "experiment") -> str | None:
+    """Write a review-status revision that keeps a CROSSING lesson where it helps.
+
+    Nothing about the original lesson changes. The draft's ``applies_when``
+    gains an explicit "only for" clause naming the helped subgroups and its
+    ``do_not_apply_when`` names the harmed ones, both with their randomized
+    effects; ``narrowed_to`` records the same machine-readably. An operator
+    approves or rejects it like any draft. Returns the draft path, or None when
+    the lesson is not CROSSING or a draft is already waiting.
+    """
+    from commontrace import frontmatter, lesson_io, paths, templates
+
+    if h.flag != FLAG_CROSSING:
+        return None
+    helps, hurts = narrowing(h)
+    path = lesson_io.lesson_path(root, h.lesson_slug)
+    if path is None:
+        return None
+    fm, body = frontmatter.read(path)
+    stem = lesson_io.canonical_slug(h.lesson_slug)
+    draft_slug = f"{stem}-narrowed"
+    out_path = os.path.join(paths.lessons_dir(root), f"lesson_{draft_slug}.md")
+    with frontmatter.locked(out_path):
+        if os.path.exists(out_path):
+            existing, _ = frontmatter.read(out_path)
+            if existing.get("status") == "review":
+                return None
+        only = ", ".join(_effect_text(g) for g in helps)
+        never = ", ".join(_effect_text(g) for g in hurts)
+        draft = templates.lesson_frontmatter(
+            slug=draft_slug,
+            description=f"Narrowed revision of {stem}: only where randomized evidence shows it helps",
+            agent_type=str(fm.get("agent_type") or paths.store_agent_type(root)),
+            domain=str(fm.get("domain") or ""), tags=list(fm.get("tags") or []),
+            applies_when=f"{fm.get('applies_when', '')} Only when {by} is one of: {only}.".strip(),
+            do_not_apply_when=f"{fm.get('do_not_apply_when', '')} Not when {by} is one of: {never}.".strip(),
+            importance=int(fm.get("importance") or 3),
+            importance_rationale=(f"Randomized subgroup effects for {stem} cross zero "
+                                  f"(Cochran's Q={h.q_statistic}, p={h.q_p_value})."),
+            source_traces=[], status="review", scopes=list(fm.get("scopes") or []),
+        )
+        draft["revises"] = stem
+        draft["narrowed_to"] = {"by": by, "include": [g.group for g in helps], "exclude": [g.group for g in hurts]}
+        evidence = [f"- helps: {_effect_text(g)}" for g in helps] + [f"- hurts: {_effect_text(g)}" for g in hurts]
+        evidence += [f"- other: {_effect_text(g)}" for g in h.groups if g not in helps and g not in hurts]
+        text = (body.rstrip("\n") + "\n\n## Evidence for narrowing\n"
+                f"Randomized holdout effects by {by} (injected minus withheld success rate, BH-corrected; "
+                "exploratory and fixed-horizon, not the billing verdict):\n" + "\n".join(evidence) + "\n")
+        lesson_io.write_lesson(out_path, draft, text, root=root, actor=actor,
+                               reason=f"narrowing draft of {stem} from CROSSING subgroup effects by {by}")
+    return out_path
+
+
 def render(results: list[LessonHeterogeneity], by: str) -> str:
     lines = [f"Subgroup effects by {by} (exploratory, fixed-horizon; BH across all subgroup tests; "
              "not the billing verdict)", ""]
@@ -273,8 +337,8 @@ def render(results: list[LessonHeterogeneity], by: str) -> str:
         if h.untested_groups:
             lines.append(f"    below the per-arm floor: {', '.join(h.untested_groups)}")
         if h.flag == FLAG_CROSSING:
-            lines.append(f"    -> helps in one context and hurts in another: narrow applies_when "
-                         f"(`commontrace lesson suggest-revision {h.lesson_slug}`).")
+            lines.append("    -> helps in one context and hurts in another: `commontrace experiment "
+                         f"--by {by} --draft-revisions` drafts a narrowed revision for review.")
     lines.append("")
     lines.append("* = significant after correction. Effects are injected minus withheld success rate.")
     return "\n".join(lines)

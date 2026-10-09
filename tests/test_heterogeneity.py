@@ -96,5 +96,5 @@ def test_cli_by_agent_type_end_to_end(tmp_path, capsys):
     [lesson] = out["lessons"]
     assert lesson["flag"] == "CROSSING"
     assert main(["experiment", "--by", "agent_type", "--strict", "--dest", root]) == 1
-    assert "suggest-revision L" in capsys.readouterr().out
+    assert "--draft-revisions" in capsys.readouterr().out
     assert main(["experiment", "--by", "agent_type", "--covariates", "x", "--dest", root]) == 2
