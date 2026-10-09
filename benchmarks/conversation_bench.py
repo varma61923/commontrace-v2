@@ -304,6 +304,8 @@ _AMA_STEP = re.compile(r"\b(?:[Ss]teps?|[Tt]urns?)\s+(\d{1,4})(?:\s*(?:-|to|and|
 
 
 AMA_FIELD_CHARS = 100_000
+GRADE_ROUNDS = 4
+GRADE_ROUND_PAUSE_S = 60.0
 
 
 def _ama_field(value) -> str:
@@ -779,6 +781,47 @@ def grade_answer(
     return res
 
 
+def grade_all(pending: list, workers: int, *, grade=None, rounds: int | None = None,
+              pause_s: float | None = None) -> None:
+    """Grade (row, kwargs) pairs concurrently, updating each row in place.
+
+    A provider outage on one question must not discard the others, and a question
+    cannot be dropped either: which questions fail correlates with prompt length,
+    so scoring the survivors would bias accuracy. Failed questions are retried in
+    later rounds; completed calls are cached, so an aborted run resumes where it
+    stopped.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from commontrace import llm
+
+    grade = grade or grade_answer
+    rounds = GRADE_ROUNDS if rounds is None else rounds
+    pause_s = GRADE_ROUND_PAUSE_S if pause_s is None else pause_s
+
+    def attempt(item):
+        try:
+            return item, grade(**item[1]), None
+        except llm.LLMUnavailable as exc:
+            return item, None, exc
+
+    remaining = list(pending)
+    for round_number in range(rounds):
+        if round_number:
+            time.sleep(pause_s)
+        with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+            outcomes = list(pool.map(attempt, remaining))
+        remaining = [item for item, info, error in outcomes if error is not None]
+        for item, info, error in outcomes:
+            if error is None:
+                item[0].update(info)
+        if not remaining:
+            return
+        print(f"grading round {round_number + 1}: {len(remaining)} question(s) failed; retrying", file=sys.stderr)
+    raise RuntimeError(f"{len(remaining)} question(s) could not be graded after {rounds} rounds; "
+                       "rerun the same command to resume from the cache")
+
+
 def evaluation_config_binding(config: object) -> dict[str, object]:
     # Endpoints may embed userinfo or query credentials; bind their exact
     # configuration without publishing URL bytes or private account metadata.
@@ -1093,12 +1136,7 @@ def run(args) -> dict:
 
     if pending_grades:
         # Retrieval ran in order above; only the reader and judge calls run concurrently.
-        from concurrent.futures import ThreadPoolExecutor
-
-        with ThreadPoolExecutor(max_workers=answer_workers) as pool:
-            for (row, _grading), info in zip(pending_grades,
-                                             pool.map(lambda item: grade_answer(**item[1]), pending_grades)):
-                row.update(info)
+        grade_all(pending_grades, answer_workers)
 
     n = max(1, len(rows_by_mode[modes[0]][budgets[0]]))
     judge_info = {
