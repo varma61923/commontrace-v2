@@ -496,6 +496,15 @@ class Gateway:
             summary="Approve a review draft through every gate. Needs --allow-approval.")
         self._route("POST", "/v1/lesson/reject", self._lesson_reject, request={
             "slug": "a lesson in review", "reason": "why"}, summary="Reject a review draft. Needs --allow-approval.")
+        self._route("GET", "/v1/ledger/executive", self._ledger_executive,
+                    summary="Proven value at the lower bound, harm withdrawn, lift per injected token.")
+        self._route("GET", "/v1/ledger/releases", self._ledger_releases,
+                    summary="Releases, or one release's diff against its parent (?to=ID[&from=ID]).")
+        self._route("GET", "/v1/ledger/design", self._ledger_design,
+                    summary="Experiment designer (?baseline=&effect=&rate=[&power=&daily=&budget=]).")
+        self._route("GET", "/v1/ledger/forensics", self._ledger_forensics,
+                    summary="One occasion: assignments, outcome, signed receipts and incident reports (?occasion=).")
+        self._route("GET", "/v1/ledger/digest", self._ledger_digest, summary="Markdown digest of the last ?days=7.")
         self._route("GET", "/v1/market/listings", self._market_listings,
                     summary="Marketplace catalog (?q=words, ?id=one full listing).")
         self._route("POST", "/v1/market/listings", self._market_add, request={"listing": "a signed listing"},
@@ -1509,6 +1518,67 @@ class Gateway:
         if not self.allow_approval:
             raise ApiError(403, "approval_disabled", "start the gateway with --allow-approval to edit, approve or "
                                                        "reject lessons here")
+
+    def _effects(self) -> list:
+        _state, _rows, analysis = self._analysis()
+        return list(analysis.effects) if analysis is not None else []
+
+    def _ledger_executive(self, _body, _query) -> dict:
+        from commontrace import ledger_views
+
+        state, _rows, _analysis = self._analysis()
+        return ledger_views.executive(self.root, self._effects(), harmful=set(self._watch.current()),
+                                      value_per_occasion=(state or {}).get("value_per_occasion"))
+
+    def _ledger_releases(self, _body, query) -> dict:
+        from commontrace import ledger_views
+
+        to_id = (query.get("to") or [""])[0]
+        if not to_id:
+            return {"releases": ledger_views.releases(self.root)}
+        try:
+            return ledger_views.release_diff(self.root, to_id, (query.get("from") or [""])[0] or None)
+        except ValueError as exc:
+            raise ApiError(404, "not_found", str(exc)) from None
+
+    def _ledger_design(self, _body, query) -> dict:
+        from commontrace import ledger_views
+
+        def number(name, default=None, cast=float):
+            raw = (query.get(name) or [None])[0]
+            if raw in (None, ""):
+                return default
+            try:
+                value = cast(raw)
+            except ValueError:
+                raise _bad(f"{name} must be a number") from None
+            if value != value or value in (float("inf"), float("-inf")):
+                raise _bad(f"{name} must be finite")
+            return value
+
+        try:
+            return ledger_views.design(baseline=number("baseline", 0.5), effect=number("effect", 0.1),
+                                       rate=number("rate", 0.1), power=number("power", 0.8),
+                                       daily=number("daily"), budget=number("budget", cast=int))
+        except ValueError as exc:
+            raise _bad(str(exc)) from None
+
+    def _ledger_forensics(self, _body, query) -> dict:
+        from commontrace import ledger_views
+
+        occasion = _ident((query.get("occasion") or [""])[0], "occasion")
+        return ledger_views.forensics(self.root, occasion)
+
+    def _ledger_digest(self, _body, query) -> dict:
+        from commontrace import ledger_views
+
+        try:
+            days = int((query.get("days") or ["7"])[0])
+        except ValueError:
+            raise _bad("days must be a whole number") from None
+        if not 1 <= days <= 366:
+            raise _bad("days must be between 1 and 366")
+        return ledger_views.digest(self.root, self._effects(), days=days)
 
     def _market_listings(self, _body, query) -> dict:
         from commontrace import marketplace

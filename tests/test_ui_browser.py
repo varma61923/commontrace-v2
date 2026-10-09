@@ -435,3 +435,45 @@ def test_malformed_hash_cannot_crash_the_console(page: Page, console: Console) -
     page.get_by_role("navigation", name="Console sections").get_by_role("link", name="Explore memory", exact=True).click()
     pw.expect(page.get_by_label("Your question", exact=True)).to_be_visible()
     assert not errors
+
+
+@pytest.mark.parametrize("width", [390, 1440])
+def test_learning_ledger_value_design_forensics_and_digest(page: Page, console: Console, width: int) -> None:
+    from tests.test_ledger_views import seeded_store
+
+    page.set_viewport_size({"width": width, "height": 1000})
+    seeded_store(console.root)
+    errors: list[str] = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    connect(page, console)
+    navigate(page, "Learning Ledger")
+    pw.expect(page.get_by_text("Occasions proven improved", exact=True)).to_be_visible()
+    chart = page.get_by_role("img", name="Cumulative proven lift", exact=False)
+    pw.expect(chart).to_be_visible()
+    pw.expect(page.get_by_role("region", name="Each memory's effect and cost")).to_contain_text("keys")
+
+    page.get_by_role("navigation", name="Ledger sections").get_by_role("link", name="Releases", exact=True).click()
+    pw.expect(page.get_by_text("first <b>release</b>", exact=True)).to_be_visible()  # literal, never markup
+    assert page.locator("main b").count() == 0
+    page.get_by_role("link", name="What changed").first.click()
+    pw.expect(page.locator("main pre")).to_contain_text("+Send a stable idempotency key")
+
+    page.get_by_role("navigation", name="Ledger sections").get_by_role("link", name="Experiment designer", exact=True).click()
+    page.get_by_label("Holdout rate", exact=True).fill("0.2")
+    page.get_by_label("Occasions per day (optional)", exact=True).fill("100")
+    page.get_by_role("button", name="Plan", exact=True).click()
+    pw.expect(page.get_by_text("commontrace experiment --configure --rate 0.2", exact=True)).to_be_visible()
+    pw.expect(page.get_by_role("heading", name="Days needed", exact=True)).to_be_visible()
+
+    page.get_by_role("navigation", name="Ledger sections").get_by_role("link", name="Forensics", exact=True).click()
+    page.get_by_label("Occasion id", exact=True).fill("o3")
+    page.get_by_role("button", name="Investigate", exact=True).click()
+    pw.expect(page.get_by_role("region", name="Memories eligible on this occasion")).to_contain_text("noise")
+
+    page.get_by_role("navigation", name="Ledger sections").get_by_role("link", name="Weekly digest", exact=True).click()
+    pw.expect(page.locator("main pre")).to_contain_text("CommonTrace digest")
+    with page.expect_download() as download:
+        page.get_by_role("button", name="Download Markdown", exact=True).click()
+    assert download.value.suggested_filename.startswith("commontrace-digest-")
+    assert not page.evaluate("() => document.documentElement.scrollWidth > innerWidth")
+    assert not errors
