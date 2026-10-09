@@ -15,7 +15,7 @@ Legend: **Done** · **Done (this pass)** (added or fixed in this audit) ·
 | Item | Status | Where |
 | --- | --- | --- |
 | 0.1 Scoreboard with dense + cross-encoder on | **Done (this pass)**: LoCoMo (dense, dense + cross-encoder, dense + adaptive), BEAM (dense, dense + adaptive), LongMemEval (dense, paired 100-question subset) | `benchmarks/conversation_bench.py --embedder arctic-m` |
-| 0.2 Model-backed answer accuracy | **Partial (this pass)**: no hosted credentials here, so an in-process local reader (`COMMONTRACE_LLM_PROVIDER=local`, Qwen2.5-0.5B-Instruct) with the deterministic `exact` judge was run on a 100-question LoCoMo subset (see below); hosted-model, LLM-judged accuracy is still not measured | `--answer --judge exact`, `local_llm.py`, `benchmarks/judges/` |
+| 0.2 Model-backed answer accuracy | **Done (this pass)**: Gemma 4 31B reader and LLM judge (LoCoMo judge profile) on a 200-question LoCoMo subset, 68.5% [61.8, 74.5] with lexical memory at 1,500 tokens (see below); plus the in-process 0.5B local reader with the exact judge | `--answer --judge exact`, `local_llm.py`, `benchmarks/judges/` |
 | 0.3 Competitors through the same harness | **Partial**: local raw-source mem0 and Graphiti profiles; managed services not reproduced | `benchmarks/vendor_adapters.py` |
 | 0.4 Agentic benchmarks (MemoryArena, AMA-Bench, MemGym, Evo-Memory) | **Partial (this pass)**: AMA-Bench open-ended QA (208 agent trajectories, derived step evidence) and MemoryAgentBench Accurate Retrieval (answer-in-context) run through the harness; interactive environments (MemoryArena, MemGym, Evo-Memory) still need their own agent loops | `--dataset ama`, `--dataset mab`, `benchmarks/dolphinbench/` |
 | 0.5 Leaderboard from signed manifests, `reproduce.sh` | **Done** | `benchmarks/phase0*.py`, `reproduce.sh` |
@@ -172,6 +172,25 @@ scores.
 
 The ordering matches the evidence measurements: better-delivered context gives a
 better answer from the same reader.
+
+### Model-judged answer accuracy (Gemma 4 31B)
+
+Gemma 4 31B (`gemma-4-31b-it`, Google AI free tier) as both reader and judge,
+the LoCoMo judge profile (`locomo-downstream-binary-v1`), a seeded stratified
+200-question LoCoMo subset, keyword retrieval at a 1,500-token budget
+(1,435 tokens delivered on average), 800 calls, $0 spend, frozen worktree:
+
+| Run | Accuracy [95% CI] | Single-hop | Temporal | Multi-hop | Open-domain |
+| --- | --: | --: | --: | --: | --: |
+| No memory | 0.0% | 0.0% | 0.0% | 0.0% | 0.0% |
+| Lexical memory, 1,500 tokens | 68.5% [61.8, 74.5] | 86.3% (n=51) | 78.4% (n=51) | 73.1% (n=52) | 32.6% (n=46) |
+
+The reader prompt tells the model to say it does not know when the context
+lacks the answer, so the no-memory arm abstains on every question (it does not
+guess); the lift is the whole 68.5 points. Full-context is not run: a LoCoMo
+conversation exceeds the free tier's 16K input tokens per minute. The same
+model reads and judges, which can flatter it; these numbers are not comparable
+to published scores that use other readers and judges.
 
 ### Agentic benchmarks
 
