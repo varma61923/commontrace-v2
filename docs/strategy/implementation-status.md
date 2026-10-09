@@ -15,7 +15,7 @@ Legend: **Done** · **Done (this pass)** (added or fixed in this audit) ·
 | Item | Status | Where |
 | --- | --- | --- |
 | 0.1 Scoreboard with dense + cross-encoder on | **Done (this pass)**: LoCoMo (dense, dense + cross-encoder, dense + adaptive), BEAM (dense, dense + adaptive), LongMemEval (dense, paired 100-question subset) | `benchmarks/conversation_bench.py --embedder arctic-m` |
-| 0.2 Model-backed answer accuracy | **Partial**: harness, judges and cost guards exist; not run (no model credentials in this environment) | `--answer`, `benchmarks/judges/` |
+| 0.2 Model-backed answer accuracy | **Partial (this pass)**: no hosted credentials here, so an in-process local reader (`COMMONTRACE_LLM_PROVIDER=local`, Qwen2.5-0.5B-Instruct) with the deterministic `exact` judge was run on a 100-question LoCoMo subset (see below); hosted-model, LLM-judged accuracy is still not measured | `--answer --judge exact`, `local_llm.py`, `benchmarks/judges/` |
 | 0.3 Competitors through the same harness | **Partial**: local raw-source mem0 and Graphiti profiles; managed services not reproduced | `benchmarks/vendor_adapters.py` |
 | 0.4 Agentic benchmarks (MemoryArena, AMA-Bench, MemGym, Evo-Memory) | **Partial (this pass)**: AMA-Bench open-ended QA (208 agent trajectories, derived step evidence) and MemoryAgentBench Accurate Retrieval (answer-in-context) run through the harness; interactive environments (MemoryArena, MemGym, Evo-Memory) still need their own agent loops | `--dataset ama`, `--dataset mab`, `benchmarks/dolphinbench/` |
 | 0.5 Leaderboard from signed manifests, `reproduce.sh` | **Done** | `benchmarks/phase0*.py`, `reproduce.sh` |
@@ -128,6 +128,24 @@ the identical subset:
 | --- | --- | --- | --- |
 | Lexical | 79.76% / 84.52% | 52.94% / 52.94% | 75.00% |
 | Dense (arctic-m) | 81.80% / 89.12% | 69.61% / 75.49% | 82.14% |
+
+### Local reader answer accuracy
+
+A seeded, stratified 100-question LoCoMo subset at a 1,500-token floor, answered
+in-process by Qwen2.5-0.5B-Instruct (greedy, 64-token cap) and graded by the
+deterministic `exact` judge (gold contained in the answer, or token F1 >= 0.5).
+A 0.5B model on CPU and a strict string judge both understate accuracy, so these
+numbers compare configurations; they are not comparable to published LLM-judged
+scores.
+
+| Run | Accuracy | Evidence | Single-hop | Multi-hop | Temporal | Open-domain |
+| --- | --: | --: | --: | --: | --: | --: |
+| No memory | 4% | - | 7.7% | 0.0% | 0.0% | 8.7% |
+| Lexical, fixed (1,441 tok) | 19% | 61.33% | 34.6% | 11.5% | 20.0% | 8.7% |
+| Dense + adaptive (1,788 tok) | 26% | 75.82% | 38.5% | 23.1% | 24.0% | 17.4% |
+
+The ordering matches the evidence measurements: better-delivered context gives a
+better answer from the same reader.
 
 ### Agentic benchmarks
 
