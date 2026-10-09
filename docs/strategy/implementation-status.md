@@ -32,7 +32,7 @@ Legend: **Done** · **Done (this pass)** (added or fixed in this audit) ·
 | WS3 Compression ladder, skill crystallization, causal promotion gate | **Done** | `compression.py`, `experience_skills.py` |
 | WS4 Origin-bound authority, action policy, Ed25519, action-vote smoothing, collusion signals | **Done** | `origin.py`, `memory_authority.py`, `assurance.py` |
 | WS4 Red-team suite | **Done (this pass)**: PoisonBench, nine attacks through the real write and recall paths; 0% attack success with an authority policy at 100% clean utility | `benchmarks/poisonbench.py`, `docs/benchmarks/poisonbench.md` |
-| WS4 Multi-principal (GateMem-style) benchmark | see below | |
+| WS4 Multi-principal (GateMem-style) benchmark | **Done (this pass)**: GovBench through the gateway; 100% utility, 0 leaks, 0 forgotten records delivered, certificate covers derived records | `benchmarks/govbench.py`, `docs/benchmarks/govbench.md` |
 | WS5 Federated commons, randomized response, replicated lift | **Done** (experimental privacy, stated as such) | `federation.py` |
 | WS5 Marketplace with revenue share | **Not done**: needs a hosted service and commercial terms | - |
 | WS6 Foresight and sleep-time refresh | **Done** | `memory_control.offline_pass`, `dream` |
