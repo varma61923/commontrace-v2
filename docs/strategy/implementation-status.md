@@ -90,6 +90,7 @@ Legend: **Done** · **Done (this pass)** (added or fixed in this audit) ·
 | P3 Adaptive token budget | **Done (this pass)**: BEAM event ordering 59.6% → 96.9%, summarization 28.5% → 50.5% evidence at a 1,500 floor |
 | P4 Cross-encoder reranking | Already supported; **measured (this pass)**: LoCoMo 82.00% -> 83.90% evidence at 1,500 tokens over dense alone |
 | Preference following | **Tried and rejected (this pass)**: weighting the user's own turns on advice questions lowered LongMemEval preference evidence from 61.7% to 52.8%, so it was removed. The misses are vocabulary mismatches (a "battery life" question answered by a "power bank" statement); dense retrieval is the measured lever |
+| Advice-question budget class | **Tried and rejected (this pass)**: doubling the budget for advice/recommendation questions raised LongMemEval preference evidence 61.67% -> 65.00% but lowered BEAM 79.37% -> 79.30% and moved LoCoMo only 80.29% -> 80.42%, at more tokens everywhere |
 | Summarization pipeline | Adaptive budget measured above; model summaries exist (`conversation summarize --model`) |
 | Temporal hints, event ordering | **Done** (`temporal_intent.py`; adaptive budget for ordering questions) |
 | Benchmark CI on PRs | **Done** (stratified LoCoMo gate) |
