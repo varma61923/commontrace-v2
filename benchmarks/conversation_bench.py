@@ -1265,7 +1265,7 @@ def main(argv=None) -> int:
     )
     p.add_argument(
         "--judge",
-        choices=("auto", "generic", "longmemeval", "locomo", "beam"),
+        choices=("auto", "generic", "longmemeval", "locomo", "beam", "exact"),
         default="auto",
         help="judge protocol to evaluate answers (default: auto matches dataset)",
     )

@@ -60,11 +60,24 @@ def benchmark_binding(config: llm.Config, *, output_limit: int = 1536) -> dict:
                                                  "retries": 0, "requests_sha256": implementation})
 
 
+def _local_complete(prompt: str, config: llm.Config, guard: CostGuard, *, output_limit: int):
+    """An in-process model: no charge, but the output cap and usage bounds still hold."""
+    from commontrace import local_llm
+
+    answer, usage = local_llm.complete(config, prompt, max_new_tokens=output_limit)
+    if usage["output_tokens"] > output_limit:
+        raise ValueError("local model exceeded the declared output limit")
+    guard.record_call(0.0)
+    return answer, usage, 0.0
+
+
 def bounded_complete(prompt: str, config: llm.Config, guard: CostGuard, *, output_limit: int = 1536,
                      temperature: float = 0.0) -> tuple[str, dict, float]:
     """One attempt; a failure/unknown charge refuses all subsequent dispatches."""
     if not isinstance(output_limit, int) or isinstance(output_limit, bool) or not 1 <= output_limit <= 65536:
         raise ValueError("output limit must be in 1..65536")
+    if config.provider == "local":
+        return _local_complete(prompt, config, guard, output_limit=output_limit)
     if config.provider not in ("anthropic", "openai-compatible", "ollama"):
         raise ValueError("bounded benchmark requests support Anthropic and OpenAI-compatible HTTP providers")
     input_upper = len(prompt.encode("utf-8")) + 1024

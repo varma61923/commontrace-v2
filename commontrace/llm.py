@@ -19,7 +19,7 @@ _ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 _ANTHROPIC_VERSION = "2023-06-01"
 _ANTHROPIC_MAX_TOKENS = 1536
 _TIMEOUT_SECONDS = 60
-_SUPPORTED_PROVIDERS = ("anthropic", "openai-compatible", "ollama", "bedrock", "vertex")
+_SUPPORTED_PROVIDERS = ("anthropic", "openai-compatible", "ollama", "bedrock", "vertex", "local")
 _CLOUD_PROVIDERS = ("bedrock", "vertex")
 
 _OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434/v1"
@@ -107,6 +107,12 @@ def load_config() -> Config:
         api_key = env_secret("COMMONTRACE_LLM_API_KEY").strip()
     except RuntimeError:
         raise LLMUnavailable("configured LLM API secret could not be resolved") from None
+    if provider == "local":
+        from commontrace import local_llm
+
+        model = os.environ.get("COMMONTRACE_LLM_MODEL", "").strip() or local_llm.DEFAULT_MODEL
+        return Config(provider="local", model=model, api_key="",
+                      cache_namespace=os.environ.get("COMMONTRACE_LLM_CACHE_NAMESPACE", "").strip() or None)
     if not api_key and provider not in _CLOUD_PROVIDERS and not ollama_alias and LLM_CREDENTIALS.get(provider, True):
         raise LLMUnavailable(
             "COMMONTRACE_LLM_API_KEY is not set -- no LLM-assisted draft is possible."
@@ -315,6 +321,12 @@ def _sdk_missing(provider: str, package: str) -> LLMUnavailable:
         f"provider {provider!r} needs the optional {package} package: pip install 'commontrace[llm]'")
 
 
+def _call_local(config: Config, prompt: str) -> tuple[str, dict]:
+    from commontrace import local_llm
+
+    return local_llm.complete(config, prompt)
+
+
 def _call_bedrock(config: Config, prompt: str) -> tuple[str, dict]:
     try:
         import boto3
@@ -396,7 +408,7 @@ def complete(prompt: str, config: Config | None = None) -> tuple[str, dict]:
 
     caller = llm_caller(cfg.provider, {"anthropic": _call_anthropic, "openai-compatible": _call_openai_compatible,
               "ollama": _call_openai_compatible,
-              "bedrock": _call_bedrock, "vertex": _call_vertex})
+              "bedrock": _call_bedrock, "vertex": _call_vertex, "local": _call_local})
     # IAM/ADC identity may change independently of these routing fields. Require
     # an owner-supplied tenant/account namespace before caching cloud SDK calls.
     if cache is None or (cfg.provider in _CLOUD_PROVIDERS and not cfg.cache_namespace):

@@ -6,11 +6,12 @@ from typing import Union
 
 from .beam import BEAM_ABILITIES, BEAMJudge, event_ordering_score, kendall_tau_b
 from .dolphin import DolphinJudge
+from .exact import ExactJudge
 from .generic import GenericJudge
 from .locomo import LoCoMoJudge, is_scorable_category
 from .longmemeval import LongMemEvalJudge, get_anscheck_prompt
 
-JudgeType = Union[GenericJudge, LongMemEvalJudge, LoCoMoJudge, BEAMJudge, DolphinJudge]
+JudgeType = Union[GenericJudge, LongMemEvalJudge, LoCoMoJudge, BEAMJudge, DolphinJudge, ExactJudge]
 
 __all__ = [
     "BEAM_ABILITIES",
@@ -36,6 +37,7 @@ JUDGE_CLASSES: dict[str, type] = {
     "locomo": LoCoMoJudge,
     "beam": BEAMJudge,
     "dolphin": DolphinJudge,
+    "exact": ExactJudge,
 }
 
 DEFAULT_JUDGE_MODELS: dict[str, str] = {
@@ -44,6 +46,7 @@ DEFAULT_JUDGE_MODELS: dict[str, str] = {
     "locomo": "gpt-4o",
     "beam": "gpt-4.1-mini",
     "dolphin": "gpt-4o",
+    "exact": "none",
 }
 
 DATASET_DEFAULTS: dict[str, tuple[str, str]] = {
@@ -72,6 +75,7 @@ def get_judge(name: str, model: str | None = None) -> JudgeType:
         "locomo": "locomo",
         "beam": "beam",
         "dolphin": "dolphin",
+        "exact": "exact",
     }
     canonical = lookup.get(key)
     if canonical is None:
