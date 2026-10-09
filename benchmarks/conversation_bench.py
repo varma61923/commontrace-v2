@@ -167,6 +167,8 @@ def _load_cases(args) -> list:
         return list(beam_cases(args.data, args.limit))
     if args.dataset == "ama":
         return list(ama_cases(args.data, args.limit, args.seed))
+    if args.dataset == "mab":
+        return list(mab_cases(args.data, args.limit))
     if args.dataset == "locomo":
         return sample_cases(list(locomo_cases(args.data)), args.limit, args.seed)
     return list(longmemeval_cases(args.data, args.limit, args.seed))
@@ -301,6 +303,14 @@ AMA_TYPES = {"A": "recall", "B": "causal-inference", "C": "state-updating", "D":
 _AMA_STEP = re.compile(r"\b(?:[Ss]teps?|[Tt]urns?)\s+(\d{1,4})(?:\s*(?:-|to|and|through)\s*(\d{1,4}))?")
 
 
+AMA_FIELD_CHARS = 100_000
+
+
+def _ama_field(value) -> str:
+    text = str(value or "")
+    return text if len(text) <= AMA_FIELD_CHARS else text[:AMA_FIELD_CHARS] + " [truncated]"
+
+
 def ama_cases(path: str, limit: int = 0, seed: int = 0):
     """AMA-Bench open-ended QA over long agent trajectories (arXiv 2602.22769).
 
@@ -310,7 +320,9 @@ def ama_cases(path: str, limit: int = 0, seed: int = 0):
     labels, so gold evidence here is *derived*: the action and observation of
     every step the question or reference answer names ("Step 8", "steps 3-5",
     turn_idx N). Questions that name no step have no evidence and are excluded
-    from evidence metrics, never counted as misses.
+    from evidence metrics, never counted as misses. A handful of observations are
+    page dumps over a megabyte; each field is clipped at AMA_FIELD_CHARS, as an
+    agent's own log would clip them.
     """
     with open(path, encoding="utf-8") as source:
         rows = [json.loads(line) for line in source if line.strip()]
@@ -335,9 +347,9 @@ def ama_cases(path: str, limit: int = 0, seed: int = 0):
             idx = int(turn["turn_idx"])
             steps.add(idx)
             messages.append({"id": f"{episode}-s{idx}-a", "role": "assistant", "speaker": "agent",
-                             "text": f"Step {idx} action: {turn.get('action', '')}"})
+                             "text": f"Step {idx} action: {_ama_field(turn.get('action'))}"})
             messages.append({"id": f"{episode}-s{idx}-o", "role": "user", "speaker": "environment",
-                             "text": f"Step {idx} observation: {turn.get('observation', '')}"})
+                             "text": f"Step {idx} observation: {_ama_field(turn.get('observation'))}"})
         questions = []
         for i, qa in enumerate(row["qa_pairs"]):
             named = set()
@@ -353,6 +365,52 @@ def ama_cases(path: str, limit: int = 0, seed: int = 0):
         task = f"Task ({row['domain']}): {row['task']}"
         yield episode, [("trajectory", None, [{"id": f"{episode}-task", "role": "user", "speaker": "user",
                                               "text": task}] + messages)], None, questions
+
+
+_MAB_DOC = re.compile(r"(?=\bDocument \d+:)")
+MAB_CHUNK_CHARS = 2000
+
+
+def mab_cases(path: str, limit: int = 0):
+    """MemoryAgentBench (arXiv 2507.05257) contexts as one long memory each.
+
+    A context is split at its "Document N:" markers (or into ~2,000-character
+    passages when it has none). The benchmark ships accepted answer strings but no
+    evidence labels, so only answer-in-context is scored: whether any accepted
+    answer appears in the delivered context. Evidence metrics stay undefined.
+    """
+    import pandas as pd
+
+    frame = pd.read_parquet(path)
+    for index, row in frame.iterrows():
+        meta = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        source = str(meta.get("source") or f"row{index}")
+        space = re.sub(r"[^A-Za-z0-9._-]", "_", f"mab-{source}-{index}")
+        context = str(row["context"])
+        parts = [p.strip() for p in _MAB_DOC.split(context) if p.strip()]
+        if len(parts) < 2:
+            parts = [context[i:i + MAB_CHUNK_CHARS] for i in range(0, len(context), MAB_CHUNK_CHARS)]
+        messages = [{"id": f"{space}-d{i}", "role": "user", "speaker": "document", "text": text}
+                    for i, text in enumerate(parts)]
+        ids = list(meta.get("qa_pair_ids") if meta.get("qa_pair_ids") is not None else [])
+        questions = []
+        for i, (question, answers) in enumerate(zip(row["questions"], row["answers"])):
+            accepted = [str(a) for a in (list(answers) if not isinstance(answers, str) else [answers]) if str(a)]
+            questions.append({"id": f"{space}-{ids[i] if i < len(ids) else i}", "question": str(question),
+                              "answer": accepted[0] if accepted else "", "answers": accepted,
+                              "type": source.split("_")[0] if "_" in source else source,
+                              "evidence": set(), "sessions": set()})
+        yield space, [("context", None, messages)], None, questions
+        limit -= 1
+        if limit == 0:
+            break
+
+
+def answer_in_any(context: str, question: dict) -> bool | None:
+    """`answer_in` over every accepted answer; None when none is short enough to check."""
+    checks = [answer_in(context, a) for a in (question.get("answers") or [question.get("answer", "")])]
+    known = [c for c in checks if c is not None]
+    return any(known) if known else None
 
 
 def longmemeval_cases(path: str, limit: int, seed: int):
@@ -883,7 +941,7 @@ def run(args) -> dict:
                                 ev = (len(turn_gold & refs) / len(turn_gold)) if turn_gold else None
                                 comp = turn_gold <= refs if turn_gold else None
                                 ses = (len(set(session_gold) & sess) / len(session_gold)) if session_gold else None
-                                ans_in_ctx = answer_in(ctx, q["answer"])
+                                ans_in_ctx = answer_in_any(ctx, q)
                                 conf = r.explain.get("confidence")
                                 rtop = r.explain.get("rerank_top")
                             elif mode in ("full-context", "budgeted-history"):
@@ -900,7 +958,7 @@ def run(args) -> dict:
                                 ev = None
                                 comp = None
                                 ses = None
-                                ans_in_ctx = answer_in(ctx, q["answer"])
+                                ans_in_ctx = answer_in_any(ctx, q)
                                 conf = None
                                 rtop = None
                             elif mode == "no-memory":
@@ -1170,7 +1228,7 @@ def summarize(rows, args, budget, ingest_s, recall_s, full_tokens, mode="memory"
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--dataset", choices=("locomo", "longmemeval", "dolphin", "beam", "ama"), required=True)
+    p.add_argument("--dataset", choices=("locomo", "longmemeval", "dolphin", "beam", "ama", "mab"), required=True)
     p.add_argument("--personas", default="", help="dolphin: comma list (default: all three)")
     p.add_argument("--data", required=True)
     p.add_argument(

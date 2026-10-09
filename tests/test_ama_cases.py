@@ -37,3 +37,13 @@ def test_ama_limit_stratifies_by_domain(tmp_path):
     picked = list(cb.ama_cases(str(path), limit=4, seed=1))
     assert len(picked) == 4
     assert {c[1][0][2][0]["text"].split(")")[0] for c in picked} == {"Task (WEB", "Task (GAME"}
+
+
+def test_ama_clips_megabyte_observations(tmp_path):
+    row = _row("e1")
+    row["trajectory"][1]["observation"] = "x" * (cb.AMA_FIELD_CHARS + 50)
+    path = tmp_path / "ama.jsonl"
+    path.write_text(json.dumps(row))
+    [(_space, sessions, _now, _questions)] = list(cb.ama_cases(str(path)))
+    clipped = [m["text"] for m in sessions[0][2] if m["id"].endswith("-s1-o")][0]
+    assert clipped.endswith(" [truncated]") and len(clipped) < cb.AMA_FIELD_CHARS + 100
