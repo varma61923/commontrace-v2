@@ -42,6 +42,10 @@ profiles, standing questions, hard directives, budgeted offline consolidation,
 shared signed memory repositories, and an evidence-governed compression ladder.
 Origin receipts preserve the least-trusted source through summarization and echo.
 
+Lessons that proved their lift at two or more organizations can be listed and
+bought as signed listings (`commontrace market`); an install always lands in review.
+`COMMONTRACE_LLM_PROVIDER=local` runs drafting with an in-process model, no key needed.
+
 The [memory guide](docs/MEMORY_EVOLUTION.md) covers local models, connectors,
 framework tools, causal policy evaluation, replay forensics and their limits.
 The multi-tenant [Hub](hub/README.md) adds organization isolation and governance.
@@ -75,7 +79,10 @@ commands](docs/REFERENCE.md#measurement-scoreboard-2026-10-08), the dense,
 reranked and adaptive-budget measurements in the [implementation
 status](docs/strategy/implementation-status.md#measured-results), and
 [CausalMemBench](docs/benchmarks/causalmembench.md), which scores whether a memory
-system stops delivering harmful memories without discarding helpful ones.
+system stops delivering harmful memories without discarding helpful ones,
+[PoisonBench](docs/benchmarks/poisonbench.md) and [GovBench](docs/benchmarks/govbench.md)
+for memory poisoning and multi-principal governance. AMA-Bench and MemoryAgentBench
+agent-memory results are in the implementation status.
 
 The protocol is Capture → Structure → Extract → Validate → Store → Inject → Measure.
 Read the [protocol](protocol/PROTOCOL.md), [full reference](docs/REFERENCE.md),
