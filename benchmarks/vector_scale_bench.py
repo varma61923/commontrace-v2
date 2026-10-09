@@ -20,7 +20,6 @@ import argparse
 import asyncio
 import hashlib
 import json
-import math
 import os
 import statistics
 import sys
@@ -45,7 +44,7 @@ def _percentile(values: list[float], q: float) -> float:
 
 
 async def run(dsn: str, *, n: int, dim: int, queries: int, top_k: int, clusters: int, spread: float,
-              seed: int, batch: int, ef_search: int, m: int, ef_construction: int, keep: bool) -> dict:
+              seed: int, batch: int, ef_search: list[int], m: int, ef_construction: int, keep: bool) -> dict:
     import asyncpg
 
     rng = np.random.default_rng(seed)
@@ -85,43 +84,43 @@ async def run(dsn: str, *, n: int, dim: int, queries: int, top_k: int, clusters:
                 f"((embedding::vector({dim})) vector_cosine_ops) WITH (m={m}, ef_construction={ef_construction}) "
                 f"WHERE dimension={dim}")
             report["index_build_seconds"] = round(time.perf_counter() - started, 1)
-            database = await connection.fetchval("SELECT current_database()")
-            await connection.execute(f'ALTER DATABASE "{database}" SET hnsw.ef_search={int(ef_search)}')
             report["index_bytes"] = await connection.fetchval(
                 f"SELECT pg_relation_size('commontrace_vectors_hnsw_{digest}')")
         finally:
             await connection.close()
-        approximate = await vector_store.PostgresVectorIndex.open(
-            dsn, tenant=TENANT, namespace=NAMESPACE, model=MODEL, dimension=dim, max_size=4, approximate=True,
-            command_timeout=3600)
-        try:
-            noise = np.random.default_rng(seed + 1)
-            probes = []
-            for point in sample[:queries]:
-                q = point + noise.normal(0.0, spread / 2, size=dim).astype(np.float32)
-                probes.append((q / np.linalg.norm(q)).tolist())
-            for q in probes[:5]:  # warm both paths
-                await approximate.search(q, top_k=top_k)
-            ann_ms, exact_ms, recalls = [], [], []
-            for q in probes:
-                t0 = time.perf_counter()
-                hits = await approximate.search(q, top_k=top_k)
-                ann_ms.append((time.perf_counter() - t0) * 1000)
-                t0 = time.perf_counter()
-                truth = await exact.search(q, top_k=top_k)
-                exact_ms.append((time.perf_counter() - t0) * 1000)
-                want = {h.key for h in truth}
-                recalls.append(len(want & {h.key for h in hits}) / max(1, len(want)))
-        finally:
-            await approximate.close()
-        report.update({
-            "hnsw": {"m": m, "ef_construction": ef_construction, "ef_search": ef_search,
-                     "iterative_scan": "strict_order"},
-            "ann_ms": {"p50": round(statistics.median(ann_ms), 2), "p95": round(_percentile(ann_ms, 0.95), 2)},
-            "exact_ms": {"p50": round(statistics.median(exact_ms), 1), "p95": round(_percentile(exact_ms, 0.95), 1)},
-            f"recall_at_{top_k}": round(statistics.fmean(recalls), 4),
-            "recall_min": round(min(recalls), 4),
-        })
+        noise = np.random.default_rng(seed + 1)
+        probes = []
+        for point in sample[:queries]:
+            q = point + noise.normal(0.0, spread / 2, size=dim).astype(np.float32)
+            probes.append((q / np.linalg.norm(q)).tolist())
+        exact_ms, truths = [], []
+        for q in probes:
+            t0 = time.perf_counter()
+            truths.append({h.key for h in await exact.search(q, top_k=top_k)})
+            exact_ms.append((time.perf_counter() - t0) * 1000)
+        report["exact_ms"] = {"p50": round(statistics.median(exact_ms), 1),
+                              "p95": round(_percentile(exact_ms, 0.95), 1)}
+        report["hnsw"] = {"m": m, "ef_construction": ef_construction, "iterative_scan": "strict_order"}
+        report["sweep"] = []
+        for ef in ef_search:
+            approximate = await vector_store.PostgresVectorIndex.open(
+                dsn, tenant=TENANT, namespace=NAMESPACE, model=MODEL, dimension=dim, max_size=4,
+                approximate=True, command_timeout=3600, ef_search=ef)
+            try:
+                for q in probes[:5]:
+                    await approximate.search(q, top_k=top_k)
+                ann_ms, recalls = [], []
+                for q, want in zip(probes, truths):
+                    t0 = time.perf_counter()
+                    hits = await approximate.search(q, top_k=top_k)
+                    ann_ms.append((time.perf_counter() - t0) * 1000)
+                    recalls.append(len(want & {h.key for h in hits}) / max(1, len(want)))
+            finally:
+                await approximate.close()
+            report["sweep"].append({
+                "ef_search": ef, "ann_ms": {"p50": round(statistics.median(ann_ms), 2),
+                                            "p95": round(_percentile(ann_ms, 0.95), 2)},
+                f"recall_at_{top_k}": round(statistics.fmean(recalls), 4), "recall_min": round(min(recalls), 4)})
     finally:
         if not keep:
             connection = await asyncpg.connect(dsn)
@@ -149,7 +148,8 @@ def main(argv=None) -> int:
     p.add_argument("--spread", type=float, default=0.05)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--batch", type=int, default=vector_store.MAX_BATCH)
-    p.add_argument("--ef-search", type=int, default=100)
+    p.add_argument("--ef-search", default="40,100,200,400,800",
+                   help="comma-separated hnsw.ef_search values to measure")
     p.add_argument("--m", type=int, default=16)
     p.add_argument("--ef-construction", type=int, default=64)
     p.add_argument("--keep", action="store_true")
@@ -159,14 +159,14 @@ def main(argv=None) -> int:
         p.error("--dsn (or COMMONTRACE_SCALE_DSN) is required")
     report = asyncio.run(run(args.dsn, n=args.n, dim=args.dim, queries=args.queries, top_k=args.top_k,
                              clusters=args.clusters, spread=args.spread, seed=args.seed, batch=args.batch,
-                             ef_search=args.ef_search, m=args.m, ef_construction=args.ef_construction,
+                             ef_search=[int(x) for x in args.ef_search.split(",")], m=args.m, ef_construction=args.ef_construction,
                              keep=args.keep))
     text = json.dumps(report, indent=2)
     if args.out:
         with open(args.out, "w", encoding="utf-8") as fh:
             fh.write(text + "\n")
     print(text)
-    return 0 if not math.isnan(report.get(f"recall_at_{args.top_k}", float("nan"))) else 1
+    return 0 if report.get("sweep") else 1
 
 
 if __name__ == "__main__":

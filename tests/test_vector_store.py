@@ -197,3 +197,10 @@ def test_repeated_searches_keep_a_custom_plan(factory):
         finally:
             await index.close()
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("bad", [0, 1001, True, 2.5])
+def test_ef_search_is_validated_before_connecting(bad):
+    with pytest.raises(ValueError, match="ef_search"):
+        asyncio.run(PostgresVectorIndex.open("postgresql://unused", tenant="t", namespace="n", model="m",
+                                             dimension=3, approximate=True, ef_search=bad))
