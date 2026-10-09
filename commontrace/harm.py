@@ -21,6 +21,14 @@ def hurts(by_id: dict[str, dict]) -> dict[str, dict]:
         if ev.get("verdict") == experiment.VERDICT_HURTS
     }
 
+def helps(by_id: dict[str, dict]) -> dict[str, dict]:
+    """The entries of an evidence map whose verdict is HELPS (graduation candidates)."""
+    return {
+        key: ev for key, ev in by_id.items()
+        if ev.get("verdict") == experiment.VERDICT_HELPS
+    }
+
+
 T = TypeVar("T")
 
 
