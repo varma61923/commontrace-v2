@@ -13,7 +13,8 @@ from commontrace.exceptions import CapabilityError
 def offline_env(monkeypatch):
     monkeypatch.setenv(offline.ENV, "1")
     for name in offline.MODEL_HUB_SWITCHES:
-        monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv(name, "0")
+        monkeypatch.delenv(name)
     yield
 
 
@@ -56,9 +57,12 @@ def test_web_crawler_and_remote_client_refuse(offline_env):
 
 
 def test_cli_flag_sets_model_hub_cache_only_switches(tmp_path, monkeypatch):
-    monkeypatch.delenv(offline.ENV, raising=False)
-    for name in offline.MODEL_HUB_SWITCHES:
-        monkeypatch.delenv(name, raising=False)
+    # setenv-then-delenv makes monkeypatch record each variable's original state, so the
+    # values `--offline` writes into os.environ are undone at teardown (a bare delenv of an
+    # unset variable records nothing and would leak offline mode into later tests).
+    for name in (offline.ENV, *offline.MODEL_HUB_SWITCHES):
+        monkeypatch.setenv(name, "0")
+        monkeypatch.delenv(name)
     assert main(["--offline", "init", "--dest", str(tmp_path)]) == 0
     assert offline.status() == {"offline": True, "model_hub_cache_only": True}
     assert all(os.environ[name] == "1" for name in offline.MODEL_HUB_SWITCHES)
@@ -76,3 +80,7 @@ def test_hub_api_key_can_come_from_a_mounted_file(tmp_path, monkeypatch):
     monkeypatch.setenv("COMMONTRACE_HUB_URL", "https://hub.example.com/mcp")
     resolved = resolve_hub(argparse.Namespace(hub_url=None, hub_api_key=None))
     assert resolved == ("https://hub.example.com/mcp", "ct_from_file")
+
+
+def test_offline_state_does_not_leak_between_tests():
+    assert not offline.enabled()
