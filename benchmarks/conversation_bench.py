@@ -165,6 +165,8 @@ def _load_cases(args) -> list:
         return list(dolphin_cases(args.data, args.personas, args.limit))
     if args.dataset == "beam":
         return list(beam_cases(args.data, args.limit))
+    if args.dataset == "ama":
+        return list(ama_cases(args.data, args.limit, args.seed))
     if args.dataset == "locomo":
         return sample_cases(list(locomo_cases(args.data)), args.limit, args.seed)
     return list(longmemeval_cases(args.data, args.limit, args.seed))
@@ -293,6 +295,64 @@ def locomo_cases(path: str):
                               "answer": str(qa.get("answer", "")), "type": LOCOMO_CATEGORIES[qa["category"]],
                               "evidence": gold, "sessions": set()})
         yield conv["sample_id"], sessions, None, questions
+
+
+AMA_TYPES = {"A": "recall", "B": "causal-inference", "C": "state-updating", "D": "state-abstraction"}
+_AMA_STEP = re.compile(r"\b(?:[Ss]teps?|[Tt]urns?)\s+(\d{1,4})(?:\s*(?:-|to|and|through)\s*(\d{1,4}))?")
+
+
+def ama_cases(path: str, limit: int = 0, seed: int = 0):
+    """AMA-Bench open-ended QA over long agent trajectories (arXiv 2602.22769).
+
+    Each trajectory turn becomes two messages: the agent's action and the
+    environment's observation, each prefixed with its step number as an agent's
+    own log would record it. AMA-Bench is judged by an LLM and ships no evidence
+    labels, so gold evidence here is *derived*: the action and observation of
+    every step the question or reference answer names ("Step 8", "steps 3-5",
+    turn_idx N). Questions that name no step have no evidence and are excluded
+    from evidence metrics, never counted as misses.
+    """
+    with open(path, encoding="utf-8") as source:
+        rows = [json.loads(line) for line in source if line.strip()]
+    if limit and limit < len(rows):
+        rng = random.Random(seed)
+        by_domain = defaultdict(list)
+        for row in rows:
+            by_domain[row["domain"]].append(row)
+        for domain in sorted(by_domain):
+            rng.shuffle(by_domain[domain])
+        selected = []
+        while len(selected) < limit:
+            for domain in sorted(by_domain):
+                if by_domain[domain] and len(selected) < limit:
+                    selected.append(by_domain[domain].pop())
+        rows = selected
+    for row in rows:
+        episode = f"ama{row['episode_id']}"
+        messages = []
+        steps = set()
+        for turn in row["trajectory"]:
+            idx = int(turn["turn_idx"])
+            steps.add(idx)
+            messages.append({"id": f"{episode}-s{idx}-a", "role": "assistant", "speaker": "agent",
+                             "text": f"Step {idx} action: {turn.get('action', '')}"})
+            messages.append({"id": f"{episode}-s{idx}-o", "role": "user", "speaker": "environment",
+                             "text": f"Step {idx} observation: {turn.get('observation', '')}"})
+        questions = []
+        for i, qa in enumerate(row["qa_pairs"]):
+            named = set()
+            for m in _AMA_STEP.finditer(qa["question"] + "\n" + str(qa.get("answer", ""))):
+                start, end = int(m.group(1)), int(m.group(2) or m.group(1))
+                if 0 <= end - start <= 20:
+                    named.update(range(start, end + 1))
+            evidence = {f"{episode}-s{n}-{part}" for n in sorted(named & steps) for part in ("a", "o")}
+            questions.append({"id": f"{episode}-{qa.get('question_uuid', i)}", "question": qa["question"],
+                              "answer": str(qa.get("answer", "")),
+                              "type": AMA_TYPES.get(str(qa.get("type", "")), "other"),
+                              "evidence": evidence, "sessions": set()})
+        task = f"Task ({row['domain']}): {row['task']}"
+        yield episode, [("trajectory", None, [{"id": f"{episode}-task", "role": "user", "speaker": "user",
+                                              "text": task}] + messages)], None, questions
 
 
 def longmemeval_cases(path: str, limit: int, seed: int):
@@ -1110,7 +1170,7 @@ def summarize(rows, args, budget, ingest_s, recall_s, full_tokens, mode="memory"
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--dataset", choices=("locomo", "longmemeval", "dolphin", "beam"), required=True)
+    p.add_argument("--dataset", choices=("locomo", "longmemeval", "dolphin", "beam", "ama"), required=True)
     p.add_argument("--personas", default="", help="dolphin: comma list (default: all three)")
     p.add_argument("--data", required=True)
     p.add_argument(
