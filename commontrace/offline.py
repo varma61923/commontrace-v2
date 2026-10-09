@@ -1,6 +1,7 @@
 """Air-gapped operation: refuse every non-loopback network call, and keep models cache-only.
 
-Turn it on with ``commontrace --offline <command>`` or ``COMMONTRACE_OFFLINE=1``.
+Turn it on with ``commontrace --offline <command>`` or ``COMMONTRACE_OFFLINE=1``;
+``commontrace --local <command>`` also selects the in-process local model.
 Ingestion, lexical and (already cached) semantic retrieval, the causal engine,
 the gateway and the console keep working. Hosted LLM providers, knowledge
 connectors, web crawling and Hub sync refuse with a `CapabilityError` naming
@@ -38,6 +39,16 @@ def enable() -> None:
     os.environ[ENV] = "1"
     for name in MODEL_HUB_SWITCHES:
         os.environ[name] = "1"
+
+
+def enable_local() -> None:
+    """Keyless operation: offline mode plus the in-process model, unless a provider is configured.
+
+    Ingestion, retrieval and measurement never need a model; LLM-assisted steps
+    (drafting, reflection, contextualizing) then run on cached local weights.
+    """
+    enable()
+    os.environ.setdefault("COMMONTRACE_LLM_PROVIDER", "local")
 
 
 def apply_environment() -> None:

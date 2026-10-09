@@ -41,11 +41,11 @@ Dynamic provider prefixes and test-only variables are described in the relevant 
 | `COMMONTRACE_LLM_MODEL` | [commontrace/llm.py:113](../commontrace/llm.py#L113) |
 | `COMMONTRACE_LLM_PRICES` | [commontrace/llm.py:496](../commontrace/llm.py#L496) |
 | `COMMONTRACE_LLM_PROJECT` | [commontrace/llm.py:127](../commontrace/llm.py#L127) |
-| `COMMONTRACE_LLM_PROVIDER` | [commontrace/commands/agent_cmd.py:56](../commontrace/commands/agent_cmd.py#L56) |
+| `COMMONTRACE_LLM_PROVIDER` | [commontrace/cli.py:119](../commontrace/cli.py#L119) |
 | `COMMONTRACE_LLM_REGION` | [commontrace/llm.py:124](../commontrace/llm.py#L124) |
-| `COMMONTRACE_LOG_FILE` | [commontrace/cli.py:202](../commontrace/cli.py#L202) |
-| `COMMONTRACE_LOG_FORMAT` | [commontrace/cli.py:202](../commontrace/cli.py#L202) |
-| `COMMONTRACE_LOG_LEVEL` | [commontrace/cli.py:203](../commontrace/cli.py#L203) |
+| `COMMONTRACE_LOG_FILE` | [commontrace/cli.py:210](../commontrace/cli.py#L210) |
+| `COMMONTRACE_LOG_FORMAT` | [commontrace/cli.py:210](../commontrace/cli.py#L210) |
+| `COMMONTRACE_LOG_LEVEL` | [commontrace/cli.py:211](../commontrace/cli.py#L211) |
 | `COMMONTRACE_MCP_WARM` | [commontrace/mcp_server.py:2616](../commontrace/mcp_server.py#L2616) |
 | `COMMONTRACE_OAUTH_ALGORITHMS` | [commontrace/oauth.py:135](../commontrace/oauth.py#L135) |
 | `COMMONTRACE_OAUTH_AUDIENCE` | [commontrace/oauth.py:22](../commontrace/oauth.py#L22) |
@@ -54,7 +54,7 @@ Dynamic provider prefixes and test-only variables are described in the relevant 
 | `COMMONTRACE_OAUTH_JWKS_URL` | [commontrace/oauth.py:23](../commontrace/oauth.py#L23) |
 | `COMMONTRACE_OAUTH_LEEWAY` | [commontrace/oauth.py:135](../commontrace/oauth.py#L135) |
 | `COMMONTRACE_OFFLINE` | [commontrace/cli.py:114](../commontrace/cli.py#L114) |
-| `COMMONTRACE_OTEL` | [commontrace/cli.py:204](../commontrace/cli.py#L204) |
+| `COMMONTRACE_OTEL` | [commontrace/cli.py:212](../commontrace/cli.py#L212) |
 | `COMMONTRACE_QUERY_CACHE` | [commontrace/retrieval.py:395](../commontrace/retrieval.py#L395) |
 | `COMMONTRACE_REDACT_PII` | [commontrace/memory_guard.py:180](../commontrace/memory_guard.py#L180) |
 | `COMMONTRACE_ROOT` | [commontrace/commands/_shellout.py:84](../commontrace/commands/_shellout.py#L84) |

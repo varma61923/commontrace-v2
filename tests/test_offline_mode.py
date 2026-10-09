@@ -84,3 +84,33 @@ def test_hub_api_key_can_come_from_a_mounted_file(tmp_path, monkeypatch):
 
 def test_offline_state_does_not_leak_between_tests():
     assert not offline.enabled()
+
+
+def _isolate(monkeypatch, provider=None):
+    # setenv-then-delenv registers each variable with monkeypatch, so it is restored afterwards.
+    for name in (offline.ENV, "COMMONTRACE_LLM_PROVIDER", *offline.MODEL_HUB_SWITCHES):
+        monkeypatch.setenv(name, "0")
+        monkeypatch.delenv(name)
+    if provider:
+        monkeypatch.setenv("COMMONTRACE_LLM_PROVIDER", provider)
+
+
+def test_local_flag_is_offline_plus_the_in_process_model(tmp_path, monkeypatch):
+    import os
+
+    from commontrace.cli import main
+
+    _isolate(monkeypatch)
+    assert main(["--local", "fact", "list", "--dest", str(tmp_path)]) == 0
+    assert offline.enabled() and os.environ["COMMONTRACE_LLM_PROVIDER"] == "local"
+    assert llm.load_config().provider == "local"
+
+
+def test_local_flag_keeps_an_explicit_provider(tmp_path, monkeypatch):
+    import os
+
+    from commontrace.cli import main
+
+    _isolate(monkeypatch, provider="ollama")
+    assert main(["--local", "fact", "list", "--dest", str(tmp_path)]) == 0
+    assert offline.enabled() and os.environ["COMMONTRACE_LLM_PROVIDER"] == "ollama"

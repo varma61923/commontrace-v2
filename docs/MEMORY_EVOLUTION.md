@@ -335,7 +335,9 @@ review. `commontrace init --agent-caller NAME` mints a scoped agent key in one s
 `Qwen/Qwen2.5-1.5B-Instruct`) runs an instruction model in-process with
 `transformers`, greedy and deterministic, so drafting, reflection and
 `conversation_bench --answer --judge exact` work with no credentials or model
-server; under `--offline` it loads cached weights only. Small CPU models are slow
+server; under `--offline` it loads cached weights only. `commontrace --local
+<command>` combines the two: offline mode plus the local model, unless
+`COMMONTRACE_LLM_PROVIDER` already names one. Small CPU models are slow
 and far weaker than hosted ones.
 
 Remote clients can authenticate with your own OAuth 2.1 authorization server
