@@ -790,6 +790,32 @@ def forget_fact(root: str, fact_id: str, undo: bool = False) -> AtomicFact:
     return fact
 
 
+def invalidate_fact(root: str, fact_id: str, at: str | None = None) -> AtomicFact:
+    """End an active fact's validity at *at* (default now) without a replacement.
+
+    The fact is kept, not deleted: a query ``as_of`` a moment inside its window
+    still returns it, which is what makes "what was true in March" answerable.
+    An end in the future only schedules the close; the fact stays active until then.
+    """
+    end = _moment(at, "at") or _now()
+    with mutate_facts(root) as facts:
+        if fact_id not in facts:
+            raise KeyError(f"Fact '{fact_id}' not found")
+        fact = facts[fact_id]
+        if fact.status != "active":
+            raise ValueError(f"fact '{fact_id}' is {fact.status}, not active; only an active fact can be invalidated")
+        _check_window(fact.valid_from, end)
+        fact.valid_until = end
+        ended = lesson_cache.parse_moment(end) <= datetime.now(timezone.utc)
+        if ended:
+            fact.status = "invalidated"
+        _stamp(fact)
+    if ended:
+        _unlink_entities_best_effort(root, fact_id)
+    _audit_git(root, "invalidate", fact_id)
+    return fact
+
+
 def delete_fact(root: str, fact_id: str) -> bool:
     """Soft-delete a fact: its validity ends now and it leaves default listings."""
     with mutate_facts(root) as facts:
