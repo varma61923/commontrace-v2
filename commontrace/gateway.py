@@ -490,6 +490,13 @@ class Gateway:
             summary="Approve a review draft through every gate. Needs --allow-approval.")
         self._route("POST", "/v1/lesson/reject", self._lesson_reject, request={
             "slug": "a lesson in review", "reason": "why"}, summary="Reject a review draft. Needs --allow-approval.")
+        self._route("GET", "/v1/market/listings", self._market_listings,
+                    summary="Marketplace catalog (?q=words, ?id=one full listing).")
+        self._route("POST", "/v1/market/listings", self._market_add, request={"listing": "a signed listing"},
+                    summary="Add a listing that verifies against this store's trusted keys.")
+        self._route("POST", "/v1/market/install", self._market_install, request={
+            "id": "a catalog listing id", "accept_licence": "its licence id"},
+            summary="Install a verified listing at status=review. Needs --allow-approval.")
 
     def handle(
         self, method: str, target: str, headers: Mapping[str, str] | None = None,
@@ -1477,6 +1484,44 @@ class Gateway:
         if not self.allow_approval:
             raise ApiError(403, "approval_disabled", "start the gateway with --allow-approval to edit, approve or "
                                                        "reject lessons here")
+
+    def _market_listings(self, _body, query) -> dict:
+        from commontrace import marketplace
+
+        wanted = (query.get("id") or [""])[0]
+        listings = marketplace.catalog(self.root, (query.get("q") or [""])[0][:500])
+        if wanted:
+            match = [x for x in listings if marketplace.listing_id(x) == wanted]
+            if not match:
+                raise ApiError(404, "not_found", "no listing with that id")
+            return {"listing": match[0]}
+        return {"listings": [marketplace.summary(x) for x in listings]}
+
+    def _market_add(self, body, _query) -> dict:
+        from commontrace import marketplace
+
+        listing = body.get("listing")
+        if len(json.dumps(listing).encode("utf-8")) > marketplace.MAX_LISTING_BYTES:
+            raise _bad("listing exceeds 256 KiB")
+        report = marketplace.verify(listing, marketplace.load_trust(self.root))
+        if not report["ok"]:
+            raise ApiError(422, "unverified_listing", "; ".join(report["problems"]))
+        marketplace.add_to_catalog(self.root, listing)
+        return {"id": marketplace.listing_id(listing), "summary": marketplace.summary(listing)}
+
+    def _market_install(self, body, _query) -> dict:
+        from commontrace import marketplace
+
+        self._acting()
+        wanted = str(body.get("id", ""))
+        match = [x for x in marketplace.catalog(self.root) if marketplace.listing_id(x) == wanted]
+        if not match:
+            raise ApiError(404, "not_found", "no listing with that id")
+        try:
+            return marketplace.install(self.root, match[0], accept_licence=str(body.get("accept_licence", "")),
+                                       actor="console")
+        except marketplace.MarketError as exc:
+            raise ApiError(422, "market_refused", str(exc)) from None
 
     def _lessons(self, _body, query) -> dict:
         status = (query.get("status") or [None])[0]

@@ -26,7 +26,7 @@ _COMMANDS = (
     "block", "fact", "graph", "ingest", "agent", "watch", "daemon", "viz", "conversation", "memory", "recall", "jobs",
     "ontology", "community", "observation", "saga", "page", "session_ledger",
     "procedural", "sql_query", "defense", "evolve", "policy", "assurance", "compression", "up", "connect", "migrate",
-    "codegraph",
+    "codegraph", "market",
 )
 
 
