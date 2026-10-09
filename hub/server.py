@@ -53,6 +53,7 @@ from hub.console import CONSOLE_PATH, add_console_routes
 from hub.db import check_row_level_security, session_scope
 from hub.disclosure import add_disclosure_route
 from hub.observability import RequestContextMiddleware, add_health_routes
+from hub.openapi import add_openapi_route
 from hub.otlp import add_otlp_routes
 from hub.rest import add_rest_routes
 from hub.schema_validation import SchemaValidationError
@@ -1614,6 +1615,7 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
         metrics_token=config.metrics_token,
     )
     add_disclosure_route(inner_app, config)
+    add_openapi_route(inner_app)
     inner_app.add_middleware(
         ApiKeyAuthMiddleware,
         session_factory=session_factory,

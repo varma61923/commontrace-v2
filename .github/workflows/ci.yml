@@ -397,6 +397,9 @@ jobs:
           python -m alembic -c hub/alembic.ini upgrade head
           python -m alembic -c hub/alembic.ini check
 
+      - name: Hub OpenAPI document covers every route and stays current
+        run: python scripts/export_hub_openapi.py --check
+
       - name: Run Hub tests (including test_tenant_isolation.py)
         run: python -m pytest hub/tests/ -q
 
