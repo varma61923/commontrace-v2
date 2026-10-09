@@ -207,6 +207,7 @@ class CostGuard:
         self.cached_count: int = 0
         self.reserved_cost_usd = 0.0
         self.uncertain_calls = 0
+        self.refused_calls = 0
         self.cached_cost_usd = 0.0
         self._lock = threading.RLock()
 
@@ -232,6 +233,12 @@ class CostGuard:
             self.reserved_cost_usd = max(0.0, self.reserved_cost_usd - reservation)
             self.record_call(cost)
 
+    def release_call(self, reservation: float) -> None:
+        """Drop a reservation for a request the provider answered with an error: no completion, no charge."""
+        with self._lock:
+            self.reserved_cost_usd = max(0.0, self.reserved_cost_usd - reservation)
+            self.refused_calls += 1
+
     def mark_uncertain(self) -> None:
         with self._lock:
             self.uncertain_calls += 1
@@ -239,6 +246,7 @@ class CostGuard:
     def snapshot(self) -> dict:
         return {"current_run_spend_usd": self.total_cost_usd, "reserved_cost_usd": self.reserved_cost_usd,
                 "historical_cached_cost_usd": self.cached_cost_usd, "calls": self.call_count,
+                "refused_calls": self.refused_calls,
                 "cache_hits": self.cached_count, "uncertain_calls": self.uncertain_calls,
                 "max_cost_usd": self.max_cost_usd}
 

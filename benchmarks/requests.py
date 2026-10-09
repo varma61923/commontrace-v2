@@ -74,6 +74,10 @@ def _local_complete(prompt: str, config: llm.Config, guard: CostGuard, *, output
 GEMINI_RETRY_STATUSES = (429, 500, 503)
 
 
+class _Refused(llm.LLMUnavailable):
+    """The provider answered with an HTTP error: it produced no completion and bills nothing."""
+
+
 def _retry_delay(body: bytes) -> float | None:
     """Seconds from a google.rpc.RetryInfo detail (e.g. "22.9s"), if the error carries one."""
     try:
@@ -90,8 +94,10 @@ def _gemini_complete(prompt: str, config: llm.Config, guard: CostGuard, *, outpu
                      temperature: float, attempts: int = 20, sleep=None) -> tuple[str, dict, float]:
     """Google AI generateContent, bounded like every benchmark call.
 
-    Retries are limited to HTTP 429/500/503, which carry an error body and no
-    completion; any other failure stops the run with an uncertain charge.
+    Retries are limited to HTTP 429/500/503. A request the provider answered
+    with an HTTP error produced no completion and is not billed, so its
+    reservation is released and later questions may still run; a timeout or
+    dropped connection leaves the charge uncertain and stops the run.
     """
     import time
 
@@ -116,7 +122,7 @@ def _gemini_complete(prompt: str, config: llm.Config, guard: CostGuard, *, outpu
                 finally:
                     exc.close()
                 if status not in GEMINI_RETRY_STATUSES or attempt == attempts - 1:
-                    raise llm.LLMUnavailable(f"bounded provider request failed (HTTP {status})") from None
+                    raise _Refused(f"bounded provider request refused (HTTP {status})") from None
                 # A quota 429 says how long to wait; otherwise back off exponentially.
                 sleep(min(120.0, hint + 1.0) if hint is not None else min(60.0, 2.0 * 2 ** attempt))
             except (OSError, ValueError):
@@ -131,6 +137,9 @@ def _gemini_complete(prompt: str, config: llm.Config, guard: CostGuard, *, outpu
         cost = (input_tokens * rates[0] + output_tokens * rates[1]) / 1_000_000
         guard.settle_call(reservation, cost)
         return answer, usage, cost
+    except _Refused as exc:
+        guard.release_call(reservation)
+        raise llm.LLMUnavailable(f"{exc}; nothing was charged") from None
     except Exception as exc:
         guard.mark_uncertain()
         if isinstance(exc, llm.LLMUnavailable):
