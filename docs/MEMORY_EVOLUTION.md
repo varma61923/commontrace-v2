@@ -196,6 +196,36 @@ anytime-valid verdict is HELPS, so proven memories stop paying for their holdout
 `python -m benchmarks.causalmembench` scores this layer against seeded ground truth
 ([results](benchmarks/causalmembench.md)).
 
+### Lesson marketplace
+
+A listing sells a lesson together with evidence that it helped elsewhere, and
+every claim in it is checkable with public keys:
+
+```bash
+commontrace market identity --role fleet --id fleet-a --organization acme   # once per role
+commontrace market attest retry-flaky-network --out acme.json               # each fleet, from its own holdout
+commontrace market certify acme.json globex.json --out cert.json            # a referee; 2+ organizations
+commontrace market publish retry-flaky-network --certificate cert.json \
+    --licence-id CC-BY-4.0 --terms "Attribution required." --price-usd 12 --out listing.json
+commontrace market verify listing.json                                      # buyer, against keys it trusts
+commontrace market install listing.json --accept-licence CC-BY-4.0          # lands at status=review
+```
+
+A fleet attests only a lesson whose holdout ran on one revision with at least 20
+resolved occasions per arm; the receipt binds the SHA-256 of the portable lesson
+text (rule, applicability and description, never local traces or history). A
+listing is accepted only when the certificate covers that exact text, rests on
+real (not simulated) evidence from two or more organizations, and its pooled
+interval excludes zero. Buyers trust publishers and referees explicitly
+(`market trust CARD --role publisher|referee`). An install is never active: the
+operator approves it, and the buyer's own holdout measures it again, because lift
+elsewhere is a reason to try a lesson, not proof that it helps here. The gateway
+serves a catalog of listings that verify locally (`/v1/market/listings`,
+`/v1/market/install` with `--allow-approval`); the Hub stores listings it
+verified against the uploading org's registered publisher key and the referees in
+`HUB_MARKET_REFEREES_FILE` (`/api/v1/market/*`). Licence terms and prices are
+recorded and signed; payment collection and revenue share are not implemented.
+
 ## Standard API and integrations
 
 Swagger UI is at `/v1/docs`; `/v1/openapi.json` describes live routes. The public
@@ -300,6 +330,13 @@ and `/v1/health/ready` (store, schemas, free disk; 503 when not ready) without a
 token. `commontrace lesson edit SLUG` opens a lesson in `$VISUAL`/`$EDITOR`, then
 validates, screens and journals the change; a hand-edited active lesson returns to
 review. `commontrace init --agent-caller NAME` mints a scoped agent key in one step.
+
+`COMMONTRACE_LLM_PROVIDER=local` (optionally `COMMONTRACE_LLM_MODEL`, default
+`Qwen/Qwen2.5-1.5B-Instruct`) runs an instruction model in-process with
+`transformers`, greedy and deterministic, so drafting, reflection and
+`conversation_bench --answer --judge exact` work with no credentials or model
+server; under `--offline` it loads cached weights only. Small CPU models are slow
+and far weaker than hosted ones.
 
 Remote clients can authenticate with your own OAuth 2.1 authorization server
 instead of the store's file token. Set `COMMONTRACE_OAUTH_ISSUER`,

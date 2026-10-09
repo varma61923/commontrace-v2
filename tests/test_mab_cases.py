@@ -44,3 +44,11 @@ def test_mab_cases_round_trip_through_the_chunk_payload(tmp_path):
                               "answers": [["x", "y"]], "metadata": {"source": "s"}}])
     cases = list(cb.mab_cases(path))
     assert cb._cases_from_payload(cb._payload_from_cases(cases)) == cases
+
+
+def test_eventqa_is_left_unscored_rather_than_counted_as_a_miss(tmp_path):
+    path = _write(tmp_path, [{"context": "Document 1: Debbie walked home.", "questions": ["What next?"],
+                              "answers": [["Debbie waited."]], "metadata": {"source": "eventqa_full"}}])
+    [(_space, _sessions, _now, [q])] = list(cb.mab_cases(path))
+    assert q["answer_scorable"] is False
+    assert cb.answer_in_any("Debbie waited.", q) is None

@@ -23,28 +23,31 @@ from __future__ import annotations
 
 import base64
 import datetime
-import hashlib
 import json
 import math
 import os
 import re
 
-from commontrace import _jsonl, frontmatter, lesson_io, memory_guard, origin, paths
+from commontrace import _jsonl, frontmatter, lesson_io, origin, paths
+from commontrace.market_listing import (  # noqa: F401 - re-exported as this module's API
+    _ID,
+    LISTING_KIND,
+    MAX_LISTING_BYTES,
+    MIN_ORGANIZATIONS,
+    PORTABLE_KEYS,
+    ROLES,
+    SCHEMA_VERSION,
+    MarketError,
+    _licence,
+    _lift_problems,
+    _screen,
+    lesson_digest,
+    listing_id,
+    summary,
+    verify,
+)
 
-SCHEMA_VERSION = 1
-LISTING_KIND = "lesson-listing"
-ROLES = {"publisher": "market-publisher", "referee": "certificate", "fleet": "fleet-effect"}
 TRUST_ROLES = {"publisher": "publishers", "referee": "referees", "fleet": "fleets"}
-PORTABLE_KEYS = ("name", "description", "tags", "agent_type", "domain", "importance",
-                 "importance_rationale", "applies_when", "do_not_apply_when")
-MIN_ORGANIZATIONS = 2
-MAX_LISTING_BYTES = 256 * 1024
-_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
-_PER = ("install", "month", "year")
-
-
-class MarketError(ValueError):
-    pass
 
 
 # ---------------------------------------------------------------- identities
@@ -170,17 +173,6 @@ def portable_lesson(root: str, slug: str) -> dict:
     return {"frontmatter": {k: fm[k] for k in PORTABLE_KEYS if k in fm}, "body": body}
 
 
-def lesson_digest(portable: dict) -> str:
-    return hashlib.sha256(origin._bytes(portable)).hexdigest()
-
-
-def _screen(portable: dict) -> None:
-    fields = {k: v for k, v in portable["frontmatter"].items() if isinstance(v, (str, list))}
-    report = memory_guard.scan_fields({**fields, "body": portable["body"]})
-    if report.should_block:
-        raise MarketError("the lesson carries a secret or an injection payload (" + report.summary() + ")")
-
-
 # --------------------------------------------------------------- the chain
 
 def measured_effect(root: str, slug: str, *, min_arm: int = 20) -> dict:
@@ -234,41 +226,6 @@ def certify(root: str, receipts: list[dict]) -> dict:
         raise MarketError(str(exc)) from None
 
 
-def _licence(licence: dict) -> dict:
-    if not isinstance(licence, dict) or not _ID.match(str(licence.get("id", ""))):
-        raise MarketError("a licence needs an id (an SPDX identifier or your own terms id)")
-    terms = str(licence.get("terms", "")).strip()
-    if not 1 <= len(terms) <= 4000:
-        raise MarketError("a licence needs terms text of 1-4000 characters")
-    out = {"id": licence["id"], "terms": terms}
-    price = licence.get("price")
-    if price is not None:
-        amount, per = price.get("amount_usd"), price.get("per", "install")
-        if (isinstance(amount, bool) or not isinstance(amount, (int, float)) or not math.isfinite(amount)
-                or not 0 <= amount <= 1_000_000 or per not in _PER):
-            raise MarketError(f"a price needs amount_usd in 0..1000000 and per in {', '.join(_PER)}")
-        out["price"] = {"amount_usd": round(float(amount), 2), "per": per}
-    return out
-
-
-def _lift_problems(certificate: dict, digest: str) -> list[str]:
-    record = certificate.get("record") if isinstance(certificate, dict) else None
-    if not isinstance(record, dict) or record.get("kind") != "replicated-lift-certificate":
-        return ["the certificate is not a replicated-lift certificate"]
-    problems = []
-    pooled = record.get("pooled") or {}
-    if record.get("artifact_sha256") != digest:
-        problems.append("the certificate measured different lesson text")
-    if record.get("simulated") is not False:
-        problems.append("the certificate rests on simulated evidence")
-    if not isinstance(pooled.get("organizations"), int) or pooled["organizations"] < MIN_ORGANIZATIONS:
-        problems.append(f"fewer than {MIN_ORGANIZATIONS} independent organizations")
-    ci_low = pooled.get("ci_low")
-    if isinstance(ci_low, bool) or not isinstance(ci_low, (int, float)) or not ci_low > 0:
-        problems.append("the pooled lift's interval does not exclude zero")
-    return problems
-
-
 def publish(root: str, slug: str, certificate: dict, licence: dict, *, now: str | None = None) -> dict:
     """Sign a listing for an active lesson whose certificate shows replicated positive lift."""
     principal = identity(root, "publisher")
@@ -286,50 +243,6 @@ def publish(root: str, slug: str, certificate: dict, licence: dict, *, now: str 
         raise MarketError("the listing exceeds 256 KiB")
     add_to_catalog(root, listing)
     return listing
-
-
-def listing_id(listing: dict) -> str:
-    return str(listing.get("digest", ""))
-
-
-def verify(listing: dict, trusted: dict[str, dict[str, origin.Principal]]) -> dict:
-    """Every check a buyer needs, against the public keys the buyer trusts."""
-    problems = []
-    if not isinstance(listing, dict) or not isinstance(listing.get("record"), dict):
-        return {"ok": False, "problems": ["not a signed listing"], "lift": None}
-    record = listing["record"]
-    if record.get("kind") != LISTING_KIND or record.get("schema_version") != SCHEMA_VERSION:
-        problems.append("unsupported listing kind or schema version")
-    if listing.get("principal") not in trusted["publisher"]:
-        problems.append(f"publisher {listing.get('principal')!r} is not trusted here")
-    elif not origin.verify(listing, trusted["publisher"], authority=ROLES["publisher"]):
-        problems.append("the publisher signature does not verify")
-    certificate = record.get("certificate") or {}
-    if certificate.get("principal") not in trusted["referee"]:
-        problems.append(f"referee {certificate.get('principal')!r} is not trusted here")
-    elif not origin.verify(certificate, trusted["referee"], authority=ROLES["referee"]):
-        problems.append("the referee signature does not verify")
-    portable = record.get("lesson")
-    if (not isinstance(portable, dict) or set(portable) != {"frontmatter", "body"}
-            or not isinstance(portable.get("frontmatter"), dict) or not isinstance(portable.get("body"), str)
-            or set(portable["frontmatter"]) - set(PORTABLE_KEYS)):
-        problems.append("the listed lesson is malformed")
-        return {"ok": False, "problems": problems, "lift": None}
-    digest = lesson_digest(portable)
-    if record.get("lesson_sha256") != digest:
-        problems.append("the lesson text does not match its digest")
-    problems += _lift_problems(certificate, digest)
-    try:
-        _screen(portable)
-    except MarketError as exc:
-        problems.append(str(exc))
-    try:
-        _licence(record.get("licence"))
-    except MarketError as exc:
-        problems.append(str(exc))
-    pooled = (certificate.get("record") or {}).get("pooled")
-    return {"ok": not problems, "problems": problems, "lift": pooled, "lesson_sha256": digest,
-            "publisher": listing.get("organization"), "licence": record.get("licence")}
 
 
 # ------------------------------------------------------------- catalog/install
@@ -367,17 +280,6 @@ def catalog(root: str, query: str = "") -> list[dict]:
         if all(w in haystack for w in words):
             out.append(listing)
     return out
-
-
-def summary(listing: dict) -> dict:
-    record = listing.get("record", {})
-    fm = record.get("lesson", {}).get("frontmatter", {})
-    pooled = (record.get("certificate", {}).get("record") or {}).get("pooled") or {}
-    return {"id": listing_id(listing), "name": fm.get("name"), "description": fm.get("description"),
-            "publisher": listing.get("organization"), "licence": (record.get("licence") or {}).get("id"),
-            "price": (record.get("licence") or {}).get("price"), "lift": pooled.get("effect"),
-            "lift_ci": [pooled.get("ci_low"), pooled.get("ci_high")],
-            "organizations": pooled.get("organizations"), "listed_at": record.get("listed_at")}
 
 
 def _installed_path(root: str) -> str:

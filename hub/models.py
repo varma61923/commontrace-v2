@@ -754,3 +754,52 @@ class PendingOutcome(Base):
     ref: Mapped[str] = mapped_column(String(255), default="", nullable=False)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
     mature_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+
+
+class MarketPublisher(Base):
+    """A marketplace publisher's Ed25519 public key, registered by the org that controls it."""
+
+    __tablename__ = "market_publishers"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    principal_id: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    organization: Mapped[str] = mapped_column(String(128), nullable=False)
+    public_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+
+
+class MarketListing(Base):
+    """A signed lesson listing whose replicated-lift certificate the Hub verified on upload."""
+
+    __tablename__ = "market_listings"
+    __table_args__ = (
+        CheckConstraint("status IN ('listed', 'withdrawn')", name="ck_market_listing_status"),
+        Index("ix_market_listings_status_created", "status", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    publisher_principal: Mapped[str] = mapped_column(String(128), nullable=False)
+    publisher_org: Mapped[str] = mapped_column(String(128), nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    description: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    tags: Mapped[list[str]] = mapped_column(JSONB, default=list, nullable=False)
+    lesson_sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    lift_effect: Mapped[float] = mapped_column(Float, nullable=False)
+    lift_ci_low: Mapped[float] = mapped_column(Float, nullable=False)
+    lift_ci_high: Mapped[float] = mapped_column(Float, nullable=False)
+    organizations: Mapped[int] = mapped_column(Integer, nullable=False)
+    licence_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    price_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    price_per: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    listing: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default="listed", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+    withdrawn_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

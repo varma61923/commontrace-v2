@@ -17,7 +17,7 @@ Legend: **Done** · **Done (this pass)** (added or fixed in this audit) ·
 | 0.1 Scoreboard with dense + cross-encoder on | **Done (this pass)**: LoCoMo (dense, dense + cross-encoder, dense + adaptive), BEAM (dense, dense + adaptive), LongMemEval (dense, paired 100-question subset) | `benchmarks/conversation_bench.py --embedder arctic-m` |
 | 0.2 Model-backed answer accuracy | **Partial**: harness, judges and cost guards exist; not run (no model credentials in this environment) | `--answer`, `benchmarks/judges/` |
 | 0.3 Competitors through the same harness | **Partial**: local raw-source mem0 and Graphiti profiles; managed services not reproduced | `benchmarks/vendor_adapters.py` |
-| 0.4 Agentic benchmarks (MemoryArena, AMA-Bench, MemGym, Evo-Memory) | **Not done**: they need their own agent environments; DolphinBench harness present | `benchmarks/dolphinbench/` |
+| 0.4 Agentic benchmarks (MemoryArena, AMA-Bench, MemGym, Evo-Memory) | **Partial (this pass)**: AMA-Bench open-ended QA (208 agent trajectories, derived step evidence) and MemoryAgentBench Accurate Retrieval (answer-in-context) run through the harness; interactive environments (MemoryArena, MemGym, Evo-Memory) still need their own agent loops | `--dataset ama`, `--dataset mab`, `benchmarks/dolphinbench/` |
 | 0.5 Leaderboard from signed manifests, `reproduce.sh` | **Done** | `benchmarks/phase0*.py`, `reproduce.sh` |
 | WS1 Multi-signal fusion, recipes, MMR, decision reranker | **Done** | `search_recipes.py` |
 | WS1 Named second-stage rerankers | **Done (this pass)** | `providers.reranker("mmr" \| "cross-encoder" \| ...)` |
@@ -34,7 +34,7 @@ Legend: **Done** · **Done (this pass)** (added or fixed in this audit) ·
 | WS4 Red-team suite | **Done (this pass)**: PoisonBench, nine attacks through the real write and recall paths; 0% attack success with an authority policy at 100% clean utility | `benchmarks/poisonbench.py`, `docs/benchmarks/poisonbench.md` |
 | WS4 Multi-principal (GateMem-style) benchmark | **Done (this pass)**: GovBench through the gateway; 100% utility, 0 leaks, 0 forgotten records delivered, certificate covers derived records | `benchmarks/govbench.py`, `docs/benchmarks/govbench.md` |
 | WS5 Federated commons, randomized response, replicated lift | **Done** (experimental privacy, stated as such) | `federation.py` |
-| WS5 Marketplace with revenue share | **Not done**: needs a hosted service and commercial terms | - |
+| WS5 Lesson marketplace | **Done (this pass)**: fleets sign holdout lift for the exact lesson text, a referee pools 2+ independent orgs into a certificate, publishers sign listings with licence and price, buyers verify Ed25519 signatures against keys they trust and install only into review; the Hub stores verified listings (RLS: public read, owner write). Payment collection and revenue share are not implemented | `marketplace.py`, `market_listing.py`, `commontrace market`, `/v1/market/*`, `hub/market.py` |
 | WS6 Foresight and sleep-time refresh | **Done** | `memory_control.offline_pass`, `dream` |
 | WS7 PyPI and npm publishing | **Done (this pass)** (workflow; first publish needs registry configuration) | `.github/workflows/release.yml` |
 | WS7 Agent self-signup, LLM wrappers, hooks, frameworks, connectors, generated SDKs | **Done** | `onboarding.py`, `completion_wrappers.py`, `frameworks.py`, `connectors/`, `sdk/` |
@@ -61,7 +61,7 @@ Legend: **Done** · **Done (this pass)** (added or fixed in this audit) ·
 | Bi-temporal fact invalidation | **Done** | `hierarchical.py`, `graph.py` |
 | Pipeline recovery | **Done** | `ingest/pipeline.py`, `jobs.py` |
 | Provider pattern | **Done**; reranker registry added **(this pass)** | `providers.py` |
-| Multi-tenancy isolation | **Done** (Hub RLS; per-owner/dataset local vector stores) | `hub/`, `providers.BackendFactory` |
+| Multi-tenancy isolation | **Done** (Hub RLS; per-owner/dataset local vector stores). **Fixed (this pass)**: the `traces` policy's commons-sharing clause also applied to DELETE, so any org could delete another org's shared rows through a query missing its own org filter; sharing is now a SELECT-only policy | `hub/`, `providers.BackendFactory`, migration `c1d4e8f2a9b6` |
 | Markdown-first with file watcher | **Done**; `lesson edit` added **(this pass)** | `watch.py`, `commands/lesson_cmd.py` |
 | Code graph | **Done** | `code_graph.py` |
 | Local/offline mode | **Done (this pass)**: `--offline` / `COMMONTRACE_OFFLINE` | `offline.py` |
@@ -127,6 +127,33 @@ the identical subset:
 | --- | --- | --- | --- |
 | Lexical | 79.76% / 84.52% | 52.94% / 52.94% | 75.00% |
 | Dense (arctic-m) | 81.80% / 89.12% | 69.61% / 75.49% | 82.14% |
+
+### Agentic benchmarks
+
+AMA-Bench (arXiv 2602.22769) open-ended QA over 208 long agent trajectories
+(actions and observations, 29,888 fields; the 63 over 100K characters are
+clipped). It ships no evidence labels, so evidence is *derived*: the action and
+observation of every step a question or reference answer names. 2,496 questions
+name a step; the rest are excluded from evidence, never counted as misses.
+Keyword arm:
+
+| AMA-Bench run | Evidence @1.5K / @4K | Recall | Causal inference | State updating | State abstraction |
+| --- | --- | --- | --- | --- | --- |
+| Fixed budget | 66.90% / 78.62% (1,435 / 3,663 tok) | 71.48% / 81.15% | 64.64% / 77.95% | 63.91% / 74.47% | 64.26% / 80.85% |
+| Adaptive budget | 72.87% / 83.93% (2,258 / 5,122 tok) | 75.61% / 84.47% | 70.68% / 85.03% | 69.11% / 81.24% | 76.28% / 85.77% |
+
+MemoryAgentBench (arXiv 2507.05257) Accurate Retrieval split: 22 contexts of
+roughly 200K-420K tokens each. Only answer-in-context is scored (is an accepted
+answer present in the delivered context); EventQA is multiple choice over
+paraphrased event summaries that never appear verbatim, so its 1,500 questions
+are left unscored, leaving 398 scorable questions:
+
+| MemoryAgentBench run | Answer in context @1.5K / @4K | RULER QA | LongMemEval (MAB) |
+| --- | --- | --- | --- |
+| Fixed budget | 58.04% / 64.07% (1,458 / 3,815 tok) | 79.59% / 86.22% | 37.13% / 42.57% |
+| Adaptive budget | 59.80% / 69.85% (2,746 / 7,574 tok) | 79.59% / 87.76% | 40.59% / 52.48% |
+
+Neither is the benchmarks' official, model-judged score.
 
 Dense retrieval closes most of the preference gap the report identified; the
 lexical arm cannot match "battery life" to a stored "power bank". The dense run's

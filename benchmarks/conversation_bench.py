@@ -378,6 +378,9 @@ def mab_cases(path: str, limit: int = 0):
     passages when it has none). The benchmark ships accepted answer strings but no
     evidence labels, so only answer-in-context is scored: whether any accepted
     answer appears in the delivered context. Evidence metrics stay undefined.
+    EventQA is multiple choice over paraphrased event summaries that never appear
+    verbatim in the book, so containment cannot score it: its questions are kept
+    but marked unscorable rather than counted as misses.
     """
     import pandas as pd
 
@@ -399,6 +402,7 @@ def mab_cases(path: str, limit: int = 0):
             questions.append({"id": f"{space}-{ids[i] if i < len(ids) else i}", "question": str(question),
                               "answer": accepted[0] if accepted else "", "answers": accepted,
                               "type": source.split("_")[0] if "_" in source else source,
+                              "answer_scorable": not source.startswith("eventqa"),
                               "evidence": set(), "sessions": set()})
         yield space, [("context", None, messages)], None, questions
         limit -= 1
@@ -408,6 +412,8 @@ def mab_cases(path: str, limit: int = 0):
 
 def answer_in_any(context: str, question: dict) -> bool | None:
     """`answer_in` over every accepted answer; None when none is short enough to check."""
+    if question.get("answer_scorable") is False:
+        return None
     checks = [answer_in(context, a) for a in (question.get("answers") or [question.get("answer", "")])]
     known = [c for c in checks if c is not None]
     return any(known) if known else None

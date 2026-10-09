@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Hub: commons sharing no longer grants DELETE.** The `traces` row-level policy put `shared_with_commons` in a `FOR ALL` USING clause, which also governs DELETE, so any org could delete another org's shared traces through a query missing its own org filter. Migration `c1d4e8f2a9b6` moves sharing into a SELECT-only policy; a regression test runs as an unprivileged role.
+
 ### Added
 
 - **Adaptive recall budgets.** `Options(adaptive_budget=True)`, `conversation recall --budget auto`, MCP `adaptive_budget` and the gateway's `adaptive_budget` size the context by question shape (summaries, orderings and counts 3x, lists and multi-facet questions 2x, capped at 12,000 tokens); `explain.budget` records the decision. Measured on full datasets with the keyword arm: BEAM 100K evidence 70.87% -> 79.37% at a 1,500 floor (2,804 mean tokens), LongMemEval-S 79.60% -> 83.02% (2,447), LoCoMo 78.69% -> 80.29% (1,697). The benchmark harness gains `--adaptive-budget`.
@@ -19,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **One-command agent signup.** `commontrace init --agent-caller NAME`.
 - **Release workflow.** Tag-triggered PyPI and npm publishing through OIDC trusted publishing.
 - **Threat model.** `SECURITY.md` documents assets, threats, controls, trust assumptions and known limits.
+- **Lesson marketplace.** `commontrace market identity|trust|attest|certify|publish|verify|install|list`: fleets sign the randomized holdout lift they measured for the exact lesson text, a referee pools two or more independent organizations into a signed replicated-lift certificate, and a publisher signs a listing with licence terms and an optional price. Buyers verify every Ed25519 signature against keys they chose to trust; install requires accepting the licence and lands at `status=review`. The gateway serves a verified catalog (`/v1/market/*`); the Hub stores verified listings (`/api/v1/market/*`, `HUB_MARKET_REFEREES_FILE`). Payment collection is not implemented.
+- **In-process local model.** `COMMONTRACE_LLM_PROVIDER=local` runs a Hugging Face instruction model with `transformers` (greedy; cache-only under `--offline`) for drafting, reflection and benchmark answering without credentials or a model server. The benchmark harness gains `--judge exact` (gold containment or token F1 >= 0.5), which is not comparable to LLM-judge accuracy.
+- **Agentic benchmark datasets.** `conversation_bench --dataset ama` (AMA-Bench trajectories with derived step evidence) and `--dataset mab` (MemoryAgentBench contexts, answer-in-context over every accepted answer; EventQA left unscored). Results are in `docs/strategy/implementation-status.md`.
 
 - **Standard OpenAPI and generated SDKs.** Typed memory requests, responses and bearer authentication, schema-enforced gateway admission, a pinned Swagger UI, and checksum-pinned upstream OpenAPI Generator tooling for TypeScript, Go, Rust, Java and Kotlin. CI compiles each generated client; generated output remains a build artifact.
 - **Learning assurance runtime.** Signed joint-policy assignment/outcome logs, preregistered fixed-horizon IPS/SNIPS/DR release gates, recorded recall and usage receipts, failure attribution, bounded action-ablation voting and signed replay incident reports. Adjacent compression levels require an independent review and a randomized comparison against both the parent and raw evidence. Store-level Ed25519 receipts, recursive forgetting certificates, protected aggregate releases and authenticated replicated-lift pooling retain explicit limits.
