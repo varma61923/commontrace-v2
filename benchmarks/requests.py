@@ -74,8 +74,20 @@ def _local_complete(prompt: str, config: llm.Config, guard: CostGuard, *, output
 GEMINI_RETRY_STATUSES = (429, 500, 503)
 
 
+def _retry_delay(body: bytes) -> float | None:
+    """Seconds from a google.rpc.RetryInfo detail (e.g. "22.9s"), if the error carries one."""
+    try:
+        details = json.loads(body).get("error", {}).get("details", [])
+        for detail in details:
+            if str(detail.get("@type", "")).endswith("google.rpc.RetryInfo"):
+                return max(0.0, float(str(detail["retryDelay"]).rstrip("s")))
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return None
+    return None
+
+
 def _gemini_complete(prompt: str, config: llm.Config, guard: CostGuard, *, output_limit: int,
-                     temperature: float, attempts: int = 12, sleep=None) -> tuple[str, dict, float]:
+                     temperature: float, attempts: int = 20, sleep=None) -> tuple[str, dict, float]:
     """Google AI generateContent, bounded like every benchmark call.
 
     Retries are limited to HTTP 429/500/503, which carry an error body and no
@@ -99,10 +111,14 @@ def _gemini_complete(prompt: str, config: llm.Config, guard: CostGuard, *, outpu
                 break
             except urllib.error.HTTPError as exc:
                 status = exc.code
-                exc.close()
+                try:
+                    hint = _retry_delay(exc.read(65536))
+                finally:
+                    exc.close()
                 if status not in GEMINI_RETRY_STATUSES or attempt == attempts - 1:
                     raise llm.LLMUnavailable(f"bounded provider request failed (HTTP {status})") from None
-                sleep(min(60.0, 2.0 * 2 ** attempt))
+                # A quota 429 says how long to wait; otherwise back off exponentially.
+                sleep(min(120.0, hint + 1.0) if hint is not None else min(60.0, 2.0 * 2 ** attempt))
             except (OSError, ValueError):
                 raise llm.LLMUnavailable("bounded provider request failed") from None
         answer, usage = llm.gemini_parse(data)

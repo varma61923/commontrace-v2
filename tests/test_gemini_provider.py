@@ -77,3 +77,11 @@ def test_other_failures_stop_the_run_with_an_uncertain_charge(monkeypatch):
     opener, guard, cfg = _bounded(monkeypatch, [_reply()])
     with pytest.raises(ValueError, match="bounds"):
         bench_requests._gemini_complete("q", cfg, guard, output_limit=10, temperature=0.0, sleep=lambda _s: None)
+
+
+def test_quota_errors_wait_the_suggested_delay():
+    body = json.dumps({"error": {"code": 429, "details": [
+        {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "22.9s"}]}}).encode()
+    assert bench_requests._retry_delay(body) == pytest.approx(22.9)
+    assert bench_requests._retry_delay(b"not json") is None
+    assert bench_requests._retry_delay(b'{"error": {}}') is None
