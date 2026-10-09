@@ -178,6 +178,10 @@ class MemoryClient:
 
                 for shared_root in memfs.attached_roots(self.root, agent_id=self.agent_id):
                     memory_control.check_action(shared_root, tool, tags=tags, context=self.context)
+            from commontrace import memory_authority, profile_activity
+
+            with memory_authority.restricted_writer(self.agent_id or "local", "agent" if self.agent_id else "operator"):
+                profile_activity.record(self.root, "action_check", tool, self.context)
 
 
 def wrap(completion: Callable, *, root: str = ".", budget: int = 600, agent_id: str = "",

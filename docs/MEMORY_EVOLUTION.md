@@ -221,3 +221,53 @@ available. Existing recorded runs predate these latest integrations and do not
 establish current accuracy gains. Public hosting, trained memory-manager policies,
 replica-wide verified erasure and research performance/security targets require
 separate evaluation and infrastructure.
+
+## Source ingestion and recovery
+
+`commontrace migrate mem0 export.json --context user:alice --dest STORE` imports
+Mem0, Letta, Zep or Graphiti JSON exports as scoped external evidence. Use
+`--dry-run` to inspect counts first. Prompts and core blocks become review drafts;
+foreign ownership labels never replace the operator's selected scope.
+`commontrace codegraph example.py --context project:work --dest STORE` parses
+imports, definitions and calls without executing code. Install `commontrace[code]`
+for native TypeScript/TSX parsing. Reingestion retires prior graph generations,
+including removed symbols, while keeping their history.
+
+`commontrace watch --daemon --dest STORE` polls and debounces canonical changes.
+Failed index rebuilds retain the previous watermark. Document ingestion commits
+each successful source separately; failed or wholly screened replacements remain
+retryable and retain the prior admitted generation. Deduplication stays within a
+source so independent documents retain their evidence attribution.
+
+`commontrace page watch company/office --question 'Where is the office?'
+--source FACT_ID --context project:work --dest STORE` registers a source-driven
+wiki refresh. The job queue, watch loop and agent heartbeats schedule updates.
+A page slug belongs to one owner scope. Each published revision binds its source
+IDs, content and scopes to a signed receipt. Served pages and history recheck
+source validity and forgetting; operator audit access can retain withdrawn history.
+
+`connect --provider gmail-mailbox --resource 'label:work' --account work
+--context user:alice --token-env MAIL_TOKEN --watch` polls native mailbox pages.
+`drive-changes` bootstraps before consuming a change feed; completed page cursors
+survive bounded runs and later failures. `github-repo` reads bounded text snapshots
+at an explicit `--ref`. GitHub push configuration additionally accepts
+`--webhook-secret-env`; `/v1/connectors/github/push` checks the raw-body HMAC,
+repository and live branch head. Replay protection binds authenticated content,
+so replacing a delivery header cannot roll back a newer snapshot.
+
+## Operational checks
+
+Profiles include scoped recent queries and allowed action checks. Their short TTL
+cache contains candidate IDs, never causal assignments or authorization decisions.
+Current/past/future query hints supplement explicit valid-time filters. Registered
+local LLM callables can run without an API key; hosted providers keep their
+credential requirements. Shared 429/503/529 cooldowns bound repeated provider
+calls, and HTTP redirects never forward provider bearer credentials.
+
+`COMMONTRACE_LOG_FILE` enables private rotating JSON logs for the gateway/CLI and
+Hub, with credential redaction and request identity. `make test-unit`,
+`make test-integration`, `make test-e2e`, `make coverage` and `make check` expose
+repeatable checks. CI enforces at least 80% overall Python coverage, retains the
+existing stricter fact-index gate, scans Python/TypeScript with CodeQL, and exports
+an OpenSSF Scorecard and dependency SBOM. Generated TypeScript additionally calls
+all eight memory operations against a live isolated gateway in CI.

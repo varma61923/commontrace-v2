@@ -35,6 +35,7 @@ from commontrace import (
     retrieval,
     retrieval_io,
 )
+from commontrace.exceptions import CommonTraceError
 from commontrace.gateway_tokens import load_or_create_token, token_path  # noqa: F401 - public compatibility
 from commontrace.measure import CausalMemory, HarmWatch
 
@@ -422,6 +423,8 @@ class Gateway:
                     summary="Request, tool and operation counters and latencies (Prometheus text; ?format=json).")
         self._route("GET", "/v1/openapi.json", self._openapi, summary="This API's schema.", auth=False)
         self._route("GET", "/v1/docs", self._swagger, summary="Swagger UI for this gateway's OpenAPI.", auth=False)
+        self._route("POST", "/v1/connectors/github/push", self._github_push,
+                    summary="HMAC-authenticated push sync for an operator-configured repository.", auth=False)
         self._route("GET", "/v1/command-catalog", self._command_catalog,
                     summary="CLI command catalog for the authenticated console.")
         self._route("POST", "/v1/explore", self._explore, request={
@@ -558,16 +561,30 @@ class Gateway:
             payload: dict = {}
             if method == "POST":
                 payload = self._parse_body(body)
+                if path == "/v1/connectors/github/push":
+                    lowered = {k.lower(): v for k, v in headers.items()}
+                    payload = {"raw": body, "signature": lowered.get("x-hub-signature-256", ""),
+                               "delivery": lowered.get("x-github-delivery", ""),
+                               "event": lowered.get("x-github-event", "")}
                 # Never accept caller-supplied internal authorization context.
                 payload.pop("_principal", None)
                 if principal is not None:
                     payload["_principal"] = principal
-            result = handler(payload, parse_qs(split.query))
+            from commontrace import telemetry
+
+            with telemetry.bind(user_id=principal["id"] if principal else
+                                "operator" if spec["auth"] else "anonymous"):
+                result = handler(payload, parse_qs(split.query))
             if isinstance(result, Response):
                 return result
             return _json(200, result)
         except TransientAuthError as exc:
             return _json(503, {"error": {"code": "transient_auth_error", "message": str(exc)}})
+        except CommonTraceError as exc:
+            response = _json(exc.status_code, {"error": exc.public()})
+            if exc.retryable:
+                response.headers["Retry-After"] = str(max(1, min(60, int(getattr(exc, "retry_after", 1)))))
+            return response
         except ApiError as exc:
             return _json(exc.status, {"error": {"code": exc.code, "message": exc.message}})
         except Exception as exc:  # noqa: BLE001 - never leak a traceback to a client
@@ -773,6 +790,9 @@ class Gateway:
                         action_class=body.get("action_class", ""))}
             if operation == "check-action":
                 memory_control.check_action(self.root, body.get("tool", ""), context=context, tags=body.get("tags", []))
+                from commontrace import profile_activity
+
+                profile_activity.record(self.root, "action_check", body.get("tool", ""), context)
                 return {"allowed": True}
             if operation == "propose":
                 return memory_control.proposal(self.root, body.get("text", ""),
@@ -1035,6 +1055,19 @@ class Gateway:
             "tier": capabilities["tier"],
             "capabilities": capabilities,
         }
+
+    def _github_push(self, body, _query):
+        from commontrace.connectors import knowledge_streams
+
+        try:
+            return knowledge_streams.github_push(self.root, body["raw"], body["signature"],
+                                                  body["delivery"], body["event"])
+        except PermissionError:
+            raise ApiError(403, "webhook_signature", "Webhook identity or signature refused") from None
+        except FileNotFoundError:
+            raise ApiError(404, "webhook_unconfigured", "Repository webhook is not configured") from None
+        except ValueError:
+            raise ApiError(400, "webhook_payload", "Webhook payload or repository read refused") from None
 
     def _capabilities(self, _body, _query) -> dict:
         capabilities = self._capability_matrix()

@@ -324,7 +324,13 @@ def test_public_enrollment_cannot_read_owner_global_memory(tmp_path):
     for operation in ("reflect", "profile", "search"):
         response = gw.handle("POST", "/v1/memory/" + operation, headers, b'{"query":"Orion"}')
         assert response.status == 200
-        assert b"Orion" not in response.body
+        value = json.loads(response.body)
+        if operation == "profile":
+            assert not value["static"] and not value["dynamic"]
+            assert all(row["text"] == "Orion" for row in value["recent_activity"])
+        else:
+            assert b"Orion" not in response.body
+        assert b"acquisition" not in response.body
     assert gw.handle("POST", "/v1/memory/add", headers, b'{"text":"Own Orion note"}').status == 200
     response = gw.handle("POST", "/v1/memory/search", headers, b'{"query":"Orion"}')
     assert b"Own Orion" in response.body and b"Private Orion" not in response.body

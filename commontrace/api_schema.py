@@ -98,6 +98,10 @@ def components() -> dict:
         "search": {"results": array("Evidence")},
         "profile": {"static": array("Evidence"), "dynamic": array("Evidence"),
                     "directives": array("ControlRecord"), "occasion_id": {"type": "string"},
+                    "recent_activity": {"type": "array", "items": {"type": "object", "properties": {
+                        "id": {"type": "string"}, "activity_type": {"type": "string"},
+                        "text": {"type": "string"}, "recorded_at": {"type": "string"}},
+                        "required": ["id", "activity_type", "text", "recorded_at"]}},
                     "withheld": string_array},
         "reflect": {"context": {"type": "string"}, "tokens_estimate": {"type": "integer"},
                     "budget": {"type": "integer"}, "evidence": array("Evidence"),

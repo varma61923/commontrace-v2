@@ -384,22 +384,49 @@ class _RedactingFormatter(logging.Formatter):
 _CONFIGURED = {"done": False}
 
 
-def configure_logging(fmt: str | None = None, level: str | None = None, stream=None) -> None:
+def configure_logging(fmt: str | None = None, level: str | None = None, stream=None, *,
+                      log_file: str | None = None, max_bytes: int = 50*1024*1024, backups: int = 5,
+                      _logger_name: str = "commontrace") -> None:
     """Configure the `commontrace` logger once (env: COMMONTRACE_LOG_FORMAT=json|text,
     COMMONTRACE_LOG_LEVEL). Without either variable nothing changes."""
     fmt = (fmt or os.environ.get("COMMONTRACE_LOG_FORMAT", "")).strip().lower()
     level = (level or os.environ.get("COMMONTRACE_LOG_LEVEL", "")).strip().upper()
-    if not fmt and not level:
+    log_file = log_file or os.environ.get("COMMONTRACE_LOG_FILE", "").strip()
+    if not fmt and not level and not log_file:
         return
-    logger = logging.getLogger("commontrace")
+    if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes < 1024 or (
+            isinstance(backups, bool) or not isinstance(backups, int) or not 1 <= backups <= 10):
+        raise ValueError("rotation requires max_bytes >= 1024 and 1-10 backups")
+    logger = logging.getLogger(_logger_name)
     for handler in list(logger.handlers):
         if getattr(handler, "_commontrace", False):
             logger.removeHandler(handler)
+            handler.close()
     handler = logging.StreamHandler(stream)
     handler._commontrace = True  # type: ignore[attr-defined]
     handler.setFormatter(JsonFormatter() if fmt == "json" else
                          _RedactingFormatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
     logger.addHandler(handler)
+    if log_file:
+        from logging.handlers import RotatingFileHandler
+
+        from commontrace import paths
+
+        safe = paths.safe_prepare_output_path(log_file, allow_unlink_leaf=False)
+        # Existing symlink backups could otherwise become unintended rotation targets.
+        if any(os.path.islink(safe+"."+str(i)) for i in range(1, backups+1)):
+            raise ValueError("log backups cannot be symbolic links")
+        class PrivateRotatingFileHandler(RotatingFileHandler):
+            def _open(self):
+                flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+                fd = os.open(self.baseFilename, flags, 0o600)
+                os.chmod(self.baseFilename, 0o600)
+                return os.fdopen(fd, self.mode, encoding=self.encoding, errors=self.errors)
+        file_handler = PrivateRotatingFileHandler(safe, maxBytes=max_bytes, backupCount=backups, encoding="utf-8")
+        os.chmod(safe, 0o600)
+        file_handler._commontrace = True  # type: ignore[attr-defined]
+        file_handler.setFormatter(JsonFormatter())
+        logger.addHandler(file_handler)
     logger.setLevel(getattr(logging, level, logging.INFO) if level else logging.INFO)
     logger.propagate = False
     _CONFIGURED["done"] = True

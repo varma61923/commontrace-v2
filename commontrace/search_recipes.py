@@ -109,6 +109,13 @@ def search(root: str, query: str, *, recipe: str = "balanced", scope: str = "", 
         raise ValueError(f"unknown search recipe: {recipe}")
     if not isinstance(limit, int) or isinstance(limit, bool) or not 0 <= limit <= 1000:
         raise ValueError("limit must be an integer in 0..1000")
+    from commontrace.temporal_intent import resolve
+
+    intent = resolve(query)
+    if as_of is None and intent["as_of"]:
+        as_of = intent["as_of"]
+    if recipe == "balanced" and intent["mode"] == "current":
+        recipe = "recent"
     cfg = RECIPES[recipe]
     if recipe == "decision" and utility is None:
         from commontrace.causal_policy import utility_priors

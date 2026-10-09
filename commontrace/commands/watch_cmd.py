@@ -13,9 +13,10 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Single-pass scan of memory/lessons + memory/graph; rebuild the "
              "lesson cache when anything changed. Re-run via cron/systemd.",
     )
-    p.add_argument("--once", action="store_true",
-                   help="Run one pass and exit (the only mode; kept for "
-                        "forward-compat with a future long-running watcher).")
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument("--once", action="store_true", help="Run one pass and exit (default).")
+    mode.add_argument("--daemon", action="store_true", help="Watch until interrupted; debounce direct Markdown edits.")
+    p.add_argument("--debounce", type=float, default=.5, help="Quiet period in seconds (daemon only).")
     p.add_argument("--state-file", default=None,
                    help="Path to the watch state JSON (default: memory/.cache/watch_state.json).")
     p.add_argument("--dest", default=None)
@@ -24,7 +25,13 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
 
 def run(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
+    if getattr(args, "daemon", False):
+        watch_mod.run_forever(root, state_file=args.state_file, debounce=args.debounce)
+        return 0
     result = watch_mod.reconcile(root, getattr(args, "state_file", None))
+    if not result.get("cache", {}).get("ok"):
+        print("[commontrace] watch: rebuild failed; watermark retained for retry.")
+        return 1
     changed = result.get("changed", [])
     if not changed:
         print("[commontrace] watch: no changes.")

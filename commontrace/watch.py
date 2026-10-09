@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import glob
 import json
+import math
 import os
+import threading
+import time
 
 DEFAULT_STATE_REL = os.path.join("memory", ".cache", "watch_state.json")
 
@@ -16,6 +19,10 @@ def _watched_files(root: str) -> list[str]:
     root = os.path.abspath(root)
     patterns = [
         os.path.join(root, "memory", "lessons", "*.md"),
+        os.path.join(root, "memory", "traces", "*.md"),
+        os.path.join(root, "memory", "pages", "*.md"),
+        os.path.join(root, "memory", "records", "*.md"),
+        os.path.join(root, "memory", "facts", "*.jsonl"),
         os.path.join(root, "memory", "graph", "*.jsonl"),
     ]
     out: list[str] = []
@@ -60,15 +67,10 @@ def load_state(state_file: str) -> dict:
 
 
 def save_state(state_file: str, snapshot: dict) -> None:
-    try:
-        os.makedirs(os.path.dirname(state_file), exist_ok=True)
-        tmp = state_file + ".tmp"
-        with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
-            json.dump(snapshot, fh, indent=2, sort_keys=True)
-            fh.write("\n")
-        os.replace(tmp, state_file)
-    except OSError:
-        pass
+    from commontrace import _jsonl, paths
+
+    path = paths.safe_prepare_output_path(state_file)
+    _jsonl.write_json(path, snapshot)
 
 
 def scan(root: str, state_file: str | None = None) -> list[str]:
@@ -112,14 +114,50 @@ def _rebuild_lesson_cache(root: str) -> dict:
 
 
 def reconcile(root: str, state_file: str | None = None) -> dict:
-    """Single pass: ``scan`` + conditional cache rebuild."""
+    """Commit the observed generation only after a successful cascade.
+
+    The pre-build snapshot is recorded: edits made during the build trigger
+    another pass. Failures retain the previous watermark and remain retryable.
+    """
     root = os.path.abspath(root)
     try:
-        changed = scan(root, state_file)
+        from commontrace import _jsonl
+
+        state_path = os.path.abspath(state_file) if state_file else default_state_file(root)
+        with _jsonl.locked(state_path):
+            previous, current = load_state(state_path), _snapshot(root)
+            changed = sorted(k for k in previous.keys() | current.keys() if previous.get(k) != current.get(k))
+            if not changed:
+                return {"changed": [], "rebuilt": False,
+                        "cache": {"ok": True, "method": "none", "reason": "no changes"}}
+            cache = _rebuild_lesson_cache(root)
+            if cache.get("ok"):
+                from commontrace.wiki import enqueue_changed
+
+                enqueue_changed(root)
+                save_state(state_path, current)
+            return {"changed": changed, "rebuilt": bool(cache.get("ok")), "cache": cache}
     except Exception as exc:  # noqa: BLE001
         return {"changed": [], "rebuilt": False, "cache": {"ok": False, "error": str(exc)}}
-    if not changed:
-        return {"changed": [], "rebuilt": False,
-                "cache": {"ok": True, "method": "none", "reason": "no changes"}}
-    cache = _rebuild_lesson_cache(root)
-    return {"changed": changed, "rebuilt": bool(cache.get("ok")), "cache": cache}
+
+
+def run_forever(root: str, *, state_file: str | None = None, debounce: float = .5,
+                interval: float = .1, stop: threading.Event | None = None, on_result=None) -> None:
+    """Portable polling daemon. Quiet-period debounce; synchronous work drains before exit."""
+    if any(isinstance(v, bool) or not isinstance(v, (float, int)) or not math.isfinite(v) or v <= 0
+           for v in (debounce, interval)):
+        raise ValueError("watch intervals must be finite and positive")
+    stop = stop or threading.Event()
+    last = _snapshot(root)
+    pending = True
+    changed_at = time.monotonic()
+    while not stop.wait(interval):
+        current = _snapshot(root)
+        if current != last:
+            last, changed_at, pending = current, time.monotonic(), True
+        if pending and time.monotonic()-changed_at >= debounce:
+            result = reconcile(root, state_file)
+            if on_result:
+                on_result(result)
+            pending = not result["cache"].get("ok", False)
+            changed_at = time.monotonic()

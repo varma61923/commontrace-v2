@@ -14,9 +14,12 @@ from contextvars import ContextVar
 from datetime import datetime, timezone
 
 from commontrace import _jsonl, frontmatter, hierarchical, lesson_cache, observations, paths
+from commontrace.runtime_cache import RuntimeCache
 from commontrace.search_recipes import search, terms
 
-KINDS = ("directive", "mental-model", "proposal", "foresight", "watermark", "compression")
+KINDS = ("directive", "mental-model", "proposal", "foresight", "watermark", "compression", "wiki")
+_PROFILE_ORDER = RuntimeCache(max_entries=128, max_bytes=4*1024*1024, ttl=30,
+                             weigh=lambda key, value: len(repr(key).encode())+sum(len(v)+64 for v in value))
 DIMENSIONS = ("user", "agent", "app", "project", "session")
 REQUIRED_PRINCIPAL_SCOPE: ContextVar[str] = ContextVar("commontrace_required_principal_scope", default="")
 
@@ -144,7 +147,14 @@ def profile(root: str, query: str, *, context: list[str] | None = None, limit: i
              if f.status == "active" and matches(f.scopes, context or [])
              and memory_authority.permits(root, f, action_class=action_class)]
     q = set(terms(query))
-    facts.sort(key=lambda f: (-len(q & set(terms(f.statement))), -f.confidence, f.id))
+    # Cache only ranking IDs. Canonical expiry, revocation and scope admission
+    # above are repeated on every call; holdout assignments below are never cached.
+    key = (os.path.abspath(root), query, limit, tuple(context or []), action_class,
+           tuple((f.id, f.revision, f.confidence, f.stability) for f in facts))
+    order = _PROFILE_ORDER.get_or_load(key, lambda: tuple(f.id for f in sorted(
+        facts, key=lambda f: (-len(q & set(terms(f.statement))), -f.confidence, f.id))))
+    priority = {fid: index for index, fid in enumerate(order)}
+    facts.sort(key=lambda f: priority[f.id])
     def render(f):
         return {"id": f.id, "text": f.statement, "valid_from": f.valid_from,
                 "recorded_at": f.created_at, "expires_at": f.expires_at, "sources": f.source_traces}
@@ -158,10 +168,15 @@ def profile(root: str, query: str, *, context: list[str] | None = None, limit: i
                            text=lambda f: f.statement, screen=True, check_every=1).recall_detailed(
                                query, occasion_id=occasion_value)
     eligible = {f.id for f in recalled.items}
+    from commontrace import profile_activity
+
+    if query:
+        profile_activity.record(root, "query", query, context or [])
     return {"static": [render(f) for f in selected if f.stability == "stable" and f.id in eligible],
             "dynamic": [render(f) for f in selected if f.stability != "stable" and f.id in eligible],
             "directives": records(root, "directive", context=context or []), "occasion_id": occasion_value,
-            "withheld": [f.id for f in selected if f.id not in eligible and f.id not in recalled.withdrawn]}
+            "withheld": [f.id for f in selected if f.id not in eligible and f.id not in recalled.withdrawn],
+            "recent_activity": profile_activity.recent(root, context or [], limit=min(limit, 100))}
 
 
 def reflect(root: str, query: str, *, context: list[str] | None = None, budget: int = 600,
@@ -396,9 +411,10 @@ def standing_question(root: str, question: str, *, context: list[str] | None = N
 
 def enqueue_refreshes(root: str, *, context: list[str] | None = None) -> int:
     from commontrace import jobs
+    from commontrace.wiki import enqueue_changed
 
     now = datetime.now(timezone.utc)
-    queued = 0
+    queued = enqueue_changed(root, context=context)
     for row in records(root, "mental-model", context=context):
         last = row["data"].get("refreshed_at")
         if last is None or (now - lesson_cache.parse_moment(last)).total_seconds() >= row["data"]["refresh_seconds"]:

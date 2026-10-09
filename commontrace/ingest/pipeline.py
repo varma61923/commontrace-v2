@@ -343,12 +343,19 @@ class Pipeline:
             result.skipped_unsupported += int(stats.get("unsupported", 0) or 0)
             result.truncated += int(stats.get("truncated", 0) or 0)
             commit = getattr(self.loader, "commit", None)
-            if commit is not None and not any(e.startswith("fact error") for e in result.errors):
+            ledger = getattr(self.loader, "ledger", None)
+            if ledger is not None:
+                for source, row in list(ledger.pending.items()):
+                    if row.get("status") == "ingested":
+                        ledger.note(source, "error", detail={"stage": "no-accepted-chunks"})
+                        getattr(self.submitter, "failed_sources", set()).add(source)
+            if commit is not None and (getattr(self.submitter, "acknowledged", False) or not result.errors):
                 commit()
             self.last_stats = self._stats()
 
             if job_id and target_root:
-                final_stage = "failed" if result.errors and not result.chunks_extracted else "done"
+                final_stage = "failed" if (getattr(self.submitter, "failed_sources", set()) or
+                                           result.errors and not result.chunks_extracted) else "done"
                 catalog.update_ingest_job(
                     target_root, job_id, final_stage,
                     message=f"Ingestion {final_stage}: {result.chunks_extracted} chunk(s) processed",
@@ -534,17 +541,22 @@ class Ledger:
         merged.update(self.pending)
         return [dict(row) for row in merged.values()]
 
-    def commit(self) -> None:
-        if not self.pending:
+    def commit(self, sources: Sequence[str] | None = None) -> None:
+        """Publish only acknowledged document generations when sources are supplied."""
+        selected = dict(self.pending) if sources is None else {
+            os.path.abspath(source): self.pending[os.path.abspath(source)]
+            for source in sources if os.path.abspath(source) in self.pending}
+        if not selected:
             return
         from commontrace import _jsonl
 
         with _jsonl.locked(self.path):
             current = {r["path"]: r for r in _jsonl.read_rows(self.path) if isinstance(r, dict) and r.get("path")}
-            current.update(self.pending)
+            current.update(selected)
             _jsonl.write_rows(self.path, list(current.values()))
-        self.rows.update(self.pending)
-        self.pending.clear()
+        self.rows.update(selected)
+        for key in selected:
+            self.pending.pop(key, None)
 
 
 # --- loaders ----------------------------------------------------------------------
@@ -708,7 +720,7 @@ class Deduplicator(Transform):
 
     def apply(self, chunks: Iterable[Chunk]) -> Iterable[Chunk]:
         for chunk in chunks:
-            key = _fingerprints.content_hash(chunk.content)
+            key = (chunk.source_path, _fingerprints.content_hash(chunk.content))
             if key in self._seen:
                 self.stats["duplicates"] += 1
                 continue
@@ -818,20 +830,33 @@ class SourceFactSubmitter(Submitter):
     root: str
     scope: str = ""
     connector: str = "pipeline"
+    ledger: Ledger | None = None
+    acknowledged: bool = field(default=False, init=False)
+    failed_sources: set[str] = field(default_factory=set, init=False)
 
     def submit(self, chunks: Iterable[Chunk]) -> IngestionResult:
         from commontrace.connectors.base import new_run_id, record_chunks
 
         result = IngestionResult(source_path="pipeline", source_type=self.connector)
+        self.acknowledged = False
+        self.failed_sources.clear()
         by_source: dict[str, list[Chunk]] = {}
         for chunk in chunks:
             by_source.setdefault(chunk.source_path, []).append(chunk)
             result.chunks_extracted += 1
         run_id = new_run_id()
         for source, items in by_source.items():
+            errors_before = len(result.errors)
             record_chunks(self.root, items, source_id=f"file:{source}", scope=self.scope, run_id=run_id,
                           connector=self.connector, result=result)
+            if len(result.errors) != errors_before:
+                self.failed_sources.add(source)
+            if self.ledger is not None:
+                if source in self.failed_sources:
+                    self.ledger.note(source, "error", detail={"stage": "submission"})
+                self.ledger.commit([source])
         result.source_path = ",".join(sorted(by_source))[:500]
+        self.acknowledged = True
         return result
 
 
@@ -843,11 +868,16 @@ class ConversationSubmitter(Submitter):
     root: str
     space: str
     speaker: str = "document"
+    ledger: Ledger | None = None
+    acknowledged: bool = field(default=False, init=False)
+    failed_sources: set[str] = field(default_factory=set, init=False)
 
     def submit(self, chunks: Iterable[Chunk]) -> IngestionResult:
         from commontrace.conversation import ConversationError, Store
 
         result = IngestionResult(source_path="pipeline", source_type="conversation")
+        self.acknowledged = False
+        self.failed_sources.clear()
         by_source: dict[str, list[Chunk]] = {}
         for chunk in chunks:
             by_source.setdefault(chunk.source_path, []).append(chunk)
@@ -863,9 +893,16 @@ class ConversationSubmitter(Submitter):
                                                "id": c.chunk_id + ":" + hashlib.sha256(c.content.encode())
                                                .hexdigest()[:8]} for c in items])
                 except ConversationError as exc:
+                    self.failed_sources.add(source)
                     result.errors.append(f"{source}: {exc}")
+                    if self.ledger is not None:
+                        self.ledger.note(source, "error", detail={"stage": "submission"})
+                        self.ledger.commit([source])
                     continue
                 result.chunks_extracted += out["added"]
+                if self.ledger is not None:
+                    self.ledger.commit([source])
+        self.acknowledged = True
         return result
 
 
@@ -933,6 +970,6 @@ def create_document_pipeline(
     if aliases:
         transforms.append(AliasCanonicalizer(aliases=aliases))
     transforms.append(LimitGuard(max_chars=chunk_size * 2))
-    submitter: Submitter = ConversationSubmitter(dest_root, space) if space else \
-        SourceFactSubmitter(dest_root, scope=scope, connector="documents")
+    submitter: Submitter = ConversationSubmitter(dest_root, space, ledger=ledger) if space else \
+        SourceFactSubmitter(dest_root, scope=scope, connector="documents", ledger=ledger)
     return Pipeline(loader=loader, transforms=transforms, submitter=submitter)

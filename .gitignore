@@ -66,3 +66,4 @@ htmlcov/
 sdk/rust/target/
 sdk/jvm/target/
 sdk/generated/
+coverage.xml

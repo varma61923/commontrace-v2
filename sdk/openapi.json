@@ -368,6 +368,32 @@
           "occasion_id": {
             "type": "string"
           },
+          "recent_activity": {
+            "items": {
+              "properties": {
+                "activity_type": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "recorded_at": {
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "activity_type",
+                "text",
+                "recorded_at"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
           "static": {
             "items": {
               "$ref": "#/components/schemas/Evidence"
@@ -386,6 +412,7 @@
           "dynamic",
           "directives",
           "occasion_id",
+          "recent_activity",
           "withheld"
         ],
         "type": "object"

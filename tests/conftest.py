@@ -11,6 +11,20 @@ os.environ.setdefault("COMMONTRACE_DEFAULT_RERANK", "none")
 os.environ.setdefault("COMMONTRACE_WARM", "0")
 
 
+def pytest_collection_modifyitems(items):
+    """Classify existing contracts without moving files or changing their execution."""
+    integration = {"test_optional_memory_backends.py", "test_new_framework_sdks.py", "test_vector_store.py",
+                   "test_vector_engines.py", "test_postgres_vector_snapshots.py"}
+    for item in items:
+        path = str(item.path).replace(os.sep, "/")
+        if "/e2e/" in path or "/e2e_tests/" in path or path.endswith("test_ui_browser.py"):
+            item.add_marker(pytest.mark.e2e)
+        elif os.path.basename(path) in integration or "postgres" in os.path.basename(path):
+            item.add_marker(pytest.mark.integration)
+        elif not any(item.get_closest_marker(name) for name in ("unit", "integration", "e2e")):
+            item.add_marker(pytest.mark.unit)
+
+
 def _write_frontmatter_file(path, fm, body):
     content = "---\n" + yaml.safe_dump(fm, sort_keys=False, allow_unicode=True) + "---\n\n" + body
     path.write_text(content, encoding="utf-8")

@@ -8,6 +8,7 @@ import os
 import sys
 
 from commontrace import PROTOCOL_VERSION, __version__
+from commontrace.exceptions import CommonTraceError
 
 try:
     from commontrace.frontmatter import FrontmatterError
@@ -24,7 +25,8 @@ _COMMANDS = (
     "dream", "bill", "conformance", "gate", "prove", "taxonomy", "impact", "pilot", "sync", "redact", "doctor",
     "block", "fact", "graph", "ingest", "agent", "watch", "daemon", "viz", "conversation", "memory", "recall", "jobs",
     "ontology", "community", "observation", "saga", "page", "session_ledger",
-    "procedural", "sql_query", "defense", "evolve", "policy", "assurance", "compression", "up", "connect",
+    "procedural", "sql_query", "defense", "evolve", "policy", "assurance", "compression", "up", "connect", "migrate",
+    "codegraph",
 )
 
 
@@ -186,7 +188,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     args = parser.parse_args(argv)
     try:
-        if os.environ.get("COMMONTRACE_LOG_FORMAT") or os.environ.get("COMMONTRACE_LOG_LEVEL") or \
+        if os.environ.get("COMMONTRACE_LOG_FILE") or os.environ.get("COMMONTRACE_LOG_FORMAT") or \
+                os.environ.get("COMMONTRACE_LOG_LEVEL") or \
                 os.environ.get("COMMONTRACE_OTEL") or os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"):
             from commontrace import telemetry
 
@@ -207,6 +210,10 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("\n[commontrace] interrupted.", file=sys.stderr)
         return 130
+    except CommonTraceError as exc:
+        safe = exc.public()
+        print(f"[commontrace] {safe['code']}: {safe['message']} {safe['remediation']}", file=sys.stderr)
+        return 1
     except BrokenPipeError:
         try:
             os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())

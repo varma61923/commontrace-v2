@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 
 from commontrace import llm_cache as llm_cache_mod
 from commontrace.circuit_breaker import CircuitBreaker, CircuitOpenError
+from commontrace.exceptions import InfrastructureError
 from commontrace.retry import call_with_retries, is_retryable
 from commontrace.runtime_cache import RuntimeCache
 from commontrace.secrets_provider import env_secret
@@ -27,6 +28,7 @@ REQUIRED_KEYS = ("rule", "applies_when", "do_not_apply_when", "evidence")
 
 _CIRCUITS = RuntimeCache[CircuitBreaker](max_entries=128, max_bytes=128 * 1024, ttl=3600,
                                        weigh=lambda _key, _value: 1024)
+_OVERLOADS = RuntimeCache(max_entries=128, max_bytes=128 * 1024, ttl=3600, weigh=lambda _key, _value: 1024)
 
 
 def _transient_provider_failure(error: BaseException) -> bool:
@@ -46,18 +48,30 @@ def _transient_provider_failure(error: BaseException) -> bool:
 
 
 def _provider_call(cfg: Config, prompt: str, caller) -> tuple[str, dict]:
-    if os.environ.get("COMMONTRACE_LLM_CIRCUIT_BREAKER", "1").strip().lower() in ("0", "false", "off", "no"):
-        return caller(cfg, prompt)
+    from commontrace.overload import OverloadPolicy
+
     key = (cfg.provider, cfg.model, cfg.base_url, cfg.region, cfg.project, cfg.cache_namespace,
            hashlib.sha256(cfg.api_key.encode("utf-8")).hexdigest())
+    overload = _OVERLOADS.get_or_load(key, OverloadPolicy)
+    def dispatch():
+        overload.admit()
+        try:
+            value = caller(cfg, prompt)
+        except Exception as exc:
+            overload.on_error(exc)
+            raise
+        overload.on_success()
+        return value
+    if os.environ.get("COMMONTRACE_LLM_CIRCUIT_BREAKER", "1").strip().lower() in ("0", "false", "off", "no"):
+        return dispatch()
     circuit = _CIRCUITS.get_or_load(key, CircuitBreaker)
     try:
-        return circuit.call(lambda: caller(cfg, prompt), transient=_transient_provider_failure)
+        return circuit.call(dispatch, transient=_transient_provider_failure)
     except CircuitOpenError as exc:
         raise LLMUnavailable(f"provider temporarily unavailable; retry in {exc.retry_after:.1f}s") from None
 
 
-class LLMUnavailable(RuntimeError):
+class LLMUnavailable(InfrastructureError):
     ...
 
 
@@ -79,7 +93,9 @@ class Config:
 def load_config() -> Config:
     """Provider settings from the environment."""
     provider = os.environ.get("COMMONTRACE_LLM_PROVIDER", DEFAULT_PROVIDER).strip().lower()
-    if provider not in _SUPPORTED_PROVIDERS:
+    from commontrace.providers import LLM_CREDENTIALS, LLMS
+
+    if provider not in (*_SUPPORTED_PROVIDERS, *LLMS.names()):
         raise LLMUnavailable(
             f"COMMONTRACE_LLM_PROVIDER={provider!r} is not supported "
             f"(use one of: {', '.join(_SUPPORTED_PROVIDERS)})."
@@ -91,7 +107,7 @@ def load_config() -> Config:
         api_key = env_secret("COMMONTRACE_LLM_API_KEY").strip()
     except RuntimeError:
         raise LLMUnavailable("configured LLM API secret could not be resolved") from None
-    if not api_key and provider not in _CLOUD_PROVIDERS and not ollama_alias:
+    if not api_key and provider not in _CLOUD_PROVIDERS and not ollama_alias and LLM_CREDENTIALS.get(provider, True):
         raise LLMUnavailable(
             "COMMONTRACE_LLM_API_KEY is not set -- no LLM-assisted draft is possible."
         )
@@ -151,25 +167,33 @@ def _post_json(url: str, headers: dict, payload: dict) -> dict:
     if not _is_http_url(url):
         raise LLMUnavailable(f"refusing a non-http(s) URL: {url!r}")
     body = json.dumps(payload).encode("utf-8")
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, hdrs, newurl):
+            return None
+    opener = urllib.request.build_opener(NoRedirect)
+    def read_bounded(response) -> str:
+        raw = response.read(8*1024*1024+1)
+        if len(raw) > 8*1024*1024:
+            raise LLMUnavailable("provider response exceeds 8 MiB")
+        return raw.decode("utf-8")
 
     def _once() -> str:
         request = urllib.request.Request(url, data=body, headers=headers, method="POST")
         try:
-            with urllib.request.urlopen(request, timeout=_TIMEOUT_SECONDS) as resp:  # nosec B310 - scheme checked above
-                return resp.read().decode("utf-8")
+            with opener.open(request, timeout=_TIMEOUT_SECONDS) as resp:  # nosec B310 - scheme checked above
+                return read_bounded(resp)
         except urllib.error.HTTPError as exc:
-            bodies.append(exc.read().decode("utf-8", errors="replace")[:500])
+            exc.close()
             raise
 
-    bodies: list[str] = []
     # POST lesson drafts are idempotent (same payload → same draft text), so a
     # 5xx may be retried; 429 always is. Non-JSON/4xx surface immediately.
     raw, error = call_with_retries(_once, max_retries=4, idempotent=True)
     if error is not None:
         if isinstance(error, urllib.error.HTTPError):
             raise LLMUnavailable(
-                f"{url} returned HTTP {error.code}: {bodies[-1] if bodies else ''}") from error
-        raise LLMUnavailable(f"could not reach {url}: {error}") from error
+                f"Provider returned HTTP {error.code}") from error
+        raise LLMUnavailable("Provider request failed") from error
     try:
         return json.loads(raw)
     except ValueError as exc:
@@ -364,9 +388,11 @@ def complete(prompt: str, config: Config | None = None) -> tuple[str, dict]:
         return runtime.complete(prompt, purpose=PURPOSE.get(), config=config)
     cfg = config or load_config()
     cache = llm_cache_mod.LLMCache() if llm_cache_mod.enabled() else None
-    caller = {"anthropic": _call_anthropic, "openai-compatible": _call_openai_compatible,
+    from commontrace.providers import llm_caller
+
+    caller = llm_caller(cfg.provider, {"anthropic": _call_anthropic, "openai-compatible": _call_openai_compatible,
               "ollama": _call_openai_compatible,
-              "bedrock": _call_bedrock, "vertex": _call_vertex}[cfg.provider]
+              "bedrock": _call_bedrock, "vertex": _call_vertex})
     # IAM/ADC identity may change independently of these routing fields. Require
     # an owner-supplied tenant/account namespace before caching cloud SDK calls.
     if cache is None or (cfg.provider in _CLOUD_PROVIDERS and not cfg.cache_namespace):

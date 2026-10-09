@@ -188,7 +188,7 @@ class TestHttpLayer:
                 "usage": {"input_tokens": 10, "output_tokens": 5},
             }).encode("utf-8"))
 
-        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(urllib.request, "build_opener", lambda *_args: type("Opener", (), {"open": staticmethod(fake_urlopen)})())
         result = llm.draft("do the thing", config=_config(model="claude-sonnet-5"))
         assert captured["url"] == llm._ANTHROPIC_URL
         assert captured["headers"]["x-api-key"] == "k"
@@ -207,7 +207,7 @@ class TestHttpLayer:
                 "choices": [{"message": {"content": json.dumps(_GOOD)}}],
             }).encode("utf-8"))
 
-        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(urllib.request, "build_opener", lambda *_args: type("Opener", (), {"open": staticmethod(fake_urlopen)})())
         config = _config(provider="openai-compatible", base_url="http://localhost:11434/v1")
         llm.draft("do the thing", config=config)
         assert captured["url"] == "http://localhost:11434/v1/chat/completions"
@@ -217,7 +217,7 @@ class TestHttpLayer:
         def fake_urlopen(request, timeout=None):
             raise urllib.error.HTTPError(request.full_url, 401, "unauthorized", {}, io.BytesIO(b"bad key"))
 
-        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(urllib.request, "build_opener", lambda *_args: type("Opener", (), {"open": staticmethod(fake_urlopen)})())
         with pytest.raises(llm.LLMUnavailable, match="401"):
             llm.draft("prompt", config=_config())
 
@@ -225,8 +225,8 @@ class TestHttpLayer:
         def fake_urlopen(request, timeout=None):
             raise urllib.error.URLError("no route to host")
 
-        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
-        with pytest.raises(llm.LLMUnavailable, match="could not reach"):
+        monkeypatch.setattr(urllib.request, "build_opener", lambda *_args: type("Opener", (), {"open": staticmethod(fake_urlopen)})())
+        with pytest.raises(llm.LLMUnavailable, match="request failed"):
             llm.draft("prompt", config=_config())
 
 

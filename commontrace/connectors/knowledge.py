@@ -81,7 +81,7 @@ def _gmail(payload) -> str:
 
 
 def sync(root: str, provider: str, resource: str, *, token: str, context: list[str],
-         max_pages: int = 10, fetch=None) -> dict:
+         max_pages: int = 10, fetch=None, replace_snapshot: bool = False) -> dict:
     if provider not in PROVIDERS or not isinstance(resource, str) or not 1 <= len(resource) <= 512 or not token:
         raise ValueError("known provider, bounded resource and operator OAuth token required")
     if (not isinstance(context, list) or not 1 <= len(context) <= 100
@@ -180,6 +180,7 @@ def sync(root: str, provider: str, resource: str, *, token: str, context: list[s
             state = {"cursor": None, "digests": []}
         current = state.get("cursor") or url
         digests = set(state["digests"])
+        snapshot_sources = set()
         while current and pages < max_pages:
             if (urllib.parse.urlsplit(current).netloc != urllib.parse.urlsplit(base).netloc
                     or not current.startswith(base+"/")):
@@ -193,12 +194,20 @@ def sync(root: str, provider: str, resource: str, *, token: str, context: list[s
                                               or payload.get("errors")):
                 raise ValueError("provider rejected read request")
             text = _gmail(payload) if provider == "gmail" else _text(payload)
+            generation = state.get("generation", "") if replace_snapshot else ""
+            if replace_snapshot and hashlib.sha256(text.encode()).hexdigest() == state.get("snapshot_digest"):
+                return {"provider": provider, "facts_written": 0, "pages": 1, "pending": False}
+            def source_identity(chunk):
+                return hashlib.sha256((key+"\0"+generation+"\0"+chunk).encode()).hexdigest() if replace_snapshot else \
+                    hashlib.sha256((key+"\0"+chunk).encode()).hexdigest()
+            for offset in range(0, len(text), 20000):
+                snapshot_sources.add(source_identity(text[offset:offset+20000]))
             digest = hashlib.sha256(text.encode()).hexdigest()
-            if digest not in digests and text.strip():
+            if (replace_snapshot or digest not in digests) and text.strip():
                 # Preserve source snapshots; facts inherit their authenticated external origin.
                 for offset in range(0, len(text), 20000):
                     chunk = text[offset:offset+20000]
-                    source_id = hashlib.sha256((key+"\0"+chunk).encode()).hexdigest()
+                    source_id = source_identity(chunk)
                     with memory_authority.writer(provider+":"+key, "external"):
                         trace_io.write_new(root, title=provider+" knowledge snapshot", context=chunk,
                             solution="Read-only provider evidence; no task outcome asserted", tags=["knowledge-source"],
@@ -231,5 +240,15 @@ def sync(root: str, provider: str, resource: str, *, token: str, context: list[s
                     next_url = url+"&"+urllib.parse.urlencode({parameter: cursor})
             current, pages = next_url, pages+1
         # No watermark is advanced when a page or extraction failed.
-        _jsonl.write_json(statefile, {"cursor": current, "digests": sorted(digests), "provider": provider})
+        if replace_snapshot:
+            if current or provider not in ("drive", "onedrive"):
+                raise ValueError("snapshot replacement requires a complete single-document read")
+            for source_id in set(state.get("sources", []))-snapshot_sources:
+                hierarchical.retire_source(root, source_id, keep=set())
+        _jsonl.write_json(statefile, {"cursor": current, "digests": sorted(digests), "provider": provider,
+                                    "snapshot_digest": digest if replace_snapshot else None,
+                                    "generation": hashlib.sha256(
+                                        (state.get("generation", "")+digest).encode()).hexdigest()
+                                                  if replace_snapshot else "",
+                                    "sources": sorted(snapshot_sources)})
     return {"provider": provider, "facts_written": written, "pages": pages, "pending": bool(current)}

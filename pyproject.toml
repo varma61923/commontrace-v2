@@ -16,6 +16,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+code = ["tree-sitter>=0.25,<0.27", "tree-sitter-typescript>=0.23,<0.24"]
 ontology = [
     "jsonschema>=4.23,<5.0",
 ]
@@ -83,6 +84,11 @@ select = ["E", "F", "W", "I"]
 "benchmarks/**" = ["E501"]
 
 [tool.pytest.ini_options]
+markers = [
+    "unit: isolated contract without an externally provisioned service",
+    "integration: native driver, SDK or service contract (optional services must be explicitly enabled)",
+    "e2e: executable CLI, installer, gateway or browser journey",
+]
 addopts = "--import-mode=importlib"
 pythonpath = ["."]
 testpaths = ["tests"]
