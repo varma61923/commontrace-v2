@@ -60,6 +60,9 @@ python scripts/generate_sdks.py --languages typescript go rust java kotlin
 ```
 
 The [OpenAPI contract](sdk/openapi.json) uses Swagger-compatible OpenAPI 3.0.
+Every other HTTP route is described too: all gateway operations in
+[`openapi/gateway.json`](openapi/gateway.json), tested against live responses, and the
+Hub in [`hub/openapi.json`](hub/openapi.json) (see [openapi/](openapi/README.md)).
 A checksum-pinned OpenAPI Generator produces the clients into `sdk/generated/`.
 CI validates the contract, compiles all five clients and publishes build artifacts.
 See [SDK instructions](sdk/README.md). Tagging `vX.Y.Z` runs the release workflow,
@@ -72,7 +75,13 @@ configured for this repository; hosted service deployment is a separate step.
 python -m pytest tests/ e2e_tests/ -q
 bash reproduce.sh
 python -m benchmarks.causalmembench --seeds 10
+python -m benchmarks.adaptive_allocation_bench --reps 400
 ```
+
+`commontrace allocate enable` switches a running experiment to adaptive allocation:
+unproven memories are withheld at 50% until their effect is established, then
+monitored at 5%, under published, hash-chained schedules and an estimator that stays
+valid when rates change ([measurements](docs/benchmarks/adaptive-allocation.md)).
 
 Benchmark manifests bind source, data, configuration and seeds. Published retrieval
 metrics are evidence measurements; model-backed competitor accuracy and research
