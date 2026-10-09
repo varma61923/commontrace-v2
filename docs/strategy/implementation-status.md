@@ -49,7 +49,7 @@ Legend: **Done** · **Done (this pass)** (added or fixed in this audit) ·
 
 | Report item | Status | Where |
 | --- | --- | --- |
-| MCP server | **Done** (local stdio/HTTP/SSE and Hub) | `mcp_server.py`, `hub/server.py` |
+| MCP server | **Done** (local stdio/HTTP/SSE and Hub, with `search_traces`, `contribute_trace`, `get_trace`, `vote_trace`, `amend_trace`); containerized local MCP over streamable HTTP added **(this pass)** | `mcp_server.py`, `hub/server.py`, `Dockerfile.local` |
 | CLI with agent signup | **Done**; `init --agent-caller NAME` added **(this pass)** | `commands/init_cmd.py` |
 | Dashboard | **Done** (no-build console, not Next.js, by design) | `commontrace/ui/` |
 | User profiles (static + dynamic) | **Done** | `MemoryClient.profile`, `profile_activity.py` |
@@ -58,13 +58,13 @@ Legend: **Done** · **Done (this pass)** (added or fixed in this audit) ·
 | Knowledge wiki | **Done** | `wiki.py`, `knowledge_pages.py` |
 | Data connectors | **Done**: GitHub, Slack, Drive, Gmail, Notion, OneDrive, Confluence, Jira, Linear, Zendesk, ServiceNow, Salesforce, Intercom, Greenhouse | `connectors/knowledge.py` |
 | Multi-signal retrieval | **Done** | `search_recipes.py`, conversation hybrid recall |
-| Bi-temporal fact invalidation | **Done** | `hierarchical.py`, `graph.py` |
-| Pipeline recovery | **Done** | `ingest/pipeline.py`, `jobs.py` |
+| Bi-temporal fact invalidation | **Done**; `fact invalidate` (end validity without replacement or deletion, `--at`, as-of history kept) added **(this pass)** | `hierarchical.py`, `graph.py` |
+| Pipeline recovery | **Done**: per-file ledger, durable job queue with lease reclaim; `ingest --background` and a SIGTERM-draining `jobs run --watch` added **(this pass)** | `ingest/pipeline.py`, `jobs.py` |
 | Provider pattern | **Done**; reranker registry added **(this pass)** | `providers.py` |
 | Multi-tenancy isolation | **Done** (Hub RLS; per-owner/dataset local vector stores). **Fixed (this pass)**: the `traces` policy's commons-sharing clause also applied to DELETE, so any org could delete another org's shared rows through a query missing its own org filter; sharing is now a SELECT-only policy | `hub/`, `providers.BackendFactory`, migration `c1d4e8f2a9b6` |
 | Markdown-first with file watcher | **Done**; `lesson edit` added **(this pass)** | `watch.py`, `commands/lesson_cmd.py` |
 | Code graph | **Done** | `code_graph.py` |
-| Local/offline mode | **Done (this pass)**: `--offline` / `COMMONTRACE_OFFLINE` | `offline.py` |
+| Local/offline mode | **Done (this pass)**: `--offline` / `COMMONTRACE_OFFLINE`, and `--local` (offline plus the in-process model) | `offline.py`, `local_llm.py` |
 | Migration from Mem0/Letta/Zep/Graphiti, COGX | **Done** | `migration.py`, `interop.py` |
 
 ### Reliability and operations
@@ -77,6 +77,7 @@ Legend: **Done** · **Done (this pass)** (added or fixed in this audit) ·
 | Security scanning (CodeQL, Scorecard, Trivy, SBOM) | **Done** | `.github/workflows/` |
 | Threat model in SECURITY.md | **Done (this pass)** | `SECURITY.md` |
 | Helm chart (probes, limits, PDB, NetworkPolicy, ServiceMonitor) | **Done** | `deploy/helm/commontrace-hub/` |
+| Docker Compose for local development | **Done (this pass)**: `--profile local` adds the gateway and MCP server (read-only, loopback ports, health checks, optional `.env`); CI builds, scans and starts the image | `docker-compose.yml`, `Dockerfile.local` |
 | Tiered tests, 80% coverage gate, Makefile | **Done** | `pyproject.toml`, `Makefile`, CI |
 | `_FILE` secrets | **Done**; Hub client API key now honours it **(this pass)** | `secrets_provider.py` |
 | Rate-limit auto-detection | **Done** | `overload.py` |
