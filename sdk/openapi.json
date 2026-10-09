@@ -347,7 +347,6 @@
             "type": "string"
           }
         },
-        "required": [],
         "type": "object"
       },
       "ProfileResponse": {
@@ -621,6 +620,7 @@
     },
     "securitySchemes": {
       "bearer": {
+        "description": "The operator token, an agent key (cta_...) for /v1/memory and the agent plugin/heartbeat routes, or an OAuth 2.1 access token when an issuer is configured (see /.well-known/oauth-protected-resource).",
         "scheme": "bearer",
         "type": "http"
       }
@@ -669,10 +669,17 @@
                 }
               }
             },
-            "description": "Request refused or operation failed"
+            "description": "Invalid request"
           },
           "401": {
-            "description": "missing or wrong token"
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or wrong credential"
           },
           "403": {
             "content": {
@@ -682,7 +689,7 @@
                 }
               }
             },
-            "description": "Request refused or operation failed"
+            "description": "Refused by policy or scope"
           },
           "409": {
             "content": {
@@ -692,7 +699,7 @@
                 }
               }
             },
-            "description": "Request refused or operation failed"
+            "description": "Conflicts with recorded state"
           },
           "413": {
             "content": {
@@ -702,7 +709,7 @@
                 }
               }
             },
-            "description": "Request refused or operation failed"
+            "description": "Body larger than 1 MiB"
           },
           "429": {
             "content": {
@@ -712,7 +719,7 @@
                 }
               }
             },
-            "description": "Request refused or operation failed"
+            "description": "Quota or rate limit"
           },
           "500": {
             "content": {
@@ -722,7 +729,7 @@
                 }
               }
             },
-            "description": "Request refused or operation failed"
+            "description": "Internal error; no details"
           }
         },
         "security": [
@@ -768,10 +775,17 @@
                 }
               }
             },
-            "description": "Request refused or operation failed"
+            "description": "Invalid request"
           },
           "401": {
-            "description": "missing or wrong token"
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or wrong credential"
           },
           "403": {
             "content": {
@@ -781,7 +795,7 @@
                 }
               }
             },
-            "description": "Request refused or operation failed"
+            "description": "Refused by policy or scope"
           },
           "409": {
             "content": {
@@ -791,7 +805,7 @@
                 }
               }
             },
-            "description": "Request refused or operation failed"
+            "description": "Conflicts with recorded state"
           },
           "413": {
             "content": {
@@ -801,7 +815,7 @@
                 }
               }
             },
-            "description": "Request refused or operation failed"
+            "description": "Body larger than 1 MiB"
           },
           "429": {
             "content": {
@@ -811,7 +825,7 @@
                 }
               }
             },
-            "description": "Request refused or operation failed"
+            "description": "Quota or rate limit"
           },
           "500": {
             "content": {
@@ -821,7 +835,7 @@
                 }
               }
             },
-            "description": "Request refused or operation failed"
+            "description": "Internal error; no details"
           }
         },
         "security": [
@@ -867,10 +881,17 @@
                 }
               }
             },
-            "description": "Request refused or operation failed"
+            "description": "Invalid request"
           },
           "401": {
-            "description": "missing or wrong token"
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or wrong credential"
           },
           "403": {
             "content": {
@@ -880,7 +901,7 @@
                 }
               }
             },
-            "description": "Request refused or operation failed"
+            "description": "Refused by policy or scope"
           },
           "409": {
             "content": {
@@ -890,7 +911,7 @@
                 }
               }
             },
-            "description": "Request refused or operation failed"
+            "description": "Conflicts with recorded state"
           },
           "413": {
             "content": {
@@ -900,7 +921,7 @@
                 }
               }
             },
-            "description": "Request refused or operation failed"
+            "description": "Body larger than 1 MiB"
           },
           "429": {
             "content": {
@@ -910,7 +931,7 @@
                 }
               }
             },
-            "description": "Request refused or operation failed"
+            "description": "Quota or rate limit"
           },
           "500": {
             "content": {
@@ -920,7 +941,7 @@
                 }
               }
             },
-            "description": "Request refused or operation failed"
+            "description": "Internal error; no details"
           }
         },
         "security": [
@@ -966,10 +987,17 @@
                 }
               }
             },
-            "description": "Request refused or operation failed"
+            "description": "Invalid request"
           },
           "401": {
-            "description": "missing or wrong token"
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or wrong credential"
           },
           "403": {
             "content": {
@@ -979,7 +1007,7 @@
                 }
               }
             },
-            "description": "Request refused or operation failed"
+            "description": "Refused by policy or scope"
           },
           "409": {
             "content": {
@@ -989,7 +1017,7 @@
                 }
               }
             },
-            "description": "Request refused or operation failed"
+            "description": "Conflicts with recorded state"
           },
           "413": {
             "content": {
@@ -999,7 +1027,7 @@
                 }
               }
             },
-            "description": "Request refused or operation failed"
+            "description": "Body larger than 1 MiB"
           },
           "429": {
             "content": {
@@ -1009,7 +1037,7 @@
                 }
               }
             },
-            "description": "Request refused or operation failed"
+            "description": "Quota or rate limit"
           },
           "500": {
             "content": {
@@ -1019,7 +1047,7 @@
                 }
               }
             },
-            "description": "Request refused or operation failed"
+            "description": "Internal error; no details"
           }
         },
         "security": [
@@ -1065,10 +1093,17 @@
                 }
               }
             },
-            "description": "Request refused or operation failed"
+            "description": "Invalid request"
           },
           "401": {
-            "description": "missing or wrong token"
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or wrong credential"
           },
           "403": {
             "content": {
@@ -1078,7 +1113,7 @@
                 }
               }
             },
-            "description": "Request refused or operation failed"
+            "description": "Refused by policy or scope"
           },
           "409": {
             "content": {
@@ -1088,7 +1123,7 @@
                 }
               }
             },
-            "description": "Request refused or operation failed"
+            "description": "Conflicts with recorded state"
           },
           "413": {
             "content": {
@@ -1098,7 +1133,7 @@
                 }
               }
             },
-            "description": "Request refused or operation failed"
+            "description": "Body larger than 1 MiB"
           },
           "429": {
             "content": {
@@ -1108,7 +1143,7 @@
                 }
               }
             },
-            "description": "Request refused or operation failed"
+            "description": "Quota or rate limit"
           },
           "500": {
             "content": {
@@ -1118,7 +1153,7 @@
                 }
               }
             },
-            "description": "Request refused or operation failed"
+            "description": "Internal error; no details"
           }
         },
         "security": [
@@ -1164,10 +1199,17 @@
                 }
               }
             },
-            "description": "Request refused or operation failed"
+            "description": "Invalid request"
           },
           "401": {
-            "description": "missing or wrong token"
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or wrong credential"
           },
           "403": {
             "content": {
@@ -1177,7 +1219,7 @@
                 }
               }
             },
-            "description": "Request refused or operation failed"
+            "description": "Refused by policy or scope"
           },
           "409": {
             "content": {
@@ -1187,7 +1229,7 @@
                 }
               }
             },
-            "description": "Request refused or operation failed"
+            "description": "Conflicts with recorded state"
           },
           "413": {
             "content": {
@@ -1197,7 +1239,7 @@
                 }
               }
             },
-            "description": "Request refused or operation failed"
+            "description": "Body larger than 1 MiB"
           },
           "429": {
             "content": {
@@ -1207,7 +1249,7 @@
                 }
               }
             },
-            "description": "Request refused or operation failed"
+            "description": "Quota or rate limit"
           },
           "500": {
             "content": {
@@ -1217,7 +1259,7 @@
                 }
               }
             },
-            "description": "Request refused or operation failed"
+            "description": "Internal error; no details"
           }
         },
         "security": [
@@ -1263,10 +1305,17 @@
                 }
               }
             },
-            "description": "Request refused or operation failed"
+            "description": "Invalid request"
           },
           "401": {
-            "description": "missing or wrong token"
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or wrong credential"
           },
           "403": {
             "content": {
@@ -1276,7 +1325,7 @@
                 }
               }
             },
-            "description": "Request refused or operation failed"
+            "description": "Refused by policy or scope"
           },
           "409": {
             "content": {
@@ -1286,7 +1335,7 @@
                 }
               }
             },
-            "description": "Request refused or operation failed"
+            "description": "Conflicts with recorded state"
           },
           "413": {
             "content": {
@@ -1296,7 +1345,7 @@
                 }
               }
             },
-            "description": "Request refused or operation failed"
+            "description": "Body larger than 1 MiB"
           },
           "429": {
             "content": {
@@ -1306,7 +1355,7 @@
                 }
               }
             },
-            "description": "Request refused or operation failed"
+            "description": "Quota or rate limit"
           },
           "500": {
             "content": {
@@ -1316,7 +1365,7 @@
                 }
               }
             },
-            "description": "Request refused or operation failed"
+            "description": "Internal error; no details"
           }
         },
         "security": [
@@ -1362,10 +1411,17 @@
                 }
               }
             },
-            "description": "Request refused or operation failed"
+            "description": "Invalid request"
           },
           "401": {
-            "description": "missing or wrong token"
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or wrong credential"
           },
           "403": {
             "content": {
@@ -1375,7 +1431,7 @@
                 }
               }
             },
-            "description": "Request refused or operation failed"
+            "description": "Refused by policy or scope"
           },
           "409": {
             "content": {
@@ -1385,7 +1441,7 @@
                 }
               }
             },
-            "description": "Request refused or operation failed"
+            "description": "Conflicts with recorded state"
           },
           "413": {
             "content": {
@@ -1395,7 +1451,7 @@
                 }
               }
             },
-            "description": "Request refused or operation failed"
+            "description": "Body larger than 1 MiB"
           },
           "429": {
             "content": {
@@ -1405,7 +1461,7 @@
                 }
               }
             },
-            "description": "Request refused or operation failed"
+            "description": "Quota or rate limit"
           },
           "500": {
             "content": {
@@ -1415,7 +1471,7 @@
                 }
               }
             },
-            "description": "Request refused or operation failed"
+            "description": "Internal error; no details"
           }
         },
         "security": [

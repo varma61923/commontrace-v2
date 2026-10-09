@@ -62,7 +62,10 @@ def main() -> int:
     jar = checked_jar(args.jar or ROOT/"build"/("openapi-generator-cli-"+VERSION+".jar"))
     spec = ROOT/"sdk"/"openapi.json"
     command = ["java", "-jar", str(jar)]
-    subprocess.run([*command, "validate", "-i", str(spec)], check=True)
+    # The full gateway contract is validated with the same pinned tool; clients are
+    # generated from the memory subset only.
+    for document in (spec, ROOT/"openapi"/"gateway.json"):
+        subprocess.run([*command, "validate", "-i", str(document)], check=True)
     if args.validate_only:
         return 0
     for language in args.languages:

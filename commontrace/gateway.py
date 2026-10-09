@@ -1741,42 +1741,77 @@ class Gateway:
             "Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
 
     def _openapi(self, _body, _query) -> dict:
+        from commontrace import gateway_contract as contract
+        from commontrace.api_schema import components, model_name
+
+        error = {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}
+        reasons = {400: "Invalid request", 401: "Missing or wrong credential", 403: "Refused by policy or scope",
+                   404: "Not found", 409: "Conflicts with recorded state", 413: "Body larger than 1 MiB",
+                   422: "Failed verification", 429: "Quota or rate limit", 500: "Internal error; no details",
+                   503: "Not ready or upstream unavailable"}
+        missing = [route for route in self.routes if route not in contract.OPERATIONS
+                   and not route[1].startswith("/v1/memory/")]
+        stale = [route for route in contract.OPERATIONS if route not in self.routes]
+        if missing or stale:
+            raise RuntimeError(f"gateway contract out of date: undocumented {missing}, stale {stale}")
         paths_doc: dict = {}
         for (method, path), (_h, spec) in sorted(self.routes.items()):
-            op: dict = {"summary": spec["summary"], "responses": {"200": {"description": "OK"}}}
+            memory = path.startswith("/v1/memory/")
+            entry = contract.memory_operation(path.rsplit("/", 1)[1]) if memory else contract.OPERATIONS[(method, path)]
+            op: dict = {"operationId": entry.operation_id, "tags": [entry.tag], "summary": spec["summary"],
+                        "parameters": [{"$ref": "#/components/parameters/RequestId"},
+                                       {"$ref": "#/components/parameters/ContainerTag"}]}
+            if entry.description:
+                op["description"] = entry.description
+            for name, schema, required, description in entry.query:
+                op["parameters"].append({"name": name, "in": "query", "required": required,
+                                         "description": description, "schema": schema})
+            if memory:
+                name = model_name(path.rsplit("/", 1)[1])
+                request, response = ({"$ref": "#/components/schemas/" + name + "Request"},
+                                     {"$ref": "#/components/schemas/" + name + "Response"})
+                statuses = (400, 403, 409, 413, 429)
+            else:
+                request, response = entry.request, entry.response
+                statuses = tuple(sorted(set(entry.errors) | ({400, 413} if method == "POST" else set())))
+            if method == "POST" and request is not None:
+                op["requestBody"] = {"required": True, "content": {"application/json": {"schema": request}}}
+            op["responses"] = {"200": {"description": "OK", "headers": {
+                "X-Request-Id": {"$ref": "#/components/headers/RequestId"}},
+                "content": {entry.content_type: {"schema": response}}}}
+            if path == "/v1/metrics":
+                op["responses"]["200"]["content"]["text/plain"] = {"schema": {"type": "string"}}
             if spec["auth"]:
                 op["security"] = [{"bearer": []}]
-                op["responses"]["401"] = {"description": "missing or wrong token"}
-            if path.startswith("/v1/memory/"):
-                from commontrace.api_schema import model_name
-
-                name = model_name(path.rsplit("/", 1)[1])
-                schema = {"$ref": "#/components/schemas/"+name+"Request"}
-                op["operationId"] = "memory_"+path.rsplit("/", 1)[1].replace("-", "_")
-                op["tags"] = ["Memory"]
-                op["requestBody"] = {"required": True, "content": {"application/json": {"schema": schema}}}
-                op["responses"]["200"]["content"] = {"application/json": {"schema": {
-                    "$ref": "#/components/schemas/"+name+"Response"}}}
-                for status in (400, 403, 409, 413, 429, 500):
-                    op["responses"][str(status)] = {"description": "Request refused or operation failed",
-                        "content": {"application/json": {"schema": {
-                            "$ref": "#/components/schemas/ErrorResponse"}}}}
-            elif spec["request"]:
-                op["requestBody"] = {"required": True, "content": {"application/json": {"schema": {
-                    "type": "object", "description": "fields: " + "; ".join(
-                        f"{k}: {v}" for k, v in spec["request"].items())}}}}
+                statuses += (401, 403)
+            for status in sorted(set(statuses) | {500}):
+                op["responses"][str(status)] = {"description": reasons[status], "content": error}
             paths_doc.setdefault(path, {})[method.lower()] = op
-        from commontrace.api_schema import components
-
+        paths_doc.update(contract.EXTRA_PATHS)
         return {
             "openapi": "3.0.3",
             "info": {"title": "CommonTrace gateway", "version": API_VERSION,
                      "description": "Did the memory change how the occasion went? Language-neutral."},
+            "tags": [{"name": t} for t in sorted({e.tag for e in contract.OPERATIONS.values()} | {"Memory"})],
             "paths": paths_doc,
-            "components": {"securitySchemes": {"bearer": {"type": "http", "scheme": "bearer"}},
-                           "schemas": components()},
+            "components": {
+                "securitySchemes": {"bearer": {
+                    "type": "http", "scheme": "bearer",
+                    "description": "The operator token, an agent key (cta_...) for /v1/memory and the agent "
+                                   "plugin/heartbeat routes, or an OAuth 2.1 access token when an issuer is "
+                                   "configured (see /.well-known/oauth-protected-resource)."}},
+                "parameters": {
+                    "RequestId": {"name": "X-Request-Id", "in": "header", "required": False,
+                                  "description": "Echoed back; generated when absent or invalid.",
+                                  "schema": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,64}$"}},
+                    "ContainerTag": {"name": "X-Container-Tag", "in": "header", "required": False,
+                                     "description": "Isolates lessons, conversations and review to one tenant.",
+                                     "schema": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,128}$"}}},
+                "headers": {"RequestId": {"description": "Correlates logs and traces.",
+                                          "schema": {"type": "string"}}},
+                "schemas": {**components(), **contract.components()},
+            },
         }
-
 
 def make_http_server(gateway: Gateway, host: str, port: int, *, tls: tuple[str, str] | None = None,
                      request_timeout: float = 10.0, max_connections: int = 128) -> ThreadingHTTPServer:

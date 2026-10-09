@@ -116,7 +116,10 @@ def components() -> dict:
                    "code": {"type": "string"}, "message": {"type": "string"}}, "required": ["code", "message"]}}}}
     for operation in FIELDS:
         name = model_name(operation)
-        schemas[name+"Request"] = openapi_schema(request_schema(operation))
+        request = openapi_schema(request_schema(operation))
+        if not request["required"]:
+            del request["required"]  # OpenAPI 3.0 requires a non-empty list when present
+        schemas[name+"Request"] = request
         if operation == "propose":
             schemas[name+"Response"] = {"allOf": [{"$ref": "#/components/schemas/ControlRecord"}]}
         else:

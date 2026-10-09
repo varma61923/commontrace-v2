@@ -30,7 +30,7 @@ def test_openapi_models_match_live_memory_operations(tmp_path):
             body["sources"] = [fact_id]
         path = "/v1/memory/"+operation
         schema = doc["components"]["schemas"][api_schema.model_name(operation)+"Request"]
-        assert set(schema["required"]) <= body.keys()
+        assert set(schema.get("required", [])) <= body.keys()
         response = gateway.handle("POST", path, headers, json.dumps(body).encode())
         assert response.status == 200, (operation, response.body)
         value = json.loads(response.body)
