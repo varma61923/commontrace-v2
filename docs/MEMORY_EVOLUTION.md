@@ -269,5 +269,6 @@ Hub, with credential redaction and request identity. `make test-unit`,
 `make test-integration`, `make test-e2e`, `make coverage` and `make check` expose
 repeatable checks. CI enforces at least 80% overall Python coverage, retains the
 existing stricter fact-index gate, scans Python/TypeScript with CodeQL, and exports
-an OpenSSF Scorecard and dependency SBOM. Generated TypeScript additionally calls
+an OpenSSF Scorecard and dependency SBOM. Branch Scorecards scan tracked files;
+the default-branch job also evaluates repository-wide policy and history. Generated TypeScript additionally calls
 all eight memory operations against a live isolated gateway in CI.

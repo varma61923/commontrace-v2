@@ -46,10 +46,22 @@ jobs:
         with:
           persist-credentials: false
       - uses: ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc # v2.4.4
+        if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
         with:
           results_file: scorecard.json
           results_format: json
           publish_results: false
+      - name: Scan tracked branch files with checksum-pinned Scorecard
+        if: github.ref != format('refs/heads/{0}', github.event.repository.default_branch)
+        run: |
+          curl --fail --location --retry 3 --output "$RUNNER_TEMP/scorecard.tar.gz" \
+            https://github.com/ossf/scorecard/releases/download/v5.5.0/scorecard_5.5.0_linux_amd64.tar.gz
+          echo "83b90a05c1540ef1390db1cd5711e5fd04be9c1d8537fb84d39d02092d6a8dff  $RUNNER_TEMP/scorecard.tar.gz" | sha256sum --check
+          mkdir "$RUNNER_TEMP/scorecard-tool" "$RUNNER_TEMP/scorecard-source"
+          tar -xzf "$RUNNER_TEMP/scorecard.tar.gz" -C "$RUNNER_TEMP/scorecard-tool"
+          git archive HEAD | tar -x -C "$RUNNER_TEMP/scorecard-source"
+          "$RUNNER_TEMP/scorecard-tool/scorecard" --local="$RUNNER_TEMP/scorecard-source" \
+            --format=json --output=scorecard.json
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
           name: scorecard-${{ github.sha }}
