@@ -106,9 +106,9 @@ BEAM 100K 400), keyword arm unless noted, budgets 1,500 and 4,000 tokens,
 | --- | --- | --- | --- |
 | Lexical, fixed (reproduces README) | 78.69% / 86.31% (1,441 / 3,852 tok) | 79.60% / 85.92% (1,463 / 3,926 tok) | 70.87% / 80.67% (1,465 / 3,923 tok) |
 | Lexical, adaptive budget | 80.29% / 87.30% (1,697 / 4,347 tok) | 83.02% / 90.02% (2,447 / 6,181 tok) | 79.37% / 83.16% (2,804 / 6,916 tok) |
-| Dense (arctic-m), fixed | 82.00% / 91.36% (1,452 / 3,887 tok) | running | running |
+| Dense (arctic-m), fixed | 82.00% / 91.36% (1,452 / 3,887 tok) | running | 71.21% / 82.99% (1,469 / 3,939 tok) |
 | Dense + cross-encoder, fixed | 83.90% / 91.51% (1,452 / 3,887 tok) | not run | not run |
-| Dense, adaptive budget | 83.73% / 92.53% (1,711 / 4,559 tok) | not run | not run |
+| Dense, adaptive budget | 83.73% / 92.53% (1,711 / 4,559 tok) | not run | 80.15% / 86.10% (2,819 / 7,053 tok) |
 
 LoCoMo multi-hop evidence, the report's largest gap: 52.08% / 66.61% lexical,
 60.73% / 79.47% dense, 66.66% / 83.99% dense with the adaptive budget. Turn
@@ -116,6 +116,12 @@ Recall@5 rises from 54.78% (lexical) to 60.96% (dense) and 65.46% (dense +
 cross-encoder). The cross-encoder's p50 recall latency on this shared 4-core CPU
 was about 480 ms against about 55 ms dense-only; choose it where accuracy matters
 more than latency.
+
+On BEAM 100K dense retrieval adds little at 1,500 tokens (70.87% -> 71.21%) and
+more at 4,000 (80.67% -> 82.99%); the adaptive budget is the larger lever there.
+Latency figures from runs that shared the CPU with concurrent embedding jobs (the
+dense adaptive BEAM run reported a 1.1 s p50 at the 1,500 floor) are not
+latency measurements.
 
 At equal mean tokens on LoCoMo (about 1,700), adaptive allocation scores 80.29%
 against 79.76% for a uniform budget: a small gain that comes from spending tokens
