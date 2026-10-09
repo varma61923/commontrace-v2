@@ -51,8 +51,8 @@ def run_vectors(args: argparse.Namespace) -> int:
 
 def run_exec(args: argparse.Namespace) -> int:
     only = tuple(x.strip() for x in args.only.split(",")) if args.only else None
-    if only and set(only) - {"assign", "ledger", "digest", "revision"}:
-        print("[commontrace] --only takes assign, ledger, digest, revision", file=sys.stderr)
+    if only and set(only) - set(conformance.OPS):
+        print("[commontrace] --only takes " + ", ".join(conformance.OPS), file=sys.stderr)
         return 2
     return _emit(conformance.run_exec(args.command, conformance.load_vectors(args.vectors), only=only), args.json)
 

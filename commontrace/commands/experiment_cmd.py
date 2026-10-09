@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime
 import glob
 import json
 import os
@@ -179,6 +180,7 @@ def _load(root: str) -> tuple[list[integrity.Assignment], float, int]:
             rank=rec.rank,
             scorer=rec.scorer,
             floor=rec.floor,
+            schedule=rec.schedule,
         )
         for rec in records
     ]
@@ -196,17 +198,38 @@ def scope_to_current_salt(
     return rows, wanted_salt, len(all_rows) - len(rows)
 
 
-def _observations(rows: list[integrity.Assignment]) -> list[experiment.HoldoutObservation]:
+def _observations(rows: list[integrity.Assignment],
+                  schedules: list | None = None) -> list[experiment.HoldoutObservation]:
+    """Resolved assignments as observations. `schedules` marks rows made under adaptive
+    allocation when the rows themselves carry no schedule tag (a proof package's CSV)."""
     unique, _ = integrity.normalize(rows)
+    # Assignment order, so the propensity-weighted estimator (used when a lesson's rate
+    # changed) reads the same sequence from the live log and from a proof package's CSV.
+    epoch = datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
+    ordered = sorted(unique, key=lambda r: (_aware(r.at) if r.at is not None else epoch, r.occasion_id))
     return [
         experiment.HoldoutObservation(
             lesson_slug=r.lesson,
             occasion_id=r.occasion_id,
             injected=r.injected,
             succeeded=bool(r.succeeded),
+            rate=r.rate,
+            scheduled=bool(r.schedule) or _in_schedule(r, schedules),
         )
-        for r in unique if r.succeeded is not None
+        for r in ordered if r.succeeded is not None
     ]
+
+
+def _in_schedule(row: integrity.Assignment, schedules: list | None) -> bool:
+    if not schedules or row.at is None:
+        return False
+    from commontrace import allocation
+
+    return allocation.in_force(schedules, row.salt, _aware(row.at)) is not None
+
+
+def _aware(moment: datetime.datetime) -> datetime.datetime:
+    return moment if moment.tzinfo is not None else moment.replace(tzinfo=datetime.timezone.utc)
 
 
 def _relevance_sensitivity(rows: list[integrity.Assignment], args) -> dict[str, dict]:

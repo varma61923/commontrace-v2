@@ -332,3 +332,15 @@ do_not_apply_when` (absent is `null`) plus `scopes, valid_from, valid_until` whe
 (they are omitted when absent, preserving revisions produced before these fields existed); a list is sorted; a string has CRLF and CR turned into LF, trailing spaces and
 tabs removed from every line, runs of three or more newlines reduced to two, and the ends trimmed) plus `_body`
 (the body, normalized the same way).
+
+**13.5 Adaptive allocation.** A schedule is a JSON object with the keys `version, salt, effective_from,
+default_rate, rates, policy, basis, previous, created_at, enabled`. Its digest is
+`hex(SHA-256(UTF-8("commontrace-allocation-schedule-v1" + U+001E + compact_json(schedule))))`, where
+`compact_json` sorts keys, uses no spaces and keeps non-ASCII. `previous` is the digest of the schedule before it
+(the empty string for the first), so the schedules form a chain. The rate a schedule sets for memory `lesson` is
+`rates[lesson]` when present and `default_rate` otherwise; the arm is then decided by 13.1 with that rate and the
+schedule's `salt`. An assignment made at time `at` is governed by the last schedule for its salt whose
+`effective_from <= at`, and by the experiment's fixed rate when that schedule has `enabled: false` or none
+exists. Every assignment records the rate it was compared against. How the next schedule's rates are chosen,
+and how effects are estimated once rates vary (inverse-propensity weighting is what the reference does), are
+not part of conformance.

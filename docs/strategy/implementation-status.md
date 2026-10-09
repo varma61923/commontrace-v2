@@ -25,7 +25,13 @@ Legend: **Done** · **Done (this pass)** (added or fixed in this audit) ·
 | WS1 Adaptive context budget by question shape | **Done (this pass)** | `conversation.search.budget_for`, `--budget auto` |
 | WS1 Store abstraction and scale backends (pgvector HNSW, LanceDB, Neo4j/FalkorDB) | **Done** | `store.py`, `vector_lance.py`, `graph_backends.py` |
 | WS2 Exploration slots, SNIPW, OPE release gate | **Done** | `causal_policy.py`, `policy.py`, `gate --policy` |
-| WS2 Adaptive allocation | **Partial (this pass)**: graduation of proven memories (`CausalMemory(graduate=True)`); no bandit reallocation of the holdout rate | `measure.py` |
+| WS2 Interaction effects for co-firing lessons; auto-drafted narrower `applies_when` | **Done (this pass)**: factorial reading of independent per-lesson arms (SYNERGY / INTERFERENCE), and `draft_narrowing` writes a review-status lesson scoped to where it helps | `interactions.py`, `heterogeneity.draft_narrowing` |
+| WS3 DPO export | **Done (this pass)**: evidence-linked preference pairs | `compression.export_preferences` |
+| WS5 Publisher revenue share | **Done (this pass)**: fees per install/month/year and an outcome share paid only on the buyer's own HELPS verdict at the lower bound, in a hash-chained settlement ledger | `market_settlement.py`, `market settle` |
+| WS10 Robot fleet demo with a causal report | **Done (this pass)**: multimodal episodes, protected safety memory, sim/real pooling refused, harm withdrawal, latency budget | `benchmarks/robot_fleet_demo.py`, `docs/benchmarks/robot-fleet.md` |
+| Console executive view, release diffs, experiment designer, forensics, digest | **Done (this pass)** | `ledger_views.py`, `/v1/ledger/*`, console "Learning Ledger" |
+| Every HTTP API in OpenAPI | **Done (this pass)**: 58 gateway operations with typed schemas validated against live responses; 106 Hub operations (OpenAPI 3.1, served at `/api/v1/openapi.json`); both generators refuse undocumented routes | `openapi/README.md` |
+| WS2 Adaptive allocation | **Done**: era schedules (explore 50% until proven, monitor 5% after), hash-chained and published before the occasions they govern; AIPW scores with an asymptotic confidence sequence (running intersection), used for every scheduled assignment; schedule-aware integrity audit; proof packages carry and re-check the schedules; conformance vectors (PROTOCOL 13.5); `commontrace allocate` | `allocation.py`, `docs/benchmarks/adaptive-allocation.md` |
 | WS2 Heterogeneous effects | **Done (this pass)** | `heterogeneity.py`, `experiment --by` |
 | WS2 Attribute-before-memorize, hindsight probes, forensics | **Done** | `assurance.py`, `memory_control.py` |
 | WS2 Neutral referee | **Done** | `measure.CausalMemory`, `memory_adapters.py` |
@@ -39,8 +45,10 @@ Legend: **Done** · **Done (this pass)** (added or fixed in this audit) ·
 | WS7 PyPI and npm publishing | **Done (this pass)** (workflow; first publish needs registry configuration) | `.github/workflows/release.yml` |
 | WS7 Agent self-signup, LLM wrappers, hooks, frameworks, connectors, generated SDKs | **Done** | `onboarding.py`, `completion_wrappers.py`, `frameworks.py`, `connectors/`, `sdk/` |
 | WS7 Remote MCP with OAuth 2.1 | **Done (this pass)**: JWT access-token resource server (RS256/PS256/ES256/EdDSA, issuer/audience/expiry/scope, JWKS rotation), RFC 9728 metadata, for the gateway and HTTP MCP; the Hub keeps API keys | `oauth.py`, `mcp_transport.py` |
-| WS8 Console, Memory Palace, Needs Attention | **Partial**: overview, Needs Attention review queue with revision-checked actions, memories, live activity, experiment readouts, command center; no executive lift-per-token view, release diffs, experiment designer, forensics report view or weekly digest export | `ui/`, `/v1/palace` |
+| WS8 Console, Memory Palace, Needs Attention, Learning Ledger | **Done (this pass)**: overview, Needs Attention review queue with revision-checked actions, memories, live activity, experiment readouts, command center, and the Learning Ledger (proven value and lift-per-token frontier, release diffs, experiment designer, occasion forensics, weekly digest) | `ui/`, `/v1/palace`, `/v1/ledger/*` |
 | WS9 CausalMemBench | **Done (this pass)** | `benchmarks/causalmembench.py`, `docs/benchmarks/causalmembench.md` |
+| WS9 Paper draft | **Done (this pass)**: every number reproducible from a named command | `docs/research/causal-memory.md` |
+| Process: per-workstream plans and a scorecard | **Done (this pass)** | `docs/plans/`, `docs/strategy/scorecard.md` |
 | WS10 Embodied fleets (sim/real separation, protected memories) | **Done**; multimodal episodes via ingestion | `fleet.py`, `gateway.py`, `ingest/multimodal.py` |
 
 ### Part G items not yet done
@@ -57,15 +65,8 @@ environment does not have or is open work.
 | Target B: top-3 on two agentic leaderboards | Not established; AMA-Bench and MemoryAgentBench are measured as evidence, not judged score |
 | Target C: >= 90% evidence within 1,000 tokens on LongMemEval-S | Not met; measured 79.60% at 1,500 tokens (lexical), 83.02% adaptive |
 | Target D: hybrid p50 < 50 ms / p95 < 150 ms at 1M memories | Not benchmarked at 1M |
-| Target E: +5pp at 80% power within 2,000 occasions | Not demonstrated; CausalMemBench shows the 10% default is slow, and bandit reallocation of the holdout rate is not built (it would change the estimator; needs a design review) |
+| Target E: +5pp at 80% power within 2,000 occasions | **Coverage met, power not met** (seeded simulation, 400 runs per cell): time-uniform coverage >= 96.7% in all 45 cells, any-time false positives <= 3.0%. +5pp power by 2,000 occasions is 0.31-0.33 without a predictive stratum and 0.64-0.70 with a strong one; a fixed-sample 50/50 test alone needs 3,140. At +10pp adaptive allocation detects in 96-100% of runs (median 750-800 occasions; the shipped 10% default: 2-7%) and withholds the memory 25-29% of the time instead of 50% |
 | Target G: `pip install` / `npm i` / `docker run` to first recall in < 60 s | Release workflow and images exist; nothing is published to PyPI, npm or a registry yet |
-| WS2 interaction effects for co-firing lessons; auto-drafted narrower `applies_when` | Subgroup effects flag `CROSSING`; no factorial interaction reading or automatic draft |
-| WS3 DPO export | SFT export only (`evidence-linked-sft`), no DPO pairs |
-| WS5 publisher revenue share | Licence and price are signed into listings; payment and revenue share are not wired into value billing |
-| WS8 items listed above | Open |
-| WS9 paper draft in `docs/research/` | Not written |
-| WS10 end-to-end robot fleet demo with a causal report | Not built; the gateway, fleet and multimodal pieces exist |
-| Process: `docs/plans/<ws>.md` per workstream and `docs/strategy/scorecard.md` | Not created; this status document plays the scorecard role |
 
 ## Competitive intelligence report
 

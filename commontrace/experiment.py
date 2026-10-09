@@ -430,6 +430,12 @@ class HoldoutObservation:
     occasion_id: str
     injected: bool
     succeeded: bool
+    # The logged probability of being withheld. When it varies within a lesson (adaptive
+    # allocation, or a mid-run change), that lesson is estimated by inverse-propensity
+    # weighting; observations must then be in assignment order.
+    rate: float | None = None
+    # Assigned under an adaptive-allocation schedule: always estimated by AIPW.
+    scheduled: bool = False
 
 
 @dataclass
@@ -531,6 +537,23 @@ def analyze(
                        sum(r.succeeded for r in wit), len(wit)))
 
     testable = [s for s in staged if s[2] >= min_arm and s[4] >= min_arm]
+    # Lessons whose rate changed are estimated by AIPW (see allocation); a difference
+    # in means would weight the eras by how many occasions each arm happened to get.
+    weighted = {slug for slug, rows in by_lesson.items()
+                if len({r.rate for r in rows if r.rate is not None}) > 1 or any(r.scheduled for r in rows)}
+    aipw: dict = {}
+    if weighted:
+        from commontrace import allocation
+
+        for slug, s_inj, n_inj, s_wit, n_wit in testable:
+            if slug not in weighted:
+                continue
+            baseline = ((s_inj + s_wit) / (n_inj + n_wit)) if (n_inj + n_wit) else 0.0
+            horizon = (2 * required_n_per_arm(target_effect_multiple * detectable, baseline)
+                       if 0.0 < baseline < 1.0 else 2 * (n_inj + n_wit))
+            aipw[slug] = allocation.estimate(
+                [allocation.Observation(r.injected, r.succeeded, r.rate) for r in by_lesson[slug]],
+                alpha=alpha, horizon=horizon, sequential=not use_fixed)
 
     # The interval that drives the verdict, per lesson: the anytime interval
     # in sequential mode, the alpha-matched pooled interval in fixed mode.
@@ -538,12 +561,18 @@ def analyze(
     sig_by_slug: dict[str, bool] = {}
     if use_fixed:
         z_fixed = _norm_ppf(1.0 - alpha / 2.0)
-        p_values = [two_proportion_test(s[1], s[2], s[3], s[4])[1] for s in testable]
+        p_values = [aipw[s[0]].p_value if s[0] in aipw else two_proportion_test(s[1], s[2], s[3], s[4])[1]
+                    for s in testable]
         for s, sig in zip(testable, benjamini_hochberg(p_values, alpha=alpha)):
             sig_by_slug[s[0]] = sig
-            interval_by_slug[s[0]] = diff_confidence_interval(s[1], s[2], s[3], s[4], z=z_fixed)
+            interval_by_slug[s[0]] = ((aipw[s[0]].ci_low, aipw[s[0]].ci_high) if s[0] in aipw
+                                      else diff_confidence_interval(s[1], s[2], s[3], s[4], z=z_fixed))
     else:
         for slug, s_inj, n_inj, s_wit, n_wit in testable:
+            if slug in aipw:
+                interval_by_slug[slug] = (aipw[slug].ci_low, aipw[slug].ci_high)
+                sig_by_slug[slug] = aipw[slug].ci_low > 0.0 or aipw[slug].ci_high < 0.0
+                continue
             baseline = ((s_inj + s_wit) / (n_inj + n_wit)) if (n_inj + n_wit) else 0.0
             target = (
                 required_n_per_arm(target_effect_multiple * detectable, baseline)
@@ -561,6 +590,8 @@ def analyze(
         rate_wit = (s_wit / n_wit) if n_wit else 0.0
         effect = rate_inj - rate_wit
         _, p = two_proportion_test(s_inj, n_inj, s_wit, n_wit)
+        if slug in aipw:
+            effect, p = aipw[slug].effect, aipw[slug].p_value
         baseline = ((s_inj + s_wit) / (n_inj + n_wit)) if (n_inj + n_wit) else 0.0
         mde = minimum_detectable_effect(min(n_inj, n_wit), baseline)
 

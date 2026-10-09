@@ -13,6 +13,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Adaptive holdout allocation (`commontrace allocate enable|plan|show|verify|disable`): era schedules explore
+  unproven memories at 50% and monitor proven ones at 5%, hash-chained and in force only for later occasions.
+  Every scheduled assignment logs its rate and is estimated by AIPW with an asymptotic confidence sequence;
+  the integrity audit and proof packages check each rate against its schedule; PROTOCOL 13.5 and 40 new
+  conformance vectors. Measured in `docs/benchmarks/adaptive-allocation.md` (coverage met; +5pp power within
+  2,000 occasions not met).
+- Typed OpenAPI for every HTTP API: `openapi/gateway.json` (58 operations, each live response validated in
+  tests), `hub/openapi.json` (106 operations, OpenAPI 3.1, served at `/api/v1/openapi.json`), with drift checks.
+- The Learning Ledger console: proven value and lift-per-token frontier, release diffs, experiment designer,
+  occasion forensics and a weekly digest (`/v1/ledger/*`).
+
 - **Adaptive recall budgets.** `Options(adaptive_budget=True)`, `conversation recall --budget auto`, MCP `adaptive_budget` and the gateway's `adaptive_budget` size the context by question shape (summaries, orderings and counts 3x, lists and multi-facet questions 2x, capped at 12,000 tokens); `explain.budget` records the decision. Measured on full datasets with the keyword arm: BEAM 100K evidence 70.87% -> 79.37% at a 1,500 floor (2,804 mean tokens), LongMemEval-S 79.60% -> 83.02% (2,447), LoCoMo 78.69% -> 80.29% (1,697). The benchmark harness gains `--adaptive-budget`.
 - **Subgroup effects.** `commontrace experiment --by agent_type|agent_id` (or `--covariates FILE`) reports each lesson's randomized effect per pre-treatment subgroup, Benjamini-Hochberg corrected, with Cochran's Q for heterogeneity; a lesson that helps one subgroup and hurts another is flagged `CROSSING`.
 - **CausalMemBench and graduation.** `python -m benchmarks.causalmembench` scores memory policies against seeded ground truth in a confounded fleet with late and missing outcomes. `CausalMemory(graduate=True)` stops randomizing a memory once its anytime-valid verdict is HELPS.

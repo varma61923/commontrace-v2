@@ -75,40 +75,40 @@ Use per-contribution idempotency keys. Batch delete is permanent; do not replay 
 
 | Tool | Parameters | Description / source |
 | --- | --- | --- |
-| `search_traces` | `query, tags, limit, offset, occasion_id, brief, pinned, scope, as_of` | Search this org's traces by full-text query and/or tags. [source](../hub/server.py#L589) |
-| `contribute_trace` | `title, context_text, solution_text, tags, agent_type, agent_id, profile, outcome, idempotency_key, scopes, valid_from, valid_until` | Contribute a new trace. Returns its id, quarantine status, and [source](../hub/server.py#L677) |
-| `get_trace` | `id` | Fetch a single trace by id. Not found (including a trace id that [source](../hub/server.py#L757) |
-| `vote_trace` | `id, vote, feedback_tag, feedback_text` | Cast (or update) this org's vote ('up'/'down') on a trace: your [source](../hub/server.py#L771) |
-| `amend_trace` | `id, title, context_text, solution_text, tags, outcome, idempotency_key` | Create a new trace that supersedes `id`, carrying forward any [source](../hub/server.py#L793) |
-| `list_tags` | `none` | List every distinct tag used across this org's non-quarantined traces. [source](../hub/server.py#L845) |
-| `fleet_outcomes` | `agent_type` | Has your fleet's agent performance changed since your baseline [source](../hub/server.py#L856) |
-| `working_set` | `budget_chars` | Your fleet's proven memory, small enough to pin to a system prompt. [source](../hub/server.py#L900) |
-| `value_delivered` | `value_per_occasion, rate_tiers` | What your fleet's memory has been worth, causally, in occasions. [source](../hub/server.py#L947) |
-| `holdout_assign` | `trace_ids, occasion_id, pinned` | Randomized holdout: for each trace eligible on this occasion, [source](../hub/server.py#L1012) |
-| `record_occasion_outcome` | `occasion_id, succeeded` | Report how an occasion went, closing the loop on every holdout [source](../hub/server.py#L1054) |
-| `search_trace_content` | `pattern, regex, limit` | Locate traces (INCLUDING quarantined ones) whose title, context, [source](../hub/server.py#L1073) |
-| `tag_trace_subjects` | `id, subject_ids` | Set (REPLACING any previous tags, not appending) which end [source](../hub/server.py#L1101) |
-| `find_traces_by_subject` | `subject_id` | Every trace THIS ORG explicitly tagged (`tag_trace_subjects`) [source](../hub/server.py#L1127) |
-| `purge_traces_by_subject` | `subject_id` | Permanently delete every trace this org tagged with [source](../hub/server.py#L1142) |
-| `delete_trace` | `id` | Permanently delete one of your own traces, and every trace in [source](../hub/server.py#L1160) |
-| `request_account_deletion` | `none` | Start permanently deleting YOUR ENTIRE ORGANIZATION -- every [source](../hub/server.py#L1177) |
-| `cancel_account_deletion` | `none` | Cancel a pending request_account_deletion request. Needs no [source](../hub/server.py#L1196) |
-| `confirm_account_deletion` | `confirmation_token` | The second call: permanently deletes this organization and [source](../hub/server.py#L1209) |
-| `add_comment` | `trace_id, body` | Leave a remark on one of your org's own traces, visible to your [source](../hub/server.py#L1386) |
-| `list_comments` | `trace_id` | Every comment left on one of your org's own traces, oldest first. [source](../hub/server.py#L1402) |
-| `assign_trace` | `trace_id, user_id` | Make `user_id` (one of your org's own `hub.manage list-users` [source](../hub/server.py#L1412) |
-| `unassign_trace` | `trace_id` | Clear whoever this trace is currently assigned to, if anyone. [source](../hub/server.py#L1426) |
-| `list_my_notifications` | `unread_only` | Your own inbox: 'you were assigned a trace' / 'someone commented [source](../hub/server.py#L1439) |
-| `mark_notification_read` | `notification_id` | Mark one of YOUR OWN inbox entries read. Never affects, or even [source](../hub/server.py#L1456) |
-| `account_usage` | `none` | What your plan entitles you to, and what you have used this period. [source](../hub/server.py#L1476) |
-| `contribute_traces_batch` | `traces` | Contribute 1–25 traces, with ordered per-item outcomes and independent commits. [source](../hub/server.py#L1493) |
-| `get_traces_batch` | `ids` | Read 1–25 traces in order using each item's existing privacy policy. [source](../hub/server.py#L1502) |
-| `delete_traces_batch` | `ids` | Permanently delete 1–25 owned trace chains; operations commit independently. [source](../hub/server.py#L1507) |
-| `commons_overlap` | `failures, threshold, include_matches, agent_type` | Of the recurring failures your fleet keeps hitting, what fraction [source](../hub/server.py#L1234) |
-| `commons_search` | `query_signature, limit, agent_type` | Ask the CommonTrace Knowledge Base what it already knows about [source](../hub/server.py#L1264) |
-| `commons_export` | `limit` | Fetch the whole curated Knowledge Base corpus, to match against [source](../hub/server.py#L1301) |
-| `submit_kb_entry` | `title, context_text, solution_text, tags, agent_type, rationale, idempotency_key` | Propose an entry for the CommonTrace Knowledge Base -- like [source](../hub/server.py#L1332) |
-| `list_my_kb_submissions` | `limit` | Your org's own Knowledge Base submissions and their review [source](../hub/server.py#L1371) |
+| `search_traces` | `query, tags, limit, offset, occasion_id, brief, pinned, scope, as_of` | Search this org's traces by full-text query and/or tags. [source](../hub/server.py#L590) |
+| `contribute_trace` | `title, context_text, solution_text, tags, agent_type, agent_id, profile, outcome, idempotency_key, scopes, valid_from, valid_until` | Contribute a new trace. Returns its id, quarantine status, and [source](../hub/server.py#L678) |
+| `get_trace` | `id` | Fetch a single trace by id. Not found (including a trace id that [source](../hub/server.py#L758) |
+| `vote_trace` | `id, vote, feedback_tag, feedback_text` | Cast (or update) this org's vote ('up'/'down') on a trace: your [source](../hub/server.py#L772) |
+| `amend_trace` | `id, title, context_text, solution_text, tags, outcome, idempotency_key` | Create a new trace that supersedes `id`, carrying forward any [source](../hub/server.py#L794) |
+| `list_tags` | `none` | List every distinct tag used across this org's non-quarantined traces. [source](../hub/server.py#L846) |
+| `fleet_outcomes` | `agent_type` | Has your fleet's agent performance changed since your baseline [source](../hub/server.py#L857) |
+| `working_set` | `budget_chars` | Your fleet's proven memory, small enough to pin to a system prompt. [source](../hub/server.py#L901) |
+| `value_delivered` | `value_per_occasion, rate_tiers` | What your fleet's memory has been worth, causally, in occasions. [source](../hub/server.py#L948) |
+| `holdout_assign` | `trace_ids, occasion_id, pinned` | Randomized holdout: for each trace eligible on this occasion, [source](../hub/server.py#L1013) |
+| `record_occasion_outcome` | `occasion_id, succeeded` | Report how an occasion went, closing the loop on every holdout [source](../hub/server.py#L1055) |
+| `search_trace_content` | `pattern, regex, limit` | Locate traces (INCLUDING quarantined ones) whose title, context, [source](../hub/server.py#L1074) |
+| `tag_trace_subjects` | `id, subject_ids` | Set (REPLACING any previous tags, not appending) which end [source](../hub/server.py#L1102) |
+| `find_traces_by_subject` | `subject_id` | Every trace THIS ORG explicitly tagged (`tag_trace_subjects`) [source](../hub/server.py#L1128) |
+| `purge_traces_by_subject` | `subject_id` | Permanently delete every trace this org tagged with [source](../hub/server.py#L1143) |
+| `delete_trace` | `id` | Permanently delete one of your own traces, and every trace in [source](../hub/server.py#L1161) |
+| `request_account_deletion` | `none` | Start permanently deleting YOUR ENTIRE ORGANIZATION -- every [source](../hub/server.py#L1178) |
+| `cancel_account_deletion` | `none` | Cancel a pending request_account_deletion request. Needs no [source](../hub/server.py#L1197) |
+| `confirm_account_deletion` | `confirmation_token` | The second call: permanently deletes this organization and [source](../hub/server.py#L1210) |
+| `add_comment` | `trace_id, body` | Leave a remark on one of your org's own traces, visible to your [source](../hub/server.py#L1387) |
+| `list_comments` | `trace_id` | Every comment left on one of your org's own traces, oldest first. [source](../hub/server.py#L1403) |
+| `assign_trace` | `trace_id, user_id` | Make `user_id` (one of your org's own `hub.manage list-users` [source](../hub/server.py#L1413) |
+| `unassign_trace` | `trace_id` | Clear whoever this trace is currently assigned to, if anyone. [source](../hub/server.py#L1427) |
+| `list_my_notifications` | `unread_only` | Your own inbox: 'you were assigned a trace' / 'someone commented [source](../hub/server.py#L1440) |
+| `mark_notification_read` | `notification_id` | Mark one of YOUR OWN inbox entries read. Never affects, or even [source](../hub/server.py#L1457) |
+| `account_usage` | `none` | What your plan entitles you to, and what you have used this period. [source](../hub/server.py#L1477) |
+| `contribute_traces_batch` | `traces` | Contribute 1–25 traces, with ordered per-item outcomes and independent commits. [source](../hub/server.py#L1494) |
+| `get_traces_batch` | `ids` | Read 1–25 traces in order using each item's existing privacy policy. [source](../hub/server.py#L1503) |
+| `delete_traces_batch` | `ids` | Permanently delete 1–25 owned trace chains; operations commit independently. [source](../hub/server.py#L1508) |
+| `commons_overlap` | `failures, threshold, include_matches, agent_type` | Of the recurring failures your fleet keeps hitting, what fraction [source](../hub/server.py#L1235) |
+| `commons_search` | `query_signature, limit, agent_type` | Ask the CommonTrace Knowledge Base what it already knows about [source](../hub/server.py#L1265) |
+| `commons_export` | `limit` | Fetch the whole curated Knowledge Base corpus, to match against [source](../hub/server.py#L1302) |
+| `submit_kb_entry` | `title, context_text, solution_text, tags, agent_type, rationale, idempotency_key` | Propose an entry for the CommonTrace Knowledge Base -- like [source](../hub/server.py#L1333) |
+| `list_my_kb_submissions` | `limit` | Your org's own Knowledge Base submissions and their review [source](../hub/server.py#L1372) |
 
 ## Gateway HTTP routes
 

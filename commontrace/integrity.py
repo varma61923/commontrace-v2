@@ -50,6 +50,7 @@ class Assignment:
     rank: int | None = None
     scorer: str | None = None
     floor: float | None = None
+    schedule: str | None = None  # digest prefix of the allocation schedule that set `rate`
 
 
 @dataclass(frozen=True)
@@ -365,8 +366,15 @@ def check_arm_balance(rows: list[Assignment]) -> Finding:
     )
 
 
-def check_assignment_drift(rows: list[Assignment]) -> Finding:
-    """Was the randomization reshuffled part-way through?"""
+def check_assignment_drift(rows: list[Assignment], schedules: list | None = None) -> Finding:
+    """Was the randomization reshuffled part-way through?
+
+    Rates set by published adaptive-allocation schedules are not a reshuffle: the
+    hash and salt stay fixed, each assignment logs its own rate, and a lesson whose
+    rate changed is estimated by inverse-propensity weighting. With `schedules`,
+    every assignment's rate is checked against the schedule in force when it was
+    made; without them, rows tagged with a schedule are accepted as scheduled.
+    """
     salts = sorted({r.salt for r in rows})
     rates = sorted({round(r.rate, 6) for r in rows})
     numbers = {"salts": salts, "rates": rates}
@@ -376,6 +384,28 @@ def check_assignment_drift(rows: list[Assignment]) -> Finding:
             "One randomization throughout.",
             "", numbers,
         )
+    if len(salts) <= 1:
+        from commontrace import allocation
+
+        if schedules:
+            free = [r for r in rows if r.at is None
+                    or allocation.in_force(schedules, r.salt, r.at) is None]
+            wrong = allocation.unscheduled([r for r in rows if r not in free], schedules)
+        else:
+            free = [r for r in rows if not r.schedule]
+            wrong = []
+        if not wrong and len({round(r.rate, 6) for r in free}) <= 1:
+            numbers["schedules"] = len({r.schedule for r in rows if r.schedule}) if not schedules else len(
+                [s for s in schedules if s.salt == salts[0]])
+            return Finding(
+                "assignment_drift", SEVERITY_OK,
+                "One randomization; rates set by published adaptive-allocation schedules.",
+                "Every rate change comes from a schedule fixed before the occasions it governs, and "
+                "lessons whose rate changed are estimated by inverse-propensity weighting.",
+                numbers,
+            )
+        if wrong:
+            numbers["unscheduled"] = len(wrong)
     changed = []
     if len(salts) > 1:
         changed.append(f"salt ({', '.join(repr(s) for s in salts)})")
@@ -744,10 +774,11 @@ def audit(
     min_arm: int = experiment.DEFAULT_MIN_ARM,
     unit: str = UNIT_LESSON,
     now: datetime.datetime | None = None,
+    schedules: list | None = None,
 ) -> IntegrityReport:
     """Every check, plus the projection, over one experiment's assignments."""
     conflicts = check_inconsistent_arms(rows, unit)
-    drift = check_assignment_drift(rows)
+    drift = check_assignment_drift(rows, schedules)
     scorer_drift = check_scorer_drift(rows)
     unique, duplicates = normalize(rows)
     findings = [

@@ -1,0 +1,1063 @@
+{
+  "benchmark": "adaptive-allocation",
+  "version": 1,
+  "seed": 0,
+  "reps": 400,
+  "horizon": 2000,
+  "alpha": 0.05,
+  "checkpoints": "every 50 from 100",
+  "source_sha256": "9a84602db9a228b4aff7ef64b51f61531221f2dc9eb943c71b3c8023fbf0fe4f",
+  "cells": [
+    {
+      "strata": "flat",
+      "bases": [
+        0.5
+      ],
+      "effect": 0.0,
+      "design": "fixed10-mixture",
+      "reps": 400,
+      "power_at_2000": 0.0,
+      "power_ci95": [
+        0.0,
+        0.0095
+      ],
+      "median_occasions_to_helps": null,
+      "time_uniform_coverage": 1.0,
+      "coverage_ci95": [
+        0.9905,
+        1.0
+      ],
+      "false_positive_any_time": 0.0,
+      "withheld_share_of_helpful": null
+    },
+    {
+      "strata": "flat",
+      "bases": [
+        0.5
+      ],
+      "effect": 0.0,
+      "design": "fixed50-mixture",
+      "reps": 400,
+      "power_at_2000": 0.0,
+      "power_ci95": [
+        0.0,
+        0.0095
+      ],
+      "median_occasions_to_helps": null,
+      "time_uniform_coverage": 1.0,
+      "coverage_ci95": [
+        0.9905,
+        1.0
+      ],
+      "false_positive_any_time": 0.0,
+      "withheld_share_of_helpful": null
+    },
+    {
+      "strata": "flat",
+      "bases": [
+        0.5
+      ],
+      "effect": 0.0,
+      "design": "fixed50-aipw",
+      "reps": 400,
+      "power_at_2000": 0.0125,
+      "power_ci95": [
+        0.0054,
+        0.0289
+      ],
+      "median_occasions_to_helps": 900,
+      "time_uniform_coverage": 0.9775,
+      "coverage_ci95": [
+        0.9578,
+        0.9881
+      ],
+      "false_positive_any_time": 0.0225,
+      "withheld_share_of_helpful": null
+    },
+    {
+      "strata": "flat",
+      "bases": [
+        0.5
+      ],
+      "effect": 0.0,
+      "design": "fixed50-aipw-strata",
+      "reps": 400,
+      "power_at_2000": 0.01,
+      "power_ci95": [
+        0.0039,
+        0.0254
+      ],
+      "median_occasions_to_helps": 575.0,
+      "time_uniform_coverage": 0.9825,
+      "coverage_ci95": [
+        0.9643,
+        0.9915
+      ],
+      "false_positive_any_time": 0.0175,
+      "withheld_share_of_helpful": null
+    },
+    {
+      "strata": "flat",
+      "bases": [
+        0.5
+      ],
+      "effect": 0.0,
+      "design": "adaptive-aipw-strata",
+      "reps": 400,
+      "power_at_2000": 0.01,
+      "power_ci95": [
+        0.0039,
+        0.0254
+      ],
+      "median_occasions_to_helps": 850.0,
+      "time_uniform_coverage": 0.975,
+      "coverage_ci95": [
+        0.9546,
+        0.9864
+      ],
+      "false_positive_any_time": 0.025,
+      "withheld_share_of_helpful": null
+    },
+    {
+      "strata": "flat",
+      "bases": [
+        0.5
+      ],
+      "effect": 0.05,
+      "design": "fixed10-mixture",
+      "reps": 400,
+      "power_at_2000": 0.0025,
+      "power_ci95": [
+        0.0004,
+        0.014
+      ],
+      "median_occasions_to_helps": 1300,
+      "time_uniform_coverage": 1.0,
+      "coverage_ci95": [
+        0.9905,
+        1.0
+      ],
+      "false_positive_any_time": null,
+      "withheld_share_of_helpful": 0.0998
+    },
+    {
+      "strata": "flat",
+      "bases": [
+        0.5
+      ],
+      "effect": 0.05,
+      "design": "fixed50-mixture",
+      "reps": 400,
+      "power_at_2000": 0.0,
+      "power_ci95": [
+        0.0,
+        0.0095
+      ],
+      "median_occasions_to_helps": null,
+      "time_uniform_coverage": 1.0,
+      "coverage_ci95": [
+        0.9905,
+        1.0
+      ],
+      "false_positive_any_time": null,
+      "withheld_share_of_helpful": 0.4998
+    },
+    {
+      "strata": "flat",
+      "bases": [
+        0.5
+      ],
+      "effect": 0.05,
+      "design": "fixed50-aipw",
+      "reps": 400,
+      "power_at_2000": 0.3075,
+      "power_ci95": [
+        0.2643,
+        0.3544
+      ],
+      "median_occasions_to_helps": 1250,
+      "time_uniform_coverage": 0.9825,
+      "coverage_ci95": [
+        0.9643,
+        0.9915
+      ],
+      "false_positive_any_time": null,
+      "withheld_share_of_helpful": 0.4997
+    },
+    {
+      "strata": "flat",
+      "bases": [
+        0.5
+      ],
+      "effect": 0.05,
+      "design": "fixed50-aipw-strata",
+      "reps": 400,
+      "power_at_2000": 0.2975,
+      "power_ci95": [
+        0.2548,
+        0.3441
+      ],
+      "median_occasions_to_helps": 1200,
+      "time_uniform_coverage": 0.9875,
+      "coverage_ci95": [
+        0.9711,
+        0.9946
+      ],
+      "false_positive_any_time": null,
+      "withheld_share_of_helpful": 0.4996
+    },
+    {
+      "strata": "flat",
+      "bases": [
+        0.5
+      ],
+      "effect": 0.05,
+      "design": "adaptive-aipw-strata",
+      "reps": 400,
+      "power_at_2000": 0.33,
+      "power_ci95": [
+        0.2857,
+        0.3775
+      ],
+      "median_occasions_to_helps": 1200.0,
+      "time_uniform_coverage": 0.98,
+      "coverage_ci95": [
+        0.961,
+        0.9898
+      ],
+      "false_positive_any_time": null,
+      "withheld_share_of_helpful": 0.4482
+    },
+    {
+      "strata": "flat",
+      "bases": [
+        0.5
+      ],
+      "effect": 0.1,
+      "design": "fixed10-mixture",
+      "reps": 400,
+      "power_at_2000": 0.0725,
+      "power_ci95": [
+        0.051,
+        0.1022
+      ],
+      "median_occasions_to_helps": 1700,
+      "time_uniform_coverage": 1.0,
+      "coverage_ci95": [
+        0.9905,
+        1.0
+      ],
+      "false_positive_any_time": null,
+      "withheld_share_of_helpful": 0.0995
+    },
+    {
+      "strata": "flat",
+      "bases": [
+        0.5
+      ],
+      "effect": 0.1,
+      "design": "fixed50-mixture",
+      "reps": 400,
+      "power_at_2000": 0.2825,
+      "power_ci95": [
+        0.2406,
+        0.3285
+      ],
+      "median_occasions_to_helps": 1550,
+      "time_uniform_coverage": 1.0,
+      "coverage_ci95": [
+        0.9905,
+        1.0
+      ],
+      "false_positive_any_time": null,
+      "withheld_share_of_helpful": 0.4999
+    },
+    {
+      "strata": "flat",
+      "bases": [
+        0.5
+      ],
+      "effect": 0.1,
+      "design": "fixed50-aipw",
+      "reps": 400,
+      "power_at_2000": 0.9325,
+      "power_ci95": [
+        0.9036,
+        0.9532
+      ],
+      "median_occasions_to_helps": 800,
+      "time_uniform_coverage": 0.9725,
+      "coverage_ci95": [
+        0.9514,
+        0.9846
+      ],
+      "false_positive_any_time": null,
+      "withheld_share_of_helpful": 0.4996
+    },
+    {
+      "strata": "flat",
+      "bases": [
+        0.5
+      ],
+      "effect": 0.1,
+      "design": "fixed50-aipw-strata",
+      "reps": 400,
+      "power_at_2000": 0.945,
+      "power_ci95": [
+        0.9181,
+        0.9634
+      ],
+      "median_occasions_to_helps": 850.0,
+      "time_uniform_coverage": 0.9825,
+      "coverage_ci95": [
+        0.9643,
+        0.9915
+      ],
+      "false_positive_any_time": null,
+      "withheld_share_of_helpful": 0.4997
+    },
+    {
+      "strata": "flat",
+      "bases": [
+        0.5
+      ],
+      "effect": 0.1,
+      "design": "adaptive-aipw-strata",
+      "reps": 400,
+      "power_at_2000": 0.9575,
+      "power_ci95": [
+        0.933,
+        0.9733
+      ],
+      "median_occasions_to_helps": 800,
+      "time_uniform_coverage": 0.9875,
+      "coverage_ci95": [
+        0.9711,
+        0.9946
+      ],
+      "false_positive_any_time": null,
+      "withheld_share_of_helpful": 0.2851
+    },
+    {
+      "strata": "moderate",
+      "bases": [
+        0.2,
+        0.5,
+        0.8
+      ],
+      "effect": 0.0,
+      "design": "fixed10-mixture",
+      "reps": 400,
+      "power_at_2000": 0.0,
+      "power_ci95": [
+        0.0,
+        0.0095
+      ],
+      "median_occasions_to_helps": null,
+      "time_uniform_coverage": 1.0,
+      "coverage_ci95": [
+        0.9905,
+        1.0
+      ],
+      "false_positive_any_time": 0.0,
+      "withheld_share_of_helpful": null
+    },
+    {
+      "strata": "moderate",
+      "bases": [
+        0.2,
+        0.5,
+        0.8
+      ],
+      "effect": 0.0,
+      "design": "fixed50-mixture",
+      "reps": 400,
+      "power_at_2000": 0.0,
+      "power_ci95": [
+        0.0,
+        0.0095
+      ],
+      "median_occasions_to_helps": null,
+      "time_uniform_coverage": 1.0,
+      "coverage_ci95": [
+        0.9905,
+        1.0
+      ],
+      "false_positive_any_time": 0.0,
+      "withheld_share_of_helpful": null
+    },
+    {
+      "strata": "moderate",
+      "bases": [
+        0.2,
+        0.5,
+        0.8
+      ],
+      "effect": 0.0,
+      "design": "fixed50-aipw",
+      "reps": 400,
+      "power_at_2000": 0.01,
+      "power_ci95": [
+        0.0039,
+        0.0254
+      ],
+      "median_occasions_to_helps": 550.0,
+      "time_uniform_coverage": 0.985,
+      "coverage_ci95": [
+        0.9677,
+        0.9931
+      ],
+      "false_positive_any_time": 0.015,
+      "withheld_share_of_helpful": null
+    },
+    {
+      "strata": "moderate",
+      "bases": [
+        0.2,
+        0.5,
+        0.8
+      ],
+      "effect": 0.0,
+      "design": "fixed50-aipw-strata",
+      "reps": 400,
+      "power_at_2000": 0.0025,
+      "power_ci95": [
+        0.0004,
+        0.014
+      ],
+      "median_occasions_to_helps": 1200,
+      "time_uniform_coverage": 0.99,
+      "coverage_ci95": [
+        0.9746,
+        0.9961
+      ],
+      "false_positive_any_time": 0.01,
+      "withheld_share_of_helpful": null
+    },
+    {
+      "strata": "moderate",
+      "bases": [
+        0.2,
+        0.5,
+        0.8
+      ],
+      "effect": 0.0,
+      "design": "adaptive-aipw-strata",
+      "reps": 400,
+      "power_at_2000": 0.0075,
+      "power_ci95": [
+        0.0026,
+        0.0218
+      ],
+      "median_occasions_to_helps": 1000,
+      "time_uniform_coverage": 0.985,
+      "coverage_ci95": [
+        0.9677,
+        0.9931
+      ],
+      "false_positive_any_time": 0.015,
+      "withheld_share_of_helpful": null
+    },
+    {
+      "strata": "moderate",
+      "bases": [
+        0.2,
+        0.5,
+        0.8
+      ],
+      "effect": 0.05,
+      "design": "fixed10-mixture",
+      "reps": 400,
+      "power_at_2000": 0.0,
+      "power_ci95": [
+        0.0,
+        0.0095
+      ],
+      "median_occasions_to_helps": null,
+      "time_uniform_coverage": 1.0,
+      "coverage_ci95": [
+        0.9905,
+        1.0
+      ],
+      "false_positive_any_time": null,
+      "withheld_share_of_helpful": 0.0993
+    },
+    {
+      "strata": "moderate",
+      "bases": [
+        0.2,
+        0.5,
+        0.8
+      ],
+      "effect": 0.05,
+      "design": "fixed50-mixture",
+      "reps": 400,
+      "power_at_2000": 0.005,
+      "power_ci95": [
+        0.0014,
+        0.018
+      ],
+      "median_occasions_to_helps": 1275.0,
+      "time_uniform_coverage": 1.0,
+      "coverage_ci95": [
+        0.9905,
+        1.0
+      ],
+      "false_positive_any_time": null,
+      "withheld_share_of_helpful": 0.4993
+    },
+    {
+      "strata": "moderate",
+      "bases": [
+        0.2,
+        0.5,
+        0.8
+      ],
+      "effect": 0.05,
+      "design": "fixed50-aipw",
+      "reps": 400,
+      "power_at_2000": 0.39,
+      "power_ci95": [
+        0.3435,
+        0.4386
+      ],
+      "median_occasions_to_helps": 1125.0,
+      "time_uniform_coverage": 0.9775,
+      "coverage_ci95": [
+        0.9578,
+        0.9881
+      ],
+      "false_positive_any_time": null,
+      "withheld_share_of_helpful": 0.4998
+    },
+    {
+      "strata": "moderate",
+      "bases": [
+        0.2,
+        0.5,
+        0.8
+      ],
+      "effect": 0.05,
+      "design": "fixed50-aipw-strata",
+      "reps": 400,
+      "power_at_2000": 0.45,
+      "power_ci95": [
+        0.402,
+        0.499
+      ],
+      "median_occasions_to_helps": 1300.0,
+      "time_uniform_coverage": 0.9875,
+      "coverage_ci95": [
+        0.9711,
+        0.9946
+      ],
+      "false_positive_any_time": null,
+      "withheld_share_of_helpful": 0.5009
+    },
+    {
+      "strata": "moderate",
+      "bases": [
+        0.2,
+        0.5,
+        0.8
+      ],
+      "effect": 0.05,
+      "design": "adaptive-aipw-strata",
+      "reps": 400,
+      "power_at_2000": 0.46,
+      "power_ci95": [
+        0.4118,
+        0.509
+      ],
+      "median_occasions_to_helps": 1375.0,
+      "time_uniform_coverage": 0.985,
+      "coverage_ci95": [
+        0.9677,
+        0.9931
+      ],
+      "false_positive_any_time": null,
+      "withheld_share_of_helpful": 0.4371
+    },
+    {
+      "strata": "moderate",
+      "bases": [
+        0.2,
+        0.5,
+        0.8
+      ],
+      "effect": 0.1,
+      "design": "fixed10-mixture",
+      "reps": 400,
+      "power_at_2000": 0.075,
+      "power_ci95": [
+        0.053,
+        0.105
+      ],
+      "median_occasions_to_helps": 1300.0,
+      "time_uniform_coverage": 1.0,
+      "coverage_ci95": [
+        0.9905,
+        1.0
+      ],
+      "false_positive_any_time": null,
+      "withheld_share_of_helpful": 0.1003
+    },
+    {
+      "strata": "moderate",
+      "bases": [
+        0.2,
+        0.5,
+        0.8
+      ],
+      "effect": 0.1,
+      "design": "fixed50-mixture",
+      "reps": 400,
+      "power_at_2000": 0.285,
+      "power_ci95": [
+        0.243,
+        0.3311
+      ],
+      "median_occasions_to_helps": 1550.0,
+      "time_uniform_coverage": 1.0,
+      "coverage_ci95": [
+        0.9905,
+        1.0
+      ],
+      "false_positive_any_time": null,
+      "withheld_share_of_helpful": 0.5005
+    },
+    {
+      "strata": "moderate",
+      "bases": [
+        0.2,
+        0.5,
+        0.8
+      ],
+      "effect": 0.1,
+      "design": "fixed50-aipw",
+      "reps": 400,
+      "power_at_2000": 0.945,
+      "power_ci95": [
+        0.9181,
+        0.9634
+      ],
+      "median_occasions_to_helps": 800.0,
+      "time_uniform_coverage": 0.9775,
+      "coverage_ci95": [
+        0.9578,
+        0.9881
+      ],
+      "false_positive_any_time": null,
+      "withheld_share_of_helpful": 0.4995
+    },
+    {
+      "strata": "moderate",
+      "bases": [
+        0.2,
+        0.5,
+        0.8
+      ],
+      "effect": 0.1,
+      "design": "fixed50-aipw-strata",
+      "reps": 400,
+      "power_at_2000": 0.9975,
+      "power_ci95": [
+        0.986,
+        0.9996
+      ],
+      "median_occasions_to_helps": 700,
+      "time_uniform_coverage": 0.9775,
+      "coverage_ci95": [
+        0.9578,
+        0.9881
+      ],
+      "false_positive_any_time": null,
+      "withheld_share_of_helpful": 0.5004
+    },
+    {
+      "strata": "moderate",
+      "bases": [
+        0.2,
+        0.5,
+        0.8
+      ],
+      "effect": 0.1,
+      "design": "adaptive-aipw-strata",
+      "reps": 400,
+      "power_at_2000": 0.99,
+      "power_ci95": [
+        0.9746,
+        0.9961
+      ],
+      "median_occasions_to_helps": 750.0,
+      "time_uniform_coverage": 0.9675,
+      "coverage_ci95": [
+        0.9452,
+        0.9809
+      ],
+      "false_positive_any_time": null,
+      "withheld_share_of_helpful": 0.2522
+    },
+    {
+      "strata": "strong",
+      "bases": [
+        0.05,
+        0.5,
+        0.95
+      ],
+      "effect": 0.0,
+      "design": "fixed10-mixture",
+      "reps": 400,
+      "power_at_2000": 0.0,
+      "power_ci95": [
+        0.0,
+        0.0095
+      ],
+      "median_occasions_to_helps": null,
+      "time_uniform_coverage": 1.0,
+      "coverage_ci95": [
+        0.9905,
+        1.0
+      ],
+      "false_positive_any_time": 0.0,
+      "withheld_share_of_helpful": null
+    },
+    {
+      "strata": "strong",
+      "bases": [
+        0.05,
+        0.5,
+        0.95
+      ],
+      "effect": 0.0,
+      "design": "fixed50-mixture",
+      "reps": 400,
+      "power_at_2000": 0.0,
+      "power_ci95": [
+        0.0,
+        0.0095
+      ],
+      "median_occasions_to_helps": null,
+      "time_uniform_coverage": 1.0,
+      "coverage_ci95": [
+        0.9905,
+        1.0
+      ],
+      "false_positive_any_time": 0.0,
+      "withheld_share_of_helpful": null
+    },
+    {
+      "strata": "strong",
+      "bases": [
+        0.05,
+        0.5,
+        0.95
+      ],
+      "effect": 0.0,
+      "design": "fixed50-aipw",
+      "reps": 400,
+      "power_at_2000": 0.005,
+      "power_ci95": [
+        0.0014,
+        0.018
+      ],
+      "median_occasions_to_helps": 325.0,
+      "time_uniform_coverage": 0.97,
+      "coverage_ci95": [
+        0.9483,
+        0.9828
+      ],
+      "false_positive_any_time": 0.03,
+      "withheld_share_of_helpful": null
+    },
+    {
+      "strata": "strong",
+      "bases": [
+        0.05,
+        0.5,
+        0.95
+      ],
+      "effect": 0.0,
+      "design": "fixed50-aipw-strata",
+      "reps": 400,
+      "power_at_2000": 0.0025,
+      "power_ci95": [
+        0.0004,
+        0.014
+      ],
+      "median_occasions_to_helps": 850,
+      "time_uniform_coverage": 0.99,
+      "coverage_ci95": [
+        0.9746,
+        0.9961
+      ],
+      "false_positive_any_time": 0.01,
+      "withheld_share_of_helpful": null
+    },
+    {
+      "strata": "strong",
+      "bases": [
+        0.05,
+        0.5,
+        0.95
+      ],
+      "effect": 0.0,
+      "design": "adaptive-aipw-strata",
+      "reps": 400,
+      "power_at_2000": 0.0025,
+      "power_ci95": [
+        0.0004,
+        0.014
+      ],
+      "median_occasions_to_helps": 1900,
+      "time_uniform_coverage": 0.9925,
+      "coverage_ci95": [
+        0.9782,
+        0.9974
+      ],
+      "false_positive_any_time": 0.0075,
+      "withheld_share_of_helpful": null
+    },
+    {
+      "strata": "strong",
+      "bases": [
+        0.05,
+        0.5,
+        0.95
+      ],
+      "effect": 0.05,
+      "design": "fixed10-mixture",
+      "reps": 400,
+      "power_at_2000": 0.0025,
+      "power_ci95": [
+        0.0004,
+        0.014
+      ],
+      "median_occasions_to_helps": 1100,
+      "time_uniform_coverage": 1.0,
+      "coverage_ci95": [
+        0.9905,
+        1.0
+      ],
+      "false_positive_any_time": null,
+      "withheld_share_of_helpful": 0.1007
+    },
+    {
+      "strata": "strong",
+      "bases": [
+        0.05,
+        0.5,
+        0.95
+      ],
+      "effect": 0.05,
+      "design": "fixed50-mixture",
+      "reps": 400,
+      "power_at_2000": 0.0025,
+      "power_ci95": [
+        0.0004,
+        0.014
+      ],
+      "median_occasions_to_helps": 1200,
+      "time_uniform_coverage": 1.0,
+      "coverage_ci95": [
+        0.9905,
+        1.0
+      ],
+      "false_positive_any_time": null,
+      "withheld_share_of_helpful": 0.4998
+    },
+    {
+      "strata": "strong",
+      "bases": [
+        0.05,
+        0.5,
+        0.95
+      ],
+      "effect": 0.05,
+      "design": "fixed50-aipw",
+      "reps": 400,
+      "power_at_2000": 0.3425,
+      "power_ci95": [
+        0.2977,
+        0.3903
+      ],
+      "median_occasions_to_helps": 1200,
+      "time_uniform_coverage": 0.98,
+      "coverage_ci95": [
+        0.961,
+        0.9898
+      ],
+      "false_positive_any_time": null,
+      "withheld_share_of_helpful": 0.501
+    },
+    {
+      "strata": "strong",
+      "bases": [
+        0.05,
+        0.5,
+        0.95
+      ],
+      "effect": 0.05,
+      "design": "fixed50-aipw-strata",
+      "reps": 400,
+      "power_at_2000": 0.6975,
+      "power_ci95": [
+        0.6508,
+        0.7405
+      ],
+      "median_occasions_to_helps": 1250,
+      "time_uniform_coverage": 0.995,
+      "coverage_ci95": [
+        0.982,
+        0.9986
+      ],
+      "false_positive_any_time": null,
+      "withheld_share_of_helpful": 0.5
+    },
+    {
+      "strata": "strong",
+      "bases": [
+        0.05,
+        0.5,
+        0.95
+      ],
+      "effect": 0.05,
+      "design": "adaptive-aipw-strata",
+      "reps": 400,
+      "power_at_2000": 0.64,
+      "power_ci95": [
+        0.5918,
+        0.6855
+      ],
+      "median_occasions_to_helps": 1300.0,
+      "time_uniform_coverage": 0.9875,
+      "coverage_ci95": [
+        0.9711,
+        0.9946
+      ],
+      "false_positive_any_time": null,
+      "withheld_share_of_helpful": 0.4127
+    },
+    {
+      "strata": "strong",
+      "bases": [
+        0.05,
+        0.5,
+        0.95
+      ],
+      "effect": 0.1,
+      "design": "fixed10-mixture",
+      "reps": 400,
+      "power_at_2000": 0.02,
+      "power_ci95": [
+        0.0102,
+        0.039
+      ],
+      "median_occasions_to_helps": 1550.0,
+      "time_uniform_coverage": 1.0,
+      "coverage_ci95": [
+        0.9905,
+        1.0
+      ],
+      "false_positive_any_time": null,
+      "withheld_share_of_helpful": 0.1001
+    },
+    {
+      "strata": "strong",
+      "bases": [
+        0.05,
+        0.5,
+        0.95
+      ],
+      "effect": 0.1,
+      "design": "fixed50-mixture",
+      "reps": 400,
+      "power_at_2000": 0.115,
+      "power_ci95": [
+        0.0873,
+        0.15
+      ],
+      "median_occasions_to_helps": 1700.0,
+      "time_uniform_coverage": 1.0,
+      "coverage_ci95": [
+        0.9905,
+        1.0
+      ],
+      "false_positive_any_time": null,
+      "withheld_share_of_helpful": 0.5008
+    },
+    {
+      "strata": "strong",
+      "bases": [
+        0.05,
+        0.5,
+        0.95
+      ],
+      "effect": 0.1,
+      "design": "fixed50-aipw",
+      "reps": 400,
+      "power_at_2000": 0.8325,
+      "power_ci95": [
+        0.7928,
+        0.8659
+      ],
+      "median_occasions_to_helps": 950,
+      "time_uniform_coverage": 0.98,
+      "coverage_ci95": [
+        0.961,
+        0.9898
+      ],
+      "false_positive_any_time": null,
+      "withheld_share_of_helpful": 0.4999
+    },
+    {
+      "strata": "strong",
+      "bases": [
+        0.05,
+        0.5,
+        0.95
+      ],
+      "effect": 0.1,
+      "design": "fixed50-aipw-strata",
+      "reps": 400,
+      "power_at_2000": 0.995,
+      "power_ci95": [
+        0.982,
+        0.9986
+      ],
+      "median_occasions_to_helps": 750.0,
+      "time_uniform_coverage": 0.9925,
+      "coverage_ci95": [
+        0.9782,
+        0.9974
+      ],
+      "false_positive_any_time": null,
+      "withheld_share_of_helpful": 0.5
+    },
+    {
+      "strata": "strong",
+      "bases": [
+        0.05,
+        0.5,
+        0.95
+      ],
+      "effect": 0.1,
+      "design": "adaptive-aipw-strata",
+      "reps": 400,
+      "power_at_2000": 0.9975,
+      "power_ci95": [
+        0.986,
+        0.9996
+      ],
+      "median_occasions_to_helps": 750,
+      "time_uniform_coverage": 0.9775,
+      "coverage_ci95": [
+        0.9578,
+        0.9881
+      ],
+      "false_positive_any_time": null,
+      "withheld_share_of_helpful": 0.2564
+    }
+  ],
+  "note": "Seeded simulation of the estimators and allocation policy; not a measurement of any deployment."
+}
