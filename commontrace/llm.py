@@ -19,10 +19,14 @@ _ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 _ANTHROPIC_VERSION = "2023-06-01"
 _ANTHROPIC_MAX_TOKENS = 1536
 _TIMEOUT_SECONDS = 60
-_SUPPORTED_PROVIDERS = ("anthropic", "openai-compatible", "ollama", "bedrock", "vertex", "local")
+_SUPPORTED_PROVIDERS = ("anthropic", "openai-compatible", "ollama", "bedrock", "vertex", "local", "gemini")
 _CLOUD_PROVIDERS = ("bedrock", "vertex")
 
 _OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434/v1"
+_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+# Thinking models spend output tokens on reasoning before the answer.
+GEMINI_MAX_TOKENS = 8192
+GEMINI_TIMEOUT_SECONDS = 300
 
 REQUIRED_KEYS = ("rule", "applies_when", "do_not_apply_when", "evidence")
 
@@ -166,7 +170,7 @@ class Draft:
     provenance: dict = field(default_factory=dict)
 
 
-def _post_json(url: str, headers: dict, payload: dict) -> dict:
+def _post_json(url: str, headers: dict, payload: dict, *, timeout: float | None = None) -> dict:
     import urllib.error
     import urllib.request
 
@@ -190,7 +194,7 @@ def _post_json(url: str, headers: dict, payload: dict) -> dict:
     def _once() -> str:
         request = urllib.request.Request(url, data=body, headers=headers, method="POST")
         try:
-            with opener.open(request, timeout=_TIMEOUT_SECONDS) as resp:  # nosec B310 - scheme checked above
+            with opener.open(request, timeout=timeout or _TIMEOUT_SECONDS) as resp:  # nosec B310 - scheme checked above
                 return read_bounded(resp)
         except urllib.error.HTTPError as exc:
             exc.close()
@@ -226,6 +230,41 @@ def _call_anthropic(config: Config, prompt: str) -> tuple[str, dict]:
     text = "".join(b.get("text", "") for b in blocks if isinstance(b, dict))
     usage = data.get("usage") or {}
     return text, {"input_tokens": usage.get("input_tokens"), "output_tokens": usage.get("output_tokens")}
+
+
+def gemini_request(config: Config, prompt: str, *, max_tokens: int = GEMINI_MAX_TOKENS,
+                   temperature: float = 0.0) -> tuple[str, dict, dict]:
+    """(url, headers, payload) for Google AI's generateContent (Gemini and Gemma models)."""
+    from urllib.parse import quote
+
+    base = (config.base_url or _GEMINI_BASE_URL).rstrip("/")
+    url = f"{base}/models/{quote(config.model, safe='-._')}:generateContent"
+    headers = {"x-goog-api-key": config.api_key, "content-type": "application/json"}
+    payload = {"contents": [{"role": "user", "parts": [{"text": prompt}]}],
+               "generationConfig": {"temperature": temperature, "maxOutputTokens": max_tokens,
+                                    "thinkingConfig": {"includeThoughts": False}}}
+    return url, headers, payload
+
+
+def gemini_parse(data: dict) -> tuple[str, dict]:
+    """The answer without thought parts; output tokens include the thinking that was billed."""
+    candidates = data.get("candidates") or []
+    if not candidates or not isinstance(candidates[0], dict):
+        reason = (data.get("promptFeedback") or {}).get("blockReason") or "no candidates"
+        raise LLMUnavailable(f"Gemini returned no answer ({reason})")
+    parts = (candidates[0].get("content") or {}).get("parts") or []
+    text = "".join(p.get("text", "") for p in parts if isinstance(p, dict) and not p.get("thought"))
+    if not text.strip() and candidates[0].get("finishReason") == "MAX_TOKENS":
+        raise LLMUnavailable("Gemini spent its whole output budget thinking; raise the output cap")
+    usage = data.get("usageMetadata") or {}
+    output = (usage.get("candidatesTokenCount") or 0) + (usage.get("thoughtsTokenCount") or 0)
+    return text, {"input_tokens": usage.get("promptTokenCount"), "output_tokens": output,
+                  "thinking_tokens": usage.get("thoughtsTokenCount") or 0}
+
+
+def _call_gemini(config: Config, prompt: str) -> tuple[str, dict]:
+    url, headers, payload = gemini_request(config, prompt)
+    return gemini_parse(_post_json(url, headers, payload, timeout=GEMINI_TIMEOUT_SECONDS))
 
 
 def _call_openai_compatible(config: Config, prompt: str) -> tuple[str, dict]:
@@ -408,7 +447,8 @@ def complete(prompt: str, config: Config | None = None) -> tuple[str, dict]:
 
     caller = llm_caller(cfg.provider, {"anthropic": _call_anthropic, "openai-compatible": _call_openai_compatible,
               "ollama": _call_openai_compatible,
-              "bedrock": _call_bedrock, "vertex": _call_vertex, "local": _call_local})
+              "bedrock": _call_bedrock, "vertex": _call_vertex, "local": _call_local,
+              "gemini": _call_gemini})
     # IAM/ADC identity may change independently of these routing fields. Require
     # an owner-supplied tenant/account namespace before caching cloud SDK calls.
     if cache is None or (cfg.provider in _CLOUD_PROVIDERS and not cfg.cache_namespace):

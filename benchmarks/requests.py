@@ -71,6 +71,57 @@ def _local_complete(prompt: str, config: llm.Config, guard: CostGuard, *, output
     return answer, usage, 0.0
 
 
+GEMINI_RETRY_STATUSES = (429, 500, 503)
+
+
+def _gemini_complete(prompt: str, config: llm.Config, guard: CostGuard, *, output_limit: int,
+                     temperature: float, attempts: int = 12, sleep=None) -> tuple[str, dict, float]:
+    """Google AI generateContent, bounded like every benchmark call.
+
+    Retries are limited to HTTP 429/500/503, which carry an error body and no
+    completion; any other failure stops the run with an uncertain charge.
+    """
+    import time
+
+    sleep = sleep or time.sleep
+    url, headers, payload = llm.gemini_request(config, prompt, max_tokens=output_limit, temperature=temperature)
+    if not llm._is_http_url(url):
+        raise ValueError("benchmark endpoint must use HTTP(S)")
+    input_upper = len(prompt.encode("utf-8")) + 1024
+    reservation = guard.reserve_call(config.model, input_upper, output_limit)
+    try:
+        opener = urllib.request.build_opener(_NoRedirect())
+        for attempt in range(attempts):
+            request = urllib.request.Request(url, data=json.dumps(payload).encode(), headers=headers, method="POST")
+            try:
+                with opener.open(request, timeout=llm.GEMINI_TIMEOUT_SECONDS) as response:  # nosec B310
+                    data = json.load(response)
+                break
+            except urllib.error.HTTPError as exc:
+                status = exc.code
+                exc.close()
+                if status not in GEMINI_RETRY_STATUSES or attempt == attempts - 1:
+                    raise llm.LLMUnavailable(f"bounded provider request failed (HTTP {status})") from None
+                sleep(min(60.0, 2.0 * 2 ** attempt))
+            except (OSError, ValueError):
+                raise llm.LLMUnavailable("bounded provider request failed") from None
+        answer, usage = llm.gemini_parse(data)
+        input_tokens, output_tokens = usage["input_tokens"], usage["output_tokens"]
+        if any(not isinstance(v, int) or isinstance(v, bool) or v < 0 for v in (input_tokens, output_tokens)):
+            raise ValueError("provider must return text and complete integer usage")
+        if input_tokens > input_upper or output_tokens > output_limit:
+            raise ValueError("provider usage exceeds the declared request bounds")
+        rates = get_price(config.model, guard.prices, require_known=True)
+        cost = (input_tokens * rates[0] + output_tokens * rates[1]) / 1_000_000
+        guard.settle_call(reservation, cost)
+        return answer, usage, cost
+    except Exception as exc:
+        guard.mark_uncertain()
+        if isinstance(exc, llm.LLMUnavailable):
+            raise llm.LLMUnavailable(f"{exc}; charge remains uncertain") from None
+        raise
+
+
 def bounded_complete(prompt: str, config: llm.Config, guard: CostGuard, *, output_limit: int = 1536,
                      temperature: float = 0.0) -> tuple[str, dict, float]:
     """One attempt; a failure/unknown charge refuses all subsequent dispatches."""
@@ -78,6 +129,8 @@ def bounded_complete(prompt: str, config: llm.Config, guard: CostGuard, *, outpu
         raise ValueError("output limit must be in 1..65536")
     if config.provider == "local":
         return _local_complete(prompt, config, guard, output_limit=output_limit)
+    if config.provider == "gemini":
+        return _gemini_complete(prompt, config, guard, output_limit=output_limit, temperature=temperature)
     if config.provider not in ("anthropic", "openai-compatible", "ollama"):
         raise ValueError("bounded benchmark requests support Anthropic and OpenAI-compatible HTTP providers")
     input_upper = len(prompt.encode("utf-8")) + 1024

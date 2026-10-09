@@ -845,6 +845,8 @@ def run(args) -> dict:
         # Each actual prompt (including full history and every rubric call)
         # reserves its upper bound immediately before dispatch.
 
+    answer_workers = max(1, int(getattr(args, "answer_workers", 1) or 1))
+    pending_grades: list = []
     memory_adapter = getattr(args, "memory_adapter", "commontrace")
     if memory_adapter not in PROFILES:
         raise ValueError("unsupported memory adapter")
@@ -1066,7 +1068,7 @@ def run(args) -> dict:
                             if "rubric" in q:
                                 row["rubric"] = q["rubric"]
                             if args.answer:
-                                grade_info = grade_answer(
+                                grading = dict(
                                     question=q,
                                     context=ctx,
                                     now=now,
@@ -1079,12 +1081,24 @@ def run(args) -> dict:
                                     output_limit=getattr(args, "max_output_tokens", 1536),
                                     tokenizer=getattr(args, "tokenizer", None),
                                 )
-                                row.update(grade_info)
+                                if answer_workers > 1:
+                                    pending_grades.append((row, grading))
+                                else:
+                                    row.update(grade_answer(**grading))
                             rows_by_mode[mode][budget].append(row)
 
             if canonical_digest(store) != initial_canonical:
                 raise RuntimeError("canonical sources changed during measurement; discard this run")
 
+
+    if pending_grades:
+        # Retrieval ran in order above; only the reader and judge calls run concurrently.
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=answer_workers) as pool:
+            for (row, _grading), info in zip(pending_grades,
+                                             pool.map(lambda item: grade_answer(**item[1]), pending_grades)):
+                row.update(info)
 
     n = max(1, len(rows_by_mode[modes[0]][budgets[0]]))
     judge_info = {
@@ -1312,6 +1326,8 @@ def main(argv=None) -> int:
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--question-exclusions", help="JSON list of question IDs excluded before stratified sampling")
     p.add_argument("--answer", action="store_true", help="answer and judge with COMMONTRACE_LLM_*")
+    p.add_argument("--answer-workers", type=int, default=1,
+                   help="concurrent reader/judge calls after retrieval (default 1: inline, in order)")
     p.add_argument(
         "--chunk-set",
         default=None,
