@@ -460,6 +460,12 @@ class Gateway:
             "signals": "list of {detector, args} evaluated three-valued; with `combine`: all|any",
             "agent_id": "optional string",
         }, summary="How the occasion went. Records nothing while the signals are undecided.")
+        self._route("POST", "/v1/episode", self._episode, request={
+            "occasion_id": "string", "summary": "what happened, in words",
+            "sensors": "optional {name: number|boolean|short text}, at most 64",
+            "media": "optional list of {kind: image|audio|video, mime, data_b64, caption}, at most 8 x 2 MiB",
+            "succeeded": "optional boolean", "agent_id": "optional string", "env": "optional string",
+        }, summary="Record a multimodal episode (summary, sensors, media) as a retrievable trace.")
         self._route("POST", "/v1/conversation/add", self._conversation_add, request={
             "space": "string: one user, agent or thread",
             "session": "string: the session these messages belong to",
@@ -1372,6 +1378,25 @@ class Gateway:
                          "withdrawn": len(withdrawn), "protected": len(response["protected"]),
                          "quarantined": len(quarantined)})
         return response
+
+    def _episode(self, req: dict, _query) -> dict:
+        from commontrace import episodes
+
+        occasion = _ident(req.get("occasion_id"), "occasion_id")
+        agent = _agent(req)
+        self._check_env(req)
+        succeeded = req.get("succeeded")
+        if succeeded is not None and not isinstance(succeeded, bool):
+            raise _bad("succeeded must be true or false")
+        try:
+            out = episodes.record(self.root, occasion_id=occasion, summary=_text(req.get("summary"), "summary",
+                                  limit=MAX_TEXT_CHARS), agent_id=agent or "", env=self.config.env or req.get("env"),
+                                  sensors=req.get("sensors"), media=req.get("media"), outcome=succeeded)
+        except (episodes.EpisodeError, ValueError) as exc:
+            raise _bad(str(exc)) from None
+        self._log_event({"kind": "episode", "occasion_id": occasion, "agent_id": agent,
+                         "media": len(out["media"]), "sensors": out["sensors"]})
+        return out
 
     def _outcome(self, req: dict, _query) -> dict:
         occasion = _ident(req.get("occasion_id"), "occasion_id")
