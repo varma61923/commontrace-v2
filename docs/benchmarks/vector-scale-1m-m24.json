@@ -1,0 +1,63 @@
+{
+  "benchmark": "vector-scale",
+  "n": 1000000,
+  "dim": 384,
+  "queries": 200,
+  "top_k": 10,
+  "clusters": 2000,
+  "spread": 0.05,
+  "seed": 0,
+  "cpu_count": 4,
+  "load_seconds": 318.1,
+  "index_build_seconds": 588.9,
+  "index_bytes": 2048057344,
+  "exact_ms": {
+    "p50": 268.0,
+    "p95": 287.7
+  },
+  "hnsw": {
+    "m": 24,
+    "ef_construction": 200,
+    "iterative_scan": "strict_order"
+  },
+  "sweep": [
+    {
+      "ef_search": 100,
+      "ann_ms": {
+        "p50": 7.18,
+        "p95": 10.66
+      },
+      "recall_at_10": 1.0,
+      "recall_min": 1.0
+    },
+    {
+      "ef_search": 200,
+      "ann_ms": {
+        "p50": 8.6,
+        "p95": 11.22
+      },
+      "recall_at_10": 1.0,
+      "recall_min": 1.0
+    },
+    {
+      "ef_search": 400,
+      "ann_ms": {
+        "p50": 12.01,
+        "p95": 15.37
+      },
+      "recall_at_10": 1.0,
+      "recall_min": 1.0
+    },
+    {
+      "ef_search": 800,
+      "ann_ms": {
+        "p50": 39.44,
+        "p95": 47.56
+      },
+      "recall_at_10": 1.0,
+      "recall_min": 1.0
+    }
+  ],
+  "source_sha256": "143adb4f57331f8740827f1d97528387a8392698632627db11e2268d014e6f22",
+  "note": "Synthetic unit vectors around seeded cluster centres through the product Postgres index; measures index and query-path latency and recall against exhaustive search, not an embedding model or lexical fusion."
+}

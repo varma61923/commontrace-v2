@@ -64,7 +64,7 @@ environment does not have or is open work.
 | 0.4 MemoryArena, MemGym, Evo-Memory, DolphinBench completion | Need interactive agent environments; DolphinBench harness is a stub |
 | Target B: top-3 on two agentic leaderboards | Not established; AMA-Bench and MemoryAgentBench are measured as evidence, not judged score |
 | Target C: >= 90% evidence within 1,000 tokens on LongMemEval-S | Not met; measured 79.60% at 1,500 tokens (lexical), 83.02% adaptive |
-| Target D: hybrid p50 < 50 ms / p95 < 150 ms at 1M memories | Not benchmarked at 1M |
+| Target D: hybrid p50 < 50 ms / p95 < 150 ms at 1M memories | **Vector path met** (`docs/benchmarks/vector-scale.md`): 1M synthetic 384-d vectors through `PostgresVectorIndex`, HNSW m 24 / ef_construction 200, ef_search 100: p50 7.2 ms, p95 10.7 ms, recall@10 1.000 (default m 16 build plateaus at 0.945). Hybrid lexical + vector at 1M and real embeddings not measured. The run found and fixed a generic-plan bug that made searches 1.2 s at 20k vectors |
 | Target E: +5pp at 80% power within 2,000 occasions | **Coverage met, power not met** (seeded simulation, 400 runs per cell): time-uniform coverage >= 96.7% in all 45 cells, any-time false positives <= 3.0%. +5pp power by 2,000 occasions is 0.31-0.33 without a predictive stratum and 0.64-0.70 with a strong one; a fixed-sample 50/50 test alone needs 3,140. At +10pp adaptive allocation detects in 96-100% of runs (median 750-800 occasions; the shipped 10% default: 2-7%) and withholds the memory 25-29% of the time instead of 50% |
 | Target G: `pip install` / `npm i` / `docker run` to first recall in < 60 s | Release workflow and images exist; nothing is published to PyPI, npm or a registry yet |
 
