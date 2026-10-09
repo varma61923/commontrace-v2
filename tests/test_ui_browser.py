@@ -265,6 +265,7 @@ def test_fact_ranking_selection_uses_actual_response_profile_without_relabelling
     navigate(page, "Explore memory")
     selector = page.get_by_label("Fact ranking", exact=True)
     pw.expect(selector).to_have_value("overlap-v1")
+    pw.expect(selector).to_be_visible()
     bounds = selector.bounding_box()
     assert bounds is not None and bounds["height"] >= 44
     page.get_by_label("Your question", exact=True).fill("Aster payment idempotency")
