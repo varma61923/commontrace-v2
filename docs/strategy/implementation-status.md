@@ -39,9 +39,33 @@ Legend: **Done** · **Done (this pass)** (added or fixed in this audit) ·
 | WS7 PyPI and npm publishing | **Done (this pass)** (workflow; first publish needs registry configuration) | `.github/workflows/release.yml` |
 | WS7 Agent self-signup, LLM wrappers, hooks, frameworks, connectors, generated SDKs | **Done** | `onboarding.py`, `completion_wrappers.py`, `frameworks.py`, `connectors/`, `sdk/` |
 | WS7 Remote MCP with OAuth 2.1 | **Done (this pass)**: JWT access-token resource server (RS256/PS256/ES256/EdDSA, issuer/audience/expiry/scope, JWKS rotation), RFC 9728 metadata, for the gateway and HTTP MCP; the Hub keeps API keys | `oauth.py`, `mcp_transport.py` |
-| WS8 Console, Memory Palace, Needs Attention | **Done** | `ui/`, `/v1/palace` |
+| WS8 Console, Memory Palace, Needs Attention | **Partial**: overview, Needs Attention review queue with revision-checked actions, memories, live activity, experiment readouts, command center; no executive lift-per-token view, release diffs, experiment designer, forensics report view or weekly digest export | `ui/`, `/v1/palace` |
 | WS9 CausalMemBench | **Done (this pass)** | `benchmarks/causalmembench.py`, `docs/benchmarks/causalmembench.md` |
 | WS10 Embodied fleets (sim/real separation, protected memories) | **Done**; multimodal episodes via ingestion | `fleet.py`, `gateway.py`, `ingest/multimodal.py` |
+
+### Part G items not yet done
+
+Checked against the code on 2026-10-09. Each is either blocked by something this
+environment does not have or is open work.
+
+| Item | Why not |
+| --- | --- |
+| Target A: accuracy parity with re-run competitors, LLM-judged, with CIs | No hosted reader or judge credentials here; only the local 0.5B reader with the exact judge was run |
+| BEAM 1M and 10M | Not run (CPU-only machine; the 100K split is measured) |
+| 0.3 adapters for Cognee, Hindsight, EverOS, Supermemory local, Letta | Only local mem0 and Graphiti profiles exist |
+| 0.4 MemoryArena, MemGym, Evo-Memory, DolphinBench completion | Need interactive agent environments; DolphinBench harness is a stub |
+| Target B: top-3 on two agentic leaderboards | Not established; AMA-Bench and MemoryAgentBench are measured as evidence, not judged score |
+| Target C: >= 90% evidence within 1,000 tokens on LongMemEval-S | Not met; measured 79.60% at 1,500 tokens (lexical), 83.02% adaptive |
+| Target D: hybrid p50 < 50 ms / p95 < 150 ms at 1M memories | Not benchmarked at 1M |
+| Target E: +5pp at 80% power within 2,000 occasions | Not demonstrated; CausalMemBench shows the 10% default is slow, and bandit reallocation of the holdout rate is not built (it would change the estimator; needs a design review) |
+| Target G: `pip install` / `npm i` / `docker run` to first recall in < 60 s | Release workflow and images exist; nothing is published to PyPI, npm or a registry yet |
+| WS2 interaction effects for co-firing lessons; auto-drafted narrower `applies_when` | Subgroup effects flag `CROSSING`; no factorial interaction reading or automatic draft |
+| WS3 DPO export | SFT export only (`evidence-linked-sft`), no DPO pairs |
+| WS5 publisher revenue share | Licence and price are signed into listings; payment and revenue share are not wired into value billing |
+| WS8 items listed above | Open |
+| WS9 paper draft in `docs/research/` | Not written |
+| WS10 end-to-end robot fleet demo with a causal report | Not built; the gateway, fleet and multimodal pieces exist |
+| Process: `docs/plans/<ws>.md` per workstream and `docs/strategy/scorecard.md` | Not created; this status document plays the scorecard role |
 
 ## Competitive intelligence report
 
