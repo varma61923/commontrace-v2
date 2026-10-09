@@ -59,8 +59,11 @@ class MemoryClient:
         if self.url:
             return self._request("profile", {"query": query, "limit": limit, "context": self.context,
                                              "occasion_id": occasion_id, "action_class": action_class})
-        return memory_control.profile(self.root, query, context=self.context, limit=limit,
-                                      occasion_id=occasion_id, action_class=action_class)
+        from commontrace import memory_authority
+
+        with memory_authority.restricted_writer(self.agent_id or "local", "agent" if self.agent_id else "operator"):
+            return memory_control.profile(self.root, query, context=self.context, limit=limit,
+                                          occasion_id=occasion_id, action_class=action_class)
 
     def search(self, query: str, *, recipe: str = "balanced", retriever: str = "hybrid",
                limit: int = 10, center: str = "", as_of: str | None = None, action_class: str = "",

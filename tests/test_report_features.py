@@ -538,3 +538,17 @@ def test_actual_gateway_authentication_binds_registered_principal_to_logs(tmp_pa
     assert response.status == 200
     assert captured[0]['user_id'] == registered['agent_id']
     assert registered['token'] not in repr(captured)
+
+
+def test_local_agent_profile_activity_retains_agent_authority(tmp_path):
+    from commontrace import _jsonl, memory_authority
+    root = str(tmp_path)
+    memory = MemoryClient(root, agent_id='alice')
+    memory.profile('Office search', occasion_id='activity-authority')
+    row = _jsonl.read_rows(str(tmp_path/'memory'/'activity.jsonl'))[0]
+    assert row['origin']['authority'] == 'agent'
+    assert row['scopes'] == ['agent:alice']
+    with memory_authority.restricted_writer('inbound', 'external'):
+        memory.profile('Inbound search', occasion_id='external-activity')
+    rows = _jsonl.read_rows(str(tmp_path/'memory'/'activity.jsonl'))
+    assert rows[-1]['origin']['authority'] == 'external'
