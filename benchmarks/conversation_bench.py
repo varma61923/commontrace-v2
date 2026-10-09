@@ -393,14 +393,34 @@ def _mab_chat_sessions(space: str, context: str) -> list | None:
     return sessions or None
 
 
+_MAB_FACT = re.compile(r"^(\d+)\.\s+(.+)$")
+
+
+def _mab_fact_sessions(space: str, context: str) -> list | None:
+    """Conflict Resolution contexts: a numbered fact list in which later facts supersede earlier ones."""
+    if not context.startswith("Here is a list of facts:"):
+        return None
+    messages = []
+    for line in context.splitlines()[1:]:
+        match = _MAB_FACT.match(line.strip())
+        if match:
+            messages.append({"id": f"{space}-f{match.group(1)}", "role": "user", "speaker": "fact",
+                             "text": line.strip()})
+    return [("facts", None, messages)] if messages else None
+
+
 def mab_cases(path: str, limit: int = 0):
     """MemoryAgentBench (arXiv 2507.05257) contexts as one long memory each.
 
     A context is split at its "Document N:" markers, read as dated chat sessions
     when it is a LongMemEval-style history, or cut into ~2,000-character passages
-    otherwise. The benchmark ships accepted answer strings but no
-    evidence labels, so only answer-in-context is scored: whether any accepted
-    answer appears in the delivered context. Evidence metrics stay undefined.
+    otherwise; Conflict Resolution fact lists become one ordered turn per fact.
+    Test-Time Learning (label and item ids) and Long-Range Understanding
+    (summaries) cannot be scored by containment and are not supported.
+
+    The benchmark ships accepted answer strings but no evidence labels, so only
+    answer-in-context is scored: whether any accepted answer appears in the
+    delivered context. Evidence metrics stay undefined.
     EventQA is multiple choice over paraphrased event summaries that never appear
     verbatim in the book, so containment cannot score it: its questions are kept
     but marked unscorable rather than counted as misses.
@@ -413,7 +433,7 @@ def mab_cases(path: str, limit: int = 0):
         source = str(meta.get("source") or f"row{index}")
         space = re.sub(r"[^A-Za-z0-9._-]", "_", f"mab-{source}-{index}")
         context = str(row["context"])
-        sessions = _mab_chat_sessions(space, context)
+        sessions = _mab_chat_sessions(space, context) or _mab_fact_sessions(space, context)
         if sessions is None:
             parts = [p.strip() for p in _MAB_DOC.split(context) if p.strip()]
             if len(parts) < 2:
@@ -426,7 +446,8 @@ def mab_cases(path: str, limit: int = 0):
             accepted = [str(a) for a in (list(answers) if not isinstance(answers, str) else [answers]) if str(a)]
             questions.append({"id": f"{space}-{ids[i] if i < len(ids) else i}", "question": str(question),
                               "answer": accepted[0] if accepted else "", "answers": accepted,
-                              "type": source.split("_")[0] if "_" in source else source,
+                              "type": ("conflict-" + source.split("_")[1] if source.startswith("factconsolidation_")
+                                       else source.split("_")[0] if "_" in source else source),
                               "answer_scorable": not source.startswith("eventqa"),
                               "evidence": set(), "sessions": set()})
         yield space, sessions, None, questions

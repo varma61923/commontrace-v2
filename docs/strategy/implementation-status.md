@@ -150,8 +150,13 @@ are left unscored, leaving 398 scorable questions:
 
 | MemoryAgentBench run | Answer in context @1.5K / @4K | RULER QA | LongMemEval (MAB) |
 | --- | --- | --- | --- |
-| Fixed budget | 58.04% / 64.07% (1,458 / 3,815 tok) | 79.59% / 86.22% | 37.13% / 42.57% |
-| Adaptive budget | 59.80% / 69.85% (2,746 / 7,574 tok) | 79.59% / 87.76% | 40.59% / 52.48% |
+| Fixed budget | 64.82% / 71.11% (1,456 / 3,843 tok) | 79.59% / 86.22% | 50.50% / 56.44% |
+| Adaptive budget | 67.84% / 76.63% (2,776 / 7,596 tok) | 79.59% / 87.76% | 56.44% / 65.84% |
+
+The LongMemEval-derived contexts are repr'd chat histories; reading them as
+dated user/assistant sessions instead of 2,000-character blobs raised that
+slice from 37.13% / 42.57% (fixed) and 40.59% / 52.48% (adaptive) to the
+numbers above, and the scorable total from 58.04% / 64.07%.
 
 Neither is the benchmarks' official, model-judged score.
 

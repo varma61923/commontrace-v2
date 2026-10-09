@@ -65,3 +65,13 @@ def test_longmemeval_style_contexts_become_dated_chat_sessions(tmp_path):
         ("session-0", "2022/11/17 (Thu) 12:04", 2), ("session-1", "2022/12/01 (Thu) 09:00", 1)]
     assert sessions[0][2][1]["role"] == "assistant" and sessions[1][2][0]["id"] == f"{space}-s1-t0"
     assert q["type"] == "longmemeval" and q["answer_scorable"] is True
+
+
+def test_conflict_resolution_facts_become_ordered_turns(tmp_path):
+    context = "Here is a list of facts:\n0. Ana lives in Lima.\n1. Ana works at Acme.\n2. Ana lives in Quito.\n"
+    path = _write(tmp_path, [{"context": context, "questions": ["Where does Ana live?"], "answers": [["Quito"]],
+                              "metadata": {"source": "factconsolidation_sh_6k"}}])
+    [(space, sessions, _now, [q])] = list(cb.mab_cases(path))
+    [(_name, _date, messages)] = sessions
+    assert [m["id"] for m in messages] == [f"{space}-f0", f"{space}-f1", f"{space}-f2"]
+    assert messages[2]["text"] == "2. Ana lives in Quito." and q["type"] == "conflict-sh"
