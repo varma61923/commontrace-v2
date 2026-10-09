@@ -307,6 +307,8 @@ class PostgresSnapshots:
                 raise SnapshotConflict("reader lease is expired, released, or invalid")
             if not top_k or ids == []:
                 return []
+            # A generic plan would cast the query vector per row (see vector_store.search).
+            await db.execute("SET LOCAL plan_cache_mode=force_custom_plan")
             if self._approximate:
                 await db.execute("SET LOCAL hnsw.iterative_scan='strict_order'")
                 dimension = self._scope[3]

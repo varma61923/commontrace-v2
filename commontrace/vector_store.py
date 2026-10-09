@@ -529,6 +529,10 @@ class PostgresVectorIndex(_Scoped):
         if not top_k or ids == []:
             return []
         async with self._pool.acquire() as db, db.transaction():
+            # asyncpg prepares this statement; after five runs Postgres may switch to a
+            # generic plan, which casts the query vector per row and cannot pick HNSW.
+            # Measured at 20k vectors: 1.2 s per query generic against 6-20 ms custom.
+            await db.execute("SET LOCAL plan_cache_mode=force_custom_plan")
             if self._approximate:
                 await db.execute("SET LOCAL hnsw.iterative_scan='strict_order'")
                 # A matching expression and partial predicate permit the HNSW index.
