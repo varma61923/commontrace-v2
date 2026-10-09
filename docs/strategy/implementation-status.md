@@ -14,7 +14,7 @@ Legend: **Done** · **Done (this pass)** (added or fixed in this audit) ·
 
 | Item | Status | Where |
 | --- | --- | --- |
-| 0.1 Scoreboard with dense + cross-encoder on | **Done (this pass)** for LoCoMo (dense, dense + cross-encoder, dense + adaptive); BEAM/LongMemEval dense pending, see below | `benchmarks/conversation_bench.py --embedder arctic-m` |
+| 0.1 Scoreboard with dense + cross-encoder on | **Done (this pass)**: LoCoMo (dense, dense + cross-encoder, dense + adaptive), BEAM (dense, dense + adaptive), LongMemEval (dense, paired 100-question subset) | `benchmarks/conversation_bench.py --embedder arctic-m` |
 | 0.2 Model-backed answer accuracy | **Partial**: harness, judges and cost guards exist; not run (no model credentials in this environment) | `--answer`, `benchmarks/judges/` |
 | 0.3 Competitors through the same harness | **Partial**: local raw-source mem0 and Graphiti profiles; managed services not reproduced | `benchmarks/vendor_adapters.py` |
 | 0.4 Agentic benchmarks (MemoryArena, AMA-Bench, MemGym, Evo-Memory) | **Not done**: they need their own agent environments; DolphinBench harness present | `benchmarks/dolphinbench/` |
@@ -89,7 +89,7 @@ Legend: **Done** · **Done (this pass)** (added or fixed in this audit) ·
 | P2 Entity linking | **Done** (entity boost in conversation recall; mem0-style entity signal in `search_recipes`) |
 | P3 Adaptive token budget | **Done (this pass)**: BEAM event ordering 59.6% → 96.9%, summarization 28.5% → 50.5% evidence at a 1,500 floor |
 | P4 Cross-encoder reranking | Already supported; **measured (this pass)**: LoCoMo 82.00% -> 83.90% evidence at 1,500 tokens over dense alone |
-| Preference following | **Tried and rejected (this pass)**: weighting the user's own turns on advice questions lowered LongMemEval preference evidence from 61.7% to 52.8%, so it was removed. The misses are vocabulary mismatches (a "battery life" question answered by a "power bank" statement); dense retrieval is the measured lever |
+| Preference following | **Measured (this pass)**: dense retrieval raises LongMemEval preference evidence 52.94% -> 69.61% (@1.5K) and 52.94% -> 75.49% (@4K) on the paired subset. A lexical alternative (weighting the user's own turns on advice questions) lowered it from 61.7% to 52.8% on the full split and was removed |
 | Advice-question budget class | **Tried and rejected (this pass)**: doubling the budget for advice/recommendation questions raised LongMemEval preference evidence 61.67% -> 65.00% but lowered BEAM 79.37% -> 79.30% and moved LoCoMo only 80.29% -> 80.42%, at more tokens everywhere |
 | Summarization pipeline | Adaptive budget measured above; model summaries exist (`conversation summarize --model`) |
 | Temporal hints, event ordering | **Done** (`temporal_intent.py`; adaptive budget for ordering questions) |
@@ -107,7 +107,7 @@ BEAM 100K 400), keyword arm unless noted, budgets 1,500 and 4,000 tokens,
 | --- | --- | --- | --- |
 | Lexical, fixed (reproduces README) | 78.69% / 86.31% (1,441 / 3,852 tok) | 79.60% / 85.92% (1,463 / 3,926 tok) | 70.87% / 80.67% (1,465 / 3,923 tok) |
 | Lexical, adaptive budget | 80.29% / 87.30% (1,697 / 4,347 tok) | 83.02% / 90.02% (2,447 / 6,181 tok) | 79.37% / 83.16% (2,804 / 6,916 tok) |
-| Dense (arctic-m), fixed | 82.00% / 91.36% (1,452 / 3,887 tok) | running | 71.21% / 82.99% (1,469 / 3,939 tok) |
+| Dense (arctic-m), fixed | 82.00% / 91.36% (1,452 / 3,887 tok) | see subset below | 71.21% / 82.99% (1,469 / 3,939 tok) |
 | Dense + cross-encoder, fixed | 83.90% / 91.51% (1,452 / 3,887 tok) | not run | not run |
 | Dense, adaptive budget | 83.73% / 92.53% (1,711 / 4,559 tok) | not run | 80.15% / 86.10% (2,819 / 7,053 tok) |
 
@@ -117,6 +117,20 @@ Recall@5 rises from 54.78% (lexical) to 60.96% (dense) and 65.46% (dense +
 cross-encoder). The cross-encoder's p50 recall latency on this shared 4-core CPU
 was about 480 ms against about 55 ms dense-only; choose it where accuracy matters
 more than latency.
+
+LongMemEval-S dense, on a seeded stratified 100-question subset (embedding the
+full split on this 4-core CPU would take over a day), paired with a lexical run on
+the identical subset:
+
+| Subset run (n=100) | Evidence @1.5K / @4K | Preference @1.5K / @4K | Turn Recall@10 |
+| --- | --- | --- | --- |
+| Lexical | 79.76% / 84.52% | 52.94% / 52.94% | 75.00% |
+| Dense (arctic-m) | 81.80% / 89.12% | 69.61% / 75.49% | 82.14% |
+
+Dense retrieval closes most of the preference gap the report identified; the
+lexical arm cannot match "battery life" to a stored "power bank". The dense run's
+1,500-token p50 (65 s) includes building each question's index on first recall
+and is not a steady-state latency.
 
 On BEAM 100K dense retrieval adds little at 1,500 tokens (70.87% -> 71.21%) and
 more at 4,000 (80.67% -> 82.99%); the adaptive budget is the larger lever there.
