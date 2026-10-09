@@ -21,6 +21,8 @@ MIN_ORGANIZATIONS = 2
 MAX_LISTING_BYTES = 256 * 1024
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _PER = ("install", "month", "year")
+# The publisher's cut of the buyer's own proven value from a listed lesson.
+MAX_OUTCOME_SHARE = 0.5
 
 
 class MarketError(ValueError):
@@ -60,7 +62,15 @@ def _licence(licence: dict) -> dict:
     terms = str(licence.get("terms", "")).strip()
     if not 1 <= len(terms) <= 4000:
         raise MarketError("a licence needs terms text of 1-4000 characters")
+    unknown = set(licence) - {"id", "terms", "price", "outcome_share"}
+    if unknown:
+        raise MarketError(f"unknown licence terms: {', '.join(sorted(unknown))}")
     out = {"id": licence["id"], "terms": terms}
+    share = licence.get("outcome_share")
+    if share is not None:
+        if isinstance(share, bool) or not isinstance(share, (int, float)) or not 0 < share <= MAX_OUTCOME_SHARE:
+            raise MarketError(f"outcome_share must be a fraction in (0, {MAX_OUTCOME_SHARE}]")
+        out["outcome_share"] = float(share)
     price = licence.get("price")
     if price is not None:
         amount, per = price.get("amount_usd"), price.get("per", "install")

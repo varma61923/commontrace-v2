@@ -45,6 +45,8 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     pu.add_argument("--terms", required=True, help="Licence terms text.")
     pu.add_argument("--price-usd", type=float, default=None)
     pu.add_argument("--per", choices=("install", "month", "year"), default="install")
+    pu.add_argument("--outcome-share", type=float, default=None,
+                    help="Fraction (up to 0.5) of each buyer's own proven value from this lesson.")
     pu.add_argument("--out", default=None, help="Also write the listing JSON here.")
     pu.set_defaults(func=run_publish)
 
@@ -58,12 +60,21 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     ins.add_argument("--accept-licence", required=True, help="The listing's licence id, after reading its terms.")
     ins.set_defaults(func=run_install)
 
+    st = sub.add_parser("settle", help="What this store owes publishers for a period: licence fees plus "
+                                       "outcome shares on lift proven in this store's own holdout.")
+    st.add_argument("--period", required=True, help="YYYY-MM")
+    st.add_argument("--value-per-occasion", type=float, default=None,
+                    help="What one improved occasion is worth to you (needed for outcome shares).")
+    st.add_argument("--commit", action="store_true", help="Record the statement; a period settles once.")
+    st.add_argument("--json", action="store_true")
+    st.set_defaults(func=run_settle)
+
     ls = sub.add_parser("list", help="Listings in this store's catalog.")
     ls.add_argument("--query", default="")
     ls.add_argument("--json", action="store_true")
     ls.set_defaults(func=run_list)
 
-    for parser in (ident, tr, at, ce, pu, ve, ins, ls):
+    for parser in (ident, tr, at, ce, pu, ve, ins, st, ls):
         parser.add_argument("--dest", default=None)
 
 
@@ -128,6 +139,8 @@ def run_publish(args, root) -> int:
     licence = {"id": args.licence_id, "terms": args.terms}
     if args.price_usd is not None:
         licence["price"] = {"amount_usd": args.price_usd, "per": args.per}
+    if args.outcome_share is not None:
+        licence["outcome_share"] = args.outcome_share
     listing = marketplace.publish(root, args.slug, _read(args.certificate), licence)
     if args.out:
         _write(args.out, listing)
@@ -159,6 +172,28 @@ def run_install(args, root) -> int:
         print(f"[commontrace] installed as {row['slug']} at status=review. Its certified lift was measured "
               f"elsewhere; review it, then `commontrace lesson approve {row['slug']}` and let this store's "
               "holdout measure it again.")
+    return 0
+
+
+@_guarded
+def run_settle(args, root) -> int:
+    from commontrace import market_settlement
+
+    try:
+        statement = market_settlement.settle(root, args.period, value_per_occasion=args.value_per_occasion,
+                                             commit=args.commit)
+    except market_settlement.SettlementError as exc:
+        raise marketplace.MarketError(str(exc)) from None
+    if args.json:
+        print(json.dumps(statement, indent=2, sort_keys=True))
+        return 0
+    print(f"[commontrace] marketplace statement for {args.period}"
+          + ("" if args.commit else " (preview; --commit records it)") + ":")
+    for line in statement["lines"]:
+        print(f"  {line['publisher']:<20} {line['kind']:<14} {line['slug']:<28} ${line['amount_usd']:.2f}")
+    for item in statement["refused"]:
+        print(f"  no outcome share for {item['slug']}: {item['reason']}")
+    print(f"  total ${statement['total_usd']:.2f}  (digest {statement['digest'][:12]})")
     return 0
 
 
