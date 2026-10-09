@@ -24,7 +24,7 @@ def test_builtins_are_listed_after_first_use():
 
 
 def test_mmr_promotes_a_distinct_lesson_over_a_near_duplicate():
-    out = retrieval.apply_reranker("upload failed", RANKED, "mmr")
+    out = retrieval.apply_reranker("upload failed", RANKED, providers.reranker("mmr"))
     assert [r.slug for r in out] == ["retry-a", "idempotency", "retry-b"]
     assert sorted(r.slug for r in out) == sorted(r.slug for r in RANKED)
 
@@ -41,14 +41,14 @@ def test_mmr_rejects_an_invalid_lambda():
 
 def test_unknown_names_are_a_capability_error_not_an_import():
     with pytest.raises(CapabilityError):
-        retrieval.apply_reranker("q", RANKED, "os.system")
+        providers.reranker("os.system")
 
 
 def test_custom_registration_and_duplicate_refusal():
     name = "reverse-for-test"
     if name not in providers.RERANKERS.names():
         providers.register_reranker(name, lambda: (lambda task, ranked: list(reversed(ranked))))
-    assert [r.slug for r in retrieval.apply_reranker("q", RANKED, name)] == ["idempotency", "retry-b", "retry-a"]
+    assert [r.slug for r in retrieval.apply_reranker("q", RANKED, providers.reranker(name))] == ["idempotency", "retry-b", "retry-a"]
     with pytest.raises(ConfigurationError):
         providers.register_reranker(name, lambda: None)
 

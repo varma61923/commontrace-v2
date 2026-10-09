@@ -686,7 +686,12 @@ def run(args) -> dict:
         neighbours_after=args.neighbours,
         profile_facts=args.profile_facts,
         rerank_blend=args.rerank_blend,
+        adaptive_budget=bool(getattr(args, "adaptive_budget", False)),
+        max_budget=max(budgets[0], 12_000),
     )
+    if opts.adaptive_budget and (strict_budget or getattr(args, "memory_adapter", "commontrace") != "commontrace"):
+        raise ValueError("--adaptive-budget sizes CommonTrace's own context; it cannot honour a strict cap "
+                         "or a vendor profile")
 
     # Cached prep: parse once, then every sweep with the same fingerprint reuses it.
     cases, chunk_info = prepare_chunk_set(args)
@@ -705,6 +710,7 @@ def run(args) -> dict:
         "artifacts_source_sha256": dataset_digest(os.path.join(repository, "benchmarks", "artifacts.py")),
         "sampling": {"seed": args.seed, "limit": args.limit, "personas": getattr(args, "personas", "")},
         "evaluation": {"answer_enabled": args.answer, "token_accounting": "ceil-characters-divided-by-four",
+                       "adaptive_budget": bool(getattr(args, "adaptive_budget", False)),
                        "completeness_sha256": dataset_digest(os.path.join(repository, "benchmarks", "completeness.py"))},
     }
     if "question_exclusions_sha256" in fingerprint:
@@ -781,7 +787,8 @@ def run(args) -> dict:
                     for budget in budgets:
                         t = time.perf_counter()
                         def retrieve(native_budget):
-                            opts_b = Options(**{**opts.__dict__, "budget": native_budget})
+                            opts_b = Options(**{**opts.__dict__, "budget": native_budget,
+                                                "max_budget": max(native_budget, opts.max_budget)})
                             return (adapter.retrieve(q["question"], native_budget) if adapter is not None
                                     else recall(store, q["question"], now=now, options=opts_b))
 
@@ -1055,6 +1062,7 @@ def summarize(rows, args, budget, ingest_s, recall_s, full_tokens, mode="memory"
     summary = {
         "dataset": args.dataset,
         "budget": budget,
+        "adaptive_budget": bool(getattr(args, "adaptive_budget", False)),
         "mode": mode,
         "embedder": args.embedder,
         "rerank": args.rerank,
@@ -1123,6 +1131,9 @@ def main(argv=None) -> int:
         help="cross-encoder weight beside the fused rank (0 lets it replace that rank)",
     )
     p.add_argument("--profile-facts", type=int, default=4)
+    p.add_argument("--adaptive-budget", action="store_true",
+                   help="treat each --budget as a floor sized by question shape (Options.adaptive_budget); "
+                        "the reported tokens are what was actually delivered")
     p.add_argument("--limit", type=int, default=0)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--question-exclusions", help="JSON list of question IDs excluded before stratified sampling")

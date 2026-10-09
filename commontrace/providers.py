@@ -44,8 +44,8 @@ MMR_LAMBDA = 0.7
 def register_reranker(name: str, factory: Callable) -> None:
     """Register trusted code: ``factory()`` returns ``reranker(task, ranked) -> ranked``.
 
-    The callable has the shape `commontrace.retrieval.apply_reranker` accepts, so a
-    registered name and a hand-built function are interchangeable at that seam.
+    The callable has the shape `commontrace.retrieval.apply_reranker` accepts:
+    ``apply_reranker(task, ranked, providers.reranker("mmr"))``.
     """
     RERANKERS.register(name, factory)
 

@@ -576,17 +576,13 @@ Reranker = Callable[[str, list[RankedLesson]], list[RankedLesson]]
 def apply_reranker(
     task: str,
     ranked: list[RankedLesson],
-    reranker: Reranker | str | None,
+    reranker: Reranker | None,
 ) -> list[RankedLesson]:
     """Apply an optional second-stage `reranker` to an already-ranked list.
 
-    A string names a registered provider (`commontrace.providers.reranker`):
-    built-ins are ``mmr``, ``cross-encoder`` and ``cross-encoder-fast``.
+    Named built-ins (``mmr``, ``cross-encoder``, ``cross-encoder-fast``) and
+    registered rerankers resolve through `commontrace.providers.reranker(name)`.
     """
     if reranker is None:
         return ranked
-    if isinstance(reranker, str):
-        from commontrace import providers
-
-        reranker = providers.reranker(reranker)
     return reranker(task, ranked)
