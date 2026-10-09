@@ -37,6 +37,10 @@ Java and Kotlin share the JVM transport. Generated responses and retrieved facts
 never grant tool authorization: enforce directives at the tool boundary and only
 treat an explicitly boolean approval as approval.
 
+The maintained Go adapter and Go conformance example require Go 1.27.2 or later;
+the JVM adapter pins patched Jackson 2.22.3. Use a supported runtime when building
+or distributing clients, including upstream-generated packages.
+
 The schema is generated from the running gateway's definitions. Run
 `python scripts/export_openapi.py --check` after API changes; CI rejects stale
 contracts. Registry publication is not performed by this generation command.
