@@ -473,6 +473,8 @@ class Gateway:
             "sessions": "optional list of session ids", "speakers": "optional list of speakers",
             "since": "optional date", "until": "optional date",
             "context_strategy": "optional legacy or coverage-v1 context packing (default legacy)",
+            "adaptive_budget": "optional boolean: treat budget as a floor sized by the question's shape "
+                               "(summaries, orderings, counts, lists); explain.budget reports the decision",
         }, summary="The turns that answer a question, as a dated context within a token budget.")
         self._route("GET", "/v1/status", self._status, summary="Experiment and proof progress.")
         self._route("GET", "/v1/memories", self._memories, summary="Each memory's measured verdict.")
@@ -1242,6 +1244,9 @@ class Gateway:
         from commontrace.conversation import ConversationError, Options, Store, recall
 
         budget = req.get("budget", 1500)
+        adaptive = req.get("adaptive_budget", False)
+        if not isinstance(adaptive, bool):
+            raise _bad("adaptive_budget must be true or false")
         if not isinstance(budget, int) or isinstance(budget, bool) or not 50 <= budget <= 32_000:
             raise _bad("budget must be an integer number of tokens from 50 to 32000")
         question = _text(req.get("question"), "question", limit=4000)
@@ -1255,7 +1260,8 @@ class Gateway:
         if not isinstance(strategy, str) or strategy not in ("legacy", "coverage-v1"):
             raise _bad("context_strategy must be legacy or coverage-v1")
         opts = Options(budget=budget, since=req.get("since") or None, until=req.get("until") or None,
-                       context_strategy=strategy, **lists)
+                       context_strategy=strategy, adaptive_budget=adaptive,
+                       max_budget=max(budget, 12_000), **lists)
         try:
             space = self._scoped_space(_ident(req.get("space"), "space"))
             with Store(self.root, space, create=False) as store:

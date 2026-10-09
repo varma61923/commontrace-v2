@@ -57,3 +57,23 @@ def test_probes_are_in_the_live_openapi_without_security(tmp_path):
     assert status == 200
     for path in ("/v1/health/live", "/v1/health/ready"):
         assert "security" not in doc["paths"][path]["get"]
+
+
+def test_conversation_recall_accepts_an_adaptive_budget(tmp_path, monkeypatch):
+    monkeypatch.setenv("COMMONTRACE_CONVERSATION_EMBEDDER", "none")
+    _root, g = _gateway(tmp_path)
+    auth = {"Authorization": f"Bearer {TOKEN}", "Host": "localhost:8787"}
+
+    def post(body):
+        response = g.handle("POST", "/v1/conversation/recall" if "question" in body else "/v1/conversation/add",
+                            auth, json.dumps(body).encode())
+        return response.status, json.loads(response.body)
+
+    assert post({"space": "ana", "session": "s1", "messages": [
+        {"speaker": "Ana", "text": "I painted a landscape and a portrait."}]})[0] == 200
+    status, got = post({"space": "ana", "question": "What paintings has Ana made?", "budget": 400,
+                        "adaptive_budget": True})
+    assert status == 200 and got["explain"]["budget"] == {"requested": 400, "effective": 800, "reason": "list"}
+    status, fixed = post({"space": "ana", "question": "What paintings has Ana made?", "budget": 400})
+    assert status == 200 and "budget" not in fixed["explain"]
+    assert post({"space": "ana", "question": "x", "adaptive_budget": "yes"})[0] == 400

@@ -25,7 +25,7 @@ Dynamic provider prefixes and test-only variables are described in the relevant 
 | `COMMONTRACE_DEFAULT_FUSION` | [commontrace/retrieval_io.py:33](../commontrace/retrieval_io.py#L33) |
 | `COMMONTRACE_DEFAULT_RERANK` | [commontrace/retrieval_io.py:30](../commontrace/retrieval_io.py#L30) |
 | `COMMONTRACE_FACT_EMBEDDER_PATH` | [commontrace/fact_embeddings.py:16](../commontrace/fact_embeddings.py#L16) |
-| `COMMONTRACE_GLINER_MODEL_PATH` | [commontrace/gateway.py:763](../commontrace/gateway.py#L763) |
+| `COMMONTRACE_GLINER_MODEL_PATH` | [commontrace/gateway.py:765](../commontrace/gateway.py#L765) |
 | `COMMONTRACE_HANDOFF_KEY` | [commontrace/memfs.py:291](../commontrace/memfs.py#L291) |
 | `COMMONTRACE_HUB_API_KEY` | [commontrace/commands/_format.py:17](../commontrace/commands/_format.py#L17) |
 | `COMMONTRACE_HUB_API_KEY_FILE` | [commontrace/commands/_format.py:17](../commontrace/commands/_format.py#L17) |
