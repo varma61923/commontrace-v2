@@ -301,9 +301,7 @@ def run(args: argparse.Namespace) -> int:
     else:
         print("  [info] telemetry: metrics in-process (gateway /v1/metrics); set COMMONTRACE_OTEL=1 or "
               "OTEL_EXPORTER_OTLP_ENDPOINT to export traces")
-    from commontrace import offline
-
-    from commontrace import oauth
+    from commontrace import oauth, offline
 
     try:
         oauth_config = oauth.load_config(root)
