@@ -35,6 +35,7 @@ registered principal, replacing payload-supplied labels. Orthogonal `user`,
 ## Install and operate
 
 ```bash
+commontrace up --dest /path/to/store
 commontrace evolve install --agent-id reviewer --repo /path/to/code --commits 100 --dest /path/to/store
 commontrace gateway --allow-self-signup --dest /path/to/store --port 8787
 commontrace evolve offline --max-jobs 20 --seconds 30 --dest /path/to/store
@@ -69,6 +70,12 @@ questions. Local filesystem authority is the operator trust boundary.
 `commontrace evolve recipes` lists recipes. The retriever registry supports
 hybrid, decomposition, bounded graph completion and local category queries.
 Custom graph-neighbor backends are injectable; canonical writes use JSONL.
+`commontrace[graph]` provides source-bound Neo4j/FalkorDB snapshots with staged
+publication and stale-writer rejection. `commontrace[vector-lance]` supplies a
+scoped LanceDB vector index for the existing async seam. The exact SQLite and
+pgvector engines remain available. `commontrace.store.FilesStore` and
+`SQLiteStore` add a canonical Markdown record interface; they do not automatically
+migrate legacy SDK fact stores.
 Feedback adjusts graph-edge weights. Filters for evidence, scope, forgetting,
 validity and origin run before scoring. Set `COMMONTRACE_FACT_EMBEDDER_PATH` to
 an existing local embedding model directory to enable dense ranking; absent
@@ -108,6 +115,29 @@ support self-normalised IPW, decision priors, reward export and deletion/reanswe
 probes with plan/execution attribution. These estimates are experimental; the
 existing preregistered holdout remains billing authority.
 
+`commontrace policy register CANDIDATE.json` freezes an exploration-delivery policy
+before fresh evaluation traffic. `policy evaluate` reports occasion-level IPS,
+SNIPS, support/ESS and confidence bounds; DR requires a frozen complete joint-action
+prediction table trained only on earlier occasions. `policy install` and
+`gate --policy CANDIDATE.json` fail closed without a supported non-harm verdict.
+These are preregistered fixed-horizon comparisons with multiplicity correction;
+arbitrary ranker, embedding or prompt changes are refused because these logs do
+not identify them. The default billing holdout remains anytime-valid.
+
+The `compression` commands propose every adjacent level from trace through
+directive, register randomized candidate/parent/raw comparisons, record outcomes
+and require independent revision-checked review. Active artifacts recheck signed
+admission, source hashes and later harm verdicts. `export-training` exports
+source-linked SFT examples; no training job runs automatically.
+
+`assurance forensics` replays deletion probes through a trusted local evaluator
+and signs the incident report. `assurance action-vote` checks current evidence,
+directives and origin policy, then requires empty/full/randomized context votes
+to agree. Its elapsed budget is checked after callbacks; it cannot terminate a
+blocked callback. Recheck policies at execution time. Provider-reported usage and
+plan/execution/environment attribution are signed beside the recall receipt;
+replay sensitivity and usage accounting are not billing proofs.
+
 Skill proposals retain structural signatures, applicability limits, evidence
 and Beta reliability. Independent review and an abstraction-versus-raw causal
 gate precede publication. Admitted skills recheck current evidence, scope and
@@ -124,7 +154,12 @@ this is not a theorem against compromised operators or adaptive collusion.
 MemFS signs committed snapshots and audience-bound shared-repository handoffs.
 Many agents may attach the same read-only store; expiry and drift are rechecked.
 Local HMAC keys must remain private. Public-key origin primitives support
-configured Ed25519 signers; MemFS handoffs still use local HMAC custody.
+configured Ed25519 signers. `assurance signing --algorithm ed25519` pins a per-store
+public key and enables publicly verifiable record and MemFS snapshot signatures;
+verifiers cannot sign. Legacy HMAC receipts remain verifiable and shared MemFS
+handoffs still use local HMAC custody. Recursive forgetting blocks descendants at
+canonical admission; `assurance forget-certificate` describes local retrieval
+surfaces while explicitly excluding historical-byte and remote-replica erasure.
 
 Protected federation exports approved public procedure shape and aggregate
 reliability, excluding raw traces, scopes and free-text applicability. The
@@ -133,6 +168,38 @@ noise budget. Eligibility and finite-precision sampling are not a verified
 differential-privacy mechanism. Imports
 require configured signer approval over exact payload bytes and remain review
 proposals. No external transmission or federated trainer runs automatically.
+
+`federation.randomized_response` additionally implements exact binary randomized
+response with epsilon=log(3), delta=0 and a composed durable accountant. Its event
+outcome replacement guarantee assumes public, fixed cohort membership and public
+procedure structure; it does not protect those public fields or participant
+membership. `replicated_lift` authenticates distinct configured organizations,
+enforces artifact/comparison/metric and sim/real agreement, and reports descriptive
+random-effects pooling with I-squared. It is not a verified billing proof.
+
+## Standard API and integrations
+
+Swagger UI is at `/v1/docs`; `/v1/openapi.json` describes live routes. The public
+memory SDK [OpenAPI contract](../sdk/openapi.json) has typed inputs and outputs and
+shares its validation definitions with gateway admission. Run
+`python scripts/generate_sdks.py` to generate TypeScript/Go/Rust/Java/Kotlin clients
+with the checksum-pinned upstream OpenAPI Generator. CI compiles each generated
+client and publishes artifacts; no custom SDK templates are used.
+
+Framework factories include native Google ADK, Strands and AG2 1.x tools and the
+older AG2 registration API. The TypeScript convenience SDK accepts real Vercel AI
+and Mastra factories. CI runs these SDKs without model calls. Assistant installer
+targets include Codex, Copilot, Gemini and OpenCode; their generated MCP fragments
+require an operator merge and do not establish verified native session hooks.
+
+`commontrace connect PROVIDER RESOURCE --token-env TOKEN_VARIABLE --context agent:ID`
+imports read-only provider knowledge with pinned origins, source snapshots and
+failure-safe cursors. Providers include GitHub, Slack, Jira, Linear, ServiceNow
+incidents, Salesforce Cases, Notion, Drive text exports, Gmail, Confluence pages,
+OneDrive, Zendesk articles, Greenhouse candidates and Intercom conversations.
+These are bounded selected resource adapters, not exhaustive vendor exports or
+live-account OAuth verification. Blank scopes and cross-origin cursors are refused;
+downloads never forward OAuth credentials to a different origin.
 
 ## Build and reproduce
 

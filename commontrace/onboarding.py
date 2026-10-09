@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import re
 import shlex
@@ -59,8 +58,12 @@ def install(root: str, agent_id: str, *, repo: str | None = None, commits: int =
                           "session_end": {"module": "commontrace.agent_hooks", "operation": "end",
                     "command": hook_prefix + " end --agent-id " + shlex.quote(agent_id)
                                + " --dest " + shlex.quote(os.path.abspath(root))}}}
-    with open(os.path.join(directory, "plugin.json"), "w", encoding="utf-8") as fh:
-        json.dump(manifest, fh, indent=2)
+    from commontrace import _jsonl
+
+    manifest_path = os.path.join(directory, "plugin.json")
+    paths.enforce_boundary(root, manifest_path)
+    paths.safe_prepare_output_path(manifest_path)
+    _jsonl.write_json(manifest_path, manifest)
     # All potentially failing filesystem/git work precedes credential issuance.
     signup = agent_registry.rotate(root, agent_id) if exists else agent_registry.signup(root, agent_id)
     # Never write the token into the plugin, git history or returned file paths.

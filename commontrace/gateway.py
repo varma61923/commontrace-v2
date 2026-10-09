@@ -421,6 +421,7 @@ class Gateway:
         self._route("GET", "/v1/metrics", self._metrics,
                     summary="Request, tool and operation counters and latencies (Prometheus text; ?format=json).")
         self._route("GET", "/v1/openapi.json", self._openapi, summary="This API's schema.", auth=False)
+        self._route("GET", "/v1/docs", self._swagger, summary="Swagger UI for this gateway's OpenAPI.", auth=False)
         self._route("GET", "/v1/command-catalog", self._command_catalog,
                     summary="CLI command catalog for the authenticated console.")
         self._route("POST", "/v1/explore", self._explore, request={
@@ -714,8 +715,13 @@ class Gateway:
 
     def _memory_operation_inner(self, operation: str, body: dict) -> dict:
         from commontrace import additive_extract, memory_control
+        from commontrace.api_schema import validate_request
         from commontrace.search_recipes import REGISTRY
 
+        try:
+            validate_request(operation, {k: v for k, v in body.items() if k != "_principal"})
+        except ValueError as exc:
+            raise _bad(str(exc)) from exc
         principal = body.get("_principal")
         context = principal["scopes"] if principal else body.get("context", [])
         if not isinstance(context, list) or any(not isinstance(s, str) for s in context):
@@ -755,8 +761,9 @@ class Gateway:
                     occasion_id = memory_control.occasion(occasion_id, principal=principal["id"])
                 if not isinstance(body.get("succeeded"), bool):
                     raise _bad("succeeded must be boolean")
-                from commontrace import causal_policy
+                from commontrace import causal_policy, policy
 
+                policy.outcome(self.root, occasion_id, float(body["succeeded"]))
                 explored = causal_policy.record_outcome(self.root, occasion_id, float(body["succeeded"]))
                 return {"recorded": holdout_io.record_outcome(self.root, occasion_id, body["succeeded"]) or explored}
             if operation == "search":
@@ -1452,6 +1459,28 @@ class Gateway:
                 "window_events": payload["window_events"], "truncated": payload["truncated"],
                 "limit": payload["limit"], "cached": cached}
 
+    def _swagger(self, _body, _query) -> Response:
+        import base64
+        import hashlib
+
+        startup = ('window.onload=function(){SwaggerUIBundle({url:"/v1/openapi.json",dom_id:"#swagger-ui",'
+                   'persistAuthorization:false,validatorUrl:null});};')
+        digest = base64.b64encode(hashlib.sha256(startup.encode()).digest()).decode()
+        page = ('<!doctype html><html lang="en"><head><meta charset="utf-8">'
+                '<meta name="viewport" content="width=device-width,initial-scale=1">'
+                '<title>CommonTrace API</title><link rel="stylesheet" '
+                'href="https://unpkg.com/swagger-ui-dist@5.30.0/swagger-ui.css" '
+                'integrity="sha384-++DMKo1369T5pxDNqojF1F91bYxYiT1N7b1M15a7oCzEodfljztKlApQoH6eQSKI" '
+                'crossorigin="anonymous"></head><body><div id="swagger-ui"></div>'
+                '<script src="https://unpkg.com/swagger-ui-dist@5.30.0/swagger-ui-bundle.js" '
+                'integrity="sha384-9CJCDqW5gKboEGedI4f6FbRtGJUQDktyO4ALxunoU7Zh2AaMp93UH1iVtC0SzT9/" '
+                'crossorigin="anonymous"></script><script>'+startup+'</script></body></html>')
+        return Response(200, page.encode(), "text/html; charset=utf-8", {
+            "Content-Security-Policy": "default-src 'none'; script-src https://unpkg.com 'sha256-"+digest+
+                "'; style-src https://unpkg.com 'unsafe-inline'; connect-src 'self'; img-src data:; "
+                "base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+            "Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
+
     def _openapi(self, _body, _query) -> dict:
         paths_doc: dict = {}
         for (method, path), (_h, spec) in sorted(self.routes.items()):
@@ -1459,17 +1488,34 @@ class Gateway:
             if spec["auth"]:
                 op["security"] = [{"bearer": []}]
                 op["responses"]["401"] = {"description": "missing or wrong token"}
-            if spec["request"]:
+            if path.startswith("/v1/memory/"):
+                from commontrace.api_schema import model_name
+
+                name = model_name(path.rsplit("/", 1)[1])
+                schema = {"$ref": "#/components/schemas/"+name+"Request"}
+                op["operationId"] = "memory_"+path.rsplit("/", 1)[1].replace("-", "_")
+                op["tags"] = ["Memory"]
+                op["requestBody"] = {"required": True, "content": {"application/json": {"schema": schema}}}
+                op["responses"]["200"]["content"] = {"application/json": {"schema": {
+                    "$ref": "#/components/schemas/"+name+"Response"}}}
+                for status in (400, 403, 409, 413, 429, 500):
+                    op["responses"][str(status)] = {"description": "Request refused or operation failed",
+                        "content": {"application/json": {"schema": {
+                            "$ref": "#/components/schemas/ErrorResponse"}}}}
+            elif spec["request"]:
                 op["requestBody"] = {"required": True, "content": {"application/json": {"schema": {
                     "type": "object", "description": "fields: " + "; ".join(
                         f"{k}: {v}" for k, v in spec["request"].items())}}}}
             paths_doc.setdefault(path, {})[method.lower()] = op
+        from commontrace.api_schema import components
+
         return {
             "openapi": "3.0.3",
             "info": {"title": "CommonTrace gateway", "version": API_VERSION,
                      "description": "Did the memory change how the occasion went? Language-neutral."},
             "paths": paths_doc,
-            "components": {"securitySchemes": {"bearer": {"type": "http", "scheme": "bearer"}}},
+            "components": {"securitySchemes": {"bearer": {"type": "http", "scheme": "bearer"}},
+                           "schemas": components()},
         }
 
 

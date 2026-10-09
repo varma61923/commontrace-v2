@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import math
 import re
+import unicodedata
 from collections import Counter, deque
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
@@ -14,6 +15,7 @@ from datetime import datetime, timezone
 from typing import Any, Protocol
 
 from commontrace import graph, hierarchical, lesson_cache
+from commontrace.query_plan import retrieve as planned_retrieval
 
 
 @dataclass(frozen=True)
@@ -52,7 +54,11 @@ class LocalGraph:
 
 
 def terms(text: str) -> list[str]:
-    return re.findall(r"\w+", text.casefold())
+    normalized = unicodedata.normalize("NFKC", text).casefold()
+    tokens = re.findall(r"\w+", normalized)
+    for chunk in re.findall(r"[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]+", normalized):
+        tokens.extend(chunk[i:i + size] for size in (1, 2, 3) for i in range(len(chunk)-size+1))
+    return tokens
 
 
 def sigmoid_bm25(raw: float, query_terms: int) -> float:
@@ -247,7 +253,8 @@ def nl_query(root: str, query: str, **options) -> list[dict]:
 
 REGISTRY = RetrieverRegistry()
 for _name, _retriever in (("hybrid", search), ("decomposition", decomposition),
-                         ("graph-completion", graph_completion), ("nl-query", nl_query)):
+                         ("graph-completion", graph_completion), ("nl-query", nl_query),
+                         ("planned", planned_retrieval)):
     REGISTRY.register(_name, _retriever)
 
 

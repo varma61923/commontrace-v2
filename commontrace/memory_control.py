@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from commontrace import _jsonl, frontmatter, hierarchical, lesson_cache, observations, paths
 from commontrace.search_recipes import search, terms
 
-KINDS = ("directive", "mental-model", "proposal", "foresight", "watermark")
+KINDS = ("directive", "mental-model", "proposal", "foresight", "watermark", "compression")
 DIMENSIONS = ("user", "agent", "app", "project", "session")
 REQUIRED_PRINCIPAL_SCOPE: ContextVar[str] = ContextVar("commontrace_required_principal_scope", default="")
 
@@ -123,7 +123,10 @@ def directive(root: str, text: str, *, deny_tools: list[str] | None = None,
 
 def check_action(root: str, tool: str, *, tags: list[str] | None = None, context: list[str] | None = None) -> None:
     """Machine-enforced rules for integrations that use this action gate."""
-    for rule in records(root, "directive", context=context or []):
+    from commontrace import compression
+
+    promoted = [r for r in compression.active(root, context=context or []) if r["data"]["level"] == "directive"]
+    for rule in [*records(root, "directive", context=context or []), *promoted]:
         data = rule["data"]
         if tool in data.get("deny_tools", []) or not set(data.get("required_tags", [])) <= set(tags or []):
             raise PermissionError(f"action blocked by directive {rule['id']}")
@@ -163,7 +166,7 @@ def profile(root: str, query: str, *, context: list[str] | None = None, limit: i
 
 def reflect(root: str, query: str, *, context: list[str] | None = None, budget: int = 600,
             occasion_id: str | None = None, causal: bool = True, exploration_slots: int = 0,
-            action_class: str = "") -> dict:
+            action_class: str = "", record_receipt: bool = True) -> dict:
     """Curated → consolidated → raw, with one shared conservative token budget."""
     if not isinstance(budget, int) or isinstance(budget, bool) or not 0 <= budget <= 100000:
         raise ValueError("budget must be an integer in 0..100000")
@@ -231,6 +234,17 @@ def reflect(root: str, query: str, *, context: list[str] | None = None, budget: 
                 f"{i + 1}. {s.get('tool', 'action')}: {s.get('description', '')}"
                 for i, s in enumerate(skill["data"]["steps"]))
             curated.append({"id": skill["id"], "text": text, "sources": skill["data"]["sources"]})
+    from commontrace import compression
+
+    promoted = compression.active(root, context=context)
+    for artifact in promoted:
+        if artifact["data"]["level"] == "directive":
+            continue  # Added below as mandatory context, outside recall holdout.
+        if (q & set(terms(artifact["text"]+" "+artifact["data"]["applies_when"]))
+                and memory_authority.permits_record(root, artifact.get("origin", {}),
+                    {k: v for k, v in artifact.items() if k != "origin"}, action_class=action_class)):
+            target = curated if artifact["data"]["level"] in ("lesson", "skill") else consolidated
+            target.append({"id": artifact["id"], "text": artifact["text"], "sources": artifact["data"]["sources"]})
     # Reuse only fresh model snapshots whose selected evidence is still live.
     # The snapshot is a cache of evidence, never a new fact or a directive.
     live_rows = {r["id"]: r for r in [*curated, *raw]}
@@ -256,7 +270,9 @@ def reflect(root: str, query: str, *, context: list[str] | None = None, budget: 
     layers.extend((("curated", curated), ("consolidated", consolidated), ("raw", raw)))
     selected, rendered = [], []
     # Directives never silently disappear to satisfy a context cap.
-    for rule in records(root, "directive", context=context):
+    rules = [*records(root, "directive", context=context),
+             *[r for r in promoted if r["data"]["level"] == "directive"]]
+    for rule in rules:
         rendered.append(f"[directive:{rule['id']}] {rule['text']}")
     used = sum((len(t.encode()) + 3) // 4 for t in rendered)
     if used > budget:
@@ -309,7 +325,7 @@ def reflect(root: str, query: str, *, context: list[str] | None = None, budget: 
         used = (len("\n".join(rendered).encode()) + 3) // 4
     assignments = []
     if exploration_slots:
-        from commontrace import causal_policy, holdout_io
+        from commontrace import causal_policy, holdout_io, policy
 
         available = {fact.id: fact for fact, _cost in exploration_pool
                      if fact.id not in consumed and fact.id not in ranked_ids}
@@ -317,12 +333,15 @@ def reflect(root: str, query: str, *, context: list[str] | None = None, budget: 
         salt = holdout_io.load_config(root).salt
         seed_bytes = hashlib.sha256((salt + "\0" + occasion_value + "\0exploration-v1").encode()).digest()
         seed = int.from_bytes(seed_bytes, "big")
-        assignments = causal_policy.explore(sorted(available), [], slots=exploration_slots, seed=seed)
+        assignments = causal_policy.explore(sorted(available), [], slots=exploration_slots, seed=seed,
+                                             delivery_policy=policy.delivery_probabilities(root))
         for row in assignments:
             fact = available[row["memory_id"]]
             row.update(pool_sha256=pool_digest, query_sha256=hashlib.sha256(query.encode()).hexdigest(),
                        source_sha256=hashlib.sha256(json.dumps(fact.to_dict(), sort_keys=True).encode()).hexdigest())
         # Commit immutable assignments before exposing any explored content.
+        policy.record_assignment(root, occasion_value, assignments,
+                                 baseline=selected, scopes=context or [])
         causal_policy.record(root, occasion_value, assignments)
         for row in assignments:
             if row["delivered"]:
@@ -343,9 +362,14 @@ def reflect(root: str, query: str, *, context: list[str] | None = None, budget: 
             if not any(r["occasion_id"] == occasion_value for r in _jsonl.read_rows(query_path)):
                 _jsonl.append_row(query_path, {"occasion_id": occasion_value, "query": query_text, "scopes": context,
                     "sources": [r["id"] for r in selected], "recorded_at": now})
+    rule_evidence = [{"id": r["id"], "text": r["text"], "layer": "directive"} for r in rules]
+    if causal and record_receipt:
+        from commontrace import assurance
+
+        assurance.record_recall(root, occasion_value, [*selected, *rule_evidence], "\n".join(rendered), context or [])
     return {"context": "\n".join(rendered), "tokens_estimate": used, "budget": budget,
             "evidence": selected, "occasion_id": occasion_value, "withheld": withheld, "withdrawn": withdrawn,
-            "exploration": assignments}
+            "exploration": assignments, "authority_sources": [r["id"] for r in [*selected, *rule_evidence]]}
 
 
 def refresh_model(root: str, model_id: str) -> dict:

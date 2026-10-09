@@ -102,6 +102,9 @@ jobs:
       - name: Source-derived API and environment references stay current
         run: python scripts/dev.py docs --check
 
+      - name: Standard OpenAPI memory contract stays current
+        run: python scripts/export_openapi.py --check
+
       - name: Hub server image allowlist stays in sync with hub/'s imports
         run: python -m pytest hub/tests/test_image_contents.py -q --noconftest
 
@@ -246,6 +249,14 @@ jobs:
 
       - name: Build and run the test suite
         run: npm test
+
+      - name: Install pinned native TypeScript framework factories outside the checkout
+        run: npm install --prefix "$RUNNER_TEMP/commontrace-frameworks" --no-audit --no-fund ai@7.0.136 @mastra/core@1.75.0 zod@4.6.5
+
+      - name: Exercise real Vercel and Mastra tools without model calls
+        env:
+          COMMONTRACE_TS_FRAMEWORKS: ${{ runner.temp }}/commontrace-frameworks
+        run: node ../../tests/test_typescript_frameworks.mjs
 
   test-vector-engines:
     name: vector engines (SQLite + pgvector, py${{ matrix.python-version }})
@@ -647,3 +658,130 @@ jobs:
       - name: Tear down
         if: always()
         run: docker compose down -v
+
+  sdk-go:
+    name: sdk (go)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version: '1.27.x'
+          cache: false
+      - run: go test ./...
+        working-directory: sdk/go
+
+  test-graph-lance:
+    name: optional memory engines (Neo4j, FalkorDB, LanceDB)
+    runs-on: ubuntu-latest
+    services:
+      neo4j:
+        image: neo4j:5-community@sha256:c7d25c0eeebfe125718d58b72ed5d663c85d0479047733845eb2237c67ce8069
+        env:
+          NEO4J_AUTH: neo4j/commontrace-native-test
+          NEO4J_server_memory_heap_initial__size: 256m
+          NEO4J_server_memory_heap_max__size: 256m
+          NEO4J_server_memory_pagecache_size: 128m
+        ports:
+          - 7687:7687
+        options: >-
+          --health-cmd "cypher-shell -u neo4j -p commontrace-native-test 'RETURN 1'"
+          --health-interval 10s --health-timeout 10s --health-retries 12
+      falkor:
+        image: falkordb/falkordb@sha256:107455e862a824e45e8e9f5a7fbfdf5e00a08b14e13eae2577c72fd9e3f59ba6
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      COMMONTRACE_TEST_GRAPH_BACKENDS: "1"
+      COMMONTRACE_TEST_LANCE: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -e '.[graph,vector-lance]' pytest
+      - run: python -m pytest tests/test_optional_memory_backends.py -q
+
+  sdk-rust:
+    name: sdk (rust)
+    runs-on: ubuntu-latest
+    container: rust:1.91-slim
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - run: cargo test --locked
+        working-directory: sdk/rust
+
+  sdk-jvm:
+    name: sdk (java + kotlin)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        with:
+          distribution: temurin
+          java-version: '21'
+      - run: mvn -B test
+        working-directory: sdk/jvm
+
+  test-new-frameworks:
+    name: native framework tools (Google ADK, Strands, AG2)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -e . pytest google-adk==2.11.0 strands-agents==1.59.0 ag2==1.1.2
+      - run: python -m pytest tests/test_new_framework_sdks.py -q
+
+  generated-sdks:
+    name: OpenAPI generated SDK (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [typescript, go, rust, java, kotlin]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '22'
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version: '1.27.x'
+          cache: false
+      - run: python -m pip install -e .
+      - name: Check and validate the standard contract, then generate with pinned upstream tooling
+        run: |
+          python scripts/export_openapi.py --check
+          python scripts/generate_sdks.py --languages '${{ matrix.language }}' --output "$RUNNER_TEMP/generated"
+      - name: Compile generated client and models
+        working-directory: ${{ runner.temp }}/generated/${{ matrix.language }}
+        env:
+          LANGUAGE: ${{ matrix.language }}
+        run: |
+          case "$LANGUAGE" in
+            typescript) npm install --no-audit --no-fund ;;
+            go) go test ./... ;;
+            rust) cargo check ;;
+            java) mvn -B -DskipTests package ;;
+            kotlin) bash gradlew --no-daemon compileKotlin ;;
+          esac
+      - name: Package generated source for review and distribution
+        run: >-
+          tar --exclude='./node_modules' --exclude='./target' --exclude='./build' --exclude='./.gradle'
+          -czf "$RUNNER_TEMP/commontrace-sdk-${{ matrix.language }}.tgz"
+          -C "$RUNNER_TEMP/generated/${{ matrix.language }}" .
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: commontrace-sdk-${{ matrix.language }}-${{ github.sha }}
+          path: ${{ runner.temp }}/commontrace-sdk-${{ matrix.language }}.tgz

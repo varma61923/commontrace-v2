@@ -16,7 +16,7 @@ from commontrace import _jsonl, paths
 
 
 def explore(eligible: Sequence[str], ranked: Sequence[str], *, slots: int, seed: int,
-            treatment_probability: float = 0.5) -> list[dict]:
+            treatment_probability: float = 0.5, delivery_policy: dict | None = None) -> list[dict]:
     if not isinstance(slots, int) or isinstance(slots, bool) or slots < 0:
         raise ValueError("slots must be a nonnegative integer")
     if not math.isfinite(treatment_probability) or not 0 < treatment_probability < 1:
@@ -24,10 +24,15 @@ def explore(eligible: Sequence[str], ranked: Sequence[str], *, slots: int, seed:
     pool = sorted(set(eligible) - set(ranked))
     k = min(slots, len(pool))
     rng = random.Random(seed)
-    return [{"memory_id": mid, "selection_probability": k / len(pool),
-             "treatment_probability": treatment_probability,
-             "delivered": rng.random() < treatment_probability}
-            for mid in rng.sample(pool, k)]
+    rows = []
+    policy = delivery_policy or {}
+    for mid in rng.sample(pool, k):
+        probability = policy.get("probabilities", {}).get(mid, policy.get("default_probability", treatment_probability))
+        if not isinstance(probability, (int, float)) or not math.isfinite(probability) or not 0 < probability < 1:
+            raise ValueError("delivery policy requires finite full-support probabilities")
+        rows.append({"memory_id": mid, "selection_probability": k / len(pool),
+                     "treatment_probability": probability, "delivered": rng.random() < probability})
+    return rows
 
 
 def snipw(rows: Sequence[dict]) -> dict:

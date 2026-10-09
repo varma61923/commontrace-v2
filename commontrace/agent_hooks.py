@@ -6,12 +6,12 @@ import hashlib
 import json
 import sys
 
-from commontrace import memory_authority, paths, trace_io
+from commontrace import assurance, memory_authority, paths, trace_io
 from commontrace.client import MemoryClient
 
 
 def handle(root: str, operation: str, payload: dict, *, agent_id: str) -> dict:
-    with memory_authority.writer(agent_id, "agent"):
+    with memory_authority.restricted_writer(agent_id, "agent"):
         return _handle(root, operation, payload, agent_id=agent_id)
 
 
@@ -35,15 +35,28 @@ def _handle(root: str, operation: str, payload: dict, *, agent_id: str) -> dict:
     succeeded = payload.get("succeeded")
     if succeeded is not None and not isinstance(succeeded, bool):
         raise ValueError("outcomes must be explicitly boolean")
-    extra = {"scopes": memory.context, "extensions": {"profile": {"occasion_id": occasion}}}
+    try:
+        recalled = assurance.recall(root, memory._occasion(occasion))
+        if recalled["scopes"] != memory.context:
+            raise PermissionError("session recall scope mismatch")
+        sources = recalled["source_traces"]
+    except FileNotFoundError:
+        sources = []  # A session may end without a preceding recall.
+    extra = {"scopes": memory.context, "source_traces": sources, "extensions": {"profile": {"occasion_id": occasion}}}
+    attribution = assurance.failure(root, memory._occasion(occasion),
+        plan_valid=payload.get("plan_valid"), execution_valid=payload.get("execution_valid"),
+        environment_valid=payload.get("environment_valid"), final=payload.get("final", True),
+        outcome=float(succeeded) if succeeded is not None else None)
+    extra["extensions"]["profile"]["failure_attribution"] = attribution["attribution"]
     # A completion or git commit is never silently labelled a success.
-    if succeeded is not None:
+    if succeeded is not None and payload.get("final", True):
         extra["outcome"] = {"resolved": succeeded}
-    filename = trace_io.write_new(root, title=context[:200], context=context, solution=solution,
+    filename = (trace_io.write_new(root, title=context[:200], context=context, solution=solution,
                                  tags=["agent-session"], agent_type="code", extra=extra,
                                  trace_id=hashlib.sha256((agent_id + "\0" + occasion).encode()).hexdigest())
+                if payload.get("final", True) else None)
     return {"captured": bool(filename), "outcome_recorded":
-            memory.outcome(occasion, succeeded) if succeeded is not None else False}
+            memory.outcome(occasion, succeeded) if succeeded is not None and payload.get("final", True) else False}
 
 
 def main(argv=None) -> int:

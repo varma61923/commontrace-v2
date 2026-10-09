@@ -30,6 +30,7 @@ embeddings-*.db
 jobs.db
 .handoff_key
 .origin-key
+.origin-ed25519-key
 attachments.jsonl
 """
 KEY_FILE = ".handoff_key"
@@ -379,7 +380,7 @@ def verify_handoff(root: str, token: str, *, audience: str | None = None) -> dic
 
 def sign_snapshot(root: str, *, issuer: str) -> dict:
     """Detached HMAC attestation of a committed memory tree, stored in git metadata."""
-    from commontrace import _jsonl
+    from commontrace import _jsonl, memory_authority
 
     require_repo(root)
     commit_id = memory_git.head_hash(root)
@@ -387,8 +388,11 @@ def sign_snapshot(root: str, *, issuer: str) -> dict:
         raise MemfsError("commit memory before signing its snapshot")
     claims = {"version": 1, "commit": commit_id, "tree": _tree_digest(root, commit_id, ["memory"]),
               "issuer": issuer, "scope": ["memory"]}
-    signature = hmac.new(_key(root), json.dumps(claims, sort_keys=True).encode(), hashlib.sha256).hexdigest()
-    row = {**claims, "signature": signature}
+    if memory_authority.signing_config(root)["algorithm"] == "ed25519":
+        row = {**claims, "origin": memory_authority.bind(root, claims)}
+    else:
+        signature = hmac.new(_key(root), json.dumps(claims, sort_keys=True).encode(), hashlib.sha256).hexdigest()
+        row = {**claims, "signature": signature}
     filename = _git(root, "rev-parse", "--git-path", "commontrace-attestations").strip()
     if not os.path.isabs(filename):
         filename = os.path.join(root, filename)
@@ -398,7 +402,12 @@ def sign_snapshot(root: str, *, issuer: str) -> dict:
 
 def verify_snapshot(root: str, attestation: dict) -> bool:
     try:
-        claims = {k: v for k, v in attestation.items() if k != "signature"}
+        claims = {k: v for k, v in attestation.items() if k not in ("signature", "origin")}
+        if "origin" in attestation:
+            from commontrace import memory_authority
+
+            return (memory_authority.verify(root, attestation["origin"], claims)
+                    and _tree_digest(root, claims["commit"], claims["scope"]) == claims["tree"])
         signature = hmac.new(_key(root), json.dumps(claims, sort_keys=True).encode(), hashlib.sha256).hexdigest()
         return (hmac.compare_digest(signature, attestation["signature"])
                 and _tree_digest(root, claims["commit"], claims["scope"]) == claims["tree"])

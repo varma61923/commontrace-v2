@@ -7,7 +7,8 @@ import shutil
 
 from commontrace import mcp_tools, paths
 
-TARGETS = ["claude-code", "cursor", "devin", "windsurf", "generic-mcp", "generic"]
+TARGETS = ["claude-code", "cursor", "devin", "windsurf", "generic-mcp", "generic",
+           "codex", "copilot", "gemini", "opencode"]
 
 _HUB_TOOLS = [
             "get_traces_batch", "contribute_traces_batch", "delete_traces_batch",
@@ -251,7 +252,24 @@ def run(args: argparse.Namespace) -> int:
     skill_md = _find_skill_md(root, dest)
     print(f"[commontrace] installing target='{args.target}' into {dest}")
 
-    if args.target == "claude-code":
+    if args.target in ("codex", "copilot", "gemini", "opencode"):
+        from commontrace import agent_registry
+
+        directories = {"codex": ".agents", "copilot": ".github", "gemini": ".gemini", "opencode": ".opencode"}
+        skill = os.path.join(dest, directories[args.target], "skills", "commontrace-sdk", "SKILL.md")
+        _write(skill, agent_registry.SDK_SKILL, base_dir=dest)
+        server = {"command": "commontrace", "args": ["serve", "--dest", root]}
+        if args.target == "codex":
+            # A detached fragment avoids overwriting the user's existing TOML.
+            config = "[mcp_servers.commontrace]\ncommand = \"commontrace\"\nargs = "+json.dumps(server["args"])+"\n"
+            filename = os.path.join(dest, ".codex", "commontrace.mcp.toml")
+        else:
+            key = "servers" if args.target == "copilot" else "mcpServers"
+            config = json.dumps({key: {"commontrace": server}}, indent=2)
+            filename = os.path.join(dest, directories[args.target], "commontrace.mcp.json")
+        _write(filename, config+"\n", base_dir=dest)
+        print(f"  SDK skill installed; merge MCP fragment {filename} into your assistant configuration")
+    elif args.target == "claude-code":
         out = os.path.join(dest, ".claude", "skills", "commontrace", "SKILL.md")
         if skill_md:
             _copy(skill_md, out, base_dir=dest)

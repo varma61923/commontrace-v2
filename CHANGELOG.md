@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Standard OpenAPI and generated SDKs.** Typed memory requests, responses and bearer authentication, schema-enforced gateway admission, a pinned Swagger UI, and checksum-pinned upstream OpenAPI Generator tooling for TypeScript, Go, Rust, Java and Kotlin. CI compiles each generated client; generated output remains a build artifact.
+- **Learning assurance runtime.** Signed joint-policy assignment/outcome logs, preregistered fixed-horizon IPS/SNIPS/DR release gates, recorded recall and usage receipts, failure attribution, bounded action-ablation voting and signed replay incident reports. Adjacent compression levels require an independent review and a randomized comparison against both the parent and raw evidence. Store-level Ed25519 receipts, recursive forgetting certificates, protected aggregate releases and authenticated replicated-lift pooling retain explicit limits.
+- **Optional engines and adoption adapters.** Source-bound Neo4j/FalkorDB graph snapshots, scoped LanceDB indexing, append-only Markdown/SQLite record adapters, native Google ADK/Strands/AG2/Vercel/Mastra tools and owner-scoped knowledge-provider connectors. CI exercises actual optional engines and framework SDKs. The README is now a short start page; detailed reference content moves to `docs/REFERENCE.md`.
+
 - **Bounded real-data reproduction runner.** Pinned LoCoMo/LongMemEval development selections, matched original/current product harness, dense/reranker ablations, local vendor attempts, per-case failures and cluster comparisons; exact context-text counts report estimated-budget exceedances separately.
 
 - **Executable local vendor benchmark profiles.** Mem0 raw-memory/Qdrant and Graphiti episodic/FalkorDBLite paths share source-bound evidence and bounded reader/judge accounting; their limited configurations are explicit. LoCoMo development limits select exact seeded question counts.

@@ -774,8 +774,14 @@ def forget_fact(root: str, fact_id: str, undo: bool = False) -> AtomicFact:
         if fact_id not in facts:
             raise KeyError(f"Fact '{fact_id}' not found")
         fact = facts[fact_id]
+        from commontrace import memory_authority
+
+        if not undo:
+            memory_authority.record_forgetting(root, fact_id, forgotten=True)
         fact.forgotten = not undo
         _stamp(fact)
+    if undo:
+        memory_authority.record_forgetting(root, fact_id, forgotten=False)
     if undo:
         _link_entities_best_effort(root, [(fact.id, fact.statement)])
     else:
@@ -887,7 +893,11 @@ def list_facts(
     results: list[AtomicFact] = []
     facts = load_facts(root)
     resolver = EvidenceResolver(root, facts, as_of=as_of)
+    from commontrace import memory_authority
+
     for fact in facts.values():
+        if not include_forgotten and memory_authority.lineage_blocked(root, fact.id):
+            continue
         if fact.forgotten and not include_forgotten:
             continue
         if stability and fact.stability != stability:

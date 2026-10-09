@@ -77,6 +77,11 @@ else
   if command -v rsync &>/dev/null; then
     rsync -a --no-times \
       --exclude='.git' \
+      --exclude='sdk/rust/target' \
+      --exclude='sdk/jvm/target' \
+      --exclude='sdk/generated' \
+      --exclude='build' \
+      --exclude='dist' \
       --exclude='__pycache__' \
       --exclude='*.pyc' \
       --exclude='*.pyo' \
@@ -90,7 +95,13 @@ else
       --exclude='.env.*' \
       "${SCRIPT_DIR}/" "${DEST}/"
   else
-    cp -r "${SCRIPT_DIR}/." "${DEST}/"
+    # Exclude build outputs before copying; generated SDK caches may contain
+    # unreadable compiler locks and are never part of an installed skill.
+    tar -C "${SCRIPT_DIR}" --exclude='.git' --exclude='__pycache__' --exclude='*.pyc' \
+      --exclude='node_modules' --exclude='.venv' --exclude='.pytest_cache' --exclude='.ruff_cache' \
+      --exclude='./sdk/rust/target' --exclude='./sdk/jvm/target' --exclude='./sdk/generated' \
+      --exclude='./build' --exclude='./dist' --exclude='.env' --exclude='.env.*' \
+      --exclude='./memory/attention/index.npz' -cf - . | tar -C "${DEST}" -xf -
     rm -f "${DEST}/memory/attention/index.npz" 2>/dev/null || true
     rm -rf "${DEST}/.git" 2>/dev/null || true
     find "${DEST}" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true

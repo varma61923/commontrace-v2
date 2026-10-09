@@ -24,7 +24,7 @@ _COMMANDS = (
     "dream", "bill", "conformance", "gate", "prove", "taxonomy", "impact", "pilot", "sync", "redact", "doctor",
     "block", "fact", "graph", "ingest", "agent", "watch", "daemon", "viz", "conversation", "memory", "recall", "jobs",
     "ontology", "community", "observation", "saga", "page", "session_ledger",
-    "procedural", "sql_query", "defense", "evolve",
+    "procedural", "sql_query", "defense", "evolve", "policy", "assurance", "compression", "up", "connect",
 )
 
 

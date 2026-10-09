@@ -49,6 +49,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
              "is recorded as a commit. Refused when the store sits inside another repository.",
     )
     p.add_argument("--dest", default=".", help="Directory to scaffold into (default: current directory)")
+    p.add_argument("--agent", nargs="?", const="new", help="Mint a scoped local agent key after initialization.")
     p.set_defaults(func=run)
 
 
@@ -198,6 +199,16 @@ def run(args: argparse.Namespace) -> int:
                   f"Success: {kit.outcome.success}.")
             print(f"  `commontrace function forecast {kit.key} --daily <occasions per day>` "
                   "says how long a verdict takes at your volume.")
+
+    if getattr(args, "agent", None):
+        import json
+        import uuid
+
+        from commontrace import onboarding
+
+        agent_id = "agent-"+uuid.uuid4().hex[:12] if args.agent == "new" else args.agent
+        result = onboarding.install(root, agent_id, commits=0)
+        print(json.dumps(result))
 
     if getattr(args, "git", False):
         rc = _init_git(root)

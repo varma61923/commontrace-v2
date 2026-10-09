@@ -97,7 +97,8 @@ def write_new(
     profile = fm.setdefault("extensions", {}).setdefault("profile", {})
     # The authenticated writer replaces any payload-supplied origin receipt.
     profile["origin"] = memory_authority.bind(
-        root, memory_authority.trace_record(fm, context=context, solution=solution))
+        root, memory_authority.trace_record(fm, context=context, solution=solution),
+        sources=fm.get("source_traces", []))
     out_path = _free_path(os.path.join(tdir, f"{date}_{_slugify(title)}_{suffix}.md"), tid)
     frontmatter_io.write(out_path, fm, templates.trace_body(context, solution))
     return out_path

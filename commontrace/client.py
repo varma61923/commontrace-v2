@@ -48,7 +48,7 @@ class MemoryClient:
                                          "memory_type": memory_type})
         from commontrace import memory_authority
 
-        with memory_authority.writer(self.agent_id or "local", "agent" if self.agent_id else "operator"):
+        with memory_authority.restricted_writer(self.agent_id or "local", "agent" if self.agent_id else "operator"):
             return additive_extract.extract(self.root, text, local=local, complete=complete,
                                              scopes=self.context, memory_type=memory_type,
                                              entity_model=entity_model, entity_model_path=entity_model_path)
@@ -81,7 +81,7 @@ class MemoryClient:
             return self._request("batch", {"items": items, "context": self.context})
         from commontrace import ingestion_contract, memory_authority
 
-        with memory_authority.writer(self.agent_id or "local", "agent" if self.agent_id else "operator"):
+        with memory_authority.restricted_writer(self.agent_id or "local", "agent" if self.agent_id else "operator"):
             return ingestion_contract.batch(self.root, items, context=self.context)
 
     def propose(self, text: str, *, sources: list[str]) -> dict:
@@ -98,7 +98,7 @@ class MemoryClient:
                                              "action_class": action_class})
         result = memory_control.reflect(self.root, query, context=self.context, budget=budget,
                                         occasion_id=occasion_id, exploration_slots=exploration_slots,
-                                        action_class=action_class)
+                                        action_class=action_class, record_receipt=False)
         if self.agent_id:
             import hashlib
 
@@ -137,27 +137,39 @@ class MemoryClient:
                     result["context"] += "\n" + text
                     result["tokens_estimate"] = (len(result["context"].encode()) + 3) // 4
                 kept = {r["id"] for r in measured.items}
-                shared.append({"evidence": measured.items, "namespace": namespace,
+                shared.append({"evidence": measured.items, "directives": [{"id": namespace+r["id"],
+                    "text": r["text"], "layer": "directive"} for r in rules], "namespace": namespace,
                                "withheld": [r["id"] for r in candidates if r["id"] not in kept],
                                "occasion_id": result["occasion_id"]})
             result["shared"] = shared
+        from commontrace import assurance
+
+        combined = [*result["evidence"]]
+        for shared in result.get("shared", []):
+            combined.extend(shared["evidence"])
+            combined.extend(shared["directives"])
+        result["authority_sources"] = sorted(set(result["authority_sources"]+[r["id"] for r in combined]))
+        rules = [{"id": rid, "text": "mandatory directive", "layer": "directive"}
+                 for rid in result["authority_sources"] if rid not in {r["id"] for r in combined}]
+        assurance.record_recall(self.root, result["occasion_id"], [*combined, *rules], result["context"], self.context)
         return result
 
     def outcome(self, occasion_id: str, succeeded: bool) -> bool:
         occasion_id = self._occasion(occasion_id)
         if self.url:
             return self._request("outcome", {"occasion_id": occasion_id, "succeeded": succeeded})["recorded"]
-        from commontrace import causal_policy, holdout_io
+        from commontrace import causal_policy, holdout_io, policy
 
         if not isinstance(succeeded, bool):
             raise ValueError("succeeded must be boolean")
+        policy.outcome(self.root, occasion_id, float(succeeded))
         exploration = causal_policy.record_outcome(self.root, occasion_id, float(succeeded))
         return holdout_io.record_outcome(self.root, occasion_id, succeeded) or exploration
 
     def check_action(self, tool: str, *, tags: list[str] | None = None) -> None:
         if self.url:
             result = self._request("check-action", {"tool": tool, "tags": tags or [], "context": self.context})
-            if not result["allowed"]:
+            if result.get("allowed") is not True:
                 raise PermissionError("action blocked by a directive")
         else:
             memory_control.check_action(self.root, tool, tags=tags, context=self.context)
@@ -168,7 +180,8 @@ class MemoryClient:
                     memory_control.check_action(shared_root, tool, tags=tags, context=self.context)
 
 
-def wrap(completion: Callable, *, root: str = ".", budget: int = 600, agent_id: str = "") -> Callable:
+def wrap(completion: Callable, *, root: str = ".", budget: int = 600, agent_id: str = "",
+         prices: dict | None = None) -> Callable:
     """Wrap an OpenAI-style completion callable; capture only user assertions."""
     memory = MemoryClient(root, agent_id=agent_id)
 
@@ -181,7 +194,14 @@ def wrap(completion: Callable, *, root: str = ".", budget: int = 600, agent_id: 
         augmented = [dict(m) for m in messages]
         if recalled["context"]:
             augmented.append({"role": "user", "content": context})
+        import time
+
+        from commontrace import assurance
+
+        started = time.monotonic()
         response = completion(*args, messages=augmented, **kwargs)
+        assurance.usage(root, recalled["occasion_id"], response, seconds=time.monotonic()-started,
+                        provider="openai-compatible", prices=prices)
         if query:
             from commontrace import trace_io
 
@@ -192,9 +212,10 @@ def wrap(completion: Callable, *, root: str = ".", budget: int = 600, agent_id: 
             if answer:
                 from commontrace import memory_authority
 
-                with memory_authority.writer(agent_id or "completion", "agent"):
+                with memory_authority.restricted_writer(agent_id or "completion", "agent"):
                     trace_io.write_new(root, title=query[:200], context=query, solution=answer,
                                        tags=["completion"], extra={"scopes": memory.context,
+                                       "source_traces": recalled["authority_sources"],
                                        "extensions": {"profile": {"occasion_id": recalled["occasion_id"]}}})
         return response
     return remembered

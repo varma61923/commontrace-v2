@@ -25,7 +25,7 @@ def wrap_litellm(completion=None, **options):
     return wrap_openai(completion, **options)
 
 
-def wrap_anthropic(client, *, root=".", budget=600, agent_id=""):
+def wrap_anthropic(client, *, root=".", budget=600, agent_id="", prices=None):
     completion = client if callable(client) else client.messages.create
     memory = MemoryClient(root, agent_id=agent_id)
 
@@ -47,16 +47,24 @@ def wrap_anthropic(client, *, root=".", budget=600, agent_id=""):
                     augmented[-1]["content"] = [*content, {"type": "text", "text": text}]
             else:
                 augmented.append({"role": "user", "content": text})
+        import time
+
+        from commontrace import assurance
+
+        started = time.monotonic()
         response = completion(*args, messages=augmented, **kwargs)
+        assurance.usage(root, recalled["occasion_id"], response, seconds=time.monotonic()-started,
+                        provider="anthropic", prices=prices)
         blocks = response.get("content", []) if isinstance(response, dict) else getattr(response, "content", [])
         answer = "\n".join((b.get("text", "") if isinstance(b, dict) else getattr(b, "text", ""))
                            for b in blocks)
         if query and answer:
             from commontrace import memory_authority, trace_io
 
-            with memory_authority.writer(agent_id or "completion", "agent"):
+            with memory_authority.restricted_writer(agent_id or "completion", "agent"):
                 trace_io.write_new(root, title=query[:200], context=query, solution=answer,
                                    tags=["completion"], extra={"scopes": memory.context,
+                                   "source_traces": recalled["authority_sources"],
                                    "extensions": {"profile": {"occasion_id": recalled["occasion_id"]}}})
         return response
     return complete

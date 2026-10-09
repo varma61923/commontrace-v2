@@ -20,7 +20,8 @@ from commontrace.async_workers import STORE_WORKERS
 from commontrace.conversation import AsyncStore, Options, Store, recall
 from commontrace.conversation.store import SESSION_RE, db_path
 
-Framework = Literal["langchain", "langgraph", "autogen", "crewai", "llamaindex", "native"]
+Framework = Literal["langchain", "langgraph", "autogen", "ag2", "crewai", "llamaindex",
+                    "google-adk", "strands", "native"]
 MAX_TOOL_TEXT = 20_000
 
 
@@ -176,4 +177,24 @@ class MemoryTools:
             sdk = _sdk("llama_index.core.tools", "llama-index-core")
             return [sdk.FunctionTool.from_defaults(fn=tool.function, async_fn=tool.coroutine,
                                                   name=tool.name, description=tool.description) for tool in native]
+        if framework == "google-adk":
+            sdk = _sdk("google.adk.tools", "google-adk")
+            return [sdk.FunctionTool(tool.function) for tool in native]
+        if framework == "strands":
+            sdk = _sdk("strands", "strands-agents")
+            return [sdk.tool(tool.function) for tool in native]
+        if framework == "ag2":
+            sdk = _sdk("ag2", "ag2>=1")
+            return [sdk.tool(tool.coroutine, name=tool.name, description=tool.description,
+                             schema=tool.parameters) for tool in native]
         raise ValueError(f"unknown framework {framework!r}")
+
+    def register_ag2(self, caller: Any, executor: Any) -> list[str]:
+        """Register owner-bound memory tools through AG2's public registration API."""
+        sdk = _sdk("autogen", "ag2<1")
+        names = []
+        for tool in self.native_tools():
+            sdk.register_function(tool.function, caller=caller, executor=executor,
+                                  name=tool.name, description=tool.description)
+            names.append(tool.name)
+        return names

@@ -112,7 +112,7 @@ def active(root: str, *, context: list[str] | None = None, action_class: str = "
         record = memory_authority.trace_record(trace)
         receipt = trace.get("extensions", {}).get("profile", {}).get("origin", {})
         if (memory_control.matches(trace.get("scopes", []), context or [])
-                and not not ttl.trace_is_live(trace)
+                and ttl.trace_is_live(trace)
                 and memory_authority.permits_record(root, receipt, record, action_class=action_class)):
             live[str(trace["id"])] = hashlib.sha256(origin._bytes(record)).hexdigest()
     levels = {r["memory_id"]: r for r in _jsonl.read_rows(
