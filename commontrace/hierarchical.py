@@ -63,6 +63,9 @@ class AtomicFact:
     evidence_revision: str = ""
     memory_type: str = "general"
     origin: dict = field(default_factory=dict)
+    # Transaction time this fact stopped being the store's current belief (superseded,
+    # invalidated, deleted or retired). None while current. See list_facts(known_at=).
+    retracted_at: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -142,6 +145,7 @@ def _coerce_fact(data: dict[str, Any]) -> AtomicFact:
         "stability": data.get("stability") if data.get("stability") in STABILITY_VALUES else "",
         "memory_type": str(data.get("memory_type") or "general"),
         "origin": data.get("origin") if isinstance(data.get("origin"), dict) else {},
+        "retracted_at": str(data["retracted_at"]) if data.get("retracted_at") else None,
     }
     raw_evidence = data.get("evidence", [])
     if not isinstance(raw_evidence, list) or len(raw_evidence) > MAX_EVIDENCE:
@@ -362,6 +366,8 @@ class _StatementIndex:
         self.by_norm: dict[str, list[str]] = {}
         self.postings: dict[tuple, set[str]] = {}
         self.content: dict[str, frozenset] = {}
+        # (slot key, negated) -> numbers -> fact ids: contradiction candidates by lookup.
+        self.slots: dict[tuple, dict[tuple, list[str]]] = {}
         for fact in facts.values():
             self.add(fact)
 
@@ -375,6 +381,10 @@ class _StatementIndex:
         block = (numbers, negations)
         for word in content:
             self.postings.setdefault((block, word), set()).add(fact.id)
+        from commontrace.fact_conflicts import slot_key
+
+        bucket = self.slots.setdefault((slot_key(fact.statement), bool(negations)), {})
+        bucket.setdefault(numbers, []).append(fact.id)
 
     def exact(self, statement: str, scopes: list[str]) -> AtomicFact | None:
         requested = frozenset(scopes)
@@ -433,6 +443,82 @@ def _semantic_duplicate(root: str | None, facts: dict[str, AtomicFact], statemen
     return found[0][0] if found else None
 
 
+MAX_VALUE_VARIANTS = 2
+
+
+def _detect_conflicts(facts: dict[str, AtomicFact], index: _StatementIndex, fact: AtomicFact,
+                      root: str | None, sink: list, *, may_supersede: bool, later=frozenset()) -> None:
+    """Contradictions between a newly added fact and active facts in identical scope (see fact_conflicts).
+
+    Candidates come from the index by lookup: the same slot with the opposite
+    negation and the same numbers (``negation``), or the same slot and negation
+    with different numbers (``value``), the latter only when the slot holds at
+    most MAX_VALUE_VARIANTS other number variants: a template repeated across
+    many numbers ("customer 5 ...", "customer 6 ...") is identifiers, not a change.
+    `later` holds ids written after `fact` in the same batch: a fact is only
+    ever compared with what came before it.
+    """
+    from commontrace import fact_conflicts
+
+    mode = fact_conflicts.mode()
+    if mode == "off":
+        return
+    _words, numbers, negations = _signature(fact.statement)
+    slot = fact_conflicts.slot_key(fact.statement)
+    if len(slot) < 2:
+        return
+
+    def live(ids) -> list[AtomicFact]:
+        return [facts[i] for i in ids if i != fact.id and i not in later and i in facts and facts[i].status == "active"
+                and not facts[i].forgotten and facts[i].scopes == fact.scopes]
+
+    found: dict[str, tuple[AtomicFact, str]] = {}
+    for older in live(index.slots.get((slot, not negations), {}).get(numbers, ())):
+        found[older.id] = (older, "negation")
+    same = index.slots.get((slot, bool(negations)), {})
+    variants = [n for n in same if n != numbers]
+    if numbers and 1 <= len(variants) <= MAX_VALUE_VARIANTS:
+        for n in variants:
+            # One attribute changed: same arity, exactly one number different.
+            if len(n) == len(numbers) and sum(a != b for a, b in zip(n, numbers)) == 1:
+                for older in live(same[n]):
+                    found.setdefault(older.id, (older, "value"))
+    if os.environ.get("COMMONTRACE_FACT_CONFLICT_JUDGE", "").strip().lower() == "llm":
+        pool = [f for f, _k in found.values()]
+        if root:
+            from commontrace import fact_embeddings
+
+            near = fact_embeddings.similar(fact.statement, [
+                f for f in facts.values() if f.id != fact.id and f.id not in later and f.status == "active"
+                and not f.forgotten
+                and f.scopes == fact.scopes], root=root, threshold=0.8) or []
+            pool += [f for f, _cos in near[:5] if f not in pool]
+        for fid in fact_conflicts.judge(fact.statement, pool):
+            found[fid] = (facts[fid], "judged")
+    now = _now()
+    for fid, (older, kind) in sorted(found.items()):
+        action = "flagged"
+        if may_supersede and mode == "supersede" and kind in ("negation", "judged"):
+            try:
+                _supersede_locked(facts, older.id, fact.id, contradiction=True)
+                action = "superseded"
+            except ValueError as exc:  # the temporal guard refused: different windows
+                sink.append(fact_conflicts.Conflict(older.id, fact.id, kind, older.statement, fact.statement,
+                                                    now, "flagged", str(exc)))
+                continue
+        sink.append(fact_conflicts.Conflict(older.id, fact.id, kind, older.statement, fact.statement, now, action))
+
+
+def _batch_conflicts(facts: dict[str, AtomicFact], index: _StatementIndex, added: list[AtomicFact],
+                     root: str | None, sink: list, *, may_supersede: bool) -> None:
+    """Conflict detection once a batch is indexed, so the value-variant cap sees the whole batch."""
+    ids = [f.id for f in added]
+    for position, fact in enumerate(added):
+        if facts[fact.id].status == "active":
+            _detect_conflicts(facts, index, fact, root, sink, may_supersede=may_supersede,
+                              later=frozenset(ids[position + 1:]))
+
+
 def _add_locked(
     facts: dict[str, AtomicFact],
     statement: str,
@@ -451,6 +537,7 @@ def _add_locked(
     index: _StatementIndex | None = None,
     dedupe: str = "exact",
     root: str | None = None,
+    conflicts: list | None = None,
 ) -> tuple[AtomicFact, str]:
     index = index if index is not None else _StatementIndex(facts)
     existing = index.exact(statement, scopes)
@@ -523,6 +610,8 @@ def _add_locked(
     fact.revision = _compute_revision(fact.to_dict())
     facts[fact.id] = fact
     index.add(fact)
+    if conflicts is not None:
+        _detect_conflicts(facts, index, fact, root, conflicts, may_supersede=True)
     return fact, "ADD"
 
 
@@ -565,6 +654,7 @@ def add_fact(
     statement, category, valid_from, valid_until, expires_at = prepare_fact(
         statement, category, valid_from, valid_until, expires_at)
     _validate_evidence_policy(min_support)
+    found: list = []
     with mutate_facts(root) as facts:
         clean_scopes = _clean_scopes(scopes)
         if evidence is not None:
@@ -576,10 +666,20 @@ def add_fact(
         fact, action = _add_locked(
             facts, statement, category, clean_scopes, valid_from, valid_until,
             expires_at, confidence, source_trace_id, _normalize_stability(stability), created_at,
-            evidence, min_support, dedupe=dedup_mode(), root=root,
+            evidence, min_support, dedupe=dedup_mode(), root=root, conflicts=found,
         )
+    _after_conflicts(root, found)
     _link_entities_best_effort(root, [(fact.id, fact.statement)])
     return fact, action
+
+
+def _after_conflicts(root: str, found: list) -> None:
+    from commontrace import fact_conflicts
+
+    fact_conflicts.record(root, found)
+    superseded = [c.older for c in found if c.action == "superseded"]
+    for fact_id in superseded:
+        _unlink_entities_best_effort(root, fact_id)
 
 
 def _validate_evidence_policy(min_support: int) -> None:
@@ -602,6 +702,7 @@ def add_facts(root: str, items: list[dict[str, Any]]) -> list[tuple[AtomicFact, 
     if not prepared:
         return []
     mode = dedup_mode()
+    found: list = []
     with mutate_facts(root) as facts:
         index = _StatementIndex(facts)
         results = []
@@ -617,6 +718,9 @@ def add_facts(root: str, items: list[dict[str, Any]]) -> list[tuple[AtomicFact, 
                 EvidenceResolver(root, facts).validate_receipts(receipts, existing.scopes if existing else sc)
             results.append(_add_locked(facts, s, c, sc, vf, vu, ea, conf, src, stab, created, receipts, minimum,
                                        index=index, dedupe=mode, root=root))
+        _batch_conflicts(facts, index, [f for f, action in results if action == "ADD"], root, found,
+                         may_supersede=True)
+    _after_conflicts(root, found)
     _link_entities_best_effort(root, [(fact.id, fact.statement) for fact, _ in results])
     return results
 
@@ -664,6 +768,7 @@ def append_facts(root: str, items: list[dict[str, Any]]) -> list[tuple[AtomicFac
                          confidence, str(item.get("source_trace_id", "")), item.get("stability", ""), memory_type))
     results = []
     mode = dedup_mode()
+    found: list = []
     with mutate_facts(root) as facts:
         index = _StatementIndex(facts)
         for statement, category, labels, start, end, expiry, confidence, source, stability, memory_type in prepared:
@@ -693,6 +798,10 @@ def append_facts(root: str, items: list[dict[str, Any]]) -> list[tuple[AtomicFac
             facts[fact.id] = fact
             index.add(fact)
             results.append((fact, action))
+        # ADD-only admission never edits an existing fact: contradictions are flagged for review.
+        _batch_conflicts(facts, index, [f for f, action in results if action == "ADD"], root, found,
+                         may_supersede=False)
+    _after_conflicts(root, found)
     _link_entities_best_effort(root, [(fact.id, fact.statement) for fact, action in results if action == "ADD"])
     return results
 
@@ -818,6 +927,7 @@ def _supersede_locked(
     old_fact.status = "superseded"
     old_fact.valid_until = when
     old_fact.superseded_by = new_fact.id
+    old_fact.retracted_at = _now()
     _stamp(old_fact)
     return old_fact, new_fact
 
@@ -954,6 +1064,7 @@ def invalidate_fact(root: str, fact_id: str, at: str | None = None) -> AtomicFac
         ended = lesson_cache.parse_moment(end) <= datetime.now(timezone.utc)
         if ended:
             fact.status = "invalidated"
+            fact.retracted_at = _now()
         _stamp(fact)
     if ended:
         _unlink_entities_best_effort(root, fact_id)
@@ -971,6 +1082,7 @@ def delete_fact(root: str, fact_id: str) -> bool:
             return True
         fact.status = "deleted"
         fact.valid_until = _now()
+        fact.retracted_at = fact.valid_until
         _stamp(fact)
     _unlink_entities_best_effort(root, fact_id)
     return True
@@ -991,6 +1103,7 @@ def retire_source(root: str, source_id: str, keep: set[str]) -> int:
             if not fact.source_traces:
                 fact.status = "deleted"
                 fact.valid_until = now_iso
+                fact.retracted_at = now_iso
                 ended += 1
                 ended_ids.append(fact.id)
             _stamp(fact)
@@ -1019,6 +1132,26 @@ def _valid_at(fact: AtomicFact, moment: datetime) -> bool:
     return True
 
 
+def _known_at(fact: AtomicFact, moment: datetime) -> bool:
+    """Whether the store held `fact` as a current belief at transaction time *moment*.
+
+    Recorded (``created_at``) by then and not yet retracted. Rows written before
+    ``retracted_at`` existed fall back to ``updated_at`` for a non-active status,
+    which can only make the window shorter, never invent a belief.
+    """
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    try:
+        recorded = lesson_cache.parse_moment(fact.created_at) if fact.created_at else None
+        retracted = fact.retracted_at or (fact.updated_at if fact.status != "active" else None)
+        retracted_at = lesson_cache.parse_moment(retracted) if retracted else None
+    except ValueError:
+        return False
+    if recorded is not None and recorded > moment:
+        return False
+    return retracted_at is None or retracted_at > moment
+
+
 def _is_expired(fact: AtomicFact, moment: datetime) -> bool:
     """True when the fact's TTL has passed at *moment* (mem0 hide-expired semantics)."""
     if not fact.expires_at:
@@ -1044,8 +1177,14 @@ def list_facts(
     show_expired: bool = False,
     now: datetime | None = None,
     stability: str = "",
+    known_at: str | None = None,
 ) -> list[AtomicFact]:
     """Facts matching the filters; with `as_of`, the facts valid at that moment.
+
+    `known_at` is transaction time: the facts the store believed at that moment,
+    whatever happened to them later. Together with `as_of` this answers "what
+    did we think, on Monday, was true in March?". Like `as_of`, it ignores the
+    current status filter.
 
     Expired facts (TTL passed) are hidden unless `show_expired` — the read
     half of the expiry contract `add --expires-at` writes.
@@ -1056,6 +1195,7 @@ def list_facts(
     if stability and stability not in STABILITY_TIERS:
         raise ValueError(f"unknown stability tier {stability!r} (expected 'stable' or 'dynamic')")
     moment = lesson_cache.parse_moment(as_of) if as_of else None
+    known = lesson_cache.parse_moment(known_at) if known_at else None
     reference = now or datetime.now(timezone.utc)
     if reference.tzinfo is None:
         reference = reference.replace(tzinfo=timezone.utc)
@@ -1073,7 +1213,9 @@ def list_facts(
             continue
         if stability and fact.stability != stability:
             continue
-        if moment is None and status and fact.status != status:
+        if moment is None and known is None and status and fact.status != status:
+            continue
+        if known is not None and not _known_at(fact, known):
             continue
         if category and fact.category != category:
             continue
@@ -1124,6 +1266,7 @@ def search_facts(
     stability: str = "",
     *,
     scorer: str = "overlap-v1",
+    known_at: str | None = None,
 ) -> list[tuple[AtomicFact, float]]:
     """Fresh governed sparse retrieval; overlap-v1 preserves legacy ranking.
 
@@ -1133,9 +1276,17 @@ def search_facts(
     """
     from commontrace.fact_index import search
 
-    return search(root, query, scope=scope, category=category, as_of=as_of, limit=limit,
-                  include_forgotten=include_forgotten, show_expired=show_expired,
-                  stability=stability, scorer=scorer)
+    if known_at is None:
+        return search(root, query, scope=scope, category=category, as_of=as_of, limit=limit,
+                      include_forgotten=include_forgotten, show_expired=show_expired,
+                      stability=stability, scorer=scorer)
+    # Transaction time: rank only what the store believed then, with the same scorer.
+    believed = {f.id for f in list_facts(root, scope=scope, category=category, as_of=as_of, known_at=known_at,
+                                         include_forgotten=include_forgotten, show_expired=show_expired,
+                                         stability=stability)}
+    ranked = search(root, query, scope=scope, category=category, as_of=as_of or known_at, limit=1000,
+                    include_forgotten=include_forgotten, show_expired=True, stability=stability, scorer=scorer)
+    return [(f, score) for f, score in ranked if f.id in believed][:limit]
 
 
 @dataclass(frozen=True)

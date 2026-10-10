@@ -26,7 +26,9 @@ Dynamic provider prefixes and test-only variables are described in the relevant 
 | `COMMONTRACE_DEFAULT_RERANK` | [commontrace/retrieval_io.py:30](../commontrace/retrieval_io.py#L30) |
 | `COMMONTRACE_EMBED_API_KEY` | [commontrace/embeddings.py:14](../commontrace/embeddings.py#L14) |
 | `COMMONTRACE_EMBED_BASE_URL` | [commontrace/embeddings.py:14](../commontrace/embeddings.py#L14) |
-| `COMMONTRACE_FACT_DEDUP` | [commontrace/hierarchical.py:307](../commontrace/hierarchical.py#L307) |
+| `COMMONTRACE_FACT_CONFLICTS` | [commontrace/fact_conflicts.py:17](../commontrace/fact_conflicts.py#L17) |
+| `COMMONTRACE_FACT_CONFLICT_JUDGE` | [commontrace/fact_conflicts.py:12](../commontrace/fact_conflicts.py#L12) |
+| `COMMONTRACE_FACT_DEDUP` | [commontrace/hierarchical.py:311](../commontrace/hierarchical.py#L311) |
 | `COMMONTRACE_FACT_EMBEDDER` | [commontrace/fact_embeddings.py:5](../commontrace/fact_embeddings.py#L5) |
 | `COMMONTRACE_FACT_EMBEDDER_PATH` | [commontrace/fact_embeddings.py:6](../commontrace/fact_embeddings.py#L6) |
 | `COMMONTRACE_GEMINI_API_KEY` | [commontrace/embeddings.py:195](../commontrace/embeddings.py#L195) |
