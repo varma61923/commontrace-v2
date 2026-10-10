@@ -1,0 +1,18 @@
+{
+  "extension": "memory-record-v1",
+  "valid": [
+    {"id": "fact-a", "kind": "fact", "version": 1, "payload": {"statement": "Python is required"}},
+    {"id": "lesson-a", "kind": "lesson", "version": 2, "payload": {}, "status": "quarantined", "relations": {"updates": ["lesson-a"]}, "scope": {"tenant": "team", "repo": "project"}},
+    {"id": "episode-a", "kind": "episode", "version": 1, "payload": {}, "confidence": 0}
+  ],
+  "invalid": [
+    {"id": "", "kind": "fact", "version": 1, "payload": {}},
+    {"id": "a", "kind": "unknown", "version": 1, "payload": {}},
+    {"id": "a", "kind": "fact", "version": 0, "payload": {}},
+    {"id": "a", "kind": "fact", "version": true, "payload": {}},
+    {"id": "a", "kind": "fact", "version": 1, "payload": {}, "confidence": 2},
+    {"id": "a", "kind": "fact", "version": 1, "payload": {}, "relations": {"unknown": ["b"]}},
+    {"id": "a", "kind": "fact", "version": 1, "payload": {}, "relations": {"updates": [3]}},
+    {"id": "a", "kind": "fact", "version": 1, "payload": {}, "scope": {"undeclared": "team"}}
+  ]
+}

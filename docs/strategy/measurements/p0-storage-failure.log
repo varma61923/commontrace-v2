@@ -1,0 +1,29 @@
+SQLite seeding: 0/1000
+SQLite 1000 {"facts_before_trials": 1000, "single_write_p50_ms": 0.7578959999818835, "single_write_p95_ms": 1.0497900000245863, "sparse_overlap_search_p50_ms": 0.14302199997473508, "sparse_overlap_search_p95_ms": 0.21900600006574678, "batch_size": 1000, "batch_facts_per_second": 3680.512061104389, "batch_elapsed_seconds": 0.2717013239999915, "seed_elapsed_seconds": 0.28167995000001156}
+JSONL 1000 {"facts_before_trials": 1000, "single_write_p50_ms": 40.540670000041246, "single_write_p95_ms": 47.12769900004332, "sparse_overlap_search_p50_ms": 0.08040900002015405, "sparse_overlap_search_p95_ms": 0.16327200000887387, "batch_size": 1000, "batch_facts_per_second": 4343.744930850882, "batch_elapsed_seconds": 0.23021609599993553}
+SQLite 10000 {"facts_before_trials": 10000, "single_write_p50_ms": 0.7829200000060155, "single_write_p95_ms": 1.6282930000670603, "sparse_overlap_search_p50_ms": 0.12948199992024456, "sparse_overlap_search_p95_ms": 0.21433799997794267, "batch_size": 1000, "batch_facts_per_second": 3786.806447488109, "batch_elapsed_seconds": 0.2640747589999819, "seed_elapsed_seconds": 2.089879334999978}
+JSONL 10000 {"facts_before_trials": 10000, "single_write_p50_ms": 588.1440339999244, "single_write_p95_ms": 684.3766230000483, "sparse_overlap_search_p50_ms": 0.0799389999883715, "sparse_overlap_search_p95_ms": 0.15535099998942314, "batch_size": 1000, "batch_facts_per_second": 936.6651465496791, "batch_elapsed_seconds": 1.0676173909999989}
+SQLite 30000 {"facts_before_trials": 30000, "single_write_p50_ms": 0.8466360000056738, "single_write_p95_ms": 1.981210999929317, "sparse_overlap_search_p50_ms": 0.12620699999388307, "sparse_overlap_search_p95_ms": 0.24784799995813955, "batch_size": 1000, "batch_facts_per_second": 3447.6118163685364, "batch_elapsed_seconds": 0.2900558569999703, "seed_elapsed_seconds": 5.446845943999961}
+JSONL 30000 {"facts_before_trials": 30000, "single_write_p50_ms": 4108.199296999942, "single_write_p95_ms": 5906.582967999952, "sparse_overlap_search_p50_ms": 0.08622799998647679, "sparse_overlap_search_p95_ms": 0.23291600007269153, "batch_size": 1000, "batch_facts_per_second": 140.1274208428825, "batch_elapsed_seconds": 7.136361990999944}
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/workspace/repos/commontrace-v2/benchmarks/next_generation_storage.py", line 144, in <module>
+    if __name__ == "__main__":
+                         ^^^^^^
+  File "/workspace/repos/commontrace-v2/benchmarks/next_generation_storage.py", line 108, in main
+    for offset in range(cursor, size, 1000):
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/repos/commontrace-v2/commontrace/hierarchical.py", line 726, in add_facts
+    return []
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py", line 144, in __exit__
+    next(self.gen)
+  File "/workspace/repos/commontrace-v2/commontrace/hierarchical.py", line 302, in mutate_facts
+    from commontrace import fact_store
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py", line 144, in __exit__
+    next(self.gen)
+  File "/workspace/repos/commontrace-v2/commontrace/fact_store.py", line 226, in transaction
+    connection.rollback()
+    ^^^^^^^^^^^^^^^^^^^
+sqlite3.OperationalError: database or disk is full

@@ -67,3 +67,9 @@ sdk/rust/target/
 sdk/jvm/target/
 sdk/generated/
 coverage.xml
+
+# Machine-local migrated fact stores and transient SQLite journals
+facts.sqlite3
+facts.sqlite3-wal
+facts.sqlite3-shm
+facts.sqlite3.migrating*

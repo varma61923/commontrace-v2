@@ -344,3 +344,42 @@ schedule's `salt`. An assignment made at time `at` is governed by the last sched
 exists. Every assignment records the rate it was compared against. How the next schedule's rates are chosen,
 and how effects are estimated once rates vary (inverse-propensity weighting is what the reference does), are
 not part of conformance.
+
+## 14. Optional versioned memory envelope
+
+`schemas/memory-record.schema.json` defines an additive storage envelope for
+`episode`, `fact`, `entity`, `observation`, `profile`, `lesson` and `directive`
+payloads. Existing Trace and Lesson schemas and the section 13 conformance
+operations remain unchanged. Support for this extension is optional and is not
+implied by passing the v1 causal conformance suite.
+
+An envelope identifies a record by `id`, `kind` and a positive integer `version`.
+Each committed mutation increments the version for that id. `payload` preserves
+the kind's existing wire representation. `relations` carries id references under
+`updates`, `extends`, `derives`, `supersedes` or `caused_by`. An update to the same
+id references that id; its preceding version is the lower committed version.
+`scope` can carry tenant, user, agent, session, repo and legacy routing labels;
+this envelope alone does not grant authorization. The fact implementation keeps
+its existing scope and evidence admission rules.
+
+`valid_from`/`valid_until` are valid time; `created_at`/`retracted_at` are recorded
+time. `is_latest` is evaluated against the committed history. Historical event
+payloads are immutable; an envelope written with `is_latest: true` describes the
+state at that event, not a promise that it stays current forever. A current read
+must exclude non-latest, forgotten, expired and inadmissible records unless an
+explicit historical/governance operation allows them. Status remains an open
+vocabulary to preserve legacy states (`invalidated`, `deleted`, `superseded`).
+Proposed, quarantined, shadow, active, deprecated and retired states can be
+represented without changing the envelope.
+
+Local fact storage can opt into an append-only transactional event ledger.
+Materialized facts, dedup postings, contradiction slots and search indexes must
+commit atomically with the event or be rebuildable solely from committed events.
+Replay of an unchanged fact must not append an extra version. Migration must
+preserve the old source and publish a checksum of normalized source and target
+facts; a malformed or duplicate-id source row must abort activation.
+
+Extension vectors are in `conformance/memory-record-vectors.json` and exercised
+by `tests/test_memory_record.py`, independently of the v1 vector set. This phase
+implements fact envelopes; it does not claim migration of other memory kinds,
+automatic lesson activation or a new hosted API.

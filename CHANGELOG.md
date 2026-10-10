@@ -13,6 +13,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Opt-in incremental local fact storage (P0, partial).** `fact migrate` activates
+  SQLite WAL, an append-only transactional event ledger and rebuildable statement,
+  contradiction, lexical and FTS5 projections, preserving the original JSONL
+  with a checksum report. `fact export` and `fact rebuild` support portability
+  and recovery. Versioned fact event envelopes are an additive protocol extension;
+  existing evidence, temporal and scope checks remain enforced. Synthetic 30K
+  single-write p95 measured 1.98 ms (JSONL 5,906.58 ms); the 1M run exhausted disk,
+  so the specified million-fact and hybrid gates are unverified. P1–P4 were not
+  started. See `docs/strategy/next-generation-evidence.md` for reproduction and
+  limits.
+- **Terminal fact lineage.** Same-instant contradiction resolutions retain their
+  empty terminal validity interval on reload; such historical records remain
+  ineligible at every valid-time instant.
+
+
 - **Multi-provider embeddings.** `[provider:]model[@dims]` tags for local, OpenAI, Gemini, Voyage, Cohere, Ollama and OpenAI-compatible endpoints, with query/document modes and a content-hash vector cache; usable for conversations (`--embedder`), facts (`COMMONTRACE_FACT_EMBEDDER`) and ingest (`COMMONTRACE_INGEST_EMBEDDER`).
 - **Fact deduplication and contradictions.** Paraphrases reinforce instead of adding (`COMMONTRACE_FACT_DEDUP=exact|near|semantic`); new facts are checked for negation and single-value contradictions and flagged or superseded (`COMMONTRACE_FACT_CONFLICTS=off|flag|supersede`, optional LLM judge). Facts record `retracted_at`; `list_facts`/`search_facts` accept `known_at`.
 - **Hybrid facts in recall.** With a fact embedder, multi-channel recall fuses dense and lexical fact rankings.

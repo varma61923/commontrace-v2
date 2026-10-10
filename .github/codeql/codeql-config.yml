@@ -1,0 +1,9 @@
+name: CommonTrace security analysis
+# Review context for the next-generation brief's two reported false positives:
+# hub/auth.py::_key_hmac uses HMAC-SHA256 with a secret pepper to index
+# high-entropy generated API keys. Human-chosen/legacy secrets retain Argon2.
+# commontrace/ui/app.js::refresh gates UI rendering only. The gateway's
+# authenticated routing is the authorization boundary; browser state is not.
+# These comments do not suppress either query or dismiss an alert. Actual
+# dismissal requires inspecting GitHub's alert and security-events write access.
+# The current integration returned 403 for the code-scanning alerts API.

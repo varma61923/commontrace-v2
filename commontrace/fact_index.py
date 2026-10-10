@@ -624,7 +624,13 @@ class FactView(Mapping[str, 'AtomicFact']):
 
 
 def snapshot_facts(root: str) -> FactView:
+    from commontrace import fact_store
     from commontrace.hierarchical import _facts_file
+
+    if fact_store.enabled(root):
+        # The SQLite view implements the same public Mapping/ensure_current
+        # contract without materializing the corpus or retaining connections.
+        return cast(FactView, fact_store.read_view(root))
 
     path = os.path.abspath(_facts_file(root))
     for _attempt in range(MAX_RETRIES):
@@ -722,9 +728,14 @@ def _statistics(snapshot: _Snapshot, filters: _Filter, moment: datetime) -> _Sta
 def search(root: str, query: str, *, scope: str = '', category: str = '', as_of: str | None = None,
            limit: int = 10, include_forgotten: bool = False, show_expired: bool = False,
            stability: str = '', scorer: str = 'overlap-v1') -> list[tuple[AtomicFact, float]]:
+    from commontrace import fact_store
     from commontrace.fact_evidence import EvidenceResolver
     from commontrace.hierarchical import STABILITY_TIERS, _now
 
+    if fact_store.enabled(root):
+        return fact_store.search(root, query, scope=scope, category=category, as_of=as_of, limit=limit,
+                                 include_forgotten=include_forgotten, show_expired=show_expired,
+                                 stability=stability, scorer=scorer)
     selected = _scorer(scorer)
     if stability and stability not in STABILITY_TIERS:
         raise ValueError(f'unknown stability tier {stability!r}')

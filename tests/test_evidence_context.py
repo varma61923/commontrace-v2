@@ -15,8 +15,11 @@ from commontrace.evidence_context import explain_fact
 from commontrace.fact_evidence import EvidenceError, EvidenceResolver, FactEvidence, bind_evidence, claim_revision
 
 
-@pytest.fixture
-def root(tmp_path: Path) -> str:
+@pytest.fixture(params=["jsonl", "sqlite"])
+def root(tmp_path: Path, request) -> str:
+    if request.param == "sqlite":
+        from commontrace import fact_store
+        fact_store.migrate(str(tmp_path))
     return str(tmp_path)
 
 

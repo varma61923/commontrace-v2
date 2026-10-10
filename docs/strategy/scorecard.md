@@ -14,6 +14,25 @@ Details and the full audit are in [implementation-status.md](implementation-stat
 | **F.** 0% attack success on poisoning suites at >= 95% clean utility | Met (on PoisonBench) | 0% across nine attacks with an authority policy, 100% clean utility; without one, all six origin attacks succeed | `python -m benchmarks.poisonbench --variants 5` |
 | **G.** `pip install` / `npm i` / `docker run` to first recall in < 60 s | Not measured | Release workflow, generated SDKs and local image exist; nothing published to registries | — |
 
+
+## Next-generation P0 gates (2026-10-10)
+
+| Gate | Status | Evidence |
+| --- | --- | --- |
+| Single-write p95 <20 ms at 1M | Unverified / run failed | Disk exhausted before the 1M measurement; 30K p95 was 1.98 ms |
+| Batch >=2,000 facts/s at 1M | Unverified / run failed | 30K batch measured 3,448 facts/s; this does not meet the specified 1M gate |
+| Hybrid p95 <50 ms local / <150 ms server at 1M | Unverified | Selective overlap timings only; no new server fact engine |
+| Migration integrity | Tested | Normalized source/target checksum equality, rejected malformed/duplicate rows, preserved source, crash rollback, rebuild |
+| Restart without re-embedding | Not newly measured | Existing content-hash vector engines unchanged; fact migration makes no model calls |
+| Protocol/API compatibility | Tested | Additive envelope vectors; old causal vectors and HTTP formats retained |
+| Signed storage result manifests | Not produced | SHA256 integrity sidecar only; not an authenticated signature |
+
+**Stop before P1–P4**, per the attached brief's missed-gate rule.
+[Raw results and command](measurements/p0-storage.json),
+[failure transcript](measurements/p0-storage-failure.log),
+[phase evidence](next-generation-evidence.md).
+
+
 ## Beyond the targets
 
 | Area | Measured | Command |

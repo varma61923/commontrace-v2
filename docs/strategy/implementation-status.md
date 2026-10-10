@@ -10,6 +10,29 @@ none of those were available to measure.
 Legend: **Done** · **Done (this pass)** (added or fixed in this audit) ·
 **Partial** · **Not done** (with the reason).
 
+## Next-generation brief: P0 update (2026-10-10)
+
+**Partial; acceptance gate missed, so P1–P4 were not started.** The explicit
+`commontrace fact migrate` activates SQLite WAL with transactional event history,
+rebuildable projections and persistent exact/near/contradiction candidate lookup.
+`fact export` retains portable JSONL; `fact rebuild` reconstructs committed
+state. Versioned fact event envelopes add a protocol section, schema and separate
+conformance vectors without changing the causal v1 vectors or HTTP contracts.
+
+Measured single-write p95 at 1K/10K/30K facts: SQLite **1.05 / 1.63 / 1.98 ms**;
+JSONL **47.13 / 684.38 / 5,906.58 ms**. A 1,000-fact SQLite batch at 30K measured
+**3,448 facts/s**. The 1M run exhausted disk before measurement, so the requested
+1M write, batch and hybrid gates remain unmet/unverified. The Postgres fact tier
+and signed storage manifests are outstanding. No answer-accuracy or causal-uplift
+improvement is claimed. Full evidence, commands and limitations:
+[next-generation-evidence.md](next-generation-evidence.md),
+[next-generation-p0.md](next-generation-p0.md), and
+[measurements/p0-storage.json](measurements/p0-storage.json).
+
+All nine repositories were cloned and analyzed with Graphify. The reported
+CodeQL dismissals were blocked by GitHub HTTP 403. The following older status
+sections describe earlier work; they do not establish the new brief's gates.
+
 ## Part G: master prompt
 
 | Item | Status | Where |

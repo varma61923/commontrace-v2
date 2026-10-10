@@ -98,7 +98,10 @@ def _coerce_fact(data: dict[str, Any]) -> AtomicFact:
         valid_until = _moment(data.get("valid_until"), "valid_until")
     except ValueError:
         raise TypeError("invalid fact validity window") from None
-    _check_window(valid_from, valid_until)
+    # A same-instant replacement creates an empty historical interval. Keep
+    # this terminal record for provenance instead of dropping it on reload.
+    if valid_until != valid_from or data.get("status") not in {"superseded", "deleted", "invalidated", "retired"}:
+        _check_window(valid_from, valid_until)
     try:
         expires_at = _normalize_expires_at(data.get("expires_at"))
     except ValueError:
@@ -241,6 +244,10 @@ def _normalize_expires_at(expires_at: str | None) -> str | None:
 
 def load_facts(root: str) -> dict[str, AtomicFact]:
     """Every fact on disk, keyed by id; unreadable rows are skipped."""
+    from commontrace import fact_store
+
+    if fact_store.enabled(root):
+        return fact_store.load(root)
     facts: dict[str, AtomicFact] = {}
     for row in _jsonl.read_rows(_facts_file(root)):
         try:
@@ -259,8 +266,11 @@ def save_facts(root: str, facts: dict[str, AtomicFact]) -> None:
     reader available. Exact serialized bytes, not caller-owned mutable facts,
     bind the publication to its committed source generation.
     """
-    from commontrace import fact_index
+    from commontrace import fact_index, fact_store
 
+    if fact_store.enabled(root):
+        fact_store.replace(root, facts)
+        return
     with _jsonl.locked(_facts_file(root)):
         try:
             base = fact_index.capture_for_write(root)
@@ -289,6 +299,12 @@ def save_facts(root: str, facts: dict[str, AtomicFact]) -> None:
 @contextlib.contextmanager
 def mutate_facts(root: str) -> Iterator[dict[str, AtomicFact]]:
     """Load, lock and save the fact file around one read-modify-write."""
+    from commontrace import fact_store
+
+    if fact_store.enabled(root):
+        with fact_store.transaction(root, write=True) as facts:
+            yield facts
+        return
     path = _facts_file(root)
     with _jsonl.locked(path):
         facts = load_facts(root)
@@ -420,9 +436,15 @@ class _StatementIndex:
         return best
 
 
+def _statement_index(facts):
+    from commontrace import fact_store
+
+    return fact_store.StatementIndex(facts) if isinstance(facts, fact_store.FactMap) else _StatementIndex(facts)
+
+
 def _matching_active(facts: dict[str, AtomicFact], statement: str, scopes: list[str],
                      index: _StatementIndex | None = None) -> AtomicFact | None:
-    return (index or _StatementIndex(facts)).exact(statement, scopes)
+    return (index or _statement_index(facts)).exact(statement, scopes)
 
 
 def _semantic_duplicate(root: str | None, facts: dict[str, AtomicFact], statement: str,
@@ -539,7 +561,7 @@ def _add_locked(
     root: str | None = None,
     conflicts: list | None = None,
 ) -> tuple[AtomicFact, str]:
-    index = index if index is not None else _StatementIndex(facts)
+    index = index if index is not None else _statement_index(facts)
     existing = index.exact(statement, scopes)
     if existing is None and dedupe in ("near", "semantic") and evidence is None:
         # A paraphrase of an active fact reinforces it instead of becoming a second record.
@@ -704,7 +726,7 @@ def add_facts(root: str, items: list[dict[str, Any]]) -> list[tuple[AtomicFact, 
     mode = dedup_mode()
     found: list = []
     with mutate_facts(root) as facts:
-        index = _StatementIndex(facts)
+        index = _statement_index(facts)
         results = []
         for s, c, sc, vf, vu, ea, conf, src, stab, created, receipts, minimum in prepared:
             _validate_evidence_policy(minimum)
@@ -770,7 +792,7 @@ def append_facts(root: str, items: list[dict[str, Any]]) -> list[tuple[AtomicFac
     mode = dedup_mode()
     found: list = []
     with mutate_facts(root) as facts:
-        index = _StatementIndex(facts)
+        index = _statement_index(facts)
         for statement, category, labels, start, end, expiry, confidence, source, stability, memory_type in prepared:
             def same_record(f: AtomicFact) -> bool:
                 return (not f.forgotten and f.scopes == labels and (start is None or f.valid_from == start)
@@ -1274,8 +1296,13 @@ def search_facts(
     English stemming and Unicode/CJK tokenization. Evidence is revalidated only for candidate results
     and their dependency ancestry; proof eligibility is never cached.
     """
+    from commontrace import fact_store
     from commontrace.fact_index import search
 
+    if fact_store.enabled(root):
+        return fact_store.search(root, query, scope=scope, category=category, as_of=as_of, limit=limit,
+                                 include_forgotten=include_forgotten, show_expired=show_expired,
+                                 stability=stability, scorer=scorer, known_at=known_at)
     if known_at is None:
         return search(root, query, scope=scope, category=category, as_of=as_of, limit=limit,
                       include_forgotten=include_forgotten, show_expired=show_expired,

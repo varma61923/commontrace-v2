@@ -1,0 +1,312 @@
+{
+  "dataset": "pinned LoCoMo stratified 154-question sample",
+  "question_count": 154,
+  "baseline_commit": "dcab4fdd93f1d97cf5668f31caf764d1f7ebdb8e",
+  "embedder": "none",
+  "reranker": "none",
+  "reader": "none",
+  "judge": "none",
+  "metric_type": "retrieval; no model answer accuracy",
+  "gate_failures": {
+    "1500": [],
+    "4000": []
+  },
+  "overall": {
+    "1500": {
+      "answer_in_context": {
+        "baseline_mean": 0.5416666666666666,
+        "candidate_mean": 0.5416666666666666,
+        "ci_lower": 0.0,
+        "ci_status": "available",
+        "ci_upper": 0.0,
+        "delta": 0.0,
+        "excluded_questions": 34,
+        "n_clusters": 10,
+        "n_questions": 120,
+        "significant": false
+      },
+      "complete": {
+        "baseline_mean": 0.6973684210526315,
+        "candidate_mean": 0.6973684210526315,
+        "ci_lower": 0.0,
+        "ci_status": "available",
+        "ci_upper": 0.0,
+        "delta": 0.0,
+        "excluded_questions": 2,
+        "n_clusters": 10,
+        "n_questions": 152,
+        "significant": false
+      },
+      "completeness_score": {
+        "baseline_mean": 0.8909558441558442,
+        "candidate_mean": 0.8909558441558442,
+        "ci_lower": 0.0,
+        "ci_status": "available",
+        "ci_upper": 0.0,
+        "delta": 0.0,
+        "excluded_questions": 0,
+        "n_clusters": 10,
+        "n_questions": 154,
+        "significant": false
+      },
+      "evidence": {
+        "baseline_mean": 0.7574248120300752,
+        "candidate_mean": 0.7574248120300752,
+        "ci_lower": 0.0,
+        "ci_status": "available",
+        "ci_upper": 0.0,
+        "delta": 0.0,
+        "excluded_questions": 2,
+        "n_clusters": 10,
+        "n_questions": 152,
+        "significant": false
+      },
+      "session": {
+        "baseline_mean": 0.9255482456140351,
+        "candidate_mean": 0.9255482456140351,
+        "ci_lower": 0.0,
+        "ci_status": "available",
+        "ci_upper": 0.0,
+        "delta": 0.0,
+        "excluded_questions": 2,
+        "n_clusters": 10,
+        "n_questions": 152,
+        "significant": false
+      },
+      "session_ndcg_at_10": {
+        "baseline_mean": 0.7423208477333333,
+        "candidate_mean": 0.7423208477333333,
+        "ci_lower": 0.0,
+        "ci_status": "available",
+        "ci_upper": 0.0,
+        "delta": 0.0,
+        "excluded_questions": 2,
+        "n_clusters": 10,
+        "n_questions": 152,
+        "significant": false
+      },
+      "session_recall_at_10": {
+        "baseline_mean": 0.8864035087719297,
+        "candidate_mean": 0.8864035087719297,
+        "ci_lower": 0.0,
+        "ci_status": "available",
+        "ci_upper": 0.0,
+        "delta": 0.0,
+        "excluded_questions": 2,
+        "n_clusters": 10,
+        "n_questions": 152,
+        "significant": false
+      },
+      "session_recall_at_5": {
+        "baseline_mean": 0.8319078947368421,
+        "candidate_mean": 0.8319078947368421,
+        "ci_lower": 0.0,
+        "ci_status": "available",
+        "ci_upper": 0.0,
+        "delta": 0.0,
+        "excluded_questions": 2,
+        "n_clusters": 10,
+        "n_questions": 152,
+        "significant": false
+      },
+      "tokens": {
+        "baseline_mean": 1448.409090909091,
+        "candidate_mean": 1448.409090909091,
+        "ci_lower": 0.0,
+        "ci_status": "available",
+        "ci_upper": 0.0,
+        "delta": 0.0,
+        "excluded_questions": 0,
+        "n_clusters": 10,
+        "n_questions": 154,
+        "significant": false
+      },
+      "turn_ndcg_at_10": {
+        "baseline_mean": 0.4383791862652819,
+        "candidate_mean": 0.4383791862652819,
+        "ci_lower": 0.0,
+        "ci_status": "available",
+        "ci_upper": 0.0,
+        "delta": 0.0,
+        "excluded_questions": 2,
+        "n_clusters": 10,
+        "n_questions": 152,
+        "significant": false
+      },
+      "turn_recall_at_10": {
+        "baseline_mean": 0.5763784461152882,
+        "candidate_mean": 0.5763784461152882,
+        "ci_lower": 0.0,
+        "ci_status": "available",
+        "ci_upper": 0.0,
+        "delta": 0.0,
+        "excluded_questions": 2,
+        "n_clusters": 10,
+        "n_questions": 152,
+        "significant": false
+      },
+      "turn_recall_at_5": {
+        "baseline_mean": 0.531688596491228,
+        "candidate_mean": 0.531688596491228,
+        "ci_lower": 0.0,
+        "ci_status": "available",
+        "ci_upper": 0.0,
+        "delta": 0.0,
+        "excluded_questions": 2,
+        "n_clusters": 10,
+        "n_questions": 152,
+        "significant": false
+      }
+    },
+    "4000": {
+      "answer_in_context": {
+        "baseline_mean": 0.575,
+        "candidate_mean": 0.575,
+        "ci_lower": 0.0,
+        "ci_status": "available",
+        "ci_upper": 0.0,
+        "delta": 0.0,
+        "excluded_questions": 34,
+        "n_clusters": 10,
+        "n_questions": 120,
+        "significant": false
+      },
+      "complete": {
+        "baseline_mean": 0.8026315789473685,
+        "candidate_mean": 0.8026315789473685,
+        "ci_lower": 0.0,
+        "ci_status": "available",
+        "ci_upper": 0.0,
+        "delta": 0.0,
+        "excluded_questions": 2,
+        "n_clusters": 10,
+        "n_questions": 152,
+        "significant": false
+      },
+      "completeness_score": {
+        "baseline_mean": 0.9727272727272728,
+        "candidate_mean": 0.9727272727272728,
+        "ci_lower": 0.0,
+        "ci_status": "available",
+        "ci_upper": 0.0,
+        "delta": 0.0,
+        "excluded_questions": 0,
+        "n_clusters": 10,
+        "n_questions": 154,
+        "significant": false
+      },
+      "evidence": {
+        "baseline_mean": 0.8516760651629073,
+        "candidate_mean": 0.8516760651629073,
+        "ci_lower": 0.0,
+        "ci_status": "available",
+        "ci_upper": 0.0,
+        "delta": 0.0,
+        "excluded_questions": 2,
+        "n_clusters": 10,
+        "n_questions": 152,
+        "significant": false
+      },
+      "session": {
+        "baseline_mean": 0.9758771929824562,
+        "candidate_mean": 0.9758771929824562,
+        "ci_lower": 0.0,
+        "ci_status": "available",
+        "ci_upper": 0.0,
+        "delta": 0.0,
+        "excluded_questions": 2,
+        "n_clusters": 10,
+        "n_questions": 152,
+        "significant": false
+      },
+      "session_ndcg_at_10": {
+        "baseline_mean": 0.7423208477333333,
+        "candidate_mean": 0.7423208477333333,
+        "ci_lower": 0.0,
+        "ci_status": "available",
+        "ci_upper": 0.0,
+        "delta": 0.0,
+        "excluded_questions": 2,
+        "n_clusters": 10,
+        "n_questions": 152,
+        "significant": false
+      },
+      "session_recall_at_10": {
+        "baseline_mean": 0.8864035087719297,
+        "candidate_mean": 0.8864035087719297,
+        "ci_lower": 0.0,
+        "ci_status": "available",
+        "ci_upper": 0.0,
+        "delta": 0.0,
+        "excluded_questions": 2,
+        "n_clusters": 10,
+        "n_questions": 152,
+        "significant": false
+      },
+      "session_recall_at_5": {
+        "baseline_mean": 0.8319078947368421,
+        "candidate_mean": 0.8319078947368421,
+        "ci_lower": 0.0,
+        "ci_status": "available",
+        "ci_upper": 0.0,
+        "delta": 0.0,
+        "excluded_questions": 2,
+        "n_clusters": 10,
+        "n_questions": 152,
+        "significant": false
+      },
+      "tokens": {
+        "baseline_mean": 3877.0844155844156,
+        "candidate_mean": 3877.0844155844156,
+        "ci_lower": 0.0,
+        "ci_status": "available",
+        "ci_upper": 0.0,
+        "delta": 0.0,
+        "excluded_questions": 0,
+        "n_clusters": 10,
+        "n_questions": 154,
+        "significant": false
+      },
+      "turn_ndcg_at_10": {
+        "baseline_mean": 0.4383791862652819,
+        "candidate_mean": 0.4383791862652819,
+        "ci_lower": 0.0,
+        "ci_status": "available",
+        "ci_upper": 0.0,
+        "delta": 0.0,
+        "excluded_questions": 2,
+        "n_clusters": 10,
+        "n_questions": 152,
+        "significant": false
+      },
+      "turn_recall_at_10": {
+        "baseline_mean": 0.5763784461152882,
+        "candidate_mean": 0.5763784461152882,
+        "ci_lower": 0.0,
+        "ci_status": "available",
+        "ci_upper": 0.0,
+        "delta": 0.0,
+        "excluded_questions": 2,
+        "n_clusters": 10,
+        "n_questions": 152,
+        "significant": false
+      },
+      "turn_recall_at_5": {
+        "baseline_mean": 0.531688596491228,
+        "candidate_mean": 0.531688596491228,
+        "ci_lower": 0.0,
+        "ci_status": "available",
+        "ci_upper": 0.0,
+        "delta": 0.0,
+        "excluded_questions": 2,
+        "n_clusters": 10,
+        "n_questions": 152,
+        "significant": false
+      }
+    }
+  },
+  "commands": [
+    "python benchmarks/conversation_bench.py --dataset locomo --data locomo-sample.json --root STORE --budget 1500,4000 --embedder none --rerank none --out RESULT.json (both revisions)",
+    "python -m benchmarks.compare --baseline reference.json --candidate candidate.json --check --seed 61923"
+  ]
+}

@@ -16,6 +16,17 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     sub = p.add_subparsers(dest="subcommand", required=True)
 
+    for command, help_text, handler in (
+        ("migrate", "Activate SQLite WAL storage with a checksum report; preserve the original JSONL.", run_migrate),
+        ("export", "Export migrated facts to portable JSONL.", run_export),
+        ("rebuild", "Rebuild SQLite indexes from the committed event ledger.", run_rebuild),
+    ):
+        storage = sub.add_parser(command, help=help_text)
+        storage.add_argument("--dest", default=None)
+        if command == "export":
+            storage.add_argument("--output", required=True, help="Destination JSONL file.")
+        storage.set_defaults(func=handler)
+
     p_list = sub.add_parser("list", help="List facts with optional filters.")
     p_list.add_argument("--status", default="active", choices=("active", "superseded", "invalidated", "deleted", "all"))
     p_list.add_argument("--category", default="", choices=("", *hierarchical.CATEGORIES))
@@ -299,4 +310,44 @@ def run_forget(args: argparse.Namespace) -> int:
         print(f"Forgot fact '{fact.id}' (hidden from default listings).")
     else:
         print(f"Restored fact '{fact.id}' to default listings.")
+    return 0
+
+
+def run_migrate(args: argparse.Namespace) -> int:
+    from commontrace import fact_store
+
+    try:
+        report = fact_store.migrate(paths.resolve_root(args.dest))
+    except (OSError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    print(json.dumps(report, indent=2))
+    return 0
+
+
+def run_export(args: argparse.Namespace) -> int:
+    from commontrace import fact_store
+
+    root = paths.resolve_root(args.dest)
+    if not fact_store.enabled(root):
+        print("Store has not been migrated; run commontrace fact migrate first.", file=sys.stderr)
+        return 1
+    try:
+        fact_store.export(root, args.output)
+    except (OSError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    print(args.output)
+    return 0
+
+
+def run_rebuild(args: argparse.Namespace) -> int:
+    from commontrace import fact_store
+
+    root = paths.resolve_root(args.dest)
+    if not fact_store.enabled(root):
+        print("Store has not been migrated; run commontrace fact migrate first.", file=sys.stderr)
+        return 1
+    fact_store.rebuild(root)
+    print("Rebuilt SQLite fact projections from committed events.")
     return 0
