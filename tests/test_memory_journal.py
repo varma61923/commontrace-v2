@@ -208,3 +208,15 @@ def test_future_capture_scope_and_shared_source_erasure(tmp_path):
     result = journal.forget("first", reason="withdraw source")
     assert set(result["deleted"]) == {"first", "second"}
     assert not journal.buffer("a", scope={"agent": "a"})
+
+
+def test_content_redaction_preserves_principal_and_record_identity(tmp_path):
+    journal = Journal(str(tmp_path))
+    scope = {"user": "alice@example.com", "agent": "a"}
+    record = journal.put(
+        MemoryRecord("alice@example.com", "fact", 1, {"text": "Contact alice@example.com"}, scope=scope)
+    )
+    assert record.id == "alice@example.com" and record.scope == scope
+    assert "alice@example.com" not in record.payload["text"]
+    assert journal.search("Contact", scope=scope)[0].id == record.id
+    assert journal.search("Contact", scope={"user": "bob@example.com", "agent": "a"}) == []

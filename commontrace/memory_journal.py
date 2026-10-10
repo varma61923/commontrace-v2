@@ -17,8 +17,8 @@ from dataclasses import replace
 
 from commontrace import memory_guard, paths
 from commontrace.memory_record import MemoryRecord, facet_observation
+from commontrace.record_visibility import bind_capture_sources, now, sanitize_record_content
 from commontrace.record_visibility import moment as moment
-from commontrace.record_visibility import now
 from commontrace.record_visibility import visible as _visible
 from commontrace.runtime_cache import RuntimeCache
 
@@ -104,19 +104,7 @@ class Journal:
             return [self._put(db, record) for record in records]
 
     def _put(self, db, record: MemoryRecord, *, expected_version=None) -> MemoryRecord:
-        cleaned, _ = memory_guard.sanitize_metadata(record.to_dict(), pii=True)
-        record = MemoryRecord(**cleaned)
-        sources = record.payload.get("source_message_ids", [])
-        if not isinstance(sources, list) or any(not isinstance(source, str) or not source for source in sources):
-            raise ValueError("source_message_ids must be a list of capture ids")
-        if sources:
-            record = replace(
-                record,
-                relations={
-                    **record.relations,
-                    "caused_by": list(dict.fromkeys([*record.relations.get("caused_by", []), *sources])),
-                },
-            )
+        record = bind_capture_sources(sanitize_record_content(record))
         prior = db.execute("SELECT body FROM records WHERE id=?", (record.id,)).fetchone()
         old = MemoryRecord(**json.loads(prior[0])) if prior else None
         if (
@@ -236,6 +224,8 @@ class Journal:
     def capture(self, session: str, event: str, payload: dict, *, scope: dict, event_id: str | None = None) -> dict:
         if not session or len(session) > 256 or len(json.dumps(payload)) > 100000:
             raise ValueError("capture exceeds bounded session or payload")
+        if event_id is not None and (not isinstance(event_id, str) or not event_id or len(event_id) > 256):
+            raise ValueError("capture id must be a bounded nonempty string")
         payload, _ = memory_guard.sanitize_metadata(payload, pii=True)
         identity = event_id or uuid.uuid4().hex
         with self.connect(write=True) as db:

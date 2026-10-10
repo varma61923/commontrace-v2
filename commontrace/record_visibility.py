@@ -28,3 +28,35 @@ def visible(record: MemoryRecord, scope: dict, *, statuses=("active",), at: str 
         and (not record.retracted_at or stamp < moment(record.retracted_at))
         and (not record.payload.get("forget_after") or stamp < moment(record.payload["forget_after"]))
     )
+
+
+def bind_capture_sources(record: MemoryRecord) -> MemoryRecord:
+    """Normalize source citations into causal data links for both record engines."""
+    from dataclasses import replace
+
+    sources = record.payload.get("source_message_ids", [])
+    if not isinstance(sources, list) or any(not isinstance(source, str) or not source for source in sources):
+        raise ValueError("source_message_ids must be a list of capture ids")
+    if not sources:
+        return record
+    return replace(
+        record,
+        relations={
+            **record.relations,
+            "caused_by": list(dict.fromkeys([*record.relations.get("caused_by", []), *sources])),
+        },
+    )
+
+
+def sanitize_record_content(record: MemoryRecord) -> MemoryRecord:
+    """Redact content without changing owner scopes or logical source identifiers."""
+    from commontrace import memory_guard
+
+    data, _ = memory_guard.sanitize_metadata(record.to_dict(), pii=True)
+    data.update(id=record.id, scope=record.scope, relations=record.relations)
+    if "source_message_ids" in record.payload:
+        data["payload"]["source_message_ids"] = record.payload["source_message_ids"]
+    for name in ("source_versions", "source_fact_ids", "source_message_ids"):
+        if name in record.provenance:
+            data["provenance"][name] = record.provenance[name]
+    return MemoryRecord(**data)

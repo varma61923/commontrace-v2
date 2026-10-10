@@ -334,7 +334,9 @@ def consolidate_record_facet(root: str, entity: str, facet: str, source_ids: lis
         from commontrace import llm
 
         text = llm._extract_json_object(output)["text"]
-        offered_numbers = set(re.findall(r"\d+(?:\.\d+)?", json.dumps([record.payload for record in sources])))
+        offered_numbers = set(
+            re.findall(r"\d+(?:\.\d+)?", "\n".join(str(record.payload.get("text", "")) for record in sources))
+        )
         if set(re.findall(r"\d+(?:\.\d+)?", text)) - offered_numbers:
             raise ValueError("consolidation introduced a computed or unsupported number")
     from commontrace.memory_record import facet_observation

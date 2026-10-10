@@ -134,9 +134,22 @@ def test_openai_native_text_part_array_has_human_authorship():
 
 def test_profile_erasure_removes_all_historical_source_captures(tmp_path):
     memory = MemoryClient(str(tmp_path), agent_id="a")
-    first = memory.turn("s1", "preferences", text="I prefer privatespecializedformat.")
+    first = memory.turn(
+        "s1",
+        "I prefer privatespecializedformat.",
+        text="I prefer privatespecializedformat.",
+        event="UserPromptSubmit",
+        payload={"event_id": "alice@example.com"},
+    )
     identity = first["profile"]["dynamic"][0]["id"]
-    memory.turn("s2", "preferences", text="I prefer privatespecializedformat.")
+    memory.turn("s2", "I prefer privatespecializedformat.", text="I prefer privatespecializedformat.")
     memory.forget_record(identity, reason="withdraw my preference")
     assert "privatespecializedformat" not in str(Journal(str(tmp_path)).search(""))
     assert b"privatespecializedformat" not in (tmp_path / "memory/runtime.sqlite3").read_bytes()
+
+
+def test_email_principal_profile_scope_is_preserved(tmp_path):
+    memory = MemoryClient(str(tmp_path), agent_id="a", context={"user": "alice@example.com"})
+    assert memory.turn("s", "preferences", text="I prefer pytest.")["profile"]["dynamic"]
+    other = MemoryClient(str(tmp_path), agent_id="a", context={"user": "bob@example.com"})
+    assert not other.turn("s", "preferences")["profile"]["dynamic"]

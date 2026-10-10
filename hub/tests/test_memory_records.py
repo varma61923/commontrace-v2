@@ -149,3 +149,53 @@ async def test_failed_vector_erasure_is_durable_and_cannot_delete_reused_id(sess
     assert await restarted.retry_vector_erasures() == {"completed": 1, "pending": False}
     assert vector.deleted == [record.id]
     await restarted.put(record)
+
+
+@pytest.mark.asyncio
+async def test_postgres_source_citations_share_local_erasure_semantics(session_factory):
+    org = str(uuid.uuid4())
+    async with session_scope(session_factory) as session:
+        session.add(Organization(id=org, name=org))
+    store = PostgresJournal(session_factory, org)
+    await store.put(MemoryRecord("message", "episode", 1, {"text": "I prefer sourceboundformat"}, scope={"agent": "a"}))
+    profile = await store.put(
+        MemoryRecord(
+            "pref", "profile", 1, {"text": "sourceboundformat", "source_message_ids": ["message"]}, scope={"agent": "a"}
+        )
+    )
+    assert profile.relations["caused_by"] == ["message"]
+    assert set((await store.forget("message", reason="erase source"))["deleted"]) == {"message", "pref"}
+
+
+@pytest.mark.asyncio
+async def test_postgres_erases_historical_profile_sources(session_factory):
+    from dataclasses import replace
+
+    org = str(uuid.uuid4())
+    async with session_scope(session_factory) as session:
+        session.add(Organization(id=org, name=org))
+    store = PostgresJournal(session_factory, org)
+    for identity in ("old-message", "new-message"):
+        await store.put(
+            MemoryRecord(identity, "episode", 1, {"text": "private historical preference"}, scope={"agent": "a"})
+        )
+    profile = await store.put(
+        MemoryRecord(
+            "historical-pref",
+            "profile",
+            1,
+            {"text": "preference", "source_message_ids": ["old-message"]},
+            scope={"agent": "a"},
+        )
+    )
+    await store.put(
+        replace(
+            profile,
+            version=2,
+            relations={},
+            payload={"text": "revised preference", "source_message_ids": ["new-message"]},
+        )
+    )
+    erased = await store.forget("historical-pref", reason="withdraw preference")
+    assert set(erased["deleted"]) == {"historical-pref", "old-message", "new-message"}
+    assert not await store.search("private", scope={"agent": "a"})

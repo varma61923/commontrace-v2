@@ -92,7 +92,10 @@ class HookKit:
 
         if not remaining():
             return empty
+        source_identity = payload.get("event_id")
         payload, _ = memory_guard.sanitize_metadata(payload, pii=True)
+        if source_identity is not None:
+            payload["event_id"] = source_identity  # An identifier must remain stable across content redaction.
         captured = self.journal.capture(run, event, payload, scope=self.scope, event_id=payload.get("event_id"))
         if event == "SubagentStart":
             parent = payload.get("parent_session_id")

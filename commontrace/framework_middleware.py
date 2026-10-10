@@ -30,7 +30,7 @@ def scope_from_labels(labels: list[str]) -> dict:
     return result
 
 
-def maintain_preferences(journal: Journal, text: str, scope: dict, *, source_id=None):
+def maintain_preferences(journal: Journal, text: str, scope: dict, *, source_ids=None):
     """Explicit user preferences only; model/assistant assertions use a different author."""
     import re
 
@@ -51,7 +51,7 @@ def maintain_preferences(journal: Journal, text: str, scope: dict, *, source_id=
                     "bucket": "static",
                     "author": "user",
                     "observed_at": now(),
-                    "source_message_ids": [source_id] if source_id else [],
+                    "source_message_ids": source_ids or [],
                 },
                 scope=scope,
                 created_at=now(),
@@ -79,7 +79,7 @@ def maintain_preferences(journal: Journal, text: str, scope: dict, *, source_id=
                     "observed_at": now(),
                     "critical": False,
                     "author": "user",
-                    "source_message_ids": [source_id] if source_id else [],
+                    "source_message_ids": source_ids or [],
                 },
                 scope=scope,
                 created_at=now(),
@@ -118,12 +118,14 @@ def turn(
     scope["agent"] = agent
     kit = HookKit(root, agent, scope=scope, embedder=embedder)
     run = hashlib.sha256(json.dumps([scope, session], sort_keys=True).encode()).hexdigest()
+    import uuid
+
+    event_payload = {**(payload or {}), "session_id": session, "prompt": query, "budget": budget}
+    event_payload.setdefault("event_id", uuid.uuid4().hex)
     if text:
         captured = kit.journal.capture(run, "UserMessage", {"text": text, "author": "user"}, scope=scope)
-        maintain_preferences(kit.journal, text, scope, source_id=captured["id"])
-    result = kit.handle(
-        event or "UserPromptSubmit", {**(payload or {}), "session_id": session, "prompt": query, "budget": budget}
-    )
+        maintain_preferences(kit.journal, text, scope, source_ids=[captured["id"], event_payload["event_id"]])
+    result = kit.handle(event or "UserPromptSubmit", event_payload)
     profile = {"static": [], "dynamic": [], "custom": []}
     for record in kit.journal.search("", scope=scope, kinds=("profile",), limit=30):
         data = record.payload

@@ -14,7 +14,7 @@ from sqlalchemy.exc import IntegrityError
 
 from commontrace import memory_guard
 from commontrace.memory_record import MemoryRecord, facet_observation
-from commontrace.record_visibility import now, visible
+from commontrace.record_visibility import bind_capture_sources, now, sanitize_record_content, visible
 from hub import audit
 from hub.db import session_scope
 from hub.models import MemoryRecordEvent, MemoryRecordProjection, MemoryVectorErasure
@@ -29,8 +29,9 @@ class PostgresJournal:
     async def put(self, record: MemoryRecord) -> MemoryRecord:
         if record.scope.get("tenant", self.org_id) != self.org_id:
             raise ValueError("record tenant cannot override authenticated organization")
-        data, _ = memory_guard.sanitize_metadata(record.to_dict(), pii=True)
-        record = replace(MemoryRecord(**data), scope={**record.scope, "tenant": self.org_id})
+        record = bind_capture_sources(
+            replace(sanitize_record_content(record), scope={**record.scope, "tenant": self.org_id})
+        )
         try:
             async with session_scope(self.factory, org_id=self.org_id) as session:
                 await self._lock_owner(session)
@@ -204,17 +205,25 @@ class PostgresJournal:
         async with session_scope(self.factory, org_id=self.org_id) as session:
             await self._lock_owner(session)
             rows = (
-                (
-                    await session.execute(
-                        select(MemoryRecordProjection).where(MemoryRecordProjection.org_id == self.org_id)
-                    )
-                )
+                (await session.execute(select(MemoryRecordEvent).where(MemoryRecordEvent.org_id == self.org_id)))
                 .scalars()
                 .all()
             )
             deleted = {identity}
             while True:
-                derived = {
+                # Raw message episodes cited by any historical revision are erased too.
+                source_scopes = [
+                    (source, row.record["scope"])
+                    for row in rows
+                    if row.id in deleted
+                    for source in row.record["payload"].get("source_message_ids", [])
+                ]
+                sources = {
+                    row.id
+                    for row in rows
+                    if row.record["kind"] == "episode" and (row.id, row.record["scope"]) in source_scopes
+                }
+                derived = sources | {
                     row.id for row in rows if any(set(ids) & deleted for ids in row.record["relations"].values())
                 }
                 if derived <= deleted:
