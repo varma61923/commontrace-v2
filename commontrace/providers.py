@@ -50,10 +50,33 @@ def register_reranker(name: str, factory: Callable) -> None:
     RERANKERS.register(name, factory)
 
 
+# Registered rerankers that take a model: ``cohere:rerank-v3.5`` resolves to the
+# ``cohere`` factory called with ``"rerank-v3.5"``.
+_MODEL_RERANKERS = frozenset({"cohere", "voyage", "jina", "llm"})
+_RERANK_MODEL = re.compile(r"[A-Za-z0-9._/\-]{1,128}")
+
+
 def reranker(name: str):
-    """Resolve a reranker by name; built-ins are registered on first use."""
+    """Resolve a reranker by name or ``provider:model`` tag; built-ins register on first use.
+
+    Lesson rerankers (``mmr``) take ``(task, ranked)``. Text rerankers (the
+    cross-encoders, ``cohere``, ``voyage``, ``jina``, ``llm``) also expose
+    ``rerank(query, documents, top_n)`` for facts, recall and conversations.
+    """
     register_builtin_rerankers()
+    if not isinstance(name, str):
+        raise ConfigurationError("a reranker is chosen by name")
+    base, _sep, model = name.partition(":")
+    if _sep:
+        if base not in _MODEL_RERANKERS or not _RERANK_MODEL.fullmatch(model):
+            raise ConfigurationError("only cohere, voyage, jina and llm take a :model suffix")
+        return RERANKERS.create(base, model)
     return RERANKERS.create(name)
+
+
+def reranker_names() -> tuple[str, ...]:
+    register_builtin_rerankers()
+    return RERANKERS.names()
 
 
 def _terms(text: str) -> set[str]:
@@ -90,25 +113,24 @@ def mmr_reranker(lam: float = MMR_LAMBDA):
 
 
 def cross_encoder_reranker(mode: str = "cross-encoder"):
-    """Second-stage cross-encoder over each lesson's full text (attention extra)."""
-    from commontrace import frontmatter, rerank_arm
+    """Second-stage cross-encoder over each lesson's (or document's) full text (attention extra)."""
+    from commontrace.reranking import LocalCrossEncoder
 
-    if mode not in rerank_arm.MODELS:
-        raise ConfigurationError("unknown cross-encoder mode")
-    if not rerank_arm.available():
-        raise CapabilityError("cross-encoder reranking needs the attention extra")
+    return LocalCrossEncoder(mode)
 
-    def rerank(task: str, ranked: list) -> list:
-        if len(ranked) < 2:
-            return list(ranked)
-        path_of = {r.slug: r.path for r in ranked}
-        text_of = rerank_arm.texts([r.slug for r in ranked], path_of, frontmatter.read)
-        page, _unused = rerank_arm.rerank(task, [r.slug for r in ranked], text_of, len(ranked), mode=mode)
-        order = {slug: i for i, (slug, _score) in enumerate(page)}
-        # Lessons the model could not read keep their first-stage order, after the scored ones.
-        return sorted(ranked, key=lambda r: (order.get(r.slug, len(order)), ranked.index(r)))
 
-    return rerank
+def _hosted_reranker(provider: str):
+    def factory(model: str | None = None):
+        from commontrace.rerankers_hosted import HostedReranker
+
+        return HostedReranker(provider, model)
+    return factory
+
+
+def _llm_reranker(model: str | None = None):
+    from commontrace.rerankers_hosted import LLMReranker
+
+    return LLMReranker(model)
 
 
 def register_builtin_rerankers() -> None:
@@ -118,6 +140,11 @@ def register_builtin_rerankers() -> None:
         RERANKERS.register("mmr", mmr_reranker)
         RERANKERS.register("cross-encoder", lambda: cross_encoder_reranker("cross-encoder"))
         RERANKERS.register("cross-encoder-fast", lambda: cross_encoder_reranker("cross-encoder-fast"))
+        RERANKERS.register("bge-reranker-v2-m3", lambda: cross_encoder_reranker("bge-reranker-v2-m3"))
+        RERANKERS.register("mxbai-rerank", lambda: cross_encoder_reranker("mxbai-rerank"))
+        for provider in ("cohere", "voyage", "jina"):
+            RERANKERS.register(provider, _hosted_reranker(provider))
+        RERANKERS.register("llm", _llm_reranker)
         _RERANK_REGISTERED[0] = True
 
 

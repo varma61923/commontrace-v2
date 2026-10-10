@@ -14,6 +14,7 @@ FIELDS = {
                  "limit": {"type": "integer", "minimum": 0, "maximum": 1000}}, []),
     "reflect": ({"query": TEXT, "action_class": TEXT, "occasion_id": OCCASION,
                  "budget": {"type": "integer", "minimum": 0, "maximum": 100000},
+                 "adaptive_budget": {"type": "boolean"},
                  "exploration_slots": {"type": "integer", "minimum": 0, "maximum": 100}}, ["query"]),
     "outcome": ({"occasion_id": {"type": "string", "minLength": 1, "maxLength": 256},
                  "succeeded": {"type": "boolean"}}, ["occasion_id", "succeeded"]),

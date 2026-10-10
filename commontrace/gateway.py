@@ -842,7 +842,8 @@ class Gateway:
                 return memory_control.reflect(self.root, query, context=context, budget=body.get("budget", 600),
                                                occasion_id=occasion_id,
                                                exploration_slots=body.get("exploration_slots", 0),
-                                               action_class=body.get("action_class", ""))
+                                               action_class=body.get("action_class", ""),
+                                               adaptive_budget=body.get("adaptive_budget", False))
             if operation == "outcome":
                 occasion_id = memory_control.occasion(body.get("occasion_id"), generate=False)
                 if principal and not occasion_id.startswith(principal["id"] + ":"):

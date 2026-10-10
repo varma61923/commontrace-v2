@@ -96,15 +96,19 @@ class MemoryClient:
         return memory_control.proposal(self.root, text, sources=sources, context=self.context)
 
     def reflect(self, query: str, *, budget: int = 600, occasion_id: str | None = None,
-                exploration_slots: int = 0, action_class: str = "") -> dict:
+                exploration_slots: int = 0, action_class: str = "", adaptive_budget: bool = False) -> dict:
         occasion_id = self._occasion(occasion_id)
         if self.url:
-            return self._request("reflect", {"query": query, "budget": budget, "context": self.context,
-                                             "occasion_id": occasion_id, "exploration_slots": exploration_slots,
-                                             "action_class": action_class})
+            body = {"query": query, "budget": budget, "context": self.context, "occasion_id": occasion_id,
+                    "exploration_slots": exploration_slots, "action_class": action_class}
+            if adaptive_budget:  # sent only when asked, so older servers keep accepting the request
+                body["adaptive_budget"] = True
+            return self._request("reflect", body)
         result = memory_control.reflect(self.root, query, context=self.context, budget=budget,
                                         occasion_id=occasion_id, exploration_slots=exploration_slots,
-                                        action_class=action_class, record_receipt=False)
+                                        action_class=action_class, record_receipt=False,
+                                        adaptive_budget=adaptive_budget)
+        budget = result["budget"]  # an adaptive budget may have grown; shared memory fills the same page
         if self.agent_id:
             import hashlib
 

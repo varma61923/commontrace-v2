@@ -70,7 +70,8 @@ export class MemoryClient {
   profile(query = "", limit = 10) {
     return this.request<{static: Evidence[]; dynamic: Evidence[]; occasion_id: string}>("profile", {query, limit});
   }
-  reflect(query: string, options: {budget?: number; occasion_id?: string; exploration_slots?: number} = {}) {
+  reflect(query: string, options: {budget?: number; occasion_id?: string; exploration_slots?: number;
+                                   adaptive_budget?: boolean} = {}) {
     return this.request<Recall>("reflect", {query, ...options});
   }
   async outcome(occasionId: string, succeeded: boolean) {

@@ -53,7 +53,7 @@ Dynamic provider prefixes and test-only variables are described in the relevant 
 | `COMMONTRACE_LOG_FILE` | [commontrace/cli.py:210](../commontrace/cli.py#L210) |
 | `COMMONTRACE_LOG_FORMAT` | [commontrace/cli.py:210](../commontrace/cli.py#L210) |
 | `COMMONTRACE_LOG_LEVEL` | [commontrace/cli.py:211](../commontrace/cli.py#L211) |
-| `COMMONTRACE_MCP_WARM` | [commontrace/mcp_server.py:2616](../commontrace/mcp_server.py#L2616) |
+| `COMMONTRACE_MCP_WARM` | [commontrace/mcp_server.py:2622](../commontrace/mcp_server.py#L2622) |
 | `COMMONTRACE_OAUTH_ALGORITHMS` | [commontrace/oauth.py:135](../commontrace/oauth.py#L135) |
 | `COMMONTRACE_OAUTH_AUDIENCE` | [commontrace/oauth.py:22](../commontrace/oauth.py#L22) |
 | `COMMONTRACE_OAUTH_ISSUER` | [commontrace/commands/doctor_cmd.py:42](../commontrace/commands/doctor_cmd.py#L42) |
