@@ -26,6 +26,7 @@ _LOCK = threading.Lock()
 _MODELS: OrderedDict = OrderedDict()
 _VECTORS: OrderedDict = OrderedDict()
 _WORK: dict = {}
+_ARRAYS: OrderedDict = OrderedDict()  # id(vector tuple) -> (tuple, float32 array): numpy copies of cached vectors
 MAX_CACHED = 50_000
 
 
@@ -155,6 +156,36 @@ def vectors(facts, *, model=None, model_path: str | None = None, root: str | Non
     return model_key, {fid: found[key] for fid, key in keys.items()}
 
 
+def _matrix_cosines(by_id: dict, ids: list[str], probe) -> list[float] | None:
+    """Cosines of `probe` to each id's vector with numpy, or None without it (or on mixed dimensions)."""
+    try:
+        import numpy as np
+    except ImportError:
+        return None
+    if not ids or any(len(by_id[i]) != len(probe) for i in ids):
+        return None
+    with _LOCK:
+        cached = [_ARRAYS.get(id(by_id[i])) for i in ids]
+    rows = [c if c is not None and c[0] is by_id[i] else None for c, i in zip(cached, ids)]
+    built = {}
+    for n, row in enumerate(rows):
+        if row is None:
+            built[ids[n]] = np.asarray(by_id[ids[n]], dtype=np.float32)
+    if built:
+        with _LOCK:
+            for fid, arr in built.items():
+                _ARRAYS[id(by_id[fid])] = (by_id[fid], arr)
+            while len(_ARRAYS) > MAX_CACHED:
+                _ARRAYS.popitem(last=False)
+    matrix = np.stack([row[1] if row is not None else built[i] for row, i in zip(rows, ids)])
+    query = np.asarray(probe, dtype=np.float32)
+    norms = np.linalg.norm(matrix, axis=1) * float(np.linalg.norm(query))
+    dots = matrix @ query
+    with np.errstate(divide="ignore", invalid="ignore"):
+        values = np.where(norms > 0, dots / norms, 0.0)
+    return [float(v) for v in np.clip(values, -1.0, 1.0)]
+
+
 def scores(query: str, facts, *, model_path: str | None = None, model=None,
            root: str | None = None) -> dict[str, float] | None:
     """Cosine similarity of `query` to each fact, or None when no embedder is configured."""
@@ -164,6 +195,10 @@ def scores(query: str, facts, *, model_path: str | None = None, model=None,
         return None
     _key, by_id = vectors(facts, model=model, model_path=model_path, root=root)
     query_vector = _encode(model_obj, [query], query=True)[0]
+    ids = [f.id for f in facts]
+    fast = _matrix_cosines(by_id, ids, query_vector)
+    if fast is not None:
+        return dict(zip(ids, fast))
     result = {}
     for fact in facts:
         vector = by_id[fact.id]

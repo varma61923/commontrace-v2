@@ -157,3 +157,26 @@ def test_a_provider_tag_selects_the_embedder(tmp_path, monkeypatch):
     scores = fact_embeddings.scores("tokyo hours", facts, root=root)
     assert scores[facts[0].id] == pytest.approx(1.0) and scores[facts[1].id] == pytest.approx(0.0)
     assert list((tmp_path / "memory" / "facts").glob("embeddings-openai_text-embedding-3-small.db"))
+
+
+def test_recall_fuses_a_dense_arm_into_the_facts_channel(tmp_path, monkeypatch):
+    from commontrace import recall
+
+    model = _Topics()
+    monkeypatch.setattr(fact_embeddings, "_resolve", lambda m, p: (model, ("tag", "fake-topics")))
+    root = str(tmp_path)
+    tokyo, _ = hierarchical.add_fact(root, "Bob's company headquarters sit in Tokyo")
+    hierarchical.add_fact(root, "The quarterly report is due on Friday")
+    question = "where is the tokyo head office"
+    lexical_only = recall.recall(root, question, channels=("facts",))
+    assert all(i.id != f"fact:{tokyo.id}" or "dense_cosine" not in i.provenance["search"]
+               for i in lexical_only.items)  # no embedder configured: lexical behaviour unchanged
+    monkeypatch.setenv("COMMONTRACE_FACT_EMBEDDER", "fake")
+    hybrid = recall.recall(root, question, channels=("facts",))
+    top = hybrid.items[0]
+    assert top.id == f"fact:{tokyo.id}" and top.provenance["search"]["dense_cosine"] > 0.9
+    assert top.score <= 1.0
+    forgotten, _ = hierarchical.add_fact(root, "Tokyo branch hosts the archive servers")
+    hierarchical.forget_fact(root, forgotten.id)
+    again = recall.recall(root, question, channels=("facts",))
+    assert f"fact:{forgotten.id}" not in {i.id for i in again.items}  # the dense arm honours forgetting

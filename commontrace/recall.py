@@ -39,6 +39,8 @@ DEFAULT_WEIGHTS = {"lessons": 1.0, "facts": 0.8, "graph": 0.6, "conversations": 
 DEFAULT_BUDGET = 1500
 FLOOR_SHARE = 0.12
 RRF_K = 60
+DENSE_RELATIVE_FLOOR = 0.5  # dense fact hits below half the best cosine are dropped
+DENSE_ONLY_SCALE = 0.5  # a fact found only by embedding scores half its cosine (see _hybrid)
 MMR_LAMBDA = 0.75
 MIN_CUT_FRACTION = 0.4
 ADAPTIVE_CAP = 12_000  # the default ceiling an adaptive budget may grow to
@@ -235,6 +237,46 @@ def _lessons(root: str, question: str, as_of: str | None, k: int, scope: str = "
     return out
 
 
+def _dense_facts(root: str, question: str, as_of: str | None, k: int, scope: str) -> dict:
+    """{fact id: (fact, cosine)} for the `k` facts nearest the question, or {} without a fact embedder.
+
+    Uses the embedder `commontrace.fact_embeddings` is configured with
+    (``COMMONTRACE_FACT_EMBEDDER``), so vectors come from its persistent cache.
+    """
+    from commontrace import fact_embeddings, hierarchical
+
+    if not (os.environ.get("COMMONTRACE_FACT_EMBEDDER", "").strip().lower() not in ("", "none", "off")
+            or os.environ.get("COMMONTRACE_FACT_EMBEDDER_PATH")):
+        return {}
+    facts = hierarchical.list_facts(root, scope=scope, as_of=as_of)  # validity, forgetting and TTL applied
+    scores = fact_embeddings.scores(question, facts, root=root) or {}
+    ranked = sorted(((f, scores.get(f.id, 0.0)) for f in facts), key=lambda pair: (-pair[1], pair[0].id))
+    best = ranked[0][1] if ranked else 0.0
+    # Cosines are not calibrated across models; a relative floor drops the tail that only shares noise.
+    return {f.id: (f, cosine) for f, cosine in ranked[:k] if cosine > 0 and cosine >= DENSE_RELATIVE_FLOOR * best}
+
+
+def _hybrid(lexical: list, dense: dict, k: int) -> list:
+    """Reciprocal-rank fusion of the lexical and dense fact rankings (dense-only hits included).
+
+    Each fact keeps its lexical score when it has one; a dense-only hit scores
+    its cosine scaled into the lexical range, so the retrieval assessment never
+    reads a semantic match as stronger evidence than a lexical one.
+    """
+    if not dense:
+        return lexical
+    fused: dict[str, float] = {}
+    by_id: dict = {}
+    for rank, (fact, score) in enumerate(item for item in lexical if item[1] > 0):
+        fused[fact.id] = fused.get(fact.id, 0.0) + 1 / (RRF_K + rank + 1)
+        by_id[fact.id] = (fact, score)
+    for rank, (fid, (fact, cosine)) in enumerate(sorted(dense.items(), key=lambda kv: (-kv[1][1], kv[0]))):
+        fused[fid] = fused.get(fid, 0.0) + 1 / (RRF_K + rank + 1)
+        by_id.setdefault(fid, (fact, cosine * DENSE_ONLY_SCALE))
+    order = sorted(fused, key=lambda fid: (-fused[fid], -dense.get(fid, (None, 0.0))[1], fid))[:k]
+    return [by_id[fid] for fid in order]
+
+
 def _facts(
     root: str, question: str, as_of: str | None, k: int, evidence_budget: int = 0, scope: str = "",
     fact_scorer: str = "overlap-v1",
@@ -243,6 +285,8 @@ def _facts(
     from commontrace.fact_evidence import EvidenceResolver
 
     ranked = hierarchical.search_facts(root, question, as_of=as_of, limit=k, scope=scope, scorer=fact_scorer)
+    dense = _dense_facts(root, question, as_of, k, scope)
+    ranked = _hybrid(ranked, dense, k)
     current_facts = fact_index.snapshot_facts(root)
     resolver = EvidenceResolver(root, current_facts, as_of=as_of)
     output = []
@@ -257,6 +301,8 @@ def _facts(
             continue
         provenance = {"search": {"scorer": fact_scorer,
                                   "matched_terms": fact_index.matched_terms(question, fact.statement, fact_scorer)}}
+        if fact.id in dense:
+            provenance["search"]["dense_cosine"] = round(dense[fact.id][1], 4)
         text = fact.statement
         if fact.evidence_bound:
             # Re-check the fresh snapshot before assembling injection, including
