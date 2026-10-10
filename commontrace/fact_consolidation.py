@@ -22,6 +22,12 @@ clusters of near-duplicate and paraphrased *facts*:
    an optional summary: extractive (the canonical statement, its distinct
    variants and the entities they name) or written by the configured model.
 
+Write-time dedup in `hierarchical` (``COMMONTRACE_FACT_DEDUP``) already folds
+statements that are nearly identical (content-word Jaccard >= 0.85 with the
+same numbers and negations) into one fact. This pass is the after-the-fact
+complement: looser paraphrases, embedding-only matches, and duplicates in
+stores written before (or around) write-time dedup.
+
 The default is a report. ``apply`` writes one review-status proposal per
 cluster through `memory_control` (kind ``proposal``, record id = cluster id,
 ``data.sources`` = member fact ids), so a human approves or rejects it like any

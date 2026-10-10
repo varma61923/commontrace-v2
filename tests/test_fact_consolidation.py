@@ -15,7 +15,11 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 @pytest.fixture
-def root(tmp_path):
+def root(tmp_path, monkeypatch):
+    # Write-time dedup (hierarchical, COMMONTRACE_FACT_DEDUP=near) already merges
+    # very close statements. Exact mode models a store written before it existed,
+    # or by a path that skips it: the duplicates consolidation is there to find.
+    monkeypatch.setenv("COMMONTRACE_FACT_DEDUP", "exact")
     os.makedirs(tmp_path / "memory")
     return str(tmp_path)
 
@@ -66,6 +70,14 @@ def test_paraphrases_cluster_within_scope_only(root):
     assert "Paris" in cluster["entities"] and cluster["summary_method"] == "extractive"
     assert cluster["id"].startswith(fc.CLUSTER_PREFIX)
     assert report == fc.cluster_facts(root)  # deterministic
+
+
+def test_finds_paraphrases_that_write_time_dedup_keeps_apart(root, monkeypatch):
+    monkeypatch.setenv("COMMONTRACE_FACT_DEDUP", "near")
+    _add(root, "The user lives in Paris, France.")
+    _add(root, "User lives in Paris")
+    assert len(hierarchical.list_facts(root)) == 2  # below the 0.85 write-time bar
+    assert len(fc.cluster_facts(root)["clusters"]) == 1
 
 
 def test_canonical_tie_breaks_on_recency(root):
