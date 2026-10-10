@@ -3,10 +3,10 @@
   "report": {
     "public_aggregate_only": true,
     "format": "commontrace-next-generation-release-v1",
-    "created_at": "2026-10-10T22:34:21.340581+00:00",
-    "source_commit": "8b771b7b56e23e5d0926bb56a2708c0203f01319",
+    "created_at": "2026-10-10T23:05:29.062671+00:00",
+    "source_commit": "4482532ed9bcac75a5abbe902692e6e053c65fd5",
     "storage_measured_commit": "d19bf44ffd43339de2da38926984539b2ad3fbdc",
-    "source_role": "Runtime at source_commit; storage measured on its parent with unchanged recorded source-file hashes.",
+    "source_role": "Runtime at source_commit; storage measured on an earlier pinned revision with unchanged recorded source-file hashes.",
     "branch": "codex/next-generation-complete",
     "model": {
       "name": "BAAI/bge-small-en-v1.5",
@@ -15,10 +15,10 @@
     },
     "files_sha256": {
       "docs/strategy/measurements/storage-v2.json": "d860298cdf2fd6520e7be2b738ffdcc8702133b19806bb095f8e3789181e5fd9",
-      "docs/strategy/measurements/injector-bge.json": "4e2b1569dee0755b38e61ec9f13869af31d9fc38726f3ab5c93355e124b237a9",
+      "docs/strategy/measurements/injector-bge.json": "03eac225e19f26e292a897868688b370d319d8d8543365f689a8792cbee79336",
       "docs/strategy/measurements/injector-concurrent.json": "00ad5fc08c989a32ffc819307da4aa165a0e841d0d209f333a59e1bfd7221eb8",
-      "docs/strategy/measurements/injector-transport.json": "4dff05f23e4ee60f182651ba73e6bcfc9e039d26f939105fc08bf1b8c64ffad0",
-      "docs/strategy/measurements/runtime-validation.json": "cc4359c647dd43f2792061ea58695c7aa208b9dd0a7ade488b860777c7773c88"
+      "docs/strategy/measurements/injector-transport.json": "201143768bf754f19066ffee4a262a48cad28890cdeff807541ace27b21a1566",
+      "docs/strategy/measurements/runtime-validation.json": "e23ac909cca9bd8960085df570fbfe82bb8a1ce518c24ee35815cf58c6e803b0"
     },
     "storage_source_files_sha256": {
       "commontrace/hierarchical.py": "33cc54bde991467962899bb07481cef62c9675e5811ea11725f863124898c3e1",
@@ -44,13 +44,13 @@
       {
         "name": "Warm injector p95 <50 ms",
         "status": "idle fixture pass; load-sensitive",
-        "measurement": "20.84 ms idle; 50.90 ms under concurrent validation",
+        "measurement": "20.61 ms idle; 50.90 ms under concurrent validation",
         "scope": "actual BGE-small, 14 coding queries x5; cold call timed out; interpreter startup excluded"
       },
       {
         "name": "Native process transport p95 <50 ms",
-        "status": "fixture pass",
-        "measurement": "46.74 ms",
+        "status": "measured miss",
+        "measurement": "52.50 ms",
         "scope": "50 fresh Node processes, warm broker, fixed directive; no semantic retrieval"
       },
       {
@@ -109,7 +109,7 @@
     ],
     "surface": {
       "python_modules": 322,
-      "python_lines": 85567,
+      "python_lines": 85636,
       "documented_environment_variables": 154,
       "commontrace_environment_variables": 80,
       "recommended_profile_options": 9,
@@ -118,11 +118,11 @@
     },
     "graphify": {
       "version": "0.9.84",
-      "nodes": 21345,
-      "edges": 63020,
+      "nodes": 21366,
+      "edges": 63090,
       "missing_endpoints": 0,
       "possible_unreachable": 303,
-      "graph_sha256": "500da479f42054d97f37d8e7ac1a4267cb574413bd4936aa2af39a28ba101f18",
+      "graph_sha256": "7f5dfd546f5f1cc39e3556da84c58d3be40f101e935dacf9d4f538141bd32a23",
       "limitations": [
         "Dynamic dispatch, SDK exports, callbacks and generated entry points are incomplete in static graphs.",
         "No function is deleted or declared dead solely from this report."
@@ -136,14 +136,25 @@
         "coverage_percent": 84.4,
         "scope": "full-suite snapshot before final targeted erasure/native-authorship fixes"
       },
+      "core_only": {
+        "passed": 6103,
+        "skipped": 282,
+        "scope": "full core-only suite snapshot during final source privacy fixes"
+      },
+      "focused_source_privacy": {
+        "passed": 59,
+        "skipped": 1,
+        "scope": "latest local/Hub source, ownership and erasure checks"
+      },
       "full_hub": {
         "passed": 2497,
         "skipped": 2,
         "postgres": 16,
-        "test_durability_disabled": true
+        "test_durability_disabled": true,
+        "scope": "full-suite snapshot before final source-citation fixes"
       },
       "native_frameworks": {
-        "passed": 22,
+        "passed": 24,
         "skipped": 5,
         "scope": "isolated OpenAI/Microsoft native SDK and framework-tool checks"
       },
@@ -176,5 +187,5 @@
     ]
   },
   "public_key": "2f39e407917f00d5eb1b74b2ac440888a9b35c56f838b80808e4c027e80bef69",
-  "signature": "8QOrSOePdMb2jXEnG5/AKfXVCQYGqSsKlmOlSGrgy/wkN0POYDGihQqfEm26mEwHQoof3Eb61KNqxOajBsA4Ag=="
+  "signature": "EpBS1sk2ytup6wY0Xx+mZGwWakL4iSKQ1+OfsizLchbAGOimCL7+viDi0FCpSR8MjYsqDhtcODMs4khQbfxBDA=="
 }

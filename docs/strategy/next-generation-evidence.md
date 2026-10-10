@@ -27,7 +27,9 @@ exact scope. It copies the latest source text by default; optional consolidation
 may summarize but rejects invented numeric values. Derived reads verify source
 versions, active status and validity recursively; missing proof, cycles and
 retracted sources fail closed. Unknown forward references cannot later cross
-scope. Legacy record payloads and causal conformance vectors remain compatible.
+scope. Redaction preserves logical identities and owner scopes, including email-shaped
+identifiers. Human profiles bind exact captured evidence; erasure follows every
+revision and removes same-scope sources and dependent profiles. Legacy record payloads and causal conformance vectors remain compatible.
 
 The Hub record engine uses a transactional PostgreSQL event/projection ledger,
 full-text candidates, canonical validation of optional owner-pinned pgvector/HNSW
@@ -104,17 +106,19 @@ performance or durability measurement is inferred.
 
 Actual `BAAI/bge-small-en-v1.5` embeddings were measured on fourteen labelled
 coding queries, five repetitions. The idle run had **1.0 precision and recall**,
-**20.84 ms p95**, zero timeouts. A concurrent-validation run had **50.90 ms p95**,
-four timeouts and 0.94 recall. Both reports are retained. A separate 50-process native transport fixture measured 46.74 ms p95
-with a fixed directive and no semantic retrieval. Cold core calls timed
+**20.61 ms p95**, zero timeouts. A concurrent-validation run had **50.90 ms p95**,
+four timeouts and 0.94 recall. Both reports are retained. A separate 50-process native transport fixture measured 52.50 ms p95
+with a fixed directive and no semantic retrieval, missing the 50 ms target. Cold core calls timed
 out in both semantic runs. These small fixtures exclude interpreter startup/model download
 and do not establish production precision, cold host latency or 1M hybrid speed.
 Eleven adversarial poison/status cases delivered no poison; clean utility remained.
 
 Validation: full Python suite **6,652 passed, 113 skipped**, **84.40% coverage**;
-full PostgreSQL Hub suite **2,497 passed, 2 skipped**. Subsequent focused checks
-cover source-version freshness, optional-provider failure and SDK callbacks.
-Isolated native SDK checks: **22 passed, 5 skipped**; unavailable optional SDKs
+full PostgreSQL Hub suite **2,497 passed, 2 skipped**. These full-suite snapshots
+precede the final source-citation fixes. The core-only snapshot passed **6,103 tests**,
+with **282 skips**. Latest focused source, ownership and erasure checks passed
+**59 tests**, with **1 skip**.
+Isolated native SDK checks: **24 passed, 5 skipped**; unavailable optional SDKs
 remain skips. TypeScript suite: **23 passed**. Ruff, the 35-file strict typing
 list, medium/high Bandit, declared dependency audits, generated references and
 OpenAPI checks passed locally. Final branch CI is a separate result.

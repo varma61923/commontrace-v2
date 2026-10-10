@@ -6,14 +6,25 @@
     "coverage_percent": 84.4,
     "scope": "full-suite snapshot before final targeted erasure/native-authorship fixes"
   },
+  "core_only": {
+    "passed": 6103,
+    "skipped": 282,
+    "scope": "full core-only suite snapshot during final source privacy fixes"
+  },
+  "focused_source_privacy": {
+    "passed": 59,
+    "skipped": 1,
+    "scope": "latest local/Hub source, ownership and erasure checks"
+  },
   "full_hub": {
     "passed": 2497,
     "skipped": 2,
     "postgres": 16,
-    "test_durability_disabled": true
+    "test_durability_disabled": true,
+    "scope": "full-suite snapshot before final source-citation fixes"
   },
   "native_frameworks": {
-    "passed": 22,
+    "passed": 24,
     "skipped": 5,
     "scope": "isolated OpenAI/Microsoft native SDK and framework-tool checks"
   },

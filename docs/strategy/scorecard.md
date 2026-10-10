@@ -25,6 +25,7 @@ Details and the full audit are in [implementation-status.md](implementation-stat
 | Restart without re-embedding | **Tested on bounded fixtures** | Durable fact watermarks, vector hashes and hook document cache; not a 1M restart timing |
 | Injector precision >=0.80 | **Fixture measured** | Actual BGE-small, maintainer-labelled coding relevance; not production/SWE precision |
 | Warm hook p95 <50 ms | **Load-sensitive; not established universally** | See signed report for idle and concurrent runs; native socket deadline is separate from total host startup |
+| Fresh native process p95 <50 ms | **Measured miss** | Latest 50-process fixed-directive fixture: 52.50 ms; warm broker, no semantic model |
 | LoCoMo >=0.85 GPT-class at <=1,500 tokens | **Unverified** | No configured GPT-class reader/judge credentials or endpoint |
 | LongMemEval-S >=0.90; BEAM 100K/1M and categories | **Unverified** | Model-backed required evaluations not run |
 | Coding uplift >=5pp, sequential lower CI >0 | **Unverified** | Real patch/test randomized harness implemented; no actual SWE model run |
