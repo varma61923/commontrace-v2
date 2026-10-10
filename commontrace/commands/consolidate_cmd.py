@@ -24,8 +24,26 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p = subparsers.add_parser(
         "consolidate",
         help="Propose fusions, archive candidates, and contradictions in the active "
-        "corpus. Reports only -- never modifies a lesson.",
+        "corpus. Reports only -- never modifies a lesson. `consolidate facts` clusters "
+        "near-duplicate atomic facts.",
     )
+    p.add_argument(
+        "target", nargs="?", choices=("lessons", "facts"), default="lessons",
+        help="lessons (default): fusion/contradiction report; facts: near-duplicate fact clusters.",
+    )
+    facts = p.add_argument_group("facts", "options for `consolidate facts`")
+    facts.add_argument("--threshold", type=float, default=None,
+                       help="Stemmed token-set Jaccard at or above which two facts are linked "
+                            "(default 0.5).")
+    facts.add_argument("--embedder", default=None,
+                       help="Also link facts whose embedding cosine reaches --embed-threshold; any "
+                            "commontrace.embeddings tag (default: $COMMONTRACE_CONSOLIDATE_EMBEDDER, else off).")
+    facts.add_argument("--embed-threshold", type=float, default=None, help="Cosine threshold (default 0.9).")
+    facts.add_argument("--scope", default="", help="Only facts visible in this scope.")
+    facts.add_argument("--summarize", choices=("extractive", "model", "none"), default="extractive",
+                       help="Cluster summary: extractive (default), model (the configured LLM) or none.")
+    facts.add_argument("--apply", action="store_true",
+                       help="Write one status=review proposal per cluster. Facts are never changed or deleted.")
     p.add_argument(
         "--redundancy-threshold", type=float, default=redundancy.DEFAULT_THRESHOLD,
         help="Similarity (commontrace/redundancy.py) at or above which two active "
@@ -138,7 +156,33 @@ def _write_drafts(root: str, lessons: list[dict], report) -> list[str]:
     return written
 
 
+def run_facts(args: argparse.Namespace) -> int:
+    from commontrace import fact_consolidation as fc
+
+    root = paths.resolve_root(args.dest)
+    try:
+        report = fc.cluster_facts(
+            root,
+            threshold=fc.DEFAULT_THRESHOLD if args.threshold is None else args.threshold,
+            embedder=args.embedder,
+            embed_threshold=fc.DEFAULT_EMBED_THRESHOLD if args.embed_threshold is None else args.embed_threshold,
+            scope=args.scope, summarize=args.summarize,
+        )
+        if args.apply:
+            report["applied"] = fc.apply_clusters(root, report)
+    except (ValueError, RuntimeError, OSError, PermissionError) as exc:
+        print(f"[commontrace] {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(report, indent=2) if args.json else fc.render(report))
+    if args.strict and report["clusters"]:
+        print(f"\n[commontrace] --strict: {len(report['clusters'])} fact cluster(s).", file=sys.stderr)
+        return 1
+    return 0
+
+
 def run(args: argparse.Namespace) -> int:
+    if getattr(args, "target", "lessons") == "facts":
+        return run_facts(args)
     root = paths.resolve_root(args.dest)
     lessons = evidence_io.load_active_lessons(root)
 
