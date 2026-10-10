@@ -20,6 +20,7 @@ Dynamic provider prefixes and test-only variables are described in the relevant 
 | `COMMONTRACE_COMMONS_VERIFY_KEY_ID` | [commontrace/commons_integrity.py:94](../commontrace/commons_integrity.py#L94) |
 | `COMMONTRACE_COMMONS_VERIFY_KEY_PREVIOUS` | [commontrace/commons_integrity.py:91](../commontrace/commons_integrity.py#L91) |
 | `COMMONTRACE_COMMONS_VERIFY_KEY_PREVIOUS_ID` | [commontrace/commons_integrity.py:95](../commontrace/commons_integrity.py#L95) |
+| `COMMONTRACE_CONSOLIDATE_EMBEDDER` | [commontrace/commands/consolidate_cmd.py:40](../commontrace/commands/consolidate_cmd.py#L40) |
 | `COMMONTRACE_CONVERSATION_BENCH` | [commontrace/commands/bench_cmd.py:118](../commontrace/commands/bench_cmd.py#L118) |
 | `COMMONTRACE_CONVERSATION_EMBEDDER` | [commontrace/commands/conversation_cmd.py:35](../commontrace/commands/conversation_cmd.py#L35) |
 | `COMMONTRACE_DEFAULT_FUSION` | [commontrace/retrieval_io.py:33](../commontrace/retrieval_io.py#L33) |
@@ -32,11 +33,14 @@ Dynamic provider prefixes and test-only variables are described in the relevant 
 | `COMMONTRACE_FACT_EMBEDDER` | [commontrace/fact_embeddings.py:5](../commontrace/fact_embeddings.py#L5) |
 | `COMMONTRACE_FACT_EMBEDDER_PATH` | [commontrace/fact_embeddings.py:6](../commontrace/fact_embeddings.py#L6) |
 | `COMMONTRACE_GEMINI_API_KEY` | [commontrace/embeddings.py:195](../commontrace/embeddings.py#L195) |
-| `COMMONTRACE_GLINER_MODEL_PATH` | [commontrace/gateway.py:830](../commontrace/gateway.py#L830) |
+| `COMMONTRACE_GLINER_MODEL_PATH` | [commontrace/gateway.py:847](../commontrace/gateway.py#L847) |
 | `COMMONTRACE_HANDOFF_KEY` | [commontrace/memfs.py:291](../commontrace/memfs.py#L291) |
 | `COMMONTRACE_HUB_API_KEY` | [commontrace/commands/_format.py:17](../commontrace/commands/_format.py#L17) |
 | `COMMONTRACE_HUB_API_KEY_FILE` | [commontrace/commands/_format.py:17](../commontrace/commands/_format.py#L17) |
 | `COMMONTRACE_HUB_URL` | [commontrace/commands/_format.py:11](../commontrace/commands/_format.py#L11) |
+| `COMMONTRACE_INGEST_EMBEDDER` | [commontrace/ingest/embedding.py:3](../commontrace/ingest/embedding.py#L3) |
+| `COMMONTRACE_INGEST_EMBED_BATCH` | [commontrace/ingest/embedding.py:12](../commontrace/ingest/embedding.py#L12) |
+| `COMMONTRACE_INGEST_EMBED_CONCURRENCY` | [commontrace/ingest/embedding.py:14](../commontrace/ingest/embedding.py#L14) |
 | `COMMONTRACE_JOBS_SECONDS` | [commontrace/daemon.py:210](../commontrace/daemon.py#L210) |
 | `COMMONTRACE_LLM_API_KEY` | [commontrace/commands/agent_cmd.py:56](../commontrace/commands/agent_cmd.py#L56) |
 | `COMMONTRACE_LLM_BASE_URL` | [commontrace/llm.py:139](../commontrace/llm.py#L139) |
