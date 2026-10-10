@@ -7,12 +7,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import tempfile
 from pathlib import Path
 
-from commontrace.gateway import Gateway
-
 ROOT = Path(__file__).resolve().parents[1]
+# Export the checkout this script lives in, not whichever copy is installed.
+sys.path.insert(0, str(ROOT))
+
+from commontrace.gateway import Gateway  # noqa: E402
 
 
 def full_document() -> dict:
