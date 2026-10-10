@@ -271,6 +271,43 @@ class FalkorGraph(_SnapshotGraph):
         self.db.close()
 
 
+BACKENDS = ("neo4j", "falkordb")
+
+
+def from_env(name: str | None = None):
+    """The graph mirror named by `name` or ``COMMONTRACE_GRAPH_BACKEND`` (neo4j | falkordb), or None.
+
+    Connection settings come from the environment; passwords resolve through
+    `secrets_provider.env_secret`, so ``NAME_FILE`` and AWS sources work:
+
+    - neo4j: ``COMMONTRACE_NEO4J_URI`` (required), ``_USER`` (neo4j), ``_PASSWORD``, ``_DATABASE`` (neo4j)
+    - falkordb: ``COMMONTRACE_FALKORDB_HOST`` (localhost), ``_PORT`` (6379), ``_PASSWORD``, ``_GRAPH``
+
+    ``COMMONTRACE_GRAPH_NAMESPACE`` (commontrace) separates stores sharing one engine.
+    """
+    from commontrace.secrets_provider import env_secret
+
+    choice = (name or os.environ.get("COMMONTRACE_GRAPH_BACKEND", "")).strip().lower()
+    if not choice or choice in ("local", "none"):
+        return None
+    if choice not in BACKENDS:
+        raise ValueError(f"graph backend must be one of {', '.join(BACKENDS)}, not {choice!r}")
+    namespace = os.environ.get("COMMONTRACE_GRAPH_NAMESPACE", "commontrace").strip() or "commontrace"
+    if choice == "neo4j":
+        uri = os.environ.get("COMMONTRACE_NEO4J_URI", "").strip()
+        if not uri:
+            raise ValueError("COMMONTRACE_NEO4J_URI is required for the neo4j graph backend")
+        return Neo4jGraph(uri, username=os.environ.get("COMMONTRACE_NEO4J_USER", "neo4j"),
+                          password=env_secret("COMMONTRACE_NEO4J_PASSWORD"),
+                          database=os.environ.get("COMMONTRACE_NEO4J_DATABASE", "neo4j"), namespace=namespace)
+    port = os.environ.get("COMMONTRACE_FALKORDB_PORT", "6379")
+    if not port.isdigit():
+        raise ValueError("COMMONTRACE_FALKORDB_PORT must be a port number")
+    return FalkorGraph(host=os.environ.get("COMMONTRACE_FALKORDB_HOST", "localhost"), port=int(port),
+                       password=env_secret("COMMONTRACE_FALKORDB_PASSWORD") or None,
+                       graph_name=os.environ.get("COMMONTRACE_FALKORDB_GRAPH", "commontrace"), namespace=namespace)
+
+
 def rebuild(root: str, backend) -> dict:
     """Publish a complete canonical snapshot; failed writes retain previous visibility."""
     from commontrace import graph

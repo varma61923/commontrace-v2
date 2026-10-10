@@ -41,8 +41,20 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p_q.add_argument("--hops", type=int, default=1, choices=(1, 2, 3), help="Max hops to traverse.")
     p_q.add_argument("--as-of", default="", help="What was true at this moment (valid time).")
     p_q.add_argument("--known-at", default="", help="As the store knew it at this moment (record time).")
+    p_q.add_argument("--backend", default="local", choices=("local", "mirror"),
+                     help="local: the canonical files; mirror: the Neo4j/FalkorDB mirror named by "
+                          "COMMONTRACE_GRAPH_BACKEND (publish it first with `graph mirror`).")
+    p_q.add_argument("--relation", action="append", default=[],
+                     help="Only follow this relation (repeatable; mirror backend).")
     p_q.add_argument("--dest", default=None)
     p_q.set_defaults(func=run_query)
+
+    p_mir = sub.add_parser("mirror", help="Publish the graph to the Neo4j/FalkorDB mirror (COMMONTRACE_GRAPH_BACKEND).")
+    p_mir.add_argument("--backend", default=None, choices=("neo4j", "falkordb"),
+                       help="Overrides COMMONTRACE_GRAPH_BACKEND.")
+    p_mir.add_argument("--json", action="store_true")
+    p_mir.add_argument("--dest", default=None)
+    p_mir.set_defaults(func=run_mirror)
 
     p_t = sub.add_parser("timeline", help="How an entity's relations changed: what began, ended, and why.")
     p_t.add_argument("entity", help="Entity ID.")
@@ -202,6 +214,69 @@ def run_edge(args: argparse.Namespace) -> int:
     return 0
 
 
+def _open_mirror(name: str | None = None):
+    from commontrace import graph_backends
+
+    backend = graph_backends.from_env(name)
+    if backend is None:
+        raise ValueError("no graph mirror configured: set COMMONTRACE_GRAPH_BACKEND to neo4j or falkordb")
+    return backend
+
+
+def _close(backend) -> None:
+    close = getattr(backend, "close", None)
+    if close is not None:
+        close()
+
+
+def run_mirror(args: argparse.Namespace) -> int:
+    from commontrace import graph_backends
+
+    root = paths.resolve_root(args.dest)
+    try:
+        backend = _open_mirror(args.backend)
+        try:
+            out = graph_backends.rebuild(root, backend)
+        finally:
+            _close(backend)
+    except (ValueError, RuntimeError) as exc:
+        print(f"[commontrace] {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(out, indent=2))
+    else:
+        print(f"[commontrace] mirrored {out['nodes']} node(s) and {out['edges']} edge(s); "
+              "the local files stay canonical.")
+    return 0
+
+
+def _query_mirror(args: argparse.Namespace, start_ids: list[str]) -> None:
+    backend = _open_mirror()
+    try:
+        relations = args.relation or None
+        as_of, known_at = args.as_of or None, args.known_at or None
+        if args.hops == 1:
+            for sid in start_ids:
+                print(f"# Neighbors of '{sid}' (mirror):")
+                rows = backend.typed_neighbors(sid, relations=relations, as_of=as_of, known_at=known_at)
+                if not rows:
+                    print("  (no connected edges)")
+                for n in rows:
+                    arrow = f"--[{n['relation']}]-->" if n["direction"] == "out" else f"<--[{n['relation']}]--"
+                    print(f"  ({sid}) {arrow} ({n['neighbor_id']})")
+            return
+        sub = backend.multi_hop(start_ids, max_hops=args.hops, relations=relations, as_of=as_of, known_at=known_at)
+        print(f"# Subgraph (mirror): {len(sub['nodes'])} nodes, {len(sub['edges'])} edges")
+        print("\n## Nodes:")
+        for node_id in sub["nodes"]:
+            print(f"  - {node_id} [hop={sub['hop_distances'].get(node_id, 0)}]")
+        print("\n## Edges:")
+        for e in sub["edges"]:
+            print(f"  - ({e['source']}) --[{e['relation']}]--> ({e['target']})")
+    finally:
+        _close(backend)
+
+
 def run_query(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
     try:
@@ -213,7 +288,11 @@ def run_query(args: argparse.Namespace) -> int:
             print(f"No known graph entities found matching '{args.entity}'.")
             return 0
 
-        if args.hops == 1:
+        if getattr(args, "backend", "local") == "mirror":
+            _query_mirror(args, start_ids)
+        elif getattr(args, "relation", None):
+            raise ValueError("--relation filters the mirror backend; add --backend mirror")
+        elif args.hops == 1:
             for sid in start_ids:
                 neighbors = graph.get_neighbors(root, sid, as_of=args.as_of or None,
                                                 known_at=args.known_at or None)
