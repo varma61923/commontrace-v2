@@ -17,6 +17,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 from commontrace import paths
+from commontrace.ontology import FALLBACK_TYPE
 
 SPACY_LABELS = {
     "PERSON": "person", "ORG": "organization", "GPE": "place", "LOC": "place", "FAC": "place",
@@ -191,9 +192,21 @@ _TYPE_RANK = {"error": 0, "file": 1, "symbol": 2, "service": 3, "tool": 4, "pers
               "place": 7, "event": 8, "concept": 9}
 
 
-def _resolve(text: str, raw: list[tuple[str, str, int, int, str]], onto) -> list[Mention]:
+def _ontology_type(name: str, text: str, start: int, end: int, onto, embedder) -> str | None:
+    """A declared type for an untyped (fallback) mention, from the ontology's aliases and
+    keywords, and from embeddings when an embedder is given; None when unknown."""
+    from commontrace import ontology_classify
+
+    methods = ("keyword", "embedding") if embedder is not None else ("keyword",)
+    found = ontology_classify.classify(name, text[max(0, start - 80):end + 40], onto=onto, embedder=embedder,
+                                       methods=methods)
+    return found.type
+
+
+def _resolve(text: str, raw: list[tuple[str, str, int, int, str]], onto, embedder=None) -> list[Mention]:
     """Overlapping spans keep the most specific reading; one key per entity, first
-    occurrence kept."""
+    occurrence kept. A mention left at the fallback type is classified into the
+    ontology's types (`ontology_classify`) when its name or context says which."""
     raw = sorted(raw, key=lambda r: (r[2], -(r[3] - r[2]), _PRIORITY[r[4]], _TYPE_RANK.get(r[1], 9)))
     taken: list[tuple[int, int]] = []
     by_key: dict[str, Mention] = {}
@@ -201,6 +214,8 @@ def _resolve(text: str, raw: list[tuple[str, str, int, int, str]], onto) -> list
         if any(s < te and ts < e for ts, te in taken):
             continue
         type_ = onto.entity_type(type_) if onto is not None else type_
+        if onto is not None and type_ == FALLBACK_TYPE:
+            type_ = _ontology_type(name, text, s, e, onto, embedder) or type_
         key = canonical_key(name, type_, onto)
         if not key.split(":", 1)[-1]:
             continue
@@ -222,12 +237,14 @@ def _alias_map(onto) -> dict[str, str]:
     return out
 
 
-def extract(text: str, *, onto=None, use_spacy: bool | None = None) -> list[Mention]:
-    """Entities in `text`, each once, in order of first mention."""
-    return extract_batch([text], onto=onto, use_spacy=use_spacy)[0]
+def extract(text: str, *, onto=None, use_spacy: bool | None = None, embedder=None) -> list[Mention]:
+    """Entities in `text`, each once, in order of first mention. With an ontology, untyped
+    mentions are classified into its types; `embedder` adds semantic classification."""
+    return extract_batch([text], onto=onto, use_spacy=use_spacy, embedder=embedder)[0]
 
 
-def extract_batch(texts: Iterable[str], *, onto=None, use_spacy: bool | None = None) -> list[list[Mention]]:
+def extract_batch(texts: Iterable[str], *, onto=None, use_spacy: bool | None = None,
+                  embedder=None) -> list[list[Mention]]:
     """`extract` over many texts; spaCy (when used) processes them as one stream."""
     texts = [(t or "")[:MAX_TEXT] for t in texts]
     nlp = spacy_model() if use_spacy is not False else None
@@ -241,7 +258,7 @@ def extract_batch(texts: Iterable[str], *, onto=None, use_spacy: bool | None = N
         raw = _pattern_mentions(text, aliases)
         if doc is not None:
             raw += _spacy_mentions(doc)
-        out.append(_resolve(text, raw, onto))
+        out.append(_resolve(text, raw, onto, embedder))
     return out
 
 
@@ -267,7 +284,7 @@ def _lesson_text(path: str) -> tuple[str, str]:
 
 
 def link_lessons(root: str, slugs: list[str] | None = None, *, use_spacy: bool | None = None,
-                 min_mentions: int = 1) -> dict:
+                 min_mentions: int = 1, embedder=None) -> dict:
     """Extract entities from lessons and record them in the graph: one node per
     canonical entity (its surface forms kept as aliases, its mention count as weight)
     and a `mentions` edge from each lesson to each entity it names. Re-running is
@@ -287,7 +304,7 @@ def link_lessons(root: str, slugs: list[str] | None = None, *, use_spacy: bool |
             continue
         names.append(name)
         texts.append(text)
-    mentions = extract_batch(texts, onto=onto, use_spacy=use_spacy)
+    mentions = extract_batch(texts, onto=onto, use_spacy=use_spacy, embedder=embedder)
     counts: dict[str, int] = {}
     for found in mentions:
         for m in found:
@@ -337,9 +354,12 @@ def entities(root: str, *, type_: str | None = None, limit: int = 100) -> list[d
     return sorted(out, key=lambda e: (-e["mentions"], e["id"]))[:max(1, limit)]
 
 
-def merge(root: str, keep: str, duplicate: str) -> dict:
+def merge(root: str, keep: str, duplicate: str, *, evidence: dict | None = None,
+          provenance: dict | None = None) -> dict:
     """Fold `duplicate` into `keep`: its edges move over, its names become aliases, and
-    it is recorded as superseded so the history is not lost."""
+    it is recorded as superseded so the history is not lost. `evidence` (why they are
+    one, e.g. a resolver's method and score) is kept on both the duplicate and the
+    `supersedes` edge; `provenance` is recorded for the merge's node and edge writes."""
     from commontrace import graph
 
     keep_id, dup_id = graph._clean_id(keep), graph._clean_id(duplicate)
@@ -353,7 +373,8 @@ def merge(root: str, keep: str, duplicate: str) -> dict:
         aliases = sorted({*winner.properties.get("aliases", []), *loser.properties.get("aliases", []),
                           loser.name})[:40]
         mentions = int(winner.properties.get("mentions", 0) or 0) + int(loser.properties.get("mentions", 0) or 0)
-        graph._put_node(txn, keep_id, winner.entity_type, "", {"aliases": aliases, "mentions": mentions}, None)
+        graph._put_node(txn, keep_id, winner.entity_type, "", {"aliases": aliases, "mentions": mentions},
+                        provenance)
         for edge in list(txn.edges):
             if edge.invalid_at is not None or dup_id not in (edge.source, edge.target):
                 continue
@@ -362,10 +383,12 @@ def merge(root: str, keep: str, duplicate: str) -> dict:
             graph._close(edge, graph._now(), graph._now(), f"merged into {keep_id}")
             if src != dst:
                 graph.add_edge(root, src, dst, edge.relation, weight=edge.weight, valid_at=edge.valid_at,
-                               properties={**(edge.properties or {}), "merged_from": dup_id})
+                               properties={**(edge.properties or {}), "merged_from": dup_id}, provenance=provenance)
             moved += 1
-        graph.add_edge(root, keep_id, dup_id, "supersedes", properties={"reason": "entity merge"})
-        loser.properties = {**loser.properties, "merged_into": keep_id}
+        reason = {"reason": "entity merge", **({"evidence": evidence} if evidence else {})}
+        graph.add_edge(root, keep_id, dup_id, "supersedes", properties=reason, provenance=provenance)
+        loser.properties = {**loser.properties, "merged_into": keep_id, **({"merge_evidence": evidence}
+                                                                           if evidence else {})}
         txn.nodes_dirty = True
     return {"kept": keep_id, "merged": dup_id, "edges_moved": moved}
 

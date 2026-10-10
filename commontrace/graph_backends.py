@@ -1,19 +1,77 @@
-"""Optional source-bound graph snapshots; local canonical evidence remains authoritative."""
+"""Optional source-bound graph snapshots; local canonical evidence remains authoritative.
+
+The Neo4j/FalkorDB mirror keeps the local graph's typing and bi-temporality: every
+edge carries its ontology relation (as `e.relation`, and as the relationship type
+when that name sanitizes safely), its valid time (`valid_at`, `invalid_at`), its
+record time (`created_at`, `closed_recorded_at`) and its `expired_at`. Reads apply
+`graph._is_active_edge`'s semantics in Cypher, and every value is a parameter."""
 from __future__ import annotations
 
 import hashlib
 import json
 import os
+import re
 import time
 import uuid
 from datetime import datetime, timezone
 
+GENERIC_TYPE = "MEMORY"
+MAX_HOPS = 4
+MAX_ROWS = 2000
+_REL_TYPE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
+_DIRECTIONS = {"out": "-[e]->", "in": "<-[e]-", "both": "-[e]-"}
+# Bi-temporal visibility, mirroring graph._is_active_edge: an edge recorded after
+# $known is unknown then; a close recorded after $known had not happened; the
+# edge must be valid at $at. Fixed-width UTC strings compare chronologically.
+ACTIVE_EDGE = ("($known IS NULL OR e.created_at IS NULL OR e.created_at <= $known) AND "
+               "(e.valid_at IS NULL OR e.valid_at <= $at) AND "
+               "(e.invalid_at IS NULL OR e.invalid_at > $at OR "
+               "($known IS NOT NULL AND e.closed_recorded_at IS NOT NULL AND e.closed_recorded_at > $known)) AND "
+               "(e.expired_at IS NULL OR e.expired_at > $at)")
+
 
 def _moment(value=None):
+    """A fixed-width UTC timestamp, so string order in the native engine is time order."""
     instant = datetime.fromisoformat(value.replace("Z", "+00:00")) if value else datetime.now(timezone.utc)
     if instant.tzinfo is None:
         instant = instant.replace(tzinfo=timezone.utc)
-    return instant.astimezone(timezone.utc).isoformat()
+    return instant.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f+00:00")
+
+
+def _optional_moment(value):
+    return _moment(value) if value else None
+
+
+def relation_key(name) -> str:
+    """The canonical relation name stored in `e.relation`: the ontology's key form."""
+    key = re.sub(r"[^a-z0-9]+", "_", str(name or "").strip().lower()).strip("_")
+    if not key or len(key) > 64:
+        raise ValueError("graph relation names are 1-64 characters")
+    return key
+
+
+def relationship_type(relation: str) -> str:
+    """The native relationship type for `relation`. Cypher cannot parameterize a type, so
+    only a strict `^[A-Z][A-Z0-9_]{0,63}$` form is used (and backtick-quoted); anything
+    else keeps the generic type, with the relation still stored as a property."""
+    candidate = str(relation or "").upper()
+    return candidate if _REL_TYPE.fullmatch(candidate) else GENERIC_TYPE
+
+
+def _relations_param(relations) -> list[str] | None:
+    if relations is None:
+        return None
+    values = [relations] if isinstance(relations, str) else list(relations)
+    if not values or len(values) > 64:
+        raise ValueError("filter by 1-64 relations, or none")
+    return sorted({relation_key(v) for v in values})
+
+
+def visibility(as_of=None, known_at=None) -> dict:
+    """`$at`/`$known` for `ACTIVE_EDGE`: as `graph._is_active_edge`, the valid time
+    defaults to the record time when only that is given, else to now."""
+    known = _optional_moment(known_at)
+    return {"at": _moment(as_of) if as_of else known or _moment(), "known": known}
 
 
 class _SnapshotGraph:
@@ -45,15 +103,28 @@ class _SnapshotGraph:
         self._query("MERGE (n:CommonTrace {id:$id,namespace:$ns,generation:$gen}) SET n.properties=$properties",
                     {"id": node_id, "ns": self.namespace, "gen": self.generation, "properties": json.dumps(properties)})
 
-    def write_edge(self, source: str, target: str, *, weight: float = 1., valid_from=None, valid_until=None):
+    def write_edge(self, source: str, target: str, *, relation: str = "relates_to", weight: float = 1.,
+                   valid_at=None, invalid_at=None, expired_at=None, created_at=None, closed_recorded_at=None,
+                   properties: dict | None = None, valid_from=None, valid_until=None):
+        """Mirror one bi-temporal edge. The relation is kept as `e.relation` and, when it
+        sanitizes safely, as the relationship type; every value is a parameter.
+        `valid_from`/`valid_until` are the earlier names of `valid_at`/`invalid_at`."""
         if not self.generation:
             raise ValueError("begin a source-bound graph snapshot before writing")
+        relation = relation_key(relation)
+        start, end = _optional_moment(valid_at or valid_from), _optional_moment(invalid_at or valid_until)
+        expired = _optional_moment(expired_at)
+        rel_type = relationship_type(relation)
         self._query("MATCH (a:CommonTrace {id:$source,namespace:$ns,generation:$gen}), "
                     "(b:CommonTrace {id:$target,namespace:$ns,generation:$gen}) "
-                    "CREATE (a)-[e:MEMORY]->(b) SET e.weight=$weight,e.valid_from=$start,e.valid_until=$end",
+                    f"CREATE (a)-[e:`{rel_type}`]->(b) SET e.relation=$relation,e.weight=$weight,"
+                    "e.valid_at=$start,e.invalid_at=$end,e.expired_at=$expired,e.created_at=$created,"
+                    "e.closed_recorded_at=$closed,e.valid_from=$start,e.valid_until=$until,e.properties=$properties",
                     {"source": source, "target": target, "ns": self.namespace, "gen": self.generation,
-                     "weight": weight, "start": _moment(valid_from) if valid_from else None,
-                     "end": _moment(valid_until) if valid_until else None})
+                     "relation": relation, "weight": weight, "start": start, "end": end, "expired": expired,
+                     "created": _optional_moment(created_at), "closed": _optional_moment(closed_recorded_at),
+                     "until": min((m for m in (end, expired) if m), default=None),
+                     "properties": json.dumps(properties or {}, sort_keys=True, default=str)})
 
     def publish_snapshot(self):
         if not self.generation:
@@ -71,14 +142,67 @@ class _SnapshotGraph:
         # Historical and staging generations remain invisible. Retaining them
         # avoids deleting another writer's staging generation during publication.
 
-    def neighbors(self, node_id: str, *, as_of=None) -> list[dict]:
-        result = self._query("MATCH (s:CommonTraceIndex {namespace:$ns}), "
-            "(n:CommonTrace {id:$id,namespace:$ns})-[e:MEMORY]-(m:CommonTrace {namespace:$ns}) "
-            "WHERE n.generation=s.current AND m.generation=s.current AND "
-            "(e.valid_from IS NULL OR e.valid_from <= $at) AND (e.valid_until IS NULL OR e.valid_until > $at) "
-            "RETURN m.id,coalesce(e.weight,1.0) LIMIT 2000",
-            {"ns": self.namespace, "id": node_id, "at": _moment(as_of)})
-        return [{"neighbor_id": row[0], "weight": row[1]} for row in result]
+    def _edges_from(self, ids: list[str], *, direction: str, relations, as_of, known_at, limit: int) -> list:
+        """Published edges incident to `ids`, visible at (as_of, known_at):
+        rows of (here, there, relation, outgoing, weight, valid_at, invalid_at)."""
+        if direction not in _DIRECTIONS:
+            raise ValueError("direction is out, in or both")
+        return self._query("MATCH (s:CommonTraceIndex {namespace:$ns}), "
+            f"(n:CommonTrace {{namespace:$ns}}){_DIRECTIONS[direction]}(m:CommonTrace {{namespace:$ns}}) "
+            "WHERE n.id IN $ids AND n.generation=s.current AND m.generation=s.current AND "
+            "($relations IS NULL OR e.relation IN $relations) AND " + ACTIVE_EDGE + " "
+            "RETURN n.id,m.id,coalesce(e.relation,'relates_to'),startNode(e)=n,coalesce(e.weight,1.0),"
+            "e.valid_at,e.invalid_at LIMIT $limit",
+            {"ns": self.namespace, "ids": list(ids), "relations": _relations_param(relations),
+             "limit": int(limit), **visibility(as_of, known_at)})
+
+    def neighbors(self, node_id: str, *, as_of=None, known_at=None) -> list[dict]:
+        """Nodes one visible edge away, through any relation: [{neighbor_id, weight}]."""
+        rows = self._edges_from([node_id], direction="both", relations=None, as_of=as_of, known_at=known_at,
+                                limit=MAX_ROWS)
+        return [{"neighbor_id": row[1], "weight": row[4]} for row in rows]
+
+    def typed_neighbors(self, node_id: str, *, relations=None, direction: str = "both", as_of=None,
+                        known_at=None) -> list[dict]:
+        """Neighbors with the connecting relation and validity, optionally only through
+        `relations` and in one `direction` (out, in or both)."""
+        rows = self._edges_from([node_id], direction=direction, relations=relations, as_of=as_of,
+                                known_at=known_at, limit=MAX_ROWS)
+        return [{"neighbor_id": row[1], "relation": row[2], "direction": "out" if row[3] else "in",
+                 "weight": row[4], "valid_at": row[5], "invalid_at": row[6]} for row in rows]
+
+    def multi_hop(self, start, max_hops: int = 2, relations=None, as_of=None, known_at=None, *,
+                  max_edges: int = MAX_ROWS) -> dict:
+        """Breadth-first subgraph within `max_hops` (1-4) of `start` (an id or ids), one
+        bounded query per hop, in `graph.multi_hop_subgraph`'s shape and visibility."""
+        if isinstance(max_hops, bool) or not isinstance(max_hops, int) or not 1 <= max_hops <= MAX_HOPS:
+            raise ValueError(f"max_hops must be an integer from 1 to {MAX_HOPS}")
+        starts = [start] if isinstance(start, str) else list(start)
+        if not starts or len(starts) > MAX_ROWS or not all(isinstance(s, str) and s for s in starts):
+            raise ValueError(f"multi_hop needs 1-{MAX_ROWS} non-empty start ids")
+        cap = max(1, min(int(max_edges), MAX_ROWS))
+        distances = dict.fromkeys(starts, 0)
+        edges: list[dict] = []
+        seen: set[tuple] = set()
+        frontier = list(distances)
+        for hop in range(1, max_hops + 1):
+            if not frontier or len(edges) >= cap:
+                break
+            rows = self._edges_from(frontier, direction="both", relations=relations, as_of=as_of,
+                                    known_at=known_at, limit=cap)
+            reached = []
+            for here, there, relation, outgoing, weight, start_at, end_at in rows:
+                source, target = (here, there) if outgoing else (there, here)
+                key = (source, target, relation, start_at)
+                if key not in seen and len(edges) < cap:
+                    seen.add(key)
+                    edges.append({"source": source, "target": target, "relation": relation, "weight": weight,
+                                  "valid_at": start_at, "invalid_at": end_at})
+                if there not in distances:
+                    distances[there] = hop
+                    reached.append(there)
+            frontier = reached
+        return {"nodes": list(distances), "edges": edges, "hop_distances": distances}
 
 
 class Neo4jGraph(_SnapshotGraph):
@@ -161,8 +285,11 @@ def rebuild(root: str, backend) -> dict:
     for edge in edges:
         if edge.source in nodes and edge.target in nodes and not (
                 nodes[edge.source].is_forgotten or nodes[edge.target].is_forgotten):
-            backend.write_edge(edge.source, edge.target, weight=edge.weight,
-                               valid_from=edge.valid_at, valid_until=edge.invalid_at or edge.expired_at)
+            backend.write_edge(edge.source, edge.target, relation=edge.relation, weight=edge.weight,
+                               valid_at=edge.valid_at, invalid_at=edge.invalid_at, expired_at=edge.expired_at,
+                               created_at=edge.created_at or None,
+                               closed_recorded_at=(edge.properties or {}).get("closed_recorded_at"),
+                               properties=edge.properties)
             count += 1
     backend.publish_snapshot()
     return {"nodes": sum(not n.is_forgotten for n in nodes.values()), "edges": count,

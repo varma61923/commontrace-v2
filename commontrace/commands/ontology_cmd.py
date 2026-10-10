@@ -32,6 +32,49 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p_schema.add_argument("--replace", action="store_true")
     p_schema.add_argument("--dest", default=None)
     p_schema.set_defaults(func=run_schema)
+    p_cls = sub.add_parser("classify", help="Classify an entity mention into the ontology's entity types.")
+    p_cls.add_argument("text", help="The mention (with --extract: a text whose mentions are classified); "
+                                    "'-' reads stdin.")
+    p_cls.add_argument("--context", default="", help="Text the mention appears in.")
+    p_cls.add_argument("--extract", action="store_true", help="Classify every entity mentioned in the text.")
+    p_cls.add_argument("--embedder", default=None,
+                       help="Embedding provider tag (e.g. arctic-m, openai:text-embedding-3-small); "
+                            "default COMMONTRACE_GRAPH_EMBEDDER, else none.")
+    p_cls.add_argument("--llm", action="store_true", help="Also ask the configured LLM (COMMONTRACE_LLM_*).")
+    p_cls.add_argument("--threshold", type=float, default=None, help="Minimum confidence (default 0.6).")
+    p_cls.add_argument("--json", action="store_true")
+    p_cls.add_argument("--dest", default=None)
+    p_cls.set_defaults(func=run_classify)
+
+
+def run_classify(args: argparse.Namespace) -> int:
+    import json
+
+    from commontrace import entities, llm, ontology_classify
+
+    text = sys.stdin.read() if args.text == "-" else args.text
+    try:
+        onto = ontology.load(paths.resolve_root(args.dest))
+        options = {"onto": onto, "embedder": args.embedder, "llm": llm.complete if args.llm else None}
+        if args.threshold is not None:
+            options["threshold"] = args.threshold
+        if args.extract:
+            names = [m.name for m in entities.extract(text, use_spacy=False)]
+            rows = [{"mention": n, **ontology_classify.classify(n, text, **options).to_dict()} for n in names]
+        else:
+            found = ontology_classify.classify(text, args.context, **options)
+            rows = [{"mention": text.strip(), **found.to_dict()}]
+    except (ValueError, RuntimeError, TypeError) as exc:
+        print(f"[commontrace] {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(rows, indent=2))
+        return 0
+    for row in rows:
+        lineage = "  (" + " is a ".join(row["ancestors"]) + ")" if len(row["ancestors"]) > 1 else ""
+        print(f"{row['mention']!r}: {row['type'] or 'unknown'}  confidence={row['confidence']:.2f}  "
+              f"method={row['method']}{lineage}")
+    return 0
 
 
 def run_propose(args):

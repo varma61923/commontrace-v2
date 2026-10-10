@@ -128,6 +128,32 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p_m.add_argument("--dest", default=None)
     p_m.set_defaults(func=run_merge)
 
+    p_rx = sub.add_parser("extract-relations",
+                          help="Extract ontology relations (triples) from a file or text into graph edges.")
+    p_rx.add_argument("source", help="A text file, or the text itself; '-' reads stdin.")
+    p_rx.add_argument("--llm", action="store_true",
+                      help="Extract with the configured LLM (COMMONTRACE_LLM_*) instead of offline patterns.")
+    p_rx.add_argument("--dry-run", action="store_true", help="Show the triples without writing them.")
+    p_rx.add_argument("--json", action="store_true")
+    p_rx.add_argument("--dest", default=None)
+    p_rx.set_defaults(func=run_extract_relations)
+
+    p_rs = sub.add_parser("resolve", help="Propose (and with --apply, merge) entities that name one thing.")
+    p_rs.add_argument("--embedder", default=None,
+                      help="Embedding provider tag (e.g. arctic-m, openai:text-embedding-3-small); default "
+                           "COMMONTRACE_GRAPH_EMBEDDER, else character n-gram similarity.")
+    p_rs.add_argument("--threshold", type=float, default=None,
+                      help="Report pairs at or above this similarity (default 0.85 embeddings, 0.6 n-grams).")
+    p_rs.add_argument("--apply", action="store_true",
+                      help="Merge compatible pairs at or above the stricter --apply-threshold.")
+    p_rs.add_argument("--apply-threshold", type=float, default=None,
+                      help="Similarity a pair needs to be merged (default 0.95 embeddings, 0.85 n-grams).")
+    p_rs.add_argument("--context", action="store_true", help="Embed each entity with its neighbours' names.")
+    p_rs.add_argument("--limit", type=int, default=100)
+    p_rs.add_argument("--json", action="store_true")
+    p_rs.add_argument("--dest", default=None)
+    p_rs.set_defaults(func=run_resolve)
+
 
 def run_node(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
@@ -436,4 +462,68 @@ def run_merge(args: argparse.Namespace) -> int:
         print(f"[commontrace] {exc}", file=sys.stderr)
         return 2
     print(f"[commontrace] merged {out['merged']} into {out['kept']} ({out['edges_moved']} edge(s) moved).")
+    return 0
+
+
+def _relation_source(source: str) -> tuple[str, str]:
+    """(label, text) for a file path, '-' (stdin) or literal text."""
+    import os
+
+    from commontrace import relation_extraction
+
+    if source == "-":
+        return "<stdin>", sys.stdin.read(relation_extraction.MAX_TEXT + 1)
+    if os.path.isfile(source):
+        with open(source, encoding="utf-8", errors="replace") as fh:
+            return os.path.abspath(source), fh.read(relation_extraction.MAX_TEXT + 1)
+    return "<text>", source
+
+
+def run_extract_relations(args: argparse.Namespace) -> int:
+    from commontrace import llm, relation_extraction
+
+    try:
+        label, text = _relation_source(args.source)
+        report = relation_extraction.ingest_text(paths.resolve_root(args.dest), text, source=label,
+                                                 llm=llm.complete if args.llm else None, dry_run=args.dry_run)
+    except (OSError, ValueError, llm.LLMUnavailable) as exc:
+        print(f"[commontrace] {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(report, indent=2))
+        return 0
+    for t in report["extracted"]:
+        when = f"  valid_at={t['valid_at']}" if t["valid_at"] else ""
+        print(f"({t['subject']}) --[{t['relation']}]--> ({t['object']})  conf={t['confidence']:.2f}{when}")
+    for error in report["errors"]:
+        print(f"  - {error}", file=sys.stderr)
+    verb = "would write" if args.dry_run else "wrote"
+    edges = report["triples"] if args.dry_run else report["edges_written"]
+    print(f"[commontrace] {report['triples']} triple(s); {verb} {edges} edge(s) from {label}.", file=sys.stderr)
+    return 1 if report["errors"] else 0
+
+
+def run_resolve(args: argparse.Namespace) -> int:
+    from commontrace import embeddings, entity_resolution
+
+    try:
+        out = entity_resolution.resolve(paths.resolve_root(args.dest), embedder=args.embedder,
+                                        threshold=args.threshold, apply=args.apply,
+                                        apply_threshold=args.apply_threshold, context=args.context,
+                                        limit=args.limit)
+    except (ValueError, embeddings.EmbeddingError) as exc:
+        print(f"[commontrace] {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(out, indent=2))
+        return 0
+    for p in out["pairs"]:
+        flag = "" if p["compatible"] else "  [blocked: incompatible types]"
+        print(f"{p['score']:.3f}  {p['a']}  ~  {p['b']}{flag}")
+    for m in out["merged"]:
+        print(f"merged {m['merged']} into {m['kept']} ({m['method']} {m['score']:.3f})")
+    for s in out["skipped"]:
+        print(f"skipped {s['a']} ~ {s['b']}: {s['reason']}")
+    print(f"[commontrace] {len(out['pairs'])} candidate pair(s) by {out['method']} >= {out['threshold']}; "
+          f"{len(out['merged'])} merged (>= {out['apply_threshold']}).", file=sys.stderr)
     return 0
