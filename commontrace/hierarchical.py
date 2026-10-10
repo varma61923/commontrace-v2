@@ -447,18 +447,51 @@ def _matching_active(facts: dict[str, AtomicFact], statement: str, scopes: list[
     return (index or _statement_index(facts)).exact(statement, scopes)
 
 
+def _semantic_pool(root, facts, statement, scopes, *, exclude=frozenset()):
+    """Bounded indexed candidates; JSONL retains its legacy compatibility scan."""
+    from commontrace import fact_store
+    requested = frozenset(scopes)
+    if isinstance(facts, fact_store.FactMap):
+        tokens = sorted(_signature(statement)[0])[:32]
+        expression = " OR ".join('"' + token.replace('"', '""') + '"' for token in tokens)
+        identities = [row[0] for row in facts.connection.execute(
+            "SELECT fact_id FROM fact_fts WHERE fact_fts MATCH ? ORDER BY bm25(fact_fts) LIMIT 100",
+            (expression,),
+        )] if expression else []
+        # Pending writes are not yet in the materialized FTS projection.
+        identities += [key for key, fact in facts.loaded.items()
+                       if set(tokens) & _signature(fact.statement)[0]][:100]
+        if root:
+            from commontrace import fact_vector_projection
+            try:
+                identities += [key for key, score in fact_vector_projection.search(root, statement, limit=15)
+                               if score >= 0.6]
+            except (ImportError, OSError, ValueError, RuntimeError):
+                pass
+        pool = [facts[key] for key in dict.fromkeys(identities) if key in facts and key not in exclude]
+    else:
+        pool = [fact for fact in facts.values() if fact.id not in exclude]
+    return [fact for fact in pool if fact.status == "active" and not fact.forgotten
+            and _scopes_compatible(requested, fact.scopes)]
+
+
 def _semantic_duplicate(root: str | None, facts: dict[str, AtomicFact], statement: str,
-                        scopes: list[str]) -> AtomicFact | None:
+                        scopes: list[str], decision: dict | None = None) -> AtomicFact | None:
     """An embedding near-duplicate in compatible scope with the same numbers and negations."""
     if not root:
         return None
     from commontrace import fact_embeddings
 
     _w, numbers, negations = _signature(statement)
-    requested = frozenset(scopes)
-    pool = [f for f in facts.values() if f.status == "active" and not f.forgotten
-            and _scopes_compatible(requested, f.scopes)
-            and _signature(f.statement)[1:] == (numbers, negations)]
+    pool = _semantic_pool(root, facts, statement, scopes)
+    if decision is not None and os.environ.get("COMMONTRACE_FACT_CONFLICT_JUDGE", "").lower() == "llm":
+        from commontrace import fact_conflicts
+        ranked = fact_embeddings.similar(statement, pool, root=root, threshold=0.6)
+        candidates = [fact for fact, _ in ranked[:15]] if ranked is not None else pool[:15]
+        decision.update(fact_conflicts.judge_joint(statement, candidates))
+        return next((fact for fact in candidates if fact.id in decision["duplicates"]
+                     and _signature(fact.statement)[1:] == (numbers, negations)), None)
+    pool = [fact for fact in pool if _signature(fact.statement)[1:] == (numbers, negations)]
     if not pool:
         return None
     found = fact_embeddings.similar(statement, pool, root=root, threshold=NEAR_DUPLICATE_COSINE)
@@ -469,7 +502,8 @@ MAX_VALUE_VARIANTS = 2
 
 
 def _detect_conflicts(facts: dict[str, AtomicFact], index: _StatementIndex, fact: AtomicFact,
-                      root: str | None, sink: list, *, may_supersede: bool, later=frozenset()) -> None:
+                      root: str | None, sink: list, *, may_supersede: bool, later=frozenset(),
+                      joint_decision=None) -> None:
     """Contradictions between a newly added fact and active facts in identical scope (see fact_conflicts).
 
     Candidates come from the index by lookup: the same slot with the opposite
@@ -506,17 +540,20 @@ def _detect_conflicts(facts: dict[str, AtomicFact], index: _StatementIndex, fact
                 for older in live(same[n]):
                     found.setdefault(older.id, (older, "value"))
     if os.environ.get("COMMONTRACE_FACT_CONFLICT_JUDGE", "").strip().lower() == "llm":
-        pool = [f for f, _k in found.values()]
-        if root:
-            from commontrace import fact_embeddings
-
-            near = fact_embeddings.similar(fact.statement, [
-                f for f in facts.values() if f.id != fact.id and f.id not in later and f.status == "active"
-                and not f.forgotten
-                and f.scopes == fact.scopes], root=root, threshold=0.8) or []
-            pool += [f for f, _cos in near[:5] if f not in pool]
-        for fid in fact_conflicts.judge(fact.statement, pool):
-            found[fid] = (facts[fid], "judged")
+        if joint_decision is None:
+            pool = [f for f, _k in found.values()]
+            if root:
+                from commontrace import fact_embeddings
+                candidates = _semantic_pool(root, facts, fact.statement, fact.scopes,
+                                            exclude=later | {fact.id})
+                near = fact_embeddings.similar(fact.statement, candidates, root=root, threshold=0.6) or []
+                pool += [f for f, _cos in near[:15] if f not in pool]
+            judged = fact_conflicts.judge(fact.statement, pool[:15])
+        else:
+            judged = joint_decision["contradictions"]
+        for fid in judged:
+            if fid in facts and fid != fact.id and fid not in later and facts[fid].scopes == fact.scopes:
+                found[fid] = (facts[fid], "judged")
     now = _now()
     for fid, (older, kind) in sorted(found.items()):
         action = "flagged"
@@ -563,11 +600,12 @@ def _add_locked(
 ) -> tuple[AtomicFact, str]:
     index = index if index is not None else _statement_index(facts)
     existing = index.exact(statement, scopes)
+    decision = {}
     if existing is None and dedupe in ("near", "semantic") and evidence is None:
         # A paraphrase of an active fact reinforces it instead of becoming a second record.
         existing = index.near(statement, scopes)
         if existing is None and dedupe == "semantic":
-            existing = _semantic_duplicate(root, facts, statement, scopes)
+            existing = _semantic_duplicate(root, facts, statement, scopes, decision)
     if existing is not None:
         if existing.evidence_bound or evidence is not None:
             before = existing.to_dict()
@@ -633,7 +671,7 @@ def _add_locked(
     facts[fact.id] = fact
     index.add(fact)
     if conflicts is not None:
-        _detect_conflicts(facts, index, fact, root, conflicts, may_supersede=True)
+        _detect_conflicts(facts, index, fact, root, conflicts, may_supersede=True, joint_decision=decision or None)
     return fact, "ADD"
 
 

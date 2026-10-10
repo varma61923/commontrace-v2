@@ -33,13 +33,22 @@ CREATE TABLE IF NOT EXISTS facts (
  category TEXT NOT NULL, confidence REAL NOT NULL, length INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS fact_norm ON facts(norm, status);
 CREATE INDEX IF NOT EXISTS fact_slot ON facts(slot, negative, numbers, status);
-CREATE TABLE IF NOT EXISTS terms (
- kind TEXT NOT NULL, term TEXT NOT NULL, fact_id TEXT NOT NULL,
- count INTEGER NOT NULL, PRIMARY KEY(kind, term, fact_id));
-CREATE INDEX IF NOT EXISTS term_fact ON terms(fact_id);
-CREATE TABLE IF NOT EXISTS term_counts (
- kind TEXT NOT NULL, term TEXT NOT NULL, documents INTEGER NOT NULL,
- PRIMARY KEY(kind, term));
+CREATE TABLE IF NOT EXISTS lexicon (
+ id INTEGER PRIMARY KEY, kind TEXT NOT NULL, term TEXT NOT NULL,
+ documents INTEGER NOT NULL DEFAULT 0, UNIQUE(kind,term));
+CREATE TABLE IF NOT EXISTS postings (
+ term_id INTEGER NOT NULL, fact_row INTEGER NOT NULL, count INTEGER NOT NULL,
+ PRIMARY KEY(term_id,fact_row)) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS posting_fact ON postings(fact_row);
+CREATE VIEW IF NOT EXISTS terms AS
+ SELECT l.kind,l.term,f.id AS fact_id,p.count FROM postings p
+ JOIN lexicon l ON l.id=p.term_id JOIN facts f ON f.rowid=p.fact_row;
+CREATE VIEW IF NOT EXISTS term_counts AS SELECT kind,term,documents FROM lexicon;
+CREATE TRIGGER IF NOT EXISTS clear_terms INSTEAD OF DELETE ON terms BEGIN
+ DELETE FROM postings WHERE term_id=(SELECT id FROM lexicon WHERE kind=old.kind AND term=old.term)
+ AND fact_row=(SELECT rowid FROM facts WHERE id=old.fact_id); END;
+CREATE TRIGGER IF NOT EXISTS clear_counts INSTEAD OF DELETE ON term_counts BEGIN
+ UPDATE lexicon SET documents=0 WHERE kind=old.kind AND term=old.term; END;
 CREATE VIRTUAL TABLE IF NOT EXISTS fact_fts USING fts5(fact_id UNINDEXED, statement);
 """
 
@@ -63,6 +72,31 @@ def _connect(path: str, *, create: bool = False) -> sqlite3.Connection:
         connection.execute("PRAGMA journal_mode=WAL")
         connection.execute("PRAGMA synchronous=FULL")
         connection.executescript(_SCHEMA)
+    elif connection.execute("SELECT type FROM sqlite_master WHERE name='terms'").fetchone() == ("table",):
+        # Recheck under the writer lock: two restarting processes may observe v1.
+        try:
+            connection.execute('BEGIN IMMEDIATE')
+            if connection.execute("SELECT type FROM sqlite_master WHERE name='terms'").fetchone() == ('table',):
+                connection.execute('ALTER TABLE terms RENAME TO legacy_terms')
+                connection.execute('ALTER TABLE term_counts RENAME TO legacy_counts')
+                statement = ''
+                for line in _SCHEMA.splitlines(keepends=True):
+                    statement += line
+                    if sqlite3.complete_statement(statement):
+                        connection.execute(statement)
+                        statement = ''
+                connection.execute("INSERT INTO lexicon(kind,term,documents) "
+                                   "SELECT kind,term,documents FROM legacy_counts")
+                connection.execute("INSERT INTO postings SELECT l.id,f.rowid,t.count FROM legacy_terms t "
+                                   "JOIN lexicon l ON l.kind=t.kind AND l.term=t.term "
+                                   "JOIN facts f ON f.id=t.fact_id")
+                connection.execute('DROP TABLE legacy_terms')
+                connection.execute('DROP TABLE legacy_counts')
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            connection.close()
+            raise
     return connection
 
 
@@ -104,19 +138,21 @@ def _project(connection: sqlite3.Connection, fact) -> None:
             ("overlap-v1", {word: 1 for word in overlap}), ("bm25-v1", frequencies),
         ) for term, count in values.items()
     ]
-    connection.executemany("INSERT INTO terms VALUES(?,?,?,?)", term_rows)
-    connection.executemany(
-        "INSERT INTO term_counts VALUES(?,?,1) ON CONFLICT(kind,term) DO UPDATE SET documents=documents+1",
-        ((kind, term) for kind, term, _, _ in term_rows),
-    )
     rowid = connection.execute("SELECT rowid FROM facts WHERE id=?", (fact.id,)).fetchone()[0]
+    for kind, term, _, count in term_rows:
+        connection.execute("INSERT INTO lexicon(kind,term,documents) VALUES(?,?,1) "
+                           "ON CONFLICT(kind,term) DO UPDATE SET documents=documents+1", (kind, term))
+        tid = connection.execute("SELECT id FROM lexicon WHERE kind=? AND term=?", (kind, term)).fetchone()[0]
+        connection.execute("INSERT INTO postings VALUES(?,?,?)", (tid, rowid, count))
     connection.execute("INSERT INTO fact_fts(rowid,fact_id,statement) VALUES(?,?,?)", (rowid, fact.id, fact.statement))
 
 
 def _remove_terms(connection, identity):
-    rows = connection.execute("SELECT kind,term FROM terms WHERE fact_id=?", (identity,)).fetchall()
-    connection.executemany("UPDATE term_counts SET documents=documents-1 WHERE kind=? AND term=?", rows)
-    connection.execute("DELETE FROM terms WHERE fact_id=?", (identity,))
+    row = connection.execute("SELECT rowid FROM facts WHERE id=?", (identity,)).fetchone()
+    if row:
+        connection.execute("UPDATE lexicon SET documents=documents-1 WHERE id IN "
+                           "(SELECT term_id FROM postings WHERE fact_row=?)", row)
+        connection.execute("DELETE FROM postings WHERE fact_row=?", row)
 
 
 
@@ -134,7 +170,7 @@ def _append(connection: sqlite3.Connection, fact, *, delete: bool = False) -> No
     payload = fact.to_dict()
     relations = {"updates": [fact.id]} if version > 1 else {}
     record = MemoryRecord(
-        fact.id, "fact", version, payload, status=fact.status,
+        fact.id, "fact", version, payload, status="active" if fact.status == "active" else "deprecated",
         relations=relations, provenance={"source_traces": fact.source_traces},
         scope={"labels": fact.scopes}, valid_from=fact.valid_from,
         valid_until=fact.valid_until, created_at=fact.created_at,
@@ -393,7 +429,7 @@ def migrate(root: str) -> dict[str, Any]:
                 raise ValueError("migration checksum mismatch")
             report = {"facts": len(values), "source_sha256": hashlib.sha256(raw).hexdigest(),
                       "normalized_sha256": expected, "destination_sha256": actual,
-                      "source_preserved": True, "backend": "sqlite-wal", "schema_version": 1}
+                      "source_preserved": True, "backend": "sqlite-wal", "schema_version": 2}
             connection.execute("INSERT INTO meta VALUES('migration',?)", (_dump(report),))
             connection.commit()
             connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -431,8 +467,8 @@ def rebuild(root: str) -> None:
     with transaction(root, write=True) as facts:
         connection = facts.connection
         connection.execute("DELETE FROM facts")
-        connection.execute("DELETE FROM terms")
-        connection.execute("DELETE FROM term_counts")
+        connection.execute("DELETE FROM postings")
+        connection.execute("UPDATE lexicon SET documents=0")
         connection.execute("DELETE FROM fact_fts")
         for identity, operation, record in connection.execute(
             "SELECT fact_id, operation, record FROM events WHERE seq IN (SELECT MAX(seq) FROM events GROUP BY fact_id)"
@@ -553,3 +589,48 @@ class ReadView(Mapping):
 
 def read_view(root: str) -> ReadView:
     return ReadView(root)
+
+
+def fts_candidates(root: str, query: str, *, context: list[str] | None = None, limit=200, as_of=None):
+    """Bounded FTS5 BM25 candidates, fresh temporal/proof/scope admission.
+
+    This channel uses SQLite's index statistics; the historical ``bm25-v1`` API
+    retains its precise scoped-statistics contract. A new candidate channel does
+    not silently redefine legacy scores.
+    """
+    from commontrace import hierarchical as h
+    from commontrace import lesson_cache, memory_authority, memory_control
+    from commontrace.fact_evidence import EvidenceResolver
+    from commontrace.search_recipes import terms
+
+    tokens = list(dict.fromkeys(terms(query)))[:32]
+    if not tokens or limit <= 0:
+        return []
+    expression = " OR ".join('"' + token.replace('"', '""') + '"' for token in tokens)
+    moment = lesson_cache.parse_moment(as_of or h._now())
+    with transaction(root) as facts:
+        rows = facts.connection.execute(
+            "SELECT f.id,bm25(fact_fts) FROM fact_fts "
+            "JOIN facts f ON f.rowid=fact_fts.rowid WHERE fact_fts MATCH ? "
+            "AND f.forgotten=0 ORDER BY bm25(fact_fts) LIMIT ?",
+            (expression, max(1000, min(10000, limit * 10))),
+        )
+        resolver = EvidenceResolver(root, facts, as_of=as_of)
+        result = []
+        for identity, score in rows:
+            fact = facts[identity]
+            if (
+                fact.status != "active"
+                and not as_of
+                or not h._valid_at(fact, moment)
+                or h._is_expired(fact, moment)
+                or not memory_control.matches(fact.scopes, context or [])
+                or not memory_authority.permits(root, fact)
+                or fact.evidence_bound
+                and not resolver.assess(identity).eligible
+            ):
+                continue
+            result.append((fact, float(-score)))
+            if len(result) >= limit:
+                break
+        return result

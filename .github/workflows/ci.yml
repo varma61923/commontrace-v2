@@ -423,6 +423,16 @@ jobs:
           python -m pip install -r hub/requirements.txt
           python -m pip install bandit pip-audit mypy
 
+      - name: Injector poison fixtures fail closed
+        run: |
+          python - <<'PY'
+          import json
+          from benchmarks.injector_bench import poison_check
+          result = poison_check()
+          print(json.dumps(result, indent=2))
+          assert result["passed"], "InjectorPoisonBench detected an unsafe injection"
+          PY
+
       - name: Bandit static analysis
         run: bandit -r commontrace/ hub/ memory/ -x "*/tests/*,*/test_*" -ll
 
@@ -787,6 +797,18 @@ jobs:
           java-version: '21'
       - run: mvn -B test
         working-directory: sdk/jvm
+
+  test-native-memory-middleware:
+    name: Native OpenAI and Microsoft memory middleware
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      # Client SDKs use MCP 1.x; keep them separate from the Hub's MCP 2.x environment.
+      - run: python -m pip install -e . pytest openai-agents==0.14.6 openai==2.26.0 agent-framework-core==1.0.0rc5
+      - run: python -m pytest tests/test_runtime_turn.py tests/test_integrations_agents.py -q
 
   test-new-frameworks:
     needs: changes

@@ -803,3 +803,39 @@ class MarketListing(Base):
     status: Mapped[str] = mapped_column(String(16), default="listed", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
     withdrawn_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+class MemoryRecordEvent(Base):
+    __tablename__ = "memory_record_events"
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True
+    )
+    id: Mapped[str] = mapped_column(String(256), primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, primary_key=True)
+    record: Mapped[dict] = mapped_column(JSONB, nullable=False)
+
+
+class MemoryRecordProjection(Base):
+    __tablename__ = "memory_records"
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True
+    )
+    id: Mapped[str] = mapped_column(String(256), primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    record: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    scope: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    search_vector: Mapped[str] = mapped_column(
+        TSVECTOR, Computed("to_tsvector('english', coalesce(record->'payload'->>'text',''))", persisted=True)
+    )
+    __table_args__ = (
+        Index("ix_memory_records_search", "search_vector", postgresql_using="gin"),
+        Index("ix_memory_records_scope", "scope", postgresql_using="gin"),
+    )
+
+
+class MemoryVectorErasure(Base):
+    """Durable retry after canonical erasure commits and an external vector engine fails."""
+
+    __tablename__ = "memory_vector_erasures"
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True
+    )
+    record_id: Mapped[str] = mapped_column(String(256), primary_key=True)

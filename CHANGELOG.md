@@ -13,16 +13,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Opt-in incremental local fact storage (P0, partial).** `fact migrate` activates
-  SQLite WAL, an append-only transactional event ledger and rebuildable statement,
-  contradiction, lexical and FTS5 projections, preserving the original JSONL
-  with a checksum report. `fact export` and `fact rebuild` support portability
-  and recovery. Versioned fact event envelopes are an additive protocol extension;
-  existing evidence, temporal and scope checks remain enforced. Synthetic 30K
-  single-write p95 measured 1.98 ms (JSONL 5,906.58 ms); the 1M run exhausted disk,
-  so the specified million-fact and hybrid gates are unverified. P1–P4 were not
-  started. See `docs/strategy/next-generation-evidence.md` for reproduction and
-  limits.
+- **Event-backed agent memory runtime.** Compact SQLite fact storage passed the
+  synthetic 1M write gates (1.09 ms p95; 2,533 facts/s). A versioned envelope adds
+  scoped facts, profiles, observations, episodes, lessons and directives; the Hub
+  adds PostgreSQL full-text projections and fail-closed tenant RLS. Facet
+  observations refresh atomically and verify source revisions during retrieval.
+- **Durable hooks and evaluated learning.** Eight agent serializers share a
+  ten-event core, an optional warm native broker, acknowledged injection delivery,
+  persistent once/inherit decisions and escaped context templates. Captured runs
+  produce bounded, quarantined proposals; reviewed shadow studies promote or
+  retire only from sound randomized causal evidence. History imports, framework
+  callbacks, profiles and one-call save/retrieve share the runtime.
+- **Privacy and release evidence.** Recursive local erasure removes events,
+  vectors, derived records and pending deliveries; retention requires an audited
+  reason. Added injector poison CI, a real patch/test coding harness, Graphify
+  audits and an Ed25519-signed public aggregate leaderboard. Model-graded quality,
+  SWE uplift, 1M hybrid latency and the simplification gate remain unverified or
+  unmet; see `docs/strategy/next-generation-evidence.md`.
 - **Terminal fact lineage.** Same-instant contradiction resolutions retain their
   empty terminal validity interval on reload; such historical records remain
   ineligible at every valid-time instant.

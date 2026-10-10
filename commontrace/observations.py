@@ -18,6 +18,7 @@ how the recent 30d count compares with the prior 60d count.
 Storage: memory/observations/observations.jsonl, atomic tmp+rename writes
 via commontrace._jsonl, matching the rest of the store. Stdlib only.
 """
+
 from __future__ import annotations
 
 import glob
@@ -95,8 +96,9 @@ class Observation:
         if clean.get("trend") not in TRENDS:
             clean["trend"] = "new"
         revisions = clean.get("source_revisions", {})
-        if not isinstance(revisions, dict) or not all(isinstance(k, str) and isinstance(v, str)
-                                                     for k, v in revisions.items()):
+        if not isinstance(revisions, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in revisions.items()
+        ):
             raise TypeError("observation source_revisions must map identifiers to digests")
         clean["source_revisions"] = revisions
         return cls(**clean)
@@ -126,15 +128,24 @@ def load_observations(root: str, *, scope: str | None = None) -> dict[str, Obser
             valid = True
             for source_id, revision in observation.source_revisions.items():
                 fact = facts.get(source_id)
-                if fact is None or fact.status != "active" or fact.forgotten or claim_revision(fact) != revision \
-                        or fact.statement != observation.statement \
-                        or not scope_allows(observation.scopes, fact.scopes) \
-                        or not resolver._fact_live(fact) or not resolver.assess(source_id).eligible:
+                if (
+                    fact is None
+                    or fact.status != "active"
+                    or fact.forgotten
+                    or claim_revision(fact) != revision
+                    or fact.statement != observation.statement
+                    or not scope_allows(observation.scopes, fact.scopes)
+                    or not resolver._fact_live(fact)
+                    or not resolver.assess(source_id).eligible
+                ):
                     valid = False
                     break
                 expected = _bound_evidence(resolver, fact)
-                if expected is None or observation.evidence != expected \
-                        or observation.proof_count != resolver.assess(source_id).supports:
+                if (
+                    expected is None
+                    or observation.evidence != expected
+                    or observation.proof_count != resolver.assess(source_id).supports
+                ):
                     valid = False
                     break
             if not valid:
@@ -157,8 +168,15 @@ def _bound_evidence(resolver: EvidenceResolver, fact: hierarchical.AtomicFact) -
         if quote is None:
             return None
         seen.add(key)
-        evidence.append({"quote": quote, "source_id": receipt.source_id, "kind": receipt.kind,
-                         "revision": receipt.revision, "at": receipt.recorded_at})
+        evidence.append(
+            {
+                "quote": quote,
+                "source_id": receipt.source_id,
+                "kind": receipt.kind,
+                "revision": receipt.revision,
+                "at": receipt.recorded_at,
+            }
+        )
     return evidence if len(evidence) == resolver.assess(fact.id).supports else None
 
 
@@ -212,8 +230,7 @@ def _trend(evidence_times: list[str], *, now: datetime, created_at: str = "") ->
 def _observation_id(statement: str, scopes: list[str] | None = None) -> str:
     norm = re.sub(r"\s+", " ", statement.strip().lower())
     if scopes:
-        payload = json.dumps({"statement": norm, "scopes": sorted(set(scopes))},
-                             sort_keys=True, separators=(",", ":"))
+        payload = json.dumps({"statement": norm, "scopes": sorted(set(scopes))}, sort_keys=True, separators=(",", ":"))
         return "obs-scoped-" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
     return "obs-" + hashlib.sha256(norm.encode("utf-8")).hexdigest()[:12]
 
@@ -234,8 +251,13 @@ def consolidate_facts(root: str, now: str | None = None) -> list[Observation]:
     out: dict[str, Observation] = {}
     for fact_id in sorted(facts):
         fact = facts[fact_id]
-        if fact.status != "active" or fact.forgotten or fact.confirmations < 2 \
-                or not hierarchical._valid_at(fact, now_dt) or hierarchical._is_expired(fact, now_dt):
+        if (
+            fact.status != "active"
+            or fact.forgotten
+            or fact.confirmations < 2
+            or not hierarchical._valid_at(fact, now_dt)
+            or hierarchical._is_expired(fact, now_dt)
+        ):
             continue
         assessment = resolver.assess(fact.id)
         if fact.evidence_bound and not assessment.eligible:
@@ -249,11 +271,13 @@ def consolidate_facts(root: str, now: str | None = None) -> list[Observation]:
         for trace_id in sorted({str(t) for t in fact.source_traces if str(t).strip()}):
             if fact.evidence_bound:
                 break
-            evidence.append({
-                "quote": fact.statement,
-                "source_id": trace_id,
-                "at": trace_dates.get(trace_id) or fact.created_at or "",
-            })
+            evidence.append(
+                {
+                    "quote": fact.statement,
+                    "source_id": trace_id,
+                    "at": trace_dates.get(trace_id) or fact.created_at or "",
+                }
+            )
         if not evidence:
             evidence.append({"quote": fact.statement, "source_id": "", "at": fact.created_at or ""})
         trend = _trend([str(e.get("at", "")) for e in evidence], now=now_dt, created_at=fact.created_at)
@@ -273,3 +297,50 @@ def consolidate_facts(root: str, now: str | None = None) -> list[Observation]:
         )
     save_observations(root, out)
     return [out[key] for key in sorted(out)]
+
+
+def consolidate_record_facet(root: str, entity: str, facet: str, source_ids: list[str], *, complete=None):
+    """One facet per observation, update in place, preserve versions and grounding."""
+    import json
+    import re
+
+    from commontrace.memory_journal import Journal
+
+    journal = Journal(root)
+    sources = []
+    for identity in source_ids[:9]:
+        history = journal.history(identity)
+        if not history or history[-1].kind != "fact" or history[-1].status != "active":
+            raise ValueError("observation requires active grounding facts")
+        sources.append(history[-1])
+    if (
+        not sources
+        or not entity.strip()
+        or not facet.strip()
+        or any(record.scope != sources[0].scope for record in sources)
+    ):
+        raise ValueError("observation requires a facet and facts from one scope")
+    text = sources[-1].payload.get("text", "")
+    if complete is not None:
+        from commontrace.llm_runtime import purpose
+
+        with purpose("observation-consolidation"):
+            output, _ = complete(
+                "Consolidate exactly ONE entity/facet. Prefer updates over new observations; "
+                "preserve explicit transitions and uncertainty. Never compute numbers or invent dates. "
+                'Return JSON {"text":"one contextual observation"}.\n'
+                + json.dumps({"entity": entity, "facet": facet, "facts": [record.payload for record in sources]})
+            )
+        from commontrace import llm
+
+        text = llm._extract_json_object(output)["text"]
+        offered_numbers = set(re.findall(r"\d+(?:\.\d+)?", json.dumps([record.payload for record in sources])))
+        if set(re.findall(r"\d+(?:\.\d+)?", text)) - offered_numbers:
+            raise ValueError("consolidation introduced a computed or unsupported number")
+    from commontrace.memory_record import facet_observation
+
+    observation = facet_observation(entity, facet, sources, text=text)
+    history = journal.history(observation.id)
+    if history:
+        observation = facet_observation(entity, facet, sources, previous=history[-1], text=text)
+    return journal.put(observation)

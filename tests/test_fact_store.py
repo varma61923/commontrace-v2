@@ -227,3 +227,27 @@ def test_staged_add_then_remove_leaves_no_orphan_projection(tmp_path):
     assert fact_store.events(str(tmp_path)) == []
     fact_store.rebuild(str(tmp_path))
     assert h.load_facts(str(tmp_path)) == {}
+
+
+def test_legacy_postings_upgrade_is_atomic_for_concurrent_readers(tmp_path):
+    import sqlite3
+    from concurrent.futures import ThreadPoolExecutor
+
+    from commontrace import fact_store, hierarchical
+    root = str(tmp_path)
+    fact_store.migrate(root)
+    fact, _ = hierarchical.add_fact(root, 'A durable assertion exists', category='test')
+    db = sqlite3.connect(fact_store.database_path(root))
+    db.executescript('DROP TRIGGER clear_terms; DROP TRIGGER clear_counts; '
+                     'CREATE TABLE legacy_terms AS SELECT * FROM terms; '
+                     'CREATE TABLE legacy_counts AS SELECT * FROM term_counts; '
+                     'DROP VIEW terms; DROP VIEW term_counts; '
+                     'ALTER TABLE legacy_terms RENAME TO terms; '
+                     'ALTER TABLE legacy_counts RENAME TO term_counts; '
+                     'DROP TABLE postings; DROP TABLE lexicon;')
+    db.close()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: hierarchical.load_facts(root)[fact.id].statement, range(2)))
+    assert results == ['A durable assertion exists'] * 2
+    with fact_store.transaction(root) as canonical:
+        assert canonical.connection.execute('SELECT COUNT(*) FROM postings').fetchone()[0] > 0

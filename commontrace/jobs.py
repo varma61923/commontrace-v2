@@ -379,3 +379,23 @@ HANDLERS: dict[str, Callable[[str, dict], Any]] = {
     "commit": _commit,
     "distill": _distill,
 }
+def _learn_session(root: str, payload: dict) -> dict:
+    from commontrace.llm_runtime import LLMRuntime
+    from commontrace.session_learning import learn
+
+    runtime = LLMRuntime(root, payload["session"])
+    with runtime.scope():
+        results = []
+        for _ in range(32):
+            result = learn(root, payload["session"], scope=payload["scope"], semantic_segments=True)
+            results.append(result)
+            if result.get("reason") in ("already reflected", "session still open; cursor unchanged"):
+                break
+        else:
+            # Keep this durable job retryable rather than abandoning an oversized completed transcript.
+            raise RuntimeError("reflection batch limit reached; resume from the committed cursor")
+        result = {"reflections": results}
+    return {**result, "usage": runtime.manifest()}
+
+
+HANDLERS["learn-session"] = _learn_session

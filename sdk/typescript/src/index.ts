@@ -14,5 +14,5 @@ export type {
   TraceRelated,
   TraceVote,
 } from "./types.js";
-export { MemoryClient, memoryToolDefinitions, vercelMemoryTools, mastraMemoryTools } from "./memory.js";
-export type { MemoryClientOptions, Evidence, Recall } from "./memory.js";
+export { MemoryClient, memoryToolDefinitions, vercelMemoryTools, mastraMemoryTools, vercelMemoryMiddleware, mastraMemoryProcessor, replaceMemoryUpdate } from "./memory.js";
+export type { MemoryClientOptions, Evidence, Recall, MemoryTurn, RuntimeMessage, RecordEnvelope } from "./memory.js";

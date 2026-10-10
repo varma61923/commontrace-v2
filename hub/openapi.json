@@ -4795,6 +4795,84 @@
         ]
       }
     },
+    "/api/v1/memory/records/{operation}": {
+      "post": {
+        "operationId": "memoryRecordOperation",
+        "parameters": [
+          {
+            "description": "",
+            "in": "path",
+            "name": "operation",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "description": "Versioned memory data",
+                "type": "object"
+              }
+            }
+          },
+          "description": "MemoryRecord envelope, scoped query, or id and erasure reason.",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "description": "Versioned memory data",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Versioned record, search results, or erasure audit."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid record or version conflict."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Payload exceeds 100 kB."
+          },
+          "503": {
+            "$ref": "#/components/responses/Overloaded"
+          },
+          "504": {
+            "$ref": "#/components/responses/Timeout"
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "summary": "Versioned scoped records: put, search or hard forget",
+        "tags": [
+          "Memory"
+        ]
+      }
+    },
     "/api/v1/openapi.json": {
       "get": {
         "description": "Describes every route the Hub can serve; a route whose surface is disabled on this deployment answers 404.",
@@ -8829,6 +8907,84 @@
         ]
       }
     },
+    "/v1/memory/{operation}": {
+      "post": {
+        "operationId": "memoryRecordSDKOperation",
+        "parameters": [
+          {
+            "description": "",
+            "in": "path",
+            "name": "operation",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "description": "Scoped record SDK data",
+                "type": "object"
+              }
+            }
+          },
+          "description": "Record envelope or query, context labels, or erasure reason.",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "description": "Record SDK data",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Record SDK response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid record or version conflict."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Payload exceeds 100 kB."
+          },
+          "503": {
+            "$ref": "#/components/responses/Overloaded"
+          },
+          "504": {
+            "$ref": "#/components/responses/Timeout"
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "summary": "Local SDK record-put, record-search and record-forget wire parity",
+        "tags": [
+          "Memory"
+        ]
+      }
+    },
     "/v1/traces": {
       "post": {
         "description": "Needs `write`. Each span becomes a trace (profile `otel`, spanId as idempotency key); a span carrying an occasion id and outcome also records that outcome. Protobuf is not accepted. Ingest stops at the first entitlement or rate-limit refusal.",
@@ -8923,6 +9079,10 @@
     }
   },
   "tags": [
+    {
+      "description": "Versioned, tenant-scoped memory records and erasure.",
+      "name": "Memory"
+    },
     {
       "description": "The MCP streamable-HTTP endpoint (path HUB_STREAMABLE_HTTP_PATH, default /mcp). Tools are discovered with `tools/list`; their arguments are described by the server itself.",
       "name": "MCP"

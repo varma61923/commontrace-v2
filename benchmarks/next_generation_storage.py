@@ -96,6 +96,13 @@ def main() -> int:
         "command": " ".join([sys.executable, "-m", "benchmarks.next_generation_storage", *sys.argv[1:]]),
         "trials": args.trials, "legacy": [], "sqlite": [],
     }
+    result['source_files_sha256'] = {
+        name: hashlib.sha256(open(name, 'rb').read()).hexdigest()
+        for name in ('commontrace/hierarchical.py', 'commontrace/fact_store.py',
+                     'commontrace/memory_record.py', 'commontrace/fact_index.py',
+                     'commontrace/fact_conflicts.py', 'benchmarks/next_generation_storage.py')
+    }
+    result['source_snapshot'] = 'file hashes identify the measured worktree; commit alone may precede these changes'
     def persist():
         with open(output, "w", encoding="utf-8") as handle:
             json.dump(result, handle, indent=2)
@@ -141,8 +148,8 @@ def main() -> int:
         "single_write_p95_lt_20ms_at_1m": bool(million and million["single_write_p95_ms"] < 20),
         "batch_gte_2000_facts_per_second_at_1m": bool(million and million["batch_facts_per_second"] >= 2000),
         "hybrid_search_at_1m": "unverified: sparse timings are not hybrid timings",
-        "postgres_server": "not implemented in P0 local migration",
-        "restart_zero_reembedding": "no embedding writes; existing vector snapshot engine unchanged",
+        "postgres_server": "not measured by this local workload",
+        "restart_zero_reembedding": "not exercised: this workload does not write embeddings",
     }
     persist()
     with open(output, "rb") as source:

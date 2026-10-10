@@ -5,6 +5,14 @@ OCCASION = {"type": ["string", "null"], "maxLength": 256}
 TEXT = {"type": "string", "maxLength": 20000}
 CONTEXT = {"type": "array", "items": {"type": "string", "maxLength": 256}, "maxItems": 100}
 FIELDS = {
+    "record-put": ({"record": {"type": "object"}}, ["record"]),
+    "record-search": ({"query": TEXT, "limit": {"type": "integer", "minimum": 0, "maximum": 1000}}, []),
+    "record-forget": ({"id": {**TEXT, "minLength": 1, "maxLength": 256},
+                        "reason": {**TEXT, "minLength": 1}}, ["id", "reason"]),
+    "turn": ({"session_id": {"type": "string", "minLength": 1, "maxLength": 256},
+              "query": TEXT, "text": TEXT, "event": TEXT, "payload": {"type": "object"},
+            "budget": {"type": "integer", "minimum": 0, "maximum": 8000}},
+             ["session_id", "query"]),
     "add": ({"text": {**TEXT, "minLength": 1}, "local": {"type": "boolean"}, "memory_type": TEXT}, ["text"]),
     "batch": ({"items": {"type": "array", "items": {"type": "object"}, "maxItems": 200}}, ["items"]),
     "search": ({"query": TEXT, "recipe": TEXT, "retriever": TEXT, "center": TEXT,
@@ -93,6 +101,12 @@ def components() -> dict:
     def array(name):
         return {"type": "array", "items": {"$ref": "#/components/schemas/"+name}}
     responses = {
+        "record-put": {"record": obj},
+        "record-search": {"results": {"type": "array", "items": obj}},
+        "record-forget": {"deleted": string_array, "reason": {"type": "string"}, "at": {"type": "string"}},
+        "turn": {"context": {"type": "string"}, "injected": string_array,
+                 "profile": obj, "buffer": {"type": "array", "items": obj},
+                 "session_id": {"type": "string"}, "scope": obj, "results": array("Evidence")},
         "add": {"calls": {"type": "integer"}, "add_only": {"type": "boolean"}, "facts": array("Fact"),
                 "entity_ids": string_array},
         "batch": {"add_only": {"type": "boolean"}, "facts": array("Fact")},

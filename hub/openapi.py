@@ -630,18 +630,28 @@ _HEADERS = {
 }
 
 _TAGS = [
-    ("MCP", "The MCP streamable-HTTP endpoint (path HUB_STREAMABLE_HTTP_PATH, default /mcp). Tools are "
-            "discovered with `tools/list`; their arguments are described by the server itself."),
+    ("Memory", "Versioned, tenant-scoped memory records and erasure."),
+    (
+        "MCP",
+        "The MCP streamable-HTTP endpoint (path HUB_STREAMABLE_HTTP_PATH, default /mcp). Tools are "
+        "discovered with `tools/list`; their arguments are described by the server itself.",
+    ),
     ("REST", "The /api/v1 REST API (HUB_REST_API_ENABLED) the CommonTrace client plugin speaks. X-API-Key."),
-    ("Marketplace", "The lesson marketplace under /api/v1/market (HUB_REST_API_ENABLED). Uploads are verified "
-                    "against HUB_MARKET_REFEREES_FILE."),
+    (
+        "Marketplace",
+        "The lesson marketplace under /api/v1/market (HUB_REST_API_ENABLED). Uploads are verified "
+        "against HUB_MARKET_REFEREES_FILE.",
+    ),
     ("Telemetry", "Client beacons under /api/v1/telemetry (HUB_REST_API_ENABLED). Authenticated, body ignored."),
     ("Signup", "Self-serve account creation (HUB_SIGNUP_ENABLED; POST /api/v1/keys also needs the REST API)."),
     ("Console", "The customer console under /app (HUB_CONSOLE_SECRET): HTML pages and form posts."),
-    ("Admin", "The operator console under /admin (HUB_ADMIN_TOKEN): HTML pages and form posts. Each form "
+    (
+        "Admin",
+        "The operator console under /admin (HUB_ADMIN_TOKEN): HTML pages and form posts. Each form "
               "names its target in a body field (`org_id`, `user_id`, `key_id`, `trace_id`, `hold_id`, "
               "`submission_id`, `digest` or `target`) together with a matching `csrf` token; that field, not "
-              "the URL, selects what is changed."),
+        "the URL, selects what is changed.",
+    ),
     ("Billing", "The Stripe webhook (HUB_STRIPE_WEBHOOK_SECRET)."),
     ("OTLP", "OpenTelemetry trace ingest (HUB_OTLP_INGEST_ENABLED), OTLP/JSON only."),
     ("Connectors", "System-of-record webhooks that record outcomes (HUB_CONNECTORS_ENABLED)."),
@@ -1423,6 +1433,32 @@ def _operations() -> dict[tuple[str, str], dict]:
             ok={"200": _html("HUB_COMMONS_ENABLED=false: an explanatory page.")},
         ),
     }
+    ops[("POST", "/api/v1/memory/records/{operation}")] = _api(
+        "memoryRecordOperation",
+        "Memory",
+        "Versioned scoped records: put, search or hard forget",
+        body=_json_body(
+            _free_object("Versioned memory data"), "MemoryRecord envelope, scoped query, or id and erasure reason."
+        ),
+        ok={
+            "200": _json("Versioned record, search results, or erasure audit.", _free_object("Versioned memory data")),
+            "400": _error("Invalid record or version conflict."),
+            "413": _error("Payload exceeds 100 kB."),
+        },
+    )
+    ops[("POST", "/v1/memory/{operation}")] = _api(
+        "memoryRecordSDKOperation",
+        "Memory",
+        "Local SDK record-put, record-search and record-forget wire parity",
+        body=_json_body(
+            _free_object("Scoped record SDK data"), "Record envelope or query, context labels, or erasure reason."
+        ),
+        ok={
+            "200": _json("Record SDK response", _free_object("Record SDK data")),
+            "400": _error("Invalid record or version conflict."),
+            "413": _error("Payload exceeds 100 kB."),
+        },
+    )
     return ops
 
 

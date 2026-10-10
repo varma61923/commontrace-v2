@@ -406,10 +406,26 @@ class Gateway:
         self._route("POST", "/v1/agent/signup", self._agent_signup, summary="Register one scoped agent.")
         self._route("POST", "/v1/agent/plugin", self._agent_plugin, summary="SDK skill and per-agent manifest.")
         self._route("POST", "/v1/agent/heartbeat", self._agent_heartbeat, summary="Record agent liveness.")
-        for operation in ("add", "batch", "profile", "reflect", "search", "check-action", "propose", "outcome"):
-            self._route("POST", "/v1/memory/" + operation,
+        for operation in (
+            "record-put",
+            "record-search",
+            "record-forget",
+            "turn",
+            "add",
+            "batch",
+            "profile",
+            "reflect",
+            "search",
+            "check-action",
+            "propose",
+            "outcome",
+        ):
+            self._route(
+                "POST",
+                "/v1/memory/" + operation,
                         lambda body, query, op=operation: self._memory_operation(op, body),
-                        summary="Scoped memory " + operation + ".")
+                summary="Scoped memory " + operation + ".",
+            )
         self._route("GET", "/v1/palace", self._palace, summary="Overview, attention and memory suggestions.")
         for operation in ("directive", "question", "refresh", "reject-proposal", "review-foresight", "skill-review"):
             self._route("POST", "/v1/control/" + operation,
@@ -564,16 +580,25 @@ class Gateway:
                 lowered = {k.lower(): v for k, v in headers.items()}
                 request_origin = lowered.get("origin")
                 host = lowered.get("host", "").lower()
-                if (lowered.get("sec-fetch-site") == "cross-site" or request_origin
-                        and (urlsplit(request_origin).scheme not in ("http", "https")
-                             or urlsplit(request_origin).netloc.lower() != host)):
+                if (
+                    lowered.get("sec-fetch-site") == "cross-site"
+                    or request_origin
+                    and (
+                        urlsplit(request_origin).scheme not in ("http", "https")
+                        or urlsplit(request_origin).netloc.lower() != host
+                    )
+                ):
                     raise ApiError(403, "bad_origin", "cross-origin memory operations are refused")
-            if path in ("/benchmarks", "/benchmarks/", "/benchmarks/run.json") and method == "GET":
+            if method == "GET" and path in (
+                "/benchmarks", "/benchmarks/", "/benchmarks/run.json", "/benchmarks/public-key.txt"
+            ):
                 if path == "/benchmarks":
                     return Response(301, b"", headers={"Location": "/benchmarks/"})
                 return self._benchmark_site(path)
-            if path in ("/", "/index.html", "/ui/app.js", "/ui/app.css", "/ui/tokens.css",
-                        "/ui/favicon.svg") and method == "GET":
+            if (
+                path in ("/", "/index.html", "/ui/app.js", "/ui/app.css", "/ui/tokens.css", "/ui/favicon.svg")
+                and method == "GET"
+            ):
                 return self._static(path)
             if path.startswith("/.well-known/oauth-protected-resource") and method == "GET":
                 return self._oauth_metadata(path)
@@ -583,10 +608,18 @@ class Gateway:
                     raise ApiError(405, "method_not_allowed", f"{method} is not allowed on {path}")
                 raise ApiError(404, "not_found", f"no such endpoint: {path}")
             handler, spec = entry
-            if self._request_scope() and (path.startswith("/v1/memory/") or path.startswith("/v1/control/")
-                    or path.startswith("/v1/agent/") or path == "/v1/palace"):
-                raise ApiError(403, "container_scope", "memory evolution routes require a dedicated store; "
-                               "container-scoped requests use the existing recall and review routes")
+            if self._request_scope() and (
+                path.startswith("/v1/memory/")
+                or path.startswith("/v1/control/")
+                or path.startswith("/v1/agent/")
+                or path == "/v1/palace"
+            ):
+                raise ApiError(
+                    403,
+                    "container_scope",
+                    "memory evolution routes require a dedicated store; "
+                    "container-scoped requests use the existing recall and review routes",
+                )
             principal = None
             if spec["auth"] and not trusted and not self._authorised(headers):
                 from commontrace import agent_registry, oauth
@@ -599,21 +632,24 @@ class Gateway:
                     try:
                         claims = server.verify(supplied)
                     except oauth.InvalidToken:
-                        return self._oauth_challenge(server, 401, "invalid_token",
-                                                     "the access token is invalid or expired")
+                        return self._oauth_challenge(
+                            server, 401, "invalid_token", "the access token is invalid or expired"
+                        )
                     if claims.is_admin:
                         operator = True
                     elif oauth.SCOPE_MEMORY in claims.scopes:
                         principal = claims.principal()
                     else:
-                        return self._oauth_challenge(server, 403, "insufficient_scope",
-                                                     "the access token grants no CommonTrace scope")
+                        return self._oauth_challenge(
+                            server, 403, "insufficient_scope", "the access token grants no CommonTrace scope"
+                        )
                 elif supplied.startswith("cta_"):
                     principal = agent_registry.authenticate(self.root, supplied)
                 if principal is None and not operator:
                     if server is not None:
-                        return self._oauth_challenge(server, 401, None,
-                                                     "a valid Authorization: Bearer token is required")
+                        return self._oauth_challenge(
+                            server, 401, None, "a valid Authorization: Bearer token is required"
+                        )
                     raise ApiError(401, "unauthorized", "a valid Authorization: Bearer token is required")
                 if principal is not None:
                     if not (path.startswith("/v1/memory/") or path in ("/v1/agent/plugin", "/v1/agent/heartbeat")):
@@ -623,10 +659,9 @@ class Gateway:
                             agent_registry.admit(self.root, principal["id"])
                         except PermissionError as exc:
                             raise ApiError(429, "agent_quota", str(exc)) from exc
-            container_tag = next((
-                v for k, v in headers.items()
-                if k.lower() in ("x-container-tag", "container-tag")
-            ), "")
+            container_tag = next(
+                (v for k, v in headers.items() if k.lower() in ("x-container-tag", "container-tag")), ""
+            )
             if container_tag:
                 self._validated_tag(container_tag)
             payload: dict = {}
@@ -634,17 +669,19 @@ class Gateway:
                 payload = self._parse_body(body)
                 if path == "/v1/connectors/github/push":
                     lowered = {k.lower(): v for k, v in headers.items()}
-                    payload = {"raw": body, "signature": lowered.get("x-hub-signature-256", ""),
+                    payload = {
+                        "raw": body,
+                        "signature": lowered.get("x-hub-signature-256", ""),
                                "delivery": lowered.get("x-github-delivery", ""),
-                               "event": lowered.get("x-github-event", "")}
+                        "event": lowered.get("x-github-event", ""),
+                    }
                 # Never accept caller-supplied internal authorization context.
                 payload.pop("_principal", None)
                 if principal is not None:
                     payload["_principal"] = principal
             from commontrace import telemetry
 
-            with telemetry.bind(user_id=principal["id"] if principal else
-                                "operator" if spec["auth"] else "anonymous"):
+            with telemetry.bind(user_id=principal["id"] if principal else "operator" if spec["auth"] else "anonymous"):
                 result = handler(payload, parse_qs(split.query))
             if isinstance(result, Response):
                 return result
@@ -734,13 +771,20 @@ class Gateway:
         })
 
     def _benchmark_site(self, path: str) -> Response:
-        directory = os.path.join(self.root, "benchmark-results", "evolution", "second")
+        directory = os.path.join(self.root, "docs", "strategy", "leaderboard")
+        release = os.path.isfile(os.path.join(directory, "run.json"))
+        if not release:
+            directory = os.path.join(self.root, "benchmark-results", "evolution", "second")
         try:
             with open(os.path.join(directory, "run.json"), encoding="utf-8") as fh:
                 report = json.load(fh)
-            if report.get("synthetic") is not True:
-                raise ApiError(403, "private_benchmark", "only the synthetic showcase can be served publicly")
-            name = "run.json" if path.endswith("run.json") else "index.html"
+            public = (report.get("report", {}).get("public_aggregate_only") is True
+                      if release else report.get("synthetic") is True)
+            if not public:
+                raise ApiError(403, "private_benchmark",
+                               "only explicitly public aggregate benchmarks can be served publicly")
+            name = "public-key.txt" if release and path.endswith("public-key.txt") else (
+                "run.json" if path.endswith("run.json") else "index.html")
             with open(os.path.join(directory, name), "rb") as fh:
                 data = fh.read()
         except (OSError, ValueError):
@@ -833,7 +877,26 @@ class Gateway:
         context = principal["scopes"] if principal else body.get("context", [])
         if not isinstance(context, list) or any(not isinstance(s, str) for s in context):
             raise _bad("context must be a list of scope labels")
+        if principal and (operation == "turn" or operation.startswith("record-")):
+            context = [label for label in context if not label.startswith("agent:")] + ["agent:" + principal["id"]]
         try:
+            if operation.startswith("record-"):
+                from commontrace.record_api import operate
+
+                return operate(self.root, operation, body, context=context, untrusted=bool(principal))
+            if operation == "turn":
+                from commontrace.framework_middleware import turn
+
+                return turn(
+                    self.root,
+                    body["session_id"],
+                    body["query"],
+                    context=context,
+                    text=body.get("text", ""),
+                    budget=body.get("budget", 600),
+                    event=body.get("event"),
+                    payload=body.get("payload"),
+                )
             if operation == "batch":
                 from commontrace import ingestion_contract
 
@@ -842,25 +905,43 @@ class Gateway:
                 local = body.get("local", True)
                 if not isinstance(local, bool) or (principal and not local):
                     raise _bad("agent writes use local ADD-only admission")
-                return additive_extract.extract(self.root, body.get("text", ""), scopes=context, local=local,
+                return additive_extract.extract(
+                    self.root,
+                    body.get("text", ""),
+                    scopes=context,
+                    local=local,
                                                  memory_type=body.get("memory_type", "general"),
-                                                 entity_model_path=os.environ.get("COMMONTRACE_GLINER_MODEL_PATH"))
+                    entity_model_path=os.environ.get("COMMONTRACE_GLINER_MODEL_PATH"),
+                )
             query = body.get("query", "")
             if not isinstance(query, str) or len(query) > MAX_TEXT_CHARS:
                 raise _bad("query must be bounded text")
             if operation == "profile":
-                occasion_id = memory_control.occasion(body.get("occasion_id"),
-                                                       principal=principal["id"] if principal else "")
-                return memory_control.profile(self.root, query, context=context, limit=body.get("limit", 10),
-                                               occasion_id=occasion_id, action_class=body.get("action_class", ""))
+                occasion_id = memory_control.occasion(
+                    body.get("occasion_id"), principal=principal["id"] if principal else ""
+                )
+                return memory_control.profile(
+                    self.root,
+                    query,
+                    context=context,
+                    limit=body.get("limit", 10),
+                    occasion_id=occasion_id,
+                    action_class=body.get("action_class", ""),
+                )
             if operation == "reflect":
-                occasion_id = memory_control.occasion(body.get("occasion_id"),
-                                                       principal=principal["id"] if principal else "")
-                return memory_control.reflect(self.root, query, context=context, budget=body.get("budget", 600),
+                occasion_id = memory_control.occasion(
+                    body.get("occasion_id"), principal=principal["id"] if principal else ""
+                )
+                return memory_control.reflect(
+                    self.root,
+                    query,
+                    context=context,
+                    budget=body.get("budget", 600),
                                                occasion_id=occasion_id,
                                                exploration_slots=body.get("exploration_slots", 0),
                                                action_class=body.get("action_class", ""),
-                                               adaptive_budget=body.get("adaptive_budget", False))
+                    adaptive_budget=body.get("adaptive_budget", False),
+                )
             if operation == "outcome":
                 occasion_id = memory_control.occasion(body.get("occasion_id"), generate=False)
                 if principal and not occasion_id.startswith(principal["id"] + ":"):
@@ -875,10 +956,19 @@ class Gateway:
                 explored = causal_policy.record_outcome(self.root, occasion_id, float(body["succeeded"]))
                 return {"recorded": holdout_io.record_outcome(self.root, occasion_id, body["succeeded"]) or explored}
             if operation == "search":
-                return {"results": REGISTRY.retrieve(body.get("retriever", "hybrid"), self.root, query,
-                        recipe=body.get("recipe", "balanced"), context=context, limit=body.get("limit", 10),
-                        center=body.get("center", ""), as_of=body.get("as_of"),
-                        action_class=body.get("action_class", ""))}
+                return {
+                    "results": REGISTRY.retrieve(
+                        body.get("retriever", "hybrid"),
+                        self.root,
+                        query,
+                        recipe=body.get("recipe", "balanced"),
+                        context=context,
+                        limit=body.get("limit", 10),
+                        center=body.get("center", ""),
+                        as_of=body.get("as_of"),
+                        action_class=body.get("action_class", ""),
+                    )
+                }
             if operation == "check-action":
                 memory_control.check_action(self.root, body.get("tool", ""), context=context, tags=body.get("tags", []))
                 from commontrace import profile_activity
@@ -886,8 +976,9 @@ class Gateway:
                 profile_activity.record(self.root, "action_check", body.get("tool", ""), context)
                 return {"allowed": True}
             if operation == "propose":
-                return memory_control.proposal(self.root, body.get("text", ""),
-                        sources=body.get("sources", []), context=context)
+                return memory_control.proposal(
+                    self.root, body.get("text", ""), sources=body.get("sources", []), context=context
+                )
         except (ValueError, TypeError) as exc:
             raise _bad(str(exc)) from exc
         except PermissionError as exc:

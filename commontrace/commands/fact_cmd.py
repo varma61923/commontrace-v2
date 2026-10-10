@@ -20,9 +20,13 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         ("migrate", "Activate SQLite WAL storage with a checksum report; preserve the original JSONL.", run_migrate),
         ("export", "Export migrated facts to portable JSONL.", run_export),
         ("rebuild", "Rebuild SQLite indexes from the committed event ledger.", run_rebuild),
+        ("purge", "Erase a fact, derived payloads, history and cached vectors locally.", run_purge),
     ):
         storage = sub.add_parser(command, help=help_text)
         storage.add_argument("--dest", default=None)
+        if command == "purge":
+            storage.add_argument("fact_id")
+            storage.add_argument("--reason", required=True)
         if command == "export":
             storage.add_argument("--output", required=True, help="Destination JSONL file.")
         storage.set_defaults(func=handler)
@@ -350,4 +354,11 @@ def run_rebuild(args: argparse.Namespace) -> int:
         return 1
     fact_store.rebuild(root)
     print("Rebuilt SQLite fact projections from committed events.")
+    return 0
+
+
+def run_purge(args):
+    from commontrace.privacy_erasure import purge_fact
+    result = purge_fact(paths.resolve_root(args.dest), args.fact_id, reason=args.reason)
+    print(json.dumps(result, indent=2))
     return 0

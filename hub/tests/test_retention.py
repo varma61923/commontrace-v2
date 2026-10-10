@@ -455,6 +455,7 @@ class TestSchemaSafety:
             _NEW_TABLES as _SCIM_GROUP_TABLES,
         )
         from hub.alembic.versions.d5c8b3a91e77_row_level_security import _SCOPED_TABLES
+        from hub.alembic.versions.d6e8a1b2c3f4_memory_record_events import _NEW_TABLES as _MEMORY_TABLES
         from hub.alembic.versions.d7f2a63b9c41_retention_policies_and_legal_holds import (
             _NEW_TABLES as _RETENTION_TABLES,
         )
@@ -466,7 +467,7 @@ class TestSchemaSafety:
         protected = {
             *_SCOPED_TABLES, *_RETENTION_TABLES, *_WEBHOOK_TABLES,
             *_USER_TABLES, *_COLLAB_TABLES, *_ALERT_TABLES, *_SCIM_GROUP_TABLES, *_CONNECTOR_TABLES,
-            *_MARKET_TABLES, "traces",
+            *_MARKET_TABLES, *_MEMORY_TABLES, "traces",
         }
         exempt = {
             "api_keys",

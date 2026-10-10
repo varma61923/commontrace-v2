@@ -258,6 +258,8 @@ def add_rest_routes(
             return denied
         return Response(status_code=204)
 
+    from hub.memory_records import add_memory_routes
+    add_memory_routes(app, session_factory, authenticate=_authenticate, require_scope=_require_scope)
     add_market_routes(app, session_factory, config=config, authenticate=_authenticate,
                       require_scope=_require_scope)
     app.add_route(f"{API_PREFIX}/traces", contribute, methods=["POST"])

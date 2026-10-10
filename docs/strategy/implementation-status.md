@@ -10,28 +10,28 @@ none of those were available to measure.
 Legend: **Done** · **Done (this pass)** (added or fixed in this audit) ·
 **Partial** · **Not done** (with the reason).
 
-## Next-generation brief: P0 update (2026-10-10)
+## Next-generation implementation (2026-10-10)
 
-**Partial; acceptance gate missed, so P1–P4 were not started.** The explicit
-`commontrace fact migrate` activates SQLite WAL with transactional event history,
-rebuildable projections and persistent exact/near/contradiction candidate lookup.
-`fact export` retains portable JSONL; `fact rebuild` reconstructs committed
-state. Versioned fact event envelopes add a protocol section, schema and separate
-conformance vectors without changing the causal v1 vectors or HTTP contracts.
+The combined branch continues through P0–P4 under the user's explicit instruction
+not to stop at the original missed-gate rule. The earlier memory-evolution code
+was already squashed into main; its branch and `codex/next-generation-p0` are both
+ancestors of `codex/next-generation-complete`.
 
-Measured single-write p95 at 1K/10K/30K facts: SQLite **1.05 / 1.63 / 1.98 ms**;
-JSONL **47.13 / 684.38 / 5,906.58 ms**. A 1,000-fact SQLite batch at 30K measured
-**3,448 facts/s**. The 1M run exhausted disk before measurement, so the requested
-1M write, batch and hybrid gates remain unmet/unverified. The Postgres fact tier
-and signed storage manifests are outstanding. No answer-accuracy or causal-uplift
-improvement is claimed. Full evidence, commands and limitations:
-[next-generation-evidence.md](next-generation-evidence.md),
-[next-generation-p0.md](next-generation-p0.md), and
-[measurements/p0-storage.json](measurements/p0-storage.json).
+| Brief | Implemented | Acceptance limits |
+| --- | --- | --- |
+| A: storage | Compact SQLite WAL/event ledger, exact/near/FTS candidates, transactional migration/rebuild, durable content-hash vector projection; tenant-pinned PostgreSQL record ledger, FTS, optional existing pgvector/HNSW | 1M writes pass locally; 1M hybrid and server latency remain unverified |
+| B: records | Seven kinds, five scope dimensions plus labels, six lifecycle states, version history, bi-temporal validity, typed relationships, evidence and revision-grounded derived reads | Hosted legacy SDK operations still use the Gateway; Hub implements envelope CRUD, not all legacy operations |
+| C: extraction | Dated speaker/transition extraction, no assistant echo, exact/entropy/MinHash/dense/joint-judge candidate tiers, bounded per-entity/facet observations, existing grounded mental-model refresh | Optional model quality and extraction-cost reduction need real model-backed evaluations |
+| D: learning | Durable event capture, bounded session segmentation, explicit tool/run outcomes, clustered cases, curator/writer proposals, quarantine/shadow/causal activation and retirement, four-format history import, reflection arena and DPO export | Causal activation is tested on randomized fixtures; real SWE uplift and harmful-retirement N remain unverified |
+| E: integration | Shared ten-event core, eight native-agent serializers, framework model hooks, RRF admission, persistent once/inherit decisions, delivery acknowledgements, escaped templates, unextracted buffer, background broker | Host-supported events vary; Kimi needs config selection, Cline needs Hooks enabled, Windsurf hooks capture only; cold startup and loaded-system latency need further measurement |
+| F: retrieval | Indexed sparse and incremental dense candidates, graph BFS, temporal/evidence filtering, utility explainers, bounded reranking and three-round agentic completeness traces; BGE-small default in configured runtime | Exact local vector engine remains available; 1M dense/hybrid scaling is not established |
+| G: profiles | Explicit static assertions, dynamic weighted/decaying preferences, custom profiles, profile returned with one-call save/retrieve, critical preferences always eligible | Context budgets use an estimate unless the caller supplies exact counting |
+| H: privacy | Pinned scope, pre-model and post-model redaction, recursive hard erasure across local history/FTS/vectors/derived records, retention reaper and reason audit, telemetry off, poison CI | External backups/mirrors require operator erasure; PostgreSQL vector cleanup failures remain explicitly pending in a tenant-pinned retry ledger until its worker runs |
+| I: product | `up` setup/server, one YAML with local/team/server profiles, history import, existing-lesson preview, HTTP/SDK record parity, signed aggregate leaderboard, Graphify CI and pinned native SDK smoke tests | No registry/service publication; empty stores wait for evaluated evidence, so first injected lesson <2 minutes is not established; legacy module/config surface was not reduced |
 
-All nine repositories were cloned and analyzed with Graphify. The reported
-CodeQL dismissals were blocked by GitHub HTTP 403. The following older status
-sections describe earlier work; they do not establish the new brief's gates.
+Measured results and commands are in [next-generation-evidence.md](next-generation-evidence.md)
+and the [signed leaderboard](leaderboard/index.html). Historical status sections
+below describe earlier work and do not establish this brief's acceptance gates.
 
 ## Part G: master prompt
 

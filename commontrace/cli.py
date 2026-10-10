@@ -154,6 +154,14 @@ def _from_worker(argv: list[str]) -> int | None:
     return rc
 
 
+def _configured_call(args):
+    from commontrace import configuration, paths
+
+    root = paths.resolve_root(getattr(args, "dest", None))
+    if getattr(args, "command", "") == "up" or not os.path.isfile(os.path.join(root, "commontrace.yaml")):
+        return args.func(args)
+    with configuration.apply(configuration.load(root)):
+        return args.func(args)
 def main(argv: list[str] | None = None) -> int:
     if _MISSING_DEPENDENCY is not None:
         print(
@@ -207,18 +215,24 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     args = parser.parse_args(argv)
     try:
-        if os.environ.get("COMMONTRACE_LOG_FILE") or os.environ.get("COMMONTRACE_LOG_FORMAT") or \
-                os.environ.get("COMMONTRACE_LOG_LEVEL") or \
-                os.environ.get("COMMONTRACE_OTEL") or os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"):
+        if (
+            os.environ.get("COMMONTRACE_LOG_FILE")
+            or os.environ.get("COMMONTRACE_LOG_FORMAT")
+            or os.environ.get("COMMONTRACE_LOG_LEVEL")
+            or os.environ.get("COMMONTRACE_OTEL")
+            or os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
+        ):
             from commontrace import telemetry
 
             telemetry.configure_logging()
             sub = getattr(args, "subcommand", None) or getattr(args, "action", None)
-            with telemetry.bind(request_id=telemetry.new_request_id(), command=argv[0]), \
-                    telemetry.span(f"cli.{argv[0]}" + (f".{sub}" if isinstance(sub, str) else "")):
-                res = args.func(args)
+            with (
+                telemetry.bind(request_id=telemetry.new_request_id(), command=argv[0]),
+                telemetry.span(f"cli.{argv[0]}" + (f".{sub}" if isinstance(sub, str) else "")),
+            ):
+                res = _configured_call(args)
         else:
-            res = args.func(args)
+            res = _configured_call(args)
         return 0 if res is None else int(res)
     except FrontmatterError as exc:
         print(f"[commontrace] error: {exc}", file=sys.stderr)

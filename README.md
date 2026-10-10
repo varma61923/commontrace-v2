@@ -17,7 +17,7 @@ without an LLM and requires only Python 3.10+ and PyYAML.
 git clone https://github.com/varma61923/commontrace-v2.git
 cd commontrace-v2
 python -m pip install -e .
-commontrace up --dest ../commontrace-store
+commontrace up --dest /path/to/agent-project
 ```
 
 Open the printed console URL. The gateway requires its bearer token for memory
@@ -27,12 +27,44 @@ The key is returned once. See [installation and scope rules](docs/MEMORY_EVOLUTI
 In containers, `docker compose --profile local up` runs the gateway on `:8787` and
 the MCP server on `:8421` over one store volume (`Dockerfile.local`).
 
+`up` initializes transactional storage, detects supported agents and installs
+project-local hooks. Use `--setup-only` to configure without starting the API.
+A single `commontrace.yaml` selects the `local`, `team` or `server` profile:
+
+```yaml
+profile: local
+profiles:
+  local:
+    embedding: bge-small
+    reranker: cross-encoder-fast
+    redact_pii: true
+    telemetry: false
+```
+
+Local model packages are optional; install `.[attention]` for the local embedding/model
+runtime. Existing explicit environment settings take precedence. Empty stores
+wait for evaluated runs or reviewed history; setup never invents a first lesson.
+Kimi requires its generated config flag, Cline requires Hooks enabled, and
+Windsurf's native hooks capture events; use framework middleware for context.
+
 ## Add memory to your agent
 
 ```python
 from commontrace import wrap_openai
 completion = wrap_openai(provider_client, root=STORE_ROOT, agent_id="reviewer")
 ```
+
+For a single save/retrieve operation with profiles and an unextracted buffer:
+
+```python
+from commontrace.client import MemoryClient
+memory = MemoryClient("/path/to/agent-project", agent_id="reviewer", context={"user": "alice"})
+turn = memory.turn("session-1", "How should I validate this patch?", text="I prefer pytest.")
+# Feed turn["context"] as a user-level memory update; keep the system prefix stable.
+```
+
+Native framework callbacks are provided by `commontrace.framework_middleware.Middleware`;
+see the [runtime and evaluation guide](docs/strategy/next-generation-evidence.md).
 
 Call `completion` with `messages` and an `occasion_id`. Recall happens before
 completion; the response is captured as experience. Report an independently

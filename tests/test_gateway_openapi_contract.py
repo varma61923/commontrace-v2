@@ -103,6 +103,10 @@ def test_live_responses_match_the_declared_schemas(tmp_path):
             jsonschema.Draft4Validator({**request, **components}).validate(body)
         return value
 
+    call("POST", "/v1/memory/record-put", {"record": {
+        "id": "api-fact", "kind": "fact", "version": 1, "payload": {"text": "scoped parser fact"}}})
+    call("POST", "/v1/memory/record-search", {"query": "parser"})
+    call("POST", "/v1/memory/record-forget", {"id": "api-fact", "reason": "contract test erasure"})
     call("POST", "/v1/agent/signup", {"agent_id": "bot-1", "scopes": ["team"]})
     enrolled = call("POST", "/v1/agent/enroll", {})
     call("POST", "/v1/agent/claim", {"agent_id": enrolled["agent_id"], "owner": "alice"})
@@ -168,6 +172,8 @@ def test_live_responses_match_the_declared_schemas(tmp_path):
     call("POST", "/v1/market/listings", {"listing": {}}, status=422)
     call("POST", "/v1/market/install", {"id": "nope", "accept_licence": "x"}, status=404)
     call("POST", "/v1/connectors/github/push", {"zen": "hi"}, status=404)
+
+    call("POST", "/v1/memory/turn", {"session_id": "turn-1", "query": "pytest", "text": "I prefer pytest."})
 
     routes = set(gw.routes)
     assert routes - checked == set(), sorted(routes - checked)

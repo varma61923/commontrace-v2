@@ -1,0 +1,347 @@
+"""Event-backed PostgreSQL records with full-text candidates and Hub tenancy.
+
+The optional vector index is the existing owner-pinned pgvector/HNSW engine.
+Canonical records are revalidated after every ANN lookup, including erasure.
+"""
+
+from __future__ import annotations
+
+from dataclasses import replace
+
+from sqlalchemy import delete, or_, select, text
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import IntegrityError
+
+from commontrace import memory_guard
+from commontrace.memory_record import MemoryRecord, facet_observation
+from commontrace.record_visibility import now, visible
+from hub import audit
+from hub.db import session_scope
+from hub.models import MemoryRecordEvent, MemoryRecordProjection, MemoryVectorErasure
+
+
+class PostgresJournal:
+    def __init__(self, session_factory, org_id: str, *, vector_index=None):
+        if not org_id or vector_index is not None and vector_index.tenant != org_id:
+            raise ValueError("vector and record owners must match authenticated tenancy")
+        self.factory, self.org_id, self.vector_index = session_factory, org_id, vector_index
+
+    async def put(self, record: MemoryRecord) -> MemoryRecord:
+        if record.scope.get("tenant", self.org_id) != self.org_id:
+            raise ValueError("record tenant cannot override authenticated organization")
+        data, _ = memory_guard.sanitize_metadata(record.to_dict(), pii=True)
+        record = replace(MemoryRecord(**data), scope={**record.scope, "tenant": self.org_id})
+        try:
+            async with session_scope(self.factory, org_id=self.org_id) as session:
+                await self._lock_owner(session)
+                await self._put(session, record)
+                if record.kind == "fact":
+                    await self._refresh_facet(session, record)
+            return record
+        except IntegrityError as exc:
+            raise ValueError("concurrent record version conflict") from exc
+
+    async def _lock_owner(self, session):
+        # One tenant's projection/erasure must serialize; other tenants remain independent.
+        # In particular, a remote erasure retry must not delete a newly reused identifier.
+        await session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:owner, 61923))"),
+            {"owner": "commontrace-memory:" + self.org_id},
+        )
+
+    async def _put(self, session, record):
+        if await session.get(MemoryVectorErasure, (self.org_id, record.id)) is not None:
+            raise ValueError("record identity has pending vector erasure")
+        old = await session.get(MemoryRecordProjection, (self.org_id, record.id), with_for_update=True)
+        if record.version != (old.version + 1 if old else 1):
+            raise ValueError("record version conflict")
+        if old and (old.record["kind"] != record.kind or old.scope != record.scope):
+            raise ValueError("record identity cannot change kind or scope")
+        incoming = (
+            (
+                await session.execute(
+                    select(MemoryRecordProjection).where(
+                        MemoryRecordProjection.org_id == self.org_id,
+                        or_(
+                            *(
+                                MemoryRecordProjection.record.contains({"relations": {kind: [record.id]}})
+                                for kind in ("updates", "extends", "derives", "supersedes", "caused_by")
+                            )
+                        ),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if any(row.scope != record.scope for row in incoming):
+            raise ValueError("forward record relationships cannot cross scopes")
+        for identities in record.relations.values():
+            for identity in identities:
+                source = await session.get(MemoryRecordProjection, (self.org_id, identity))
+                if source is not None and source.scope != record.scope:
+                    raise ValueError("record relationships cannot cross scopes")
+        session.add(
+            MemoryRecordEvent(org_id=self.org_id, id=record.id, version=record.version, record=record.to_dict())
+        )
+        statement = insert(MemoryRecordProjection).values(
+            org_id=self.org_id,
+            id=record.id,
+            version=record.version,
+            record=record.to_dict(),
+            scope=record.scope,
+        )
+        await session.execute(
+            statement.on_conflict_do_update(
+                index_elements=["org_id", "id"],
+                set_={"version": record.version, "record": record.to_dict(), "scope": record.scope},
+            )
+        )
+
+    async def _refresh_facet(self, session, record):
+        entity, facet = record.payload.get("entity"), record.payload.get("facet")
+        if not isinstance(entity, str) or not isinstance(facet, str) or not entity.strip() or not facet.strip():
+            return
+        rows = (
+            await session.execute(
+                select(MemoryRecordProjection)
+                .where(
+                    MemoryRecordProjection.org_id == self.org_id,
+                    MemoryRecordProjection.scope == record.scope,
+                    MemoryRecordProjection.record.contains(
+                        {"kind": "fact", "payload": {"entity": entity, "facet": facet}}
+                    ),
+                )
+                .order_by(MemoryRecordProjection.id)
+            )
+        ).scalars()
+        sources = []
+        for row in rows:
+            source = MemoryRecord(**row.record)
+            if source.id != record.id and visible(source, record.scope):
+                sources.append(source)
+                if len(sources) == 8:
+                    break
+        if visible(record, record.scope):
+            sources.append(record)
+        if not sources:
+            return
+        observation = facet_observation(entity, facet, sources)
+        old = await session.get(MemoryRecordProjection, (self.org_id, observation.id))
+        if old:
+            observation = facet_observation(entity, facet, sources, previous=MemoryRecord(**old.record))
+        await self._put(session, observation)
+
+    async def search(self, query: str, *, scope: dict, limit=20, vector=None) -> list[MemoryRecord]:
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 0 <= limit <= 1000:
+            raise ValueError("record result limit must be in 0..1000")
+        if not limit:
+            return []
+        context = {**scope, "tenant": self.org_id}
+        async with session_scope(self.factory, org_id=self.org_id) as session:
+            from sqlalchemy import func
+
+            statement = select(MemoryRecordProjection).where(
+                MemoryRecordProjection.org_id == self.org_id, MemoryRecordProjection.scope.op("<@")(context)
+            )
+            if query.strip():
+                tsquery = func.websearch_to_tsquery("english", query[:20000])
+                statement = statement.where(MemoryRecordProjection.search_vector.op("@@")(tsquery)).order_by(
+                    func.ts_rank_cd(MemoryRecordProjection.search_vector, tsquery).desc()
+                )
+            rows = (await session.execute(statement.limit(max(200, limit * 5)))).scalars().all()
+            found = {row.id: MemoryRecord(**row.record) for row in rows}
+            sparse_order = list(found)
+            dense_order = []
+            if vector is not None and self.vector_index is not None:
+                hits = await self.vector_index.search(vector, top_k=max(100, limit * 5))
+                for hit in hits:
+                    row = await session.get(MemoryRecordProjection, (self.org_id, hit.key))
+                    if row and visible(MemoryRecord(**row.record), context):
+                        found[row.id] = MemoryRecord(**row.record)
+                        dense_order.append(row.id)
+            ranks = {}
+            for order in (sparse_order, dense_order):
+                for rank, identity in enumerate(order, 1):
+                    ranks[identity] = ranks.get(identity, 0) + 1 / (60 + rank)
+            checked = {}
+
+            async def grounded(record, trail=frozenset()):
+                if record.id in trail or len(trail) >= 64 or not visible(record, context):
+                    return False
+                if record.id in checked:
+                    return checked[record.id]
+                for identity in record.relations.get("derives", []):
+                    source = found.get(identity)
+                    if source is None:
+                        row = await session.get(MemoryRecordProjection, (self.org_id, identity))
+                        source = MemoryRecord(**row.record) if row else None
+                    versions = record.provenance.get("source_versions")
+                    if (
+                        source is None
+                        or (
+                            versions is not None
+                            and (not isinstance(versions, dict) or versions.get(identity) != source.version)
+                        )
+                        or not await grounded(source, trail | {record.id})
+                    ):
+                        checked[record.id] = False
+                        return False
+                checked[record.id] = True
+                return True
+
+            eligible = []
+            for identity in sorted(ranks, key=lambda identity: (-ranks[identity], identity)):
+                if await grounded(found[identity]):
+                    eligible.append(found[identity])
+                if len(eligible) >= limit:
+                    break
+            return eligible
+
+    async def forget(self, identity: str, *, reason: str) -> dict:
+        if not reason.strip():
+            raise ValueError("erasure requires a reason")
+        async with session_scope(self.factory, org_id=self.org_id) as session:
+            await self._lock_owner(session)
+            rows = (
+                (
+                    await session.execute(
+                        select(MemoryRecordProjection).where(MemoryRecordProjection.org_id == self.org_id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            deleted = {identity}
+            while True:
+                derived = {
+                    row.id for row in rows if any(set(ids) & deleted for ids in row.record["relations"].values())
+                }
+                if derived <= deleted:
+                    break
+                deleted |= derived
+            if self.vector_index is not None:
+                await session.execute(
+                    insert(MemoryVectorErasure)
+                    .values([{"org_id": self.org_id, "record_id": value} for value in sorted(deleted)])
+                    .on_conflict_do_nothing()
+                )
+            for model in (MemoryRecordProjection, MemoryRecordEvent):
+                await session.execute(delete(model).where(model.org_id == self.org_id, model.id.in_(deleted)))
+            result = {"deleted": sorted(deleted), "reason": memory_guard.redact_secrets(reason)[0], "at": now()}
+            await audit.record(
+                session,
+                actor="memory-erasure",
+                action="forget_memory",
+                org_id=self.org_id,
+                target_type="memory",
+                target_id=identity,
+                summary="records=" + str(len(deleted)),
+            )
+        if self.vector_index is not None:
+            result["vector_cleanup"] = await self.retry_vector_erasures()
+        return result
+
+    async def retry_vector_erasures(self, *, limit=256) -> dict:
+        """Bounded, tenant-pinned outbox; safe to call from the vector worker after restart."""
+        if type(limit) is not int or not 1 <= limit <= 10000:
+            raise ValueError("vector cleanup batch must be in 1..10000")
+        if self.vector_index is None:
+            return {"completed": 0, "pending": True, "reason": "vector engine unavailable"}
+        async with session_scope(self.factory, org_id=self.org_id) as session:
+            await self._lock_owner(session)
+            rows = (
+                (
+                    await session.execute(
+                        select(MemoryVectorErasure.record_id)
+                        .where(MemoryVectorErasure.org_id == self.org_id)
+                        .order_by(MemoryVectorErasure.record_id)
+                        .limit(limit)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            if not rows:
+                return {"completed": 0, "pending": False}
+            try:
+                await self.vector_index.delete(rows)
+            except Exception:  # noqa: BLE001 - canonical erasure committed; external cleanup stays durably pending
+                return {"completed": 0, "pending": True, "reason": "vector cleanup retry required"}
+            await session.execute(
+                delete(MemoryVectorErasure).where(
+                    MemoryVectorErasure.org_id == self.org_id, MemoryVectorErasure.record_id.in_(rows)
+                )
+            )
+            pending = (
+                await session.execute(
+                    select(MemoryVectorErasure.record_id).where(MemoryVectorErasure.org_id == self.org_id).limit(1)
+                )
+            ).first() is not None
+            return {"completed": len(rows), "pending": pending}
+
+
+def add_memory_routes(app, session_factory, *, authenticate, require_scope):
+    """Expose records through authenticated Hub routes; tenant comes only from the API key."""
+    import json
+
+    from starlette.responses import JSONResponse
+
+    from hub import scopes
+
+    async def operation(request):
+        action = request.path_params["operation"].removeprefix("record-")
+        authenticated, denied = await authenticate(request)
+        if denied is None:
+            denied = require_scope(authenticated, scopes.SCOPE_READ if action == "search" else scopes.SCOPE_WRITE)
+        if denied is not None:
+            return denied
+        raw = await request.body()
+        if len(raw) > 100000:
+            return JSONResponse({"error": "payload_too_large"}, status_code=413)
+        try:
+            payload = json.loads(raw)
+            if not isinstance(payload, dict):
+                raise ValueError("record request must be an object")
+            if "context" in payload:
+                context = payload["context"]
+                if not isinstance(context, list) or any(not isinstance(label, str) for label in context):
+                    raise ValueError("context must be a list of scope labels")
+                scope, labels = {}, []
+                for label in context:
+                    key, _, value = label.partition(":")
+                    if key in ("tenant", "user", "agent", "session", "repo") and value:
+                        if key in scope and scope[key] != value:
+                            raise ValueError("ambiguous context dimension")
+                        scope[key] = value
+                    else:
+                        labels.append(label)
+                if labels:
+                    scope["labels"] = sorted(labels)
+                payload["scope"] = scope
+            store = PostgresJournal(session_factory, authenticated.org_id)
+            if action == "put":
+                record = MemoryRecord(**payload["record"])
+                # Remote writes are evidence. Only controlled causal promotion can grant active lessons/rules.
+                if record.kind in ("lesson", "directive") and record.status == "active":
+                    record = replace(record, status="quarantined")
+                return JSONResponse({"record": (await store.put(record)).to_dict()})
+            if action == "search":
+                return JSONResponse(
+                    {
+                        "results": [
+                            record.to_dict()
+                            for record in await store.search(
+                                payload.get("query", ""), scope=payload.get("scope", {}), limit=payload.get("limit", 20)
+                            )
+                        ]
+                    }
+                )
+            if action == "forget":
+                return JSONResponse(await store.forget(payload["id"], reason=payload["reason"]))
+            return JSONResponse({"error": "unknown_operation"}, status_code=404)
+        except (ValueError, KeyError, TypeError) as exc:
+            return JSONResponse({"error": "bad_request", "detail": str(exc)}, status_code=400)
+
+    app.add_route("/api/v1/memory/records/{operation}", operation, methods=["POST"])
+    app.add_route("/v1/memory/{operation}", operation, methods=["POST"])

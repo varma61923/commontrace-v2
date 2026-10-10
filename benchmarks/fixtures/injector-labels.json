@@ -1,0 +1,26 @@
+{
+  "description": "Maintainer-labelled coding relevance fixtures; precision here does not establish precision on production coding tasks.",
+  "lessons": [
+    {"id":"tests","text":"Run pytest before committing changes to catch test failures."},
+    {"id":"validation","text":"Validate request fields at the API boundary before parsing JSON."},
+    {"id":"sql","text":"Use parameterized SQL queries to isolate tenant data."},
+    {"id":"timeouts","text":"Handle network timeouts by returning a safe empty memory context."},
+    {"id":"cursor","text":"Preserve capture cursors until lesson writing successfully persists."}
+  ],
+  "cases": [
+    {"query":"Run pytest before committing changes to catch test failures.","relevant":["tests"]},
+    {"query":"Validate request fields at the API boundary before parsing JSON.","relevant":["validation"]},
+    {"query":"Use parameterized SQL queries to isolate tenant data.","relevant":["sql"]},
+    {"query":"Handle network timeouts by returning a safe empty memory context.","relevant":["timeouts"]},
+    {"query":"Preserve capture cursors until lesson writing successfully persists.","relevant":["cursor"]},
+    {"query":"pytest tests failed before committing changes","relevant":["tests"]},
+    {"query":"network timeouts must return a safe empty memory context","relevant":["timeouts"]},
+    {"query":"validate JSON request fields at the API boundary","relevant":["validation"]},
+    {"query":"parameterized SQL queries for tenant isolation","relevant":["sql"]},
+    {"query":"lesson writer failed; preserve capture cursor until persistence succeeds","relevant":["cursor"]},
+    {"query":"What should I cook for dinner tonight?","relevant":[]},
+    {"query":"What is the weather in Tokyo tomorrow?","relevant":[]},
+    {"query":"Write a poem about the moon","relevant":[]},
+    {"query":"Find the museum opening hours","relevant":[]}
+  ]
+}

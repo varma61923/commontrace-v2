@@ -10,7 +10,7 @@
     "kind": {"enum": ["episode", "fact", "entity", "observation", "profile", "lesson", "directive"]},
     "version": {"type": "integer", "minimum": 1},
     "payload": {"type": "object"},
-    "status": {"type": "string", "minLength": 1},
+    "status": {"enum": ["proposed", "quarantined", "shadow", "active", "deprecated", "retired"]},
     "is_latest": {"type": "boolean"},
     "relations": {
       "type": "object",

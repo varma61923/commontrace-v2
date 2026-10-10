@@ -15,23 +15,29 @@ Details and the full audit are in [implementation-status.md](implementation-stat
 | **G.** `pip install` / `npm i` / `docker run` to first recall in < 60 s | Not measured | Release workflow, generated SDKs and local image exist; nothing published to registries | — |
 
 
-## Next-generation P0 gates (2026-10-10)
+## Next-generation release gates (2026-10-10)
 
 | Gate | Status | Evidence |
 | --- | --- | --- |
-| Single-write p95 <20 ms at 1M | Unverified / run failed | Disk exhausted before the 1M measurement; 30K p95 was 1.98 ms |
-| Batch >=2,000 facts/s at 1M | Unverified / run failed | 30K batch measured 3,448 facts/s; this does not meet the specified 1M gate |
-| Hybrid p95 <50 ms local / <150 ms server at 1M | Unverified | Selective overlap timings only; no new server fact engine |
-| Migration integrity | Tested | Normalized source/target checksum equality, rejected malformed/duplicate rows, preserved source, crash rollback, rebuild |
-| Restart without re-embedding | Not newly measured | Existing content-hash vector engines unchanged; fact migration makes no model calls |
-| Protocol/API compatibility | Tested | Additive envelope vectors; old causal vectors and HTTP formats retained |
-| Signed storage result manifests | Not produced | SHA256 integrity sidecar only; not an authenticated signature |
+| Single-write p95 <20 ms at 1M | **Measured pass** | 1.093 ms, real hierarchical APIs, 20 trials, synthetic selective workload |
+| Batch >=2,000 facts/s at 1M | **Measured pass** | 2,533 facts/s, one 1,000-fact batch |
+| Hybrid p95 <50 ms local / <150 ms server at 1M | **Unverified** | 0.252 ms selective sparse overlap is not hybrid retrieval |
+| Restart without re-embedding | **Tested on bounded fixtures** | Durable fact watermarks, vector hashes and hook document cache; not a 1M restart timing |
+| Injector precision >=0.80 | **Fixture measured** | Actual BGE-small, maintainer-labelled coding relevance; not production/SWE precision |
+| Warm hook p95 <50 ms | **Load-sensitive; not established universally** | See signed report for idle and concurrent runs; native socket deadline is separate from total host startup |
+| LoCoMo >=0.85 GPT-class at <=1,500 tokens | **Unverified** | No configured GPT-class reader/judge credentials or endpoint |
+| LongMemEval-S >=0.90; BEAM 100K/1M and categories | **Unverified** | Model-backed required evaluations not run |
+| Coding uplift >=5pp, sequential lower CI >0 | **Unverified** | Real patch/test randomized harness implemented; no actual SWE model run |
+| Harmful-retirement N and lower extraction cost | **Unverified** | Synthetic causal lifecycle and usage-accounting checks do not establish either production metric |
+| Poison resistance | **Fixture tested** | Eleven injector poison/status cases; no successful injection, clean utility retained; novel attacks not covered |
+| First injected lesson <2 minutes | **Unverified** | Setup previews eligible existing lessons; empty stores require reviewed/evaluated evidence |
+| F7: fewer modules; <40 documented config vars | **Not met** | 322 Python modules, 154 documented environment variables before final small edits; nine recommended profile settings, legacy surface retained |
+| Signed public aggregate report | **Implemented** | Ed25519 signature with repository-pinned session public key; no private trajectories |
 
-**Stop before P1–P4**, per the attached brief's missed-gate rule.
-[Raw results and command](measurements/p0-storage.json),
-[failure transcript](measurements/p0-storage-failure.log),
-[phase evidence](next-generation-evidence.md).
-
+Historical P0 disk exhaustion remains recorded in
+[measurements/p0-storage.json](measurements/p0-storage.json). Compact schema v2
+resolved that failure in the measured 1M run. See
+[next-generation-evidence.md](next-generation-evidence.md) for scope and reproduction.
 
 ## Beyond the targets
 

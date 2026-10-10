@@ -20,7 +20,7 @@ from commontrace.search_recipes import search, terms
 KINDS = ("directive", "mental-model", "proposal", "foresight", "watermark", "compression", "wiki")
 _PROFILE_ORDER = RuntimeCache(max_entries=128, max_bytes=4*1024*1024, ttl=30,
                              weigh=lambda key, value: len(repr(key).encode())+sum(len(v)+64 for v in value))
-DIMENSIONS = ("user", "agent", "app", "project", "session")
+DIMENSIONS = ("tenant", "user", "agent", "app", "project", "session", "repo")
 REQUIRED_PRINCIPAL_SCOPE: ContextVar[str] = ContextVar("commontrace_required_principal_scope", default="")
 
 

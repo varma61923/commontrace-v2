@@ -42,6 +42,38 @@ class MemoryClient:
                 raise ValueError("gateway response must be an object")
             return result
 
+    def put_record(self, record) -> dict:
+        return self._record_operation("record-put", {"record": record.to_dict()})
+
+    def search_records(self, query: str = "", *, limit: int = 20) -> list[dict]:
+        return self._record_operation("record-search", {"query": query, "limit": limit})["results"]
+
+    def forget_record(self, identity: str, *, reason: str) -> dict:
+        return self._record_operation("record-forget", {"id": identity, "reason": reason})
+
+    def _record_operation(self, operation: str, payload: dict) -> dict:
+        from commontrace.api_schema import validate_request
+        payload = {**payload, "context": self.context}
+        validate_request(operation, payload)
+        if self.url:
+            return self._request(operation, payload)
+        from commontrace.record_api import operate
+        return operate(self.root, operation, payload, context=self.context, untrusted=bool(self.agent_id))
+
+    def turn(self, session_id: str, query: str, *, text: str = "", budget: int = 600,
+             event: str | None = None, payload: dict | None = None) -> dict:
+        """Capture a user turn and return profile, memory and pending buffer in one call."""
+        capture_payload = payload
+        payload = {"session_id": session_id, "query": query, "text": text,
+                   "budget": budget, "context": self.context}
+        if event:
+            payload.update({"event": event, "payload": capture_payload or {}})
+        if self.url:
+            return self._request("turn", payload)
+        from commontrace.framework_middleware import turn
+        return turn(self.root, session_id, query, text=text, budget=budget, context=self.context,
+                    event=event, payload=capture_payload)
+
     def add(self, text: str, *, local: bool = True, complete=None, memory_type: str = "general",
             entity_model=None, entity_model_path: str | None = None) -> dict:
         if self.url:

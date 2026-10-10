@@ -173,6 +173,9 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p_rs.add_argument("--limit", type=int, default=100)
     p_rs.add_argument("--json", action="store_true")
     p_rs.add_argument("--dest", default=None)
+    p_rs.add_argument("--tiered", action="store_true",
+                      help="Exact, entropy-gated MinHash, embeddings and optional judge.")
+    p_rs.add_argument("--judge", action="store_true", help="Batch-judge remaining tiered entity candidates.")
     p_rs.set_defaults(func=run_resolve)
 
 
@@ -613,7 +616,9 @@ def run_resolve(args: argparse.Namespace) -> int:
         out = entity_resolution.resolve(paths.resolve_root(args.dest), embedder=args.embedder,
                                         threshold=args.threshold, apply=args.apply,
                                         apply_threshold=args.apply_threshold, context=args.context,
-                                        limit=args.limit)
+                                        limit=args.limit, tiered=getattr(args, 'tiered', False),
+                                        complete=__import__('commontrace.llm', fromlist=['complete']).complete
+                                        if getattr(args, 'judge', False) else None)
     except (ValueError, embeddings.EmbeddingError) as exc:
         print(f"[commontrace] {exc}", file=sys.stderr)
         return 2

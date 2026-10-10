@@ -91,36 +91,14 @@ def classify(older: str, newer: str) -> str | None:
     return None
 
 
-_JUDGE_PROMPT = """You compare a NEW fact with EXISTING facts from the same memory.
-For each existing fact, decide whether the NEW fact replaces it: they describe the
-same subject and attribute and cannot both be true now (for example a changed
-employer, address, preference or count). Facts about different subjects, or that
-can both be true, are not replaced.
-
-NEW: {new}
-EXISTING:
-{existing}
-
-Answer with JSON only: {{"replaces": ["<id>", ...]}} listing only ids shown above."""
-
-
 def judge(newer: str, candidates: list, complete=None) -> set[str]:
     """Ids among `candidates` (facts) that an LLM judges the newer statement to replace.
 
     Defensive: only ids that were offered are accepted, and any failure means none.
     """
-    if not candidates:
-        return set()
-    from commontrace import llm
-
-    offered = {f.id: f.statement for f in candidates[:8]}
-    prompt = _JUDGE_PROMPT.format(new=newer, existing="\n".join(f"- {i}: {s}" for i, s in offered.items()))
-    try:
-        text = complete(prompt) if complete is not None else llm.complete(prompt)[0]
-        ids = llm._extract_json_object(str(text)).get("replaces", [])
-    except Exception:  # noqa: BLE001 - a judge that fails judges nothing
-        return set()
-    return {i for i in ids if isinstance(i, str) and i in offered}
+    if complete is None:
+        return judge_joint(newer, candidates)['contradictions']
+    return judge_joint(newer, candidates, complete=lambda prompt: (complete(prompt), {}))['contradictions']
 
 
 def _queue_path(root: str) -> str:
@@ -159,3 +137,36 @@ def pending(root: str) -> list[Conflict]:
         if older is not None and newer is not None and older.status == "active" and newer.status == "active":
             out.append(Conflict(**row))
     return out
+
+
+def judge_joint(newer: str, candidates: list, complete=None) -> dict[str, set[str]]:
+    """One bounded duplicate/contradiction decision; no model-selected arbitrary ids."""
+    from commontrace import llm
+    from commontrace.llm_runtime import purpose
+
+    offered = {fact.id: fact.statement for fact in candidates[:15]}
+    empty = {"duplicates": set(), "contradictions": set()}
+    if not offered:
+        return empty
+    try:
+        with purpose("fact-dedup-contradiction"):
+            text, _ = (complete or llm.complete)(
+                'Return JSON {"duplicates":["id"],"contradictions":["id"]}. Duplicate means the same claim; '
+                "contradiction means identical subject, facet and overlapping time with mutually exclusive claims. "
+                "Choose only offered identifiers. Different dates do not establish a contradiction.\n"
+                + __import__("json").dumps({"new": newer, "existing": offered})
+            )
+        payload = llm._extract_json_object(text)
+        result = {
+            key: {
+                identity
+                for identity in payload.get(key, payload.get("replaces", []) if key == "contradictions" else [])
+                if isinstance(identity, str) and identity in offered
+            }
+            for key in empty
+        }
+        if result["duplicates"] & result["contradictions"]:
+            return empty
+        return result
+    except Exception:  # noqa: BLE001 - failed judgments never mutate temporal truth
+        return empty

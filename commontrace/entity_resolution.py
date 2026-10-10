@@ -112,13 +112,16 @@ def _keeper(onto, x, y):
 
 
 def resolve(root: str, *, embedder=None, threshold: float | None = None, apply: bool = False,
-            apply_threshold: float | None = None, context: bool = False, limit: int = 100) -> dict:
+            apply_threshold: float | None = None, context: bool = False, limit: int = 100,
+            tiered: bool = False, complete=None) -> dict:
     """`candidates`, and with `apply`, merge each compatible pair at or above
     `apply_threshold`; an entity takes part in at most one merge per run."""
     from commontrace import entities, graph, ontology
 
-    found = candidates(root, embedder=embedder, threshold=threshold, context=context, limit=limit)
-    strict = THRESHOLDS[found["method"]][1] if apply_threshold is None else float(apply_threshold)
+    found = (tiered_candidates(root, embedder=embedder, complete=complete, limit=limit) if tiered
+             else candidates(root, embedder=embedder, threshold=threshold, context=context, limit=limit))
+    found.setdefault('threshold', .6)
+    strict = THRESHOLDS.get(found["method"], (.6, .95))[1] if apply_threshold is None else float(apply_threshold)
     if strict < found["threshold"]:
         raise ValueError("the apply threshold must not be below the reporting threshold")
     found.update(apply_threshold=strict, merged=[], skipped=[])
@@ -141,3 +144,91 @@ def resolve(root: str, *, embedder=None, threshold: float | None = None, apply: 
         touched.update((keep.id, dup.id))
         found["merged"].append({**out, **evidence})
     return found
+
+
+def tiered_candidates(root: str, *, embedder=None, complete=None, limit=100) -> dict:
+    """Exact aliases → entropy-gated MinHash → top-15 cosine → one batched judge.
+
+    Suggestions remain reviewable; ontology compatibility still gates merging.
+    Thresholds are explicit and require task-specific calibration, not claimed
+    universally correct from a static graph or a competitor's defaults.
+    """
+    import math
+    from collections import Counter
+
+    from commontrace import llm, ontology
+    from commontrace.llm_runtime import purpose
+    from commontrace.overlap import minhash
+
+    nodes = _candidates_nodes(root)
+    onto = ontology.load(root)
+    found, remainder = {}, {}
+    forms = [set(kg_similarity.normalize(form) for form in _forms(node)) for node in nodes]
+    grams = [frozenset().union(*(kg_similarity.ngrams(form) for form in values)) for values in forms]
+    signatures = [minhash(" ".join(value.replace(" ", "_") for value in sorted(values))) for values in grams]
+
+    def entropy(text):
+        counts = Counter(text)
+        total = max(1, len(text))
+        return -sum((count / total) * math.log2(count / total) for count in counts.values())
+
+    for a in range(len(nodes)):
+        for b in range(a + 1, len(nodes)):
+            if not compatible(onto, nodes[a].entity_type, nodes[b].entity_type):
+                continue
+            if forms[a] & forms[b]:
+                found[(a, b)] = ("exact", 1.0)
+            elif min(entropy(" ".join(forms[a])), entropy(" ".join(forms[b]))) >= 2:
+                similarity = sum(x == y for x, y in zip(signatures[a], signatures[b])) / len(signatures[a])
+                if similarity >= 0.8 and kg_similarity.jaccard(grams[a], grams[b]) >= 0.8:
+                    found[(a, b)] = ("minhash", similarity)
+    provider = kg_similarity.embedder(embedder)
+    if provider is not None:
+        scores = _embedding_scores(root, nodes, provider, False)
+        for a in range(len(nodes)):
+            candidates = sorted(
+                [(b, score) for (x, b), score in scores.items() if x == a and score >= 0.6],
+                key=lambda pair: (-pair[1], nodes[pair[0]].id),
+            )[:15]
+            for b, score in candidates:
+                if (a, b) not in found and compatible(onto, nodes[a].entity_type, nodes[b].entity_type):
+                    remainder[(a, b)] = score
+    if remainder and complete is not None:
+        offered = [
+            {"a": nodes[a].id, "b": nodes[b].id, "a_names": sorted(forms[a]), "b_names": sorted(forms[b])}
+            for a, b in list(remainder)[: max(1, min(limit, 100))]
+        ]
+        with purpose("entity-dedup"):
+            text, _ = complete(
+                'Return JSON {"duplicates":[["a-id","b-id"]]}. '
+                "Only identify aliases of the same real entity; prefer no merge for ambiguity.\n"
+                + __import__("json").dumps(offered)
+            )
+        judged = llm._extract_json_object(text).get("duplicates", [])
+        accepted = {
+            tuple(pair)
+            for pair in judged
+            if isinstance(pair, list) and len(pair) == 2 and all(isinstance(identity, str) for identity in pair)
+        }
+        for (a, b), score in remainder.items():
+            if (nodes[a].id, nodes[b].id) in accepted:
+                found[(a, b)] = ("llm", score)
+    pairs = [
+        {
+            "a": nodes[a].id,
+            "b": nodes[b].id,
+            "score": score,
+            "tier": tier,
+            "a_type": nodes[a].entity_type,
+            "b_type": nodes[b].entity_type,
+            "compatible": True,
+        }
+        for (a, b), (tier, score) in found.items()
+    ]
+    return {
+        "method": "tiered",
+        "entities": len(nodes),
+        "pairs": sorted(pairs, key=lambda pair: (-pair["score"], pair["a"], pair["b"]))[:limit],
+        "llm_batches": int(bool(remainder and complete)),
+        "thresholds": {"entropy": 2.0, "minhash": 0.8, "cosine": 0.6, "top_k": 15},
+    }

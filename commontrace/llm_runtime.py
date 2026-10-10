@@ -6,7 +6,7 @@ import threading
 import time
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from commontrace import llm, session_ledger
 
@@ -51,8 +51,11 @@ class LLMRuntime:
     def __init__(self, root: str, session_id: str, *, routes: dict[str, llm.Config] | None = None,
                  budget: Budget | None = None, complete=None):
         self.root, self.session_id = root, session_id
+        from commontrace import configuration
+        configured = configuration.load(root)
+        self.model_routes = configured['model_routes']
         self.routes = dict(routes or {})
-        self.budget = budget or Budget()
+        self.budget = budget or Budget(**configured['llm_budget'])
         self.caller = complete or llm.complete
         self.calls = self.tokens = 0
         self.cost = 0.0
@@ -77,6 +80,8 @@ class LLMRuntime:
                     time.monotonic() - self.started >= self.budget.seconds):
                 raise BudgetExceeded("LLM budget exhausted")
             cfg = self.routes.get(purpose, self.routes.get("default")) or config or llm.load_config()
+            if purpose not in self.routes and purpose in self.model_routes:
+                cfg = replace(cfg, model=self.model_routes[purpose])
             self.calls += 1
             token = ACTIVE.set(None)
             try:

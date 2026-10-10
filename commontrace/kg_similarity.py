@@ -5,11 +5,25 @@ An embedder is configured by passing one (an `embeddings.provider` tag such as
 ``arctic-m`` or ``openai:text-embedding-3-small``, or any object with
 ``embed(texts, *, query) -> unit vectors``), or by ``COMMONTRACE_GRAPH_EMBEDDER``.
 Nothing here loads a model or calls a network until an embedder is asked to embed."""
+
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import os
 import re
+
+from commontrace.runtime_cache import RuntimeCache
+
+_QUERY_VECTORS = RuntimeCache(
+    max_entries=512,
+    max_bytes=8 * 1024 * 1024,
+    ttl=300,
+    weigh=lambda _key, value: sum(len(vector) * 32 for vector in value),
+)
+
+_LOCAL_PROVIDERS = RuntimeCache(max_entries=4, max_bytes=4, ttl=3600, weigh=lambda _key, _value: 1)
 
 ENV = "COMMONTRACE_GRAPH_EMBEDDER"
 _WORD = re.compile(r"[a-z0-9]+")
@@ -27,10 +41,13 @@ def embedder(spec=None):
         return None
     from commontrace import embeddings
 
+    spec = embeddings.parse(tag) if not (":" in tag and tag.partition(":")[0] in embeddings._CUSTOM) else None
+    if spec is not None and spec.provider == "local":
+        return _LOCAL_PROVIDERS.get_or_load(spec.tag, lambda: embeddings.provider(spec))
     return embeddings.provider(tag)
 
 
-def embed(provider, texts: list[str], *, query: bool) -> list[list[float]]:
+def _embed_uncached(provider, texts: list[str], *, query: bool) -> list[list[float]]:
     """Unit vectors for `texts`, checked: one finite vector per text, one dimension."""
     vectors = [list(map(float, v)) for v in provider.embed(list(texts), query=query)]
     if len(vectors) != len(texts) or len({len(v) for v in vectors}) > 1:
@@ -42,6 +59,21 @@ def embed(provider, texts: list[str], *, query: bool) -> list[list[float]]:
             raise ValueError("the embedder returned an empty, zero or non-finite vector")
         out.append([x / norm for x in vector])
     return out
+
+
+def embed(provider, texts: list[str], *, query: bool) -> list[list[float]]:
+    if not query:
+        return _embed_uncached(provider, texts, query=False)
+    digest = hashlib.sha256(json.dumps(texts, ensure_ascii=False).encode()).hexdigest()
+    try:
+        hash(provider)
+    except TypeError:
+        return _embed_uncached(provider, texts, query=True)
+    # Provider identity prevents mixing replaced weights or request-specific fakes.
+    cached = _QUERY_VECTORS.get_or_load(
+        (provider, digest), lambda: tuple(tuple(v) for v in _embed_uncached(provider, texts, query=True))
+    )
+    return [list(vector) for vector in cached]
 
 
 def cosine(a: list[float], b: list[float]) -> float:
@@ -69,7 +101,7 @@ def ngrams(text: str, n: int = 3) -> frozenset[str]:
     padded = f" {normalize(text)} "
     if len(padded.strip()) == 0:
         return frozenset()
-    return frozenset(padded[i:i + n] for i in range(max(1, len(padded) - n + 1)))
+    return frozenset(padded[i : i + n] for i in range(max(1, len(padded) - n + 1)))
 
 
 def jaccard(a: frozenset[str], b: frozenset[str]) -> float:
