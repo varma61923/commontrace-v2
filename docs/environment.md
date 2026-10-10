@@ -33,6 +33,7 @@ Dynamic provider prefixes and test-only variables are described in the relevant 
 | `COMMONTRACE_FACT_EMBEDDER_PATH` | [commontrace/fact_embeddings.py:6](../commontrace/fact_embeddings.py#L6) |
 | `COMMONTRACE_GEMINI_API_KEY` | [commontrace/embeddings.py:195](../commontrace/embeddings.py#L195) |
 | `COMMONTRACE_GLINER_MODEL_PATH` | [commontrace/gateway.py:830](../commontrace/gateway.py#L830) |
+| `COMMONTRACE_GRAPH_EMBEDDER` | [commontrace/commands/graph_cmd.py:144](../commontrace/commands/graph_cmd.py#L144) |
 | `COMMONTRACE_HANDOFF_KEY` | [commontrace/memfs.py:291](../commontrace/memfs.py#L291) |
 | `COMMONTRACE_HUB_API_KEY` | [commontrace/commands/_format.py:17](../commontrace/commands/_format.py#L17) |
 | `COMMONTRACE_HUB_API_KEY_FILE` | [commontrace/commands/_format.py:17](../commontrace/commands/_format.py#L17) |
