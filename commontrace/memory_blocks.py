@@ -15,6 +15,14 @@ Letta-style safeguards adopted here:
   comparison and storage.
 - ``insert_block``: positional line insertion (0 = top, -1 = bottom, N = line N).
 - ``render_memory_blocks``: Letta-style XML rendering for prompt injection.
+
+Scoping: every operation takes an optional ``scope`` -- ``""`` (global, the
+default and the only behaviour before scopes existed), ``session:<id>`` or
+``agent:<id>``. Scoped blocks live under ``memory/blocks/scopes/<kind>/``
+and share the global lock and audit log (their journal rows carry
+``scope``). Reads that want the effective view use ``resolve_block`` /
+``resolved_blocks``: a session block shadows an agent block of the same
+name, which shadows the global one.
 """
 from __future__ import annotations
 
@@ -33,6 +41,10 @@ from commontrace import _jsonl, paths
 DEFAULT_MAX_CHARS = 2000
 MAX_QUOTA_CHARS = 100_000
 BUILTIN_BLOCKS = ("persona", "human", "project")
+SCOPE_KINDS = ("session", "agent")
+GLOBAL_SCOPE = ""
+_SCOPE_RE = re.compile(r"^(session|agent):(.{1,200})$", re.DOTALL)
+_SCOPE_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
 # Strips "Line 12: " or "12→ " or "12> " prefixes that LLMs hallucinate when
 # copying text from a line-numbered rendered view.
@@ -78,28 +90,73 @@ class MemoryBlock:
     updated_at: str
     metadata: dict[str, Any]
     read_only: bool = False
+    scope: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        if not data["scope"]:
+            # Global blocks serialise exactly as they did before scopes existed.
+            del data["scope"]
+        return data
+
+
+def normalize_scope(scope: str | None) -> str:
+    """Canonical scope label: ``""`` for global, else ``session:<id>`` / ``agent:<id>``."""
+    if scope is None:
+        return GLOBAL_SCOPE
+    text = str(scope).strip()
+    if text in ("", "global"):
+        return GLOBAL_SCOPE
+    match = _SCOPE_RE.match(text)
+    if not match or not match.group(2).strip() or _SCOPE_CONTROL.search(match.group(2)):
+        raise MemoryBlockError(
+            "memory block scope must be 'global', 'session:<id>' or 'agent:<id>' "
+            "(id: 1-200 characters, no control characters)")
+    return f"{match.group(1)}:{match.group(2).strip()}"
+
+
+def _scope_dirname(scope: str) -> str:
+    kind, ident = scope.split(":", 1)
+    # Lossy, traversal-proof label for humans plus a digest of the exact id,
+    # so two ids that sanitise alike can never share a directory.
+    label = re.sub(r"[^A-Za-z0-9_-]", "_", ident)[:48].strip("_-") or "id"
+    digest = hashlib.sha256(ident.encode("utf-8")).hexdigest()[:12]
+    return os.path.join(kind, f"{label}-{digest}")
+
+
+def resolution_order(session: str = "", agent: str = "") -> list[str]:
+    """Scopes consulted when reading, most specific first: session > agent > global."""
+    order: list[str] = []
+    if session:
+        order.append(normalize_scope(session if session.startswith("session:") else f"session:{session}"))
+    if agent:
+        order.append(normalize_scope(agent if agent.startswith("agent:") else f"agent:{agent}"))
+    order.append(GLOBAL_SCOPE)
+    return order
 
 
 
-def _blocks_dir(root: str) -> str:
+def _root_blocks_dir(root: str) -> str:
     return os.path.join(paths.memory_dir(root), "blocks")
 
 
+def _blocks_dir(root: str, scope: str = "") -> str:
+    base = _root_blocks_dir(root)
+    return os.path.join(base, "scopes", _scope_dirname(scope)) if scope else base
+
+
 def _history_file(root: str) -> str:
-    return os.path.join(_blocks_dir(root), "history.jsonl")
+    return os.path.join(_root_blocks_dir(root), "history.jsonl")
 
 
-def _meta_file(root: str, name: str) -> str:
+def _meta_file(root: str, name: str, scope: str = "") -> str:
     safe_name = _sanitize_name(name)
-    return os.path.join(_blocks_dir(root), f"{safe_name}.meta.json")
+    return os.path.join(_blocks_dir(root, scope), f"{safe_name}.meta.json")
 
 
-def _content_file(root: str, name: str) -> str:
+def _content_file(root: str, name: str, scope: str = "") -> str:
     safe_name = _sanitize_name(name)
-    return os.path.join(_blocks_dir(root), f"{safe_name}.md")
+    return os.path.join(_blocks_dir(root, scope), f"{safe_name}.md")
 
 
 def _sanitize_name(name: str) -> str:
@@ -120,16 +177,21 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def get_block(root: str, name: str) -> MemoryBlock:
-    """Retrieve one coherent metadata/content snapshot, serialized with writers."""
+def get_block(root: str, name: str, *, scope: str = "") -> MemoryBlock:
+    """Retrieve one coherent metadata/content snapshot, serialized with writers.
+
+    ``scope`` reads exactly that scope; use ``resolve_block`` for the
+    session > agent > global fallback.
+    """
+    scope = normalize_scope(scope)
     with _jsonl.locked(_lock_path(root)):
-        return _get_block_locked(root, name)
+        return _get_block_locked(root, name, scope)
 
 
-def _get_block_locked(root: str, name: str) -> MemoryBlock:
+def _get_block_locked(root: str, name: str, scope: str = "") -> MemoryBlock:
     clean = _sanitize_name(name)
-    meta_path = _meta_file(root, clean)
-    content_path = _content_file(root, clean)
+    meta_path = _meta_file(root, clean, scope)
+    content_path = _content_file(root, clean, scope)
 
     try:
         with open(meta_path, "r", encoding="utf-8") as f:
@@ -137,7 +199,8 @@ def _get_block_locked(root: str, name: str) -> MemoryBlock:
         with open(content_path, "r", encoding="utf-8") as f:
             content = f.read()
     except FileNotFoundError:
-        raise BlockNotFoundError(f"Memory block '{clean}' does not exist") from None
+        where = f" in scope '{scope}'" if scope else ""
+        raise BlockNotFoundError(f"Memory block '{clean}' does not exist{where}") from None
     except ValueError as exc:
         raise MemoryBlockError(f"Memory block '{clean}' metadata is unreadable: {exc}") from None
 
@@ -151,12 +214,14 @@ def _get_block_locked(root: str, name: str) -> MemoryBlock:
         updated_at=meta.get("updated_at", _now()),
         metadata=meta.get("metadata", {}),
         read_only=bool(meta.get("read_only", False)),
+        scope=scope,
     )
 
 
-def list_blocks(root: str) -> list[MemoryBlock]:
-    """List all configured memory blocks in the store."""
-    b_dir = _blocks_dir(root)
+def list_blocks(root: str, *, scope: str = "") -> list[MemoryBlock]:
+    """List the memory blocks of one scope (global by default)."""
+    scope = normalize_scope(scope)
+    b_dir = _blocks_dir(root, scope)
     blocks: list[MemoryBlock] = []
     if not os.path.isdir(b_dir):
         return blocks
@@ -165,14 +230,63 @@ def list_blocks(root: str) -> list[MemoryBlock]:
         if fname.endswith(".meta.json"):
             name = fname[:-10]
             try:
-                blocks.append(get_block(root, name))
+                blocks.append(get_block(root, name, scope=scope))
             except MemoryBlockError:
                 continue
     return blocks
 
 
+def list_scopes(root: str) -> list[str]:
+    """Every non-global scope that holds at least one block, sorted."""
+    base = os.path.join(_root_blocks_dir(root), "scopes")
+    found: set[str] = set()
+    for kind in SCOPE_KINDS:
+        kind_dir = os.path.join(base, kind)
+        if not os.path.isdir(kind_dir):
+            continue
+        for entry in sorted(os.listdir(kind_dir)):
+            directory = os.path.join(kind_dir, entry)
+            if not os.path.isdir(directory):
+                continue
+            for fname in sorted(os.listdir(directory)):
+                if fname.endswith(".meta.json"):
+                    label = _read_meta(os.path.join(directory, fname)).get("scope")
+                    try:
+                        scope = normalize_scope(label)
+                    except MemoryBlockError:
+                        continue
+                    if scope and _blocks_dir(root, scope) == directory:
+                        found.add(scope)
+                        break
+    return sorted(found)
+
+
+def resolve_block(root: str, name: str, *, session: str = "", agent: str = "") -> MemoryBlock:
+    """The effective block *name*: the session's, else the agent's, else the global one."""
+    order = resolution_order(session, agent)
+    with _jsonl.locked(_lock_path(root)):
+        for scope in order:
+            try:
+                return _get_block_locked(root, name, scope)
+            except BlockNotFoundError:
+                continue
+    raise BlockNotFoundError(f"Memory block '{_sanitize_name(name)}' does not exist in {order[:-1] + ['global']}")
+
+
+def resolved_blocks(root: str, *, session: str = "", agent: str = "") -> list[MemoryBlock]:
+    """The effective block set, one per name, with session > agent > global shadowing.
+
+    Sorted by name, so the rendering is deterministic for a given store state.
+    """
+    chosen: dict[str, MemoryBlock] = {}
+    for scope in resolution_order(session, agent):
+        for block in list_blocks(root, scope=scope):
+            chosen.setdefault(block.name, block)
+    return [chosen[name] for name in sorted(chosen)]
+
+
 def _lock_path(root: str) -> str:
-    return os.path.join(_blocks_dir(root), "blocks")
+    return os.path.join(_root_blocks_dir(root), "blocks")
 
 
 def _read_meta(meta_path: str) -> dict[str, Any]:
@@ -215,7 +329,7 @@ def _discard(*paths_: str) -> None:
 
 def _write_locked(
     root: str, clean: str, content: str, max_chars: int, actor: str, reason: str,
-    metadata: dict[str, Any] | None, *, read_only: bool = False,
+    metadata: dict[str, Any] | None, *, read_only: bool = False, scope: str = "",
 ) -> MemoryBlock:
     if int(max_chars) > MAX_QUOTA_CHARS:
         raise MemoryBlockError(f"block quota cannot exceed {MAX_QUOTA_CHARS} characters")
@@ -223,8 +337,8 @@ def _write_locked(
         raise QuotaExceededError(
             f"Content length {len(content)} exceeds quota of {max_chars} chars for block '{clean}'"
         )
-    os.makedirs(_blocks_dir(root), exist_ok=True)
-    meta_path, content_path = _meta_file(root, clean), _content_file(root, clean)
+    os.makedirs(_blocks_dir(root, scope), exist_ok=True)
+    meta_path, content_path = _meta_file(root, clean, scope), _content_file(root, clean, scope)
     existing = _read_meta(meta_path)
     prev_revision = str(existing.get("revision", ""))
     created_at = str(existing.get("created_at") or _now())
@@ -238,6 +352,8 @@ def _write_locked(
         "created_at": created_at, "updated_at": updated_at, "metadata": merged,
         "read_only": effective_read_only,
     }
+    if scope:
+        meta["scope"] = scope
     content_tmp, meta_tmp = content_path + ".tmp", meta_path + ".tmp"
     backup, meta_backup = content_path + ".bak", meta_path + ".bak"
     had_content, had_meta = os.path.exists(content_path), os.path.exists(meta_path)
@@ -265,6 +381,7 @@ def _write_locked(
         _log(root, {
             "timestamp": updated_at, "block": clean, "action": "set", "actor": actor, "reason": reason,
             "revision": revision, "prev_revision": prev_revision, "char_count": len(content),
+            **({"scope": scope} if scope else {}),
         })
         cleanup_backups = True
     except BaseException:
@@ -287,7 +404,7 @@ def _write_locked(
     return MemoryBlock(
         name=clean, content=content, char_count=len(content), max_chars=int(max_chars),
         revision=revision, created_at=created_at, updated_at=updated_at, metadata=merged,
-        read_only=effective_read_only,
+        read_only=effective_read_only, scope=scope,
     )
 
 
@@ -321,23 +438,26 @@ def set_block(
     *,
     read_only: bool = False,
     expected_revision: str | None = None,
+    scope: str = "",
 ) -> MemoryBlock:
     """Create or overwrite a block; the new content must fit its quota.
 
     Pass ``read_only=True`` to mark the block immutable after creation.
     ``expected_revision`` compares under the write lock; ``""`` is create-only.
+    ``scope`` (``session:<id>`` / ``agent:<id>``) writes a scoped block.
     """
     clean = _sanitize_name(name)
+    scope = normalize_scope(scope)
     with _jsonl.locked(_lock_path(root)):
         # Allow overwrite only if the existing block is not read-only.
         try:
-            existing = get_block(root, clean)
+            existing = _get_block_locked(root, clean, scope)
             _check_revision(clean, existing.revision, expected_revision)
             _check_mutable(existing)
         except BlockNotFoundError:
             _check_revision(clean, "", expected_revision)
         return _write_locked(root, clean, content.expandtabs().strip(), max_chars, actor, reason,
-                             metadata, read_only=read_only)
+                             metadata, read_only=read_only, scope=scope)
 
 
 def append_block(
@@ -348,12 +468,14 @@ def append_block(
     reason: str = "",
     *,
     expected_revision: str | None = None,
+    scope: str = "",
 ) -> MemoryBlock:
     """Append a line to a block (creating it), keeping it within its quota."""
     clean = _sanitize_name(name)
+    scope = normalize_scope(scope)
     with _jsonl.locked(_lock_path(root)):
         try:
-            block = get_block(root, clean)
+            block = _get_block_locked(root, clean, scope)
             _check_revision(clean, block.revision, expected_revision)
             _check_mutable(block)
             base, max_chars = block.content, block.max_chars
@@ -362,7 +484,7 @@ def append_block(
             base, max_chars = "", DEFAULT_MAX_CHARS
         appended = text.expandtabs().strip()
         new_content = f"{base}\n{appended}".strip() if base else appended
-        return _write_locked(root, clean, new_content, max_chars, actor, reason or "append", None)
+        return _write_locked(root, clean, new_content, max_chars, actor, reason or "append", None, scope=scope)
 
 
 def replace_block(
@@ -374,6 +496,7 @@ def replace_block(
     reason: str = "",
     *,
     expected_revision: str | None = None,
+    scope: str = "",
 ) -> MemoryBlock:
     """Replace the one occurrence of *old_str* in a block.
 
@@ -385,11 +508,12 @@ def replace_block(
     if not old_str:
         raise MemoryBlockError("Ambiguous replacement: the target text is empty")
     clean = _sanitize_name(name)
+    scope = normalize_scope(scope)
     # Strip hallucinated line prefixes and expand tabs before comparing.
     old_str = strip_line_prefix(old_str.expandtabs())
     new_str = strip_line_prefix(new_str.expandtabs())
     with _jsonl.locked(_lock_path(root)):
-        block = get_block(root, clean)
+        block = _get_block_locked(root, clean, scope)
         _check_revision(clean, block.revision, expected_revision)
         _check_mutable(block)
         normalised = block.content.expandtabs()
@@ -410,7 +534,7 @@ def replace_block(
             )
         new_content = normalised.replace(old_str, new_str).strip()
         return _write_locked(root, clean, new_content, block.max_chars, actor,
-                             reason or f"replaced '{old_str[:20]}' with '{new_str[:20]}'", None)
+                             reason or f"replaced '{old_str[:20]}' with '{new_str[:20]}'", None, scope=scope)
 
 
 def insert_block(
@@ -422,6 +546,7 @@ def insert_block(
     reason: str = "",
     *,
     expected_revision: str | None = None,
+    scope: str = "",
 ) -> MemoryBlock:
     """Insert *text* at a specific line of a block.
 
@@ -431,9 +556,10 @@ def insert_block(
     - ``N`` (1 ≤ N ≤ n_lines): insert after line N.
     """
     clean = _sanitize_name(name)
+    scope = normalize_scope(scope)
     with _jsonl.locked(_lock_path(root)):
         try:
-            block = get_block(root, clean)
+            block = _get_block_locked(root, clean, scope)
             _check_revision(clean, block.revision, expected_revision)
             _check_mutable(block)
             lines = block.content.expandtabs().split("\n")
@@ -455,7 +581,7 @@ def insert_block(
             )
         new_content = "\n".join(lines).strip()
         return _write_locked(root, clean, new_content, max_chars, actor,
-                             reason or f"inserted at line {line_number}", None)
+                             reason or f"inserted at line {line_number}", None, scope=scope)
 
 
 def delete_block(
@@ -465,11 +591,13 @@ def delete_block(
     reason: str = "",
     *,
     expected_revision: str | None = None,
+    scope: str = "",
 ) -> bool:
     """Delete a block, recording the deletion in its history."""
     clean = _sanitize_name(name)
+    scope = normalize_scope(scope)
     with _jsonl.locked(_lock_path(root)):
-        meta_path, content_path = _meta_file(root, clean), _content_file(root, clean)
+        meta_path, content_path = _meta_file(root, clean, scope), _content_file(root, clean, scope)
         if not os.path.exists(meta_path) and not os.path.exists(content_path):
             _check_revision(clean, "", expected_revision)
             return False
@@ -491,7 +619,7 @@ def delete_block(
             _log(root, {
                 "timestamp": _now(), "block": clean, "action": "delete", "actor": actor, "reason": reason,
                 "revision": _compute_revision(clean, "", prev_revision), "prev_revision": prev_revision,
-                "char_count": 0,
+                "char_count": 0, **({"scope": scope} if scope else {}),
             })
             cleanup_backups = True
         except BaseException:
@@ -505,11 +633,18 @@ def delete_block(
         return True
 
 
-def block_history(root: str, name: str = "") -> list[dict[str, Any]]:
-    """The audit log for every block, or for *name* only."""
+def block_history(root: str, name: str = "", *, scope: str = "") -> list[dict[str, Any]]:
+    """The audit log for every block, or for *name* only, in one scope.
+
+    The default is the global scope (exactly the pre-scope behaviour); pass
+    ``scope="*"`` for every scope's rows.
+    """
     clean = _sanitize_name(name) if name else ""
+    every = scope == "*"
+    wanted = "" if every else normalize_scope(scope)
     with _jsonl.locked(_lock_path(root)):
-        return [e for e in _jsonl.read_rows(_history_file(root)) if not clean or e.get("block") == clean]
+        return [e for e in _jsonl.read_rows(_history_file(root))
+                if (not clean or e.get("block") == clean) and (every or str(e.get("scope") or "") == wanted)]
 
 
 def render_memory_blocks(blocks: list[MemoryBlock]) -> str:
@@ -537,10 +672,11 @@ def render_memory_blocks(blocks: list[MemoryBlock]) -> str:
         if not re.match(r"^[A-Za-z_]", tag):
             tag = "block_" + tag
         ro = "true" if block.read_only else "false"
+        scope_attr = f' scope="{escape(block.scope, {chr(34): "&quot;"})}"' if block.scope else ""
         lines.append(f"  <{tag}>")
         lines.append(
             f'    <metadata chars_current="{block.char_count}" '
-            f'chars_limit="{block.max_chars}" read_only="{ro}"/>'
+            f'chars_limit="{block.max_chars}" read_only="{ro}"{scope_attr}/>'
         )
         lines.append(f"    <value>{escape(block.content)}</value>")
         lines.append(f"  </{tag}>")

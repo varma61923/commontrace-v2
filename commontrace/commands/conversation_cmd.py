@@ -77,8 +77,25 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     m.add_argument("--session", action="append", default=[], help="only this session (repeatable)")
     m.add_argument("--model", action="store_true", help="have the configured model write them (default: extractive)")
     m.add_argument("--force", action="store_true", help="rewrite summaries that are already current")
+    m.add_argument("--rolling", action="store_true",
+                   help="keep a rolling summary: fold in only turns added since the last run "
+                        "(rebuilds when earlier turns changed)")
+    m.add_argument("--json", action="store_true")
     m.add_argument("--dest", default=None)
     m.set_defaults(func=run_summarize)
+
+    w = sub.add_parser("working-memory",
+                       help="Core blocks, rolling summary, recent turns and recalled evidence in one budgeted context.")
+    w.add_argument("space", help=SPACE_HELP)
+    w.add_argument("session", help="the session the next call belongs to")
+    w.add_argument("question", help="what the next call is about")
+    w.add_argument("--budget", type=int, default=2000, help="tokens (default 2000)")
+    w.add_argument("--recent-turns", type=int, default=6, help="last N turns kept verbatim (default 6)")
+    w.add_argument("--agent", default="", help="also use this agent's scoped memory blocks")
+    w.add_argument("--refresh-summary", action="store_true", help="fold new turns into the rolling summary first")
+    w.add_argument("--json", action="store_true")
+    w.add_argument("--dest", default=None)
+    w.set_defaults(func=run_working_memory)
 
     x = sub.add_parser("extract", help="Distil dated memories from new messages with the configured model.")
     x.add_argument("space", help=SPACE_HELP)
@@ -284,17 +301,46 @@ def run_answer(args) -> int:
 def run_summarize(args) -> int:
     from commontrace import llm
     from commontrace.conversation import ConversationError
-    from commontrace.conversation.summary import summarize
+    from commontrace.conversation.summary import rolling_all, summarize
 
+    method = "model" if args.model else "extractive"
     try:
         with _store(args, create=False) as store:
-            out = summarize(store, args.session or None, method="model" if args.model else "extractive",
-                            force=args.force)
+            if getattr(args, "rolling", False):
+                out = rolling_all(store, args.session or None, method=method, force=args.force)
+            else:
+                out = summarize(store, args.session or None, method=method, force=args.force)
     except (ConversationError, llm.LLMUnavailable) as exc:
         print(f"[commontrace] {exc}", file=sys.stderr)
         return 2
-    print(f"[commontrace] {out['summarized']} session(s) summarised ({out['method']}), "
-          f"{out['unchanged']} already current.")
+    if getattr(args, "json", False):
+        print(json.dumps(out, indent=2))
+    elif getattr(args, "rolling", False):
+        print(f"[commontrace] rolling ({out['method']}): {out['incremental']} updated incrementally, "
+              f"{out['full']} rebuilt, {out['unchanged']} unchanged.")
+    else:
+        print(f"[commontrace] {out['summarized']} session(s) summarised ({out['method']}), "
+              f"{out['unchanged']} already current.")
+    return 0
+
+
+def run_working_memory(args) -> int:
+    from commontrace import working_memory
+    from commontrace.conversation import ConversationError
+
+    try:
+        out = working_memory.assemble(paths.resolve_root(args.dest), args.space, args.session, args.question,
+                                      budget=args.budget, recent_turns=args.recent_turns, agent=args.agent,
+                                      refresh_summary=args.refresh_summary)
+    except ConversationError as exc:
+        print(f"[commontrace] {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(out, indent=2, default=str))
+        return 0
+    print(out["context"])
+    spent = ", ".join(f"{k} {v}" for k, v in out["explain"]["spent"].items())
+    print(f"[commontrace] {out['tokens']}/{out['budget']} tokens ({spent}).", file=sys.stderr)
     return 0
 
 

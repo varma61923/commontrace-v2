@@ -134,6 +134,8 @@ class IngestionResult:
     skipped_unsupported: int = 0
     truncated: int = 0
     errors: list[str] = field(default_factory=list)
+    # Filled by the pipeline's embedding stage when an embedder is configured.
+    embeddings: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -150,6 +152,7 @@ class IngestionResult:
             "skipped_unsupported": self.skipped_unsupported,
             "truncated": self.truncated,
             "errors": self.errors,
+            **({"embeddings": dict(self.embeddings)} if self.embeddings else {}),
         }
 
 

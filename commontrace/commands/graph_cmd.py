@@ -91,7 +91,16 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p_r.set_defaults(func=run_revise)
 
     p_p = sub.add_parser("provenance", help="Show where a node or edge came from (source and run).")
-    p_p.add_argument("target", help="Node id, or an edge as 'source->target:relation'.")
+    p_p.add_argument("target", nargs="?", default=None, help="Node id, or an edge as 'source->target:relation'.")
+    p_p.add_argument("--lineage", metavar="ID", default=None,
+                     help="Walk the derivation graph from this record (fact, observation, proposal, trace, "
+                          "chunk, source path, run:<id> or lesson:<slug>).")
+    way = p_p.add_mutually_exclusive_group()
+    way.add_argument("--down", dest="direction", action="store_const", const="down",
+                     help="What was derived from it (default).")
+    way.add_argument("--up", dest="direction", action="store_const", const="up", help="What it came from.")
+    p_p.add_argument("--max-depth", type=int, default=5, help="Hops to follow (1-32, default 5).")
+    p_p.add_argument("--json", action="store_true")
     p_p.add_argument("--dest", default=None)
     p_p.set_defaults(func=run_provenance)
 
@@ -296,7 +305,22 @@ def run_provenance(args: argparse.Namespace) -> int:
     from commontrace import provenance
 
     root = paths.resolve_root(args.dest)
+    if getattr(args, "lineage", None):
+        try:
+            result = provenance.lineage(root, args.lineage, direction=args.direction or "down",
+                                        max_depth=args.max_depth)
+        except ValueError as exc:
+            print(f"[commontrace] {exc}", file=sys.stderr)
+            return 2
+        print(json.dumps(result, indent=2) if args.json else provenance.render_lineage(result))
+        return 0
+    if not args.target:
+        print("[commontrace] give a node or edge id, or --lineage <id>.", file=sys.stderr)
+        return 2
     records = provenance.list_provenance(root, args.target)
+    if args.json:
+        print(json.dumps(records, indent=2))
+        return 0
     if not records:
         print(f"No provenance recorded for '{args.target}'.")
         return 0

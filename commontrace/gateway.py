@@ -482,6 +482,23 @@ class Gateway:
             "adaptive_budget": "optional boolean: treat budget as a floor sized by the question's shape "
                                "(summaries, orderings, counts, lists); explain.budget reports the decision",
         }, summary="The turns that answer a question, as a dated context within a token budget.")
+        self._route("GET", "/v1/conversation/sessions", self._conversation_sessions,
+                    summary="A space's sessions with turn counts, time range and summary state "
+                            "(?space=, ?limit=, ?after=).")
+        self._route("POST", "/v1/conversation/summarize", self._conversation_summarize, request={
+            "space": "string", "session": "string",
+            "mode": "optional extractive (default, deterministic) or model (the configured LLM)",
+            "force": "optional boolean: rebuild from the first turn",
+            "verify": "optional full (default: re-hash every covered turn) or tail",
+        }, summary="Fold a session's new turns into its rolling summary; rebuilds when earlier turns changed.")
+        self._route("POST", "/v1/working-memory", self._working_memory, request={
+            "space": "string", "session": "string", "question": "string",
+            "budget": "optional integer: tokens from 50 to 32000 (default 2000)",
+            "recent_turns": "optional integer from 0 to 200 (default 6)",
+            "agent": "optional string: adds this agent's scoped memory blocks",
+            "now": "optional date the question is asked",
+            "refresh_summary": "optional boolean: fold new turns into the rolling summary first",
+        }, summary="Core blocks, rolling summary, recent turns and recalled evidence in one budgeted context.")
         self._route("GET", "/v1/status", self._status, summary="Experiment and proof progress.")
         self._route("GET", "/v1/memories", self._memories, summary="Each memory's measured verdict.")
         self._route("GET", "/v1/occasions", self._occasions, summary="Recent recalls and outcomes (?limit=).")
@@ -1334,6 +1351,80 @@ class Gateway:
                 return recall(store, question, now=req.get("now") or None, options=opts).as_dict()
         except ConversationError as exc:
             raise ApiError(404 if "no conversations" in str(exc) else 400, "conversation", str(exc)) from None
+
+    @staticmethod
+    def _conversation_error(exc: Exception) -> ApiError:
+        missing = "no conversations" in str(exc) or "no session" in str(exc)
+        return ApiError(404 if missing else 400, "conversation", str(exc))
+
+    def _conversation_sessions(self, _body, query) -> dict:
+        from commontrace import working_memory
+        from commontrace.conversation import ConversationError, Store
+
+        space = _ident((query.get("space") or [None])[0], "space")
+        limit = self._limit(query, 200, 1000)
+        after_raw = (query.get("after") or [None])[0]
+        try:
+            after = int(after_raw) if after_raw not in (None, "") else None
+        except ValueError:
+            raise _bad("after must be an integer session sequence number") from None
+        try:
+            with Store(self.root, self._scoped_space(space), create=False, read_only=True) as store:
+                return {**working_memory.sessions(store, limit=limit, after_seq=after), "space": space}
+        except ConversationError as exc:
+            raise self._conversation_error(exc) from None
+
+    def _conversation_summarize(self, req: dict, _query) -> dict:
+        from commontrace import llm
+        from commontrace.conversation import ConversationError, Store
+        from commontrace.conversation.summary import rolling
+
+        mode = req.get("mode", "extractive")
+        if mode not in ("extractive", "model"):
+            raise _bad("mode must be extractive or model")
+        force = req.get("force", False)
+        if not isinstance(force, bool):
+            raise _bad("force must be true or false")
+        verify = req.get("verify", "full")
+        if verify not in ("full", "tail"):
+            raise _bad("verify must be full or tail")
+        space = _ident(req.get("space"), "space")
+        session = _ident(req.get("session"), "session")
+        try:
+            with Store(self.root, self._scoped_space(space), create=False) as store:
+                return {**rolling(store, session, method=mode, force=force, verify=verify), "space": space}
+        except ConversationError as exc:
+            raise self._conversation_error(exc) from None
+        except llm.LLMUnavailable as exc:
+            raise ApiError(503, "llm_unavailable", str(exc)) from None
+
+    def _working_memory(self, req: dict, _query) -> dict:
+        from commontrace import working_memory
+        from commontrace.conversation import ConversationError
+
+        budget = req.get("budget", working_memory.DEFAULT_BUDGET)
+        if isinstance(budget, bool) or not isinstance(budget, int) or not 50 <= budget <= 32_000:
+            raise _bad("budget must be an integer number of tokens from 50 to 32000")
+        recent = req.get("recent_turns", working_memory.DEFAULT_RECENT)
+        if isinstance(recent, bool) or not isinstance(recent, int) or not 0 <= recent <= working_memory.MAX_RECENT:
+            raise _bad(f"recent_turns must be an integer from 0 to {working_memory.MAX_RECENT}")
+        refresh = req.get("refresh_summary", False)
+        if not isinstance(refresh, bool):
+            raise _bad("refresh_summary must be true or false")
+        space = _ident(req.get("space"), "space")
+        session = _ident(req.get("session"), "session")
+        question = _text(req.get("question"), "question", limit=4000)
+        agent = _ident(req["agent"], "agent") if req.get("agent") is not None else ""
+        scoped = self._scoped_space(space)
+        try:
+            out = working_memory.assemble(
+                self.root, scoped, session, question, budget=budget, recent_turns=recent, agent=agent,
+                now=req.get("now") or None, refresh_summary=refresh,
+                # Tenants never read each other's session- or agent-scoped blocks.
+                block_namespace=scoped if scoped != space else "")
+        except ConversationError as exc:
+            raise self._conversation_error(exc) from None
+        return {**out, "space": space}
 
     def _recall(self, req: dict, _query) -> dict:
         occasion = _ident(req.get("occasion_id"), "occasion_id")

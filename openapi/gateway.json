@@ -3713,6 +3713,431 @@
         ]
       }
     },
+    "/v1/conversation/sessions": {
+      "get": {
+        "operationId": "conversation_sessions",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RequestId"
+          },
+          {
+            "$ref": "#/components/parameters/ContainerTag"
+          },
+          {
+            "description": "the conversation space",
+            "in": "query",
+            "name": "space",
+            "required": true,
+            "schema": {
+              "description": "1-128 characters, no control characters or surrounding whitespace",
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "page size",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "return sessions after this sequence number",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "next_after": {
+                      "description": "pass as ?after= for the next page",
+                      "nullable": true,
+                      "type": "integer"
+                    },
+                    "sessions": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "first_at": {
+                            "description": "earliest dated turn",
+                            "nullable": true,
+                            "type": "string"
+                          },
+                          "id": {
+                            "type": "string"
+                          },
+                          "last_at": {
+                            "description": "latest dated turn",
+                            "nullable": true,
+                            "type": "string"
+                          },
+                          "seq": {
+                            "type": "integer"
+                          },
+                          "started_at": {
+                            "nullable": true,
+                            "type": "string"
+                          },
+                          "summary": {
+                            "additionalProperties": true,
+                            "properties": {
+                              "current": {
+                                "description": "a summary covers every turn",
+                                "type": "boolean"
+                              },
+                              "method": {
+                                "nullable": true,
+                                "type": "string"
+                              },
+                              "pending_turns": {
+                                "description": "turns the rolling summary has not folded in",
+                                "type": "integer"
+                              },
+                              "rolling_through_idx": {
+                                "description": "rolling summary high-water mark",
+                                "nullable": true,
+                                "type": "integer"
+                              }
+                            },
+                            "required": [
+                              "current",
+                              "pending_turns"
+                            ],
+                            "type": "object"
+                          },
+                          "turns": {
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "seq",
+                          "turns",
+                          "summary"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "space": {
+                      "type": "string"
+                    },
+                    "total": {
+                      "description": "sessions in the space",
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "space",
+                    "sessions",
+                    "total"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or wrong credential"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Refused by policy or scope"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal error; no details"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "A space's sessions with turn counts, time range and summary state (?space=, ?limit=, ?after=).",
+        "tags": [
+          "Conversations"
+        ]
+      }
+    },
+    "/v1/conversation/summarize": {
+      "post": {
+        "description": "Reads only the turns after the high-water mark after proving, by a hash chain over the covered turns, that none of them changed; otherwise rebuilds. 503 when mode=model and no model is configured.",
+        "operationId": "conversation_summarize",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RequestId"
+          },
+          {
+            "$ref": "#/components/parameters/ContainerTag"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "force": {
+                    "description": "rebuild from the first turn",
+                    "type": "boolean"
+                  },
+                  "mode": {
+                    "default": "extractive",
+                    "enum": [
+                      "extractive",
+                      "model"
+                    ],
+                    "type": "string"
+                  },
+                  "session": {
+                    "description": "1-128 characters, no control characters or surrounding whitespace",
+                    "maxLength": 128,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "space": {
+                    "description": "1-128 characters, no control characters or surrounding whitespace",
+                    "maxLength": 128,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "verify": {
+                    "default": "full",
+                    "enum": [
+                      "full",
+                      "tail"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "space",
+                  "session"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "method": {
+                      "enum": [
+                        "extractive",
+                        "model"
+                      ],
+                      "type": "string"
+                    },
+                    "mode": {
+                      "enum": [
+                        "unchanged",
+                        "incremental",
+                        "full"
+                      ],
+                      "type": "string"
+                    },
+                    "new_turns": {
+                      "description": "turns folded in by this call",
+                      "type": "integer"
+                    },
+                    "reason": {
+                      "enum": [
+                        "",
+                        "first",
+                        "forced",
+                        "method-changed",
+                        "history-changed"
+                      ],
+                      "type": "string"
+                    },
+                    "session": {
+                      "type": "string"
+                    },
+                    "space": {
+                      "type": "string"
+                    },
+                    "text": {
+                      "type": "string"
+                    },
+                    "through_idx": {
+                      "description": "high-water mark: the last covered turn index",
+                      "type": "integer"
+                    },
+                    "turns": {
+                      "description": "turns the summary covers",
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "session",
+                    "mode",
+                    "reason",
+                    "new_turns",
+                    "turns",
+                    "through_idx",
+                    "text"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or wrong credential"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Refused by policy or scope"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Body larger than 1 MiB"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal error; no details"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not ready or upstream unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Fold a session's new turns into its rolling summary; rebuilds when earlier turns changed.",
+        "tags": [
+          "Conversations"
+        ]
+      }
+    },
     "/v1/docs": {
       "get": {
         "operationId": "swagger_ui",
@@ -8509,6 +8934,282 @@
         "summary": "Caller identity and scope.",
         "tags": [
           "Service"
+        ]
+      }
+    },
+    "/v1/working-memory": {
+      "post": {
+        "description": "Deterministic for a given store state. Sections: memory blocks in effect (session > agent > global), the rolling session summary, the last recent_turns messages verbatim, and older evidence from conversation recall deduplicated against them; explain says how the budget was spent.",
+        "operationId": "working_memory",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RequestId"
+          },
+          {
+            "$ref": "#/components/parameters/ContainerTag"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "agent": {
+                    "description": "1-128 characters, no control characters or surrounding whitespace",
+                    "maxLength": 128,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "budget": {
+                    "default": 2000,
+                    "description": "tokens",
+                    "maximum": 32000,
+                    "minimum": 50,
+                    "type": "integer"
+                  },
+                  "now": {
+                    "description": "date the question is asked",
+                    "nullable": true,
+                    "type": "string"
+                  },
+                  "question": {
+                    "maxLength": 4000,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "recent_turns": {
+                    "default": 6,
+                    "maximum": 200,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "refresh_summary": {
+                    "description": "fold new turns into the rolling summary first",
+                    "type": "boolean"
+                  },
+                  "session": {
+                    "description": "1-128 characters, no control characters or surrounding whitespace",
+                    "maxLength": 128,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "space": {
+                    "description": "1-128 characters, no control characters or surrounding whitespace",
+                    "maxLength": 128,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "space",
+                  "session",
+                  "question"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "agent": {
+                      "type": "string"
+                    },
+                    "budget": {
+                      "type": "integer"
+                    },
+                    "context": {
+                      "description": "every non-empty section, labelled",
+                      "type": "string"
+                    },
+                    "explain": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "allocated": {
+                          "additionalProperties": true,
+                          "type": "object"
+                        },
+                        "budget": {
+                          "type": "integer"
+                        },
+                        "deduplicated": {
+                          "additionalProperties": true,
+                          "type": "object"
+                        },
+                        "dropped": {
+                          "additionalProperties": true,
+                          "type": "object"
+                        },
+                        "spent": {
+                          "additionalProperties": true,
+                          "type": "object"
+                        },
+                        "unused": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "budget",
+                        "allocated",
+                        "spent",
+                        "dropped",
+                        "deduplicated"
+                      ],
+                      "type": "object"
+                    },
+                    "question": {
+                      "type": "string"
+                    },
+                    "sections": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "items": {
+                            "items": {
+                              "additionalProperties": true,
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
+                          "label": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "enum": [
+                              "core_blocks",
+                              "session_summary",
+                              "recent_turns",
+                              "evidence"
+                            ],
+                            "type": "string"
+                          },
+                          "text": {
+                            "type": "string"
+                          },
+                          "tokens": {
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "label",
+                          "text",
+                          "tokens",
+                          "items"
+                        ],
+                        "type": "object"
+                      },
+                      "maxItems": 4,
+                      "minItems": 4,
+                      "type": "array"
+                    },
+                    "session": {
+                      "type": "string"
+                    },
+                    "space": {
+                      "type": "string"
+                    },
+                    "tokens": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "space",
+                    "session",
+                    "question",
+                    "budget",
+                    "tokens",
+                    "context",
+                    "sections",
+                    "explain"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or wrong credential"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Refused by policy or scope"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Body larger than 1 MiB"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal error; no details"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Core blocks, rolling summary, recent turns and recalled evidence in one budgeted context.",
+        "tags": [
+          "Conversations"
         ]
       }
     }

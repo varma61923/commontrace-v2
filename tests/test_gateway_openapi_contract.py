@@ -150,6 +150,18 @@ def test_live_responses_match_the_declared_schemas(tmp_path):
     call("POST", "/v1/conversation/add", {"space": "u1", "session": "s1", "messages": [
         {"speaker": "A", "text": "I moved to Paris in May", "at": "2024-05-02"}]})
     call("POST", "/v1/conversation/recall", {"space": "u1", "question": "Where did A move?"})
+    call("POST", "/v1/conversation/add", {"space": "u1", "session": "s1", "messages": [
+        {"speaker": "A", "text": "The new flat near the river has two bedrooms", "at": "2024-05-03"}]})
+    call("GET", "/v1/conversation/sessions?space=u1&limit=10")
+    call("GET", "/v1/conversation/sessions?space=missing", status=404)
+    call("POST", "/v1/conversation/summarize", {"space": "u1", "session": "s1"})
+    call("POST", "/v1/conversation/summarize", {"space": "u1", "session": "s1", "mode": "extractive",
+                                                "verify": "tail"})
+    call("POST", "/v1/conversation/summarize", {"space": "u1", "session": "absent"}, status=404)
+    call("POST", "/v1/working-memory", {"space": "u1", "session": "s1", "question": "Where did A move?",
+                                        "budget": 400, "recent_turns": 1})
+    call("POST", "/v1/working-memory", {"space": "u1", "session": "s1", "question": "x", "budget": 10},
+         status=400)
     call("POST", "/v1/lesson/edit", {"slug": "draft", "rule": "Draft rule, edited."})
     call("POST", "/v1/lesson/approve", {"slug": "draft-two", "rationale": "measured"}, status=409)
     call("POST", "/v1/lesson/reject", {"slug": "draft", "reason": "duplicate"})

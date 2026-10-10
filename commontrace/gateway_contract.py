@@ -342,6 +342,61 @@ OPERATIONS: dict[tuple[str, str], Operation] = {
         obj({"question": string(), "context": string(), "tokens": integer(), "turns": array(integer()),
              "window": nullable(ANY_OBJECT), "explain": ANY_OBJECT}, ("question", "context", "tokens", "turns")),
         errors=(400, 404)),
+    ("GET", "/v1/conversation/sessions"): Operation(
+        "conversation_sessions", "Conversations", None, obj({
+            "space": string(), "total": integer("sessions in the space"),
+            "next_after": nullable(integer("pass as ?after= for the next page")),
+            "sessions": array(obj({
+                "id": string(), "seq": integer(), "started_at": nullable(string()), "turns": integer(),
+                "first_at": nullable(string("earliest dated turn")), "last_at": nullable(string("latest dated turn")),
+                "summary": obj({"current": boolean("a summary covers every turn"), "method": nullable(string()),
+                                "rolling_through_idx": nullable(integer("rolling summary high-water mark")),
+                                "pending_turns": integer("turns the rolling summary has not folded in")},
+                               ("current", "pending_turns"))},
+                ("id", "seq", "turns", "summary")))}, ("space", "sessions", "total")),
+        query=(("space", IDENT, True, "the conversation space"),
+               ("limit", integer(minimum=1, maximum=1000, default=200), False, "page size"),
+               ("after", integer(minimum=0), False, "return sessions after this sequence number")),
+        errors=(400, 404)),
+    ("POST", "/v1/conversation/summarize"): Operation(
+        "conversation_summarize", "Conversations", obj({
+            "space": IDENT, "session": IDENT,
+            "mode": string(enum=["extractive", "model"], default="extractive"),
+            "force": boolean("rebuild from the first turn"),
+            "verify": string(enum=["full", "tail"], default="full")}, ("space", "session")),
+        obj({"space": string(), "session": string(), "method": string(enum=["extractive", "model"]),
+             "mode": string(enum=["unchanged", "incremental", "full"]),
+             "reason": string(enum=["", "first", "forced", "method-changed", "history-changed"]),
+             "new_turns": integer("turns folded in by this call"), "turns": integer("turns the summary covers"),
+             "through_idx": integer("high-water mark: the last covered turn index"), "text": string()},
+            ("session", "mode", "reason", "new_turns", "turns", "through_idx", "text")),
+        errors=(400, 404, 503),
+        description="Reads only the turns after the high-water mark after proving, by a hash chain over the "
+                    "covered turns, that none of them changed; otherwise rebuilds. 503 when mode=model and no "
+                    "model is configured."),
+    ("POST", "/v1/working-memory"): Operation(
+        "working_memory", "Conversations", obj({
+            "space": IDENT, "session": IDENT, "question": string(minLength=1, maxLength=4000),
+            "budget": integer("tokens", minimum=50, maximum=32000, default=2000),
+            "recent_turns": integer(minimum=0, maximum=200, default=6),
+            "agent": IDENT, "now": nullable(string("date the question is asked")),
+            "refresh_summary": boolean("fold new turns into the rolling summary first")},
+            ("space", "session", "question")),
+        obj({"space": string(), "session": string(), "agent": string(), "question": string(),
+             "budget": integer(), "tokens": integer(), "context": string("every non-empty section, labelled"),
+             "sections": array(obj({
+                 "name": string(enum=["core_blocks", "session_summary", "recent_turns", "evidence"]),
+                 "label": string(), "text": string(), "tokens": integer(), "items": array(ANY_OBJECT)},
+                 ("name", "label", "text", "tokens", "items")), minItems=4, maxItems=4),
+             "explain": obj({"budget": integer(), "allocated": ANY_OBJECT, "spent": ANY_OBJECT,
+                             "dropped": ANY_OBJECT, "deduplicated": ANY_OBJECT, "unused": integer()},
+                            ("budget", "allocated", "spent", "dropped", "deduplicated"))},
+            ("space", "session", "question", "budget", "tokens", "context", "sections", "explain")),
+        errors=(400, 404),
+        description="Deterministic for a given store state. Sections: memory blocks in effect (session > agent "
+                    "> global), the rolling session summary, the last recent_turns messages verbatim, and older "
+                    "evidence from conversation recall deduplicated against them; explain says how the budget "
+                    "was spent."),
     ("GET", "/v1/status"): Operation("status", "Measurement", None, obj({
         "gateway": ANY_OBJECT, "experiment": obj({"running": boolean(), "rate": number()}),
         "activity": ANY_OBJECT, "proof": nullable(ANY_OBJECT), "cached": boolean(), "proof_cached": boolean()},
