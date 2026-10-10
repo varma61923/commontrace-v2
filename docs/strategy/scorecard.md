@@ -19,9 +19,9 @@ Details and the full audit are in [implementation-status.md](implementation-stat
 
 | Gate | Status | Evidence |
 | --- | --- | --- |
-| Single-write p95 <20 ms at 1M | **Measured pass** | 1.093 ms, real hierarchical APIs, 20 trials, synthetic selective workload |
-| Batch >=2,000 facts/s at 1M | **Measured pass** | 2,533 facts/s, one 1,000-fact batch |
-| Hybrid p95 <50 ms local / <150 ms server at 1M | **Unverified** | 0.252 ms selective sparse overlap is not hybrid retrieval |
+| Single-write p95 <20 ms at 1M | **Measured pass** | 1.253 ms, real hierarchical APIs, 20 trials, synthetic selective workload |
+| Batch >=2,000 facts/s at 1M | **Measured pass** | 3,417 facts/s, one 1,000-fact batch |
+| Hybrid p95 <50 ms local / <150 ms server at 1M | **Unverified** | 0.299 ms selective sparse overlap is not hybrid retrieval |
 | Restart without re-embedding | **Tested on bounded fixtures** | Durable fact watermarks, vector hashes and hook document cache; not a 1M restart timing |
 | Injector precision >=0.80 | **Fixture measured** | Actual BGE-small, maintainer-labelled coding relevance; not production/SWE precision |
 | Warm hook p95 <50 ms | **Load-sensitive; not established universally** | See signed report for idle and concurrent runs; native socket deadline is separate from total host startup |

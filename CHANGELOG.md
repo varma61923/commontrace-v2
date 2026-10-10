@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Event-backed agent memory runtime.** Compact SQLite fact storage passed the
-  synthetic 1M write gates (1.09 ms p95; 2,533 facts/s). A versioned envelope adds
+  synthetic 1M write gates (1.25 ms p95; 3,417 facts/s). A versioned envelope adds
   scoped facts, profiles, observations, episodes, lessons and directives; the Hub
   adds PostgreSQL full-text projections and fail-closed tenant RLS. Facet
   observations refresh atomically and verify source revisions during retrieval.

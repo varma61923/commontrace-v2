@@ -94,8 +94,8 @@ identify the session publisher; they do not certify scientific validity. The
 storage report records the base commit and per-file source hashes. Raw trajectories,
 private signing keys, large graphs and model weights are excluded.
 
-The measured 1M SQLite selective workload achieved **1.093 ms single-write p95**,
-**2,533 facts/s** for one 1,000-fact batch, and **0.252 ms sparse overlap p95**.
+The measured 1M SQLite selective workload achieved **1.253 ms single-write p95**,
+**3,417 facts/s** for one 1,000-fact batch, and **0.299 ms sparse overlap p95**.
 Sparse overlap is not hybrid search. The earlier P0 disk-full failure is retained
 in [measurements/p0-storage.json](measurements/p0-storage.json); compact postings
 resolved it in this measured run. Tests of PostgreSQL used a disposable PostgreSQL
@@ -104,16 +104,17 @@ performance or durability measurement is inferred.
 
 Actual `BAAI/bge-small-en-v1.5` embeddings were measured on fourteen labelled
 coding queries, five repetitions. The idle run had **1.0 precision and recall**,
-**20.50 ms p95**, zero timeouts. A concurrent-validation run had **50.90 ms p95**,
-four timeouts and 0.94 recall. Both reports are retained. Cold core calls timed
-out in both runs. These small fixtures exclude interpreter startup/model download
+**20.84 ms p95**, zero timeouts. A concurrent-validation run had **50.90 ms p95**,
+four timeouts and 0.94 recall. Both reports are retained. A separate 50-process native transport fixture measured 46.74 ms p95
+with a fixed directive and no semantic retrieval. Cold core calls timed
+out in both semantic runs. These small fixtures exclude interpreter startup/model download
 and do not establish production precision, cold host latency or 1M hybrid speed.
 Eleven adversarial poison/status cases delivered no poison; clean utility remained.
 
 Validation: full Python suite **6,652 passed, 113 skipped**, **84.40% coverage**;
-full PostgreSQL Hub suite **2,495 passed, 2 skipped**. Subsequent focused checks
+full PostgreSQL Hub suite **2,497 passed, 2 skipped**. Subsequent focused checks
 cover source-version freshness, optional-provider failure and SDK callbacks.
-Isolated native SDK checks: **19 passed, 5 skipped**; unavailable optional SDKs
+Isolated native SDK checks: **22 passed, 5 skipped**; unavailable optional SDKs
 remain skips. TypeScript suite: **23 passed**. Ruff, the 35-file strict typing
 list, medium/high Bandit, declared dependency audits, generated references and
 OpenAPI checks passed locally. Final branch CI is a separate result.

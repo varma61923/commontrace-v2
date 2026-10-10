@@ -1,0 +1,41 @@
+{
+  "public_aggregate_only": true,
+  "full_python": {
+    "passed": 6652,
+    "skipped": 113,
+    "coverage_percent": 84.4,
+    "scope": "full-suite snapshot before final targeted erasure/native-authorship fixes"
+  },
+  "full_hub": {
+    "passed": 2497,
+    "skipped": 2,
+    "postgres": 16,
+    "test_durability_disabled": true
+  },
+  "native_frameworks": {
+    "passed": 22,
+    "skipped": 5,
+    "scope": "isolated OpenAI/Microsoft native SDK and framework-tool checks"
+  },
+  "typescript": {
+    "passed": 23,
+    "failed": 0
+  },
+  "final_record_rls": {
+    "passed": 4
+  },
+  "checks": [
+    "repository lint",
+    "35-file strict CI typing list",
+    "strict MemoryRecord types",
+    "medium/high Bandit",
+    "all declared optional dependency audit",
+    "Hub pinned dependency audit",
+    "generated docs",
+    "OpenAPI exports"
+  ],
+  "limitations": [
+    "Optional services and SDKs remain skips. Test-db settings do not establish server durability.",
+    "GitHub CI is reported independently; this manifest does not assert its final result."
+  ]
+}

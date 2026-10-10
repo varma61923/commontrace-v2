@@ -14,7 +14,7 @@ if [[ "${1:-}" == "--next-generation" ]]; then
     tests/test_hook_kit.py tests/test_hook_service.py tests/test_fact_purge.py \
     tests/test_fact_vector_projection.py tests/test_runtime_turn.py tests/test_signed_results.py -q
   python3 -m benchmarks.signed_results --manifest docs/strategy/leaderboard/run.json \
-    --verify --trusted-key "$(cat docs/strategy/leaderboard/public-key.txt)"
+    --verify --trusted-key "$(cat docs/strategy/leaderboard/public-key.txt)" --artifact-root .
   echo "Local reports: $output. Reader/judge, BEAM, SWE and server gates require their documented external setup."
   exit 0
 fi

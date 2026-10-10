@@ -1,0 +1,180 @@
+{
+  "format": "commontrace-public-results-v1",
+  "report": {
+    "public_aggregate_only": true,
+    "format": "commontrace-next-generation-release-v1",
+    "created_at": "2026-10-10T22:34:21.340581+00:00",
+    "source_commit": "8b771b7b56e23e5d0926bb56a2708c0203f01319",
+    "storage_measured_commit": "d19bf44ffd43339de2da38926984539b2ad3fbdc",
+    "source_role": "Runtime at source_commit; storage measured on its parent with unchanged recorded source-file hashes.",
+    "branch": "codex/next-generation-complete",
+    "model": {
+      "name": "BAAI/bge-small-en-v1.5",
+      "alias": "bge-small",
+      "dimension": 384
+    },
+    "files_sha256": {
+      "docs/strategy/measurements/storage-v2.json": "d860298cdf2fd6520e7be2b738ffdcc8702133b19806bb095f8e3789181e5fd9",
+      "docs/strategy/measurements/injector-bge.json": "4e2b1569dee0755b38e61ec9f13869af31d9fc38726f3ab5c93355e124b237a9",
+      "docs/strategy/measurements/injector-concurrent.json": "00ad5fc08c989a32ffc819307da4aa165a0e841d0d209f333a59e1bfd7221eb8",
+      "docs/strategy/measurements/injector-transport.json": "4dff05f23e4ee60f182651ba73e6bcfc9e039d26f939105fc08bf1b8c64ffad0",
+      "docs/strategy/measurements/runtime-validation.json": "cc4359c647dd43f2792061ea58695c7aa208b9dd0a7ade488b860777c7773c88"
+    },
+    "storage_source_files_sha256": {
+      "commontrace/hierarchical.py": "33cc54bde991467962899bb07481cef62c9675e5811ea11725f863124898c3e1",
+      "commontrace/fact_store.py": "8606eb9c05f92b37e9e652ed4a38f3a1df504235b0461a5514eb394ae5dceed3",
+      "commontrace/memory_record.py": "c2ca8edc120bdd1e15df67279b676b709fce9b0b60b1568246f53fa3ac0388db",
+      "commontrace/fact_index.py": "fd8fde127391b57491b04c86e7ef9f1d457d43da5c047030ffdab7577111a539",
+      "commontrace/fact_conflicts.py": "fac86d1adbaa7d169254be33dcac455de0ff6e14fbcd80c89930a5e54e9ba74a",
+      "benchmarks/next_generation_storage.py": "9f3deefb7f016ff359aa1ab042c32612b8e6765888247b9c99e0944ba3deda5b"
+    },
+    "gates": [
+      {
+        "name": "1M single-write p95 <20 ms",
+        "status": "measured pass",
+        "measurement": "1.253 ms",
+        "scope": "20 synthetic selective trials, governed local SQLite APIs"
+      },
+      {
+        "name": "1M batch >=2,000 facts/s",
+        "status": "measured pass",
+        "measurement": "3416.5 facts/s",
+        "scope": "one 1,000-fact batch"
+      },
+      {
+        "name": "Warm injector p95 <50 ms",
+        "status": "idle fixture pass; load-sensitive",
+        "measurement": "20.84 ms idle; 50.90 ms under concurrent validation",
+        "scope": "actual BGE-small, 14 coding queries x5; cold call timed out; interpreter startup excluded"
+      },
+      {
+        "name": "Native process transport p95 <50 ms",
+        "status": "fixture pass",
+        "measurement": "46.74 ms",
+        "scope": "50 fresh Node processes, warm broker, fixed directive; no semantic retrieval"
+      },
+      {
+        "name": "Injector precision >=0.80",
+        "status": "labelled fixture pass",
+        "measurement": "precision 1.00; recall 1.00",
+        "scope": "maintainer labels; not production/SWE precision"
+      },
+      {
+        "name": "Injector poison resistance",
+        "status": "fixture pass",
+        "measurement": "0/11 successful poison/status injections; clean utility retained",
+        "scope": "fixed adversarial templates; no universal attack guarantee"
+      },
+      {
+        "name": "1M hybrid local/server latency",
+        "status": "unverified",
+        "scope": "sparse overlap is not hybrid retrieval"
+      },
+      {
+        "name": "LoCoMo >=0.85; LongMemEval-S >=0.90; BEAM 100K/1M",
+        "status": "unverified",
+        "scope": "requires pinned official datasets and configured GPT-class reader/judge"
+      },
+      {
+        "name": "Real SWE coding uplift >=5pp; sequential lower CI >0",
+        "status": "unverified",
+        "scope": "real patch/test randomized harness exists; actual coding-model trial not run"
+      },
+      {
+        "name": "Harmful-retirement N and lower extraction cost",
+        "status": "unverified",
+        "scope": "requires labelled interventions and model-backed paired cost measurement"
+      },
+      {
+        "name": "Restart without re-embedding",
+        "status": "bounded fixture tested",
+        "scope": "content hashes and durable watermarks; not a 1M restart timing"
+      },
+      {
+        "name": "First injected lesson from empty store <2 minutes",
+        "status": "unverified",
+        "scope": "waits for evaluated evidence/review; existing eligible lesson preview implemented"
+      },
+      {
+        "name": "Module/config surface reduction",
+        "status": "not met",
+        "measurement": "322 Python modules; 154 env variables (80 COMMONTRACE_); 9 recommended profile options",
+        "scope": "legacy public interfaces retained"
+      },
+      {
+        "name": "Signed aggregate publication",
+        "status": "implemented",
+        "scope": "repository-pinned session key identifies report, not organizational/scientific certification"
+      }
+    ],
+    "surface": {
+      "python_modules": 322,
+      "python_lines": 85567,
+      "documented_environment_variables": 154,
+      "commontrace_environment_variables": 80,
+      "recommended_profile_options": 9,
+      "top_level_commands": 69,
+      "gateway_operations": 63
+    },
+    "graphify": {
+      "version": "0.9.84",
+      "nodes": 21345,
+      "edges": 63020,
+      "missing_endpoints": 0,
+      "possible_unreachable": 303,
+      "graph_sha256": "500da479f42054d97f37d8e7ac1a4267cb574413bd4936aa2af39a28ba101f18",
+      "limitations": [
+        "Dynamic dispatch, SDK exports, callbacks and generated entry points are incomplete in static graphs.",
+        "No function is deleted or declared dead solely from this report."
+      ]
+    },
+    "validation": {
+      "public_aggregate_only": true,
+      "full_python": {
+        "passed": 6652,
+        "skipped": 113,
+        "coverage_percent": 84.4,
+        "scope": "full-suite snapshot before final targeted erasure/native-authorship fixes"
+      },
+      "full_hub": {
+        "passed": 2497,
+        "skipped": 2,
+        "postgres": 16,
+        "test_durability_disabled": true
+      },
+      "native_frameworks": {
+        "passed": 22,
+        "skipped": 5,
+        "scope": "isolated OpenAI/Microsoft native SDK and framework-tool checks"
+      },
+      "typescript": {
+        "passed": 23,
+        "failed": 0
+      },
+      "final_record_rls": {
+        "passed": 4
+      },
+      "checks": [
+        "repository lint",
+        "35-file strict CI typing list",
+        "strict MemoryRecord types",
+        "medium/high Bandit",
+        "all declared optional dependency audit",
+        "Hub pinned dependency audit",
+        "generated docs",
+        "OpenAPI exports"
+      ],
+      "limitations": [
+        "Optional services and SDKs remain skips. Test-db settings do not establish server durability.",
+        "GitHub CI is reported independently; this manifest does not assert its final result."
+      ]
+    },
+    "limitations": [
+      "Fixture gates apply only to the labelled workloads and machine reported.",
+      "No private trajectories, model weights or competitor implementations are included.",
+      "External model-backed quality, SWE uplift, server/hybrid scale, simplification and cold-start gates remain unverified or unmet."
+    ]
+  },
+  "public_key": "2f39e407917f00d5eb1b74b2ac440888a9b35c56f838b80808e4c027e80bef69",
+  "signature": "8QOrSOePdMb2jXEnG5/AKfXVCQYGqSsKlmOlSGrgy/wkN0POYDGihQqfEm26mEwHQoof3Eb61KNqxOajBsA4Ag=="
+}

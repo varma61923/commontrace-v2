@@ -4,10 +4,8 @@
     {
       "repository": "commontrace-v2",
       "commit": "dcab4fdd93f1d97cf5668f31caf764d1f7ebdb8e",
-      "graph_path": "/workspace/research/commontrace-v2/graphify-out/graphify-out/graph.json",
       "nodes": 20810,
       "edges": 61120,
-      "diagnostics_path": "/workspace/research/commontrace-v2-diagnostics.json",
       "graphify_metadata": {
         "schema_version": 1,
         "graphify_version": "0.9.84"
@@ -43,10 +41,8 @@
     {
       "repository": "graphiti",
       "commit": "a9ef13f7e2cce23e92abd2f76947f42e270da25a",
-      "graph_path": "/workspace/research/graphiti/graphify-out/graphify-out/graph.json",
       "nodes": 5336,
       "edges": 17709,
-      "diagnostics_path": "/workspace/research/graphiti-diagnostics.json",
       "graphify_metadata": {
         "schema_version": 1,
         "graphify_version": "0.9.84"
@@ -82,10 +78,8 @@
     {
       "repository": "cognee",
       "commit": "0ec7a9fa61c9ff04bf7e02e0d57af363a993a5e1",
-      "graph_path": "/workspace/research/cognee/graphify-out/graph.json",
       "nodes": 43268,
       "edges": 119538,
-      "diagnostics_path": "/workspace/research/cognee-diagnostics.json",
       "graphify_metadata": {
         "schema_version": 1,
         "graphify_version": "0.9.84"
@@ -121,10 +115,8 @@
     {
       "repository": "mem0",
       "commit": "b7ad69afda6b6ed030347c66d48a13e4de9dec08",
-      "graph_path": "/workspace/research/mem0/graphify-out/graphify-out/graph.json",
       "nodes": 15920,
       "edges": 34310,
-      "diagnostics_path": "/workspace/research/mem0-diagnostics.json",
       "graphify_metadata": {
         "schema_version": 1,
         "graphify_version": "0.9.84"
@@ -160,10 +152,8 @@
     {
       "repository": "EverOS",
       "commit": "fcd41b57cab6c577211120e166f801038d21b7ae",
-      "graph_path": "/workspace/research/EverOS/graphify-out/graphify-out/graph.json",
       "nodes": 13098,
       "edges": 32208,
-      "diagnostics_path": "/workspace/research/EverOS-diagnostics.json",
       "graphify_metadata": {
         "schema_version": 1,
         "graphify_version": "0.9.84"
@@ -199,10 +189,8 @@
     {
       "repository": "hindsight",
       "commit": "44d5340148fd47efb34e184d61f87ab5e2d8d1e2",
-      "graph_path": "/workspace/research/hindsight/graphify-out/graph.json",
       "nodes": 65487,
       "edges": 158936,
-      "diagnostics_path": "/workspace/research/hindsight-diagnostics.json",
       "graphify_metadata": {
         "schema_version": 1,
         "graphify_version": "0.9.84"
@@ -238,10 +226,8 @@
     {
       "repository": "zep",
       "commit": "cfa2ab2bbc3c7085d636479b719bcf64608162cc",
-      "graph_path": "/workspace/research/zep/graphify-out/graphify-out/graph.json",
       "nodes": 9052,
       "edges": 21564,
-      "diagnostics_path": "/workspace/research/zep-diagnostics.json",
       "graphify_metadata": {
         "schema_version": 1,
         "graphify_version": "0.9.84"
@@ -277,10 +263,8 @@
     {
       "repository": "letta-code",
       "commit": "d31b8799456df47dfbfbc099aac8c06c83121f41",
-      "graph_path": "/workspace/research/letta-code/graphify-out/graphify-out/graph.json",
       "nodes": 19881,
       "edges": 65436,
-      "diagnostics_path": "/workspace/research/letta-code-diagnostics.json",
       "graphify_metadata": {
         "schema_version": 1,
         "graphify_version": "0.9.84"
@@ -316,10 +300,8 @@
     {
       "repository": "supermemory",
       "commit": "552803c018cbdd7c60ca644074a6b621776e18ab",
-      "graph_path": "/workspace/research/supermemory/graphify-out/graph.json",
       "nodes": 4226,
       "edges": 8632,
-      "diagnostics_path": "/workspace/research/supermemory-diagnostics.json",
       "graphify_metadata": {
         "schema_version": 1,
         "graphify_version": "0.9.84"
@@ -359,6 +341,6 @@
   "limitations": [
     "AST relationships do not establish runtime reachability; dynamic registration can be missed.",
     "Graphs contain self-loop edges; summarized diagnostics are included. No dangling or missing endpoints were reported.",
-    "Local artifact paths identify this execution workspace; regenerate from pinned commits on another machine."
+    "Large generated graphs and private query transcripts stay outside the repository; regenerate from pinned commits."
   ]
 }
