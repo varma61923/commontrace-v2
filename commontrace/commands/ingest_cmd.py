@@ -112,6 +112,10 @@ def _run_docs(args: argparse.Namespace, root: str) -> int:
                     "screened", "headed", "model_calls"):
             if key in payload:
                 print(f"  {key.replace('_', ' '):18s} {payload[key]}")
+        if payload.get("embeddings"):
+            emb = payload["embeddings"]
+            print(f"  {'embeddings':18s} {emb['embedded']} embedded, {emb['cached']} cached, "
+                  f"{emb['failed']} failed ({emb['embedder']})")
         for problem in payload.get("warnings", []) + payload.get("errors", []):
             print(f"    - {problem}", file=sys.stderr)
     return 1 if payload.get("errors") else 0

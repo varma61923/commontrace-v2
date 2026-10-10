@@ -255,10 +255,15 @@ class Pipeline:
         loader: Loader,
         transforms: Sequence[Transform] = (),
         submitter: Submitter | None = None,
+        embedder=None,
     ):
         self.loader = loader
         self.transforms = transforms
         self.submitter = submitter
+        # The catalog's `embedding` stage: an ingest.embedding.ChunkEmbedder, or
+        # None to take COMMONTRACE_INGEST_EMBEDDER at run time (off when unset).
+        self.embedder = embedder
+        self.last_embedding: dict | None = None
 
     def _stream(self) -> Iterator[Chunk]:
         chunks: Iterable[Chunk] = self.loader.load()
@@ -305,7 +310,8 @@ class Pipeline:
         """Run the full pipeline and submit to storage; the loader's ledger records
         what was ingested only once the submitter has written it.
         If job_id is provided, lifecycle stages are tracked:
-        queued -> extracting -> transforming -> submitting -> done | failed.
+        queued -> extracting -> transforming -> [embedding ->] submitting -> done | failed.
+        The embedding stage runs only when an embedder is configured.
         """
         if self.submitter is None:
             raise ValueError("Pipeline cannot run without a submitter")
@@ -325,13 +331,34 @@ class Pipeline:
                         message="Transforming and deduplicating chunks",
                     )
                 chunks_stream = self._stream()
+                embedder = self.embedder
+                if embedder is None and target_root:
+                    from commontrace.ingest import embedding
+
+                    embedder = embedding.from_env(target_root)
+                if embedder is not None:
+                    if job_id and target_root:
+                        catalog.update_ingest_job(
+                            target_root, job_id, "embedding",
+                            message=f"Embedding new chunks in batches of {embedder.batch_size} "
+                                    f"({embedder.max_workers} in flight)",
+                        )
+                    chunks_stream = embedder.stream(chunks_stream)
 
                 if job_id and target_root:
                     catalog.update_ingest_job(
                         target_root, job_id, "submitting",
                         message="Submitting chunks to storage",
                     )
-                result = self.submitter.submit(chunks_stream)
+                try:
+                    result = self.submitter.submit(chunks_stream)
+                finally:
+                    if embedder is not None and self.embedder is None:
+                        embedder.close()
+                if embedder is not None:
+                    self.last_embedding = embedder.summary()
+                    result.embeddings = dict(self.last_embedding)
+                    result.errors.extend(embedder.errors)
 
                 handle.set(chunks=result.chunks_extracted, facts=result.facts_written)
 
@@ -359,7 +386,9 @@ class Pipeline:
                 catalog.update_ingest_job(
                     target_root, job_id, final_stage,
                     message=f"Ingestion {final_stage}: {result.chunks_extracted} chunk(s) processed",
-                    stats={"chunks": result.chunks_extracted, "facts": result.facts_written},
+                    stats={"chunks": result.chunks_extracted, "facts": result.facts_written,
+                           **({"embedded": result.embeddings["embedded"], "embed_cached": result.embeddings["cached"],
+                               "embed_failed": result.embeddings["failed"]} if result.embeddings else {})},
                 )
             return result
         except Exception as exc:
