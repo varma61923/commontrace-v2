@@ -46,6 +46,10 @@ async def test_record_rls_denies_unscoped_nonowner_reads(session_factory):
         session.add_all([Organization(id=value, name=value) for value in orgs])
     for org in orgs:
         await PostgresJournal(session_factory, org).put(MemoryRecord(org, "fact", 1, {"text": "rls evidence"}))
+        from hub.models import MemoryVectorErasure
+
+        async with session_scope(session_factory, org_id=org) as session:
+            session.add(MemoryVectorErasure(org_id=org, record_id=org))
     try:
         async with session_scope(session_factory) as session:
             await session.execute(
@@ -75,6 +79,10 @@ async def test_record_rls_denies_unscoped_nonowner_reads(session_factory):
                 await session.execute(text("SET LOCAL ROLE commontrace_record_reader"))
                 rows = (await session.execute(text("SELECT org_id::text FROM memory_records"))).scalars().all()
                 assert rows == ([] if org is None else [org])
+                pending = (
+                    (await session.execute(text("SELECT org_id::text FROM memory_vector_erasures"))).scalars().all()
+                )
+                assert pending == ([] if org is None else [org])
     finally:
         async with session_scope(session_factory) as session:
             for table in _NEW_TABLES:

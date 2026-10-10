@@ -120,7 +120,9 @@ def turn(
     profile = {"static": [], "dynamic": [], "custom": []}
     for record in kit.journal.search("", scope=scope, kinds=("profile",), limit=30):
         data = record.payload
-        age = max(0.0, (moment(now()) - moment(data.get("observed_at") or record.created_at or now())).total_seconds() / 86400)
+        age = max(
+            0.0, (moment(now()) - moment(data.get("observed_at") or record.created_at or now())).total_seconds() / 86400
+        )
         weight = data.get("weight", 1) * (
             1 if data.get("bucket") == "static" else 2 ** (-age / data.get("half_life_days", 90))
         )
@@ -153,15 +155,53 @@ def is_memory_update(text) -> bool:
     return isinstance(text, str) and bool(re.fullmatch(r"\s*<memory_update>.*</memory_update>\s*", text, re.S))
 
 
+def native_user_text(message) -> str:
+    """Explicit human authorship across SDK containers; assistant/tool echoes stay out of profiles."""
+
+    def text_content(value):
+        if isinstance(value, str):
+            return value
+        if isinstance(value, list):
+            return "\n".join(
+                part["text"]
+                for part in value
+                if isinstance(part, dict)
+                and part.get("type") in ("text", "input_text")
+                and isinstance(part.get("text"), str)
+            )
+        return ""
+
+    if isinstance(message, dict):
+        return text_content(message.get("content")) if message.get("role") == "user" else ""
+    role = str(getattr(message, "role", getattr(message, "type", "")))
+    parts = getattr(message, "parts", []) or []
+    if role in ("user", "human"):
+        for name in ("content", "text"):
+            value = getattr(message, name, None)
+            if isinstance(value, (str, list)):
+                return text_content(value)
+        return "\n".join(part.text for part in parts if isinstance(getattr(part, "text", None), str))
+    # Pydantic ModelRequest has no role; UserPromptPart still has explicit authorship.
+    return "\n".join(
+        part.content
+        for part in parts
+        if getattr(part, "part_kind", "") == "user-prompt" and isinstance(getattr(part, "content", None), str)
+    )
+
+
+def user_query(messages) -> str:
+    return next(
+        (text for message in reversed(messages) if (text := native_user_text(message)) and not is_memory_update(text)),
+        "",
+    )
+
+
+def strip_memory_updates(messages):
+    return [message for message in messages if not is_memory_update(native_user_text(message))]
+
+
 def replace_memory_update(messages: list[dict], context: str) -> list[dict]:
-    clean = list(messages)
-    if (
-        clean
-        and isinstance(clean[-1], dict)
-        and clean[-1].get("role") == "user"
-        and is_memory_update(clean[-1].get("content"))
-    ):
-        clean.pop()
+    clean = strip_memory_updates(messages)
     return [*clean, {"role": "user", "content": context}] if context else clean
 
 
@@ -185,25 +225,16 @@ class Middleware:
 
     def langgraph_pre_model(self, state: dict, config=None) -> dict:
         messages = replace_memory_update(list(state.get("messages", [])), "")
-        query = str(
-            messages[-1].get("content", "")
-            if messages and isinstance(messages[-1], dict)
-            else getattr(messages[-1], "content", "")
-            if messages
-            else state.get("input", "")
-        )
+        query = user_query(messages)
         result = self.before_run(query, text=query)
         if result["context"]:
             messages.append({"role": "user", "content": result["context"]})
         return {"llm_input_messages": messages}
 
     def process_llm_request(self, callback_context, llm_request):
-        contents = llm_request.contents
-        if contents and getattr(contents[-1], "role", None) == "user":
-            parts = getattr(contents[-1], "parts", []) or []
-            if len(parts) == 1 and is_memory_update(getattr(parts[0], "text", None)):
-                contents.pop()
-        query = str(getattr(contents[-1], "parts", "")) if contents else ""
+        contents = strip_memory_updates(llm_request.contents)
+        llm_request.contents = contents
+        query = user_query(contents)
         result = self.before_run(query, text=query)
         if result["context"]:
             from google.genai import types
@@ -212,17 +243,9 @@ class Middleware:
         return None
 
     def pydantic_history_processor(self, ctx, messages):
-        messages = list(messages)
-        if messages:
-            parts = getattr(messages[-1], "parts", [])
-            if (
-                len(parts) == 1
-                and getattr(parts[0], "part_kind", "") == "user-prompt"
-                and is_memory_update(getattr(parts[0], "content", None))
-            ):
-                messages.pop()
-        query = str(messages[-1]) if messages else ""
-        result = self.before_run(query)
+        messages = strip_memory_updates(messages)
+        query = user_query(messages)
+        result = self.before_run(query, text=query)
         if not result["context"]:
             return messages
         from pydantic_ai.messages import ModelRequest, UserPromptPart
@@ -231,10 +254,12 @@ class Middleware:
 
     def openai_input(self, messages: list[dict]) -> list[dict]:
         messages = replace_memory_update(messages, "")
-        result = self.before_run(str(messages[-1].get("content", "")) if messages else "")
+        query = user_query(messages)
+        result = self.before_run(query, text=query)
         return replace_memory_update(messages, result["context"])
 
     def crewai_before_kickoff(self, inputs: dict) -> dict:
+        inputs = {key: value for key, value in inputs.items() if key != "commontrace_memory"}
         result = self.before_run(json.dumps(inputs))
         return {**inputs, "commontrace_memory": result["context"]}
 
@@ -250,16 +275,10 @@ class Middleware:
 
     async def microsoft_agent_middleware(self, context, next):
         """Agent Framework agent middleware callback; pin one middleware per run."""
-        messages = list(context.messages)
-        if (
-            messages
-            and str(getattr(messages[-1], "role", "")) == "user"
-            and is_memory_update(getattr(messages[-1], "text", None))
-        ):
-            messages.pop()
+        messages = strip_memory_updates(context.messages)
         context.messages = messages
-        query = str(messages[-1]) if messages else ""
-        result = self.before_run(query)
+        query = user_query(messages)
+        result = self.before_run(query, text=query)
         if result["context"]:
             from agent_framework import Message
 

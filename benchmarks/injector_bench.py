@@ -157,17 +157,85 @@ def measure(*, model="bge-small", repetitions=5) -> dict:
     }
 
 
+def measure_transport(*, repetitions=50) -> dict:
+    """Fresh native process through a warm broker; measure transport separately from model quality."""
+    import shlex
+    import shutil
+    import subprocess
+    import sys
+
+    from commontrace.memory_journal import Journal
+
+    if not shutil.which("node") or not hasattr(__import__("socket"), "AF_UNIX"):
+        raise RuntimeError("native transport measurement requires Node and Unix sockets")
+    samples = []
+    with tempfile.TemporaryDirectory(prefix="commontrace-native-measure-") as root:
+        with open(os.path.join(root, "commontrace.yaml"), "w", encoding="utf-8") as stream:
+            stream.write("profiles:\n  local:\n    embedding: none\n")
+        Journal(root).put(
+            MemoryRecord("rule", "directive", 1, {"text": "Keep credentials private."}, scope={"agent": "fixture"})
+        )
+        broker = subprocess.Popen(
+            [sys.executable, "-m", "commontrace.hook_service", "--dest", root],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            for _ in range(200):
+                if os.path.isfile(os.path.join(root, "memory", "hooks.sock")) or os.path.exists(
+                    os.path.join(root, "memory", "hooks.sock")
+                ):
+                    break
+                if broker.poll() is not None:
+                    raise RuntimeError("broker did not start")
+                time.sleep(0.01)
+            command = shlex.split(
+                HookKit(root, "fixture", embedder="none").manifest("claude")["events"]["UserPromptSubmit"]
+            )
+            for index in range(repetitions):
+                started = time.perf_counter()
+                result = subprocess.run(
+                    command + ["--format", "claude"],
+                    input=json.dumps({"session_id": str(index), "prompt": "edit code"}),
+                    text=True,
+                    capture_output=True,
+                    timeout=2,
+                    check=True,
+                )
+                samples.append((time.perf_counter() - started) * 1000)
+                if "rule" not in json.loads(result.stdout).get("hookSpecificOutput", {}).get("additionalContext", ""):
+                    raise RuntimeError("native transport withheld the fixture's critical directive")
+        finally:
+            broker.terminate()
+            broker.wait(timeout=5)
+    return {
+        "public_aggregate_only": True,
+        "benchmark": "Native transport process latency",
+        "samples_ms": samples,
+        "p50_ms": sorted(samples)[len(samples) // 2],
+        "p95_ms": sorted(samples)[max(0, int(0.95 * len(samples) + 0.999) - 1)],
+        "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+        "source_sha256": hashlib.sha256(open(__file__, "rb").read()).hexdigest(),
+        "measurement": "fresh Node process through warm broker, stdout and acknowledgement; fixed directive; no semantic model",
+        "limitations": ["Transport-only fixture does not measure semantic relevance or cold broker/model startup."],
+    }
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", default="bge-small")
     parser.add_argument("--repetitions", type=int, default=5)
-    parser.add_argument("--safety-only", action="store_true")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--safety-only", action="store_true")
+    modes.add_argument("--transport-only", action="store_true")
     parser.add_argument("--out")
     args = parser.parse_args(argv)
     if not 1 <= args.repetitions <= 100:
         parser.error("repetitions must be in 1..100")
     report = (
-        poison_check()
+        measure_transport(repetitions=args.repetitions)
+        if args.transport_only
+        else poison_check()
         if args.safety_only
         else {**measure(model=args.model, repetitions=args.repetitions), "safety": poison_check()}
     )

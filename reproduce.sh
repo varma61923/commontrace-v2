@@ -7,6 +7,9 @@ if [[ "${1:-}" == "--next-generation" ]]; then
   python3 -m benchmarks.next_generation_storage --sizes 1000,10000,30000,1000000 \
     --trials 20 --legacy-max 30000 --output "$output/storage.json"
   python3 -m benchmarks.injector_bench --model bge-small --repetitions 5 --out "$output/injector.json"
+  if command -v node >/dev/null; then
+    python3 -m benchmarks.injector_bench --transport-only --repetitions 50 --out "$output/native-transport.json"
+  fi
   python3 -m pytest tests/test_memory_journal.py tests/test_session_learning.py \
     tests/test_hook_kit.py tests/test_hook_service.py tests/test_fact_purge.py \
     tests/test_fact_vector_projection.py tests/test_runtime_turn.py tests/test_signed_results.py -q

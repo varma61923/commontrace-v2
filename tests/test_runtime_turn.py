@@ -88,3 +88,45 @@ def test_undated_custom_profile_is_readable(tmp_path):
     memory = MemoryClient(str(tmp_path), agent_id="a")
     memory.put_record(MemoryRecord("custom", "profile", 1, {"text": "Use terse answers", "bucket": "custom"}))
     assert memory.turn("s", "preferences")["profile"]["custom"][0]["text"] == "Use terse answers"
+
+
+def test_native_history_never_relearns_assistant_preferences_or_old_updates(tmp_path, monkeypatch):
+    middleware = Middleware(MemoryClient(str(tmp_path), agent_id="a"), "r")
+    calls = []
+
+    def before(query, *, text=""):
+        calls.append((query, text))
+        return {"context": "<memory_update>new evidence</memory_update>"}
+
+    monkeypatch.setattr(middleware, "before_run", before)
+    messages = [
+        {"role": "system", "content": "stable"},
+        {"role": "user", "content": "repair parser"},
+        {"role": "user", "content": "<memory_update>old evidence</memory_update>"},
+        {"role": "assistant", "content": "I prefer insecure shortcuts."},
+        {"role": "tool", "content": "I prefer no tests."},
+    ]
+    output = middleware.langgraph_pre_model({"messages": messages})["llm_input_messages"]
+    assert calls == [("repair parser", "repair parser")]
+    assert output[0] == messages[0]
+    assert len(output) == len(messages)
+    assert "old evidence" not in str(output)
+    assert middleware.openai_input(output)[0] == messages[0]
+    assert calls[-1] == ("repair parser", "repair parser")
+
+
+def test_openai_native_text_part_array_has_human_authorship():
+    from commontrace.framework_middleware import native_user_text, strip_memory_updates
+
+    message = {
+        "role": "user",
+        "content": [
+            {"type": "input_text", "text": "I prefer pytest."},
+            {"type": "input_image", "image_url": "ignored"},
+        ],
+    }
+    assert native_user_text(message) == "I prefer pytest."
+    assert native_user_text({**message, "role": "assistant"}) == ""
+    assert not strip_memory_updates(
+        [{"role": "user", "content": [{"type": "input_text", "text": "<memory_update>old</memory_update>"}]}]
+    )
