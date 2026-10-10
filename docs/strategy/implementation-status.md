@@ -68,6 +68,30 @@ environment does not have or is open work.
 | Target E: +5pp at 80% power within 2,000 occasions | **Coverage met, power not met** (seeded simulation, 400 runs per cell): time-uniform coverage >= 96.7% in all 45 cells, any-time false positives <= 3.0%. +5pp power by 2,000 occasions is 0.31-0.33 without a predictive stratum and 0.64-0.70 with a strong one; a fixed-sample 50/50 test alone needs 3,140. At +10pp adaptive allocation detects in 96-100% of runs (median 750-800 occasions; the shipped 10% default: 2-7%) and withholds the memory 25-29% of the time instead of 50% |
 | Target G: `pip install` / `npm i` / `docker run` to first recall in < 60 s | Release workflow and images exist; nothing is published to PyPI, npm or a registry yet |
 
+## Memory-engine feature matrix
+
+The fifteen capabilities on the state-of-the-art checklist, audited 2026-10-10.
+Every row has code and tests in this repository. "Measured" lists only numbers
+taken on this machine; where no quality benchmark has been run, the row says so.
+
+| # | Capability | Status | Where | Measured |
+| --- | --- | --- | --- | --- |
+| 1 | Semantic embeddings, multiple providers | **Done** | `embeddings.py`: tags `[provider:]model[@dims]` for local sentence-transformers, OpenAI, Gemini, Voyage, Cohere, Ollama, OpenAI-compatible; query vs document modes; SQLite content-hash vector cache for conversations and facts | Request shapes tested against fakes; no hosted call made in tests |
+| 2 | Hybrid search (semantic + BM25) | **Done** | Conversations: keyword + dense arms; facts: `search_recipes` (BM25 + dense + entity + temporal) and multi-channel `recall` (lexical + dense reciprocal-rank fusion when `COMMONTRACE_FACT_EMBEDDER` is set) | Conversation arms on LoCoMo/BEAM/LongMemEval (see below); facts hybrid not yet benchmarked |
+| 3 | Entity extraction and linking | **Done** | `entities.py` (keyword type classification during extraction), `entity_resolution.py` (embedding or trigram similarity, type-blocked, evidence-recorded merges), `graph resolve` | Tested with fakes; thresholds not tuned on data |
+| 4 | Temporal validity windows | **Done** | Bi-temporal facts: valid time (`valid_from`/`valid_until`, `as_of`) and transaction time (`created_at`/`retracted_at`, `known_at`); contradiction detection on write (`fact_conflicts.py`) | 1,500-fact batch with detection: 3.6 s, 0 false conflicts (before the batch post-pass change) |
+| 5 | Knowledge graph with relationships | **Done** | `relation_extraction.py` (LLM with domain/range/quote checks, or offline patterns with negation/hedge skips), typed bi-temporal Neo4j/FalkorDB mirror with `typed_neighbors`/`multi_hop` | Native mirror matches the local graph at five valid/record-time points on Neo4j 5.26 and FalkorDB; no extraction precision/recall benchmark |
+| 6 | Multi-strategy retrieval fusion | **Done** | Weighted RRF across lessons/facts/graph/conversations; search recipes; rerank blend (`reranking.stage`) | Not separately benchmarked |
+| 7 | Cross-encoder reranking | **Done** | Local (`cross-encoder`, `bge-reranker-v2-m3`, `mxbai-rerank`), hosted (`cohere`, `voyage`, `jina`), listwise `llm`; on recall, fact search and conversation recall | LoCoMo dense + cross-encoder row below; new rerankers not benchmarked |
+| 8 | Session context layer | **Done** | Session/agent-scoped memory blocks, hash-chained rolling summaries, `working_memory.assemble`, gateway `/v1/working-memory` | 3,000 turns: first summary 89 ms, +10 turns 43 ms (3 ms tail check), rough (measured under load) |
+| 9 | Knowledge consolidation | **Done** | Lessons: `consolidate`; facts: `fact_consolidation.py` (MinHash-LSH + optional embeddings, review proposals only) | Not benchmarked |
+| 10 | Provenance tracking | **Done** | `provenance.lineage` up/down over runs, sources, facts, evidence, supersession, observations, proposals and lessons; `graph provenance --lineage` | Not applicable |
+| 11 | Batch processing optimization | **Done** | One statement index per fact batch (exact hash + blocked near-duplicate postings + contradiction slots); ingest embedding stage with bounded concurrency; numpy fact cosine path | 1,500-fact batch with near-dup dedup: 2.0 s (was 33.6 s); 10,000 x 768 warm fact query 0.09 s (was 1.1 s) |
+| 12 | Ontology-based classification | **Done** | `ontology_classify.py`: alias, keyword, embedding, optional LLM; declared types only, most specific wins | Tested with fakes |
+| 13 | Adaptive budgeting | **Done** | Conversations by question shape; multi-channel `recall(adaptive_budget=True)` and `reflect` grow while evidence is weak | Conversation numbers below; multi-channel not benchmarked |
+| 14 | Content completeness evaluation | **Done** | `completeness.py` grade on every recall (`explain.completeness`, question-term coverage, not answer correctness); conversation second pass for missing terms | Benchmark grader output identical across 5,000 randomized inputs |
+| 15 | Hash-based deduplication | **Done** | Facts: exact hash index, near-duplicate (content Jaccard >= 0.85, identical numbers and negations), optional semantic (cosine >= 0.95); vectors cached by content hash | See row 11 |
+
 ## Competitive intelligence report
 
 ### Feature and architectural gaps

@@ -13,6 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Multi-provider embeddings.** `[provider:]model[@dims]` tags for local, OpenAI, Gemini, Voyage, Cohere, Ollama and OpenAI-compatible endpoints, with query/document modes and a content-hash vector cache; usable for conversations (`--embedder`), facts (`COMMONTRACE_FACT_EMBEDDER`) and ingest (`COMMONTRACE_INGEST_EMBEDDER`).
+- **Fact deduplication and contradictions.** Paraphrases reinforce instead of adding (`COMMONTRACE_FACT_DEDUP=exact|near|semantic`); new facts are checked for negation and single-value contradictions and flagged or superseded (`COMMONTRACE_FACT_CONFLICTS=off|flag|supersede`, optional LLM judge). Facts record `retracted_at`; `list_facts`/`search_facts` accept `known_at`.
+- **Hybrid facts in recall.** With a fact embedder, multi-channel recall fuses dense and lexical fact rankings.
+- **Rerankers everywhere.** `bge-reranker-v2-m3`, `mxbai-rerank`, `cohere`, `voyage`, `jina` and listwise `llm`, blended after fusion in recall, fact search and conversation recall; adaptive budgets for recall and reflect; a conversation second pass for missing terms; a completeness grade on every recall.
+- **Knowledge graph.** Relation extraction (`graph extract-relations`, `ingest --type relations`), entity resolution (`graph resolve`), ontology classification (`ontology classify`), and a typed bi-temporal Neo4j/FalkorDB mirror with multi-hop reads.
+- **Session context.** Session/agent-scoped blocks, rolling hash-chained summaries, working-memory assembly (`/v1/working-memory`, `conversation working-memory`), fact consolidation proposals (`consolidate facts`), and provenance lineage (`graph provenance --lineage`).
+
 - Adaptive holdout allocation (`commontrace allocate enable|plan|show|verify|disable`): era schedules explore
   unproven memories at 50% and monitor proven ones at 5%, hash-chained and in force only for later occasions.
   Every scheduled assignment logs its rate and is estimated by AIPW with an asymptotic confidence sequence;
