@@ -135,7 +135,7 @@ def search(root: str, query: str, *, recipe: str = "balanced", scope: str = "", 
     if dense_scores is None:
         from commontrace import fact_embeddings
 
-        dense_scores = fact_embeddings.scores(query, facts, model=embedder)
+        dense_scores = fact_embeddings.scores(query, facts, model=embedder, root=root)
     documents = [terms(f.statement) for f in facts]
     sparse = _bm25(terms(query), documents)
     backend = backend or LocalGraph(root)

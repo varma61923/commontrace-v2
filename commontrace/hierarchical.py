@@ -292,23 +292,145 @@ def mutate_facts(root: str) -> Iterator[dict[str, AtomicFact]]:
         save_facts(root, facts)
 
 
-def _matching_active(facts: dict[str, AtomicFact], statement: str, scopes: list[str]) -> AtomicFact | None:
+_WORD = re.compile(r"[a-z0-9']+")
+_NUMBER = re.compile(r"\d+(?:[.,]\d+)?")
+_NEGATIONS = frozenset({"not", "no", "never", "none", "nobody", "nothing", "neither", "nor", "without",
+                        "cannot", "can't", "don't", "doesn't", "didn't", "isn't", "aren't", "wasn't",
+                        "weren't", "won't", "wouldn't", "shouldn't", "couldn't", "hasn't", "haven't"})
+NEAR_DUPLICATE_JACCARD = 0.85
+NEAR_DUPLICATE_COSINE = 0.95
+
+
+def dedup_mode() -> str:
+    """``exact`` (normalized text only), ``near`` (default: also high-precision lexical
+    paraphrases) or ``semantic`` (also embedding near-duplicates; needs COMMONTRACE_FACT_EMBEDDER)."""
+    mode = os.environ.get("COMMONTRACE_FACT_DEDUP", "near").strip().lower() or "near"
+    if mode not in ("exact", "near", "semantic"):
+        raise ValueError("COMMONTRACE_FACT_DEDUP must be exact, near or semantic")
+    return mode
+
+
+def _signature(statement: str) -> tuple[frozenset, tuple, frozenset]:
+    """Words, the numbers in order, and the negations: two statements that differ in a
+    number or a negation are never duplicates, however similar their wording."""
     norm = _normalize_statement(statement)
-    requested_scopes = frozenset(scopes)
-    for existing in facts.values():
-        if existing.status != "active" or _normalize_statement(existing.statement) != norm:
-            continue
-        # Scope is an authorization boundary, not a relevance hint. A scoped
-        # write must never reinforce or re-scope a global fact (or another
-        # tenant's fact); scoped facts may reinforce when their scope sets
-        # overlap, preserving the existing multi-project fact semantics.
-        if not requested_scopes and existing.scopes:
-            continue
-        if requested_scopes and not existing.scopes:
-            continue
-        if not requested_scopes or requested_scopes & frozenset(existing.scopes):
-            return existing
-    return None
+    words = _WORD.findall(norm)
+    return frozenset(words), tuple(_NUMBER.findall(norm)), frozenset(w for w in words if w in _NEGATIONS)
+
+
+def _content(words: frozenset) -> frozenset:
+    from commontrace.conversation.profile import STOPWORDS
+
+    return frozenset(w for w in words if w not in STOPWORDS or w in _NEGATIONS)
+
+
+def near_duplicate(a: str, b: str, threshold: float = NEAR_DUPLICATE_JACCARD) -> bool:
+    """High-precision paraphrase test: shared content words, identical numbers and negations."""
+    wa, na, ga = _signature(a)
+    wb, nb, gb = _signature(b)
+    if na != nb or ga != gb:
+        return False
+    ca, cb = _content(wa), _content(wb)
+    if min(len(ca), len(cb)) < 3:
+        return False
+    return len(ca & cb) / len(ca | cb) >= threshold
+
+
+def _scopes_compatible(requested: frozenset, existing: list[str]) -> bool:
+    # Scope is an authorization boundary, not a relevance hint. A scoped
+    # write must never reinforce or re-scope a global fact (or another
+    # tenant's fact); scoped facts may reinforce when their scope sets
+    # overlap, preserving the existing multi-project fact semantics.
+    if not requested and existing:
+        return False
+    if requested and not existing:
+        return False
+    return not requested or bool(requested & frozenset(existing))
+
+
+class _StatementIndex:
+    """Exact-statement lookup and near-duplicate postings over active facts, built once per write.
+
+    Replaces a scan of every fact per added statement, so a batch costs about
+    O(N + M) rather than O(N x M). Near-duplicate postings are blocked by the
+    statement's numbers and negations (a duplicate must match them exactly) and
+    keyed by content word; each fact's content words are computed once.
+    """
+
+    def __init__(self, facts: dict[str, AtomicFact]):
+        self.facts = facts
+        self.by_norm: dict[str, list[str]] = {}
+        self.postings: dict[tuple, set[str]] = {}
+        self.content: dict[str, frozenset] = {}
+        for fact in facts.values():
+            self.add(fact)
+
+    def add(self, fact: AtomicFact) -> None:
+        if fact.status != "active":
+            return
+        self.by_norm.setdefault(_normalize_statement(fact.statement), []).append(fact.id)
+        words, numbers, negations = _signature(fact.statement)
+        content = _content(words)
+        self.content[fact.id] = content
+        block = (numbers, negations)
+        for word in content:
+            self.postings.setdefault((block, word), set()).add(fact.id)
+
+    def exact(self, statement: str, scopes: list[str]) -> AtomicFact | None:
+        requested = frozenset(scopes)
+        for fid in self.by_norm.get(_normalize_statement(statement), ()):
+            existing = self.facts.get(fid)
+            if existing is not None and existing.status == "active" and _scopes_compatible(requested, existing.scopes):
+                return existing
+        return None
+
+    def near(self, statement: str, scopes: list[str],
+             threshold: float = NEAR_DUPLICATE_JACCARD) -> AtomicFact | None:
+        words, numbers, negations = _signature(statement)
+        content = _content(words)
+        if len(content) < 3:
+            return None
+        block = (numbers, negations)
+        # Jaccard >= t means a duplicate misses at most (1 - t) of the words, so it
+        # appears in the postings of any (floor((1 - t) * n) + 1) of them: take the rarest.
+        need = int((1 - threshold) * len(content)) + 1
+        rare = sorted(content, key=lambda w: (len(self.postings.get((block, w), ())), w))[:need]
+        candidates = set().union(*(self.postings.get((block, w), set()) for w in rare))
+        requested = frozenset(scopes)
+        best = None
+        for fid in sorted(candidates):
+            existing = self.facts.get(fid)
+            other = self.content.get(fid, frozenset())
+            if (existing is None or existing.status != "active" or existing.forgotten or len(other) < 3
+                    or len(content & other) / len(content | other) < threshold
+                    or not _scopes_compatible(requested, existing.scopes)):
+                continue
+            if best is None or existing.confirmations > best.confirmations:
+                best = existing
+        return best
+
+
+def _matching_active(facts: dict[str, AtomicFact], statement: str, scopes: list[str],
+                     index: _StatementIndex | None = None) -> AtomicFact | None:
+    return (index or _StatementIndex(facts)).exact(statement, scopes)
+
+
+def _semantic_duplicate(root: str | None, facts: dict[str, AtomicFact], statement: str,
+                        scopes: list[str]) -> AtomicFact | None:
+    """An embedding near-duplicate in compatible scope with the same numbers and negations."""
+    if not root:
+        return None
+    from commontrace import fact_embeddings
+
+    _w, numbers, negations = _signature(statement)
+    requested = frozenset(scopes)
+    pool = [f for f in facts.values() if f.status == "active" and not f.forgotten
+            and _scopes_compatible(requested, f.scopes)
+            and _signature(f.statement)[1:] == (numbers, negations)]
+    if not pool:
+        return None
+    found = fact_embeddings.similar(statement, pool, root=root, threshold=NEAR_DUPLICATE_COSINE)
+    return found[0][0] if found else None
 
 
 def _add_locked(
@@ -325,8 +447,18 @@ def _add_locked(
     created_at: str | None = None,
     evidence: Sequence[FactEvidence] | None = None,
     min_support: int = 1,
+    *,
+    index: _StatementIndex | None = None,
+    dedupe: str = "exact",
+    root: str | None = None,
 ) -> tuple[AtomicFact, str]:
-    existing = _matching_active(facts, statement, scopes)
+    index = index if index is not None else _StatementIndex(facts)
+    existing = index.exact(statement, scopes)
+    if existing is None and dedupe in ("near", "semantic") and evidence is None:
+        # A paraphrase of an active fact reinforces it instead of becoming a second record.
+        existing = index.near(statement, scopes)
+        if existing is None and dedupe == "semantic":
+            existing = _semantic_duplicate(root, facts, statement, scopes)
     if existing is not None:
         if existing.evidence_bound or evidence is not None:
             before = existing.to_dict()
@@ -390,6 +522,7 @@ def _add_locked(
         fact.evidence_revision = claim_revision(fact)
     fact.revision = _compute_revision(fact.to_dict())
     facts[fact.id] = fact
+    index.add(fact)
     return fact, "ADD"
 
 
@@ -443,7 +576,7 @@ def add_fact(
         fact, action = _add_locked(
             facts, statement, category, clean_scopes, valid_from, valid_until,
             expires_at, confidence, source_trace_id, _normalize_stability(stability), created_at,
-            evidence, min_support,
+            evidence, min_support, dedupe=dedup_mode(), root=root,
         )
     _link_entities_best_effort(root, [(fact.id, fact.statement)])
     return fact, action
@@ -468,19 +601,22 @@ def add_facts(root: str, items: list[dict[str, Any]]) -> list[tuple[AtomicFact, 
                          item.get("created_at"), item.get("evidence"), item.get("min_support", 1)))
     if not prepared:
         return []
+    mode = dedup_mode()
     with mutate_facts(root) as facts:
+        index = _StatementIndex(facts)
         results = []
         for s, c, sc, vf, vu, ea, conf, src, stab, created, receipts, minimum in prepared:
             _validate_evidence_policy(minimum)
             if receipts is not None:
                 if not isinstance(receipts, (list, tuple)):
                     raise EvidenceError("evidence must be a sequence of FactEvidence receipts")
-                existing = _matching_active(facts, s, sc)
+                existing = index.exact(s, sc)
                 if existing and any(receipt.kind == "fact" and receipt.source_id == existing.id
                                     for receipt in receipts if isinstance(receipt, FactEvidence)):
                     raise EvidenceError("a fact cannot support or refute itself")
                 EvidenceResolver(root, facts).validate_receipts(receipts, existing.scopes if existing else sc)
-            results.append(_add_locked(facts, s, c, sc, vf, vu, ea, conf, src, stab, created, receipts, minimum))
+            results.append(_add_locked(facts, s, c, sc, vf, vu, ea, conf, src, stab, created, receipts, minimum,
+                                       index=index, dedupe=mode, root=root))
     _link_entities_best_effort(root, [(fact.id, fact.statement) for fact, _ in results])
     return results
 
@@ -527,12 +663,20 @@ def append_facts(root: str, items: list[dict[str, Any]]) -> list[tuple[AtomicFac
         prepared.append((statement, category, _clean_scopes(labels), start, end, expiry,
                          confidence, str(item.get("source_trace_id", "")), item.get("stability", ""), memory_type))
     results = []
+    mode = dedup_mode()
     with mutate_facts(root) as facts:
+        index = _StatementIndex(facts)
         for statement, category, labels, start, end, expiry, confidence, source, stability, memory_type in prepared:
-            duplicate = next((f for f in facts.values() if f.status == "active" and not f.forgotten
-                              and _normalize_statement(f.statement) == _normalize_statement(statement)
-                              and f.scopes == labels and (start is None or f.valid_from == start)
-                              and f.valid_until == end and f.expires_at == expiry), None)
+            def same_record(f: AtomicFact) -> bool:
+                return (not f.forgotten and f.scopes == labels and (start is None or f.valid_from == start)
+                        and f.valid_until == end and f.expires_at == expiry)
+
+            duplicate = next((facts[fid] for fid in index.by_norm.get(_normalize_statement(statement), ())
+                              if facts[fid].status == "active" and same_record(facts[fid])), None)
+            if duplicate is None and mode != "exact":
+                # ADD-only admission never edits the existing record; a paraphrase is a NOOP.
+                near = index.near(statement, labels)
+                duplicate = near if near is not None and same_record(near) else None
             if duplicate:
                 results.append((duplicate, "NOOP"))
                 continue
@@ -547,6 +691,7 @@ def append_facts(root: str, items: list[dict[str, Any]]) -> list[tuple[AtomicFac
             fact.origin = memory_authority.bind(root, memory_authority.fact_record(fact), sources=fact.source_traces)
             fact.revision = _compute_revision(fact.to_dict())
             facts[fact.id] = fact
+            index.add(fact)
             results.append((fact, action))
     _link_entities_best_effort(root, [(fact.id, fact.statement) for fact, action in results if action == "ADD"])
     return results
