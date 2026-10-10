@@ -181,10 +181,33 @@ def profile(root: str, query: str, *, context: list[str] | None = None, limit: i
 
 def reflect(root: str, query: str, *, context: list[str] | None = None, budget: int = 600,
             occasion_id: str | None = None, causal: bool = True, exploration_slots: int = 0,
-            action_class: str = "", record_receipt: bool = True) -> dict:
-    """Curated → consolidated → raw, with one shared conservative token budget."""
+            action_class: str = "", record_receipt: bool = True, adaptive_budget: bool = False,
+            max_budget: int | None = None) -> dict:
+    """Curated → consolidated → raw, with one shared conservative token budget.
+
+    ``adaptive_budget`` sizes the budget by the question's shape
+    (`conversation.search.budget_for`), then doubles it, up to ``max_budget``
+    (default 12000), while the selected evidence covers the question weakly and
+    candidates were left out for lack of room. ``budget`` in the result is the
+    budget used; ``budget_decision`` says how it was reached.
+    """
     if not isinstance(budget, int) or isinstance(budget, bool) or not 0 <= budget <= 100000:
         raise ValueError("budget must be an integer in 0..100000")
+    if not isinstance(adaptive_budget, bool):
+        raise ValueError("adaptive_budget must be true or false")
+    decision: dict | None = None
+    if adaptive_budget and budget > 0:
+        from commontrace import recall as _recall
+        from commontrace.conversation.search import budget_for
+
+        if max_budget is not None and (isinstance(max_budget, bool) or not isinstance(max_budget, int)
+                                       or not 0 <= max_budget <= 100000):
+            raise ValueError("max_budget must be an integer in 0..100000")
+        cap = max(budget, _recall.ADAPTIVE_CAP if max_budget is None else max_budget)
+        shaped, shape = budget_for(query, budget, cap)
+        decision = {"requested": budget, "shaped": shaped, "effective": shaped, "reason": shape, "cap": cap,
+                    "grown": []}
+        budget = shaped
     if (not isinstance(exploration_slots, int) or isinstance(exploration_slots, bool)
             or not 0 <= exploration_slots <= 100):
         raise ValueError("exploration slots must be an integer in 0..100")
@@ -224,7 +247,8 @@ def reflect(root: str, query: str, *, context: list[str] | None = None, budget: 
                     and all(fid in current_facts and current_facts[fid].statement == o.statement
                             for fid in o.source_fact_ids)]
     eligible = set(current_facts)
-    raw = [r for r in search(root, query, limit=1000, context=context) if r["id"] in eligible]
+    # Layers are re-sorted by query overlap below, so a model reranker here would only add cost.
+    raw = [r for r in search(root, query, limit=1000, context=context, reranker="none") if r["id"] in eligible]
     from commontrace.commands._traces import load_trace_instances
 
     live_ids = set(current_facts)
@@ -307,24 +331,51 @@ def reflect(root: str, query: str, *, context: list[str] | None = None, budget: 
                 exploration_pool.append((fact, cost))
     reserve = max((cost for _fact, cost in exploration_pool), default=0) * min(
         exploration_slots, len(exploration_pool))
-    consumed: set[str] = set()
-    selected_texts: set[str] = set()
     directive_text = list(rendered)
-    for layer, candidates in layers:
+    directive_used = used
+    for _layer, candidates in layers:
         candidates.sort(key=lambda r: (-len(q & set(terms(r["text"]))), r["id"]))
-        for row in candidates:
-            if injection_guard.injection_labels({"text": row["text"]}):
-                continue
-            if row["id"] in consumed or row["text"] in selected_texts:
-                continue
-            text = f"[{layer}:{row['id']}] {row['text']}"
-            cost = (len(text.encode()) + 3) // 4 + (1 if rendered else 0)
-            if used + cost <= budget - reserve:
-                rendered.append(text)
-                selected.append({**row, "layer": layer})
-                used += cost
-                consumed.update(row.get("sources", []))
-                selected_texts.add(row["text"])
+
+    def fill(limit: int) -> tuple[list[str], list[dict], int, set[str], int]:
+        """Select layer rows best-first within `limit`; also count rows left out for room."""
+        rendered, selected, used = list(directive_text), [], directive_used
+        consumed: set[str] = set()
+        selected_texts: set[str] = set()
+        left_out = 0
+        for layer, candidates in layers:
+            for row in candidates:
+                if injection_guard.injection_labels({"text": row["text"]}):
+                    continue
+                if row["id"] in consumed or row["text"] in selected_texts:
+                    continue
+                text = f"[{layer}:{row['id']}] {row['text']}"
+                cost = (len(text.encode()) + 3) // 4 + (1 if rendered else 0)
+                if used + cost <= limit - reserve:
+                    rendered.append(text)
+                    selected.append({**row, "layer": layer})
+                    used += cost
+                    consumed.update(row.get("sources", []))
+                    selected_texts.add(row["text"])
+                else:
+                    left_out += 1
+        return rendered, selected, used, consumed, left_out
+
+    rendered, selected, used, consumed, left_out = fill(budget)
+    if decision is not None:
+        from commontrace import recall as _recall
+
+        while budget < decision["cap"] and len(decision["grown"]) < _recall.MAX_GROWTH_STEPS:
+            why = _recall.weak_coverage(query, [r["text"] for r in selected])
+            if not why:
+                break
+            if not left_out:
+                decision["stopped"] = "every candidate already fits; a larger budget adds nothing"
+                break
+            grown = min(decision["cap"], budget * 2)
+            rendered, selected, used, consumed, left_out = fill(grown)
+            decision["grown"].append({"from": budget, "to": grown, "why": why})
+            budget = grown
+        decision["effective"] = budget
     withheld, withdrawn = [], {}
     ranked_ids = {r["id"] for r in selected}
     if causal:
@@ -382,9 +433,12 @@ def reflect(root: str, query: str, *, context: list[str] | None = None, budget: 
         from commontrace import assurance
 
         assurance.record_recall(root, occasion_value, [*selected, *rule_evidence], "\n".join(rendered), context or [])
-    return {"context": "\n".join(rendered), "tokens_estimate": used, "budget": budget,
-            "evidence": selected, "occasion_id": occasion_value, "withheld": withheld, "withdrawn": withdrawn,
-            "exploration": assignments, "authority_sources": [r["id"] for r in [*selected, *rule_evidence]]}
+    out = {"context": "\n".join(rendered), "tokens_estimate": used, "budget": budget,
+           "evidence": selected, "occasion_id": occasion_value, "withheld": withheld, "withdrawn": withdrawn,
+           "exploration": assignments, "authority_sources": [r["id"] for r in [*selected, *rule_evidence]]}
+    if decision is not None:
+        out["budget_decision"] = decision
+    return out
 
 
 def refresh_model(root: str, model_id: str) -> dict:

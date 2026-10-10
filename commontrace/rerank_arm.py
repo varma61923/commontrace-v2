@@ -10,12 +10,20 @@ from collections.abc import Callable, Mapping, Sequence
 MODELS = {
     "cross-encoder": ("cross-encoder/ms-marco-MiniLM-L-6-v2", "minilm6"),
     "cross-encoder-fast": ("cross-encoder/ms-marco-TinyBERT-L-2-v2", "tinybert2"),
+    # Multilingual, 8k-token context; the strongest open local reranker of its size.
+    "bge-reranker-v2-m3": ("BAAI/bge-reranker-v2-m3", "bgev2m3"),
+    "mxbai-rerank": ("mixedbread-ai/mxbai-rerank-base-v1", "mxbai-base"),
 }
 DEFAULT_MODE = "cross-encoder"
 
+# The gate drops pool members the model scores below a threshold calibrated on
+# MS-MARCO logits. The newer models have no calibrated threshold yet, so their
+# gate admits every candidate (they still reorder; they never silently filter).
 GATE_THRESHOLDS = {
     ("cross-encoder", ""): -4.0,
     ("cross-encoder-fast", ""): -4.0,
+    ("bge-reranker-v2-m3", ""): float("-inf"),
+    ("mxbai-rerank", ""): float("-inf"),
     ("cross-encoder", "arctic-m"): -8.0,
     ("cross-encoder-fast", "arctic-m"): -8.0,
 }

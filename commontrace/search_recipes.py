@@ -104,7 +104,20 @@ def search(root: str, query: str, *, recipe: str = "balanced", scope: str = "", 
            as_of: str | None = None, dense_scores: dict[str, float] | None = None,
            entity_ids: Sequence[str] = (), center: str = "", backend: GraphBackend | None = None,
            utility: dict[str, float] | None = None, context: list[str] | None = None,
-           action_class: str = "", embedder=None) -> list[dict[str, Any]]:
+           action_class: str = "", embedder=None, reranker: str | None = None,
+           rerank_depth: int | None = None, rerank_blend: float | None = None,
+           explain: dict | None = None) -> list[dict[str, Any]]:
+    """Rank governed facts by a recipe's blend of dense, lexical, entity, temporal and utility signals.
+
+    ``reranker`` (a `providers.reranker` name, or "none") reranks the top
+    ``rerank_depth`` scored facts with a cross-encoder, hosted or LLM reranker
+    before the recipe's own ordering; unset, it comes from the ``"rerank"``
+    section of `memory/budgets.json` (see `commontrace.recall`), and without
+    one nothing changes. Reranked rows carry ``rerank_score``; recipes that
+    order by graph distance or corroboration use the reranked order to break
+    ties, and ``diverse`` trades redundancy against the original scores. A
+    caller-supplied ``explain`` dict receives ``{"rerank": report}``.
+    """
     if recipe not in RECIPES:
         raise ValueError(f"unknown search recipe: {recipe}")
     if not isinstance(limit, int) or isinstance(limit, bool) or not 0 <= limit <= 1000:
@@ -175,12 +188,15 @@ def search(root: str, query: str, *, recipe: str = "balanced", scope: str = "", 
                      "recorded_at": fact.created_at, "stability": fact.stability,
                      "distance": nearby.get(fact.id, nearby.get(f"memory:{fact.id}", 999))})
     rows.sort(key=lambda r: (-r["score"], r["id"]))
+    rows = _model_rerank(root, query, rows, reranker, rerank_depth, rerank_blend, explain)
+    # Stable sorts over the (possibly reranked) score order: without a model
+    # reranker these equal sorting by (key, -score, id), as they always have.
     if cfg.reranker == "node-distance":
         if not center:
             raise ValueError("nearby recipe requires a center node")
-        rows.sort(key=lambda r: (r["distance"], -r["score"], r["id"]))
+        rows.sort(key=lambda r: r["distance"])
     elif cfg.reranker == "episode-mentions":
-        rows.sort(key=lambda r: (-len(set(r["source_traces"])), -r["score"], r["id"]))
+        rows.sort(key=lambda r: -len(set(r["source_traces"])))
     elif cfg.reranker == "mmr":
         selected = []
         pool = rows[:max(limit * 10, 100)]
@@ -195,6 +211,32 @@ def search(root: str, query: str, *, recipe: str = "balanced", scope: str = "", 
             pool.remove(chosen)
         rows = selected
     return rows[:limit]
+
+
+def _model_rerank(root: str, query: str, rows: list[dict], name: str | None, depth: int | None,
+                  blend: float | None, explain: dict | None) -> list[dict]:
+    from commontrace import recall, reranking
+
+    if name is None or depth is None or blend is None:
+        settings = recall.retrieval_settings(root)
+        name = settings["reranker"] if name is None else name
+        depth = settings["depth"] if depth is None else depth
+        blend = settings["blend"] if blend is None else blend
+    reranking.check_options(depth, blend)
+    ranker, unavailable = reranking.load(name)
+    if ranker is None:
+        if unavailable and explain is not None:
+            explain["rerank"] = {"reranker": name, "items": 0, "latency_ms": 0.0, "error": unavailable}
+        return rows
+    scores: dict[str, float] = {}
+    order, report = reranking.stage(query, [r["id"] for r in rows], {r["id"]: r["text"] for r in rows}, ranker,
+                                    depth=depth, blend=blend, scores=scores)
+    if explain is not None:
+        explain["rerank"] = report
+    by_id = {r["id"]: r for r in rows}
+    for fact_id, value in scores.items():
+        by_id[fact_id]["rerank_score"] = round(value, 6)
+    return [by_id[i] for i in order]
 
 
 Retriever = Callable[..., list[dict]]

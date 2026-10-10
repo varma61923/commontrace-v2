@@ -462,6 +462,9 @@
             "maxLength": 20000,
             "type": "string"
           },
+          "adaptive_budget": {
+            "type": "boolean"
+          },
           "budget": {
             "maximum": 100000,
             "minimum": 0,

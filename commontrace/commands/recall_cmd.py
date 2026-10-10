@@ -28,6 +28,16 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument("--fact-scorer", default="overlap-v1", choices=("overlap-v1", "bm25-v1"),
                    help="Fact ranking: compatible overlap or stemmed multilingual BM25.")
     p.add_argument("--weight", action="append", default=[], metavar="CHANNEL=W", help="Channel weight override.")
+    p.add_argument("--reranker", default=None,
+                   help="Rerank the top fused items: cross-encoder, cross-encoder-fast, bge-reranker-v2-m3, "
+                        "mxbai-rerank, cohere[:model], voyage[:model], jina[:model], llm[:model] or none "
+                        "(default: memory/budgets.json, else none).")
+    p.add_argument("--rerank-depth", type=int, default=None, help="How many fused items the reranker reads (30).")
+    p.add_argument("--rerank-blend", type=float, default=None,
+                   help="Reranker weight beside the fused order: 0 keeps it, 1 replaces it (0.5).")
+    p.add_argument("--adaptive-budget", action="store_true", default=None,
+                   help="Size the budget by the question's shape; grow it while evidence is thin.")
+    p.add_argument("--max-budget", type=int, default=None, help="With --adaptive-budget: the ceiling (12000).")
     p.add_argument("--json", action="store_true")
     p.add_argument("--dest", default=None)
     p.set_defaults(func=run)
@@ -49,7 +59,12 @@ def run(args: argparse.Namespace) -> int:
                                channels=tuple(args.channel) or recall.CHANNELS, as_of=args.as_of,
                                weights=weights or None, spaces=args.space, embedder=args.embedder,
                                evidence_budget=args.evidence_budget, scope=args.scope,
-                               fact_scorer=getattr(args, "fact_scorer", "overlap-v1"))
+                               fact_scorer=getattr(args, "fact_scorer", "overlap-v1"),
+                               reranker=getattr(args, "reranker", None),
+                               rerank_depth=getattr(args, "rerank_depth", None),
+                               rerank_blend=getattr(args, "rerank_blend", None),
+                               adaptive_budget=getattr(args, "adaptive_budget", None),
+                               max_budget=getattr(args, "max_budget", None))
     except ValueError as exc:
         print(f"[commontrace] {exc}", file=sys.stderr)
         return 2
@@ -62,4 +77,9 @@ def run(args: argparse.Namespace) -> int:
           file=sys.stderr)
     for channel, error in result.errors.items():
         print(f"[commontrace] {channel} channel failed: {error}", file=sys.stderr)
+    rerank = result.explain.get("rerank")
+    if rerank:
+        state = f"failed ({rerank['error']}); fused order kept" if rerank.get("error") else \
+            f"read {rerank['items']} items in {rerank['latency_ms']} ms, moved {rerank.get('moved', 0)}"
+        print(f"[commontrace] reranker {rerank['reranker']} {state}", file=sys.stderr)
     return 0

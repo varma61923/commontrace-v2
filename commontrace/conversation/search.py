@@ -68,6 +68,10 @@ class Options:
     adaptive_budget: bool = False  # True: scale `budget` by question shape (see budget_for), up to max_budget
     max_budget: int = 12_000
     context_strategy: str = "legacy"  # coverage-v1 prioritizes marginal excerpt facets per quoted token
+    # True: when the delivered context leaves budget unused and misses some of the
+    # question's subject terms, search facet queries for those terms, add what they
+    # find after the first-pass ranking and assemble again (explain["second_pass"]).
+    second_pass: bool = False
 
 
 @dataclass
@@ -400,6 +404,29 @@ _CONSIDERING = re.compile(r"^(?:considering|given|taking into account|based on)\
                           r"should|would|will|do|does|is|are)\b", re.I)
 
 
+SECOND_PASS_TURNS = 8  # most turns a coverage-driven second pass may add
+SECOND_PASS_QUERIES = 8
+
+
+def facet_queries(question: str, missing: Sequence[str]) -> list[str]:
+    """Facet sub-queries for subject terms the first pass did not deliver.
+
+    Each missing term is searched alone and beside each entity the question
+    names ("Ana" + "dog"), then all of them together through `subqueries`.
+    Deterministic: the same question and terms give the same queries.
+    """
+    terms = [t for t in dict.fromkeys(missing) if t]
+    if not terms:
+        return []
+    named = list(dict.fromkeys(profile.entities(question)))[:3]
+    out: list[str] = []
+    for term in terms:
+        out.append(term)
+        out.extend(f"{name} {term}" for name in named)
+    out.extend(subqueries(" ".join(terms)))
+    return list(dict.fromkeys(out))[:SECOND_PASS_QUERIES]
+
+
 def _rrf(rankings: list[tuple[list[int], float]]) -> dict[int, float]:
     scores: dict[int, float] = {}
     for ranking, weight in rankings:
@@ -628,7 +655,7 @@ def _recall_key(store: Store, question: str, now, opts: Options,
         opts.rerank_depth, opts.rerank_blend, opts.profile_facts, opts.instructions,
         opts.broad, opts.recency_boost, opts.primary_hits, opts.embedder,
         opts.summaries, opts.sessions, opts.speakers, opts.since, opts.until, opts.graph_hops,
-        opts.context_strategy, tuple(extra_queries), stamp,
+        opts.context_strategy, opts.second_pass, tuple(extra_queries), stamp,
     )
 
 
@@ -765,15 +792,19 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
     dense_rankings: dict[str, list[int]] = {
         query: list(units) for query, units in dense_candidates.rankings.items()
     } if dense_candidates is not None else {}
-    if embedder is not None and allowed != set() and pool > 0:
+    def encode_dense(batch_queries: list[str]) -> None:
+        if embedder is None or allowed == set() or pool <= 0 or not batch_queries:
+            return
         from commontrace.conversation import embed
 
         # Encode related facets together and scan each bounded query batch once.
-        for start in range(0, len(queries), embed.QUERY_BATCH):
-            batch = queries[start:start + embed.QUERY_BATCH]
+        for start in range(0, len(batch_queries), embed.QUERY_BATCH):
+            batch = batch_queries[start:start + embed.QUERY_BATCH]
             vectors = embedder.encode(batch, query=True)
             pages = embed.search_many(store, embedder, vectors, pool, allowed=allowed)
             dense_rankings.update((q, [u for u, _s in hits]) for q, hits in zip(batch, pages))
+
+    encode_dense(queries)
 
     def arm_rankings(query: str) -> list[tuple[list[int], float]]:
         lexical = [u for u, _s in store.lexical(query, pool, allowed=allowed)]
@@ -891,21 +922,28 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
     if belief_at is None and window is not None and moment is not None and window[1] < moment.date():
         belief_at = dt.datetime.combine(window[1], dt.time(23, 59, 59))
         explain["belief_as_of"] = belief_at.isoformat()
-    emitted: list[_EmittedText] = []
-    selection: dict = {}
-    context, used, n_tokens = assemble(store, question, ranked, opts, withheld, allowed, now=show_now,
-                                     as_of=belief_at, current_instructions=now is None and belief_at is not None,
-                                     evidence_paths=explain.get("graph_paths", ()), emitted=emitted,
-                                     selection=selection)
+    from commontrace.conversation.coverage import assess
+
+    def pack(candidates: list[int], withheld: list[int]):
+        emitted: list[_EmittedText] = []
+        selection: dict = {}
+        packed = assemble(store, question, candidates, opts, withheld, allowed, now=show_now,
+                          as_of=belief_at, current_instructions=now is None and belief_at is not None,
+                          evidence_paths=explain.get("graph_paths", ()), emitted=emitted, selection=selection)
+        found = assess(question, [part.body for part in emitted if part.body],
+                       labels=[part.speaker for part in emitted if part.body and part.speaker])
+        return packed, selection, found
+
+    (context, used, n_tokens), selection, coverage = pack(ranked, withheld)
+    if opts.second_pass:
+        ranked, withheld, (context, used, n_tokens), selection, coverage = _second_pass(
+            store, question, ranked, withheld, (context, used, n_tokens), selection, coverage, opts, explain,
+            encode_dense, turn_scores, pack)
     explain["context_selection"] = selection
     if explain.get("graph_paths"):
         chosen = set(used)
         explain["selected_graph_paths"] = [p for p in explain["graph_paths"]
                                            if p["source"] in chosen and p["turn"] in chosen]
-    from commontrace.conversation.coverage import assess
-
-    coverage = assess(question, [part.body for part in emitted if part.body],
-                      labels=[part.speaker for part in emitted if part.body and part.speaker])
     conf = coverage.confidence
     explain["confidence"] = conf
     explain["coverage"] = coverage.as_dict()
@@ -917,10 +955,59 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
                   (window[0].isoformat(), window[1].isoformat(), window[2]) if window else None, explain)
 
 
+def _second_pass(store: Store, question: str, ranked: list[int], withheld: list[int], packed: tuple,
+                 selection: dict, coverage, opts: Options, explain: dict, encode_dense, turn_scores, pack):
+    """Search facet queries for the subject terms the first context missed.
+
+    Runs only when the first pass did not abstain, some subject term is
+    missing and the context left budget unused. Newly found turns go after
+    the first-pass ranking, so the greedy assembly keeps what it had and fills
+    the room left; the same budget applies. The result is used only when it
+    delivers at least one new turn. ``explain["second_pass"]`` reports it.
+    """
+    missing = list(coverage.missing_subject_terms)
+    report: dict = {"terms": missing, "added_turns": []}
+    unchanged = ranked, withheld, packed, selection, coverage
+    if coverage.abstain:
+        report["skipped"] = "the first pass abstained"
+    elif not missing:
+        report["skipped"] = "no subject term is missing"
+    elif packed[2] >= opts.budget:
+        report["skipped"] = "no budget remains"
+    if "skipped" in report:
+        explain["second_pass"] = report
+        return unchanged
+    queries = facet_queries(question, missing)
+    encode_dense(queries)
+    scores = turn_scores(queries)
+    found, _self = filter_self_turns(store, question, sorted(scores, key=lambda t: (-scores[t], t)))
+    known = set(ranked)
+    added = [t for t in found if t not in known][:SECOND_PASS_TURNS]
+    report["queries"] = queries
+    if not added:
+        report["skipped"] = "the facet queries found no new turn"
+        explain["second_pass"] = report
+        return unchanged
+    merged = ranked + added
+    second_withheld: list[int] = []
+    packed2, selection2, coverage2 = pack(merged, second_withheld)
+    before = set(packed[1])
+    new = [t for t in packed2[1] if t not in before]
+    report.update(added_turns=new, tokens_before=packed[2], tokens_after=packed2[2],
+                  missing_after=list(coverage2.missing_subject_terms))
+    explain["second_pass"] = report
+    if not new:
+        report["skipped"] = "the new turns did not fit the remaining budget"
+        return unchanged
+    return merged, second_withheld, packed2, selection2, coverage2
+
+
 def _rerank(store: Store, question: str, ranked: list[int], mode: str, depth: int,
             explain: dict | None = None, blend: float = 0.0) -> list[int]:
     from commontrace import rerank_arm
 
+    if mode not in rerank_arm.MODELS:
+        return _rerank_provider(store, question, ranked, mode, depth, explain, blend)
     if rerank_arm.ready(mode):
         return ranked
     head = ranked[:depth]
@@ -941,6 +1028,41 @@ def _rerank(store: Store, question: str, ranked: list[int], mode: str, depth: in
         order = sorted(scores, key=lambda t: -scores[t])
     returned = set(order)
     return order + [t for t in ranked if t not in returned]
+
+
+def _rerank_provider(store: Store, question: str, ranked: list[int], name: str, depth: int,
+                     explain: dict | None, blend: float) -> list[int]:
+    """Any `providers.reranker` text reranker (hosted, LLM or registered) over the head.
+
+    ``blend`` keeps this module's meaning: the reranker's weight beside the
+    fused rank, where 0 lets it replace that rank. A reranker that cannot run
+    leaves the ranking unchanged and is reported in ``explain["rerank_stage"]``.
+    """
+    from commontrace import reranking
+
+    report: dict
+    try:
+        ranker, unavailable = reranking.load(name)
+    except ValueError as exc:
+        ranker, unavailable = None, str(exc)
+    if ranker is None:
+        report = {"reranker": name, "items": 0, "latency_ms": 0.0, "error": unavailable}
+        order = ranked
+    else:
+        head = ranked[:max(1, min(depth, reranking.MAX_DEPTH))]
+        turns = store.turns(head)
+        text_of = {str(t): _excerpt(turns[t], question, 300) for t in head if t in turns}
+        stage_blend = 1.0 if not blend else blend / (1.0 + blend)
+        keys, report = reranking.stage(question, [str(t) for t in ranked], text_of, ranker,
+                                       depth=len(head), blend=stage_blend)
+        order = [int(k) for k in keys]
+        if report.get("top"):
+            report["top"] = [{"id": int(row["id"]), "score": row["score"]} for row in report["top"]]
+    if explain is not None:
+        explain["rerank_stage"] = report
+        if report.get("top"):
+            explain["rerank_top"] = report["top"][0]["score"]
+    return order
 
 
 _GLOBAL_RULE = re.compile(r"\b(?:format\w*|style|length|short|shorter|concise|brief|bullet\w*|list|language|units?|"

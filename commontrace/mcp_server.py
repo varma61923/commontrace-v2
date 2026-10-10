@@ -1999,7 +1999,8 @@ def build_server(root: str, *, allow_approval: bool = True):
     async def memory_recall(question: str, budget: int = 1500, agent: str = "", as_of: str = "",
                             channels: list[str] | None = None, spaces: list[str] | None = None,
                             evidence_budget: int = 0, scope: str = "",
-                            ctx: Any = None, fact_scorer: str = "overlap-v1") -> dict:
+                            ctx: Any = None, fact_scorer: str = "overlap-v1", reranker: str = "",
+                            adaptive_budget: bool = False) -> dict:
         """One context from every kind of memory: approved lessons, atomic facts, graph
         relations around the entities `question` names, and conversation spaces, fused,
         de-duplicated and packed into `budget` tokens. `as_of` selects valid-time
@@ -2007,6 +2008,10 @@ def build_server(root: str, *, allow_approval: bool = True):
         memory/budgets.json. `channels` narrows to lessons/facts/graph/conversations.
         Default fact ranking preserves overlap; fact_scorer="bm25-v1" opts into
         stemmed multilingual BM25 without changing the other channels.
+        `reranker` reranks the top fused items (cross-encoder, bge-reranker-v2-m3,
+        mxbai-rerank, cohere, voyage, jina, llm, or "none"; empty uses memory/budgets.json).
+        `adaptive_budget` sizes the budget by the question's shape and grows it while
+        evidence is thin. `explain` in the result reports both decisions.
         """
         from commontrace import recall as recall_mod
 
@@ -2014,7 +2019,8 @@ def build_server(root: str, *, allow_approval: bool = True):
             return recall_mod.recall(root, question, budget=budget or None, agent=agent or None,
                                      as_of=as_of or None, channels=tuple(channels or recall_mod.CHANNELS),
                                      spaces=spaces, evidence_budget=evidence_budget, scope=scope,
-                                     fact_scorer=fact_scorer).to_dict()
+                                     fact_scorer=fact_scorer, reranker=reranker or None,
+                                     adaptive_budget=adaptive_budget or None).to_dict()
 
         try:
             await _progress(ctx, 0, "Retrieving memory evidence")

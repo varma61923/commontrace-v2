@@ -31,10 +31,16 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
             q.add_argument("--recipe", default="balanced")
             q.add_argument("--retriever", default="hybrid", choices=REGISTRY.names())
             q.add_argument("--center", default="")
+            q.add_argument("--reranker", default=None,
+                           help="second-stage reranker for the top facts: cross-encoder, bge-reranker-v2-m3, "
+                                "mxbai-rerank, cohere[:model], voyage[:model], jina[:model], llm[:model] or none "
+                                "(default: memory/budgets.json, else none)")
         if name in ("question", "reflect"):
             q.add_argument("--budget", type=int, default=600)
         if name == "reflect":
             q.add_argument("--exploration-slots", type=int, default=0)
+            q.add_argument("--adaptive-budget", action="store_true",
+                           help="size the budget by the question's shape and grow it while evidence is thin")
         if name == "question":
             q.add_argument("--refresh-seconds", type=int, default=3600)
         if name == "directive":
@@ -86,11 +92,13 @@ def run(args) -> int:
             result = additive_extract.extract(root, args.text, local=not args.model, scopes=context,
                                                memory_type=args.memory_type, entity_model_path=args.gliner_model)
         elif op == "search":
+            extra = {"reranker": args.reranker} if args.reranker is not None else {}
             result = REGISTRY.retrieve(args.retriever, root, args.text, recipe=args.recipe,
-                                       context=context, center=args.center)
+                                       context=context, center=args.center, **extra)
         elif op == "reflect":
             result = memory_control.reflect(root, args.text, context=context, budget=args.budget,
-                                             exploration_slots=args.exploration_slots)
+                                             exploration_slots=args.exploration_slots,
+                                             adaptive_budget=args.adaptive_budget)
         elif op == "profile":
             result = memory_control.profile(root, args.text, context=context)
         elif op == "directive":
