@@ -68,8 +68,16 @@ def test_append_only_admission_treats_a_paraphrase_as_a_noop_and_never_edits(tmp
     assert hierarchical.load_facts(root)[first.id].to_dict() == before
 
 
-def test_batches_use_one_index_and_dedupe_within_the_batch(tmp_path):
+def test_batches_use_one_index_and_dedupe_within_the_batch(tmp_path, monkeypatch):
     root = str(tmp_path)
+    builds = []
+    original = hierarchical._StatementIndex.__init__
+
+    def counting(self, facts):
+        builds.append(len(facts))
+        original(self, facts)
+
+    monkeypatch.setattr(hierarchical._StatementIndex, "__init__", counting)
     results = hierarchical.add_facts(root, [
         {"statement": "The office is located in Tokyo, Japan"},
         {"statement": "Our office is located in Tokyo Japan"},
@@ -77,10 +85,12 @@ def test_batches_use_one_index_and_dedupe_within_the_batch(tmp_path):
     ])
     assert [action for _f, action in results] == ["ADD", "NOOP", "ADD"]
     many = [{"statement": f"Customer {i} prefers invoices by email in region {i % 7}"} for i in range(1500)]
+    builds.clear()
     started = time.perf_counter()
     hierarchical.add_facts(root, many)
     assert len(hierarchical.load_facts(root)) == 1502
-    assert time.perf_counter() - started < 15  # O(N + M); the old scan was O(N x M)
+    assert builds == [2]  # one index per batch, not one scan per statement (O(N x M))
+    assert time.perf_counter() - started < 60  # a loose backstop: CI runs this under parallel load
 
 
 class _Topics:
