@@ -69,7 +69,7 @@ _NAME_TOKEN = r"(?:[A-Z][\w.+#/-]*[\w+#]|[A-Z]|[a-z0-9][\w+#-]*[._/-][\w.+#/-]*[
 _LEFT_NAME = re.compile(r"(" + _NAME_TOKEN + r"(?:(?: of)? " + _NAME_TOKEN + r"){0,4})$")
 _RIGHT_NAME = re.compile(r"^(?:the |a |an |our |their )?(" + _NAME_TOKEN + r"(?:(?: of)? " + _NAME_TOKEN
                          + r"){0,4})")
-_SENTENCE_END = re.compile(r"(?<!\b[A-Z])(?<!\b(?:Mr|Ms|Dr|St|Co|vs))(?<!\b(?:Mrs|Inc|Ltd|e\.g|i\.e))(?<!Prof|Corp)"
+_SENTENCE_END = re.compile(r"(?<!\b[A-Z])(?<!\b(?:Mr|Ms|Dr|St|vs))(?<!\b(?:Mrs|e\.g|i\.e))(?<!Prof)"
                            r"[.!?](?=\s+[A-Z0-9\"'(\[])|\n\s*\n|\n(?=\s*[-*#\d])")
 _MONTHS = {m: i for i, m in enumerate(("january", "february", "march", "april", "may", "june", "july", "august",
                                        "september", "october", "november", "december"), 1)}
