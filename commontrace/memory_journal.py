@@ -106,6 +106,17 @@ class Journal:
     def _put(self, db, record: MemoryRecord, *, expected_version=None) -> MemoryRecord:
         cleaned, _ = memory_guard.sanitize_metadata(record.to_dict(), pii=True)
         record = MemoryRecord(**cleaned)
+        sources = record.payload.get("source_message_ids", [])
+        if not isinstance(sources, list) or any(not isinstance(source, str) or not source for source in sources):
+            raise ValueError("source_message_ids must be a list of capture ids")
+        if sources:
+            record = replace(
+                record,
+                relations={
+                    **record.relations,
+                    "caused_by": list(dict.fromkeys([*record.relations.get("caused_by", []), *sources])),
+                },
+            )
         prior = db.execute("SELECT body FROM records WHERE id=?", (record.id,)).fetchone()
         old = MemoryRecord(**json.loads(prior[0])) if prior else None
         if (
@@ -121,6 +132,9 @@ class Journal:
                 source_row = db.execute("SELECT body FROM records WHERE id=?", (source,)).fetchone()
                 if source_row and json.loads(source_row[0])["scope"] != record.scope:
                     raise ValueError("relationships cannot cross scopes")
+                capture = db.execute("SELECT scope FROM captures WHERE id=?", (source,)).fetchone()
+                if capture and json.loads(capture[0]) != record.scope:
+                    raise ValueError("capture evidence cannot cross scopes")
                 db.execute("INSERT OR IGNORE INTO links VALUES(?,?)", (source, record.id))
         # Forward references cannot acquire a different scope later.
         for row in db.execute(
@@ -225,6 +239,11 @@ class Journal:
         payload, _ = memory_guard.sanitize_metadata(payload, pii=True)
         identity = event_id or uuid.uuid4().hex
         with self.connect(write=True) as db:
+            for row in db.execute(
+                "SELECT r.body FROM links l JOIN records r ON r.id=l.derived WHERE l.source=?", (identity,)
+            ):
+                if json.loads(row[0])["scope"] != scope:
+                    raise ValueError("forward capture evidence cannot cross scopes")
             db.execute(
                 "INSERT OR IGNORE INTO captures(id,session,event,body,scope) VALUES(?,?,?,?,?)",
                 (identity, session, event, json.dumps(payload), json.dumps(scope, sort_keys=True)),
@@ -415,20 +434,34 @@ class Journal:
                 current = db.execute("SELECT body FROM records WHERE id=?", (identity,)).fetchone()
                 if current is None or json.loads(current[0])["version"] != expected_version:
                     raise ValueError("expiration record version changed")
-            pending, deleted = [identity], set()
+            pending, deleted, capture_ids = [identity], set(), set()
             while pending:
                 current = pending.pop()
                 if current in deleted:
                     continue
                 deleted.add(current)
                 pending.extend(row[0] for row in db.execute("SELECT derived FROM links WHERE source=?", (current,)))
-            capture_ids = set(deleted)
-            for current in deleted:
-                row = db.execute("SELECT body FROM records WHERE id=?", (current,)).fetchone()
-                if row:
-                    capture_ids.update(json.loads(row[0])["payload"].get("source_message_ids", []))
-            for capture_id in capture_ids:
-                db.execute("DELETE FROM captures WHERE id=?", (capture_id,))
+                # Every historical revision contributes source captures, not only the latest payload.
+                for (body,) in db.execute("SELECT body FROM record_events WHERE id=?", (current,)):
+                    record = MemoryRecord(**json.loads(body))
+                    capture_ids.add((current, json.dumps(record.scope, sort_keys=True)))
+                    for source in set(record.payload.get("source_message_ids", [])) | set(
+                        record.relations.get("caused_by", [])
+                    ):
+                        row = db.execute("SELECT scope FROM captures WHERE id=?", (source,)).fetchone()
+                        if row and json.loads(row[0]) == record.scope:
+                            capture_ids.add((source, row[0]))
+                            # Other records distilled from an erased capture lose their source too.
+                            pending.extend(
+                                value[0]
+                                for value in db.execute(
+                                    "SELECT l.derived FROM links l JOIN records r ON r.id=l.derived "
+                                    "WHERE l.source=? AND json_extract(r.body,'$.scope')=json(?)",
+                                    (source, json.dumps(record.scope, sort_keys=True)),
+                                )
+                            )
+            for capture_id, scope in capture_ids:
+                db.execute("DELETE FROM captures WHERE id=? AND scope=?", (capture_id, scope))
             for token, body in db.execute("SELECT token,body FROM deliveries").fetchall():
                 receipt = json.loads(body)
                 assigned = {row.get("lesson") for row in receipt["assignments"]}

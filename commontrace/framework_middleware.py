@@ -30,7 +30,7 @@ def scope_from_labels(labels: list[str]) -> dict:
     return result
 
 
-def maintain_preferences(journal: Journal, text: str, scope: dict):
+def maintain_preferences(journal: Journal, text: str, scope: dict, *, source_id=None):
     """Explicit user preferences only; model/assistant assertions use a different author."""
     import re
 
@@ -40,18 +40,24 @@ def maintain_preferences(journal: Journal, text: str, scope: dict):
         identity = (
             "static-" + hashlib.sha256((json.dumps(scope, sort_keys=True) + assertion.casefold()).encode()).hexdigest()
         )
-        if not journal.history(identity):
-            journal.put(
-                MemoryRecord(
-                    identity,
-                    "profile",
-                    1,
-                    {"text": assertion, "bucket": "static", "author": "user", "observed_at": now()},
-                    scope=scope,
-                    created_at=now(),
-                    provenance={"authored_by": "user"},
-                )
+        history = journal.history(identity)
+        journal.put(
+            MemoryRecord(
+                identity,
+                "profile",
+                len(history) + 1,
+                {
+                    "text": assertion,
+                    "bucket": "static",
+                    "author": "user",
+                    "observed_at": now(),
+                    "source_message_ids": [source_id] if source_id else [],
+                },
+                scope=scope,
+                created_at=now(),
+                provenance={"authored_by": "user"},
             )
+        )
     for match in re.finditer(r"\bI (?:prefer|like|always use|want)\s+([^.!?\n]{3,300})", text, flags=re.I):
         preference = match.group(0).strip()
         identity = (
@@ -73,6 +79,7 @@ def maintain_preferences(journal: Journal, text: str, scope: dict):
                     "observed_at": now(),
                     "critical": False,
                     "author": "user",
+                    "source_message_ids": [source_id] if source_id else [],
                 },
                 scope=scope,
                 created_at=now(),
@@ -112,8 +119,8 @@ def turn(
     kit = HookKit(root, agent, scope=scope, embedder=embedder)
     run = hashlib.sha256(json.dumps([scope, session], sort_keys=True).encode()).hexdigest()
     if text:
-        kit.journal.capture(run, "UserMessage", {"text": text, "author": "user"}, scope=scope)
-        maintain_preferences(kit.journal, text, scope)
+        captured = kit.journal.capture(run, "UserMessage", {"text": text, "author": "user"}, scope=scope)
+        maintain_preferences(kit.journal, text, scope, source_id=captured["id"])
     result = kit.handle(
         event or "UserPromptSubmit", {**(payload or {}), "session_id": session, "prompt": query, "budget": budget}
     )

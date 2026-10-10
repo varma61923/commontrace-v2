@@ -172,3 +172,39 @@ def test_manual_facet_withholds_after_source_revision(tmp_path):
     assert journal.search("Parser", kinds=("observation",))
     journal.put(replace(source, version=2, payload={"text": "Parser uses three fields"}))
     assert not journal.search("Parser", kinds=("observation",))
+
+
+def test_record_capture_evidence_cannot_erase_another_scope(tmp_path):
+    journal = Journal(str(tmp_path))
+    foreign = journal.capture("b", "UserMessage", {"text": "private foreign source"}, scope={"agent": "b"})
+    with pytest.raises(ValueError, match="cross scopes"):
+        journal.put(
+            MemoryRecord(
+                "forged",
+                "profile",
+                1,
+                {"text": "untrusted", "source_message_ids": [foreign["id"]]},
+                scope={"agent": "a"},
+            )
+        )
+    assert journal.buffer("b", scope={"agent": "b"})
+
+
+def test_future_capture_scope_and_shared_source_erasure(tmp_path):
+    journal = Journal(str(tmp_path))
+    journal.put(
+        MemoryRecord(
+            "first", "profile", 1, {"text": "source one", "source_message_ids": ["future"]}, scope={"agent": "a"}
+        )
+    )
+    with pytest.raises(ValueError, match="cross scopes"):
+        journal.capture("b", "UserMessage", {"text": "wrong owner"}, scope={"agent": "b"}, event_id="future")
+    journal.capture("a", "UserMessage", {"text": "shared source assertions"}, scope={"agent": "a"}, event_id="future")
+    journal.put(
+        MemoryRecord(
+            "second", "profile", 1, {"text": "source two", "source_message_ids": ["future"]}, scope={"agent": "a"}
+        )
+    )
+    result = journal.forget("first", reason="withdraw source")
+    assert set(result["deleted"]) == {"first", "second"}
+    assert not journal.buffer("a", scope={"agent": "a"})

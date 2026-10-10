@@ -130,3 +130,13 @@ def test_openai_native_text_part_array_has_human_authorship():
     assert not strip_memory_updates(
         [{"role": "user", "content": [{"type": "input_text", "text": "<memory_update>old</memory_update>"}]}]
     )
+
+
+def test_profile_erasure_removes_all_historical_source_captures(tmp_path):
+    memory = MemoryClient(str(tmp_path), agent_id="a")
+    first = memory.turn("s1", "preferences", text="I prefer privatespecializedformat.")
+    identity = first["profile"]["dynamic"][0]["id"]
+    memory.turn("s2", "preferences", text="I prefer privatespecializedformat.")
+    memory.forget_record(identity, reason="withdraw my preference")
+    assert "privatespecializedformat" not in str(Journal(str(tmp_path)).search(""))
+    assert b"privatespecializedformat" not in (tmp_path / "memory/runtime.sqlite3").read_bytes()
