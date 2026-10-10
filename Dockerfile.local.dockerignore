@@ -1,0 +1,10 @@
+# Build context for Dockerfile.local: the package and its schemas only.
+*
+!pyproject.toml
+!README.md
+!LICENSE
+!commontrace/
+!protocol/
+!deploy/docker/local-entrypoint.sh
+**/__pycache__
+**/*.pyc

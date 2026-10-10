@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 
 from commontrace import paths
@@ -20,7 +21,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     choices = [
         "code", "markdown", "json-logs", "logs", "transcript",
         "fact-triples", "fact_triples", "triples", "multimodal",
-        "pipeline", "modular", "docs",
+        "pipeline", "modular", "docs", "relations",
     ]
     p.add_argument(
         "--type", dest="source_type",
@@ -50,13 +51,40 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument("--contextualize", choices=("none", "heuristic", "model"), default="heuristic",
                    help="docs: prefix chunks with where they sit (model uses COMMONTRACE_LLM_*)")
     p.add_argument("--force", action="store_true", help="docs: re-read files the ledger says are unchanged")
+    p.add_argument("--background", action="store_true",
+                   help="docs: queue the ingestion as a durable job and return its id at once; "
+                        "`commontrace jobs run --watch` processes it and survives crashes")
     p.set_defaults(func=run)
 
+
+
+def _queue_docs(args: argparse.Namespace, root: str) -> int:
+    from commontrace import jobs
+
+    source = os.path.abspath(args.source)
+    if not os.path.exists(source):
+        print(f"[commontrace] ingest source does not exist: {args.source}", file=sys.stderr)
+        return 2
+    payload = {"source": source, "scope": args.scope, "space": args.space,
+               "contextualize": args.contextualize, "force": bool(args.force)}
+    job = jobs.enqueue(root, "ingest", payload, dedupe_key="ingest:" + source)
+    if args.output_json:
+        print(json.dumps(job.to_dict(), indent=2))
+    else:
+        print(f"[commontrace] queued ingest job {job.id} ({job.status}). Run `commontrace jobs run --watch` "
+              f"to process it; `commontrace jobs show {job.id}` for its result.")
+    return 0
 
 
 def _run_docs(args: argparse.Namespace, root: str) -> int:
     from commontrace import llm
     from commontrace.ingest.pipeline import create_document_pipeline
+
+    if getattr(args, "background", False):
+        if args.preview:
+            print("[commontrace] --background and --preview cannot be combined.", file=sys.stderr)
+            return 2
+        return _queue_docs(args, root)
 
     try:
         pipeline = create_document_pipeline(
@@ -84,6 +112,10 @@ def _run_docs(args: argparse.Namespace, root: str) -> int:
                     "screened", "headed", "model_calls"):
             if key in payload:
                 print(f"  {key.replace('_', ' '):18s} {payload[key]}")
+        if payload.get("embeddings"):
+            emb = payload["embeddings"]
+            print(f"  {'embeddings':18s} {emb['embedded']} embedded, {emb['cached']} cached, "
+                  f"{emb['failed']} failed ({emb['embedder']})")
         for problem in payload.get("warnings", []) + payload.get("errors", []):
             print(f"    - {problem}", file=sys.stderr)
     return 1 if payload.get("errors") else 0
@@ -159,11 +191,14 @@ def run(args: argparse.Namespace) -> int:
 
     if source_type == "docs":
         return _run_docs(args, root)
+    if getattr(args, "background", False):
+        print("[commontrace] --background is available for --type docs.", file=sys.stderr)
+        return 2
 
 
     pipeline = IngestionPipeline()
     kwargs: dict = {}
-    if source_type in ("code", "markdown", "multimodal"):
+    if source_type in ("code", "markdown", "multimodal", "relations"):
         kwargs["max_files"] = args.max_files
     if source_type == "json_logs":
         kwargs["service_name"] = args.service

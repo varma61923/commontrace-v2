@@ -17,7 +17,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     sub = p.add_subparsers(dest="subcommand", required=True)
 
     p_list = sub.add_parser("list", help="List facts with optional filters.")
-    p_list.add_argument("--status", default="active", choices=("active", "superseded", "deleted", "all"))
+    p_list.add_argument("--status", default="active", choices=("active", "superseded", "invalidated", "deleted", "all"))
     p_list.add_argument("--category", default="", choices=("", *hierarchical.CATEGORIES))
     p_list.add_argument("--scope", default="", help="Filter by routing scope.")
     p_list.add_argument("--as-of", default="", help="Point-in-time temporal evaluation date.")
@@ -88,6 +88,13 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p_res.add_argument("new_statement", help="Newer replacement fact statement or fact ID.")
     p_res.add_argument("--dest", default=None)
     p_res.set_defaults(func=run_resolve)
+
+    p_inv = sub.add_parser(
+        "invalidate", help="End a fact's validity without a replacement; it stays queryable with --as-of.")
+    p_inv.add_argument("fact_id", help="ID of the fact that stopped being true.")
+    p_inv.add_argument("--at", default=None, help="When it stopped being true (ISO date or time; default now).")
+    p_inv.add_argument("--dest", default=None)
+    p_inv.set_defaults(func=run_invalidate)
 
     p_del = sub.add_parser("delete", help="Soft-delete a fact.")
     p_del.add_argument("fact_id", help="ID of the fact to delete.")
@@ -219,6 +226,18 @@ def run_search(args: argparse.Namespace) -> int:
     print("-" * 75)
     for fact, score in scored:
         print(f"{score:<8.3f} {fact.confidence:<6.2f} {fact.id:<18} {fact.statement}")
+    return 0
+
+
+def run_invalidate(args: argparse.Namespace) -> int:
+    root = paths.resolve_root(args.dest)
+    try:
+        fact = hierarchical.invalidate_fact(root, args.fact_id, at=args.at)
+    except (KeyError, ValueError) as exc:
+        print(f"[commontrace] {exc}", file=sys.stderr)
+        return 1
+    state = "invalidated" if fact.status == "invalidated" else "scheduled to end"
+    print(f"Fact '{fact.id}' {state} at {fact.valid_until}; `fact list --as-of` before then still shows it.")
     return 0
 
 

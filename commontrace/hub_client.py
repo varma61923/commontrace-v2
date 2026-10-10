@@ -199,6 +199,10 @@ class HttpStatusProbe:
 
 async def _open_session(hub_url: str, api_key: str, timeout_seconds: float):
     _validate_hub_url(hub_url)
+    from commontrace import offline
+
+    if offline.enabled() and not offline.is_loopback(hub_url):
+        raise HubConfigurationError("offline mode: Hub sync to a non-local host is disabled (COMMONTRACE_OFFLINE)")
     if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
         raise HubConfigurationError("Hub timeout must be a finite positive number")
     try:

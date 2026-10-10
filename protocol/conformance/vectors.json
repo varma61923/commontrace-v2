@@ -1,4 +1,1102 @@
 {
+ "allocate": [
+  {
+   "digest": "5489a26fd55b034444416f041ab6cab9e85f59bf7f09a136f9a42681fc792959",
+   "held_out": true,
+   "lesson": "unlisted",
+   "occasion": "ep-281552",
+   "rate": 0.5,
+   "schedule": {
+    "basis": {
+     "assignments": 0
+    },
+    "created_at": "2026-03-01T09:00:00+00:00",
+    "default_rate": 0.5,
+    "effective_from": "2026-03-01T09:00:05+00:00",
+    "enabled": true,
+    "policy": {
+     "era_occasions": 250,
+     "explore": 0.5,
+     "monitor": 0.05
+    },
+    "previous": "",
+    "rates": {
+     "memory-0": 0.05,
+     "memory-1": 0.05,
+     "memory-2": 0.25,
+     "memory-3": 0.95
+    },
+    "salt": "exp-1",
+    "version": 0
+   }
+  },
+  {
+   "digest": "c942e032de88fc5a9c6157f70d34750703683170b5c2dc71f5710a98549e89ae",
+   "held_out": false,
+   "lesson": "unlisted",
+   "occasion": "ep-50150",
+   "rate": 0.3,
+   "schedule": {
+    "basis": {
+     "reason": "enabled"
+    },
+    "created_at": "2026-03-02T09:00:00+00:00",
+    "default_rate": 0.3,
+    "effective_from": "2026-03-02T09:00:05+00:00",
+    "enabled": true,
+    "policy": {
+     "era_occasions": 250,
+     "explore": 0.5,
+     "monitor": 0.05
+    },
+    "previous": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+    "rates": {
+     "memory-0": 0.95,
+     "memory-1": 0.5,
+     "memory-2": 0.5
+    },
+    "salt": "exp-1",
+    "version": 1
+   }
+  },
+  {
+   "digest": "6e4b1ce68b37788e80d7781519315c290a40c90044668f97c752dc5b5d65f7eb",
+   "held_out": true,
+   "lesson": "unlisted",
+   "occasion": "ep-494654",
+   "rate": 0.5,
+   "schedule": {
+    "basis": {
+     "assignments": 20
+    },
+    "created_at": "2026-03-03T09:00:00+00:00",
+    "default_rate": 0.5,
+    "effective_from": "2026-03-03T09:00:05+00:00",
+    "enabled": true,
+    "policy": {
+     "era_occasions": 250,
+     "explore": 0.5,
+     "monitor": 0.05
+    },
+    "previous": "d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35",
+    "rates": {},
+    "salt": "ünï",
+    "version": 2
+   }
+  },
+  {
+   "digest": "5e9b8d87af5111ead73111207cb8d01f4d2b06058a746336d6eb7869dde94dfe",
+   "held_out": false,
+   "lesson": "unlisted",
+   "occasion": "ep-883907",
+   "rate": 0.3,
+   "schedule": {
+    "basis": {
+     "reason": "enabled"
+    },
+    "created_at": "2026-03-04T09:00:00+00:00",
+    "default_rate": 0.3,
+    "effective_from": "2026-03-04T09:00:05+00:00",
+    "enabled": true,
+    "policy": {
+     "era_occasions": 250,
+     "explore": 0.5,
+     "monitor": 0.05
+    },
+    "previous": "",
+    "rates": {},
+    "salt": "ünï",
+    "version": 0
+   }
+  },
+  {
+   "digest": "feb34354b98f1094ef9358734b2ee50c307eb756d3972929d8209fb486fbfabc",
+   "held_out": false,
+   "lesson": "unlisted",
+   "occasion": "ep-122776",
+   "rate": 0.5,
+   "schedule": {
+    "basis": {
+     "assignments": 40
+    },
+    "created_at": "2026-03-05T09:00:00+00:00",
+    "default_rate": 0.5,
+    "effective_from": "2026-03-05T09:00:05+00:00",
+    "enabled": true,
+    "policy": {
+     "era_occasions": 250,
+     "explore": 0.5,
+     "monitor": 0.05
+    },
+    "previous": "4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a",
+    "rates": {},
+    "salt": "exp-1",
+    "version": 1
+   }
+  },
+  {
+   "digest": "6f3751c3f8d4382794ef33996e8cffb283be7c7aeb8f7c5f8ef9cc4568e8b739",
+   "held_out": false,
+   "lesson": "memory-0",
+   "occasion": "ep-857114",
+   "rate": 0.05,
+   "schedule": {
+    "basis": {
+     "reason": "enabled"
+    },
+    "created_at": "2026-03-06T09:00:00+00:00",
+    "default_rate": 0.3,
+    "effective_from": "2026-03-06T09:00:05+00:00",
+    "enabled": true,
+    "policy": {
+     "era_occasions": 250,
+     "explore": 0.5,
+     "monitor": 0.05
+    },
+    "previous": "ef2d127de37b942baad06145e54b0c619a1f22327b2ebbcfbec78f5564afe39d",
+    "rates": {
+     "memory-0": 0.05
+    },
+    "salt": "exp-1",
+    "version": 2
+   }
+  },
+  {
+   "digest": "93847ce7ab52fcc2d867e559d31d612ed9688799011c080de1d4cec351e63c79",
+   "held_out": false,
+   "lesson": "unlisted",
+   "occasion": "ep-84350",
+   "rate": 0.5,
+   "schedule": {
+    "basis": {
+     "assignments": 60
+    },
+    "created_at": "2026-03-07T09:00:00+00:00",
+    "default_rate": 0.5,
+    "effective_from": "2026-03-07T09:00:05+00:00",
+    "enabled": true,
+    "policy": {
+     "era_occasions": 250,
+     "explore": 0.5,
+     "monitor": 0.05
+    },
+    "previous": "",
+    "rates": {
+     "memory-0": 0.95
+    },
+    "salt": "pinned",
+    "version": 0
+   }
+  },
+  {
+   "digest": "7ff79f971350677ef00887dde08cc6b7129292c1af20f9232ad9a420f9ca22e0",
+   "held_out": false,
+   "lesson": "unlisted",
+   "occasion": "ep-695734",
+   "rate": 0.5,
+   "schedule": {
+    "basis": {
+     "reason": "enabled"
+    },
+    "created_at": "2026-03-08T09:00:00+00:00",
+    "default_rate": 0.5,
+    "effective_from": "2026-03-08T09:00:05+00:00",
+    "enabled": true,
+    "policy": {
+     "era_occasions": 250,
+     "explore": 0.5,
+     "monitor": 0.05
+    },
+    "previous": "7902699be42c8a8e46fbbb4501726517e86b22c56a189f7625a6da49081b2451",
+    "rates": {
+     "memory-0": 0.05,
+     "memory-1": 0.05,
+     "memory-2": 0.5,
+     "memory-3": 0.25
+    },
+    "salt": "exp-1",
+    "version": 1
+   }
+  },
+  {
+   "digest": "5e5355ef401fd801de3b39ae89505258119e2e9eb289b7e1a1e0c81c5f2aada7",
+   "held_out": false,
+   "lesson": "memory-0",
+   "occasion": "ep-127030",
+   "rate": 0.25,
+   "schedule": {
+    "basis": {
+     "assignments": 80
+    },
+    "created_at": "2026-03-09T09:00:00+00:00",
+    "default_rate": 0.3,
+    "effective_from": "2026-03-09T09:00:05+00:00",
+    "enabled": true,
+    "policy": {
+     "era_occasions": 250,
+     "explore": 0.5,
+     "monitor": 0.05
+    },
+    "previous": "2c624232cdd221771294dfbb310aca000a0df6ac8b66b696d90ef06fdefb64a3",
+    "rates": {
+     "memory-0": 0.25,
+     "memory-1": 0.05,
+     "memory-2": 0.25
+    },
+    "salt": "ünï",
+    "version": 2
+   }
+  },
+  {
+   "digest": "68d88129c6cc93026c45bf4841a4f284b698e79198be5253e24aff5366cea489",
+   "held_out": true,
+   "lesson": "unlisted",
+   "occasion": "ep-695194",
+   "rate": 0.5,
+   "schedule": {
+    "basis": {
+     "reason": "enabled"
+    },
+    "created_at": "2026-03-01T09:00:00+00:00",
+    "default_rate": 0.5,
+    "effective_from": "2026-03-01T09:00:05+00:00",
+    "enabled": true,
+    "policy": {
+     "era_occasions": 250,
+     "explore": 0.5,
+     "monitor": 0.05
+    },
+    "previous": "",
+    "rates": {},
+    "salt": "ünï",
+    "version": 0
+   }
+  },
+  {
+   "digest": "4472923603aeac5167627e21e31e7876d3c9c30d5f15dcda591f8b29cdd2eba4",
+   "held_out": true,
+   "lesson": "unlisted",
+   "occasion": "ep-41158",
+   "rate": 0.3,
+   "schedule": {
+    "basis": {
+     "assignments": 100
+    },
+    "created_at": "2026-03-02T09:00:00+00:00",
+    "default_rate": 0.3,
+    "effective_from": "2026-03-02T09:00:05+00:00",
+    "enabled": true,
+    "policy": {
+     "era_occasions": 250,
+     "explore": 0.5,
+     "monitor": 0.05
+    },
+    "previous": "4a44dc15364204a80fe80e9039455cc1608281820fe2b24f1e5233ade6af1dd5",
+    "rates": {},
+    "salt": "exp-1",
+    "version": 1
+   }
+  },
+  {
+   "digest": "b72f3cacf222671cc45068338ebdd5a6b6e4c3ec1166824dbc05fe5913cd1306",
+   "held_out": false,
+   "lesson": "memory-2",
+   "occasion": "ep-366684",
+   "rate": 0.05,
+   "schedule": {
+    "basis": {
+     "reason": "enabled"
+    },
+    "created_at": "2026-03-03T09:00:00+00:00",
+    "default_rate": 0.5,
+    "effective_from": "2026-03-03T09:00:05+00:00",
+    "enabled": true,
+    "policy": {
+     "era_occasions": 250,
+     "explore": 0.5,
+     "monitor": 0.05
+    },
+    "previous": "4fc82b26aecb47d2868c4efbe3581732a3e7cbcc6c2efb32062c08170a05eeb8",
+    "rates": {
+     "memory-0": 0.05,
+     "memory-1": 0.25,
+     "memory-2": 0.05
+    },
+    "salt": "ünï",
+    "version": 2
+   }
+  },
+  {
+   "digest": "8496ef7fe467a467ae3f5acc8ad6516e5a6226a8482253aa9ca920dd8fc5bbeb",
+   "held_out": false,
+   "lesson": "memory-2",
+   "occasion": "ep-322292",
+   "rate": 0.5,
+   "schedule": {
+    "basis": {
+     "assignments": 120
+    },
+    "created_at": "2026-03-04T09:00:00+00:00",
+    "default_rate": 0.5,
+    "effective_from": "2026-03-04T09:00:05+00:00",
+    "enabled": true,
+    "policy": {
+     "era_occasions": 250,
+     "explore": 0.5,
+     "monitor": 0.05
+    },
+    "previous": "",
+    "rates": {
+     "memory-0": 0.95,
+     "memory-1": 0.5,
+     "memory-2": 0.5
+    },
+    "salt": "ünï",
+    "version": 0
+   }
+  },
+  {
+   "digest": "8481c07bbbf398819ebaf99b190ad5f433885a4e22ad8003ab5f52cc1c9aa788",
+   "held_out": true,
+   "lesson": "memory-0",
+   "occasion": "ep-477331",
+   "rate": 0.95,
+   "schedule": {
+    "basis": {
+     "reason": "enabled"
+    },
+    "created_at": "2026-03-05T09:00:00+00:00",
+    "default_rate": 0.5,
+    "effective_from": "2026-03-05T09:00:05+00:00",
+    "enabled": true,
+    "policy": {
+     "era_occasions": 250,
+     "explore": 0.5,
+     "monitor": 0.05
+    },
+    "previous": "3fdba35f04dc8c462986c992bcf875546257113072a909c162f7e470e581e278",
+    "rates": {
+     "memory-0": 0.95,
+     "memory-1": 0.5
+    },
+    "salt": "pinned",
+    "version": 1
+   }
+  },
+  {
+   "digest": "ca36894f77a3cc320fc68214616ca83f07377d87e061703bed5d639b84a5787a",
+   "held_out": true,
+   "lesson": "memory-2",
+   "occasion": "ep-468760",
+   "rate": 0.5,
+   "schedule": {
+    "basis": {
+     "assignments": 140
+    },
+    "created_at": "2026-03-06T09:00:00+00:00",
+    "default_rate": 0.3,
+    "effective_from": "2026-03-06T09:00:05+00:00",
+    "enabled": true,
+    "policy": {
+     "era_occasions": 250,
+     "explore": 0.5,
+     "monitor": 0.05
+    },
+    "previous": "8527a891e224136950ff32ca212b45bc93f69fbb801c3b1ebedac52775f99e61",
+    "rates": {
+     "memory-0": 0.95,
+     "memory-1": 0.5,
+     "memory-2": 0.5
+    },
+    "salt": "ünï",
+    "version": 2
+   }
+  },
+  {
+   "digest": "c4b40ce668c19b70bfd57c6e187361a96f77f7956b4ee862471bdd155e4d4837",
+   "held_out": false,
+   "lesson": "unlisted",
+   "occasion": "ep-809384",
+   "rate": 0.3,
+   "schedule": {
+    "basis": {
+     "reason": "enabled"
+    },
+    "created_at": "2026-03-07T09:00:00+00:00",
+    "default_rate": 0.3,
+    "effective_from": "2026-03-07T09:00:05+00:00",
+    "enabled": true,
+    "policy": {
+     "era_occasions": 250,
+     "explore": 0.5,
+     "monitor": 0.05
+    },
+    "previous": "",
+    "rates": {},
+    "salt": "ünï",
+    "version": 0
+   }
+  },
+  {
+   "digest": "e1cac751b227186c8505c1fcb66f5e95c544065016a5225677f4b4ecb41a3061",
+   "held_out": true,
+   "lesson": "unlisted",
+   "occasion": "ep-940740",
+   "rate": 0.5,
+   "schedule": {
+    "basis": {
+     "assignments": 160
+    },
+    "created_at": "2026-03-08T09:00:00+00:00",
+    "default_rate": 0.5,
+    "effective_from": "2026-03-08T09:00:05+00:00",
+    "enabled": true,
+    "policy": {
+     "era_occasions": 250,
+     "explore": 0.5,
+     "monitor": 0.05
+    },
+    "previous": "b17ef6d19c7a5b1ee83b907c595526dcb1eb06db8227d650d5dda0a9f4ce8cd9",
+    "rates": {},
+    "salt": "exp-1",
+    "version": 1
+   }
+  },
+  {
+   "digest": "5acc76220988749f8d450b803f4bb92f1e869be4dd09b97439508de8187badba",
+   "held_out": false,
+   "lesson": "memory-2",
+   "occasion": "ep-654988",
+   "rate": 0.5,
+   "schedule": {
+    "basis": {
+     "reason": "enabled"
+    },
+    "created_at": "2026-03-09T09:00:00+00:00",
+    "default_rate": 0.3,
+    "effective_from": "2026-03-09T09:00:05+00:00",
+    "enabled": true,
+    "policy": {
+     "era_occasions": 250,
+     "explore": 0.5,
+     "monitor": 0.05
+    },
+    "previous": "4523540f1504cd17100c4835e85b7eefd49911580f8efff0599a8f283be6b9e3",
+    "rates": {
+     "memory-0": 0.5,
+     "memory-1": 0.25,
+     "memory-2": 0.5,
+     "memory-3": 0.25
+    },
+    "salt": "pinned",
+    "version": 2
+   }
+  },
+  {
+   "digest": "a0fa4f7508f2771deb9339c1f511c45e9f768ef1527e727f180a92818b4b0e6f",
+   "held_out": true,
+   "lesson": "unlisted",
+   "occasion": "ep-367321",
+   "rate": 0.5,
+   "schedule": {
+    "basis": {
+     "assignments": 180
+    },
+    "created_at": "2026-03-01T09:00:00+00:00",
+    "default_rate": 0.5,
+    "effective_from": "2026-03-01T09:00:05+00:00",
+    "enabled": true,
+    "policy": {
+     "era_occasions": 250,
+     "explore": 0.5,
+     "monitor": 0.05
+    },
+    "previous": "",
+    "rates": {
+     "memory-0": 0.25
+    },
+    "salt": "pinned",
+    "version": 0
+   }
+  },
+  {
+   "digest": "3e29329a9e76b9a24613530b1b9bce592344759127b06d18f9e2e78dc5e91dce",
+   "held_out": true,
+   "lesson": "unlisted",
+   "occasion": "ep-486454",
+   "rate": 0.5,
+   "schedule": {
+    "basis": {
+     "reason": "enabled"
+    },
+    "created_at": "2026-03-02T09:00:00+00:00",
+    "default_rate": 0.5,
+    "effective_from": "2026-03-02T09:00:05+00:00",
+    "enabled": true,
+    "policy": {
+     "era_occasions": 250,
+     "explore": 0.5,
+     "monitor": 0.05
+    },
+    "previous": "9400f1b21cb527d7fa3d3eabba93557a18ebe7a2ca4e471cfe5e4c5b4ca7f767",
+    "rates": {
+     "memory-0": 0.95,
+     "memory-1": 0.25,
+     "memory-2": 0.95,
+     "memory-3": 0.05
+    },
+    "salt": "exp-1",
+    "version": 1
+   }
+  },
+  {
+   "digest": "978a9040f7020f0c0883e2221bf068b96a3d2ca19a2bafad03385371ad7405bb",
+   "held_out": true,
+   "lesson": "memory-0",
+   "occasion": "ep-46580",
+   "rate": 0.95,
+   "schedule": {
+    "basis": {
+     "assignments": 200
+    },
+    "created_at": "2026-03-03T09:00:00+00:00",
+    "default_rate": 0.5,
+    "effective_from": "2026-03-03T09:00:05+00:00",
+    "enabled": true,
+    "policy": {
+     "era_occasions": 250,
+     "explore": 0.5,
+     "monitor": 0.05
+    },
+    "previous": "f5ca38f748a1d6eaf726b8a42fb575c3c71f1864a8143301782de13da2d9202b",
+    "rates": {
+     "memory-0": 0.95,
+     "memory-1": 0.95
+    },
+    "salt": "exp-1",
+    "version": 2
+   }
+  },
+  {
+   "digest": "60be16b28559a9667afadb447d966408f300b1af9941c57b979bc02603a789e8",
+   "held_out": true,
+   "lesson": "unlisted",
+   "occasion": "ep-202180",
+   "rate": 0.5,
+   "schedule": {
+    "basis": {
+     "reason": "enabled"
+    },
+    "created_at": "2026-03-04T09:00:00+00:00",
+    "default_rate": 0.5,
+    "effective_from": "2026-03-04T09:00:05+00:00",
+    "enabled": true,
+    "policy": {
+     "era_occasions": 250,
+     "explore": 0.5,
+     "monitor": 0.05
+    },
+    "previous": "",
+    "rates": {},
+    "salt": "exp-1",
+    "version": 0
+   }
+  },
+  {
+   "digest": "9fda68e1f323626e9fbf3b8445aa7a712dadd01eab8cc60ee91416f1606003c1",
+   "held_out": false,
+   "lesson": "unlisted",
+   "occasion": "ep-824949",
+   "rate": 0.3,
+   "schedule": {
+    "basis": {
+     "assignments": 220
+    },
+    "created_at": "2026-03-05T09:00:00+00:00",
+    "default_rate": 0.3,
+    "effective_from": "2026-03-05T09:00:05+00:00",
+    "enabled": true,
+    "policy": {
+     "era_occasions": 250,
+     "explore": 0.5,
+     "monitor": 0.05
+    },
+    "previous": "785f3ec7eb32f30b90cd0fcf3657d388b5ff4297f2f9716ff66e9b69c05ddd09",
+    "rates": {},
+    "salt": "exp-1",
+    "version": 1
+   }
+  },
+  {
+   "digest": "4b5d209ff7797277e4052a58db5487d31b635c442d0c9aa827f42a1d9d12ffac",
+   "held_out": true,
+   "lesson": "memory-0",
+   "occasion": "ep-730777",
+   "rate": 0.95,
+   "schedule": {
+    "basis": {
+     "reason": "enabled"
+    },
+    "created_at": "2026-03-06T09:00:00+00:00",
+    "default_rate": 0.3,
+    "effective_from": "2026-03-06T09:00:05+00:00",
+    "enabled": true,
+    "policy": {
+     "era_occasions": 250,
+     "explore": 0.5,
+     "monitor": 0.05
+    },
+    "previous": "535fa30d7e25dd8a49f1536779734ec8286108d115da5045d77f3b4185d8f790",
+    "rates": {
+     "memory-0": 0.95,
+     "memory-1": 0.25
+    },
+    "salt": "ünï",
+    "version": 2
+   }
+  },
+  {
+   "digest": "383719df0b2cfe09a5a33bedf35bee380c68dd448788352a0a0ddf2c89e49c11",
+   "held_out": false,
+   "lesson": "unlisted",
+   "occasion": "ep-378323",
+   "rate": 0.5,
+   "schedule": {
+    "basis": {
+     "assignments": 240
+    },
+    "created_at": "2026-03-07T09:00:00+00:00",
+    "default_rate": 0.5,
+    "effective_from": "2026-03-07T09:00:05+00:00",
+    "enabled": true,
+    "policy": {
+     "era_occasions": 250,
+     "explore": 0.5,
+     "monitor": 0.05
+    },
+    "previous": "",
+    "rates": {
+     "memory-0": 0.25
+    },
+    "salt": "exp-1",
+    "version": 0
+   }
+  },
+  {
+   "digest": "bde14feca4744e592a2bc09ecfd581eb72d835cc77e5b06fb74b7c43a04f73d4",
+   "held_out": true,
+   "lesson": "unlisted",
+   "occasion": "ep-640991",
+   "rate": 0.5,
+   "schedule": {
+    "basis": {
+     "reason": "enabled"
+    },
+    "created_at": "2026-03-08T09:00:00+00:00",
+    "default_rate": 0.5,
+    "effective_from": "2026-03-08T09:00:05+00:00",
+    "enabled": true,
+    "policy": {
+     "era_occasions": 250,
+     "explore": 0.5,
+     "monitor": 0.05
+    },
+    "previous": "b7a56873cd771f2c446d369b649430b65a756ba278ff97ec81bb6f55b2e73569",
+    "rates": {},
+    "salt": "ünï",
+    "version": 1
+   }
+  },
+  {
+   "digest": "8614c39d6339fcdd1925dc1dcc168ad5fdea94c298783270fd3841279beea7d0",
+   "held_out": true,
+   "lesson": "unlisted",
+   "occasion": "ep-976252",
+   "rate": 0.5,
+   "schedule": {
+    "basis": {
+     "assignments": 260
+    },
+    "created_at": "2026-03-09T09:00:00+00:00",
+    "default_rate": 0.5,
+    "effective_from": "2026-03-09T09:00:05+00:00",
+    "enabled": true,
+    "policy": {
+     "era_occasions": 250,
+     "explore": 0.5,
+     "monitor": 0.05
+    },
+    "previous": "5f9c4ab08cac7457e9111a30e4664920607ea2c115a1433d7be98e97e64244ca",
+    "rates": {
+     "memory-0": 0.95,
+     "memory-1": 0.5
+    },
+    "salt": "ünï",
+    "version": 2
+   }
+  },
+  {
+   "digest": "12c9b8e007391a71da8de06d5ae4a11c58109b5548f61027128cc2f8b44f3c41",
+   "held_out": false,
+   "lesson": "memory-1",
+   "occasion": "ep-354901",
+   "rate": 0.05,
+   "schedule": {
+    "basis": {
+     "reason": "enabled"
+    },
+    "created_at": "2026-03-01T09:00:00+00:00",
+    "default_rate": 0.3,
+    "effective_from": "2026-03-01T09:00:05+00:00",
+    "enabled": true,
+    "policy": {
+     "era_occasions": 250,
+     "explore": 0.5,
+     "monitor": 0.05
+    },
+    "previous": "",
+    "rates": {
+     "memory-0": 0.95,
+     "memory-1": 0.05
+    },
+    "salt": "ünï",
+    "version": 0
+   }
+  },
+  {
+   "digest": "1fd347fab265b563a87fe92e372110df04b30f2940d0896dd1760b84c2557c31",
+   "held_out": true,
+   "lesson": "unlisted",
+   "occasion": "ep-758213",
+   "rate": 0.5,
+   "schedule": {
+    "basis": {
+     "assignments": 280
+    },
+    "created_at": "2026-03-02T09:00:00+00:00",
+    "default_rate": 0.5,
+    "effective_from": "2026-03-02T09:00:05+00:00",
+    "enabled": true,
+    "policy": {
+     "era_occasions": 250,
+     "explore": 0.5,
+     "monitor": 0.05
+    },
+    "previous": "59e19706d51d39f66711c2653cd7eb1291c94d9b55eb14bda74ce4dc636d015a",
+    "rates": {},
+    "salt": "exp-1",
+    "version": 1
+   }
+  },
+  {
+   "digest": "4d0604c6c8c5b7cf591e491ab6116404f3be5b7fc151aa89a4dc1d12801111a4",
+   "held_out": true,
+   "lesson": "unlisted",
+   "occasion": "ep-273722",
+   "rate": 0.5,
+   "schedule": {
+    "basis": {
+     "reason": "enabled"
+    },
+    "created_at": "2026-03-03T09:00:00+00:00",
+    "default_rate": 0.5,
+    "effective_from": "2026-03-03T09:00:05+00:00",
+    "enabled": true,
+    "policy": {
+     "era_occasions": 250,
+     "explore": 0.5,
+     "monitor": 0.05
+    },
+    "previous": "35135aaa6cc23891b40cb3f378c53a17a1127210ce60e125ccf03efcfdaec458",
+    "rates": {},
+    "salt": "pinned",
+    "version": 2
+   }
+  },
+  {
+   "digest": "c7869c5c37dc6953aabcbe03fee900250f02aa4e6c72aa51fb83ba04d8078c9e",
+   "held_out": false,
+   "lesson": "memory-0",
+   "occasion": "ep-165421",
+   "rate": 0.25,
+   "schedule": {
+    "basis": {
+     "assignments": 300
+    },
+    "created_at": "2026-03-04T09:00:00+00:00",
+    "default_rate": 0.3,
+    "effective_from": "2026-03-04T09:00:05+00:00",
+    "enabled": true,
+    "policy": {
+     "era_occasions": 250,
+     "explore": 0.5,
+     "monitor": 0.05
+    },
+    "previous": "",
+    "rates": {
+     "memory-0": 0.25
+    },
+    "salt": "ünï",
+    "version": 0
+   }
+  },
+  {
+   "digest": "13e18be3a36c03ee962602ab67fd23d330dfd3b18f90bda4a0bad5ebf269ad0e",
+   "held_out": false,
+   "lesson": "memory-2",
+   "occasion": "ep-755536",
+   "rate": 0.95,
+   "schedule": {
+    "basis": {
+     "reason": "enabled"
+    },
+    "created_at": "2026-03-05T09:00:00+00:00",
+    "default_rate": 0.5,
+    "effective_from": "2026-03-05T09:00:05+00:00",
+    "enabled": true,
+    "policy": {
+     "era_occasions": 250,
+     "explore": 0.5,
+     "monitor": 0.05
+    },
+    "previous": "eb1e33e8a81b697b75855af6bfcdbcbf7cbbde9f94962ceaec1ed8af21f5a50f",
+    "rates": {
+     "memory-0": 0.25,
+     "memory-1": 0.25,
+     "memory-2": 0.95
+    },
+    "salt": "exp-1",
+    "version": 1
+   }
+  },
+  {
+   "digest": "e52eb87698ad1a446004a155813df04618dd5dc30060cdfeceb6d3011cf78b0f",
+   "held_out": false,
+   "lesson": "memory-2",
+   "occasion": "ep-522835",
+   "rate": 0.05,
+   "schedule": {
+    "basis": {
+     "assignments": 320
+    },
+    "created_at": "2026-03-06T09:00:00+00:00",
+    "default_rate": 0.3,
+    "effective_from": "2026-03-06T09:00:05+00:00",
+    "enabled": true,
+    "policy": {
+     "era_occasions": 250,
+     "explore": 0.5,
+     "monitor": 0.05
+    },
+    "previous": "e29c9c180c6279b0b02abd6a1801c7c04082cf486ec027aa13515e4f3884bb6b",
+    "rates": {
+     "memory-0": 0.95,
+     "memory-1": 0.5,
+     "memory-2": 0.05
+    },
+    "salt": "exp-1",
+    "version": 2
+   }
+  },
+  {
+   "digest": "858e4be413345d1b1d0cc7e6b8ac337c1eed41be511e7ae76df121ff17a05b65",
+   "held_out": false,
+   "lesson": "memory-0",
+   "occasion": "ep-406704",
+   "rate": 0.5,
+   "schedule": {
+    "basis": {
+     "reason": "enabled"
+    },
+    "created_at": "2026-03-07T09:00:00+00:00",
+    "default_rate": 0.3,
+    "effective_from": "2026-03-07T09:00:05+00:00",
+    "enabled": true,
+    "policy": {
+     "era_occasions": 250,
+     "explore": 0.5,
+     "monitor": 0.05
+    },
+    "previous": "",
+    "rates": {
+     "memory-0": 0.5,
+     "memory-1": 0.95,
+     "memory-2": 0.05
+    },
+    "salt": "pinned",
+    "version": 0
+   }
+  },
+  {
+   "digest": "7f6a0c001303ed665c82909f423def423d516743e0fcf97b8759f9b39c553b5b",
+   "held_out": false,
+   "lesson": "unlisted",
+   "occasion": "ep-92598",
+   "rate": 0.3,
+   "schedule": {
+    "basis": {
+     "assignments": 340
+    },
+    "created_at": "2026-03-08T09:00:00+00:00",
+    "default_rate": 0.3,
+    "effective_from": "2026-03-08T09:00:05+00:00",
+    "enabled": true,
+    "policy": {
+     "era_occasions": 250,
+     "explore": 0.5,
+     "monitor": 0.05
+    },
+    "previous": "86e50149658661312a9e0b35558d84f6c6d3da797f552a9657fe0558ca40cdef",
+    "rates": {
+     "memory-0": 0.05,
+     "memory-1": 0.25
+    },
+    "salt": "ünï",
+    "version": 1
+   }
+  },
+  {
+   "digest": "dccb709e7973906cfc8c3d2b6a0e7d2b8faf972d9b3627055ea6bcb7b80f065b",
+   "held_out": false,
+   "lesson": "memory-0",
+   "occasion": "ep-205242",
+   "rate": 0.05,
+   "schedule": {
+    "basis": {
+     "reason": "enabled"
+    },
+    "created_at": "2026-03-09T09:00:00+00:00",
+    "default_rate": 0.5,
+    "effective_from": "2026-03-09T09:00:05+00:00",
+    "enabled": true,
+    "policy": {
+     "era_occasions": 250,
+     "explore": 0.5,
+     "monitor": 0.05
+    },
+    "previous": "9f14025af0065b30e47e23ebb3b491d39ae8ed17d33739e5ff3827ffb3634953",
+    "rates": {
+     "memory-0": 0.05
+    },
+    "salt": "pinned",
+    "version": 2
+   }
+  },
+  {
+   "digest": "ced808a0acf522f430addb0b97d39f36fb19c440f2cb551ed325a2c9a0bf32b1",
+   "held_out": false,
+   "lesson": "memory-0",
+   "occasion": "ep-112089",
+   "rate": 0.05,
+   "schedule": {
+    "basis": {
+     "assignments": 360
+    },
+    "created_at": "2026-03-01T09:00:00+00:00",
+    "default_rate": 0.3,
+    "effective_from": "2026-03-01T09:00:05+00:00",
+    "enabled": true,
+    "policy": {
+     "era_occasions": 250,
+     "explore": 0.5,
+     "monitor": 0.05
+    },
+    "previous": "",
+    "rates": {
+     "memory-0": 0.05
+    },
+    "salt": "pinned",
+    "version": 0
+   }
+  },
+  {
+   "digest": "c7fe08b1a291f67169553390f36ba854226e341d9e1f7434bfc53e29b2085ec1",
+   "held_out": true,
+   "lesson": "memory-1",
+   "occasion": "ep-85712",
+   "rate": 0.5,
+   "schedule": {
+    "basis": {
+     "reason": "enabled"
+    },
+    "created_at": "2026-03-02T09:00:00+00:00",
+    "default_rate": 0.3,
+    "effective_from": "2026-03-02T09:00:05+00:00",
+    "enabled": true,
+    "policy": {
+     "era_occasions": 250,
+     "explore": 0.5,
+     "monitor": 0.05
+    },
+    "previous": "7a61b53701befdae0eeeffaecc73f14e20b537bb0f8b91ad7c2936dc63562b25",
+    "rates": {
+     "memory-0": 0.95,
+     "memory-1": 0.5
+    },
+    "salt": "pinned",
+    "version": 1
+   }
+  },
+  {
+   "digest": "5940baff804bc8b366481591888bc96d0237fecdeebd92526e33a1b4ca2ce652",
+   "held_out": true,
+   "lesson": "memory-1",
+   "occasion": "ep-785838",
+   "rate": 0.25,
+   "schedule": {
+    "basis": {
+     "assignments": 380
+    },
+    "created_at": "2026-03-03T09:00:00+00:00",
+    "default_rate": 0.3,
+    "effective_from": "2026-03-03T09:00:05+00:00",
+    "enabled": true,
+    "policy": {
+     "era_occasions": 250,
+     "explore": 0.5,
+     "monitor": 0.05
+    },
+    "previous": "aea92132c4cbeb263e6ac2bf6c183b5d81737f179f21efdc5863739672f0f470",
+    "rates": {
+     "memory-0": 0.5,
+     "memory-1": 0.25,
+     "memory-2": 0.95,
+     "memory-3": 0.05
+    },
+    "salt": "pinned",
+    "version": 2
+   }
+  },
+  {
+   "digest": "2f6066eba65bbacc072181a92ed0c00a9926f3ad3100cdb6f5c14cef894288fb",
+   "held_out": true,
+   "lesson": "unlisted",
+   "occasion": "ep-895428",
+   "rate": 0.5,
+   "schedule": {
+    "basis": {
+     "reason": "enabled"
+    },
+    "created_at": "2026-03-04T09:00:00+00:00",
+    "default_rate": 0.5,
+    "effective_from": "2026-03-04T09:00:05+00:00",
+    "enabled": true,
+    "policy": {
+     "era_occasions": 250,
+     "explore": 0.5,
+     "monitor": 0.05
+    },
+    "previous": "",
+    "rates": {
+     "memory-0": 0.05,
+     "memory-1": 0.25,
+     "memory-2": 0.95
+    },
+    "salt": "exp-1",
+    "version": 0
+   }
+  }
+ ],
  "assign": [
   {
    "held_out": false,

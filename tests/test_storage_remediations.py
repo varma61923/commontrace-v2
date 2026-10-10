@@ -331,6 +331,7 @@ class TestAtomicIndexGeneration:
             0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "commontrace", "reference")
         )
         import build_index
+        monkeypatch.setattr(build_index, "SentenceTransformer", _FakeEncoder)
 
         lessons_dir = tmp_path / "memory" / "lessons"
         attention_dir = tmp_path / "memory" / "attention"

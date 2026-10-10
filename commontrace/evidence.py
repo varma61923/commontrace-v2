@@ -148,6 +148,17 @@ def attach(root: str, result: dict, *lists: str) -> None:
             lesson["evidence"] = evidence["by_lesson"].get(lesson.get("slug"), {"verdict": "NOT_MEASURED"})
 
 
+def graduated(root: str) -> dict[str, dict]:
+    """Memories the anytime-valid verdict already shows HELPING; empty when unreadable."""
+    try:
+        evidence = for_lessons(root)
+    except Exception:  # noqa: BLE001 - same contract as withdrawn(): no evidence, no action
+        return {}
+    if not evidence.get("available"):
+        return {}
+    return harm.helps(evidence.get("by_lesson", {}))
+
+
 def withdrawn(root: str, policy: str) -> dict[str, dict]:
     if policy != harm.POLICY_WITHDRAW:
         return {}

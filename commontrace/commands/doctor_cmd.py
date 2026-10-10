@@ -38,6 +38,11 @@ TROUBLESHOOTING: dict[str, tuple[str, str]] = {
                               "cannot be exported.",
                               "`python3 -m pip install opentelemetry-sdk opentelemetry-exporter-otlp-proto-http`, "
                               "or unset COMMONTRACE_OTEL."),
+    "OAuth resource server": ("Remote clients may authenticate with JWT access tokens from your authorization server "
+                              "(COMMONTRACE_OAUTH_ISSUER / _AUDIENCE / _JWKS_URL or _JWKS_FILE).",
+                              "Set both issuer and audience and exactly one JWKS source (https, or a file), and "
+                              "`python3 -m pip install 'commontrace[security]'`; unset COMMONTRACE_OAUTH_ISSUER "
+                              "to turn OAuth off."),
     "git on PATH": ("Some commands read the repository's history.", "Install git, or ignore this if you do not use "
                                                                     "those commands."),
     "memory/ store present": ("Every command reads a store: a `memory/` directory.",
@@ -296,6 +301,20 @@ def run(args: argparse.Namespace) -> int:
     else:
         print("  [info] telemetry: metrics in-process (gateway /v1/metrics); set COMMONTRACE_OTEL=1 or "
               "OTEL_EXPORTER_OTLP_ENDPOINT to export traces")
+    from commontrace import oauth, offline
+
+    try:
+        oauth_config = oauth.load_config(root)
+    except Exception as exc:  # noqa: BLE001 - doctor reports, it never raises
+        _check("OAuth resource server", False, f"configuration error: {exc}")
+    else:
+        if oauth_config is not None:
+            _check("OAuth resource server", True,
+                   f"issuer {oauth_config.issuer}, audience {oauth_config.audience}, "
+                   f"metadata at {oauth.metadata_url(oauth_config)}")
+    if offline.enabled():
+        print("  [info] offline mode: non-loopback network calls are refused and models load from the "
+              "local cache only (COMMONTRACE_OFFLINE)")
 
     has_mem = os.path.isdir(paths.memory_dir(root))
     _check("memory/ store present", has_mem,

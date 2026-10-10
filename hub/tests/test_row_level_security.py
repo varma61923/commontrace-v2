@@ -10,6 +10,12 @@ from hub import auth
 from hub.alembic.versions.a7c3e91d4b20_outcome_connectors import (  # noqa: E402
     _NEW_TABLES as _CONNECTOR_TABLES,
 )
+from hub.alembic.versions.c1d4e8f2a9b6_traces_shared_read_only import (  # noqa: E402
+    OWN_POLICY as TRACES_OWN_POLICY,
+)
+from hub.alembic.versions.c1d4e8f2a9b6_traces_shared_read_only import (  # noqa: E402
+    SHARED_READ_POLICY as TRACES_SHARED_READ_POLICY,
+)
 from hub.alembic.versions.d5c8b3a91e77_row_level_security import (  # noqa: E402
     _OWN_ROWS,
     _SCOPED_TABLES,
@@ -36,17 +42,15 @@ async def rls(session_factory):
             ))
         await session.execute(text("ALTER TABLE traces ENABLE ROW LEVEL SECURITY"))
         await session.execute(text("ALTER TABLE traces FORCE ROW LEVEL SECURITY"))
-        await session.execute(text(
-            f"CREATE POLICY org_isolation ON traces AS PERMISSIVE FOR ALL "
-            f"USING ({_UNSCOPED} OR {_OWN_ROWS} OR shared_with_commons) "
-            f"WITH CHECK ({_UNSCOPED} OR {_OWN_ROWS})"
-        ))
+        await session.execute(text(TRACES_OWN_POLICY))
+        await session.execute(text(TRACES_SHARED_READ_POLICY))
     try:
         yield
     finally:
         async with session_scope(session_factory) as session:
             for table in (*_SCOPED_TABLES, *_CONNECTOR_TABLES, "traces"):
                 await session.execute(text(f"DROP POLICY IF EXISTS org_isolation ON {table}"))
+                await session.execute(text(f"DROP POLICY IF EXISTS commons_read ON {table}"))
                 await session.execute(text(f"ALTER TABLE {table} NO FORCE ROW LEVEL SECURITY"))
                 await session.execute(text(f"ALTER TABLE {table} DISABLE ROW LEVEL SECURITY"))
 
@@ -272,6 +276,27 @@ class TestTheKnowledgeBaseStillWorks:
             assert "row-level security" in str(exc).lower()
         finally:
             auth.current_org_id.reset(token)
+
+
+    async def test_shared_does_not_grant_delete_either(
+        self, rls, enforcing_factory, two_orgs
+    ):
+        a_id, b_id, pattern = two_orgs
+        async with session_scope(enforcing_factory) as session:
+            await session.execute(
+                text("UPDATE traces SET shared_with_commons = true WHERE org_id = :o"),
+                {"o": b_id},
+            )
+        token = auth.current_org_id.set(a_id)
+        try:
+            async with session_scope(enforcing_factory) as session:
+                result = await session.execute(
+                    text("DELETE FROM traces WHERE org_id = :o"), {"o": b_id},
+                )
+                assert result.rowcount == 0, "an org deleted another org's shared trace"
+        finally:
+            auth.current_org_id.reset(token)
+        assert len(await _titles(enforcing_factory, pattern)) == 2
 
 
 class TestTheHubNoticesWhenRlsCannotBite:

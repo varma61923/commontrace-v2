@@ -396,7 +396,7 @@ class TestRetry:
         class FakeResp:
             def __enter__(self): return self
             def __exit__(self, *a): return False
-            def read(self): return json_mod.dumps({"content": []}).encode()
+            def read(self, _limit=-1): return json_mod.dumps({"content": []}).encode()
 
         def fake_urlopen(request, timeout=None):
             attempts["n"] += 1
@@ -404,7 +404,8 @@ class TestRetry:
                 raise urllib.error.HTTPError(request.full_url, 503, "down", {}, io.BytesIO(b"busy"))
             return FakeResp()
 
-        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(urllib.request, "build_opener", lambda *_args: type(
+            "Opener", (), {"open": staticmethod(fake_urlopen)})())
         monkeypatch.setattr("time.sleep", lambda s: None)
         out = llm._post_json("https://api.example.com/v1/x", {}, {"a": 1})
         assert out == {"content": []} and attempts["n"] == 3
@@ -422,7 +423,8 @@ class TestRetry:
             attempts["n"] += 1
             raise urllib.error.HTTPError(request.full_url, 400, "bad", {}, io.BytesIO(b"nope"))
 
-        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(urllib.request, "build_opener", lambda *_args: type(
+            "Opener", (), {"open": staticmethod(fake_urlopen)})())
         with pytest.raises(llm.LLMUnavailable, match="HTTP 400"):
             llm._post_json("https://api.example.com/v1/x", {}, {"a": 1})
         assert attempts["n"] == 1

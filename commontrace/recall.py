@@ -13,10 +13,20 @@ forgotten/deleted sources and integrity checks still apply to historical recall;
 time travel never restores trust in revoked content.
 
 Budgets can be set per agent in `memory/budgets.json`:
-    {"default": 1500, "agents": {"reviewer": {"budget": 800, "weights": {"lessons": 2}}}}"""
+    {"default": 1500, "agents": {"reviewer": {"budget": 800, "weights": {"lessons": 2}}}}
+
+A second-stage reranker (a local cross-encoder, Cohere, Voyage, Jina or an LLM;
+see `commontrace.reranking`) can rerank the head of the fused ranking before
+diversity and packing, per call or in the same file, globally or per agent:
+    {"rerank": {"reranker": "cohere:rerank-v3.5", "depth": 30, "blend": 0.5},
+     "adaptive_budget": true, "max_budget": 6000}
+`adaptive_budget` sizes the budget by the question's shape and grows it while
+retrieved evidence stays weak. Both are off unless asked for; every result
+says what ran in ``explain``, with a lexical completeness grade."""
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from dataclasses import dataclass, field
@@ -29,8 +39,14 @@ DEFAULT_WEIGHTS = {"lessons": 1.0, "facts": 0.8, "graph": 0.6, "conversations": 
 DEFAULT_BUDGET = 1500
 FLOOR_SHARE = 0.12
 RRF_K = 60
+DENSE_RELATIVE_FLOOR = 0.5  # dense fact hits below half the best cosine are dropped
+DENSE_ONLY_SCALE = 0.5  # a fact found only by embedding scores half its cosine (see _hybrid)
 MMR_LAMBDA = 0.75
 MIN_CUT_FRACTION = 0.4
+ADAPTIVE_CAP = 12_000  # the default ceiling an adaptive budget may grow to
+LOW_CONFIDENCE = 0.35  # below this, an adaptive budget grows while candidates remain unpacked
+MAX_GROWTH_STEPS = 2  # each step doubles the budget, up to the cap
+MAX_PER_CHANNEL = 64
 _WORDS = re.compile(r"[a-z0-9]+")
 _SENTENCE = re.compile(r"(?<=[.!?])\s+")
 
@@ -97,6 +113,7 @@ class Result:
     errors: dict = field(default_factory=dict)
     assessment: RetrievalAssessment = field(default_factory=RetrievalAssessment)
     fact_scorer: str = "overlap-v1"
+    explain: dict = field(default_factory=dict)
 
     @property
     def tokens(self) -> int:
@@ -119,7 +136,7 @@ class Result:
         return {"question": self.question, "as_of": self.as_of, "budget": self.budget, "tokens": self.tokens,
                 "items": [i.to_dict() for i in self.items], "considered": self.considered,
                 "errors": self.errors, "assessment": self.assessment.to_dict(), "context": self.context,
-                "fact_scorer": self.fact_scorer}
+                "fact_scorer": self.fact_scorer, "explain": self.explain}
 
 
 # --- budgets ---------------------------------------------------------------------------
@@ -143,6 +160,38 @@ def resolve_budget(root: str, agent: str | None, budget: int | None,
     total = budget or spec.get("budget") or cfg.get("default") or DEFAULT_BUDGET
     merged = {**DEFAULT_WEIGHTS, **(cfg.get("weights") or {}), **(spec.get("weights") or {}), **(weights or {})}
     return max(50, min(int(total), 200_000)), {k: float(v) for k, v in merged.items() if k in CHANNELS}
+
+
+def retrieval_settings(root: str, agent: str | None = None) -> dict:
+    """Reranker and adaptive-budget settings from `memory/budgets.json`, agent over global.
+
+    Returns ``{"reranker", "depth", "blend", "adaptive_budget", "max_budget"}``;
+    ``"rerank"`` in the file may be a reranker name or an object with those keys.
+    """
+    from commontrace import reranking
+
+    cfg = budget_config(root)
+    spec = ((cfg.get("agents") or {}).get(agent) or {}) if agent else {}
+    out = {"reranker": None, "depth": reranking.DEFAULT_DEPTH, "blend": reranking.DEFAULT_BLEND,
+           "adaptive_budget": False, "max_budget": None}
+    for layer in (cfg, spec):
+        if not isinstance(layer, dict):
+            continue
+        rerank = layer.get("rerank")
+        if isinstance(rerank, str):
+            rerank = {"reranker": rerank}
+        if isinstance(rerank, dict):
+            out.update({key: rerank[key] for key in ("reranker", "depth", "blend") if key in rerank})
+        out.update({key: layer[key] for key in ("adaptive_budget", "max_budget") if key in layer})
+    if not isinstance(out["adaptive_budget"], bool):
+        raise ValueError("budgets.json: adaptive_budget must be true or false")
+    if out["max_budget"] is not None and (isinstance(out["max_budget"], bool)
+                                          or not isinstance(out["max_budget"], int)):
+        raise ValueError("budgets.json: max_budget must be an integer")
+    if out["reranker"] is not None and not isinstance(out["reranker"], str):
+        raise ValueError("budgets.json: rerank.reranker must be a reranker name")
+    reranking.check_options(out["depth"], out["blend"])
+    return out
 
 
 # --- channels --------------------------------------------------------------------------
@@ -188,6 +237,46 @@ def _lessons(root: str, question: str, as_of: str | None, k: int, scope: str = "
     return out
 
 
+def _dense_facts(root: str, question: str, as_of: str | None, k: int, scope: str) -> dict:
+    """{fact id: (fact, cosine)} for the `k` facts nearest the question, or {} without a fact embedder.
+
+    Uses the embedder `commontrace.fact_embeddings` is configured with
+    (``COMMONTRACE_FACT_EMBEDDER``), so vectors come from its persistent cache.
+    """
+    from commontrace import fact_embeddings, hierarchical
+
+    if not (os.environ.get("COMMONTRACE_FACT_EMBEDDER", "").strip().lower() not in ("", "none", "off")
+            or os.environ.get("COMMONTRACE_FACT_EMBEDDER_PATH")):
+        return {}
+    facts = hierarchical.list_facts(root, scope=scope, as_of=as_of)  # validity, forgetting and TTL applied
+    scores = fact_embeddings.scores(question, facts, root=root) or {}
+    ranked = sorted(((f, scores.get(f.id, 0.0)) for f in facts), key=lambda pair: (-pair[1], pair[0].id))
+    best = ranked[0][1] if ranked else 0.0
+    # Cosines are not calibrated across models; a relative floor drops the tail that only shares noise.
+    return {f.id: (f, cosine) for f, cosine in ranked[:k] if cosine > 0 and cosine >= DENSE_RELATIVE_FLOOR * best}
+
+
+def _hybrid(lexical: list, dense: dict, k: int) -> list:
+    """Reciprocal-rank fusion of the lexical and dense fact rankings (dense-only hits included).
+
+    Each fact keeps its lexical score when it has one; a dense-only hit scores
+    its cosine scaled into the lexical range, so the retrieval assessment never
+    reads a semantic match as stronger evidence than a lexical one.
+    """
+    if not dense:
+        return lexical
+    fused: dict[str, float] = {}
+    by_id: dict = {}
+    for rank, (fact, score) in enumerate(item for item in lexical if item[1] > 0):
+        fused[fact.id] = fused.get(fact.id, 0.0) + 1 / (RRF_K + rank + 1)
+        by_id[fact.id] = (fact, score)
+    for rank, (fid, (fact, cosine)) in enumerate(sorted(dense.items(), key=lambda kv: (-kv[1][1], kv[0]))):
+        fused[fid] = fused.get(fid, 0.0) + 1 / (RRF_K + rank + 1)
+        by_id.setdefault(fid, (fact, cosine * DENSE_ONLY_SCALE))
+    order = sorted(fused, key=lambda fid: (-fused[fid], -dense.get(fid, (None, 0.0))[1], fid))[:k]
+    return [by_id[fid] for fid in order]
+
+
 def _facts(
     root: str, question: str, as_of: str | None, k: int, evidence_budget: int = 0, scope: str = "",
     fact_scorer: str = "overlap-v1",
@@ -196,6 +285,8 @@ def _facts(
     from commontrace.fact_evidence import EvidenceResolver
 
     ranked = hierarchical.search_facts(root, question, as_of=as_of, limit=k, scope=scope, scorer=fact_scorer)
+    dense = _dense_facts(root, question, as_of, k, scope)
+    ranked = _hybrid(ranked, dense, k)
     current_facts = fact_index.snapshot_facts(root)
     resolver = EvidenceResolver(root, current_facts, as_of=as_of)
     output = []
@@ -210,6 +301,8 @@ def _facts(
             continue
         provenance = {"search": {"scorer": fact_scorer,
                                   "matched_terms": fact_index.matched_terms(question, fact.statement, fact_scorer)}}
+        if fact.id in dense:
+            provenance["search"]["dense_cosine"] = round(dense[fact.id][1], 4)
         text = fact.statement
         if fact.evidence_bound:
             # Re-check the fresh snapshot before assembling injection, including
@@ -410,10 +503,60 @@ def _assess_retrieval(
     )
 
 
+def rerank_fused(question: str, fused: list[Item], reranker, *, depth: int, blend: float) -> tuple[list[Item], dict]:
+    """Rerank the head of a fused ranking; see `commontrace.reranking.stage`.
+
+    Fused scores are rank-preserving: each item takes the fused score of the
+    position it now holds, so diversity and packing follow the new order and
+    the scale against the untouched tail is unchanged.
+    """
+    from commontrace import reranking
+
+    keys = [str(n) for n in range(len(fused))]
+    order, report = reranking.stage(question, keys, {k: item.text for k, item in zip(keys, fused)}, reranker,
+                                    depth=depth, blend=blend)
+    values = [item.fused for item in fused]
+    reordered = [fused[int(k)] for k in order]
+    for item, value in zip(reordered, values):
+        item.fused = value
+    for row in report.get("top", []):
+        row["id"] = fused[int(row["id"])].id
+    return reordered, report
+
+
+def weak_coverage(question: str, texts: list[str]) -> str:
+    """Why `texts` cover `question` too thinly to stop at (lexical coverage), or ""."""
+    from commontrace.conversation.coverage import assess
+
+    coverage = assess(question, texts)
+    if coverage.abstain:
+        return "abstain: " + coverage.reason
+    if coverage.confidence < LOW_CONFIDENCE:
+        return f"coverage {coverage.confidence} below {LOW_CONFIDENCE}"
+    if coverage.missing_subject_terms:
+        return "missing subject terms: " + ", ".join(coverage.missing_subject_terms)
+    return ""
+
+
+def _weak_evidence(question: str, items: list[Item], assessment: RetrievalAssessment) -> str:
+    """Why the packed evidence looks too thin to stop at, or "" when it does not."""
+    if assessment.abstain:
+        return "abstain: " + assessment.reason
+    if assessment.confidence < LOW_CONFIDENCE:
+        return f"confidence {assessment.confidence} below {LOW_CONFIDENCE}"
+    return weak_coverage(question, [item.text for item in items])
+
+
+def _fits(items: list[Item], budget: int) -> bool:
+    return sum(tokens(i.text) for i in items) <= budget
+
+
 def recall(root: str, question: str, *, budget: int | None = None, agent: str | None = None,
            channels: tuple[str, ...] = CHANNELS, as_of: str | None = None, weights: dict[str, float] | None = None,
            spaces: list[str] | None = None, embedder: str = "none", per_channel: int = 12,
-           evidence_budget: int = 0, scope: str = "", fact_scorer: str = "overlap-v1") -> Result:
+           evidence_budget: int = 0, scope: str = "", fact_scorer: str = "overlap-v1",
+           reranker: str | None = None, rerank_depth: int | None = None, rerank_blend: float | None = None,
+           adaptive_budget: bool | None = None, max_budget: int | None = None) -> Result:
     """Recall across channels; opt into bounded fact source quotes.
 
     Nonempty ``scope`` restricts lessons/facts to that scope or public memory.
@@ -421,8 +564,16 @@ def recall(root: str, question: str, *, budget: int | None = None, agent: str | 
     Conversation spaces must be explicitly selected by the authorized caller
     for scoped reads; no scoped request enumerates the root's other spaces.
     Empty scope preserves trusted-local root-wide behavior.
+
+    ``reranker`` (a name from `providers.reranker`, or "none") reranks the top
+    ``rerank_depth`` fused items before diversity and packing, blended with the
+    fused order by ``rerank_blend`` (0 keeps it, 1 takes the reranker's).
+    ``adaptive_budget`` sizes the budget with `conversation.search.budget_for`
+    and doubles it, up to ``max_budget``, while evidence stays weak and
+    unpacked candidates remain. Unset arguments fall back to `memory/budgets.json`,
+    then to no reranker and a fixed budget. ``explain`` reports each decision.
     """
-    from commontrace import lesson_cache
+    from commontrace import completeness, lesson_cache, reranking
 
     if isinstance(evidence_budget, bool) or not isinstance(evidence_budget, int) or not 0 <= evidence_budget <= 8192:
         raise ValueError("evidence_budget must be an integer between 0 and 8192")
@@ -435,6 +586,29 @@ def recall(root: str, question: str, *, budget: int | None = None, agent: str | 
     if as_of:
         lesson_cache.parse_moment(as_of)  # refuse a bad moment before reading anything
     total, weights = resolve_budget(root, agent, budget, weights)
+    settings = retrieval_settings(root, agent)
+    adaptive = settings["adaptive_budget"] if adaptive_budget is None else adaptive_budget
+    if not isinstance(adaptive, bool):
+        raise ValueError("adaptive_budget must be true or false")
+    depth = settings["depth"] if rerank_depth is None else rerank_depth
+    blend = settings["blend"] if rerank_blend is None else rerank_blend
+    reranking.check_options(depth, blend)
+    name = settings["reranker"] if reranker is None else reranker
+    ranker, unavailable = reranking.load(name)
+    decision: dict | None = None
+    if adaptive:
+        from commontrace.conversation.search import budget_for
+
+        ceiling = settings["max_budget"] if max_budget is None else max_budget
+        if ceiling is not None and (isinstance(ceiling, bool) or not isinstance(ceiling, int) or ceiling < 50):
+            raise ValueError("max_budget must be an integer of at least 50")
+        cap = max(total, min(200_000, ADAPTIVE_CAP if ceiling is None else ceiling))
+        requested = total
+        total, shape = budget_for(question, total, cap)
+        decision = {"requested": requested, "shaped": total, "effective": total, "reason": shape, "cap": cap,
+                    "grown": []}
+        if total > requested:  # a wider page needs a deeper pool to fill it from
+            per_channel = min(MAX_PER_CHANNEL, max(per_channel, math.ceil(per_channel * total / requested)))
     result = Result(question, as_of, total, fact_scorer=fact_scorer)
     if not question:
         return result
@@ -461,8 +635,31 @@ def recall(root: str, question: str, *, budget: int | None = None, agent: str | 
             result.considered[channel] = len(found)
             if found:
                 rankings[channel] = found
-        result.items = pack(diversify(fuse(rankings, weights)), total)
+        fused = fuse(rankings, weights)
+        if ranker is not None and fused:
+            with telemetry.span("recall.rerank", reranker=ranker.name):
+                fused, result.explain["rerank"] = rerank_fused(question, fused, ranker, depth=depth, blend=blend)
+        elif unavailable:
+            result.explain["rerank"] = {"reranker": name, "items": 0, "latency_ms": 0.0, "error": unavailable}
+        candidates = diversify(fused)
+        result.items = pack(candidates, total)
         result.assessment = _assess_retrieval(question, result.items, result.errors)
+        if decision is not None:
+            while total < decision["cap"] and len(decision["grown"]) < MAX_GROWTH_STEPS:
+                why = _weak_evidence(question, result.items, result.assessment)
+                if not why:
+                    break
+                if _fits(candidates, total):
+                    decision["stopped"] = "every candidate already fits; a larger budget adds nothing"
+                    break
+                grown = min(decision["cap"], total * 2)
+                result.items = pack(candidates, grown)
+                result.assessment = _assess_retrieval(question, result.items, result.errors)
+                decision["grown"].append({"from": total, "to": grown, "why": why})
+                total = grown
+            decision["effective"] = result.budget = total
+            result.explain["budget"] = decision
+        result.explain["completeness"] = completeness.grade_question(question, result.context)
         handle.set(tokens=result.tokens, items=len(result.items), confidence=result.assessment.confidence)
     telemetry.observe("commontrace_recall_tokens", float(result.tokens))
     return result

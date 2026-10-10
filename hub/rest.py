@@ -13,6 +13,7 @@ from hub import audit, auth, crud, scopes
 from hub.abuse import RateLimited, TraceRejected, make_named_limiter, rate_limit_key
 from hub.config import HubConfig
 from hub.db import session_scope
+from hub.market import add_market_routes
 from hub.models import Organization
 from hub.plans import EntitlementExceeded
 
@@ -257,6 +258,8 @@ def add_rest_routes(
             return denied
         return Response(status_code=204)
 
+    add_market_routes(app, session_factory, config=config, authenticate=_authenticate,
+                      require_scope=_require_scope)
     app.add_route(f"{API_PREFIX}/traces", contribute, methods=["POST"])
     app.add_route(f"{API_PREFIX}/traces/search", search, methods=["POST"])
     for beacon in ("install", "ping", "triggers"):

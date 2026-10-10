@@ -9,7 +9,13 @@ from commontrace import frontmatter
 
 def resolve_hub(args) -> tuple[str, str] | None:
     hub_url = args.hub_url or os.environ.get("COMMONTRACE_HUB_URL")
-    api_key = args.hub_api_key or os.environ.get("COMMONTRACE_HUB_API_KEY")
+    if args.hub_api_key:
+        api_key = args.hub_api_key
+    else:
+        from commontrace.secrets_provider import env_secret
+
+        # COMMONTRACE_HUB_API_KEY, or a mounted COMMONTRACE_HUB_API_KEY_FILE / AWS secret.
+        api_key = env_secret("COMMONTRACE_HUB_API_KEY").strip() or None
     if args.hub_api_key:
         print(
             "[commontrace] [WARN] --hub-api-key was passed on the command line, which is "

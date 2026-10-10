@@ -12,6 +12,12 @@ if str(REPO_ROOT) not in sys.path:
 from e2e_tests.harness.store_fixtures import create_test_store  # noqa: E402
 
 
+def pytest_collection_modifyitems(items):
+    for item in items:
+        if "e2e_tests" in Path(str(item.fspath)).parts:
+            item.add_marker(pytest.mark.e2e)
+
+
 @pytest.fixture
 def isolated_store(tmp_path: Path) -> str:
     store_dir = tmp_path / "fleet"

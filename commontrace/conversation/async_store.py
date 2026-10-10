@@ -202,7 +202,7 @@ class AsyncStore:
             encoder = _embedder(self._store, options.embedder)
             if encoder is None:
                 return None  # Same optional-model lexical fallback as ordinary recall.
-            if index.model != embed.MODELS[encoder.tag][0]:
+            if index.model != embed.model_identity(encoder.tag):
                 raise ConversationError("vector index uses a different embedding model")
             if self._store._units_identity is None:
                 raise ConversationError("external vector retrieval requires an upgraded conversation store")

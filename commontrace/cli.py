@@ -8,6 +8,7 @@ import os
 import sys
 
 from commontrace import PROTOCOL_VERSION, __version__
+from commontrace.exceptions import CommonTraceError
 
 try:
     from commontrace.frontmatter import FrontmatterError
@@ -24,7 +25,8 @@ _COMMANDS = (
     "dream", "bill", "conformance", "gate", "prove", "taxonomy", "impact", "pilot", "sync", "redact", "doctor",
     "block", "fact", "graph", "ingest", "agent", "watch", "daemon", "viz", "conversation", "memory", "recall", "jobs",
     "ontology", "community", "observation", "saga", "page", "session_ledger",
-    "procedural", "sql_query", "defense",
+    "procedural", "sql_query", "defense", "evolve", "policy", "assurance", "compression", "up", "connect", "migrate",
+    "codegraph", "market", "allocate",
 )
 
 
@@ -106,6 +108,16 @@ def build_parser(only: str | None = None) -> argparse.ArgumentParser:
         "--version", action="version",
         version=f"commontrace {__version__} (protocol {PROTOCOL_VERSION})",
     )
+    parser.add_argument(
+        "--offline", action="store_true",
+        help="Air-gapped mode (first argument only): refuse non-loopback network calls and load "
+             "models from the local cache only. Same as COMMONTRACE_OFFLINE=1.",
+    )
+    parser.add_argument(
+        "--local", action="store_true",
+        help="Keyless mode (first argument only): --offline, plus the in-process local model for "
+             "LLM-assisted steps unless COMMONTRACE_LLM_PROVIDER is already set.",
+    )
     subparsers = parser.add_subparsers(dest="command", required=_MISSING_DEPENDENCY is None)
     clean_only = only.replace("-", "_") if isinstance(only, str) else None
     if clean_only in _COMMANDS:
@@ -153,6 +165,15 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if argv is None:
         argv = sys.argv[1:]
+    from commontrace import offline
+
+    if argv and argv[0] in ("--offline", "--local"):
+        if argv[0] == "--local":
+            offline.enable_local()
+        else:
+            offline.enable()
+        argv = argv[1:]
+    offline.apply_environment()
     answered = _from_worker(argv)
     if answered is not None:
         return answered
@@ -186,7 +207,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     args = parser.parse_args(argv)
     try:
-        if os.environ.get("COMMONTRACE_LOG_FORMAT") or os.environ.get("COMMONTRACE_LOG_LEVEL") or \
+        if os.environ.get("COMMONTRACE_LOG_FILE") or os.environ.get("COMMONTRACE_LOG_FORMAT") or \
+                os.environ.get("COMMONTRACE_LOG_LEVEL") or \
                 os.environ.get("COMMONTRACE_OTEL") or os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"):
             from commontrace import telemetry
 
@@ -207,6 +229,10 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("\n[commontrace] interrupted.", file=sys.stderr)
         return 130
+    except CommonTraceError as exc:
+        safe = exc.public()
+        print(f"[commontrace] {safe['code']}: {safe['message']} {safe['remediation']}", file=sys.stderr)
+        return 1
     except BrokenPipeError:
         try:
             os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())

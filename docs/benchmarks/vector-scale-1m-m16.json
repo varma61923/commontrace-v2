@@ -1,0 +1,72 @@
+{
+  "benchmark": "vector-scale",
+  "n": 1000000,
+  "dim": 384,
+  "queries": 200,
+  "top_k": 10,
+  "clusters": 2000,
+  "spread": 0.05,
+  "seed": 0,
+  "cpu_count": 4,
+  "load_seconds": 320.0,
+  "index_build_seconds": 166.9,
+  "index_bytes": 2048008192,
+  "exact_ms": {
+    "p50": 264.1,
+    "p95": 285.2
+  },
+  "hnsw": {
+    "m": 16,
+    "ef_construction": 64,
+    "iterative_scan": "strict_order"
+  },
+  "sweep": [
+    {
+      "ef_search": 40,
+      "ann_ms": {
+        "p50": 4.27,
+        "p95": 6.58
+      },
+      "recall_at_10": 0.5765,
+      "recall_min": 0.0
+    },
+    {
+      "ef_search": 100,
+      "ann_ms": {
+        "p50": 5.36,
+        "p95": 9.11
+      },
+      "recall_at_10": 0.772,
+      "recall_min": 0.0
+    },
+    {
+      "ef_search": 200,
+      "ann_ms": {
+        "p50": 6.92,
+        "p95": 13.45
+      },
+      "recall_at_10": 0.924,
+      "recall_min": 0.0
+    },
+    {
+      "ef_search": 400,
+      "ann_ms": {
+        "p50": 8.63,
+        "p95": 15.2
+      },
+      "recall_at_10": 0.9405,
+      "recall_min": 0.7
+    },
+    {
+      "ef_search": 800,
+      "ann_ms": {
+        "p50": 20.9,
+        "p95": 26.48
+      },
+      "recall_at_10": 0.945,
+      "recall_min": 0.7
+    }
+  ],
+  "source_sha256": "143adb4f57331f8740827f1d97528387a8392698632627db11e2268d014e6f22",
+  "note": "Synthetic unit vectors around seeded cluster centres through the product Postgres index; measures index and query-path latency and recall against exhaustive search, not an embedding model or lexical fusion."
+}

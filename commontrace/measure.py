@@ -52,24 +52,31 @@ def content_revision(text: str | None) -> str | None:
 
 class HarmWatch:
     def __init__(self, root: str, on_harm: str | None = None,
-                 check_every: int = DEFAULT_CHECK_EVERY) -> None:
+                 check_every: int = DEFAULT_CHECK_EVERY, graduate: bool = False) -> None:
         if on_harm is not None and on_harm not in harm.POLICIES:
             raise ValueError(f"on_harm must be one of {', '.join(harm.POLICIES)} (or None)")
         if not isinstance(check_every, int) or isinstance(check_every, bool) or check_every < 1:
             raise ValueError("check_every must be a whole number of at least 1")
         self._root, self._on_harm, self._every = root, on_harm, check_every
+        self._graduate = graduate
         self._calls = 0
         self._harmful: dict[str, dict] = {}
+        self._helping: dict[str, dict] = {}
         self._lock = threading.Lock()
 
     def current(self) -> dict[str, dict]:
+        return self.snapshot()[0]
+
+    def snapshot(self) -> tuple[dict[str, dict], dict[str, dict]]:
+        """(withdrawn for harm, graduated for help), refreshed every `check_every` calls."""
         with self._lock:
             due = self._calls % self._every == 0
             self._calls += 1
             if due:
                 policy = self._on_harm or retrieval_io.read_harm_policy(self._root)
                 self._harmful = evidence.withdrawn(self._root, policy)
-            return self._harmful
+                self._helping = evidence.graduated(self._root) if self._graduate else {}
+            return self._harmful, self._helping
 
 
 @dataclass(frozen=True)
@@ -77,6 +84,7 @@ class Recall:
     items: list
     withdrawn: dict = field(default_factory=dict)
     quarantined: dict = field(default_factory=dict)
+    graduated: dict = field(default_factory=dict)
 
 
 class CausalMemory:
@@ -96,10 +104,18 @@ class CausalMemory:
         harm_watch: HarmWatch | None = None,
         durable: bool = True,
         screen: bool = False,
+        graduate: bool = False,
     ) -> None:
+        """`graduate=True`: a memory whose anytime-valid verdict is HELPS stops being
+        randomized and is always delivered (it is "graduated", like a pinned id).
+        Its estimate freezes at the evidence that proved it; every other memory's
+        randomization is independent of it, so their estimates are unaffected.
+        """
         if not callable(retrieve):
             raise TypeError("retrieve must be callable")
-        self._watch = harm_watch or HarmWatch(paths.resolve_root(root), on_harm, check_every)
+        if harm_watch is not None and graduate and not harm_watch._graduate:
+            raise ValueError("graduate=True needs a HarmWatch created with graduate=True")
+        self._watch = harm_watch or HarmWatch(paths.resolve_root(root), on_harm, check_every, graduate)
         self._durable = durable
         self._retrieve = retrieve
         self._root = paths.resolve_root(root)
@@ -125,7 +141,7 @@ class CausalMemory:
             raise ValueError("occasion_id must be a non-empty string")
         items = list(self._retrieve(query, **kwargs))
 
-        harmful = self._withdrawn()
+        harmful, helping = self._watch.snapshot()
         removed: dict[str, dict] = {}
         if harmful:
             kept = []
@@ -156,7 +172,7 @@ class CausalMemory:
         for item in items:
             item_id = str(self._key(item))
             keyed.append((item_id, item))
-            if item_id in self._pinned or item_id in revisions:
+            if item_id in self._pinned or item_id in helping or item_id in revisions:
                 continue
             ids.append(item_id)
             revisions[item_id] = content_revision(self._text(item))
@@ -177,6 +193,8 @@ class CausalMemory:
         return Recall(
             items=[item for item_id, item in keyed if item_id not in withheld], withdrawn=removed,
             quarantined=quarantined,
+            graduated={item_id: helping[item_id] for item_id, _item in keyed
+                       if item_id in helping and item_id not in self._pinned},
         )
 
     def record_outcome(self, occasion_id: str, *, succeeded: bool) -> bool:

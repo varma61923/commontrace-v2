@@ -93,7 +93,9 @@ def test_an_internal_error_never_leaks_a_traceback(gw, monkeypatch):
 
 def test_openapi_describes_exactly_the_routes_that_exist(gw):
     _, doc = call(gw, "GET", "/v1/openapi.json", headers={})
-    documented = {(m.upper(), p) for p, ops in doc["paths"].items() for m in ops}
+    from commontrace.gateway_contract import EXTRA_PATHS
+
+    documented = {(m.upper(), p) for p, ops in doc["paths"].items() for m in ops if p not in EXTRA_PATHS}
     assert documented == set(gw.routes)
     assert doc["paths"]["/v1/recall"]["post"]["security"] == [{"bearer": []}]
     assert "security" not in doc["paths"]["/v1/health"]["get"]

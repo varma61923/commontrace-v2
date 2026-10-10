@@ -45,12 +45,13 @@ def test_ledger_skips_unchanged_files_and_rereads_changed(tmp_path):
     assert first.last_stats["files"] == 3
     again = pl.create_document_pipeline(src, store, contextualize="none")
     again.run()
-    assert again.last_stats["files"] == 0 and again.last_stats["unchanged"] == 3
+    # Screened-only input remains retryable; both acknowledged source documents skip.
+    assert again.last_stats["files"] == 1 and again.last_stats["unchanged"] == 2
     with open(os.path.join(src, "runbook.md"), "a", encoding="utf-8") as fh:
         fh.write("\nAlso check disk space.\n")
     third = pl.create_document_pipeline(src, store, contextualize="none")
     third.run()
-    assert third.last_stats["files"] == 1
+    assert third.last_stats["files"] == 2
     forced = pl.create_document_pipeline(src, store, contextualize="none", force=True)
     forced.run()
     assert forced.last_stats["files"] == 3
@@ -64,7 +65,8 @@ def test_screen_dedupe_context_and_aliases(tmp_path):
     texts = [c.content for c in report.chunks]
     assert not any("Ignore all previous instructions" in t for t in texts)
     assert report.would_write.get("screened", 0) >= 1 or any("screen" in w.lower() for w in report.warnings)
-    assert sum("promote the replica" in t for t in texts) == 1
+    # Dedup is within a source, preserving independent source generations.
+    assert sum("promote the replica" in t for t in texts) == 2
     assert any("postgres" in t and "Failover" in t for t in texts)
 
 
@@ -98,7 +100,7 @@ def test_conversation_submitter(tmp_path):
     pl.create_document_pipeline(src, store, space="docs", contextualize="none").run()
     with Store(store, "docs") as conv:
         sessions = [s["id"] for s in conv.sessions()]
-    assert len(sessions) == 1  # the copy is a duplicate; the injection was screened out
+    assert len(sessions) == 2  # distinct source documents retain their own receipts
     # session keys are basename+content-hash suffixed (doc:<base>-<12hex>)
     assert any(s.startswith(("doc:copy.md-", "doc:runbook.md-")) for s in sessions)
 

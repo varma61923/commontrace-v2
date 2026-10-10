@@ -29,6 +29,11 @@ commontrace/**
 !commontrace/_lexical.py
 !commontrace/_stem.py
 !commontrace/memory_guard.py
+!commontrace/market_listing.py
+!commontrace/allocation_schedule.py
+!commontrace/aipw.py
+!commontrace/origin.py
+!commontrace/telemetry.py
 !commontrace/commons_integrity.py
 !commontrace/prereg.py
 !commontrace/raw_export.py

@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from commontrace import experiment, frontmatter, paths, raw_export, revision, validate, value
 
 SUITE_VERSION = "1"
+OPS = ("assign", "ledger", "digest", "revision", "allocate")
 VECTORS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "conformance_vectors.json")
 SPEC_VECTORS_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "protocol",
                                  "conformance", "vectors.json")
@@ -56,6 +57,15 @@ def ref_revision(fm: dict, body: str) -> str:
     return revision.revision_of(fm, body)
 
 
+def ref_allocate(schedule: dict, lesson: str, occasion: str) -> dict:
+    """PROTOCOL 13.5: a schedule's digest, the rate it sets for `lesson`, and the resulting arm."""
+    from commontrace import allocation
+
+    rate = schedule["rates"].get(lesson, schedule["default_rate"])
+    return {"digest": allocation.schedule_digest(schedule), "rate": rate,
+            "held_out": experiment.is_held_out(lesson, occasion, rate, schedule["salt"])}
+
+
 def answer(request: dict) -> dict:
     """The reference implementation of the stdio protocol."""
     op = request.get("op")
@@ -67,6 +77,8 @@ def answer(request: dict) -> dict:
         return {"digest": ref_digest(request["rows"])}
     if op == "revision":
         return {"revision": ref_revision(request["frontmatter"], request["body"])}
+    if op == "allocate":
+        return ref_allocate(request["schedule"], request["lesson"], request["occasion"])
     return {"error": f"unknown op {op!r}"}
 
 
@@ -103,8 +115,22 @@ def build_vectors() -> dict:
              "## Rule\r\nLink the policy.\r\n\r\n\r\n"),
             ({"applies_when": "ünï", "do_not_apply_when": "", "tags": []}, "")):
         revisions.append({"frontmatter": fm, "body": body, "revision": ref_revision(fm, body)})
+    allocations = []
+    for n in range(40):
+        rates = {f"memory-{k}": rng.choice([0.05, 0.25, 0.5, 0.95]) for k in range(rng.randint(0, 4))}
+        schedule = {"version": n % 3, "salt": rng.choice(["exp-1", "ünï", "pinned"]),
+                    "effective_from": f"2026-03-0{1 + n % 9}T09:00:05+00:00", "default_rate": rng.choice([0.5, 0.3]),
+                    "rates": dict(sorted(rates.items())), "policy": {"explore": 0.5, "monitor": 0.05,
+                                                                       "era_occasions": 250},
+                    "basis": {"reason": "enabled"} if n % 2 else {"assignments": n * 10},
+                    "previous": "" if n % 3 == 0 else hashlib.sha256(str(n).encode()).hexdigest(),
+                    "created_at": f"2026-03-0{1 + n % 9}T09:00:00+00:00", "enabled": True}
+        lesson = rng.choice([*rates, "unlisted"])
+        occasion = f"ep-{rng.randint(0, 10**6)}"
+        allocations.append({"schedule": schedule, "lesson": lesson, "occasion": occasion,
+                            **ref_allocate(schedule, lesson, occasion)})
     return {"suite": SUITE_VERSION, "protocol": "2.0.0", "assign": assign, "ledger": ledgers, "digest": digests,
-            "revision": revisions}
+            "revision": revisions, "allocate": allocations}
 
 
 def load_vectors(path: str | None = None) -> dict:
@@ -114,8 +140,9 @@ def load_vectors(path: str | None = None) -> dict:
 
 def run_exec(command: str, vectors: dict, timeout: float = 30.0, only: tuple[str, ...] | None = None) -> list[Result]:
     """Run `command` as a stdio program against every vector. One process, one JSON object per line."""
-    ops = only or ("assign", "ledger", "digest", "revision")
+    ops = only or OPS
     vectors = {k: (v if k in ops else []) for k, v in vectors.items() if isinstance(v, list)}
+    vectors.setdefault("allocate", [])
     requests, expected = [], []
     for v in vectors["assign"]:
         requests.append({"op": "assign", "lesson": v["lesson"], "occasion": v["occasion"], "salt": v["salt"],
@@ -130,6 +157,10 @@ def run_exec(command: str, vectors: dict, timeout: float = 30.0, only: tuple[str
     for v in vectors["revision"]:
         requests.append({"op": "revision", "frontmatter": v["frontmatter"], "body": v["body"]})
         expected.append(("revision", {"revision": v["revision"]}))
+    for v in vectors["allocate"]:
+        requests.append({"op": "allocate", "schedule": v["schedule"], "lesson": v["lesson"],
+                         "occasion": v["occasion"]})
+        expected.append(("allocate", {"digest": v["digest"], "rate": v["rate"], "held_out": v["held_out"]}))
     try:
         argv = shlex.split(command)
         if not argv:
@@ -158,7 +189,7 @@ def run_exec(command: str, vectors: dict, timeout: float = 30.0, only: tuple[str
     return [Result(f"vectors:{op}", op not in failures,
                    f"{totals[op] - len(failures.get(op, []))}/{totals[op]} agree"
                    + (f"; first miss: {failures[op][0]}" if op in failures else ""))
-            for op in ("assign", "ledger", "digest", "revision") if op in ops]
+            for op in OPS if op in ops and op in totals]
 
 
 def check_vectors_against_reference(vectors: dict) -> list[Result]:
@@ -166,7 +197,7 @@ def check_vectors_against_reference(vectors: dict) -> list[Result]:
     fresh = build_vectors()
     return [Result(f"reference:{k}", vectors.get(k) == fresh[k], "the committed vectors match the reference"
                    if vectors.get(k) == fresh[k] else "the committed vectors differ from the reference implementation")
-            for k in ("assign", "ledger", "digest", "revision")]
+            for k in OPS]
 
 
 def check_store(root: str) -> list[Result]:

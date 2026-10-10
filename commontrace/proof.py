@@ -9,6 +9,7 @@ import os
 from dataclasses import dataclass, field
 
 from commontrace import (
+    allocation,
     experiment,
     functions,
     holdout_io,
@@ -193,13 +194,14 @@ def _mode(state: dict) -> str:
     return "fixed-horizon" if state.get("stopping_rule") == prereg.STOP_FIXED_N else "sequential"
 
 
-def analyse_rows(rows: list, mode: str, audited_at: str, vpo: float | None) -> Analysis:
+def analyse_rows(rows: list, mode: str, audited_at: str, vpo: float | None,
+                 schedules: list | None = None) -> Analysis:
     from commontrace.commands import experiment_cmd
 
     at = datetime.datetime.fromisoformat(audited_at)
-    report = integrity.audit(rows, now=at)
+    report = integrity.audit(rows, now=at, schedules=schedules or None)
     effects = experiment.analyze(
-        experiment_cmd._observations(rows), sequential=(mode == "sequential"))
+        experiment_cmd._observations(rows, schedules), sequential=(mode == "sequential"))
     priced = value.compute(
         effects, report, value_per_occasion=vpo,
         overlap=value.overlap_from_assignments(rows), assignments=rows)
@@ -258,7 +260,8 @@ def status(root: str, *, now: datetime.datetime | None = None) -> Status:
                       prereg_note=prereg.check(registration).note,
                       next_step="No assignments yet. Retrieve with an occasion id and report the outcome "
                                 "under the same id (`commontrace function show` has the occasion and outcome model).")
-    analysis = analyse_rows(rows, _mode(state), moment.isoformat(), state.get("value_per_occasion"))
+    analysis = analyse_rows(rows, _mode(state), moment.isoformat(), state.get("value_per_occasion"),
+                            allocation.history(root))
     check = prereg.check(
         registration, actual_salt=rows[0].salt,
         actual_holdout_rate=sum(r.rate for r in rows) / len(rows),
@@ -370,7 +373,8 @@ def build_record(root: str, state: dict, *, key: bytes | None, org_id: str,
     if not rows:
         raise ProofError("no assignments to report on yet")
     audited_at = moment.isoformat()
-    a = analyse_rows(rows, _mode(state), audited_at, state.get("value_per_occasion"))
+    schedules = [s for s in allocation.history(root) if s.salt == rows[0].salt]
+    a = analyse_rows(rows, _mode(state), audited_at, state.get("value_per_occasion"), schedules)
     export = raw_export.export(rows)
     registration = prereg.Preregistration.from_dict(state["preregistration"])
     check = prereg.check(
@@ -414,6 +418,9 @@ def build_record(root: str, state: dict, *, key: bytes | None, org_id: str,
         },
         "ledger": [dataclasses.asdict(e) for e in ledger],
         "ledger_root": value.ledger_root(ledger),
+        # The adaptive-allocation schedules behind any rate change, so a verifier can
+        # check every assignment's rate against the schedule in force when it was made.
+        "allocation": [{**s.body(), "digest": s.digest} for s in schedules],
         "evidence": {"digest": export.digest, "rows": export.n_rows, "occasions": export.n_occasions,
                      "file": DATA_NAME},
         "signature": signature,
@@ -605,7 +612,11 @@ def verify(directory: str, *, key: bytes | None = None) -> list[Check]:
     try:
         rows = rows_from_csv(csv_text)
         vpo = record["design"].get("value_per_occasion")
-        a = analyse_rows(rows, record["mode"], record["audited_at"], vpo)
+        schedules = [allocation.Schedule(**s) for s in record.get("allocation", [])]
+        tampered = [s.version for s in schedules if allocation.schedule_digest(s.body()) != s.digest]
+        if tampered:
+            raise ProofError(f"allocation schedule(s) {tampered} do not hash to their recorded digests")
+        a = analyse_rows(rows, record["mode"], record["audited_at"], vpo, schedules)
     except (ProofError, ValueError) as exc:
         checks.append(Check("recomputation", FAIL, str(exc)))
         return checks

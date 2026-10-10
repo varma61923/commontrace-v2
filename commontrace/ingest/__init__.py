@@ -134,6 +134,8 @@ class IngestionResult:
     skipped_unsupported: int = 0
     truncated: int = 0
     errors: list[str] = field(default_factory=list)
+    # Filled by the pipeline's embedding stage when an embedder is configured.
+    embeddings: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -150,6 +152,7 @@ class IngestionResult:
             "skipped_unsupported": self.skipped_unsupported,
             "truncated": self.truncated,
             "errors": self.errors,
+            **({"embeddings": dict(self.embeddings)} if self.embeddings else {}),
         }
 
 
@@ -793,6 +796,61 @@ def ingest_fact_triples(
     return result
 
 
+RELATION_TEXT_SUFFIXES = (".md", ".markdown", ".txt", ".rst")
+
+
+def ingest_text_relations(
+    source: str,
+    root: str,
+    scope: str = "",
+    run_id: str = "",
+    *,
+    llm: Any = None,
+    max_files: int = 200,
+    force: bool = False,
+    dry_run: bool = False,
+) -> IngestionResult:
+    """Relations stated in text files (or a literal text) into ontology-typed graph edges.
+
+    Triples come from `relation_extraction` (the `llm` completion callable when given,
+    else offline patterns) and are written through `graph.add_edge` with provenance
+    naming each file. Resumable via the ledger; `dry_run` extracts without writing."""
+    from commontrace import relation_extraction
+
+    del scope  # Graph edges are not routed by scope; the parameter keeps the connector signature.
+    result = IngestionResult(source_path=source if os.path.exists(source) else "<text>", source_type="relations")
+    if not os.path.exists(source):
+        targets: list[tuple[str, str | None]] = [("<text>", source)]
+    else:
+        targets = [(f, None) for f in _walk_files(source, RELATION_TEXT_SUFFIXES, max_files)]
+    ledger = None if dry_run else _ledger_for(root, force)
+    for label, text in targets:
+        if text is None:
+            if _skip_if_unchanged(ledger, label, result) or \
+                    _skip_if_large(label, relation_extraction.MAX_TEXT, ledger, result):
+                continue
+            try:
+                text = _read_text(label)
+            except (OSError, ValueError) as exc:
+                result.errors.append(f"read error ({label}): {exc}")
+                continue
+        try:
+            report = relation_extraction.ingest_text(root, text, source=label, run_id=run_id, llm=llm,
+                                                     dry_run=dry_run)
+        except ValueError as exc:
+            result.errors.append(f"relation extraction error ({label}): {exc}")
+            continue
+        result.chunks_extracted += report["triples"]
+        result.graph_edges_written += report["triples"] if dry_run else report["edges_written"]
+        result.graph_nodes_written += report["nodes_created"]
+        result.errors.extend(report["errors"])
+        if ledger is not None and label != "<text>":
+            ledger.note(label, "ingested" if not report["errors"] else "error")
+    if ledger is not None:
+        ledger.commit()
+    return result
+
+
 def _multimodal_targets(source: str, max_files: int | None, stats: dict[str, int] | None = None) -> list[str]:
     from commontrace.ingest import multimodal
 
@@ -979,6 +1037,8 @@ class IngestionPipeline:
     ) -> IngestionResult:
         """Ingest *path* as *source_type* into the store at *dest_root* (or only preview it)."""
         stype = source_type.replace("-", "_")
+        if stype == "relations":
+            return ingest_text_relations(path, dest_root, scope=scope, dry_run=preview, **kwargs)
         if preview:
             return preview_ingest(path, stype, scope=scope, **kwargs)
         if stype == "code":
@@ -1049,6 +1109,7 @@ __all__ = [
     "ingest_json_logs",
     "ingest_failure_transcript",
     "ingest_fact_triples",
+    "ingest_text_relations",
     "ingest_multimodal_document",
     "preview_ingest",
     "INGEST_STAGES",

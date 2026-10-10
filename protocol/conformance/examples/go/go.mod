@@ -1,7 +1,7 @@
 module conformance-example
 
-go 1.21
+go 1.27.2
 
-require golang.org/x/crypto v0.31.0
+require golang.org/x/crypto v0.57.0
 
-require golang.org/x/sys v0.28.0 // indirect
+require golang.org/x/sys v0.48.0 // indirect

@@ -7,8 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Hub: commons sharing no longer grants DELETE.** The `traces` row-level policy put `shared_with_commons` in a `FOR ALL` USING clause, which also governs DELETE, so any org could delete another org's shared traces through a query missing its own org filter. Migration `c1d4e8f2a9b6` moves sharing into a SELECT-only policy; a regression test runs as an unprivileged role.
+
 ### Added
 
+- **Multi-provider embeddings.** `[provider:]model[@dims]` tags for local, OpenAI, Gemini, Voyage, Cohere, Ollama and OpenAI-compatible endpoints, with query/document modes and a content-hash vector cache; usable for conversations (`--embedder`), facts (`COMMONTRACE_FACT_EMBEDDER`) and ingest (`COMMONTRACE_INGEST_EMBEDDER`).
+- **Fact deduplication and contradictions.** Paraphrases reinforce instead of adding (`COMMONTRACE_FACT_DEDUP=exact|near|semantic`); new facts are checked for negation and single-value contradictions and flagged or superseded (`COMMONTRACE_FACT_CONFLICTS=off|flag|supersede`, optional LLM judge). Facts record `retracted_at`; `list_facts`/`search_facts` accept `known_at`.
+- **Hybrid facts in recall.** With a fact embedder, multi-channel recall fuses dense and lexical fact rankings.
+- **Rerankers everywhere.** `bge-reranker-v2-m3`, `mxbai-rerank`, `cohere`, `voyage`, `jina` and listwise `llm`, blended after fusion in recall, fact search and conversation recall; adaptive budgets for recall and reflect; a conversation second pass for missing terms; a completeness grade on every recall.
+- **Knowledge graph.** Relation extraction (`graph extract-relations`, `ingest --type relations`), entity resolution (`graph resolve`), ontology classification (`ontology classify`), and a typed bi-temporal Neo4j/FalkorDB mirror with multi-hop reads.
+- **Session context.** Session/agent-scoped blocks, rolling hash-chained summaries, working-memory assembly (`/v1/working-memory`, `conversation working-memory`), fact consolidation proposals (`consolidate facts`), and provenance lineage (`graph provenance --lineage`).
+
+- Adaptive holdout allocation (`commontrace allocate enable|plan|show|verify|disable`): era schedules explore
+  unproven memories at 50% and monitor proven ones at 5%, hash-chained and in force only for later occasions.
+  Every scheduled assignment logs its rate and is estimated by AIPW with an asymptotic confidence sequence;
+  the integrity audit and proof packages check each rate against its schedule; PROTOCOL 13.5 and 40 new
+  conformance vectors. Measured in `docs/benchmarks/adaptive-allocation.md` (coverage met; +5pp power within
+  2,000 occasions not met).
+- Typed OpenAPI for every HTTP API: `openapi/gateway.json` (58 operations, each live response validated in
+  tests), `hub/openapi.json` (106 operations, OpenAPI 3.1, served at `/api/v1/openapi.json`), with drift checks.
+- The Learning Ledger console: proven value and lift-per-token frontier, release diffs, experiment designer,
+  occasion forensics and a weekly digest (`/v1/ledger/*`).
+
+- **Adaptive recall budgets.** `Options(adaptive_budget=True)`, `conversation recall --budget auto`, MCP `adaptive_budget` and the gateway's `adaptive_budget` size the context by question shape (summaries, orderings and counts 3x, lists and multi-facet questions 2x, capped at 12,000 tokens); `explain.budget` records the decision. Measured on full datasets with the keyword arm: BEAM 100K evidence 70.87% -> 79.37% at a 1,500 floor (2,804 mean tokens), LongMemEval-S 79.60% -> 83.02% (2,447), LoCoMo 78.69% -> 80.29% (1,697). The benchmark harness gains `--adaptive-budget`.
+- **Subgroup effects.** `commontrace experiment --by agent_type|agent_id` (or `--covariates FILE`) reports each lesson's randomized effect per pre-treatment subgroup, Benjamini-Hochberg corrected, with Cochran's Q for heterogeneity; a lesson that helps one subgroup and hurts another is flagged `CROSSING`.
+- **CausalMemBench and graduation.** `python -m benchmarks.causalmembench` scores memory policies against seeded ground truth in a confounded fleet with late and missing outcomes. `CausalMemory(graduate=True)` stops randomizing a memory once its anytime-valid verdict is HELPS.
+- **Readiness probes.** Gateway `/v1/health/live` and `/v1/health/ready` (store, schemas, free disk; 503 when not ready).
+- **Offline mode.** `commontrace --offline` / `COMMONTRACE_OFFLINE=1` refuses non-loopback network calls and loads models from the local cache only.
+- **Named rerankers.** `providers.reranker("mmr" | "cross-encoder" | "cross-encoder-fast")` plus `register_reranker` for custom second stages.
+- **Markdown editing.** `commontrace lesson edit SLUG` validates, screens and journals a hand edit; an edited active lesson returns to review.
+- **One-command agent signup.** `commontrace init --agent-caller NAME`.
+- **Release workflow.** Tag-triggered PyPI and npm publishing through OIDC trusted publishing.
+- **Threat model.** `SECURITY.md` documents assets, threats, controls, trust assumptions and known limits.
+- **Fact invalidation.** `commontrace fact invalidate ID [--at WHEN]` ends a fact's validity without a replacement; it stays in as-of history, and a future end is scheduled.
+- **Background ingestion.** `ingest SOURCE --type docs --background` queues a durable, deduplicated job; `jobs run --watch` drains on SIGTERM or Ctrl-C.
+- **Keyless mode.** `commontrace --local <command>` is `--offline` plus the in-process local model.
+- **Local container.** `Dockerfile.local` and `docker compose --profile local up` run the gateway (:8787) and the streamable-HTTP MCP server (:8421) on one store volume.
+- **CI path filtering.** Documentation-only changes skip the expensive build jobs; core test, coverage and security gates always run.
+- **Lesson marketplace.** `commontrace market identity|trust|attest|certify|publish|verify|install|list`: fleets sign the randomized holdout lift they measured for the exact lesson text, a referee pools two or more independent organizations into a signed replicated-lift certificate, and a publisher signs a listing with licence terms and an optional price. Buyers verify every Ed25519 signature against keys they chose to trust; install requires accepting the licence and lands at `status=review`. The gateway serves a verified catalog (`/v1/market/*`); the Hub stores verified listings (`/api/v1/market/*`, `HUB_MARKET_REFEREES_FILE`). Payment collection is not implemented.
+- **In-process local model.** `COMMONTRACE_LLM_PROVIDER=local` runs a Hugging Face instruction model with `transformers` (greedy; cache-only under `--offline`) for drafting, reflection and benchmark answering without credentials or a model server. The benchmark harness gains `--judge exact` (gold containment or token F1 >= 0.5), which is not comparable to LLM-judge accuracy.
+- **Agentic benchmark datasets.** `conversation_bench --dataset ama` (AMA-Bench trajectories with derived step evidence) and `--dataset mab` (MemoryAgentBench contexts, answer-in-context over every accepted answer; EventQA left unscored). Results are in `docs/strategy/implementation-status.md`.
+
+- **Standard OpenAPI and generated SDKs.** Typed memory requests, responses and bearer authentication, schema-enforced gateway admission, a pinned Swagger UI, and checksum-pinned upstream OpenAPI Generator tooling for TypeScript, Go, Rust, Java and Kotlin. CI compiles each generated client; generated output remains a build artifact.
+- **Learning assurance runtime.** Signed joint-policy assignment/outcome logs, preregistered fixed-horizon IPS/SNIPS/DR release gates, recorded recall and usage receipts, failure attribution, bounded action-ablation voting and signed replay incident reports. Adjacent compression levels require an independent review and a randomized comparison against both the parent and raw evidence. Store-level Ed25519 receipts, recursive forgetting certificates, protected aggregate releases and authenticated replicated-lift pooling retain explicit limits.
+- **Optional engines and adoption adapters.** Source-bound Neo4j/FalkorDB graph snapshots, scoped LanceDB indexing, append-only Markdown/SQLite record adapters, native Google ADK/Strands/AG2/Vercel/Mastra tools and owner-scoped knowledge-provider connectors. CI exercises actual optional engines and framework SDKs. The README is now a short start page; detailed reference content moves to `docs/REFERENCE.md`.
+
+- **Bounded real-data reproduction runner.** Pinned LoCoMo/LongMemEval development selections, matched original/current product harness, dense/reranker ablations, local vendor attempts, per-case failures and cluster comparisons; exact context-text counts report estimated-budget exceedances separately.
+
+- **Executable local vendor benchmark profiles.** Mem0 raw-memory/Qdrant and Graphiti episodic/FalkorDBLite paths share source-bound evidence and bounded reader/judge accounting; their limited configurations are explicit. LoCoMo development limits select exact seeded question counts.
+
+- **Bounded benchmark inference.** HTTP reader and multi-call judge requests reserve cost before dispatch, send output caps and avoid hidden retries. Missing or overbound usage invalidates the run; cache history is reported separately from current spend. Optional tokenizer counts and source-bound generation settings expose the measurement contract.
+- **Configuration-bound benchmark caching.** Completion reuse binds opaque provider/account routing, generation settings and the completion implementation; legacy unbound rows cannot satisfy judged harness lookups. Endpoint and credential values are excluded from persisted identities.
+- **Memory evolution interfaces.** Append-only extraction, governed multi-signal search recipes, scoped agent SDK distribution, standing-question refresh jobs, hard directives, a Memory Palace console, signed shared MemFS snapshots and budgeted offline consolidation. Experimental causal exploration, structural skill proposals and approved abstract experience exports retain evidence and explicit limitations. The Linux binary builder and independently reproduced synthetic benchmark are documented in `docs/MEMORY_EVOLUTION.md`.
 - **Benchmark measurement fidelity and source-bound comparison.** New `benchmarks.compare` measures raw-turn/session Recall@5/10 and NDCG@10 with question-weighted conversation-cluster 95% intervals, exact case/provenance checks and a quality regression gate. Both public recall budgets retain temporal and eligibility fences. Parsed caches bind dataset/adapter content; canonical source edits refuse reuse. `full-context` retains entire history; `budgeted-history` names the earlier truncated reference. A pinned 154-question stratified LoCoMo CI sample compares the same corrected harness against the pinned product source. No retrieval API or default changed.
 - **Corrected evidence scoreboard, not answer accuracy.** Full keyword-only LoCoMo (1,540), LongMemEval-S (500) and BEAM 100K (400) now include ranking metrics and independent budget latency. At 1,500 / 4,000 estimated tokens, evidence is 78.69% / 86.31%, 79.60% / 85.92%, and 70.87% / 80.67%. LoCoMo previously reported 78.98% / 86.61% after silently excluding unresolved annotations; retaining those misses corrects the denominator. LongMemEval's complete second-budget recall corrects 85.85% to 85.92%; BEAM evidence is unchanged. `--limit 500` now evaluates 500 rather than 400 cases. Default `auto/auto` was verified only in lexical fallback; no model calls or official judged accuracy are claimed.
 - **Benchmark judge compatibility profiles.** LongMemEval task prompts match upstream; LoCoMo's legacy downstream binary profile differs from the primary evaluator and current competitor judge. BEAM's compatibility profile still needs official semantic alignment and aggregate scoring. Parser tests with supplied responses are not measured agreement of live judges. Existing response cache and preflight cost estimates need endpoint/settings binding and multi-call/full-history accounting before a paid evaluation.

@@ -578,7 +578,11 @@ def apply_reranker(
     ranked: list[RankedLesson],
     reranker: Reranker | None,
 ) -> list[RankedLesson]:
-    """Apply an optional second-stage `reranker` to an already-ranked list."""
+    """Apply an optional second-stage `reranker` to an already-ranked list.
+
+    Named built-ins (``mmr``, ``cross-encoder``, ``cross-encoder-fast``) and
+    registered rerankers resolve through `commontrace.providers.reranker(name)`.
+    """
     if reranker is None:
         return ranked
     return reranker(task, ranked)

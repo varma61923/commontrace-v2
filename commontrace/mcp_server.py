@@ -1959,7 +1959,7 @@ def build_server(root: str, *, allow_approval: bool = True):
     async def conversation_recall(space: str, question: str, budget: int = 1500, now: str = "",
                                   sessions: list[str] | None = None, speakers: list[str] | None = None,
                                   since: str = "", until: str = "", ctx: Any = None,
-                                  context_strategy: str = "legacy") -> dict:
+                                  context_strategy: str = "legacy", adaptive_budget: bool = False) -> dict:
         """What was said that answers `question`: the matching turns with their neighbours,
         grouped by session with dates, within `budget` tokens, plus what the user has said
         about themselves when it bears on the question. Pass `now` when the question is
@@ -1968,6 +1968,9 @@ def build_server(root: str, *, allow_approval: bool = True):
         withheld and listed under explain.withheld.
         `context_strategy=coverage-v1` prioritizes distinct query facets within
         the same evidence budget; the default preserves existing ranking.
+        `adaptive_budget=true` treats `budget` as a floor and sizes it by the
+        question's shape (summaries, orderings, counts and lists get up to 3x,
+        capped at 12000); explain.budget reports what was used and why.
         """
         from commontrace.conversation import ConversationError, Options, Store, recall
 
@@ -1977,7 +1980,8 @@ def build_server(root: str, *, allow_approval: bool = True):
             return _err("budget must be a number of tokens")
 
         opts = Options(budget=budget, sessions=tuple(sessions or ()), speakers=tuple(speakers or ()),
-                       since=since or None, until=until or None, context_strategy=context_strategy)
+                       since=since or None, until=until or None, context_strategy=context_strategy,
+                       adaptive_budget=bool(adaptive_budget), max_budget=max(budget, 12_000))
 
         def _run():
             with Store(root, space, create=False) as store:
@@ -1995,7 +1999,8 @@ def build_server(root: str, *, allow_approval: bool = True):
     async def memory_recall(question: str, budget: int = 1500, agent: str = "", as_of: str = "",
                             channels: list[str] | None = None, spaces: list[str] | None = None,
                             evidence_budget: int = 0, scope: str = "",
-                            ctx: Any = None, fact_scorer: str = "overlap-v1") -> dict:
+                            ctx: Any = None, fact_scorer: str = "overlap-v1", reranker: str = "",
+                            adaptive_budget: bool = False) -> dict:
         """One context from every kind of memory: approved lessons, atomic facts, graph
         relations around the entities `question` names, and conversation spaces, fused,
         de-duplicated and packed into `budget` tokens. `as_of` selects valid-time
@@ -2003,6 +2008,10 @@ def build_server(root: str, *, allow_approval: bool = True):
         memory/budgets.json. `channels` narrows to lessons/facts/graph/conversations.
         Default fact ranking preserves overlap; fact_scorer="bm25-v1" opts into
         stemmed multilingual BM25 without changing the other channels.
+        `reranker` reranks the top fused items (cross-encoder, bge-reranker-v2-m3,
+        mxbai-rerank, cohere, voyage, jina, llm, or "none"; empty uses memory/budgets.json).
+        `adaptive_budget` sizes the budget by the question's shape and grows it while
+        evidence is thin. `explain` in the result reports both decisions.
         """
         from commontrace import recall as recall_mod
 
@@ -2010,7 +2019,8 @@ def build_server(root: str, *, allow_approval: bool = True):
             return recall_mod.recall(root, question, budget=budget or None, agent=agent or None,
                                      as_of=as_of or None, channels=tuple(channels or recall_mod.CHANNELS),
                                      spaces=spaces, evidence_budget=evidence_budget, scope=scope,
-                                     fact_scorer=fact_scorer).to_dict()
+                                     fact_scorer=fact_scorer, reranker=reranker or None,
+                                     adaptive_budget=adaptive_budget or None).to_dict()
 
         try:
             await _progress(ctx, 0, "Retrieving memory evidence")

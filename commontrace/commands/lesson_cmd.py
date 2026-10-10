@@ -18,6 +18,7 @@ from commontrace import (
     paths,
     redundancy,
     reliability,
+    revision,
     templates,
     trace_io,
     validate,
@@ -101,6 +102,17 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     withdraw.add_argument("--reason", default="approval revoked")
     withdraw.add_argument("--dest", default=None)
     withdraw.set_defaults(func=run_revoke)
+
+    ed = sub.add_parser(
+        "edit",
+        help="Edit a lesson's Markdown in $VISUAL/$EDITOR; the change is validated, screened and journaled.",
+    )
+    ed.add_argument("slug")
+    ed.add_argument("--editor", default=None,
+                    help="Editor command (default: $VISUAL, then $EDITOR, then vi).")
+    ed.add_argument("--reason", default="edited by hand", help="Recorded in the revision journal.")
+    ed.add_argument("--dest", default=None)
+    ed.set_defaults(func=run_edit)
 
     rj = sub.add_parser(
         "reject",
@@ -947,3 +959,85 @@ def run_history(args: argparse.Namespace) -> int:
           "during a run makes the two arms measure different treatments, which the "
           "validity section of that report calls out._")
     return 0
+
+
+# Frontmatter a hand edit may not change: status moves only through approve/reject/
+# revoke, and admission receipts are written only by the approval path.
+_GOVERNED_KEYS = ("status", "approval_receipt", "approved_by", "approved_at", "admission")
+
+
+def run_edit(args: argparse.Namespace) -> int:
+    """Hand-edit one lesson as Markdown, keeping governance intact.
+
+    The edit happens on a private copy. Nothing reaches the store unless it parses,
+    passes the schema and the content screen, and leaves governed keys alone. An
+    active lesson whose content changes returns to `review`, because the approval
+    was for the old text; an unchanged save is a no-op.
+    """
+    import shlex
+    import subprocess
+    import tempfile
+
+    root = paths.resolve_root(args.dest)
+    path = lesson_io.lesson_path(root, args.slug)
+    if path is None:
+        print(f"[commontrace] No lesson named {args.slug!r}.", file=sys.stderr)
+        return 1
+    before_fm, before_body = frontmatter.read(path)
+    with open(path, encoding="utf-8") as fh:
+        original = fh.read()
+    editor = args.editor or os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
+    # A private (0600) file outside the store, so no store scanner ever sees the draft.
+    fd, draft = tempfile.mkstemp(prefix="commontrace-lesson-edit-", suffix=".md")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(original)
+        try:
+            completed = subprocess.run([*shlex.split(editor), draft], check=False)
+        except (OSError, ValueError) as exc:
+            print(f"[commontrace] Could not start the editor: {exc}", file=sys.stderr)
+            return 1
+        if completed.returncode != 0:
+            print("[commontrace] Editor exited with an error; the lesson is unchanged.", file=sys.stderr)
+            return 1
+        try:
+            fm, body = frontmatter.read(draft)
+        except (frontmatter.FrontmatterError, OSError, UnicodeDecodeError) as exc:
+            print(f"[commontrace] The edited file does not parse ({exc}); the lesson is unchanged.",
+                  file=sys.stderr)
+            return 1
+        changed_governed = [k for k in _GOVERNED_KEYS if fm.get(k) != before_fm.get(k)]
+        if changed_governed:
+            print("[commontrace] Refused: a hand edit cannot change " + ", ".join(changed_governed)
+                  + ". Use `commontrace lesson approve|reject|revoke`.", file=sys.stderr)
+            return 1
+        errors = validate.validate(fm, validate.load_schema("lesson.schema.json"))
+        if errors:
+            print("[commontrace] Refused: the edit fails the lesson schema:", file=sys.stderr)
+            for error in errors:
+                print(f"  - {error}", file=sys.stderr)
+            return 1
+        report = memory_guard.scan_fields({**{k: v for k, v in fm.items() if isinstance(v, (str, list))},
+                                           "body": body})
+        if report.should_block:
+            print("[commontrace] Refused: the edit carries a secret or an injection payload ("
+                  + report.summary() + ").", file=sys.stderr)
+            return 1
+        if revision.revision_of(fm, body) == revision.revision_of(before_fm, before_body):
+            print("[commontrace] No content change; nothing written.")
+            return 0
+        demoted = before_fm.get("status") == "active"
+        if demoted:
+            fm = {**fm, "status": "review"}
+        lesson_io.write_lesson(path, fm, body, root=root, actor=_actor(), reason=args.reason)
+        if demoted:
+            print(f"[commontrace] Saved. {args.slug} was active and its text changed, so it is back in "
+                  f"review: `commontrace lesson approve {args.slug}` re-activates it.")
+        else:
+            print(f"[commontrace] Saved {args.slug}; the change is in the revision journal.")
+        return 0
+    finally:
+        try:
+            os.unlink(draft)
+        except OSError:
+            pass

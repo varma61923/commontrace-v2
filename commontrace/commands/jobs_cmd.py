@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import signal
 import sys
+import threading
 import time
 
 from commontrace import jobs, paths
@@ -102,14 +104,27 @@ def run_show(args, root) -> int:
 @_guard
 def run_run(args, root) -> int:
     total = {"done": 0, "failed": 0}
-    while True:
-        out = jobs.run_pending(root, limit=args.limit, kinds=args.kind or None)
-        total["done"] += out["done"]
-        total["failed"] += out["failed"]
-        if not args.watch:
-            break
-        if not out["done"] and not out["failed"]:
-            time.sleep(max(0.5, args.interval))
+    stopping = threading.Event()
+    previous = {}
+    if args.watch and threading.current_thread() is threading.main_thread():
+        # Drain on shutdown: a SIGTERM or Ctrl-C lets the job in hand finish and be
+        # recorded, then the worker exits. A hard kill is covered by lease reclaim.
+        def _stop(_signum, _frame):
+            stopping.set()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            previous[sig] = signal.signal(sig, _stop)
+    try:
+        while not stopping.is_set():
+            out = jobs.run_pending(root, limit=1 if args.watch else args.limit, kinds=args.kind or None)
+            total["done"] += out["done"]
+            total["failed"] += out["failed"]
+            if not args.watch:
+                break
+            if not out["done"] and not out["failed"]:
+                stopping.wait(max(0.5, args.interval))
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
     summary = {**total, "pending": jobs.counts(root).get("queued", 0)}
     print(json.dumps(summary) if args.json else
           f"[commontrace] jobs: {summary['done']} done, {summary['failed']} failed, {summary['pending']} queued")

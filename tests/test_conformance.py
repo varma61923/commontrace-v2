@@ -34,7 +34,8 @@ def test_the_vectors_are_deterministic_and_cover_the_edges():
 
 def test_the_reference_passes_over_stdio():
     results = conformance.run_exec(REFERENCE, conformance.load_vectors())
-    assert [r.name for r in results] == ["vectors:assign", "vectors:ledger", "vectors:digest", "vectors:revision"]
+    assert [r.name for r in results] == ["vectors:assign", "vectors:ledger", "vectors:digest", "vectors:revision",
+                                         "vectors:allocate"]
     assert all(r.ok for r in results), [r.detail for r in results if not r.ok]
 
 

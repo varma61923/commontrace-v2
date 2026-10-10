@@ -41,8 +41,20 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p_q.add_argument("--hops", type=int, default=1, choices=(1, 2, 3), help="Max hops to traverse.")
     p_q.add_argument("--as-of", default="", help="What was true at this moment (valid time).")
     p_q.add_argument("--known-at", default="", help="As the store knew it at this moment (record time).")
+    p_q.add_argument("--backend", default="local", choices=("local", "mirror"),
+                     help="local: the canonical files; mirror: the Neo4j/FalkorDB mirror named by "
+                          "COMMONTRACE_GRAPH_BACKEND (publish it first with `graph mirror`).")
+    p_q.add_argument("--relation", action="append", default=[],
+                     help="Only follow this relation (repeatable; mirror backend).")
     p_q.add_argument("--dest", default=None)
     p_q.set_defaults(func=run_query)
+
+    p_mir = sub.add_parser("mirror", help="Publish the graph to the Neo4j/FalkorDB mirror (COMMONTRACE_GRAPH_BACKEND).")
+    p_mir.add_argument("--backend", default=None, choices=("neo4j", "falkordb"),
+                       help="Overrides COMMONTRACE_GRAPH_BACKEND.")
+    p_mir.add_argument("--json", action="store_true")
+    p_mir.add_argument("--dest", default=None)
+    p_mir.set_defaults(func=run_mirror)
 
     p_t = sub.add_parser("timeline", help="How an entity's relations changed: what began, ended, and why.")
     p_t.add_argument("entity", help="Entity ID.")
@@ -91,7 +103,16 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p_r.set_defaults(func=run_revise)
 
     p_p = sub.add_parser("provenance", help="Show where a node or edge came from (source and run).")
-    p_p.add_argument("target", help="Node id, or an edge as 'source->target:relation'.")
+    p_p.add_argument("target", nargs="?", default=None, help="Node id, or an edge as 'source->target:relation'.")
+    p_p.add_argument("--lineage", metavar="ID", default=None,
+                     help="Walk the derivation graph from this record (fact, observation, proposal, trace, "
+                          "chunk, source path, run:<id> or lesson:<slug>).")
+    way = p_p.add_mutually_exclusive_group()
+    way.add_argument("--down", dest="direction", action="store_const", const="down",
+                     help="What was derived from it (default).")
+    way.add_argument("--up", dest="direction", action="store_const", const="up", help="What it came from.")
+    p_p.add_argument("--max-depth", type=int, default=5, help="Hops to follow (1-32, default 5).")
+    p_p.add_argument("--json", action="store_true")
     p_p.add_argument("--dest", default=None)
     p_p.set_defaults(func=run_provenance)
 
@@ -127,6 +148,32 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p_m.add_argument("duplicate")
     p_m.add_argument("--dest", default=None)
     p_m.set_defaults(func=run_merge)
+
+    p_rx = sub.add_parser("extract-relations",
+                          help="Extract ontology relations (triples) from a file or text into graph edges.")
+    p_rx.add_argument("source", help="A text file, or the text itself; '-' reads stdin.")
+    p_rx.add_argument("--llm", action="store_true",
+                      help="Extract with the configured LLM (COMMONTRACE_LLM_*) instead of offline patterns.")
+    p_rx.add_argument("--dry-run", action="store_true", help="Show the triples without writing them.")
+    p_rx.add_argument("--json", action="store_true")
+    p_rx.add_argument("--dest", default=None)
+    p_rx.set_defaults(func=run_extract_relations)
+
+    p_rs = sub.add_parser("resolve", help="Propose (and with --apply, merge) entities that name one thing.")
+    p_rs.add_argument("--embedder", default=None,
+                      help="Embedding provider tag (e.g. arctic-m, openai:text-embedding-3-small); default "
+                           "COMMONTRACE_GRAPH_EMBEDDER, else character n-gram similarity.")
+    p_rs.add_argument("--threshold", type=float, default=None,
+                      help="Report pairs at or above this similarity (default 0.85 embeddings, 0.6 n-grams).")
+    p_rs.add_argument("--apply", action="store_true",
+                      help="Merge compatible pairs at or above the stricter --apply-threshold.")
+    p_rs.add_argument("--apply-threshold", type=float, default=None,
+                      help="Similarity a pair needs to be merged (default 0.95 embeddings, 0.85 n-grams).")
+    p_rs.add_argument("--context", action="store_true", help="Embed each entity with its neighbours' names.")
+    p_rs.add_argument("--limit", type=int, default=100)
+    p_rs.add_argument("--json", action="store_true")
+    p_rs.add_argument("--dest", default=None)
+    p_rs.set_defaults(func=run_resolve)
 
 
 def run_node(args: argparse.Namespace) -> int:
@@ -167,6 +214,69 @@ def run_edge(args: argparse.Namespace) -> int:
     return 0
 
 
+def _open_mirror(name: str | None = None):
+    from commontrace import graph_backends
+
+    backend = graph_backends.from_env(name)
+    if backend is None:
+        raise ValueError("no graph mirror configured: set COMMONTRACE_GRAPH_BACKEND to neo4j or falkordb")
+    return backend
+
+
+def _close(backend) -> None:
+    close = getattr(backend, "close", None)
+    if close is not None:
+        close()
+
+
+def run_mirror(args: argparse.Namespace) -> int:
+    from commontrace import graph_backends
+
+    root = paths.resolve_root(args.dest)
+    try:
+        backend = _open_mirror(args.backend)
+        try:
+            out = graph_backends.rebuild(root, backend)
+        finally:
+            _close(backend)
+    except (ValueError, RuntimeError) as exc:
+        print(f"[commontrace] {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(out, indent=2))
+    else:
+        print(f"[commontrace] mirrored {out['nodes']} node(s) and {out['edges']} edge(s); "
+              "the local files stay canonical.")
+    return 0
+
+
+def _query_mirror(args: argparse.Namespace, start_ids: list[str]) -> None:
+    backend = _open_mirror()
+    try:
+        relations = args.relation or None
+        as_of, known_at = args.as_of or None, args.known_at or None
+        if args.hops == 1:
+            for sid in start_ids:
+                print(f"# Neighbors of '{sid}' (mirror):")
+                rows = backend.typed_neighbors(sid, relations=relations, as_of=as_of, known_at=known_at)
+                if not rows:
+                    print("  (no connected edges)")
+                for n in rows:
+                    arrow = f"--[{n['relation']}]-->" if n["direction"] == "out" else f"<--[{n['relation']}]--"
+                    print(f"  ({sid}) {arrow} ({n['neighbor_id']})")
+            return
+        sub = backend.multi_hop(start_ids, max_hops=args.hops, relations=relations, as_of=as_of, known_at=known_at)
+        print(f"# Subgraph (mirror): {len(sub['nodes'])} nodes, {len(sub['edges'])} edges")
+        print("\n## Nodes:")
+        for node_id in sub["nodes"]:
+            print(f"  - {node_id} [hop={sub['hop_distances'].get(node_id, 0)}]")
+        print("\n## Edges:")
+        for e in sub["edges"]:
+            print(f"  - ({e['source']}) --[{e['relation']}]--> ({e['target']})")
+    finally:
+        _close(backend)
+
+
 def run_query(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
     try:
@@ -178,7 +288,11 @@ def run_query(args: argparse.Namespace) -> int:
             print(f"No known graph entities found matching '{args.entity}'.")
             return 0
 
-        if args.hops == 1:
+        if getattr(args, "backend", "local") == "mirror":
+            _query_mirror(args, start_ids)
+        elif getattr(args, "relation", None):
+            raise ValueError("--relation filters the mirror backend; add --backend mirror")
+        elif args.hops == 1:
             for sid in start_ids:
                 neighbors = graph.get_neighbors(root, sid, as_of=args.as_of or None,
                                                 known_at=args.known_at or None)
@@ -270,7 +384,22 @@ def run_provenance(args: argparse.Namespace) -> int:
     from commontrace import provenance
 
     root = paths.resolve_root(args.dest)
+    if getattr(args, "lineage", None):
+        try:
+            result = provenance.lineage(root, args.lineage, direction=args.direction or "down",
+                                        max_depth=args.max_depth)
+        except ValueError as exc:
+            print(f"[commontrace] {exc}", file=sys.stderr)
+            return 2
+        print(json.dumps(result, indent=2) if args.json else provenance.render_lineage(result))
+        return 0
+    if not args.target:
+        print("[commontrace] give a node or edge id, or --lineage <id>.", file=sys.stderr)
+        return 2
     records = provenance.list_provenance(root, args.target)
+    if args.json:
+        print(json.dumps(records, indent=2))
+        return 0
     if not records:
         print(f"No provenance recorded for '{args.target}'.")
         return 0
@@ -436,4 +565,68 @@ def run_merge(args: argparse.Namespace) -> int:
         print(f"[commontrace] {exc}", file=sys.stderr)
         return 2
     print(f"[commontrace] merged {out['merged']} into {out['kept']} ({out['edges_moved']} edge(s) moved).")
+    return 0
+
+
+def _relation_source(source: str) -> tuple[str, str]:
+    """(label, text) for a file path, '-' (stdin) or literal text."""
+    import os
+
+    from commontrace import relation_extraction
+
+    if source == "-":
+        return "<stdin>", sys.stdin.read(relation_extraction.MAX_TEXT + 1)
+    if os.path.isfile(source):
+        with open(source, encoding="utf-8", errors="replace") as fh:
+            return os.path.abspath(source), fh.read(relation_extraction.MAX_TEXT + 1)
+    return "<text>", source
+
+
+def run_extract_relations(args: argparse.Namespace) -> int:
+    from commontrace import llm, relation_extraction
+
+    try:
+        label, text = _relation_source(args.source)
+        report = relation_extraction.ingest_text(paths.resolve_root(args.dest), text, source=label,
+                                                 llm=llm.complete if args.llm else None, dry_run=args.dry_run)
+    except (OSError, ValueError, llm.LLMUnavailable) as exc:
+        print(f"[commontrace] {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(report, indent=2))
+        return 0
+    for t in report["extracted"]:
+        when = f"  valid_at={t['valid_at']}" if t["valid_at"] else ""
+        print(f"({t['subject']}) --[{t['relation']}]--> ({t['object']})  conf={t['confidence']:.2f}{when}")
+    for error in report["errors"]:
+        print(f"  - {error}", file=sys.stderr)
+    verb = "would write" if args.dry_run else "wrote"
+    edges = report["triples"] if args.dry_run else report["edges_written"]
+    print(f"[commontrace] {report['triples']} triple(s); {verb} {edges} edge(s) from {label}.", file=sys.stderr)
+    return 1 if report["errors"] else 0
+
+
+def run_resolve(args: argparse.Namespace) -> int:
+    from commontrace import embeddings, entity_resolution
+
+    try:
+        out = entity_resolution.resolve(paths.resolve_root(args.dest), embedder=args.embedder,
+                                        threshold=args.threshold, apply=args.apply,
+                                        apply_threshold=args.apply_threshold, context=args.context,
+                                        limit=args.limit)
+    except (ValueError, embeddings.EmbeddingError) as exc:
+        print(f"[commontrace] {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(out, indent=2))
+        return 0
+    for p in out["pairs"]:
+        flag = "" if p["compatible"] else "  [blocked: incompatible types]"
+        print(f"{p['score']:.3f}  {p['a']}  ~  {p['b']}{flag}")
+    for m in out["merged"]:
+        print(f"merged {m['merged']} into {m['kept']} ({m['method']} {m['score']:.3f})")
+    for s in out["skipped"]:
+        print(f"skipped {s['a']} ~ {s['b']}: {s['reason']}")
+    print(f"[commontrace] {len(out['pairs'])} candidate pair(s) by {out['method']} >= {out['threshold']}; "
+          f"{len(out['merged'])} merged (>= {out['apply_threshold']}).", file=sys.stderr)
     return 0

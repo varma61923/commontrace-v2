@@ -233,6 +233,16 @@ def _put_node(
     entity_type = txn.onto.entity_type(entity_type)
     now_iso = _now()
     node = txn.nodes.get(clean_id)
+    schema_type = node.entity_type if node else entity_type
+    if schema_type not in txn.onto.entity_types:
+        from commontrace.ontology import OntologyError
+
+        raise OntologyError("existing entity type is absent from the current ontology: " + schema_type)
+    schema = txn.onto.entity_types[schema_type].schema
+    if schema:
+        from commontrace.schema_properties import validate_properties
+
+        validate_properties({**(node.properties if node else {}), **(properties or {})}, schema)
     if node is not None:
         changed = False
         if name and name.strip() != node.name:
@@ -713,6 +723,32 @@ def get_neighbors(
             })
             break
     return results
+
+
+def feedback_edge(root: str, source: str, target: str, relation: str, *, event_id: str, helpful: bool) -> GraphEdge:
+    """Feedback-weighted edge revisions; replay of one outcome cannot add weight."""
+    if not event_id or not isinstance(helpful, bool):
+        raise ValueError("feedback needs an event id and a boolean outcome")
+    with batch(root) as txn:
+        edges = txn.by_key.get((_clean_id(source), _clean_id(target), relation), [])
+        active = [edge for edge in edges if edge.invalid_at is None]
+        if not active:
+            raise ValueError("no active edge matches feedback")
+        prior = active[-1]
+        outcomes = dict(prior.properties.get("feedback_outcomes", {}))
+        if event_id in outcomes:
+            if outcomes[event_id] != helpful:
+                raise ValueError("feedback outcome is immutable")
+            return prior
+        if len(outcomes) >= 2000:
+            raise ValueError("edge feedback ledger reached its configured bound")
+        outcomes[event_id] = helpful
+        successes = sum(outcomes.values())
+        # Beta(1,1) reliability; feedback is a ranking weight, not causal proof.
+        weight = (1 + successes) / (2 + len(outcomes))
+        return add_edge(root, source, target, relation, weight=weight, valid_at=_now(),
+                        properties={**prior.properties, "feedback_outcomes": outcomes},
+                        provenance={"kind": "feedback", "event_id": event_id})
 
 
 def multi_hop_subgraph(

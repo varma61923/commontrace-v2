@@ -78,6 +78,7 @@ class KnowledgePage:
     updated_at: str = field(default_factory=_now)
     last_actor: str = "agent"
     last_comment: str = ""
+    source_binding: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -101,16 +102,28 @@ def dry_run_diff(old_content: str, new_content: str, slug: str = "page") -> str:
     return "\n".join(diff).strip()
 
 
-def get_page(root: str, slug: str, version: int | None = None) -> KnowledgePage | None:
+def get_page(root: str, slug: str, version: int | None = None, *, _check_sources: bool = True) -> KnowledgePage | None:
     """Fetch the latest or a historical version of a knowledge page."""
     try:
         clean = _sanitize_slug(slug)
     except ValueError:
         return None
 
+    if _check_sources:
+        from commontrace import memory_control, wiki
+
+        for registration in memory_control.records(root, "wiki"):
+            if registration["text"] == clean:
+                try:
+                    digest, _facts = wiki.source_state(root, registration)
+                except PermissionError:
+                    return None
+                if digest != registration["data"].get("source_digest"):
+                    return None
+
     if version is not None:
         # Fetch specific historical version from history
-        for entry in page_history(root, clean):
+        for entry in page_history(root, clean, _check_sources=_check_sources):
             if entry.get("version") == version:
                 return KnowledgePage(
                     slug=clean,
@@ -123,6 +136,7 @@ def get_page(root: str, slug: str, version: int | None = None) -> KnowledgePage 
                     updated_at=entry.get("timestamp", _now()),
                     last_actor=entry.get("actor", "agent"),
                     last_comment=entry.get("comment", ""),
+                    source_binding=entry.get("source_binding", {}),
                 )
         return None
 
@@ -136,6 +150,8 @@ def get_page(root: str, slug: str, version: int | None = None) -> KnowledgePage 
             meta = json.load(f)
         with open(content_path, "r", encoding="utf-8") as f:
             content = f.read()
+        if _check_sources and not _binding_live(root, {**meta, "content": content}):
+            return None
         return KnowledgePage(
             slug=clean,
             title=meta.get("title", clean),
@@ -147,6 +163,7 @@ def get_page(root: str, slug: str, version: int | None = None) -> KnowledgePage 
             updated_at=meta.get("updated_at", _now()),
             last_actor=meta.get("last_actor", "agent"),
             last_comment=meta.get("last_comment", ""),
+            source_binding=meta.get("source_binding", {}),
         )
     except (OSError, ValueError):
         return None
@@ -187,13 +204,14 @@ def update_page(
     dry_run: bool = False,
     actor: str = "agent",
     comment: str = "",
+    source_binding: dict | None = None,
 ) -> dict[str, Any]:
     """Create or update a curated knowledge page with dry-run diff preview."""
     clean = _sanitize_slug(slug)
     os.makedirs(_pages_dir(root), exist_ok=True)
 
     with _jsonl.locked(_lock_file(root)):
-        current = get_page(root, clean)
+        current = get_page(root, clean, _check_sources=False)
         old_content = current.content if current else ""
         current_version = current.version if current else 0
         proposed_version = current_version + 1
@@ -206,6 +224,8 @@ def update_page(
 
         diff = dry_run_diff(old_content, content, slug=clean)
         changed = (old_content.strip() != content.strip())
+        if current and current.source_binding and source_binding is None and changed and not dry_run:
+            raise PermissionError("source-bound wiki pages must be updated through their refresh registration")
 
         if dry_run:
             return {
@@ -240,6 +260,16 @@ def update_page(
             "last_actor": actor.strip() or "agent",
             "last_comment": comment.strip(),
         }
+        binding = source_binding if source_binding is not None else (current.source_binding if current else {})
+        if binding:
+            from commontrace import memory_authority
+
+            binding = {k: v for k, v in binding.items() if k != "origin"}
+            binding.update(id=clean+":v"+str(proposed_version), kind="wiki-page", revision=revision,
+                           content=content, slug=clean, version=proposed_version, title=page_title,
+                           source_traces=binding["sources"])
+            binding["origin"] = memory_authority.bind(root, binding, sources=binding["sources"])
+        meta["source_binding"] = binding
 
         meta_path = _meta_file(root, clean)
         content_path = _content_file(root, clean)
@@ -269,6 +299,7 @@ def update_page(
             "created_at": created_at,
             "content": content,
             "diff": diff,
+            "source_binding": binding,
         })
 
         updated_page = KnowledgePage(
@@ -282,6 +313,7 @@ def update_page(
             updated_at=now_iso,
             last_actor=actor,
             last_comment=comment,
+            source_binding=binding,
         )
 
         return {
@@ -321,10 +353,30 @@ def delete_page(root: str, slug: str, actor: str = "agent", comment: str = "") -
         return True
 
 
-def page_history(root: str, slug: str = "") -> list[dict[str, Any]]:
+def _binding_live(root: str, row: dict) -> bool:
+    from commontrace import memory_authority, memory_control, wiki
+
+    binding = row.get("source_binding", {})
+    if not binding:
+        return not any(r["text"] == row.get("slug") for r in memory_control.records(root, "wiki"))
+    if any(binding.get(key) != row.get(key) for key in ("slug", "version", "revision", "content", "title")):
+        return False
+    if not memory_authority.verify(root, binding.get("origin", {}),
+                                   {k: v for k, v in binding.items() if k != "origin"}):
+        return False
+    try:
+        digest, _facts = wiki.source_state(root, {"scopes": binding["scopes"], "data": binding})
+    except (PermissionError, KeyError):
+        return False
+    return digest == binding.get("source_digest")
+
+
+def page_history(root: str, slug: str = "", *, _check_sources: bool = True) -> list[dict[str, Any]]:
     """Return immutable version history for one or all knowledge pages."""
     path = _history_file(root)
     rows = _jsonl.read_rows(path)
+    if _check_sources:
+        rows = [row for row in rows if isinstance(row, dict) and _binding_live(root, row)]
     if not slug:
         return rows
     try:

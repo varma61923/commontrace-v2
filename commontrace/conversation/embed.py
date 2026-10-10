@@ -6,6 +6,7 @@ import heapq
 import importlib.util
 import json
 import os
+import re
 import threading
 import time
 import weakref
@@ -50,15 +51,48 @@ def available() -> bool:
             and importlib.util.find_spec("sentence_transformers") is not None)
 
 
+def available_for(tag: str) -> bool:
+    """Whether `tag` can embed here, without loading anything: hosted providers need only numpy."""
+    if tag in MODELS:
+        return available()
+    from commontrace import embeddings
+
+    try:
+        spec = embeddings.parse(tag)
+    except embeddings.EmbeddingError:
+        return False
+    return importlib.util.find_spec("numpy") is not None if spec.hosted else available()
+
+
+def canonical(tag: str) -> str:
+    """The cache identity of an embedder tag: legacy local names stay as they are."""
+    if tag in MODELS:
+        return tag
+    from commontrace import embeddings
+
+    try:
+        return embeddings.parse(tag).tag
+    except embeddings.EmbeddingError as exc:
+        raise _store.ConversationError(str(exc)) from None
+
+
+def model_identity(tag: str) -> str:
+    """The stable model name recorded beside an index, so a changed model is detected."""
+    if tag in MODELS:
+        return MODELS[tag][0]
+    return canonical(tag)
+
+
 def configured() -> str | None:
-    """The embedder this host uses for conversation memory, or None for lexical only."""
-    tag = os.environ.get("COMMONTRACE_CONVERSATION_EMBEDDER", DEFAULT).strip().lower()
-    if tag in ("", "none", "off", "0"):
+    """The embedder this host uses for conversation memory, or None for lexical only.
+
+    Any tag from `commontrace.embeddings` is accepted, e.g. ``openai:text-embedding-3-small``.
+    """
+    raw = os.environ.get("COMMONTRACE_CONVERSATION_EMBEDDER", DEFAULT).strip()
+    if raw.lower() in ("", "none", "off", "0"):
         return None
-    if tag not in MODELS:
-        raise _store.ConversationError(
-            f"COMMONTRACE_CONVERSATION_EMBEDDER must be one of {sorted(MODELS)} or none, got {tag!r}")
-    return tag if available() else None
+    tag = raw.lower() if raw.lower() in MODELS else canonical(raw)
+    return tag if available_for(tag) else None
 
 
 def _model(tag: str):
@@ -85,9 +119,16 @@ class Embedder:
     def __init__(self, root: str, tag: str, *, read_only: bool = False):
         import numpy as np
 
+        tag = canonical(tag)
         self.np, self.tag, self.read_only = np, tag, read_only
+        self._provider = None
+        if tag not in MODELS:
+            from commontrace import embeddings
+
+            self._provider = embeddings.provider(tag)
         directory = _store.conversations_dir(root)
-        path = os.path.join(directory, f"embeddings-{tag}.db")
+        safe = tag if tag in MODELS else re.sub(r"[^A-Za-z0-9._-]+", "_", tag)
+        path = os.path.join(directory, f"embeddings-{safe}.db")
         if read_only:
             # vectors missing from a frozen cache are computed but never written back
             self.db = _store.connect(path, read_only=True) if os.path.isfile(path) else \
@@ -105,13 +146,23 @@ class Embedder:
             self.db.close()
 
     def encode(self, texts: list[str], query: bool = False):
-        prefix = MODELS[self.tag][1] if query else ""
-        model = _model(self.tag)
+        if self._provider is not None:
+            prefix = "query: " if query else ""
+            provider = self._provider
+            model = provider
 
-        def compute(items):
-            return model.encode([prefix + t for t in items], batch_size=BATCH,
-                                normalize_embeddings=True, convert_to_numpy=True,
-                                show_progress_bar=False).astype(self.np.float32)
+            def compute(items):
+                if not items:
+                    return self.np.zeros((0, 0), dtype=self.np.float32)
+                return self.np.asarray(provider.embed(list(items), query=query), dtype=self.np.float32)
+        else:
+            prefix = MODELS[self.tag][1] if query else ""
+            model = _model(self.tag)
+
+            def compute(items):
+                return model.encode([prefix + t for t in items], batch_size=BATCH,
+                                    normalize_embeddings=True, convert_to_numpy=True,
+                                    show_progress_bar=False).astype(self.np.float32)
 
         if not query or not texts:
             return compute(texts)

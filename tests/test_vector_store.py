@@ -170,3 +170,37 @@ def test_cancelled_sqlite_write_finishes_before_close(tmp_path):
         asyncio.run(run())
     finally:
         release.set()
+
+
+def test_repeated_searches_keep_a_custom_plan(factory):
+    # After five executions Postgres may cache a generic plan for asyncpg's prepared
+    # statement; that plan casts the query vector per row and cannot use HNSW, and
+    # was measured 60-85x slower. Later searches must stay as fast as the first.
+    import random
+    import time
+
+    async def run():
+        index = await factory(dimension=64)
+        try:
+            rng = random.Random(4)
+            await index.upsert([VectorRecord(f"k{i}", [rng.gauss(0, 1) for _ in range(64)], "r")
+                                for i in range(4000)])
+            query = [rng.gauss(0, 1) for _ in range(64)]
+            first, timings = None, []
+            for _ in range(12):
+                started = time.perf_counter()
+                hits = await index.search(query, top_k=10)
+                timings.append(time.perf_counter() - started)
+                first = first or [h.key for h in hits]
+                assert [h.key for h in hits] == first
+            assert sum(timings[8:]) / 4 < 5 * max(sum(timings[1:4]) / 3, 0.002)
+        finally:
+            await index.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("bad", [0, 1001, True, 2.5])
+def test_ef_search_is_validated_before_connecting(bad):
+    with pytest.raises(ValueError, match="ef_search"):
+        asyncio.run(PostgresVectorIndex.open("postgresql://unused", tenant="t", namespace="n", model="m",
+                                             dimension=3, approximate=True, ef_search=bad))

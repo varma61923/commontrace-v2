@@ -37,6 +37,27 @@ def _env_bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _market_referees(path: str) -> tuple[tuple[str, str, str], ...]:
+    if not path.strip():
+        return ()
+    import base64
+    import json
+
+    with open(path, encoding="utf-8") as fh:
+        cards = json.load(fh)
+    out = []
+    for card in cards if isinstance(cards, list) else []:
+        try:
+            key = base64.b64decode(card["public_key"], validate=True)
+            principal, organization = str(card["id"]), str(card["organization"])
+        except (KeyError, TypeError, ValueError):
+            raise ValueError("HUB_MARKET_REFEREES_FILE entries need id, organization and public_key") from None
+        if len(key) != 32 or not principal or not organization:
+            raise ValueError("HUB_MARKET_REFEREES_FILE entries need a 32-byte Ed25519 public_key")
+        out.append((principal, organization, card["public_key"]))
+    return tuple(out)
+
+
 def _env_cidr_list(name: str) -> tuple[str, ...]:
     raw = os.environ.get(name, "")
     if not raw.strip():
@@ -105,6 +126,9 @@ class HubConfig:
     commons_export_enabled: bool = False
     commons_signing_key: str = field(default="", repr=False)
     commons_signing_key_id: str = "default"
+    # Referee public cards (JSON list) whose replicated-lift certificates the
+    # marketplace accepts: ((principal_id, organization, base64 Ed25519 key), ...).
+    market_referees: tuple[tuple[str, str, str], ...] = ()
 
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""
@@ -262,6 +286,7 @@ class HubConfig:
             commons_export_enabled=_env_bool("HUB_COMMONS_EXPORT_ENABLED", False),
             commons_signing_key=env_secret("HUB_COMMONS_SIGNING_KEY"),
             commons_signing_key_id=os.environ.get("HUB_COMMONS_SIGNING_KEY_ID", "default"),
+            market_referees=_market_referees(os.environ.get("HUB_MARKET_REFEREES_FILE", "")),
             stripe_secret_key=env_secret("HUB_STRIPE_SECRET_KEY"),
             stripe_webhook_secret=env_secret("HUB_STRIPE_WEBHOOK_SECRET"),
             stripe_price_team=os.environ.get("HUB_STRIPE_PRICE_TEAM", ""),

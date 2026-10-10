@@ -128,9 +128,19 @@ def assign_and_log(
     revisions: dict[str, str | None] | None = None,
     durable: bool = True,
 ) -> set[str]:
-    """Decide which of `slugs` to withhold on this occasion, and record it."""
-    withheld = {s for s in slugs if experiment.is_held_out(s, occasion_id, rate, salt)}
-    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    """Decide which of `slugs` to withhold on this occasion, and record it.
+
+    When adaptive allocation is on for this experiment, each memory's rate
+    comes from the schedule in force now (see `allocation`); otherwise every
+    memory gets `rate`. Either way the logged rate is the one compared.
+    """
+    from commontrace import allocation
+
+    moment = datetime.datetime.now(datetime.timezone.utc)
+    schedule = allocation.active(root, salt, moment)
+    rates = {s: (schedule.rate_for(s) if schedule is not None else rate) for s in slugs}
+    withheld = {s for s in slugs if experiment.is_held_out(s, occasion_id, rates[s], salt)}
+    now = moment.isoformat()
 
     path = holdout_log_path(root)
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -141,7 +151,7 @@ def assign_and_log(
                 "occasion_id": occasion_id,
                 "lesson": slug,
                 "injected": slug not in withheld,
-                "rate": rate,
+                "rate": rates[slug],
                 "salt": salt,
                 "at": now,
                 "rank": rank,
@@ -157,6 +167,8 @@ def assign_and_log(
                 row["scorer"] = scorer
             if floor is not None:
                 row["floor"] = float(floor)
+            if schedule is not None:
+                row["schedule"] = schedule.digest[:16]
             lines.append(json.dumps(row))
         _append_lines(path, lines, durable)
     return withheld
@@ -272,6 +284,7 @@ class LogRecord:
     rank: int | None = None
     scorer: str | None = None
     floor: float | None = None
+    schedule: str | None = None
 
 
 def _parse_log_line(line: str) -> LogRecord | None:
@@ -301,6 +314,7 @@ def _parse_log_line(line: str) -> LogRecord | None:
         rank=_opt_int(raw.get("rank")),
         scorer=(str(raw["scorer"]) if raw.get("scorer") else None),
         floor=_opt_float(raw.get("floor")),
+        schedule=(str(raw["schedule"]) if raw.get("schedule") else None),
     )
 
 

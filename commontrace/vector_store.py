@@ -415,12 +415,13 @@ class PostgresVectorIndex(_Scoped):
     evaluation before opting into approximate retrieval.
     """
 
-    def __init__(self, pool: Any, scope: _Scope, *, approximate: bool) -> None:
+    def __init__(self, pool: Any, scope: _Scope, *, approximate: bool, ef_search: int | None = None) -> None:
         super().__init__(scope)
-        self._pool, self._approximate = pool, approximate
+        self._pool, self._approximate, self._ef_search = pool, approximate, ef_search
         from commontrace.postgres_vector_snapshots import PostgresSnapshots
 
-        self._snapshots: SnapshotBackend = PostgresSnapshots(pool, scope.sql(), approximate=approximate)
+        self._snapshots: SnapshotBackend = PostgresSnapshots(pool, scope.sql(), approximate=approximate,
+                                                             ef_search=ef_search)
 
     @property
     def snapshots(self) -> SnapshotBackend:
@@ -430,8 +431,14 @@ class PostgresVectorIndex(_Scoped):
     @classmethod
     async def open(cls, dsn: str, *, tenant: str, namespace: str, model: str,
                    dimension: int, min_size: int = 1, max_size: int = 8,
-                   approximate: bool = False, command_timeout: float = 30) -> PostgresVectorIndex:
+                   approximate: bool = False, command_timeout: float = 30,
+                   ef_search: int | None = None) -> PostgresVectorIndex:
+        """``ef_search`` sets HNSW's candidate list per approximate search (pgvector's
+        default is 40): larger finds more true neighbours and costs latency."""
         scope = _Scope(tenant, namespace, model, dimension)
+        if ef_search is not None and (isinstance(ef_search, bool) or not isinstance(ef_search, int)
+                                      or not 1 <= ef_search <= 1000):
+            raise ValueError("ef_search must be an integer from 1 to 1000")
         if isinstance(min_size, bool) or isinstance(max_size, bool) or not isinstance(min_size, int) \
                 or not isinstance(max_size, int) or not 0 <= min_size <= max_size or max_size < 1:
             raise ValueError("pool sizes must be integers with 0 <= min_size <= max_size and max_size >= 1")
@@ -477,7 +484,7 @@ class PostgresVectorIndex(_Scoped):
         except BaseException:
             await pool.close()
             raise
-        index = cls(pool, scope, approximate=approximate)
+        index = cls(pool, scope, approximate=approximate, ef_search=ef_search)
         try:
             await index.snapshots.initialize()
         except BaseException:
@@ -529,8 +536,14 @@ class PostgresVectorIndex(_Scoped):
         if not top_k or ids == []:
             return []
         async with self._pool.acquire() as db, db.transaction():
+            # asyncpg prepares this statement; after five runs Postgres may switch to a
+            # generic plan, which casts the query vector per row and cannot pick HNSW.
+            # Measured at 20k vectors: 1.2 s per query generic against 6-20 ms custom.
+            await db.execute("SET LOCAL plan_cache_mode=force_custom_plan")
             if self._approximate:
                 await db.execute("SET LOCAL hnsw.iterative_scan='strict_order'")
+                if self._ef_search is not None:
+                    await db.execute(f"SET LOCAL hnsw.ef_search={int(self._ef_search)}")
                 # A matching expression and partial predicate permit the HNSW index.
                 distance = f"embedding::vector({self.dimension}) <=> $5::text::vector({self.dimension})"
                 dimension = f"dimension=$4 AND dimension={self.dimension}"

@@ -46,6 +46,9 @@ _OPENER = urllib.request.build_opener(_HttpOnlyRedirects)
 
 
 def _get(url: str, user_agent: str, timeout: float, limit: int) -> tuple[str, bytes]:
+    from commontrace import offline
+
+    offline.check_url(url, "web crawling")
     req = urllib.request.Request(url, headers={"User-Agent": user_agent})
     with _OPENER.open(req, timeout=timeout) as resp:  # nosec B310 - http(s) only, checked above
         ctype = str(resp.headers.get("Content-Type", "") or "")

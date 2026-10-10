@@ -88,10 +88,12 @@ class PostgresSnapshots:
     grants a bounded lease independent of subsequent head publications.
     """
 
-    def __init__(self, pool: Any, scope: tuple[str, str, str, int], *, approximate: bool = False) -> None:
+    def __init__(self, pool: Any, scope: tuple[str, str, str, int], *, approximate: bool = False,
+                 ef_search: int | None = None) -> None:
         self._pool = pool
         self._scope = _Scope(*scope).sql()
         self._approximate = approximate
+        self._ef_search = ef_search
 
     async def initialize(self) -> None:
         async with self._pool.acquire() as db, db.transaction():
@@ -307,8 +309,12 @@ class PostgresSnapshots:
                 raise SnapshotConflict("reader lease is expired, released, or invalid")
             if not top_k or ids == []:
                 return []
+            # A generic plan would cast the query vector per row (see vector_store.search).
+            await db.execute("SET LOCAL plan_cache_mode=force_custom_plan")
             if self._approximate:
                 await db.execute("SET LOCAL hnsw.iterative_scan='strict_order'")
+                if self._ef_search is not None:
+                    await db.execute(f"SET LOCAL hnsw.ef_search={int(self._ef_search)}")
                 dimension = self._scope[3]
                 distance = f"embedding::vector({dimension}) <=> $5::text::vector({dimension})"
                 dimension_filter = f"dimension=$4 AND dimension={dimension}"

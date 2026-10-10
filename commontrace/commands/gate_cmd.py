@@ -25,12 +25,26 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         help="text (default), json, junit (for CI test reports), or github (Actions annotations).",
     )
     p.add_argument("--output", default=None, help="Write the report to this file instead of stdout.")
+    p.add_argument("--policy",
+                   help="JSON candidate exploration delivery policy; block unidentified or harmful changes.")
     p.set_defaults(func=run)
 
 
 def run(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
     result = gate.run(root, strict=args.strict)
+    if getattr(args, "policy", None):
+        import json
+
+        from commontrace import policy
+
+        try:
+            with open(args.policy, encoding="utf-8") as fh:
+                report = policy.evaluate(root, json.load(fh))
+            result.checks.append(gate.Check("policy", gate.PASS if report["safe_to_release"] else gate.FAIL,
+                                           report.get("reason", json.dumps(report))))
+        except (ValueError, OSError, PermissionError) as exc:
+            result.checks.append(gate.Check("policy", gate.FAIL, str(exc)))
     rendered = gate.RENDERERS[args.format](result)
     if args.output:
         with open(args.output, "w", encoding="utf-8") as fh:

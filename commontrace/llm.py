@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 
 from commontrace import llm_cache as llm_cache_mod
 from commontrace.circuit_breaker import CircuitBreaker, CircuitOpenError
+from commontrace.exceptions import InfrastructureError
 from commontrace.retry import call_with_retries, is_retryable
 from commontrace.runtime_cache import RuntimeCache
 from commontrace.secrets_provider import env_secret
@@ -18,15 +19,20 @@ _ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 _ANTHROPIC_VERSION = "2023-06-01"
 _ANTHROPIC_MAX_TOKENS = 1536
 _TIMEOUT_SECONDS = 60
-_SUPPORTED_PROVIDERS = ("anthropic", "openai-compatible", "ollama", "bedrock", "vertex")
+_SUPPORTED_PROVIDERS = ("anthropic", "openai-compatible", "ollama", "bedrock", "vertex", "local", "gemini")
 _CLOUD_PROVIDERS = ("bedrock", "vertex")
 
 _OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434/v1"
+_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+# Thinking models spend output tokens on reasoning before the answer.
+GEMINI_MAX_TOKENS = 8192
+GEMINI_TIMEOUT_SECONDS = 300
 
 REQUIRED_KEYS = ("rule", "applies_when", "do_not_apply_when", "evidence")
 
 _CIRCUITS = RuntimeCache[CircuitBreaker](max_entries=128, max_bytes=128 * 1024, ttl=3600,
                                        weigh=lambda _key, _value: 1024)
+_OVERLOADS = RuntimeCache(max_entries=128, max_bytes=128 * 1024, ttl=3600, weigh=lambda _key, _value: 1024)
 
 
 def _transient_provider_failure(error: BaseException) -> bool:
@@ -46,18 +52,30 @@ def _transient_provider_failure(error: BaseException) -> bool:
 
 
 def _provider_call(cfg: Config, prompt: str, caller) -> tuple[str, dict]:
-    if os.environ.get("COMMONTRACE_LLM_CIRCUIT_BREAKER", "1").strip().lower() in ("0", "false", "off", "no"):
-        return caller(cfg, prompt)
+    from commontrace.overload import OverloadPolicy
+
     key = (cfg.provider, cfg.model, cfg.base_url, cfg.region, cfg.project, cfg.cache_namespace,
            hashlib.sha256(cfg.api_key.encode("utf-8")).hexdigest())
+    overload = _OVERLOADS.get_or_load(key, OverloadPolicy)
+    def dispatch():
+        overload.admit()
+        try:
+            value = caller(cfg, prompt)
+        except Exception as exc:
+            overload.on_error(exc)
+            raise
+        overload.on_success()
+        return value
+    if os.environ.get("COMMONTRACE_LLM_CIRCUIT_BREAKER", "1").strip().lower() in ("0", "false", "off", "no"):
+        return dispatch()
     circuit = _CIRCUITS.get_or_load(key, CircuitBreaker)
     try:
-        return circuit.call(lambda: caller(cfg, prompt), transient=_transient_provider_failure)
+        return circuit.call(dispatch, transient=_transient_provider_failure)
     except CircuitOpenError as exc:
         raise LLMUnavailable(f"provider temporarily unavailable; retry in {exc.retry_after:.1f}s") from None
 
 
-class LLMUnavailable(RuntimeError):
+class LLMUnavailable(InfrastructureError):
     ...
 
 
@@ -79,7 +97,9 @@ class Config:
 def load_config() -> Config:
     """Provider settings from the environment."""
     provider = os.environ.get("COMMONTRACE_LLM_PROVIDER", DEFAULT_PROVIDER).strip().lower()
-    if provider not in _SUPPORTED_PROVIDERS:
+    from commontrace.providers import LLM_CREDENTIALS, LLMS
+
+    if provider not in (*_SUPPORTED_PROVIDERS, *LLMS.names()):
         raise LLMUnavailable(
             f"COMMONTRACE_LLM_PROVIDER={provider!r} is not supported "
             f"(use one of: {', '.join(_SUPPORTED_PROVIDERS)})."
@@ -91,7 +111,13 @@ def load_config() -> Config:
         api_key = env_secret("COMMONTRACE_LLM_API_KEY").strip()
     except RuntimeError:
         raise LLMUnavailable("configured LLM API secret could not be resolved") from None
-    if not api_key and provider not in _CLOUD_PROVIDERS and not ollama_alias:
+    if provider == "local":
+        from commontrace import local_llm
+
+        model = os.environ.get("COMMONTRACE_LLM_MODEL", "").strip() or local_llm.DEFAULT_MODEL
+        return Config(provider="local", model=model, api_key="",
+                      cache_namespace=os.environ.get("COMMONTRACE_LLM_CACHE_NAMESPACE", "").strip() or None)
+    if not api_key and provider not in _CLOUD_PROVIDERS and not ollama_alias and LLM_CREDENTIALS.get(provider, True):
         raise LLMUnavailable(
             "COMMONTRACE_LLM_API_KEY is not set -- no LLM-assisted draft is possible."
         )
@@ -144,32 +170,44 @@ class Draft:
     provenance: dict = field(default_factory=dict)
 
 
-def _post_json(url: str, headers: dict, payload: dict) -> dict:
+def _post_json(url: str, headers: dict, payload: dict, *, timeout: float | None = None) -> dict:
     import urllib.error
     import urllib.request
 
     if not _is_http_url(url):
         raise LLMUnavailable(f"refusing a non-http(s) URL: {url!r}")
+    from commontrace import offline
+
+    if offline.enabled() and not offline.is_loopback(url):
+        raise LLMUnavailable("offline mode: hosted model providers are disabled (COMMONTRACE_OFFLINE)")
     body = json.dumps(payload).encode("utf-8")
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, hdrs, newurl):
+            return None
+    opener = urllib.request.build_opener(NoRedirect)
+    def read_bounded(response) -> str:
+        raw = response.read(8*1024*1024+1)
+        if len(raw) > 8*1024*1024:
+            raise LLMUnavailable("provider response exceeds 8 MiB")
+        return raw.decode("utf-8")
 
     def _once() -> str:
         request = urllib.request.Request(url, data=body, headers=headers, method="POST")
         try:
-            with urllib.request.urlopen(request, timeout=_TIMEOUT_SECONDS) as resp:  # nosec B310 - scheme checked above
-                return resp.read().decode("utf-8")
+            with opener.open(request, timeout=timeout or _TIMEOUT_SECONDS) as resp:  # nosec B310 - scheme checked above
+                return read_bounded(resp)
         except urllib.error.HTTPError as exc:
-            bodies.append(exc.read().decode("utf-8", errors="replace")[:500])
+            exc.close()
             raise
 
-    bodies: list[str] = []
     # POST lesson drafts are idempotent (same payload → same draft text), so a
     # 5xx may be retried; 429 always is. Non-JSON/4xx surface immediately.
     raw, error = call_with_retries(_once, max_retries=4, idempotent=True)
     if error is not None:
         if isinstance(error, urllib.error.HTTPError):
             raise LLMUnavailable(
-                f"{url} returned HTTP {error.code}: {bodies[-1] if bodies else ''}") from error
-        raise LLMUnavailable(f"could not reach {url}: {error}") from error
+                f"Provider returned HTTP {error.code}") from error
+        raise LLMUnavailable("Provider request failed") from error
     try:
         return json.loads(raw)
     except ValueError as exc:
@@ -192,6 +230,41 @@ def _call_anthropic(config: Config, prompt: str) -> tuple[str, dict]:
     text = "".join(b.get("text", "") for b in blocks if isinstance(b, dict))
     usage = data.get("usage") or {}
     return text, {"input_tokens": usage.get("input_tokens"), "output_tokens": usage.get("output_tokens")}
+
+
+def gemini_request(config: Config, prompt: str, *, max_tokens: int = GEMINI_MAX_TOKENS,
+                   temperature: float = 0.0) -> tuple[str, dict, dict]:
+    """(url, headers, payload) for Google AI's generateContent (Gemini and Gemma models)."""
+    from urllib.parse import quote
+
+    base = (config.base_url or _GEMINI_BASE_URL).rstrip("/")
+    url = f"{base}/models/{quote(config.model, safe='-._')}:generateContent"
+    headers = {"x-goog-api-key": config.api_key, "content-type": "application/json"}
+    payload = {"contents": [{"role": "user", "parts": [{"text": prompt}]}],
+               "generationConfig": {"temperature": temperature, "maxOutputTokens": max_tokens,
+                                    "thinkingConfig": {"includeThoughts": False}}}
+    return url, headers, payload
+
+
+def gemini_parse(data: dict) -> tuple[str, dict]:
+    """The answer without thought parts; output tokens include the thinking that was billed."""
+    candidates = data.get("candidates") or []
+    if not candidates or not isinstance(candidates[0], dict):
+        reason = (data.get("promptFeedback") or {}).get("blockReason") or "no candidates"
+        raise LLMUnavailable(f"Gemini returned no answer ({reason})")
+    parts = (candidates[0].get("content") or {}).get("parts") or []
+    text = "".join(p.get("text", "") for p in parts if isinstance(p, dict) and not p.get("thought"))
+    if not text.strip() and candidates[0].get("finishReason") == "MAX_TOKENS":
+        raise LLMUnavailable("Gemini spent its whole output budget thinking; raise the output cap")
+    usage = data.get("usageMetadata") or {}
+    output = (usage.get("candidatesTokenCount") or 0) + (usage.get("thoughtsTokenCount") or 0)
+    return text, {"input_tokens": usage.get("promptTokenCount"), "output_tokens": output,
+                  "thinking_tokens": usage.get("thoughtsTokenCount") or 0}
+
+
+def _call_gemini(config: Config, prompt: str) -> tuple[str, dict]:
+    url, headers, payload = gemini_request(config, prompt)
+    return gemini_parse(_post_json(url, headers, payload, timeout=GEMINI_TIMEOUT_SECONDS))
 
 
 def _call_openai_compatible(config: Config, prompt: str) -> tuple[str, dict]:
@@ -287,6 +360,12 @@ def _sdk_missing(provider: str, package: str) -> LLMUnavailable:
         f"provider {provider!r} needs the optional {package} package: pip install 'commontrace[llm]'")
 
 
+def _call_local(config: Config, prompt: str) -> tuple[str, dict]:
+    from commontrace import local_llm
+
+    return local_llm.complete(config, prompt)
+
+
 def _call_bedrock(config: Config, prompt: str) -> tuple[str, dict]:
     try:
         import boto3
@@ -357,11 +436,19 @@ def complete(prompt: str, config: Config | None = None) -> tuple[str, dict]:
     When ``COMMONTRACE_LLM_CACHE=1``, provider/account-scoped calls share a
     bounded SQLite cache and concurrent identical calls share one provider call.
     """
+    from commontrace.llm_runtime import ACTIVE, PURPOSE
+
+    runtime = ACTIVE.get()
+    if runtime is not None:
+        return runtime.complete(prompt, purpose=PURPOSE.get(), config=config)
     cfg = config or load_config()
     cache = llm_cache_mod.LLMCache() if llm_cache_mod.enabled() else None
-    caller = {"anthropic": _call_anthropic, "openai-compatible": _call_openai_compatible,
+    from commontrace.providers import llm_caller
+
+    caller = llm_caller(cfg.provider, {"anthropic": _call_anthropic, "openai-compatible": _call_openai_compatible,
               "ollama": _call_openai_compatible,
-              "bedrock": _call_bedrock, "vertex": _call_vertex}[cfg.provider]
+              "bedrock": _call_bedrock, "vertex": _call_vertex, "local": _call_local,
+              "gemini": _call_gemini})
     # IAM/ADC identity may change independently of these routing fields. Require
     # an owner-supplied tenant/account namespace before caching cloud SDK calls.
     if cache is None or (cfg.provider in _CLOUD_PROVIDERS and not cfg.cache_namespace):

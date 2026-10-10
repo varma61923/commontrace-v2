@@ -23,7 +23,7 @@ MAX_OUTPUT_CHARS = 200_000
 # console can show their help and copyable command shape, but must not block the
 # gateway thread or replace the process serving the UI. Store setup/install are
 # safe because the runner pins their destination to the authenticated store.
-_TERMINAL_ONLY = frozenset({"daemon", "gateway", "serve", "watch"})
+_TERMINAL_ONLY = frozenset({"daemon", "gateway", "serve", "watch", "evolve"})
 
 _GROUPS: dict[str, tuple[str, ...]] = {
     "Capture": ("capture", "import", "trace", "ingest", "source"),
@@ -46,6 +46,7 @@ _GROUPS: dict[str, tuple[str, ...]] = {
 }
 
 _DESCRIPTIONS = {
+    "evolve": "Use scoped memory recipes, standing questions, hard rules and coding-agent onboarding.",
     "query": "Search approved lessons for a task or question.",
     "recall": "Fuse lessons, facts, graph relations, and conversations into one budgeted context.",
     "fact": "Manage temporal, scoped atomic facts and their lifecycle.",

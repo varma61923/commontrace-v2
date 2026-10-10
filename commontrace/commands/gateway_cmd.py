@@ -46,6 +46,8 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument("--allow-approval", action="store_true",
                    help="Let the console edit, approve and reject lessons in review (off by default: approving "
                         "changes what every agent is told).")
+    p.add_argument("--allow-self-signup", action="store_true",
+                   help="Allow rate-limited public agent enrollment into isolated scopes; off by default.")
     p.add_argument("--tls-cert", default=None)
     p.add_argument("--tls-key", default=None)
     p.set_defaults(func=run)
@@ -75,6 +77,7 @@ def run(args: argparse.Namespace) -> int:
         root, token=token,
         config=config, durable=not args.relaxed_durability, on_harm=args.on_harm,
         allowed_hosts=tuple(args.allow_host), allow_approval=args.allow_approval,
+        allow_self_signup=getattr(args, "allow_self_signup", False),
         token_provider=gateway_tokens.FileTokenProvider(root) if not args.stdio and not args.token else None)
     if args.stdio:
         print(f"[commontrace] gateway on stdio for {root}", file=sys.stderr)

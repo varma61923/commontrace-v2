@@ -15,7 +15,7 @@
   var token = "";
   var timer = null;
   var lastOk = 0;
-  var state = { status: null, capabilities: null, memories: null, agents: null, events: null, lessons: null, lesson: null, commandCatalog: null, commandResult: null, explorer: null, reviewDraft: null };
+  var state = { status: null, capabilities: null, memories: null, agents: null, events: null, lessons: null, lesson: null, commandCatalog: null, commandResult: null, explorer: null, reviewDraft: null, ledger: null };
   var selected = {};   // slug -> true, the review queue's bulk selection; survives repaints
   var notice = null;   // { kind: "ok"|"crit", text } shown on the next paint of the review views
   var lastPaint = "";
@@ -140,8 +140,10 @@
 
   var ROUTES = [
     { id: "overview", label: "Overview", title: "Overview" },
+    { id: "palace", label: "Memory Palace", title: "Memory Palace" },
     { id: "explore", label: "Explore memory", title: "Explore memory" },
     { id: "memories", label: "Memories", title: "What each memory did" },
+    { id: "ledger", label: "Learning Ledger", title: "Learning Ledger" },
     { id: "review", label: "Review", title: "Review queue" },
     { id: "lesson", label: "Review", title: "Lesson", hidden: true },
     { id: "live", label: "Live", title: "Live activity" },
@@ -249,6 +251,67 @@
     if (m && m.memories && m.memories.length) root.appendChild(memoriesPanel(m, true));
     else root.appendChild(empty("No measurements yet", "Verdicts appear once recalls are made with an occasion id and outcomes are reported under the same id.",
       "curl -H \"Authorization: Bearer $TOKEN\" -d '{\"occasion_id\":\"ep-1\",\"items\":[{\"id\":\"m1\",\"text\":\"…\"}]}' \\\n  -H 'Content-Type: application/json' http://localhost:8787/v1/recall"));
+    return root;
+  }
+
+  function viewPalace() {
+    var root = h("div", null, h("h1", { text: "Memory Palace" }),
+      h("p", { class: "lede", text: "Standing questions, hard rules, and experience awaiting review." }));
+    var data = state.palace;
+    if (!data) return root.appendChild(h("p", { text: "Loading…" })), root;
+    var attention = data.needs_attention || {};
+    root.appendChild(h("section", { class: "card" }, h("h2", { text: "Needs attention" }),
+      h("p", { text: num(attention.proposals || 0) + " suggestions awaiting review; " +
+        num((attention.jobs || {}).dead || 0) + " jobs exhausted their retries." })));
+    (data.models || []).forEach(function (model) {
+      var button = h("button", { type: "button", text: "Refresh answer" });
+      button.addEventListener("click", function () {
+        button.disabled = true;
+        post("/v1/control/refresh", { id: model.id }).then(function () {
+          button.textContent = "Refresh queued";
+        }).catch(function (e) { button.textContent = e.message; button.disabled = false; });
+      });
+      root.appendChild(h("section", { class: "card" }, h("h2", { text: model.text }),
+        h("pre", { text: ((model.data || {}).answer || {}).context || "Waiting for the offline memory engine." }), button));
+    });
+    var rules = h("section", { class: "card" }, h("h2", { text: "Hard rules" }));
+    (data.directives || []).forEach(function (rule) { rules.appendChild(h("p", { text: rule.text })); });
+    root.appendChild(rules);
+    (data.foresight || []).forEach(function (note) {
+      var inspect = h("pre", { text: JSON.stringify(note.data || {}, null, 2) });
+      var card = h("section", { class: "card" }, h("h2", { text: "Anticipatory note" }),
+        h("p", { text: note.text }), inspect);
+      if ((note.data || {}).status === "review") {
+        [true, false].forEach(function (approve) {
+          var button = h("button", { type: "button", text: approve ? "Approve note" : "Reject note" });
+          button.addEventListener("click", function () {
+            button.disabled = true;
+            post("/v1/control/review-foresight", { id: note.id, expected_revision: note.revision, approve: approve })
+              .then(function () { button.textContent = approve ? "Approved" : "Rejected"; })
+              .catch(function (e) { button.textContent = e.message; button.disabled = false; });
+          });
+          card.appendChild(button);
+        });
+      }
+      root.appendChild(card);
+    });
+    (data.suggestions || []).forEach(function (proposal) {
+      var details = h("details", null, h("summary", { text: "Inspect evidence and applicability" }),
+        h("pre", { text: JSON.stringify(proposal.data || {}, null, 2) }));
+      var reject = h("button", { type: "button", text: "Reject suggestion" });
+      reject.addEventListener("click", function () {
+        var reason = window.prompt("Why should this suggestion be rejected?");
+        if (!reason) return;
+        reject.disabled = true;
+        post("/v1/control/reject-proposal", { id: proposal.id, expected_revision: proposal.revision, reason: reason })
+          .then(function () { reject.textContent = "Rejected"; })
+          .catch(function (e) { reject.textContent = e.message; reject.disabled = false; });
+      });
+      root.appendChild(h("section", { class: "card" }, h("h2", { text: proposal.text }), details, reject));
+    });
+    if (!(data.models || []).length && !(data.suggestions || []).length) {
+      root.appendChild(empty("Build your memory palace", "Add a standing question to refresh its evidence in the background."));
+    }
     return root;
   }
 
@@ -900,7 +963,224 @@
     return root;
   }
 
-  var VIEWS = { overview: viewOverview, explore: viewExplore, memories: viewMemories, review: viewReview, lesson: viewLesson, live: viewLive, fleet: viewFleet, commands: viewCommands, safety: viewSafety };
+
+  // ---- Learning Ledger: value, releases, experiment designer, forensics, digest ------------------
+
+  var LEDGER_TABS = [
+    { id: "value", label: "Value" }, { id: "releases", label: "Releases" }, { id: "design", label: "Experiment designer" },
+    { id: "forensics", label: "Forensics" }, { id: "digest", label: "Weekly digest" }
+  ];
+  function ledgerTab() {
+    var t = hashQuery("tab");
+    return LEDGER_TABS.some(function (x) { return x.id === t; }) ? t : "value";
+  }
+  function ledgerHash(params) {
+    var q = Object.keys(params).filter(function (k) { return params[k] !== "" && params[k] !== null && params[k] !== undefined; })
+      .map(function (k) { return k + "=" + encodeURIComponent(params[k]); }).join("&");
+    return "#/ledger" + (q ? "?" + q : "");
+  }
+  function ledgerPath() {
+    var tab = ledgerTab();
+    if (tab === "value") return "ledger/executive";
+    if (tab === "releases") return hashQuery("to") ? "ledger/releases?to=" + encodeURIComponent(hashQuery("to")) : "ledger/releases";
+    if (tab === "design") {
+      var q = ["baseline", "effect", "rate", "daily"].map(function (k) {
+        var v = hashQuery(k); return v ? k + "=" + encodeURIComponent(v) : "";
+      }).filter(Boolean).join("&");
+      return "ledger/design" + (q ? "?" + q : "");
+    }
+    if (tab === "forensics") return hashQuery("occasion") ? "ledger/forensics?occasion=" + encodeURIComponent(hashQuery("occasion")) : null;
+    return "ledger/digest?days=" + encodeURIComponent(hashQuery("days") || "7");
+  }
+  function tile(label, value, note) {
+    return h("section", { class: "card" }, h("h2", { text: label }), h("p", { class: "big", text: value }),
+      note ? h("p", { class: "muted small", text: note }) : null);
+  }
+  function table(caption, heads, rows) {
+    var tr = h("tr");
+    var t = h("table", null, h("caption", { text: caption }), h("thead", null, tr));
+    heads.forEach(function (x) { tr.appendChild(h("th", { scope: "col", class: x.num ? "num" : null, text: x.label })); });
+    var tb = h("tbody");
+    rows.forEach(function (cells) {
+      var row = h("tr");
+      cells.forEach(function (c, i) {
+        var cell = i === 0 ? h("th", { scope: "row", class: "mono wrap" }) : h("td", { class: heads[i].num ? "num" : null });
+        if (c && c.nodeType) cell.appendChild(c); else cell.textContent = c === null || c === undefined ? "–" : String(c);
+        row.appendChild(cell);
+      });
+      tb.appendChild(row);
+    });
+    t.appendChild(tb);
+    return h("div", { class: "table-wrap", role: "region", "aria-label": caption, tabindex: "0" }, t);
+  }
+  // Cumulative lift against cumulative injected tokens, best lift-per-token first.
+  function frontierChart(points) {
+    var W = 560, H = 220, P = 40;
+    var maxX = Math.max.apply(null, points.map(function (p) { return p.cumulative_tokens; }).concat([1]));
+    var maxY = Math.max.apply(null, points.map(function (p) { return p.cumulative_effect; }).concat([0.01]));
+    function x(v) { return P + (W - 2 * P) * v / maxX; }
+    function y(v) { return H - P - (H - 2 * P) * v / maxY; }
+    var label = "Cumulative proven lift against injected tokens: " + points.map(function (p) {
+      return p.memory + " brings the total to " + pct(p.cumulative_effect) + " at " + p.cumulative_tokens + " tokens";
+    }).join("; ");
+    var chart = svg("svg", { viewBox: "0 0 " + W + " " + H, class: "f-svg frontier", role: "img", "aria-label": label },
+      svg("line", { class: "f-axis", x1: P, y1: H - P, x2: W - P, y2: H - P }),
+      svg("line", { class: "f-axis", x1: P, y1: P, x2: P, y2: H - P }),
+      svg("text", { x: W / 2, y: H - 8, "text-anchor": "middle", class: "f-num" }, "injected tokens per occasion"),
+      svg("text", { x: 12, y: P - 12, class: "f-num" }, "cumulative lift"));
+    var d = "M " + x(0) + " " + y(0);
+    points.forEach(function (p) { d += " L " + x(p.cumulative_tokens) + " " + y(p.cumulative_effect); });
+    chart.appendChild(svg("path", { d: d, fill: "none", stroke: "var(--accent)", "stroke-width": 2 }));
+    points.forEach(function (p) {
+      chart.appendChild(svg("circle", { cx: x(p.cumulative_tokens), cy: y(p.cumulative_effect), r: 4, fill: "var(--accent)" },
+        svg("title", {}, p.memory + ": " + pct(p.cumulative_effect) + " at " + p.cumulative_tokens + " tokens")));
+    });
+    return chart;
+  }
+  function download(name, text) {
+    var url = URL.createObjectURL(new Blob([text], { type: "text/markdown;charset=utf-8" }));
+    var a = h("a", { href: url, download: name });
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+  }
+  function hashForm(fields, submitLabel, onParams) {
+    var form = h("form", { class: "explore-controls" });
+    fields.forEach(function (f) {
+      var id = "ledger-" + f.name;
+      form.appendChild(h("label", { for: id }, f.label));
+      form.appendChild(h("input", { id: id, name: f.name, type: f.type || "text", value: hashQuery(f.name) || f.value || "",
+        step: f.step || null, min: f.min || null, max: f.max || null, inputmode: f.inputmode || null, required: f.required || null }));
+    });
+    form.appendChild(h("button", { class: "btn", type: "submit", text: submitLabel }));
+    form.addEventListener("submit", function (ev) {
+      ev.preventDefault();
+      var params = { tab: ledgerTab() };
+      fields.forEach(function (f) { params[f.name] = form.elements[f.name].value.trim(); });
+      location.hash = ledgerHash(params);
+    });
+    return form;
+  }
+
+  function ledgerValue(d) {
+    var root = h("div");
+    var grid = h("div", { class: "grid" });
+    grid.appendChild(tile("Occasions proven improved", num(d.proven_occasions_improved), "HELPS memories at the conservative lower bound"));
+    grid.appendChild(tile("Proven value", d.proven_value === null ? "Set a value per occasion" : num(d.proven_value),
+      d.value_per_occasion ? "At " + d.value_per_occasion + " per improved occasion" : "commontrace proof start --value-per-occasion"));
+    grid.appendChild(tile("Harmful memories withdrawn", d.harmful_withdrawn + " of " + d.harmful,
+      d.harmful > d.harmful_withdrawn ? "Restart the gateway with --on-harm withdraw" : "Nothing proven harmful is delivered"));
+    root.appendChild(grid);
+    if (d.frontier && d.frontier.length) {
+      root.appendChild(h("section", { class: "card" }, h("h2", { text: "Lift per token" }),
+        h("p", { class: "muted small", text: "Proven memories added best lift per token first. Where the curve flattens, more context buys little." }),
+        frontierChart(d.frontier)));
+    }
+    var rows = (d.memories || []).map(function (m) {
+      return [m.memory, verdictChip(m.verdict), pct(m.effect) + " [" + pct(m.ci[0]) + ", " + pct(m.ci[1]) + "]",
+        m.tokens, m.lift_per_1k_tokens === null ? null : pct(m.lift_per_1k_tokens / 1000, 3) + " / token",
+        m.verdict === "HURTS" ? (m.withdrawn ? "withdrawn" : "still delivered") : ""];
+    });
+    root.appendChild(rows.length ? table("Each memory's effect and cost",
+      [{ label: "Memory" }, { label: "Verdict" }, { label: "Effect [95% CI]", num: true }, { label: "Tokens", num: true },
+       { label: "Lift per token", num: true }, { label: "Harm" }], rows)
+      : empty("No measurements yet", "Effects appear once memories are recalled and outcomes recorded under an experiment."));
+    root.appendChild(h("p", { class: "muted small", text: d.basis }));
+    return root;
+  }
+  function ledgerReleases(d) {
+    var root = h("div");
+    if (d.releases) {
+      if (!d.releases.length) return empty("No releases yet", "Cut one to pin the active lessons.", "commontrace release cut --reason \"first release\"");
+      root.appendChild(table("Releases, newest first", [{ label: "Release" }, { label: "Created" }, { label: "By" }, { label: "Lessons", num: true }, { label: "Reason" }, { label: "Diff" }],
+        d.releases.map(function (r) {
+          return [r.id.slice(0, 12), r.created_at, r.actor, r.lessons, r.reason,
+            h("a", { href: ledgerHash({ tab: "releases", to: r.id }), text: "What changed" })];
+        })));
+      return root;
+    }
+    root.appendChild(h("p", null, h("a", { href: ledgerHash({ tab: "releases" }), text: "← All releases" })));
+    root.appendChild(h("h2", { text: "Release " + String(d.to).slice(0, 12) + (d.from ? " against " + String(d.from).slice(0, 12) : " (first release)") }));
+    var kv = h("dl", { class: "kv" }, h("dt", { text: "Added" }), h("dd", { text: (d.added || []).join(", ") || "none" }),
+      h("dt", { text: "Removed" }), h("dd", { text: (d.removed || []).join(", ") || "none" }),
+      h("dt", { text: "Changed" }), h("dd", { text: (d.changed || []).map(function (c) { return c.lesson; }).join(", ") || "none" }));
+    root.appendChild(h("section", { class: "card" }, kv));
+    (d.changed || []).forEach(function (c) {
+      root.appendChild(h("section", { class: "card" }, h("h3", { text: c.lesson }),
+        c.diff ? h("pre", { class: "command-pre" }, h("code", { text: c.diff })) : h("p", { class: "muted", text: "Text for one side is not in the revision journal." })));
+    });
+    return root;
+  }
+  function ledgerDesign(d) {
+    var root = h("div");
+    root.appendChild(hashForm([
+      { name: "baseline", label: "Current success rate (0-1)", type: "number", step: "0.01", min: "0.01", max: "0.99", value: "0.5" },
+      { name: "effect", label: "Smallest effect worth detecting", type: "number", step: "0.01", min: "0.01", max: "0.9", value: "0.1" },
+      { name: "rate", label: "Holdout rate", type: "number", step: "0.01", min: "0.01", max: "0.99", value: "0.1" },
+      { name: "daily", label: "Occasions per day (optional)", type: "number", step: "1", min: "1" }
+    ], "Plan"));
+    if (!d) return root;
+    var grid = h("div", { class: "grid" });
+    grid.appendChild(tile("Occasions per arm", num(d.n_per_arm), "at " + plain(d.power) + " power"));
+    grid.appendChild(tile("Occasions needed", num(d.occasions_needed), "at a " + plain(d.rate) + " holdout"));
+    if (d.days_needed !== undefined) grid.appendChild(tile("Days needed", String(d.days_needed), "at your daily volume"));
+    root.appendChild(grid);
+    root.appendChild(h("p", null, rich(d.verdict)));
+    root.appendChild(h("pre", null, h("code", { text: d.command })));
+    return root;
+  }
+  function ledgerForensics(d) {
+    var root = h("div");
+    root.appendChild(hashForm([{ name: "occasion", label: "Occasion id", required: true }], "Investigate"));
+    if (!d) return root;
+    if (!d.found) { root.appendChild(empty("Nothing recorded for that occasion", "Check the id against the Live view.")); return root; }
+    root.appendChild(h("p", null, "Outcome: ", d.outcome === null || d.outcome === undefined ? "not reported" : d.outcome ? "succeeded" : "failed"));
+    root.appendChild(table("Memories eligible on this occasion", [{ label: "Memory" }, { label: "Arm" }, { label: "Rank", num: true }, { label: "Relevance", num: true }, { label: "Revision" }],
+      d.assignments.map(function (a) { return [a.memory, a.injected ? "delivered" : "withheld", a.rank, a.relevance, a.revision ? a.revision.slice(0, 12) : null]; })));
+    d.incident_reports.forEach(function (r) {
+      root.appendChild(table("Incident report: deletion-and-replay sensitivity" + (r.signed ? " (signed)" : ""),
+        [{ label: "Memory" }, { label: "Full", num: true }, { label: "Without it", num: true }, { label: "Sensitivity", num: true }],
+        (r.results || []).map(function (x) { return [x.memory_id, x.full, x.ablated, x.sensitivity]; })));
+    });
+    if (!d.incident_reports.length) root.appendChild(h("p", { class: "muted small" }, rich("No incident report for this occasion. Run `commontrace assurance forensics` with a replay evaluator to rank which memories mattered.")));
+    root.appendChild(h("p", { class: "muted small", text: d.recall_receipts.length + " signed recall receipt(s) on record." }));
+    return root;
+  }
+  function ledgerDigest(d) {
+    var root = h("div");
+    var select = h("select", { id: "ledger-days", "aria-label": "Digest period" });
+    [7, 14, 30, 90].forEach(function (n) {
+      var o = h("option", { value: n, text: "Last " + n + " days" });
+      if (String(n) === (hashQuery("days") || "7")) o.selected = true;
+      select.appendChild(o);
+    });
+    select.addEventListener("change", function () { location.hash = ledgerHash({ tab: "digest", days: select.value }); });
+    var button = h("button", { class: "btn", type: "button", text: "Download Markdown" });
+    button.addEventListener("click", function () { if (d) download("commontrace-digest-" + d.until.slice(0, 10) + ".md", d.markdown); });
+    root.appendChild(h("div", { class: "toolbar" }, select, button));
+    if (d) root.appendChild(h("section", { class: "card" }, h("pre", { class: "command-pre" }, h("code", { text: d.markdown }))));
+    return root;
+  }
+  function viewLedger() {
+    var root = h("div"), tab = ledgerTab(), needs = ledgerPath();
+    // A response fetched for another tab or query is never rendered as this one.
+    var d = state.ledger && state.ledger.path === needs ? state.ledger.data : null;
+    root.appendChild(h("h1", { text: "Learning Ledger" }));
+    root.appendChild(h("p", { class: "lede", text: "What the memory is worth, what changed, how to measure it, and what happened on any occasion." }));
+    var tabs = h("nav", { class: "tabs", "aria-label": "Ledger sections" });
+    LEDGER_TABS.forEach(function (t) {
+      tabs.appendChild(h("a", { href: ledgerHash({ tab: t.id }), text: t.label, "aria-current": t.id === tab ? "page" : null }));
+    });
+    root.appendChild(tabs);
+    if (needs && !d) { root.appendChild(h("p", { class: "muted", text: "Loading…" })); return root; }
+    if (tab === "value") root.appendChild(ledgerValue(d));
+    else if (tab === "releases") root.appendChild(ledgerReleases(d));
+    else if (tab === "design") root.appendChild(ledgerDesign(d));
+    else if (tab === "forensics") root.appendChild(ledgerForensics(needs ? d : null));
+    else root.appendChild(ledgerDigest(d));
+    return root;
+  }
+
+  var VIEWS = { ledger: viewLedger, overview: viewOverview, palace: viewPalace, explore: viewExplore, memories: viewMemories, review: viewReview, lesson: viewLesson, live: viewLive, fleet: viewFleet, commands: viewCommands, safety: viewSafety };
 
   function viewAuth(message) {
     var input = h("input", { id: "tok", type: "password", autocomplete: "off", spellcheck: "false", "aria-describedby": "tok-help" });
@@ -929,7 +1209,7 @@
   function paint(force) {
     var route = currentRoute();
     var sig = route.id + "|" + location.hash + "|" + JSON.stringify([state.status, state.capabilities, state.memories, state.agents, state.events,
-      state.lessons, state.lesson, state.commandCatalog, state.commandResult, state.explorer, state.reviewDraft, selected, notice]);
+      state.lessons, state.lesson, state.commandCatalog, state.commandResult, state.explorer, state.reviewDraft, state.ledger, selected, notice]);
     if (!force && sig === lastPaint) return;
     if (!force && editing()) return;
     lastPaint = sig;
@@ -991,12 +1271,15 @@
     if (route === "overview" || route === "memories" || route === "lesson") wants.push("memories");
     if (route === "overview" || route === "fleet" || route === "safety") wants.push("agents");
     if (route === "live") wants.push("occasions");
+    if (route === "palace") wants.push("palace");
     var reviewOffset = Number(hashQuery("offset"));
     if (!Number.isSafeInteger(reviewOffset) || reviewOffset < 0) reviewOffset = 0;
     var reviewPath = "lessons?status=review&limit=50&offset=" + reviewOffset;
     if (route === "review") wants.push(reviewPath);
     if (route === "lesson") wants.push("lesson?slug=" + encodeURIComponent(hashQuery("slug")));
     if (route === "commands") wants.push("command-catalog");
+    var ledgerWant = route === "ledger" ? ledgerPath() : null;
+    if (ledgerWant) wants.push(ledgerWant);
     var keys = {
       capabilities: "capabilities", occasions: "events", "lessons?status=review": "lessons",
       "command-catalog": "commandCatalog"
@@ -1007,7 +1290,10 @@
         // A slow poll from an earlier page or credential must never replace
         // newer results, or turn a valid new connection into a signed-out one.
         if (!current()) return;
-        pairs.forEach(function (p) { state[keys[p[0]] || (p[0].indexOf("lesson?") === 0 ? "lesson" : p[0])] = p[1]; });
+        pairs.forEach(function (p) {
+          if (p[0] === ledgerWant) { state.ledger = { path: ledgerWant, data: p[1] }; return; }
+          state[keys[p[0]] || (p[0].indexOf("lesson?") === 0 ? "lesson" : p[0])] = p[1];
+        });
         if (wants.indexOf("capabilities") !== -1) { capabilitiesAt = Date.now(); capabilitiesToken = requestedToken; }
         lastOk = Date.now();
         setConn("ok", "Live · updated " + ago(new Date(lastOk).toISOString()));

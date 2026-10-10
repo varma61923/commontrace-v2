@@ -81,11 +81,34 @@ def add_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) 
             "--expected-revision", default=None,
             help="Only mutate this revision; an empty string requires a missing block.",
         )
+    for every in (p_list, p_get, p_set, p_app, p_rep, p_ins, p_del, p_hist, p_render):
+        every.add_argument(
+            "--scope", default="",
+            help="Block scope: global (default), session:<id> or agent:<id>.",
+        )
+    for reader in (p_list, p_get, p_render):
+        reader.add_argument("--session", default="",
+                            help="Resolved view: this session's blocks shadow the agent's and global ones.")
+        reader.add_argument("--agent", default="",
+                            help="Resolved view: this agent's blocks shadow the global ones.")
+
+
+def _scope(args: argparse.Namespace) -> str:
+    return getattr(args, "scope", "") or ""
+
+
+def _resolved(args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "session", "") or getattr(args, "agent", ""))
 
 
 def run_list(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
-    blocks = memory_blocks.list_blocks(root)
+    try:
+        blocks = (memory_blocks.resolved_blocks(root, session=args.session, agent=args.agent)
+                  if _resolved(args) else memory_blocks.list_blocks(root, scope=_scope(args)))
+    except memory_blocks.MemoryBlockError as exc:
+        print(f"[commontrace] {exc}", file=sys.stderr)
+        return 1
     if not blocks:
         print("No memory blocks configured. Run `commontrace block set <name> <content>` to create one.")
         return 0
@@ -93,19 +116,22 @@ def run_list(args: argparse.Namespace) -> int:
     print(f"{'NAME':<15} {'CHARS':<10} {'QUOTA':<10} {'REVISION':<18} {'UPDATED'}")
     print("-" * 75)
     for b in blocks:
-        print(f"{b.name:<15} {b.char_count:<10} {b.max_chars:<10} {b.revision:<18} {b.updated_at[:19]}")
+        where = f"  [{b.scope}]" if b.scope else ""
+        print(f"{b.name:<15} {b.char_count:<10} {b.max_chars:<10} {b.revision:<18} {b.updated_at[:19]}{where}")
     return 0
 
 
 def run_get(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
     try:
-        b = memory_blocks.get_block(root, args.name)
-    except memory_blocks.BlockNotFoundError as exc:
+        b = (memory_blocks.resolve_block(root, args.name, session=args.session, agent=args.agent)
+             if _resolved(args) else memory_blocks.get_block(root, args.name, scope=_scope(args)))
+    except memory_blocks.MemoryBlockError as exc:
         print(f"[commontrace] {exc}", file=sys.stderr)
         return 1
 
-    print(f"# Block: {b.name} (rev: {b.revision}, chars: {b.char_count}/{b.max_chars})")
+    where = f", scope: {b.scope}" if b.scope else ""
+    print(f"# Block: {b.name} (rev: {b.revision}, chars: {b.char_count}/{b.max_chars}{where})")
     print(f"# Updated: {b.updated_at}")
     print("-" * 60)
     print(b.content)
@@ -124,6 +150,7 @@ def run_set(args: argparse.Namespace) -> int:
             reason=args.reason,
             read_only=bool(getattr(args, "read_only", False)),
             expected_revision=getattr(args, "expected_revision", None),
+            scope=_scope(args),
         )
     except memory_blocks.MemoryBlockError as exc:
         print(f"[commontrace] {exc}", file=sys.stderr)
@@ -143,6 +170,7 @@ def run_append(args: argparse.Namespace) -> int:
             actor=args.actor,
             reason=args.reason,
             expected_revision=getattr(args, "expected_revision", None),
+            scope=_scope(args),
         )
     except memory_blocks.MemoryBlockError as exc:
         print(f"[commontrace] {exc}", file=sys.stderr)
@@ -163,6 +191,7 @@ def run_replace(args: argparse.Namespace) -> int:
             actor=args.actor,
             reason=args.reason,
             expected_revision=getattr(args, "expected_revision", None),
+            scope=_scope(args),
         )
     except memory_blocks.MemoryBlockError as exc:
         print(f"[commontrace] {exc}", file=sys.stderr)
@@ -174,7 +203,11 @@ def run_replace(args: argparse.Namespace) -> int:
 
 def run_history(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
-    entries = memory_blocks.block_history(root, args.name)
+    try:
+        entries = memory_blocks.block_history(root, args.name, scope=_scope(args))
+    except memory_blocks.MemoryBlockError as exc:
+        print(f"[commontrace] {exc}", file=sys.stderr)
+        return 1
     if not entries:
         print("No revision history recorded.")
         return 0
@@ -198,6 +231,7 @@ def run_delete(args: argparse.Namespace) -> int:
         ok = memory_blocks.delete_block(
             root, args.name, actor=args.actor, reason=args.reason,
             expected_revision=getattr(args, "expected_revision", None),
+            scope=_scope(args),
         )
     except memory_blocks.MemoryBlockError as exc:
         print(f"[commontrace] {exc}", file=sys.stderr)
@@ -220,6 +254,7 @@ def run_insert(args: argparse.Namespace) -> int:
             actor=args.actor,
             reason=args.reason,
             expected_revision=getattr(args, "expected_revision", None),
+            scope=_scope(args),
         )
     except memory_blocks.MemoryBlockError as exc:
         print(f"[commontrace] {exc}", file=sys.stderr)
@@ -230,6 +265,11 @@ def run_insert(args: argparse.Namespace) -> int:
 
 def run_render(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
-    blocks = memory_blocks.list_blocks(root)
+    try:
+        blocks = (memory_blocks.resolved_blocks(root, session=args.session, agent=args.agent)
+                  if _resolved(args) else memory_blocks.list_blocks(root, scope=_scope(args)))
+    except memory_blocks.MemoryBlockError as exc:
+        print(f"[commontrace] {exc}", file=sys.stderr)
+        return 1
     print(memory_blocks.render_memory_blocks(blocks))
     return 0

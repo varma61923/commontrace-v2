@@ -14,6 +14,16 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Manage curated knowledge pages / mental models with dry-run diffs.",
     )
     sub = p.add_subparsers(dest="subcommand", required=True)
+    tree = sub.add_parser("tree", help="Browse the wiki hierarchy.")
+    tree.add_argument("--dest")
+    tree.set_defaults(func=run_tree)
+    watch = sub.add_parser("watch", help="Refresh a page in the background when source facts change.")
+    watch.add_argument("slug")
+    watch.add_argument("--question", required=True)
+    watch.add_argument("--source", action="append", required=True)
+    watch.add_argument("--context", action="append", required=True)
+    watch.add_argument("--dest")
+    watch.set_defaults(func=run_watch)
 
     # list
     p_list = sub.add_parser("list", help="List all curated knowledge pages.")
@@ -71,6 +81,21 @@ def run_list(args: argparse.Namespace) -> int:
         v_str = f"v{p.version}"
         tags_str = f"[{', '.join(p.tags)}]" if p.tags else ""
         print(f"  {v_str:6s} {p.slug:32s} {p.title:28s} ({p.char_count} chars) {tags_str}")
+    return 0
+
+
+def run_tree(args):
+    from commontrace import wiki
+
+    print(json.dumps(wiki.tree(paths.resolve_root(args.dest)), indent=2))
+    return 0
+
+
+def run_watch(args):
+    from commontrace import wiki
+
+    print(json.dumps(wiki.register(paths.resolve_root(args.dest), args.slug, args.question,
+                                   args.source, context=args.context), indent=2))
     return 0
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime
 import glob
 import json
 import os
@@ -100,6 +101,28 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
              "store has ever done is in the log; the default is the one configured now, "
              "because pooling two is not a bigger experiment, it is a broken one.",
     )
+    p.add_argument(
+        "--by", choices=("agent_type", "agent_id"), default=None,
+        help="Exploratory subgroup reading: each lesson's randomized effect per agent type or "
+             "agent, plus a test of whether the effect differs between them (flags a lesson "
+             "that helps one context and hurts another). Pre-treatment fields only.",
+    )
+    p.add_argument(
+        "--covariates", default=None, metavar="FILE",
+        help="With --by omitted: JSONL {occasion_id, group} subgroups you supply. They must "
+             "be fixed before the lesson could act (a customer tier, a robot model), never "
+             "something recorded after the task.",
+    )
+    p.add_argument(
+        "--draft-revisions", action="store_true",
+        help="With --by/--covariates: for each CROSSING lesson, write a review-status revision whose "
+             "applies_when keeps only the subgroups where it significantly helps.",
+    )
+    p.add_argument(
+        "--interactions", action="store_true",
+        help="Exploratory factorial reading: for lessons eligible on the same occasions, does one change "
+             "the other's effect (SYNERGY / INTERFERENCE)? Uses their independent randomizations.",
+    )
     p.add_argument("--dest", default=None)
     p.set_defaults(func=run)
 
@@ -157,6 +180,7 @@ def _load(root: str) -> tuple[list[integrity.Assignment], float, int]:
             rank=rec.rank,
             scorer=rec.scorer,
             floor=rec.floor,
+            schedule=rec.schedule,
         )
         for rec in records
     ]
@@ -174,17 +198,38 @@ def scope_to_current_salt(
     return rows, wanted_salt, len(all_rows) - len(rows)
 
 
-def _observations(rows: list[integrity.Assignment]) -> list[experiment.HoldoutObservation]:
+def _observations(rows: list[integrity.Assignment],
+                  schedules: list | None = None) -> list[experiment.HoldoutObservation]:
+    """Resolved assignments as observations. `schedules` marks rows made under adaptive
+    allocation when the rows themselves carry no schedule tag (a proof package's CSV)."""
     unique, _ = integrity.normalize(rows)
+    # Assignment order, so the propensity-weighted estimator (used when a lesson's rate
+    # changed) reads the same sequence from the live log and from a proof package's CSV.
+    epoch = datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
+    ordered = sorted(unique, key=lambda r: (_aware(r.at) if r.at is not None else epoch, r.occasion_id))
     return [
         experiment.HoldoutObservation(
             lesson_slug=r.lesson,
             occasion_id=r.occasion_id,
             injected=r.injected,
             succeeded=bool(r.succeeded),
+            rate=r.rate,
+            scheduled=bool(r.schedule) or _in_schedule(r, schedules),
         )
-        for r in unique if r.succeeded is not None
+        for r in ordered if r.succeeded is not None
     ]
+
+
+def _in_schedule(row: integrity.Assignment, schedules: list | None) -> bool:
+    if not schedules or row.at is None:
+        return False
+    from commontrace import allocation
+
+    return allocation.in_force(schedules, row.salt, _aware(row.at)) is not None
+
+
+def _aware(moment: datetime.datetime) -> datetime.datetime:
+    return moment if moment.tzinfo is not None else moment.replace(tzinfo=datetime.timezone.utc)
 
 
 def _relevance_sensitivity(rows: list[integrity.Assignment], args) -> dict[str, dict]:
@@ -439,6 +484,14 @@ def run(args: argparse.Namespace) -> int:
         )
         return 0
 
+    if getattr(args, "interactions", False):
+        return _run_interactions(args, obs, report)
+    if getattr(args, "by", None) or getattr(args, "covariates", None):
+        return _run_subgroups(args, root, obs, report)
+    if getattr(args, "draft_revisions", False):
+        print("[commontrace] --draft-revisions needs --by or --covariates.", file=sys.stderr)
+        return 2
+
     effects = experiment.analyze(
         obs, min_arm=args.min_arm, alpha=args.alpha, detectable=args.detect,
         sequential=not args.fixed_horizon)
@@ -522,4 +575,57 @@ def run(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 1
+    return 0
+
+
+def _run_interactions(args, obs, report) -> int:
+    from commontrace import interactions
+
+    if report.verdict == integrity.VERDICT_COMPROMISED:
+        print("[commontrace] the experiment's audit is COMPROMISED; interaction readings from it would be "
+              "unreliable. Run `commontrace experiment` for the reasons.", file=sys.stderr)
+        return 1
+    results = interactions.analyze(obs, alpha=args.alpha)
+    if args.json:
+        print(json.dumps({"exploratory": True, "reading": "fixed-horizon",
+                          "pairs": [p.as_dict() for p in results]}, indent=2))
+    else:
+        print(interactions.render(results))
+    if args.strict and any(p.flag == interactions.FLAG_INTERFERENCE for p in results):
+        return 1
+    return 0
+
+
+def _run_subgroups(args, root, obs, report) -> int:
+    from commontrace import heterogeneity
+
+    if args.by and args.covariates:
+        print("[commontrace] use --by or --covariates, not both.", file=sys.stderr)
+        return 2
+    if report.verdict == integrity.VERDICT_COMPROMISED:
+        print("[commontrace] the experiment's audit is COMPROMISED; subgroup effects from it would be "
+              "as unreliable as the overall ones. Run `commontrace experiment` for the reasons.",
+              file=sys.stderr)
+        return 1
+    try:
+        groups = (heterogeneity.occasion_groups_from_file(args.covariates) if args.covariates
+                  else heterogeneity.occasion_groups_from_traces(root, args.by))
+        results = heterogeneity.analyze(obs, groups, min_arm=args.min_arm, alpha=args.alpha)
+    except (OSError, ValueError) as exc:
+        print(f"[commontrace] subgroup analysis refused: {exc}", file=sys.stderr)
+        return 2
+    label = args.by or "covariates"
+    drafted = []
+    if getattr(args, "draft_revisions", False):
+        drafted = [d for d in (heterogeneity.draft_narrowing(root, h, label) for h in results) if d]
+    if args.json:
+        print(json.dumps({"by": label, "exploratory": True, "reading": "fixed-horizon",
+                          "labelled_occasions": len(groups),
+                          "lessons": [h.as_dict() for h in results], "drafted": drafted}, indent=2))
+    else:
+        print(heterogeneity.render(results, label))
+        for path in drafted:
+            print(f"[commontrace] drafted {path} (status=review); approve it to replace the broad version.")
+    if args.strict and any(h.flag == heterogeneity.FLAG_CROSSING for h in results):
+        return 1
     return 0
