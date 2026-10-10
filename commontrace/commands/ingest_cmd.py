@@ -21,7 +21,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     choices = [
         "code", "markdown", "json-logs", "logs", "transcript",
         "fact-triples", "fact_triples", "triples", "multimodal",
-        "pipeline", "modular", "docs",
+        "pipeline", "modular", "docs", "relations",
     ]
     p.add_argument(
         "--type", dest="source_type",
@@ -194,7 +194,7 @@ def run(args: argparse.Namespace) -> int:
 
     pipeline = IngestionPipeline()
     kwargs: dict = {}
-    if source_type in ("code", "markdown", "multimodal"):
+    if source_type in ("code", "markdown", "multimodal", "relations"):
         kwargs["max_files"] = args.max_files
     if source_type == "json_logs":
         kwargs["service_name"] = args.service

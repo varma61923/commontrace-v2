@@ -45,6 +45,23 @@ DEFAULT_RELATIONS: dict[str, dict] = {
     "status": {"exclusive": True},
     "works_at": {"domain": ["person", "user"], "range": ["organization"], "exclusive": True},
 }
+# Head words that name a type in a mention ("Payments Service", "Q3 Launch") or sit
+# next to it ("the city of Berlin"); ontology files add or override per type.
+DEFAULT_TYPE_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "service": ("service", "server", "api", "database", "db", "queue", "cache", "cluster", "gateway",
+                "backend", "microservice", "endpoint"),
+    "tool": ("cli", "sdk", "library", "framework", "plugin", "toolkit", "compiler", "linter"),
+    "error": ("error", "exception", "failure", "fault", "timeout", "crash", "panic"),
+    "person": ("mr", "mrs", "ms", "dr", "prof", "engineer", "developer", "manager", "ceo", "cto", "founder"),
+    "organization": ("inc", "corp", "corporation", "llc", "ltd", "gmbh", "labs", "company", "foundation",
+                     "university", "institute", "agency", "department"),
+    "place": ("city", "town", "village", "country", "county", "province", "region", "street", "avenue",
+              "river", "lake", "mountain", "island", "airport"),
+    "event": ("outage", "incident", "release", "launch", "conference", "summit", "meeting", "migration",
+              "workshop", "hackathon"),
+    "document": ("document", "spec", "specification", "rfc", "readme", "report", "runbook", "handbook",
+                 "policy"),
+}
 FALLBACK_TYPE = "concept"
 FALLBACK_RELATION = "relates_to"
 
@@ -59,6 +76,7 @@ class EntityType:
     description: str = ""
     parent: str | None = None
     schema: dict = field(default_factory=dict)
+    keywords: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -120,7 +138,7 @@ class Ontology:
     @classmethod
     def default(cls) -> Ontology:
         return cls(
-            entity_types={n: EntityType(n) for n in DEFAULT_ENTITY_TYPES},
+            entity_types={n: EntityType(n, keywords=DEFAULT_TYPE_KEYWORDS.get(n, ())) for n in DEFAULT_ENTITY_TYPES},
             relations={n: RelationType(n, domain=tuple(o.get("domain", ())), range=tuple(o.get("range", ())),
                                        exclusive=o.get("exclusive", False), symmetric=o.get("symmetric", False),
                                        inverse=o.get("inverse"))
@@ -198,7 +216,8 @@ class Ontology:
     def to_dict(self) -> dict:
         return {
             "source": self.source, "strict": self.strict,
-            "entity_types": {n: {"description": t.description, "parent": t.parent, "schema": t.schema}
+            "entity_types": {n: {"description": t.description, "parent": t.parent, "schema": t.schema,
+                                 "keywords": list(t.keywords)}
                              for n, t in sorted(self.entity_types.items())},
             "relations": {n: {"description": r.description, "domain": list(r.domain), "range": list(r.range),
                               "exclusive": r.exclusive, "symmetric": r.symmetric, "inverse": r.inverse}
@@ -216,9 +235,15 @@ def _from_mapping(data: dict, source: str) -> Ontology:
     base.source, base.strict = source, bool(data.get("strict", False))
     for name, spec in (data.get("entity_types") or {}).items():
         spec = spec if isinstance(spec, dict) else {}
+        prior = base.entity_types.get(_key(name))
+        words = spec.get("keywords")
+        if words is not None and not isinstance(words, (list, tuple)):
+            raise OntologyError(f"{source}: keywords of entity type {name!r} must be a list")
+        keywords = tuple(str(w).strip().lower() for w in words if str(w).strip()) if words is not None else \
+            (prior.keywords if prior else ())
         base.entity_types[_key(name)] = EntityType(_key(name), str(spec.get("description", "")),
                                                    _key(spec["parent"]) if spec.get("parent") else None,
-                                                   spec.get("schema", {}))
+                                                   spec.get("schema", {}), keywords)
     for name, spec in (data.get("relations") or {}).items():
         spec = spec if isinstance(spec, dict) else {}
         as_tuple = lambda v: tuple(_key(x) for x in ([v] if isinstance(v, str) else (v or ())))  # noqa: E731
@@ -324,9 +349,9 @@ TEMPLATE = """# CommonTrace ontology: the types and relations this store's knowl
 strict: false            # true: refuse unknown types/relations and domain/range violations
 extends_default: true
 
-entity_types:
-  database: {parent: service, description: A data store}
-  team: {parent: organization}
+entity_types:              # keywords: head words that name the type in a mention
+  database: {parent: service, description: A data store, keywords: [database, db, datastore]}
+  team: {parent: organization, keywords: [team, squad]}
 
 relations:
   hosted_on: {domain: [service], range: [service], exclusive: true,
