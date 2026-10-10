@@ -92,8 +92,9 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument("--answer-model", default=None, help="--dataset only: answer model")
     p.add_argument("--judge-model", default=None, help="--dataset only: judge model")
     p.add_argument("--modes", default=None, help="--dataset only: comma list of memory, full-context, no-memory")
-    p.add_argument("--embedder", default=None, choices=("arctic-m", "minilm", "none"),
-                   help="--dataset only: embedding model")
+    p.add_argument("--embedder", default=None,
+                   help="--dataset only: none, a local model (arctic-m, minilm, bge-small, e5-small, nomic) or "
+                        "<provider>:<model>[@dims] (openai, gemini, voyage, cohere, ollama, compat)")
     p.add_argument("--rerank", default=None, choices=("auto", "none", "cross-encoder", "cross-encoder-fast"),
                    help="--dataset only: reranker mode")
     p.add_argument("--neighbours", type=int, default=None, help="--dataset only: neighbour turns")

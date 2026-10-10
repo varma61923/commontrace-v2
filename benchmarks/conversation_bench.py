@@ -822,6 +822,17 @@ def grade_all(pending: list, workers: int, *, grade=None, rounds: int | None = N
                        "rerun the same command to resume from the cache")
 
 
+def _embedder_choice(value: str) -> str:
+    if value in ("auto", "none"):
+        return value
+    from commontrace.conversation import embed
+
+    try:
+        return embed.canonical(value)
+    except Exception as exc:  # noqa: BLE001 - argparse reports any parse failure as a usage error
+        raise argparse.ArgumentTypeError(str(exc)) from None
+
+
 def evaluation_config_binding(config: object) -> dict[str, object]:
     # Endpoints may embed userinfo or query credentials; bind their exact
     # configuration without publishing URL bytes or private account metadata.
@@ -1345,7 +1356,9 @@ def main(argv=None) -> int:
     p.add_argument("--budget", default="1500", help="tokens; a comma list assembles each ranking at every budget")
     p.add_argument("--memory-adapter", choices=PROFILES, default="commontrace",
                    help="Optional local raw-source vendor profile (excludes managed APIs/LLM extraction)")
-    p.add_argument("--embedder", default="auto", choices=("auto", "arctic-m", "minilm", "none"))
+    p.add_argument("--embedder", default="auto", type=_embedder_choice,
+                   help="auto, none, a local model (arctic-m, minilm, bge-small, e5-small, nomic) or "
+                        "<provider>:<model>[@dims] (openai, gemini, voyage, cohere, ollama, compat)")
     p.add_argument("--rerank", default="auto", choices=("auto", "none", "cross-encoder", "cross-encoder-fast"))
     p.add_argument("--neighbours", type=int, default=1)
     p.add_argument("--bridge-turns", type=int, default=0,

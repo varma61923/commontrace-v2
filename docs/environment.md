@@ -20,11 +20,14 @@ Dynamic provider prefixes and test-only variables are described in the relevant 
 | `COMMONTRACE_COMMONS_VERIFY_KEY_ID` | [commontrace/commons_integrity.py:94](../commontrace/commons_integrity.py#L94) |
 | `COMMONTRACE_COMMONS_VERIFY_KEY_PREVIOUS` | [commontrace/commons_integrity.py:91](../commontrace/commons_integrity.py#L91) |
 | `COMMONTRACE_COMMONS_VERIFY_KEY_PREVIOUS_ID` | [commontrace/commons_integrity.py:95](../commontrace/commons_integrity.py#L95) |
-| `COMMONTRACE_CONVERSATION_BENCH` | [commontrace/commands/bench_cmd.py:117](../commontrace/commands/bench_cmd.py#L117) |
+| `COMMONTRACE_CONVERSATION_BENCH` | [commontrace/commands/bench_cmd.py:118](../commontrace/commands/bench_cmd.py#L118) |
 | `COMMONTRACE_CONVERSATION_EMBEDDER` | [commontrace/commands/conversation_cmd.py:35](../commontrace/commands/conversation_cmd.py#L35) |
 | `COMMONTRACE_DEFAULT_FUSION` | [commontrace/retrieval_io.py:33](../commontrace/retrieval_io.py#L33) |
 | `COMMONTRACE_DEFAULT_RERANK` | [commontrace/retrieval_io.py:30](../commontrace/retrieval_io.py#L30) |
+| `COMMONTRACE_EMBED_API_KEY` | [commontrace/embeddings.py:14](../commontrace/embeddings.py#L14) |
+| `COMMONTRACE_EMBED_BASE_URL` | [commontrace/embeddings.py:14](../commontrace/embeddings.py#L14) |
 | `COMMONTRACE_FACT_EMBEDDER_PATH` | [commontrace/fact_embeddings.py:16](../commontrace/fact_embeddings.py#L16) |
+| `COMMONTRACE_GEMINI_API_KEY` | [commontrace/embeddings.py:195](../commontrace/embeddings.py#L195) |
 | `COMMONTRACE_GLINER_MODEL_PATH` | [commontrace/gateway.py:830](../commontrace/gateway.py#L830) |
 | `COMMONTRACE_HANDOFF_KEY` | [commontrace/memfs.py:291](../commontrace/memfs.py#L291) |
 | `COMMONTRACE_HUB_API_KEY` | [commontrace/commands/_format.py:17](../commontrace/commands/_format.py#L17) |
@@ -54,6 +57,7 @@ Dynamic provider prefixes and test-only variables are described in the relevant 
 | `COMMONTRACE_OAUTH_JWKS_URL` | [commontrace/oauth.py:23](../commontrace/oauth.py#L23) |
 | `COMMONTRACE_OAUTH_LEEWAY` | [commontrace/oauth.py:135](../commontrace/oauth.py#L135) |
 | `COMMONTRACE_OFFLINE` | [commontrace/cli.py:114](../commontrace/cli.py#L114) |
+| `COMMONTRACE_OPENAI_API_KEY` | [commontrace/embeddings.py:185](../commontrace/embeddings.py#L185) |
 | `COMMONTRACE_OTEL` | [commontrace/cli.py:212](../commontrace/cli.py#L212) |
 | `COMMONTRACE_QUERY_CACHE` | [commontrace/retrieval.py:395](../commontrace/retrieval.py#L395) |
 | `COMMONTRACE_REDACT_PII` | [commontrace/memory_guard.py:180](../commontrace/memory_guard.py#L180) |

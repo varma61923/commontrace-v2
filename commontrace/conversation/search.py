@@ -457,7 +457,7 @@ def _embedder(store: Store, choice: str | None):
     tag = embed.configured() if choice == "auto" else choice
     if not tag or tag == "none":
         return None
-    if not embed.available():
+    if not (embed.available() if tag in embed.MODELS else embed.available_for(tag)):
         return None
     with store._lock:
         if tag not in store._embedders:
@@ -743,7 +743,7 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
         from commontrace.conversation import embed
 
         tag = embed.configured() if opts.embedder == "auto" else opts.embedder
-        expected_model = embed.MODELS[tag][0] if tag in embed.MODELS else None
+        expected_model = embed.model_identity(tag) if tag and tag != "none" else None
         if dense_candidates.identity != (store._units_identity or store.cache_identity) \
                 or dense_candidates.stamp != store.unit_stamp() or dense_candidates.model != expected_model:
             raise ConversationError("external vector candidates are stale or use a different embedding model")
