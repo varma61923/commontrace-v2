@@ -61,6 +61,31 @@ from benchmarks.vendor_adapters import PROFILES, vendor_profile  # noqa: E402
 from commontrace.conversation import Options, Store, recall  # noqa: E402
 from commontrace.conversation.search import Recall, tokens  # noqa: E402
 
+# Options newer than some measured product revisions, with the value that leaves them off.
+# CI runs this harness against an older reference checkout, so an option the product does
+# not have is dropped while it is off, and refused if a run asks for it.
+_OFF_BY_DEFAULT = {"bridge_turns": 0, "adaptive_budget": False, "second_pass": False}
+
+
+def product_options(**requested) -> Options:
+    """`Options` for the product under measurement, omitting newer options that are off."""
+    import dataclasses
+
+    supported = {f.name for f in dataclasses.fields(Options)}
+    adaptive = bool(requested.get("adaptive_budget"))
+    chosen = {}
+    for name, value in requested.items():
+        if name in supported:
+            chosen[name] = value
+        elif name == "max_budget" and not adaptive:
+            continue  # only meaningful with adaptive budgets
+        elif name in _OFF_BY_DEFAULT and value == _OFF_BY_DEFAULT[name]:
+            continue
+        else:
+            raise ValueError(f"the measured product revision has no {name!r} option; "
+                             "run without the flag that sets it")
+    return Options(**chosen)
+
 LOCOMO_CATEGORIES = {1: "multi-hop", 2: "temporal", 3: "open-domain", 4: "single-hop"}
 
 
@@ -904,7 +929,7 @@ def run(args) -> dict:
     memory_adapter = getattr(args, "memory_adapter", "commontrace")
     if memory_adapter not in PROFILES:
         raise ValueError("unsupported memory adapter")
-    opts = Options(
+    opts = product_options(
         budget=budgets[0],
         embedder=None if args.embedder == "none" else args.embedder,
         rerank=None if args.rerank == "none" else args.rerank,
@@ -916,7 +941,7 @@ def run(args) -> dict:
         adaptive_budget=bool(getattr(args, "adaptive_budget", False)),
         max_budget=max(budgets[0], 12_000),
     )
-    if opts.adaptive_budget and (strict_budget or getattr(args, "memory_adapter", "commontrace") != "commontrace"):
+    if getattr(opts, "adaptive_budget", False) and (strict_budget or getattr(args, "memory_adapter", "commontrace") != "commontrace"):
         raise ValueError("--adaptive-budget sizes CommonTrace's own context; it cannot honour a strict cap "
                          "or a vendor profile")
 
@@ -1014,8 +1039,10 @@ def run(args) -> dict:
                     for budget in budgets:
                         t = time.perf_counter()
                         def retrieve(native_budget):
-                            opts_b = Options(**{**opts.__dict__, "budget": native_budget,
-                                                "max_budget": max(native_budget, opts.max_budget)})
+                            sized = {"budget": native_budget}
+                            if hasattr(opts, "max_budget"):
+                                sized["max_budget"] = max(native_budget, opts.max_budget)
+                            opts_b = Options(**{**opts.__dict__, **sized})
                             return (adapter.retrieve(q["question"], native_budget) if adapter is not None
                                     else recall(store, q["question"], now=now, options=opts_b))
 

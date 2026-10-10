@@ -65,8 +65,9 @@ def _fake_runtime(monkeypatch, calls):
         eos_token_id = 0
 
         @classmethod
-        def from_pretrained(cls, name, local_files_only):
+        def from_pretrained(cls, name, local_files_only, revision):
             calls.append(("tokenizer", name, local_files_only))
+            calls.append(("revision", revision))
             return cls()
 
         def apply_chat_template(self, messages, tokenize, add_generation_prompt):
@@ -80,8 +81,9 @@ def _fake_runtime(monkeypatch, calls):
 
     class Model:
         @classmethod
-        def from_pretrained(cls, name, local_files_only, dtype):
+        def from_pretrained(cls, name, local_files_only, revision, dtype):
             calls.append(("model", name, local_files_only))
+            calls.append(("revision", revision))
             return cls()
 
         def eval(self):
@@ -115,6 +117,15 @@ def test_greedy_generation_counts_tokens_and_offline_loads_cache_only(monkeypatc
     assert ("generate", 8, False) in calls
     local_llm.complete(cfg, "again", max_new_tokens=8)
     assert sum(1 for c in calls if c[0] == "model") == 1  # weights load once per process
+    assert [c for c in calls if c[0] == "revision"] == [("revision", None)] * 2  # unpinned by default
+
+
+def test_a_pinned_revision_reaches_both_loaders(monkeypatch):
+    calls = []
+    _fake_runtime(monkeypatch, calls)
+    monkeypatch.setenv("COMMONTRACE_LOCAL_LLM_REVISION", "0123abcd")
+    local_llm.complete(llm.Config(provider="local", model="org/tiny", api_key=""), "hi", max_new_tokens=4)
+    assert [c for c in calls if c[0] == "revision"] == [("revision", "0123abcd")] * 2
 
 
 def test_missing_runtime_is_reported_as_unavailable(monkeypatch):

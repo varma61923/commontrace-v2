@@ -5,6 +5,9 @@ Runs an instruction-tuned Hugging Face model on this machine with
 with no hosted credentials and no model server. Decoding is greedy, so the same
 prompt and model give the same text. In offline mode (``--offline``) the
 weights must already be in the local model cache; nothing is downloaded.
+``COMMONTRACE_LOCAL_LLM_REVISION`` pins the weights to a Hugging Face commit
+(recommended for reproducible measurement and supply-chain integrity); unset,
+the model's default branch is used.
 
 Small CPU models are slow and much weaker than hosted ones. Use this for
 air-gapped deployments and for reproducible local measurement, not as a
@@ -36,9 +39,10 @@ def _load(model: str):
             raise LLMUnavailable("COMMONTRACE_LLM_PROVIDER=local needs the optional transformers and torch "
                                  "packages: pip install transformers torch") from None
         cached_only = offline.enabled()
+        revision = os.environ.get("COMMONTRACE_LOCAL_LLM_REVISION", "").strip() or None
         try:
-            tokenizer = AutoTokenizer.from_pretrained(model, local_files_only=cached_only)
-            network = AutoModelForCausalLM.from_pretrained(model, local_files_only=cached_only,
+            tokenizer = AutoTokenizer.from_pretrained(model, local_files_only=cached_only, revision=revision)
+            network = AutoModelForCausalLM.from_pretrained(model, local_files_only=cached_only, revision=revision,
                                                            dtype=torch.float32)
         except OSError as exc:
             hint = " (offline mode loads only cached weights)" if cached_only else ""

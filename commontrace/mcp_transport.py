@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING, Literal
 if TYPE_CHECKING:
     from starlette.types import ASGIApp, Receive, Scope, Send
 
+    from commontrace.oauth import ResourceServer
+
 Transport = Literal["sse", "streamable-http"]
 
 
@@ -27,7 +29,7 @@ class BearerBoundary:
     """
 
     def __init__(self, app: ASGIApp, token_provider: Callable[[], str | None], *, max_connections: int = 128,
-                 oauth_server=None):
+                 oauth_server: ResourceServer | None = None):
         """`oauth_server`: an optional `commontrace.oauth.ResourceServer`. When set, a JWT access
         token carrying ``commontrace:mcp`` or ``commontrace:admin`` is accepted beside the file
         token, and the RFC 9728 metadata document is served without authentication."""
@@ -78,8 +80,8 @@ class BearerBoundary:
                     expected = await asyncio.to_thread(self.token_provider)
                 except Exception:
                     expected = None
-            accepted = bool(expected) and supplied is not None and secrets.compare_digest(
-                supplied, expected.encode("utf-8"))
+            accepted = expected is not None and expected != "" and supplied is not None \
+                and secrets.compare_digest(supplied, expected.encode("utf-8"))
             if not accepted and supplied is not None and self.oauth_server is not None:
                 accepted = await asyncio.to_thread(self._oauth_ok, supplied)
             if not accepted:
@@ -92,6 +94,8 @@ class BearerBoundary:
     def _oauth_ok(self, supplied: bytes) -> bool:
         from commontrace import oauth
 
+        if self.oauth_server is None:
+            return False
         try:
             claims = self.oauth_server.verify(supplied.decode("ascii"))
         except (oauth.InvalidToken, UnicodeDecodeError):

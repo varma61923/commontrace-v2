@@ -16,7 +16,7 @@ from hub.abuse import make_rate_limiter
 from hub.alembic.versions.b8e3f1a2c7d4_lesson_marketplace import _OWN_ROWS, _READ, _UNSCOPED
 from hub.db import session_scope
 from hub.models import Organization
-from tests import test_row_level_security as _rls
+from hub.tests import test_row_level_security as _rls
 
 pytestmark = pytest.mark.asyncio
 
