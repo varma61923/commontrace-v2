@@ -158,6 +158,18 @@ def facet_observation(
     )
 
 
+def preference_statistics(prior: dict[str, Any]) -> dict[str, int | float]:
+    """Bound update metadata, including unvalidated counters from older records."""
+    weight = prior.get("weight", 0)
+    if type(weight) not in (int, float) or not 0 <= weight <= 10000 or not math.isfinite(weight):
+        weight = 0
+    observations = prior.get("observations", 0)
+    if type(observations) is not int or not 0 <= observations <= 1000000:
+        observations = 0
+    return {"weight": min(10, weight + 1), "half_life_days": 90,
+            "observations": min(1000000, observations + 1)}
+
+
 def preference_candidates(text: str, scope: dict) -> list[tuple[str, dict]]:
     """Literal first-person assertions shared by local and hosted capture."""
     import hashlib

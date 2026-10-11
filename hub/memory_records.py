@@ -16,7 +16,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 
 from commontrace import memory_guard
-from commontrace.memory_record import MemoryRecord, facet_observation, preference_candidates
+from commontrace.memory_record import MemoryRecord, facet_observation, preference_candidates, preference_statistics
 from commontrace.record_visibility import bind_capture_sources, now, sanitize_record_content, visible
 from hub import audit
 from hub.db import session_scope
@@ -235,11 +235,7 @@ class PostgresJournal:
                     prior = old.record["payload"] if old else {}
                     data = {**value, "observed_at": now(), "source_message_ids": [episode.id]}
                     if value["bucket"] == "dynamic":
-                        data.update(
-                            weight=min(10, prior.get("weight", 0) + 1),
-                            half_life_days=90,
-                            observations=prior.get("observations", 0) + 1,
-                        )
+                        data.update(preference_statistics(prior))
                     record = MemoryRecord(
                         identity,
                         "profile",

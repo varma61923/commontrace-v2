@@ -1,3 +1,5 @@
+import pytest
+
 from commontrace.client import MemoryClient
 from commontrace.framework_middleware import Middleware
 from commontrace.memory_journal import Journal
@@ -153,3 +155,20 @@ def test_email_principal_profile_scope_is_preserved(tmp_path):
     assert memory.turn("s", "preferences", text="I prefer pytest.")["profile"]["dynamic"]
     other = MemoryClient(str(tmp_path), agent_id="a", context={"user": "bob@example.com"})
     assert not other.turn("s", "preferences")["profile"]["dynamic"]
+
+
+@pytest.mark.parametrize("observations", ["unknown", None, True, -1, 2**2048])
+def test_preference_capture_recovers_invalid_observation_metadata(tmp_path, observations):
+    from commontrace.framework_middleware import maintain_preferences
+    from commontrace.memory_record import MemoryRecord, preference_candidates
+
+    scope = {"agent": "a"}
+    identity, content = preference_candidates("I prefer pytest.", scope)[0]
+    journal = Journal(str(tmp_path))
+    journal.put(MemoryRecord(identity, "profile", 1,
+                             {**content, "weight": 1, "observations": observations}, scope=scope))
+    maintain_preferences(journal, "I prefer pytest.", scope)
+    updated = journal.latest(identity)
+    assert updated.version == 2
+    assert updated.payload["observations"] == 1
+    assert updated.payload["weight"] == 2

@@ -34,18 +34,14 @@ def scope_from_labels(labels: list[str]) -> dict:
 
 def maintain_preferences(journal: Journal, text: str, scope: dict, *, source_ids=None):
     """Explicit user preferences only; model/assistant assertions use a different author."""
-    from commontrace.memory_record import preference_candidates
+    from commontrace.memory_record import preference_candidates, preference_statistics
 
     for identity, content in preference_candidates(text, scope):
         previous = journal.latest(identity)
         prior = previous.payload if previous else {}
         data = {**content, "observed_at": now(), "source_message_ids": source_ids or []}
         if content["bucket"] == "dynamic":
-            data.update(
-                weight=min(10, prior.get("weight", 0) + 1),
-                half_life_days=90,
-                observations=prior.get("observations", 0) + 1,
-            )
+            data.update(preference_statistics(prior))
         journal.put(
             MemoryRecord(
                 identity,

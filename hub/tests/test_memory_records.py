@@ -10,6 +10,27 @@ from hub.models import Organization
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("observations", ["unknown", None, True, -1, 2**2048])
+async def test_hosted_capture_recovers_invalid_preference_counter(session_factory, observations):
+    from commontrace.memory_record import preference_candidates
+
+    org = str(uuid.uuid4())
+    async with session_scope(session_factory) as session:
+        session.add(Organization(id=org, name=org))
+    scope = {"tenant": org, "user": "u"}
+    identity, content = preference_candidates("I prefer pytest.", scope)[0]
+    store = PostgresJournal(session_factory, org)
+    await store.put(MemoryRecord(identity, "profile", 1,
+                                {**content, "weight": 1, "observations": observations}, scope=scope))
+    await store.capture_turn("s", "pytest", text_value="I prefer pytest.", scope=scope)
+    records = await store.search("", scope=scope, kinds=("profile",))
+    updated = next(record for record in records if record.id == identity)
+    assert updated.version == 2
+    assert updated.payload["observations"] == 1
+    assert updated.payload["weight"] == 2
+
+
+@pytest.mark.asyncio
 async def test_hosted_turn_profiles_buffer_scope_and_source_erasure(session_factory):
     org = str(uuid.uuid4())
     async with session_scope(session_factory) as session:
