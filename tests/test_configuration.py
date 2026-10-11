@@ -208,6 +208,8 @@ def test_hub_kms_resolves_routing_and_rotating_secret_from_yaml(tmp_path, monkey
     import base64
 
     from commontrace.configuration import SETTING_PATHS
+
+    pytest.importorskip("hub.config")
     from hub import kms
     from hub.config import HubConfig
 
@@ -327,6 +329,8 @@ def test_auth_and_hub_config_consumers_do_not_read_a_second_environment_source()
     from pathlib import Path
 
     from commontrace import oauth
+
+    pytest.importorskip("hub.config")
     from hub import config
 
     for module in (oauth, config):

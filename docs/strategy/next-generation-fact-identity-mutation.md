@@ -19,5 +19,9 @@ combined storage, write-contract and evidence-context scope passes 132 tests.
 Ruff passes for the changed runtime and regression test.
 
 The full frozen `cd8c1dc` suite completed with 6,748 passed, 126 skipped and
-one failure in the same identity-mutation path. This fix is on its descendant
-branch; the full suite has not yet run against the fixed source.
+one failure in the same identity-mutation path. Its integrated descendant then
+completed the application/e2e suite with 6,821 passed, 116 skipped and one
+unrelated failure in a static guard that requires Hub imports in core tests to
+use `pytest.importorskip`. Adding the two missing guards makes the config file
+and the static regression pass: 31 targeted tests. The full suite was not
+repeated after this test-only adjustment.

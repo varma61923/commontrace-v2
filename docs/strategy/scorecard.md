@@ -104,7 +104,8 @@ in the [write optimization report](next-generation-p0-write-optimization.md).
 | OAuth/KMS and config migration consistency | 179 focused configuration, authentication, gateway, Hub and KMS tests passed | **Component pass**; full suite pending |
 | Learner prompt bounds | 32 learner contract tests passed, including whole-prompt wrapper sizing and cursor preservation | **Component pass**; default UTF-8 text bound excludes provider templates; model-token usage and SWE lift remain unmeasured |
 | Hybrid graph seeds and multi-round evidence | 19 focused tests passed; paired synthetic baseline/candidate raised distinct facets 1/2 → 2/2, prevented withdrawn-fact return, and reduced repeated-query judge calls 3 → 2 | **Policy behavior pass**; model answer quality and 1M hybrid latency remain unmeasured |
-| Integrated full suite after these slices | Not yet run | **Pending**; prior frozen parent had one fact-ID mutation failure, fixed and covered by 132 focused storage/evidence tests |
+| Integrated application/e2e suite after these slices | 6,821 passed, 116 skipped, one failure in the static core-test Hub-import guard; affected config file plus guard regression pass 31 tests after adding the required `pytest.importorskip` calls | **Broad run complete with test-only failure fixed in focused rerun; full suite not repeated after the fix** |
+| PostgreSQL Hub suite | 2,506 passed, 5 skipped, one RLS test failed because the local `commontrace_dev` test role lacks `CREATEROLE`; that test passes under a temporary CI-equivalent superuser | **Environment mismatch isolated; whole Hub suite was not rerun under the superuser role** |
 
 The retrieval comparison is a deterministic policy harness over temporary SQLite
 stores, with synthetic dense scores and judge responses. Its artifact includes

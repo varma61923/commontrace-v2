@@ -103,7 +103,14 @@ multi-round retrieval preserves distinct query blocks and revalidates facts
 after judging. Its 19 retrieval contracts pass; a deterministic synthetic
 comparison recovers 2/2 distinct facets rather than 1/2 and excludes withdrawn
 facts and stale seeds. These are component results, not answer-quality or
-latency acceptance. The integrated full suite still needs to run.
+latency acceptance. The integrated `tests/ e2e_tests/` run completed with 6,821
+passed, 116 skipped and one failure: a repository static test requires tests
+that import Hub modules to call `pytest.importorskip("hub...")`. The two new
+config tests now include those guards; the config file plus the failing static
+regression pass 31 tests. The full suite was not repeated after this
+test-only fix. The separate Hub suite had 2,506 passed and 5 skipped; its sole
+failure was the local test role lacking `CREATEROLE`, and the RLS test passed
+when rerun with a temporary superuser matching the CI service role.
 
 The combined branch contains P0–P4 implementation; this audit does not establish
 their acceptance gates. The earlier memory-evolution code

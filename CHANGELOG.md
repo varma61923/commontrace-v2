@@ -44,8 +44,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   uses the pre-mutation record, so event versions stay unique and index replay
   rebuilds both histories correctly. The regression failed first with a unique
   event-version conflict; 132 storage, evidence and write-contract tests pass.
-  The frozen parent full suite had one failure in this case; the fixed source's
-  full suite has not yet run. See [fact identity mutation evidence](docs/strategy/next-generation-fact-identity-mutation.md).
+  The integrated application/e2e suite then passed 6,821 tests and skipped 116,
+  with one unrelated static test guard failure. Adding the required
+  `pytest.importorskip("hub.config")` guards makes the config file and that
+  static regression pass (31 tests); the full suite was not repeated after this
+  test-only fix. See [fact identity mutation evidence](docs/strategy/next-generation-fact-identity-mutation.md).
 
 - SQLite writes keep FTS ranking current during admission while batching
   lexical projections and validated events. Transaction-local immutable lexical

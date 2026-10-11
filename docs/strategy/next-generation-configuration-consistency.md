@@ -53,11 +53,15 @@ time-to-first-injection claim changes.
 The first 21-case regression run against the unchanged
 `7e0a22402b9e69653c2fa190a374b42b92ccb83b` implementation produced **9 failed,
 12 passed** in 2.45 seconds (pytest exit 1). After implementing the changes and
-adding three boundary/precedence contracts, the focused configuration,
+adding the final boundary and precedence contracts, the focused configuration,
 OAuth/JWT, secrets, gateway/platform, Hub configuration and KMS suite produced
-**173 passed** in 14.41 seconds (pytest exit 0). All imports were checked against
-the isolated worktree. No database-backed Hub fixture or full application suite
-was run for this change.
+**179 passed** in 6.52 seconds (pytest exit 0). All imports were checked against
+the isolated worktree. The later full Hub suite had 2,506 passed and 5 skipped;
+its only failure was a local PostgreSQL test role lacking `CREATEROLE`, and the
+affected RLS test passed under a temporary superuser matching CI. The integrated
+application/e2e suite reached 6,821 passed and 116 skipped; its one failure was
+the test-only Hub-import guard, fixed and verified by a 31-test targeted rerun.
+The full suite was not repeated after that test-only adjustment.
 
 ```sh
 python -m pytest tests/test_configuration.py tests/test_oauth.py \
