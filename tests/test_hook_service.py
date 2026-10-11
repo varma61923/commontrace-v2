@@ -2,8 +2,10 @@ import json
 import os
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
+import threading
 import time
 
 import pytest
@@ -42,7 +44,10 @@ def test_native_transport_capture_receipt_and_crash_recovery(tmp_path):
                 input=json.dumps({"session_id": "s", "prompt": "code"}),
                 text=True,
                 capture_output=True,
-                timeout=5,
+                # This bounds process startup on shared CI runners. The bridge
+                # independently keeps its 25 ms socket deadline; the measured
+                # fresh-process benchmark still enforces the latency target.
+                timeout=15,
                 check=True,
             )
             output = json.loads(first.stdout)
@@ -92,3 +97,34 @@ def test_native_transport_capture_receipt_and_crash_recovery(tmp_path):
 
 def stat_private(path):
     return os.stat(path).st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize("reply", [b"invalid-json\n", b'{"context":"","delivery_token":"receipt"}\n'])
+def test_native_bridge_closes_malformed_or_stalled_receipt_peer(tmp_path, reply):
+    if not shutil.which("node") or not hasattr(socket, "AF_UNIX"):
+        pytest.skip("native Unix transport requires Node and Unix sockets")
+    (tmp_path / "memory").mkdir()
+    disconnected = threading.Event()
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+        server.bind(str(tmp_path / "memory" / "hooks.sock"))
+        server.listen(1)
+        server.settimeout(5)
+
+        def peer():
+            with server.accept()[0] as client:
+                client.settimeout(5)
+                client.recv(100000)
+                client.sendall(reply)
+                # Deliberately leave the response side open after an ACK.
+                while client.recv(100000):
+                    pass
+                disconnected.set()
+
+        worker = threading.Thread(target=peer)
+        worker.start()
+        command = shlex.split(HookKit(str(tmp_path), "agent").manifest("claude")["events"]["UserPromptSubmit"])
+        result = subprocess.run(command, input='{"session_id":"s","prompt":"code"}',
+                                text=True, capture_output=True, timeout=15, check=True)
+        assert json.loads(result.stdout)["context"] == ""
+        worker.join(timeout=5)
+        assert disconnected.is_set()

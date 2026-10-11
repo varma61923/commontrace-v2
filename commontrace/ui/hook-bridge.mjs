@@ -64,11 +64,14 @@ process.stdin.on('end', () => {
           const reply = JSON.parse(response);
           finish(reply);
           if (reply.delivery_token) {
+            // A stuck peer must not hold the host after context has been written.
+            const receiptTimer = setTimeout(() => client.destroy(), 20);
+            client.once('close', () => clearTimeout(receiptTimer));
             client.end(JSON.stringify({operation: 'ack', delivery_token: reply.delivery_token}) + '\n');
           } else {
             client.end();
           }
-        } catch { finish(empty); }
+        } catch { client.destroy(); finish(empty); }
       }
     });
     client.on('error', () => {

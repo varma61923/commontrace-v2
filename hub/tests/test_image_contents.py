@@ -113,6 +113,11 @@ class TestImportedModulesAreStdlibOnly:
             for line in (REPO_ROOT / "hub" / "requirements.txt").read_text().splitlines()
             if line.strip() and not line.strip().startswith("#")
         }
+        # Distribution names need not match their import names. These wheels
+        # are explicitly pinned by the server, rather than optional exemptions.
+        distribution_imports = {"pyyaml": "yaml", "pyjwt": "jwt", "argon2_cffi": "argon2"}
+        hub_requirements |= {name for distribution, name in distribution_imports.items()
+                             if distribution in hub_requirements}
         available = set(sys.stdlib_module_names) | hub_requirements | {"commontrace"}
 
         for module in sorted(_allowlisted_modules()):
@@ -148,7 +153,8 @@ def test_image_telemetry_runs_with_no_optional_packages(tmp_path):
 
     package = tmp_path / "commontrace"
     package.mkdir()
-    for name in ("__init__.py", "telemetry.py", "memory_guard.py", "paths.py"):
+    for name in ("__init__.py", "telemetry.py", "memory_guard.py", "paths.py",
+                 "configuration.py", "configuration.schema.json"):
         shutil.copyfile(REPO_ROOT / "commontrace" / name, package / name)
     code = ("from commontrace import telemetry; import logging; "
             "telemetry.configure_logging('json', 'INFO', log_file='private.jsonl'); "
