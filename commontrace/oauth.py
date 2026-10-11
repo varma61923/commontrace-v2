@@ -135,8 +135,9 @@ def load_config(root: str | None = None) -> OAuthConfig | None:
            "jwks_url": "COMMONTRACE_OAUTH_JWKS_URL", "jwks_file": "COMMONTRACE_OAUTH_JWKS_FILE",
            "algorithms": "COMMONTRACE_OAUTH_ALGORITHMS", "leeway": "COMMONTRACE_OAUTH_LEEWAY"}
     for key, name in env.items():
-        if _configuration_getenv(name):
-            values[key] = os.environ[name]
+        value = _configuration_getenv(name)
+        if value:
+            values[key] = value
     if not values.get("issuer"):
         return None
     algorithms = values.get("algorithms", ALGORITHMS)

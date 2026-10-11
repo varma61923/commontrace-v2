@@ -116,6 +116,7 @@ DEFAULTS = {
         },
     },
 }
+_MAX_DOCUMENT_BYTES = 64 * 1024
 
 
 def _credential(name: str) -> bool:
@@ -128,18 +129,28 @@ def _credential(name: str) -> bool:
     )
 
 
-def load(root: str, *, profile: str | None = None) -> dict:
+def config_path(root: str) -> str:
+    """Return the selected YAML configuration file for this store."""
+    return os.environ.get("COMMONTRACE_CONFIG") or os.path.join(root, "commontrace.yaml")
+
+
+def _read_document(filename: str) -> dict:
     import yaml
 
-    filename = os.environ.get("COMMONTRACE_CONFIG") or os.path.join(root, "commontrace.yaml")
-    data = {}
-    if os.path.exists(filename):
-        with open(filename, encoding="utf-8") as stream:
-            raw = stream.read(64001)
-        if len(raw) > 64000:
-            raise ValueError("configuration exceeds 64 KiB")
-        data = yaml.safe_load(raw) or {}
-    return _validate(data, root=root, profile=profile)
+    if not os.path.exists(filename):
+        return {}
+    with open(filename, "rb") as stream:
+        raw = stream.read(_MAX_DOCUMENT_BYTES + 1)
+    if len(raw) > _MAX_DOCUMENT_BYTES:
+        raise ValueError("configuration exceeds 64 KiB")
+    data = yaml.safe_load(raw.decode("utf-8")) or {}
+    if not isinstance(data, dict):
+        raise ValueError("configuration must be a mapping")
+    return data
+
+
+def load(root: str, *, profile: str | None = None) -> dict:
+    return _validate(_read_document(config_path(root)), root=root, profile=profile)
 
 
 def _validate(data, *, root, profile=None):
@@ -257,7 +268,7 @@ def current() -> dict | None:
     if selected is not None:
         return selected
     root = os.environ.get("COMMONTRACE_ROOT") or os.getcwd()
-    filename = os.environ.get("COMMONTRACE_CONFIG") or os.path.join(root, "commontrace.yaml")
+    filename = config_path(root)
     try:
         stat = os.stat(filename)
     except FileNotFoundError:
@@ -315,7 +326,7 @@ def using(root: str):
     if active is not None and active.get("root") == os.path.abspath(root):
         yield active
         return
-    filename = os.environ.get("COMMONTRACE_CONFIG") or os.path.join(root, "commontrace.yaml")
+    filename = config_path(root)
     if not os.path.isfile(filename):
         # A nested operation for another store must not inherit its caller's
         # credentials, model routes or budgets. Empty options preserve legacy defaults.
@@ -355,31 +366,42 @@ def migrate_environment(root: str, *, write=False) -> dict:
     """
     import yaml
 
-    filename = os.path.join(root, "commontrace.yaml")
-    data = {}
-    if os.path.isfile(filename):
-        with open(filename, encoding="utf-8") as stream:
-            data = yaml.safe_load(stream.read(64001)) or {}
-        if not isinstance(data, dict):
-            raise ValueError("configuration must be a mapping")
+    filename = config_path(root)
+    data = _read_document(filename)
+    existing = _validate(data, root=root)
+    selected = data.get("profiles", {}).get(existing["profile"], {})
+    explicit_options = {name for key, names in PRIMARY.items() if key in selected for name in names}
+    explicit_secrets = set(existing["secrets"])
     settings = data.setdefault("settings", {})
     secrets = data.setdefault("secrets", {})
-    migrated = []
+    migrated = set()
+    retained = set()
     for name, path in sorted(SETTING_PATHS.items()):
-        if name not in os.environ or name == "COMMONTRACE_ROOT":
+        mounted = os.environ.get(name + "_FILE") if _credential(name) and not name.endswith("_FILE") else None
+        sources = ([name] if name in os.environ else []) + ([name + "_FILE"] if mounted else [])
+        if not sources or name == "COMMONTRACE_ROOT":
             continue
         if _credential(name):
             if name.endswith("_FILE"):
-                secrets.setdefault(name.removesuffix("_FILE"), "file:" + os.environ[name])
+                if not os.environ[name]:
+                    continue  # Empty FILE selectors are ignored by env_secret too.
+                target, reference = name.removesuffix("_FILE"), "file:" + os.environ[name]
             else:
-                secrets.setdefault(name, "env:" + name)
+                target, reference = name, "file:" + mounted if mounted else "env:" + name
+            if target in explicit_secrets:
+                retained.update(sources)
+                continue
+            secrets.setdefault(target, reference)
         else:
+            if path in existing["settings"] or name in explicit_options:
+                retained.update(sources)
+                continue
             group, key = path.split(".", 1)
             settings.setdefault(group, {}).setdefault(key, os.environ[name])
-        migrated.append(name)
+        migrated.update(sources)
     _validate(data, root=root)
     serialized = yaml.safe_dump(data, sort_keys=True)
-    if len(serialized) > 64000:
+    if len(serialized.encode("utf-8")) > _MAX_DOCUMENT_BYTES:
         raise ValueError("configuration exceeds 64 KiB")
     if write:
         import tempfile
@@ -398,4 +420,10 @@ def migrate_environment(root: str, *, write=False) -> dict:
         finally:
             if os.path.exists(temporary):
                 os.remove(temporary)
-    return {"migrated_names": migrated, "written": write, "configuration": filename, "credentials_copied": False}
+    return {
+        "migrated_names": sorted(migrated),
+        "retained_names": sorted(retained),
+        "written": write,
+        "configuration": filename,
+        "credentials_copied": False,
+    }

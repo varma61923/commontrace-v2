@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ipaddress
-import os
 from dataclasses import dataclass, field
 
 from commontrace.configuration import getenv as _configuration_getenv
@@ -241,7 +240,8 @@ class HubConfig:
             )
         from hub import kms
 
-        encryption_key, encryption_key_previous = kms.resolve(os.environ, env_secret)
+        kms_options = {name: _configuration_getenv(name, "") for name in ("HUB_KMS_KEY_ID", "HUB_KMS_REGION")}
+        encryption_key, encryption_key_previous = kms.resolve(kms_options, env_secret)
         return cls(
             database_url=database_url,
             host=_configuration_getenv("HUB_HOST", "127.0.0.1"),

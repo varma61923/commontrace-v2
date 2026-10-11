@@ -201,7 +201,7 @@ def _configured_call(args):
     from commontrace import configuration, paths
 
     root = paths.resolve_root(getattr(args, "dest", None))
-    if getattr(args, "command", "") == "up" or not os.path.isfile(os.path.join(root, "commontrace.yaml")):
+    if getattr(args, "command", "") == "up" or not os.path.isfile(configuration.config_path(root)):
         return args.func(args)
     with configuration.apply(configuration.load(root)):
         return args.func(args)
