@@ -113,6 +113,16 @@ The 2026-10-11 [P0 continuation audit](next-generation-p0-audit.md) measured
 31.43 ms write p95 and 759 facts/s at one million facts on the current host,
 missing both write gates. It stops phase advancement and retains the earlier
 release results below. The runs are not a controlled hardware comparison.
+The subsequent [write optimization](next-generation-p0-write-optimization.md)
+measured 3.23 ms write p95 and 1,181 facts/s at one million facts. Single writes
+pass; batched ingest still misses 2,000 facts/s and keeps phase advancement
+stopped. Neither run exercises the hybrid/server or zero-reembedding restart gates.
+
+The measured storage source's application suite completed with 6 failures,
+6,666 passes and 118 skips. Follow-up connection and isolation fixes pass 135
+focused checks, with a separate full suite running. Its native transport fixture
+delivered all 50 directives but measured 152.27 ms p95, missing <50 ms. The
+million-fact timings above do not describe the follow-up source.
 
 The [signed aggregate leaderboard](leaderboard/index.html) links public JSON
 reports and pins its Ed25519 session public key. Signatures detect edits and

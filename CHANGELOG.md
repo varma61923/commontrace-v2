@@ -18,6 +18,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The runtime journal now shares bounded SQLite connection ownership with the
+  fact ledger. Aborted reads finalize partial cursors before closing; hook
+  requests reuse idle handles without changing their deadlines. All 135 focused
+  checks pass. Native transport delivered 50/50 directives but measured 152.27 ms
+  p95, missing <50 ms. The fixed source has not repeated the million-fact run.
+- The root-autodetection test imports in a fresh process after clearing root
+  overrides, preventing an inherited environment from contaminating its result.
+- SQLite fact operations now reuse at most four idle connections with a fresh
+  transaction and fact map per operation. Cursor finalization, fork drains,
+  rollback disposal and hard-erasure cleanup preserve ownership and durability.
+  Batched projection statements, entity-free index skipping and incremental
+  conflict bookkeeping reduce write overhead. The million-fact run measured
+  3.23 ms write p95 and 1,181 facts/s, versus the earlier 31.43 ms / 759 facts/s
+  continuation; separate runs included concurrent validation. The batch gate
+  still misses 2,000 facts/s, so phase advancement remains stopped.
 - The storage reproducer now returns nonzero when a measured million-fact write
   gate fails, stopping `reproduce.sh`. Boundary checks changed from three failures
   and two passes to five passes; smaller exploratory runs remain diagnostic.
@@ -29,7 +44,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A signed P0 continuation audit records a million-fact write-gate miss on the
   current host: 31.43 ms p95 and 759 facts/s. Phase advancement stops; earlier
   release measurements are retained. The pinned LoCoMo retrieval regression gate
-  shows no change; full application and Hub suite results remain pending.
+  shows no change. The PostgreSQL Hub suite passed 2,510 checks (2 skipped);
+  its application suite completed with 6 failures, 6,666 passes and 118 skips.
+  Those failures pass focused checks on the follow-up; its full suite is pending.
 
 - Hosted record retrieval filters retired records and older revisions before its
   candidate limit, applies kind restrictions to vector hits, and orders equal

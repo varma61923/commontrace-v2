@@ -1,0 +1,253 @@
+{
+  "measured_at": "2026-10-11T09:01:57.297084+00:00",
+  "measured_source_commit": "54681d0484518762b05132b8d1e160162818a3ba",
+  "source_base": "a8d223d245f9ad7835b41e4262c66ec23405e2e3",
+  "postmeasurement_followup": {
+    "source_base": "fa1ef0c096d1e0a7714ee84b56ed78b32930a972",
+    "source_files_sha256": {
+      "commontrace/sqlite_pool.py": "b39aa6bcb51b3fe3430ea91718efd6e043901bd814e7bb96a06a1c66b562f07e",
+      "commontrace/fact_store.py": "0fdf4a3a00f478d2409a229201de9ed9cd1b696f65d4cd42681f969960d73be5",
+      "commontrace/memory_journal.py": "8185c58489f4bbe72adb687e7eeb00ababb7926116d22645e8f3fb77b77d5f95",
+      "benchmarks/next_generation_storage.py": "35278d33fc902e4c7e7e6bc8c0b6688cf8d435d7e2feec62b00e86444d80ee1a",
+      "tests/test_fact_store.py": "0100f2b44abb34d41d726513ce1a9be925f131a4e84d97170d312bd9d47efe54",
+      "tests/test_memory_journal.py": "645113cf0409c299c1a4e669eb9e6b263ebf0d6819d04ad4ccc3c451b47e23bd",
+      "tests/test_hook_kit.py": "ed95ad0024cf766118a2a5f911c32c01263d49c5dfb753c8901195b4b1e66387",
+      "tests/test_hook_service.py": "61b15071f92826b2e9b82dcefeed07eab79cf20d8046f880372b4a509c058217",
+      "tests/test_bench_remediations.py": "3bb3265497ac8ea93b7bbaab0ab7c7046f8bffe45765b0ea6e26a862141284b4",
+      "tests/conftest.py": "a84c92f01a66c0d1dfdcea4bc752a17087c9dd9b770b3416d70ccec71108be38"
+    },
+    "scope": "Shared bounded connection owner, abort-path cursor finalization, journal reuse, isolated root test",
+    "runtime_contracts": {
+      "command": "python -m pytest tests/test_bench_remediations.py tests/test_fact_store.py tests/test_memory_journal.py tests/test_fact_purge.py tests/test_fact_conflicts.py tests/test_entity_store.py tests/test_fact_vector_projection.py tests/test_next_generation_storage.py tests/test_hook_kit.py tests/test_hook_service.py -q",
+      "state": "completed",
+      "summary": "135 passed in 34.29s",
+      "counts": {
+        "passed": 135
+      },
+      "passed": true
+    },
+    "native_transport": {
+      "public_aggregate_only": true,
+      "benchmark": "Native transport process latency",
+      "samples_ms": [
+        146.30606299033388,
+        143.36210704641417,
+        143.04830599576235,
+        145.25767700979486,
+        148.70912302285433,
+        145.56533802533522,
+        143.21189804468304,
+        140.38905600318685,
+        154.450359987095,
+        141.4881310192868,
+        140.78832400264218,
+        145.66750498488545,
+        138.42046301579103,
+        145.61110298382118,
+        141.3376840064302,
+        144.75916099036112,
+        146.22750197304413,
+        146.05334802763537,
+        142.71619298961014,
+        141.6284769657068,
+        150.96125099807978,
+        143.57540797209367,
+        144.0025030169636,
+        141.53433497995138,
+        150.39151901146397,
+        140.0613869773224,
+        142.1033379738219,
+        142.24988903151825,
+        152.2669530240819,
+        143.76829902175814,
+        145.47676697839051,
+        142.08902302198112,
+        143.07136996649206,
+        138.64870800171047,
+        142.91564200539142,
+        143.5645610326901,
+        152.99426496494561,
+        139.0665239887312,
+        140.6975159770809,
+        140.63108700793236,
+        146.7275180038996,
+        145.42037900537252,
+        146.29148499807343,
+        137.473146955017,
+        141.72479102853686,
+        146.37660601874813,
+        141.00056805182248,
+        141.4825120009482,
+        143.03666300838813,
+        142.39629299845546
+      ],
+      "p50_ms": 143.21189804468304,
+      "p95_ms": 152.2669530240819,
+      "warmup": [
+        {
+          "ms": 169.4189429981634,
+          "delivered": true
+        }
+      ],
+      "withheld_samples": [],
+      "delivery_rate": 1.0,
+      "passed": false,
+      "source_commit": "54681d0484518762b05132b8d1e160162818a3ba",
+      "source_sha256": "626407ea2c882a7fd2765ffbfbdec660e2ef848cf5328cf3b6b40bb6e1c31b38",
+      "measurement": "fresh Node process through warm broker, stdout and acknowledgement; fixed directive; no semantic model",
+      "limitations": [
+        "Transport-only fixture does not measure semantic relevance or cold broker/model startup."
+      ]
+    },
+    "source_checks": [
+      {
+        "command": "mypy --strict --follow-imports=silent --ignore-missing-imports \\\n  commontrace/async_workers.py commontrace/mcp_transport.py \\\n  commontrace/commons_integrity.py commontrace/frameworks.py \\\n  commontrace/conversation/async_store.py commontrace/conversation/validation.py \\\n  commontrace/semantic.py commontrace/vector_store.py \\\n  commontrace/distill.py commontrace/distillation_worker.py commontrace/draft_quality.py \\\n  commontrace/failure_signals.py commontrace/memory_blocks.py \\\n  commontrace/commands/block_cmd.py commontrace/commands/distill_cmd.py \\\n  commontrace/conversation/coverage.py commontrace/conversation/context_selection.py \\\n  commontrace/conversation/unicode_index.py \\\n  commontrace/lesson_admission.py \\\n  commontrace/fact_evidence.py commontrace/vector_snapshots.py \\\n  commontrace/sqlite_vector_snapshots.py commontrace/postgres_vector_snapshots.py \\\n  commontrace/evidence_context.py commontrace/explorer.py commontrace/vector_scoring.py \\\n  commontrace/fact_index.py commontrace/runtime_cache.py commontrace/sqlite_pool.py commontrace/_jsonl.py \\\n  benchmarks/memory_contracts.py benchmarks/vector_search.py \\\n  benchmarks/fact_search.py benchmarks/fact_retrieval.py benchmarks/fact_mutation.py \\\n  benchmarks/conversation_retrieval.py\n",
+        "returncode": 0,
+        "output": "Success: no issues found in 36 source files\n"
+      },
+      {
+        "command": "python -m mypy --strict --follow-imports=silent --explicit-package-bases benchmarks/compare.py benchmarks/measurement.py",
+        "returncode": 0,
+        "output": "Success: no issues found in 2 source files\n"
+      },
+      {
+        "command": "python scripts/dev.py docs --check",
+        "returncode": 0,
+        "output": ""
+      },
+      {
+        "command": "python scripts/export_openapi.py --check",
+        "returncode": 0,
+        "output": ""
+      },
+      {
+        "command": "python scripts/export_hub_openapi.py --check",
+        "returncode": 0,
+        "output": ""
+      }
+    ],
+    "ruff_passed": true,
+    "bandit_passed": true,
+    "test_first": {
+      "journal_reuse_and_cursor_release": "3 failed, 1 passed before implementation",
+      "abort_cursor_cleanup": "2 failed before implementation; 94 focused tests passed after initial fix"
+    },
+    "million_fact_write_measurement": "Not rerun on this follow-up source",
+    "full_application_suite": {
+      "command": "env -u COMMONTRACE_ROOT -u JUSTDOIT_ROOT PYTHONPATH=. python -m pytest tests e2e_tests -q",
+      "state": "running",
+      "summary": "No completed suite result claimed",
+      "passed": null,
+      "observed_failure_count": 0
+    },
+    "graphify": {
+      "nodes": 21411,
+      "edges": 63537,
+      "python_modules": 297,
+      "possible_unreachable": 303,
+      "missing_endpoints": [],
+      "policy_violations": [],
+      "graph_sha256": "e3458ce68bb27f4c8198a3f84ca61d54df3324479b4d2197413dc9f745ea6824",
+      "limits": {
+        "max_modules": 306,
+        "max_unreachable": 303
+      }
+    }
+  },
+  "source_files_sha256": {
+    "commontrace/hierarchical.py": "2f0a177a5294becaec617b62a8624557aa7efc830d217eb5f9d75f66707561ab",
+    "commontrace/configuration.py": "ffb84fa77b19df36e2b6e6286dd0233ae45d215e17484e3098ff196b3a5835af",
+    "commontrace/fact_store.py": "f0ee9b50181abe314290aeee1452a57d27f9707b8feafaa347d8024e733fecee",
+    "commontrace/entity_store.py": "836550109286c49542a25fa3703ed3e99b075cef888ac4ed62e50404ae821ba1",
+    "commontrace/memory_record.py": "851100333f523f84359a72dcdfd2ec226d35862d49dc8daf9a249f380471c05c",
+    "commontrace/fact_index.py": "fd8fde127391b57491b04c86e7ef9f1d457d43da5c047030ffdab7577111a539",
+    "commontrace/fact_conflicts.py": "fdd79c062229534d12794976fd88c0c9f6182ac8a17b71eb0c6da6c572bc0d31",
+    "benchmarks/next_generation_storage.py": "b13e3b958d23521f7297a3d87c9b38aee66c4e49febd9b9c4780ce331f6f9d1d"
+  },
+  "storage_process_exit_code": 1,
+  "candidate_runtime_contracts": {
+    "command": "python -m pytest tests/test_fact_store.py tests/test_fact_purge.py tests/test_fact_conflicts.py tests/test_entity_store.py tests/test_fact_vector_projection.py tests/test_memory_journal.py tests/test_next_generation_storage.py -q",
+    "state": "completed",
+    "summary": "92 passed in 29.73s",
+    "counts": {
+      "passed": 92
+    },
+    "passed": true
+  },
+  "candidate_full_suite": {
+    "command": "python -m pytest tests e2e_tests -q",
+    "state": "completed",
+    "summary": "6 failed, 6666 passed, 118 skipped, 26 warnings in 4147.75s (1:09:07)",
+    "counts": {
+      "failed": 6,
+      "passed": 6666,
+      "skipped": 118
+    },
+    "passed": false
+  },
+  "baseline_full_suite": {
+    "command": "python -m pytest tests e2e_tests -q",
+    "state": "interrupted",
+    "passed": null,
+    "summary": "Superseded baseline intentionally interrupted; no completed-suite pass claimed"
+  },
+  "unchanged_hub_suite": {
+    "command": "HUB_TEST_DATABASE_URL=<disposable PostgreSQL 16> python -m pytest hub/tests -q",
+    "state": "completed",
+    "summary": "2510 passed, 2 skipped in 1493.72s (0:24:53)",
+    "counts": {
+      "passed": 2510,
+      "skipped": 2
+    },
+    "passed": true
+  },
+  "source_checks": [
+    {
+      "command": "mypy --strict --follow-imports=silent --ignore-missing-imports \\\n  commontrace/async_workers.py commontrace/mcp_transport.py \\\n  commontrace/commons_integrity.py commontrace/frameworks.py \\\n  commontrace/conversation/async_store.py commontrace/conversation/validation.py \\\n  commontrace/semantic.py commontrace/vector_store.py \\\n  commontrace/distill.py commontrace/distillation_worker.py commontrace/draft_quality.py \\\n  commontrace/failure_signals.py commontrace/memory_blocks.py \\\n  commontrace/commands/block_cmd.py commontrace/commands/distill_cmd.py \\\n  commontrace/conversation/coverage.py commontrace/conversation/context_selection.py \\\n  commontrace/conversation/unicode_index.py \\\n  commontrace/lesson_admission.py \\\n  commontrace/fact_evidence.py commontrace/vector_snapshots.py \\\n  commontrace/sqlite_vector_snapshots.py commontrace/postgres_vector_snapshots.py \\\n  commontrace/evidence_context.py commontrace/explorer.py commontrace/vector_scoring.py \\\n  commontrace/fact_index.py commontrace/runtime_cache.py commontrace/_jsonl.py \\\n  benchmarks/memory_contracts.py benchmarks/vector_search.py \\\n  benchmarks/fact_search.py benchmarks/fact_retrieval.py benchmarks/fact_mutation.py \\\n  benchmarks/conversation_retrieval.py\n",
+      "returncode": 0,
+      "output": "Success: no issues found in 35 source files\n"
+    },
+    {
+      "command": "python -m mypy --strict --follow-imports=silent --explicit-package-bases benchmarks/compare.py benchmarks/measurement.py",
+      "returncode": 0,
+      "output": "Success: no issues found in 2 source files\n"
+    },
+    {
+      "command": "python scripts/dev.py docs --check",
+      "returncode": 0,
+      "output": ""
+    },
+    {
+      "command": "python scripts/export_openapi.py --check",
+      "returncode": 0,
+      "output": ""
+    },
+    {
+      "command": "python scripts/export_hub_openapi.py --check",
+      "returncode": 0,
+      "output": ""
+    }
+  ],
+  "ruff": {
+    "command": "python -m ruff check .",
+    "passed": true
+  },
+  "bandit": {
+    "command": "bandit -r commontrace/ hub/ memory/ -x \"*/tests/*,*/test_*\" -ll",
+    "passed": true
+  },
+  "test_first": {
+    "entity_free_path": "1 failed, 1 passed before implementation",
+    "connection_reuse": "2 failed, 3 passed before implementation",
+    "cursor_lifecycle": "2 failed before cleanup; 2 passed after"
+  },
+  "limitations": [
+    "Incomplete full suites are not passes.",
+    "The 54681d0 full suite completed with six failures; the fixed-source full suite is reported separately.",
+    "The follow-up native transport latency gate misses despite complete fixture delivery.",
+    "Earlier 238-check foundation and 104-check integration runs preceded the final cursor fix.",
+    "Hub source is unchanged; its suite uses dedicated PostgreSQL with default durability.",
+    "Dependency audit passed during the continuation audit; this patch adds no dependency.",
+    "Optional services and models are not all installed; skips do not establish release gates."
+  ]
+}

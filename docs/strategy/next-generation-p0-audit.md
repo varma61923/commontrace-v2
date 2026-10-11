@@ -56,9 +56,13 @@ The [validation report](measurements/p0-continuation-validation.json) records
 (3 skips), and 29 explorer/storage-boundary passes. Ruff, the mandatory mypy lists,
 Bandit's configured gate, dependency audits, docs/OpenAPI drift and the pinned
 154-question LoCoMo retrieval regression gate pass. LoCoMo retrieval did not change
-at either budget; this is not model-judged answer accuracy. The full application
-and PostgreSQL Hub suites are still running; no final result or all-CI pass is
-claimed. Hub tests use a dedicated PostgreSQL 16 instance with default durability.
+at either budget; this is not model-judged answer accuracy. The PostgreSQL Hub
+suite completed with 2,510 passed and 2 skipped on a dedicated PostgreSQL 16
+instance with default durability. The baseline application suite was superseded
+and intentionally interrupted after the corrected candidate's full suite started;
+its partial run is not a completed-suite pass. Current candidate validation is
+recorded with the [write optimization](next-generation-p0-write-optimization.md).
+No all-CI pass is claimed.
 
 [Graphify evidence](measurements/p0-continuation-graphify.json) records the exact
 tool and repository revisions: 21,370 CommonTrace nodes, zero dangling endpoints,

@@ -90,19 +90,22 @@
     },
     "full_application_suite": {
       "command": "python -m pytest tests e2e_tests -q",
-      "state": "running",
-      "summary": "Still running; no final result claimed",
+      "state": "interrupted",
+      "summary": "Superseded baseline intentionally interrupted; corrected candidate full suite running separately",
       "passed": null
     },
     "hub_suite": {
       "command": "HUB_TEST_DATABASE_URL=<disposable PostgreSQL 16> python -m pytest hub/tests -q",
-      "state": "running",
-      "summary": "Still running; no final result claimed",
-      "passed": null,
+      "summary": "2510 passed, 2 skipped in 1493.72s (0:24:53)",
+      "counts": {
+        "passed": 2510,
+        "skipped": 2
+      },
+      "passed": true,
       "environment": "Dedicated loopback PostgreSQL 16; default durability settings; run from repository root."
     }
   },
-  "measured_at": "2026-10-11T05:53:40.216134+00:00",
+  "measured_at": "2026-10-11T06:34:19.373812+00:00",
   "limitations": [
     "Optional dependency/service cases remain skips.",
     "Local checks do not claim all hosted CI jobs or model-backed release gates passed."

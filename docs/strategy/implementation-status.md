@@ -13,23 +13,33 @@ Legend: **Done** · **Done (this pass)** (added or fixed in this audit) ·
 ## Next-generation implementation (2026-10-10)
 
 The 2026-10-11 continuation follows the attached build prompt's phase gates.
-P0 missed its current million-fact write gates: 31.43 ms single-write p95
-(target <20 ms) and 759 facts/s batched (target ≥2,000). Phase advancement stops;
+After write optimization, the current million-fact run records 3.23 ms
+single-write p95 (passes <20 ms) and 1,181 facts/s batched (misses ≥2,000).
+The earlier continuation recorded 31.43 ms and 759 facts/s; both runs included
+concurrent validation and are not a controlled causal comparison. Phase advancement stops;
 P1–P4 and every unverified acceptance criterion remain part of the objective.
 The two named CodeQL alerts (#10 and #1)
 are now dismissed after source review and authentication tests (119 passed,
 3 skipped). Security-extended queries remain enabled. The storage reproducer's
 exit-status gate is fixed with five boundary checks. See
-[the continuation audit](next-generation-p0-audit.md) for current evidence.
+[the continuation audit](next-generation-p0-audit.md) and
+[write optimization evidence](next-generation-p0-write-optimization.md).
 
-The combined branch continues through P0–P4 under the user's explicit instruction
-not to stop at the original missed-gate rule. The earlier memory-evolution code
+The measured storage commit's full application suite completed with 6 failures,
+6,666 passes and 118 skips. Shared connection ownership, abort-path cursor
+cleanup and test isolation fix the six reproduced failures in 135 focused checks;
+the fixed-source full suite is running. Native transport delivered 50/50
+directives but measured 152.27 ms p95, missing <50 ms. Follow-up Graphify records
+297 modules and 303 reachability candidates within the unchanged ceilings.
+
+The combined branch contains P0–P4 implementation; this audit does not establish
+their acceptance gates. The earlier memory-evolution code
 was already squashed into main; its branch and `codex/next-generation-p0` are both
 ancestors of `codex/next-generation-complete`.
 
 | Brief | Implemented | Acceptance limits |
 | --- | --- | --- |
-| A: storage | Compact SQLite WAL/event ledger, exact/near/FTS candidates, transactional migration/rebuild, durable content-hash vector projection; optional background Lance HNSW with backend-specific watermarks; tenant-pinned PostgreSQL record ledger, FTS, optional pgvector/HNSW | 1M writes pass locally; 1M hybrid and server latency remain unverified |
+| A: storage | Compact SQLite WAL/event ledger, bounded idle connection reuse, exact/near/FTS candidates, transactional migration/rebuild, durable content-hash vector projection; optional background Lance HNSW with backend-specific watermarks; tenant-pinned PostgreSQL record ledger, FTS, optional pgvector/HNSW | Current 1M single-write gate passes; batch gate misses; 1M hybrid, server latency and zero-reembedding restart remain unverified |
 | B: records | Seven kinds, five scope dimensions plus labels, six lifecycle states, version history, bi-temporal validity, typed relationships, evidence and revision-grounded derived reads | Hosted legacy SDK operations still use the Gateway; Hub implements envelope CRUD, not all legacy operations |
 | C: extraction | Dated speaker/transition extraction, no assistant echo, exact/entropy/MinHash/dense/joint-judge candidate tiers, bounded per-entity/facet observations, existing grounded mental-model refresh | Optional model quality and extraction-cost reduction need real model-backed evaluations |
 | D: learning | Durable event capture, bounded session segmentation, explicit tool/run outcomes, clustered cases, curator/writer proposals, quarantine/shadow/causal activation and retirement, four-format history import, reflection arena and DPO export | Causal activation is tested on randomized fixtures; real SWE uplift and harmful-retirement N remain unverified |

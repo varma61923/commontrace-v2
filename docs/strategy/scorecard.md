@@ -42,7 +42,7 @@ resolved that failure in the measured 1M run. See
 
 ## P0 continuation gate check (2026-10-11)
 
-The latest run misses both write targets. Stop phase advancement as the attached
+The first continuation run missed both write targets. Stop phase advancement as the attached
 build prompt requires; earlier release measurements remain historical evidence.
 
 | Gate | Measured here | Decision |
@@ -53,12 +53,32 @@ build prompt requires; earlier release measurements remain historical evidence.
 | Hybrid/server latency and zero-re-embedding restart | Not exercised | **Unverified** |
 | Named CodeQL false positives | Alerts #10 and #1 dismissed after review and authentication tests | **Resolved** |
 | Pinned LoCoMo retrieval regression | 154 questions; no change at 1,500 or 4,000 tokens | **Pass**, not answer accuracy |
-| Full application / PostgreSQL Hub suites | Running; final results pending | **Unverified** |
+| Full application / PostgreSQL Hub suites | Baseline application run superseded and interrupted; Hub 2,510 passed, 2 skipped | Storage candidate completed with six failures; fixed-source full suite pending |
 
 Commands, signed reports, source hashes and environment limitations are in
 [the P0 continuation audit](next-generation-p0-audit.md). This run used concurrent
 validation on the current host; it does not establish a causal performance change
 from the older release. The full next-generation objective remains incomplete.
+
+## P0 write optimization (2026-10-11)
+
+| Gate | Measured here | Decision |
+| --- | --- | --- |
+| Million-fact single write | 3.23 ms p95; target <20 ms | **Pass** |
+| Million-fact batch | 1,181 facts/s; target ≥2,000 | **Miss** |
+| Sparse-overlap search | 0.261 ms p95 | Does not verify hybrid latency |
+| Hybrid/server latency and zero-reembedding restart | Not exercised | **Unverified** |
+| Storage/cursor/concurrency/erasure contracts | 92 passed | **Pass** |
+| Pinned LoCoMo retrieval regression | 154 questions; no regression at 1,500 or 4,000 tokens | **Pass**, not answer accuracy |
+| Measured storage source full suite | 6 failed, 6,666 passed, 118 skipped | **Failed** |
+| Follow-up storage/journal/hook contracts | 135 passed; all six failures reproduce before the fixes and pass afterward | **Focused pass**; fixed-source full suite pending |
+| Follow-up native transport | 152.27 ms p95, 50/50 directives delivered; target <50 ms | **Latency miss** |
+| Follow-up Graphify | 297 modules, 303 reachability candidates, zero dangling endpoints | **Pass**, unchanged 306/303 ceilings |
+
+Phase advancement remains stopped. The benchmark exited 1 on the batch miss.
+These are separate runs on the same host with concurrent validation, not a
+controlled causal comparison. Commands, source hashes and signed aggregates are
+in the [write optimization report](next-generation-p0-write-optimization.md).
 
 ## Beyond the targets
 

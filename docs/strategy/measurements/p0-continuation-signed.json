@@ -2,14 +2,14 @@
   "format": "commontrace-public-results-v1",
   "report": {
     "public_aggregate_only": true,
-    "measured_at": "2026-10-11T05:53:40.216134+00:00",
+    "measured_at": "2026-10-11T06:34:19.373812+00:00",
     "scope": "P0 continuation audit; full next-generation objective remains incomplete",
     "source_commit": "e9636cf9a1a010e71a91455707d224858ead679a",
     "files_sha256": {
       "docs/strategy/measurements/p0-continuation-storage.json": "3815d9563c713b1c96ec6cd192d89e59a8b3110d8a7e58ff574b977d6ed6b221",
       "docs/strategy/measurements/p0-continuation-quality.json": "e2261e63b085e6ffd14f10e7b0c08ffcbb232fab6ca5939097c454ec6943148b",
       "docs/strategy/measurements/p0-continuation-graphify.json": "9e6bec8f26e0d8a16e03b9dceff8e21a18d9b0cf2b63e4670c1f410914d1c361",
-      "docs/strategy/measurements/p0-continuation-validation.json": "fe7c76b6151e170507175b74b2f2d0efd06302a2b5c873de613b8d11f24441f7"
+      "docs/strategy/measurements/p0-continuation-validation.json": "298054fa88682b109fd25d4a2d46af6c3bd70f9e565c67e1559e9eff1cba0c98"
     },
     "storage": {
       "facts_before_trials": 1000000,
@@ -84,5 +84,5 @@
     ]
   },
   "public_key": "4af25ffa4889429857e2df41a90657a23ffc5ed89ec37a614a79cf56b24f1630",
-  "signature": "kyphpDhBczwYXjsenRtDZ6HxTOYrkY0GV5dbQm1Zs38n06eMpoTrZkJm7iCFKzio2Cg8dy7iMOrnfFpkP2E8BQ=="
+  "signature": "M56NFFmWky87NJQmMmzPmIfXyevGPxU/d49UEeFTqftsh83JcrVofcVMmjGBr3XRXzx6q1ilFhaXC1GMYmQPDw=="
 }
