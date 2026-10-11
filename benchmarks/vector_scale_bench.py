@@ -19,10 +19,16 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hashlib
+import importlib.metadata
 import json
+import math
 import os
+import platform
+import shutil
 import statistics
+import subprocess
 import sys
+import tempfile
 import time
 
 import numpy as np
@@ -137,9 +143,88 @@ async def run(dsn: str, *, n: int, dim: int, queries: int, top_k: int, clusters:
     return report
 
 
+async def run_lance(*, n: int, dim: int, queries: int, top_k: int, clusters: int, spread: float,
+                    seed: int, batch: int, keep: bool, work_dir: str | None = None) -> dict:
+    """Measure the optional local engine through product searches before/after ANN."""
+    if not (256 <= n <= 1_000_000 and 1 <= dim <= 2000 and 1 <= queries <= min(n, 1000)
+            and 1 <= top_k <= min(n, vector_store.MAX_BATCH) and 1 <= clusters <= n
+            and 1 <= batch <= vector_store.MAX_BATCH and seed >= 0
+            and math.isfinite(spread) and spread > 0):
+        raise ValueError("invalid Lance scale workload")
+    from commontrace.vector_lance import LanceVectorIndex
+
+    root = tempfile.mkdtemp(prefix="commontrace-lance-scale-", dir=work_dir)
+    index = None
+    report = {"benchmark": "vector-scale", "engine": "lance", "n": n, "dim": dim,
+              "queries": queries, "top_k": top_k, "clusters": clusters, "spread": spread,
+              "seed": seed, "batch": batch, "cpu_count": os.cpu_count(), "platform": platform.platform(),
+              "python": platform.python_version(), "lancedb": importlib.metadata.version("lancedb"),
+              "numpy": np.__version__, "hybrid_gate": "unverified: vector component only"}
+    try:
+        index = LanceVectorIndex(root, tenant=TENANT, namespace=NAMESPACE, model=MODEL, dimension=dim)
+        rng = np.random.default_rng(seed)
+        centres = rng.normal(size=(clusters, dim)).astype(np.float32)
+        centres /= np.linalg.norm(centres, axis=1, keepdims=True)
+        sample = []
+        started = time.perf_counter()
+        for start in range(0, n, batch):
+            block = _vectors(rng, centres, min(batch, n - start), spread)
+            if len(sample) < queries:
+                sample.extend(block[:queries - len(sample)])
+            await index.upsert(vector_store.VectorRecord(f"m{start+i}", point.tolist())
+                               for i, point in enumerate(block))
+        report["load_seconds"] = time.perf_counter() - started
+        noise = np.random.default_rng(seed + 1)
+        probes = []
+        for point in sample:
+            query = point + noise.normal(0.0, spread / 2, size=dim).astype(np.float32)
+            probes.append((query / np.linalg.norm(query)).tolist())
+        truths, exact_ms = [], []
+        for query in probes:
+            started = time.perf_counter()
+            truths.append({hit.key for hit in await index.search(query, top_k=top_k)})
+            exact_ms.append((time.perf_counter() - started) * 1000)
+        report["exact_samples_ms"] = exact_ms
+        report["exact_ms"] = {"p50": statistics.median(exact_ms), "p95": _percentile(exact_ms, .95)}
+        started = time.perf_counter()
+        report["maintenance"] = await index.maintain()
+        report["index_build_seconds"] = time.perf_counter() - started
+        if report["maintenance"]["rows"] != n or not report["maintenance"]["approximate"]:
+            raise RuntimeError("Lance ANN index did not cover the declared workload")
+        for query in probes[:5]:
+            await index.search(query, top_k=top_k)
+        samples, recalls = [], []
+        for query, truth in zip(probes, truths):
+            started = time.perf_counter()
+            hits = await index.search(query, top_k=top_k)
+            samples.append((time.perf_counter() - started) * 1000)
+            recalls.append(len(truth & {hit.key for hit in hits}) / len(truth))
+        report["sweep"] = [{"configuration": "product HnswSq defaults", "samples_ms": samples,
+                            "p50_ms": statistics.median(samples), "p95_ms": _percentile(samples, .95),
+                            "recall_at_k": statistics.mean(recalls), "recall_min": min(recalls)}]
+        repository = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        report["source_files_sha256"] = {
+            name: hashlib.sha256(open(os.path.join(repository, name), "rb").read()).hexdigest()
+            for name in ("benchmarks/vector_scale_bench.py", "commontrace/vector_lance.py",
+                         "commontrace/vector_store.py", "commontrace/async_workers.py")}
+        report["source_commit"] = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repository,
+                                                          text=True).strip()
+        report["note"] = "Synthetic paired vector queries; excludes embeddings, lexical/graph fusion and canonical admission."
+        if keep:
+            report["retained_benchmark_store"] = root
+        return report
+    finally:
+        if index is not None:
+            await index.close()
+        if not keep:
+            shutil.rmtree(root)
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("--dsn", default=os.environ.get("COMMONTRACE_SCALE_DSN", ""))
+    p.add_argument("--engine", choices=("postgres", "lance"), default="postgres")
+    p.add_argument("--work-dir", default=None, help="parent directory for a benchmark-owned Lance store")
     p.add_argument("--n", type=int, default=1_000_000)
     p.add_argument("--dim", type=int, default=384)
     p.add_argument("--queries", type=int, default=200)
@@ -155,9 +240,14 @@ def main(argv=None) -> int:
     p.add_argument("--keep", action="store_true")
     p.add_argument("--out", default=None)
     args = p.parse_args(argv)
-    if not args.dsn:
+    if args.engine == "postgres" and not args.dsn:
         p.error("--dsn (or COMMONTRACE_SCALE_DSN) is required")
-    report = asyncio.run(run(args.dsn, n=args.n, dim=args.dim, queries=args.queries, top_k=args.top_k,
+    if args.engine == "lance":
+        report = asyncio.run(run_lance(n=args.n, dim=args.dim, queries=args.queries, top_k=args.top_k,
+                                      clusters=args.clusters, spread=args.spread, seed=args.seed,
+                                      batch=args.batch, keep=args.keep, work_dir=args.work_dir))
+    else:
+        report = asyncio.run(run(args.dsn, n=args.n, dim=args.dim, queries=args.queries, top_k=args.top_k,
                              clusters=args.clusters, spread=args.spread, seed=args.seed, batch=args.batch,
                              ef_search=[int(x) for x in args.ef_search.split(",")], m=args.m, ef_construction=args.ef_construction,
                              keep=args.keep))
