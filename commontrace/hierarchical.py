@@ -70,7 +70,11 @@ class AtomicFact:
     retracted_at: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        if type(self) is not AtomicFact:
+        if (type(self) is not AtomicFact or type(self.evidence) is not list or self.evidence
+                or type(self.origin) is not dict or any(
+                    type(key) not in _FACT_SCALARS or type(value) not in _FACT_SCALARS
+                    for key, value in self.origin.items()
+                )):
             return asdict(self)
         result = {}
         for name in AtomicFact.__dataclass_fields__:
