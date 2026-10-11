@@ -5,16 +5,46 @@ from commontrace.memory_journal import Journal
 from commontrace.memory_record import MemoryRecord
 
 
+def test_offline_prior_is_bounded_and_cannot_replace_online_validation():
+    from commontrace.hook_kit import bootstrap_priority
+
+    data = {"text": "Test parser boundaries.", "offline_prior": {"alpha": 10001, "beta": 1}}
+    assert 1 < bootstrap_priority(MemoryRecord("candidate", "lesson", 1, data, status="shadow")) < 1.01
+    assert bootstrap_priority(MemoryRecord("candidate", "lesson", 1, data, status="active")) == 1
+    assert (
+        bootstrap_priority(
+            MemoryRecord(
+                "candidate", "lesson", 1, {**data, "offline_prior": {"alpha": float("nan"), "beta": 1}}, status="shadow"
+            )
+        )
+        == 1
+    )
+
+
 def test_always_rules_survive_large_candidate_store(tmp_path):
     kit = HookKit(str(tmp_path), "agent", embedder="none")
     for start in range(0, 1100, 32):
-        kit.journal.put_many([
-            MemoryRecord(f"fact-{index:05d}", "fact", 1, {"text": "Unrelated archived design note."},
-                         scope={"agent": "agent"}) for index in range(start, min(start + 32, 1100))
-        ])
-    kit.journal.put(MemoryRecord("zz-owner-rule", "lesson", 1,
-                                {"text": "Keep credentials private.", "lesson_kind": "directive"},
-                                scope={"agent": "agent"}))
+        kit.journal.put_many(
+            [
+                MemoryRecord(
+                    f"fact-{index:05d}",
+                    "fact",
+                    1,
+                    {"text": "Unrelated archived design note."},
+                    scope={"agent": "agent"},
+                )
+                for index in range(start, min(start + 32, 1100))
+            ]
+        )
+    kit.journal.put(
+        MemoryRecord(
+            "zz-owner-rule",
+            "lesson",
+            1,
+            {"text": "Keep credentials private.", "lesson_kind": "directive"},
+            scope={"agent": "agent"},
+        )
+    )
     result = kit.handle("UserPromptSubmit", {"session_id": "s", "prompt": "new unrelated question"})
     assert "zz-owner-rule" in result["injected"]
 

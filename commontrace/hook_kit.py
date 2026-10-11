@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import html
 import json
+import math
 import os
 import shlex
 import sys
@@ -31,6 +32,20 @@ EVENTS = (
     "SessionEnd",
 )
 AGENTS = ("claude", "codex", "cursor", "cline", "gemini", "kimi", "windsurf", "openhands")
+
+
+def bootstrap_priority(record: MemoryRecord) -> float:
+    """Weak offline Beta prior orders evaluation; it never grants relevance or promotion."""
+    prior = record.payload.get("offline_prior", {})
+    if record.status != "shadow" or not isinstance(prior, dict):
+        return 1.0
+    alpha, beta = prior.get("alpha", 1), prior.get("beta", 1)
+    if any(
+        type(value) not in (int, float) or not math.isfinite(value) or not 1 <= value <= 10001
+        for value in (alpha, beta)
+    ):
+        return 1.0
+    return 1 + 0.02 * (alpha / (alpha + beta) - 0.5)
 
 
 class HookKit:
@@ -162,8 +177,10 @@ class HookKit:
                 continue
             if record.status == "active" and (
                 record.kind == "directive"
-                or record.kind == "lesson" and record.payload.get("lesson_kind") == "directive"
-                or record.kind == "profile" and record.payload.get("critical")
+                or record.kind == "lesson"
+                and record.payload.get("lesson_kind") == "directive"
+                or record.kind == "profile"
+                and record.payload.get("critical")
             ):
                 fixed.append((record, text))
             elif query.strip():
@@ -202,7 +219,9 @@ class HookKit:
                         if sparse[i] > 0 and dense[i] >= 0.6
                     }
                     top = max(scores.values(), default=0)
-                    for i in sorted(scores, key=lambda i: (-scores[i], candidates[i][0].id)):
+                    for i in sorted(
+                        scores, key=lambda i: (-scores[i] * bootstrap_priority(candidates[i][0]), candidates[i][0].id)
+                    ):
                         if scores[i] >= 0.012 and scores[i] >= 0.93 * top:
                             record, text = candidates[i]
                             from commontrace.measure import content_revision
