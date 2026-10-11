@@ -1,5 +1,5 @@
 {
-  "measured_at": "2026-10-11T10:23:59.901427+00:00",
+  "measured_at": "2026-10-11T10:27:56.228144+00:00",
   "storage_source_commit": "aeadf5d07a04f80e670269a29481ea4ac9671811",
   "storage_exit_code": 1,
   "actual_command": "PYTHONPATH=. python /tmp/commontrace-current-storage-with-retention.py --sizes 1000,10000,30000,1000000 --trials 20 --legacy-max 1000 --output <report>",

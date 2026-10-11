@@ -6,8 +6,8 @@
     "source_commit": "aeadf5d07a04f80e670269a29481ea4ac9671811",
     "files_sha256": {
       "docs/strategy/measurements/p0-current-storage.json": "acf015bcef3cc3298dcd0b24ec6cef022233fcb0b3de974cf0431ecf15a1c51a",
-      "docs/strategy/measurements/p0-current-storage-validation.json": "8674ffc964cb073aae787b5c390689eadb44062e44b207082198d9f34c6cfa96",
-      "docs/strategy/measurements/p0-write-diagnostics.json": "b845e5926bd66cf4c5618d82ddc15b8ff155ec2beb206d34cd7647966a0654dd"
+      "docs/strategy/measurements/p0-current-storage-validation.json": "ebcbccb4a4a8bb03d3ec568c0ffd2994bfd4cb86e6824ce02749e24afe58e72a",
+      "docs/strategy/measurements/p0-write-diagnostics.json": "9f3ac5537fdd7dd54e064bf3846d570592e6f2b449a8dd13d1dc35ad7a85c099"
     },
     "decision": "stop at P0: latest batch gate missed; frozen full application suite passes",
     "limitations": [
@@ -15,5 +15,5 @@
     ]
   },
   "public_key": "4af25ffa4889429857e2df41a90657a23ffc5ed89ec37a614a79cf56b24f1630",
-  "signature": "mAyskq2JTnLWNeosN5npB+1bsQxP9BYPGoTR5bFvP72jxuoBudDdx0kH0rIiYN+tJSqJMtTgH55nWhLjgdilBg=="
+  "signature": "yrlKVPxNm+rJn/jZaleavfhL45yes5zx3z090TBeLnxUZ7fUIVOJ/p7sAwSZkOylZXfgV7DNxOnewK/eGmmtBg=="
 }
