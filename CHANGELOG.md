@@ -25,7 +25,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and installed-wheel checks. Windsurf UI output no longer claims model exposure.
   Three frozen 50-call runs delivered all 150 directives at 51.59, 46.64 and
   48.64 ms p95. One round misses <50 ms, so the latency gate remains open.
-  Scoped checks pass 129 tests with 8 skips; the new full suite is still running.
+  Scoped checks pass 129 tests with 8 skips; the frozen full suite passes 6,709
+  tests with 126 skips.
+- Near-duplicate terms now share a global dictionary with indexed numeric and
+  negation blocks. Atomic conversion preserves all authoritative event/payload
+  checksums on a 1,044,020-fact copy and reduces lexicon rows from 9,396,194 to
+  3,132,080. Migration, rollback, concurrent readers, scopes and recall have
+  scoped contracts. Ordinary fact snapshots copy scalar containers directly;
+  nested values and evidence retain recursive serialization. The current-source
+  full suite is running. Batch and hybrid acceptance remain open; corrected
+  private bulk prototypes are not production changes.
 - The frozen SQLite/journal follow-up passes the full application suite:
   6,678 passed and 118 skipped. The latest million-fact write run measures
   3.86 ms single-write p95 and 1,167 facts/s batched. The batch reproducer

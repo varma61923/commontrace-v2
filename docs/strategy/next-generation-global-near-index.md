@@ -47,3 +47,40 @@ They keep full WAL/synchronous durability, all API admission, all samples and
 concurrent validation context visible. Only a later frozen-source real-API
 million-fact reproducer can establish release throughput. Preserve the 2,000
 facts/s gate and report a miss without phase advancement.
+
+The production conversion on frozen `19c914b` preserves checksums of all event
+rows and fact payloads on the private 1,044,020-fact copy. It takes 55.65 seconds
+and reduces lexicon rows from 9,396,194 to 3,132,080; postings remain 24,012,460.
+Two real-API batch diagnostics before conversion reach 1,028 and 1,172 facts/s;
+after conversion they reach 1,101 and 1,178. These sequential warmed-copy samples
+have concurrent validation load and do not establish a controlled throughput
+improvement or the release gate. Adaptive candidate joins probe the smaller of
+the block and term populations; the probe limit chooses a plan and never caps
+matches. Nine new contracts pass, including strongest matches beyond 100 rows.
+Frozen `d50d54b` also passes the pinned 154-question LoCoMo retrieval regression
+at 1,500 and 4,000 tokens (paired comparison seed 61923). This uses no reader,
+judge or embedding model and does not establish the answer-quality gates.
+
+The first private combined/global and tighter-cache experiments had a quoting
+mismatch in source replacement: bulk writes retained block-specific near terms
+after conversion. Their document-frequency checks passed but did not establish
+representation completeness. Preserve those raw results as **excluded mixed
+layout diagnostics**. Repair only the mutable copy, and require every new fact's
+global near-posting set to equal its canonical content, successful near recall
+and no old near rows. The corrected prototype reaches 1,870–1,895 facts/s. An
+additional FIFO/encoder experiment retains all samples, including 1,896 and
+2,130 for its combined variant. Neither is production or release acceptance.
+
+The next staging design must preserve FTS ranking during a batch: publish fact
+metadata and FTS inside the owned transaction immediately, defer only lexical
+postings/frequency maintenance, and merge a batch-local near-posting overlay.
+Exact and contradiction lookups then keep the existing indexed SQL semantics;
+semantic candidate ranking sees the same staged FTS rows. Finalize unchanged
+staged postings together, refresh changed projections, validate the existing
+record envelope and append all events atomically. Test semantic admission beyond
+the pending-candidate cap, reinforcement, conflicts, evidence, removes/re-adds
+and rollback before promoting this design. The current bulk prototype's full
+projection deferral has not established those contracts.
+
+Raw diagnostics, source recipes and validation are bound by the
+[signed global near-index evidence](measurements/p0-global-near-signed.json).

@@ -1,5 +1,5 @@
 {
-  "measured_at": "2026-10-11T11:01:46.231790+00:00",
+  "measured_at": "2026-10-11T14:26:44.488541+00:00",
   "source_commit": "4b1d2eb56caa2c936b74d92da677ec85b85b6763",
   "source_files_sha256": {
     "commontrace/hook_bridge.py": "a8c4b582bc28f5d7b2b72e76a120ff424e888e177c3ae916c56c43f329b24ec7",
@@ -64,12 +64,12 @@
   },
   "full_application_suite": {
     "command": "env -u COMMONTRACE_ROOT -u JUSTDOIT_ROOT python -m pytest tests e2e_tests -q",
-    "state": "running",
-    "passed": null,
-    "summary": null,
-    "log_sha256": "ec13e351ccb23cef4a3c62d36090bb9a3cf2066a701eae98a2d14ed75a9bf390",
+    "state": "completed",
+    "passed": true,
+    "summary": "6709 passed, 126 skipped, 26 warnings in 4094.07s (1:08:14)",
+    "log_sha256": "7fd7cba75ed3857ee5b637640a69ce42a4d61182c8e515e32bf8dec02333d564",
     "source_commit": "4b1d2eb56caa2c936b74d92da677ec85b85b6763",
-    "log_digest_scope": "Running log prefix at collection time; not a final completion artifact.",
+    "log_digest_scope": "Complete log at collection time.",
     "source_snapshot_sha256": "9d1419d6487f16dba3454a0b11fd1b64d17e0ae9a9d0bd2ab0f4709c9ef24707",
     "source_files_verified": 1235,
     "environment": "Dedicated venv adds the frozen worktree and existing read-only test dependency directory through a .pth file. Isolated capture subprocesses import the same frozen package, not an editable live checkout."

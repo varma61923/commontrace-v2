@@ -1,0 +1,139 @@
+{
+  "scope": "Serialization-only CPU profiles, not API ingest or release gates. All rounds retained.",
+  "before": {
+    "scope": "Serialization CPU diagnostic; excludes writes and is not a storage gate.",
+    "source_commit": "19c914b2077fd51513c25d8740ea802eea6c5089",
+    "source_sha256": "2f0a177a5294becaec617b62a8624557aa7efc830d217eb5f9d75f66707561ab",
+    "python": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+    "results": [
+      {
+        "case": "scalar",
+        "calls": 50000,
+        "seconds": 0.5050621160189621,
+        "calls_per_second": 98997.72407028603
+      },
+      {
+        "case": "scalar",
+        "calls": 50000,
+        "seconds": 0.5118563380092382,
+        "calls_per_second": 97683.65904086466
+      },
+      {
+        "case": "scalar",
+        "calls": 50000,
+        "seconds": 0.5180180129827932,
+        "calls_per_second": 96521.74006864282
+      },
+      {
+        "case": "nested",
+        "calls": 5000,
+        "seconds": 0.05976819101488218,
+        "calls_per_second": 83656.53895656652
+      },
+      {
+        "case": "nested",
+        "calls": 5000,
+        "seconds": 0.06192252895561978,
+        "calls_per_second": 80746.05614999232
+      },
+      {
+        "case": "nested",
+        "calls": 5000,
+        "seconds": 0.06278883101185784,
+        "calls_per_second": 79631.99695588753
+      }
+    ],
+    "runner_source": "\"\"\"Serialization CPU diagnostic; excludes writes and is not a storage gate.\"\"\"\nimport argparse,hashlib,json,subprocess,sys,time\nfrom dataclasses import asdict\nfrom pathlib import Path\nparser=argparse.ArgumentParser();parser.add_argument('--source',required=True);parser.add_argument('--output',required=True)\nargs=parser.parse_args();sys.path.insert(0,args.source)\nfrom commontrace.hierarchical import AtomicFact\nsource=Path(args.source)/'commontrace/hierarchical.py'\nreport={'scope':__doc__,'source_commit':subprocess.check_output(['git','rev-parse','HEAD'],cwd=args.source,text=True).strip(),'source_sha256':hashlib.sha256(source.read_bytes()).hexdigest(),'python':sys.version,'results':[]}\nfor label,origin,count in [('scalar',{'author':'human'},50000),('nested',{'details':{'quotes':['alpha','beta']}},5000)]:\n fact=AtomicFact('sample','Component uses durable event storage','general',['a'],.8,1,'2026-01-01',None,origin=origin)\n expected=asdict(fact)\n for _ in range(3):\n  started=time.perf_counter()\n  for n in range(count):actual=fact.to_dict()\n  elapsed=time.perf_counter()-started\n  assert actual==expected\n  report['results'].append({'case':label,'calls':count,'seconds':elapsed,'calls_per_second':count/elapsed})\nreport['runner_source']=Path(__file__).read_text()\nPath(args.output).write_text(json.dumps(report,indent=2)+'\\n')\nprint(json.dumps(report['results']))\n"
+  },
+  "initial_fast": {
+    "scope": "Serialization CPU diagnostic; excludes writes and is not a storage gate.",
+    "source_commit": "5bdad94ebc45e1f100c0d984ad0107c8d13db05c",
+    "source_sha256": "e2653ad40a17fb8c1243db725a1782a2a47a5a3b51ebae6efbd571937ba65986",
+    "python": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+    "results": [
+      {
+        "case": "scalar",
+        "calls": 50000,
+        "seconds": 0.27772106998600066,
+        "calls_per_second": 180036.7541523601
+      },
+      {
+        "case": "scalar",
+        "calls": 50000,
+        "seconds": 0.2529425810207613,
+        "calls_per_second": 197673.32094984848
+      },
+      {
+        "case": "scalar",
+        "calls": 50000,
+        "seconds": 0.253375073953066,
+        "calls_per_second": 197335.9068827021
+      },
+      {
+        "case": "nested",
+        "calls": 5000,
+        "seconds": 0.08365791098913178,
+        "calls_per_second": 59767.2107859538
+      },
+      {
+        "case": "nested",
+        "calls": 5000,
+        "seconds": 0.0840691520133987,
+        "calls_per_second": 59474.847554107764
+      },
+      {
+        "case": "nested",
+        "calls": 5000,
+        "seconds": 0.08405644999584183,
+        "calls_per_second": 59483.834973370205
+      }
+    ],
+    "runner_source": "\"\"\"Serialization CPU diagnostic; excludes writes and is not a storage gate.\"\"\"\nimport argparse,hashlib,json,subprocess,sys,time\nfrom dataclasses import asdict\nfrom pathlib import Path\nparser=argparse.ArgumentParser();parser.add_argument('--source',required=True);parser.add_argument('--output',required=True)\nargs=parser.parse_args();sys.path.insert(0,args.source)\nfrom commontrace.hierarchical import AtomicFact\nsource=Path(args.source)/'commontrace/hierarchical.py'\nreport={'scope':__doc__,'source_commit':subprocess.check_output(['git','rev-parse','HEAD'],cwd=args.source,text=True).strip(),'source_sha256':hashlib.sha256(source.read_bytes()).hexdigest(),'python':sys.version,'results':[]}\nfor label,origin,count in [('scalar',{'author':'human'},50000),('nested',{'details':{'quotes':['alpha','beta']}},5000)]:\n fact=AtomicFact('sample','Component uses durable event storage','general',['a'],.8,1,'2026-01-01',None,origin=origin)\n expected=asdict(fact)\n for _ in range(3):\n  started=time.perf_counter()\n  for n in range(count):actual=fact.to_dict()\n  elapsed=time.perf_counter()-started\n  assert actual==expected\n  report['results'].append({'case':label,'calls':count,'seconds':elapsed,'calls_per_second':count/elapsed})\nreport['runner_source']=Path(__file__).read_text()\nPath(args.output).write_text(json.dumps(report,indent=2)+'\\n')\nprint(json.dumps(report['results']))\n"
+  },
+  "final": {
+    "scope": "Serialization CPU diagnostic; excludes writes and is not a storage gate.",
+    "source_commit": "32dd33a312372a7580178ad92df623dbe85899ce",
+    "source_sha256": "341a9b6fe2e73b7e4f867243945e1b5e23bc3c7c75146b2e149b835c0c421ed5",
+    "python": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+    "results": [
+      {
+        "case": "scalar",
+        "calls": 50000,
+        "seconds": 0.2875923030078411,
+        "calls_per_second": 173857.22593082322
+      },
+      {
+        "case": "scalar",
+        "calls": 50000,
+        "seconds": 0.2839751309948042,
+        "calls_per_second": 176071.75608949657
+      },
+      {
+        "case": "scalar",
+        "calls": 50000,
+        "seconds": 0.28887919295812026,
+        "calls_per_second": 173082.7322245
+      },
+      {
+        "case": "nested",
+        "calls": 5000,
+        "seconds": 0.06180909799877554,
+        "calls_per_second": 80894.23987548001
+      },
+      {
+        "case": "nested",
+        "calls": 5000,
+        "seconds": 0.06159189302707091,
+        "calls_per_second": 81179.5149371752
+      },
+      {
+        "case": "nested",
+        "calls": 5000,
+        "seconds": 0.061873233993537724,
+        "calls_per_second": 80810.3872592504
+      }
+    ],
+    "runner_source": "\"\"\"Serialization CPU diagnostic; excludes writes and is not a storage gate.\"\"\"\nimport argparse,hashlib,json,subprocess,sys,time\nfrom dataclasses import asdict\nfrom pathlib import Path\nparser=argparse.ArgumentParser();parser.add_argument('--source',required=True);parser.add_argument('--output',required=True)\nargs=parser.parse_args();sys.path.insert(0,args.source)\nfrom commontrace.hierarchical import AtomicFact\nsource=Path(args.source)/'commontrace/hierarchical.py'\nreport={'scope':__doc__,'source_commit':subprocess.check_output(['git','rev-parse','HEAD'],cwd=args.source,text=True).strip(),'source_sha256':hashlib.sha256(source.read_bytes()).hexdigest(),'python':sys.version,'results':[]}\nfor label,origin,count in [('scalar',{'author':'human'},50000),('nested',{'details':{'quotes':['alpha','beta']}},5000)]:\n fact=AtomicFact('sample','Component uses durable event storage','general',['a'],.8,1,'2026-01-01',None,origin=origin)\n expected=asdict(fact)\n for _ in range(3):\n  started=time.perf_counter()\n  for n in range(count):actual=fact.to_dict()\n  elapsed=time.perf_counter()-started\n  assert actual==expected\n  report['results'].append({'case':label,'calls':count,'seconds':elapsed,'calls_per_second':count/elapsed})\nreport['runner_source']=Path(__file__).read_text()\nPath(args.output).write_text(json.dumps(report,indent=2)+'\\n')\nprint(json.dumps(report['results']))\n"
+  },
+  "initial_regression": "Initial fast path traversed simple fields before falling back for nested origins. The final implementation checks complex origin/evidence first and retains the recursive path."
+}

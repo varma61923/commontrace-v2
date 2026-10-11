@@ -92,8 +92,9 @@ Bandit, docs and both OpenAPI checks. Graphify reports 21,455 nodes, 63,732 edge
 298 modules, 300 reachability candidates, no dangling endpoints and no policy
 violations. The ceilings remain 306 modules and 303 candidates; the new bridge
 is an actual generated absolute-script entry point. The full application and
-end-to-end suite is running against the same frozen commit in a dedicated
-environment. An initial tests-only invocation was stopped early and is not
+end-to-end suite completed against the same frozen commit in a dedicated
+environment: **6,709 passed, 126 skipped, 26 warnings in 4,094.07 seconds**.
+An initial tests-only invocation was stopped early and is not
 counted as a validation pass.
 
 Reproduce each transport run with:

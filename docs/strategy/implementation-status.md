@@ -51,10 +51,25 @@ commands. Three frozen 50-call runs delivered all directives and measured
 51.59, 46.64 and 48.64 ms p95. One round misses <50 ms, so native latency remains
 open. The historical 152.27 ms Node report has limited dependency provenance;
 it is not a controlled comparison. Scoped validation passes 129 tests with
-8 skips and installed-wheel capture/delivery checks. The new full application
-and end-to-end suite is running on frozen source; it is not yet a pass.
+8 skips and installed-wheel capture/delivery checks. The frozen `4b1d2eb` full
+application and end-to-end suite passes 6,709 tests with 126 skips in 4,094.07 seconds.
 Graphify now reports 298 modules and 300 candidates within the unchanged
 306/303 limits. See [native transport evidence](next-generation-native-transport.md).
+
+The later global near-term projection on `19c914b` upgrades a private 1,044,020-fact
+copy in 55.65 seconds, reducing lexicon rows from 9,396,194 to 3,132,080. Every
+authoritative event and fact payload checksum remains identical. Storage,
+deduplication, evidence, scopes and rollback pass 192 scoped checks; nine new
+near-index contracts cover migration, concurrent readers/openers, injected
+failure, brute-force recall, rebuild and uncapped strongest-match selection.
+The ordinary fact snapshot optimization has four compatibility contracts and
+80 final write/evidence checks. Its scalar serialization profile rises from
+96.5–99.0K to 173.1–176.1K calls/s; nested values retain the recursive path.
+These are component diagnostics, not a new million-fact write acceptance run.
+The pinned 154-question LoCoMo retrieval regression passes at 1,500 and 4,000
+tokens against the frozen earlier report; no reader/judge answer accuracy is measured.
+The full suite for storage/snapshot source `d50d54b` is running separately.
+See [global near-index evidence](next-generation-global-near-index.md).
 
 The combined branch contains P0–P4 implementation; this audit does not establish
 their acceptance gates. The earlier memory-evolution code

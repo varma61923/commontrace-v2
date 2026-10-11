@@ -17,6 +17,9 @@ Details and the full audit are in [implementation-status.md](implementation-stat
 
 ## Next-generation release gates (2026-10-10)
 
+This is a historical snapshot. The continuation measurements below supersede
+its current write and native-latency acceptance claims.
+
 | Gate | Status | Evidence |
 | --- | --- | --- |
 | Single-write p95 <20 ms at 1M | **Measured pass** | 5.031 ms, real hierarchical APIs, 20 trials, synthetic selective workload |
@@ -32,7 +35,7 @@ Details and the full audit are in [implementation-status.md](implementation-stat
 | Harmful-retirement N and lower extraction cost | **Unverified** | Synthetic causal lifecycle and usage-accounting checks do not establish either production metric |
 | Poison resistance | **Fixture tested** | Eleven injector poison/status cases; no successful injection, clean utility retained; novel attacks not covered |
 | First injected lesson <2 minutes | **Unverified** | Setup previews eligible existing lessons; empty stores require reviewed/evaluated evidence |
-| F7: fewer modules; <40 documented config vars | **Primary surface met; compatibility retained** | 296 Python modules; 25 primary variables; 155 legacy aliases explicitly listed in the configuration schema; nine recommended profile settings |
+| F7: fewer modules; <40 documented config vars | **Not met** | 298 Python modules in the latest audit; 25 primary variables plus 155 explicitly documented legacy aliases still exceed the variable target |
 | Signed public aggregate report | **Implemented** | Ed25519 signature with repository-pinned session public key; no private trajectories |
 
 Historical P0 disk exhaustion remains recorded in
@@ -75,7 +78,10 @@ from the older release. The full next-generation objective remains incomplete.
 | Frozen follow-up full application suite | `fa1ef0c`: 6,678 passed, 118 skipped, 26 warnings | **Pass**; later Lance changes separately covered by ten scoped checks |
 | Latest million-fact writes | `aeadf5d`: 3.86 ms single-write p95, 1,167 facts/s batched | **Single pass; batch miss**; benchmark exits 1 |
 | Historical Node transport | 152.27 ms p95, 50/50 directives delivered; target <50 ms | **Latency miss**; reported checkout 54681d0, imported dependency binding incomplete |
-| Isolated Python transport, frozen `4b1d2eb` | Three runs: 51.59, 46.64, 48.64 ms p95; 150/150 delivered | **Latency remains open**: one of three rounds misses; scoped 129 passed / 8 skipped, new full suite running |
+| Isolated Python transport, frozen `4b1d2eb` | Three runs: 51.59, 46.64, 48.64 ms p95; 150/150 delivered | **Latency remains open**: one of three rounds misses; full suite 6,709 passed / 126 skipped |
+| Global near-term migration, frozen `19c914b` | 1,044,020 facts; 9,396,194 → 3,132,080 lexicon rows; 55.65 s conversion; all event/payload checksums unchanged | **Migration diagnostic pass**; 192 scoped checks, separate current-source full suite running |
+| Corrected staged/bulk/cache prototype | 1,870–1,895 facts/s; FIFO/encoder experiment 1,896–2,130 | **Unaccepted**: misses retained, staged semantic admission unverified, concurrent validation; earlier mixed-layout timings excluded |
+| Scalar fact snapshots | 96.5–99.0K → 173.1–176.1K calls/s in a serialization-only profile; complex payloads retain recursive semantics | **Component diagnostic**; does not establish batched ingest throughput |
 | Follow-up Graphify | 297 modules, 303 reachability candidates, zero dangling endpoints | **Pass**, unchanged 306/303 ceilings |
 | Optional Lance at 10K vectors | ANN p95 7.15 ms, recall@10 1.0 on 20 paired synthetic queries | **Component measured**; million-fact hybrid unverified |
 | Optional Lance at 1M vectors | ANN p95 13.04 ms; mean recall@10 0.91, minimum 0.70 | **Recall target missed**; component only, full hybrid unverified |
