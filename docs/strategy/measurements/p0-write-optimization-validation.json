@@ -1,9 +1,9 @@
 {
-  "measured_at": "2026-10-11T09:01:57.297084+00:00",
+  "measured_at": "2026-10-11T09:23:02.551414+00:00",
   "measured_source_commit": "54681d0484518762b05132b8d1e160162818a3ba",
   "source_base": "a8d223d245f9ad7835b41e4262c66ec23405e2e3",
   "postmeasurement_followup": {
-    "source_base": "fa1ef0c096d1e0a7714ee84b56ed78b32930a972",
+    "source_commit": "fa1ef0c",
     "source_files_sha256": {
       "commontrace/sqlite_pool.py": "b39aa6bcb51b3fe3430ea91718efd6e043901bd814e7bb96a06a1c66b562f07e",
       "commontrace/fact_store.py": "0fdf4a3a00f478d2409a229201de9ed9cd1b696f65d4cd42681f969960d73be5",
@@ -131,6 +131,16 @@
     "test_first": {
       "journal_reuse_and_cursor_release": "3 failed, 1 passed before implementation",
       "abort_cursor_cleanup": "2 failed before implementation; 94 focused tests passed after initial fix"
+    },
+    "retrieval_regression": {
+      "command": "pinned 154-question LoCoMo sample; budgets 1500,4000; embedder/rerank none; paired comparison seed 61923",
+      "gate_failures": {
+        "1500": [],
+        "4000": []
+      },
+      "candidate_sha256": "0b74edc72209baf941685a8c3ffdf2bc2ea1ed7d4db3cdec006bd982f1924f41",
+      "comparison_sha256": "30749575b80916e036f8d284556fb765e4940df4b7aa1d35482c5345941edab2",
+      "scope": "Retrieval only; no reader or judge"
     },
     "million_fact_write_measurement": "Not rerun on this follow-up source",
     "full_application_suite": {

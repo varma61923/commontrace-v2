@@ -31,6 +31,10 @@ cleanup and test isolation fix the six reproduced failures in 135 focused checks
 the fixed-source full suite is running. Native transport delivered 50/50
 directives but measured 152.27 ms p95, missing <50 ms. Follow-up Graphify records
 297 modules and 303 reachability candidates within the unchanged ceilings.
+The optional Lance engine passes four real-engine/harness checks. At 10K
+synthetic vectors its ANN p95 is 7.15 ms with recall@10 1.0; this excludes full
+hybrid retrieval. The [local vector audit](next-generation-p0-vector-audit.md)
+records the scope and reproducible command; million-scale work remains pending.
 
 The combined branch contains P0–P4 implementation; this audit does not establish
 their acceptance gates. The earlier memory-evolution code

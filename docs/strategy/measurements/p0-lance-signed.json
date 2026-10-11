@@ -1,0 +1,15 @@
+{
+  "format": "commontrace-public-results-v1",
+  "report": {
+    "public_aggregate_only": true,
+    "scope": "Lance vector component; no hybrid acceptance claim",
+    "source_commit": "28a5a94",
+    "files_sha256": {
+      "docs/strategy/measurements/p0-lance-10k-scale.json": "a476061fdd726c1944a5d60a8a1b9f909f0599438e8f563eeed37bbe2a38604a",
+      "docs/strategy/measurements/p0-lance-validation.json": "af17f9ee0a2a6ef4a3d45cbc44541e442fc9ac35e5eb800b6f640389485cd47a"
+    },
+    "million_scale_state": "running; no result claimed"
+  },
+  "public_key": "4af25ffa4889429857e2df41a90657a23ffc5ed89ec37a614a79cf56b24f1630",
+  "signature": "BIDAU0L6fF/oNDjNWVspi5AGvOVM8dkmva9/BnNx4cMKPYuNpFPKbeG9Dp33pZqeZuLZZhbVYj1Ca6UwAiZ7DQ=="
+}

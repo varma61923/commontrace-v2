@@ -55,3 +55,9 @@ python -m benchmarks.vector_scale_bench --engine lance --n 10000 --dim 384 \
 The raw report binds the benchmark and product source hashes; the benchmark
 extension was uncommitted at launch. Keep source and scale distinctions visible
 when recording subsequent measurements.
+
+The [10K report](measurements/p0-lance-10k-scale.json) and
+[validation record](measurements/p0-lance-validation.json) are bound by the
+[signed aggregate](measurements/p0-lance-signed.json), using the continuation
+audit's pinned public key. Source hashes match `28a5a94`. A million-vector run
+is in progress; no result from that run is claimed yet.
