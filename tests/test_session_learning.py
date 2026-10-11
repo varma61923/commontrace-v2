@@ -66,6 +66,225 @@ def test_hard_caps_thin_none_and_writer_rejection(tmp_path):
     assert not Journal(root).search("", scope={"agent": "a"}, kinds=("lesson",), statuses=("quarantined",))
 
 
+@pytest.mark.parametrize("text", ["x" * 50000, "😀" * 5000, '\\"\n' * 10000], ids=["ascii", "unicode", "escapes"])
+def test_oversize_segment_never_truncates_or_dispatches(text):
+    import copy
+
+    entries = [{"id": "m", "sequence": 1, "event": "PostToolUseFailure", "payload": {"text": text}}]
+    original = copy.deepcopy(entries)
+    calls = []
+    with pytest.raises(ValueError, match="budget"):
+        segment(entries, max_tokens=100, complete=lambda prompt: calls.append(prompt))
+    assert entries == original
+    assert calls == []
+
+
+def test_semantic_segment_counts_whole_serialized_prompt():
+    entries = [{"payload": {"text": '😀 \\"\n' * 3}, "sequence": i} for i in range(40)]
+    calls = []
+
+    def boundaries(prompt):
+        calls.append(prompt)
+        assert len(prompt.encode("utf-8")) <= 512
+        return '{"boundaries": []}', {}
+
+    batches = segment(entries, max_tokens=512, max_messages=32, complete=boundaries)
+    assert [row for batch in batches for row in batch] == entries
+    assert max(map(len, batches)) <= 32
+    assert calls
+
+
+@pytest.mark.parametrize("option,value", [("max_tokens", 0), ("max_tokens", True), ("max_messages", 0),
+                                         ("max_messages", 2.5), ("max_messages", -1)])
+def test_segment_rejects_invalid_limits_before_work(option, value):
+    with pytest.raises(ValueError):
+        segment([], **{option: value})
+
+
+def test_curator_preselector_cannot_reintroduce_unbounded_captures(tmp_path):
+    root = str(tmp_path)
+    journal = Journal(root)
+    journal.capture("bounded", "UserPromptSubmit", {"prompt": "fix parser"}, scope={})
+    for _ in range(24):
+        journal.capture("bounded", "PreToolUse", {"tool_name": "pytest", "arguments": "x" * 600}, scope={})
+    journal.capture("bounded", "SessionEnd", {"succeeded": True, "fix": "Validate parser boundaries."}, scope={})
+    captured_rows = journal.buffer("bounded", scope={})
+    calls = []
+
+    def bounded_model(prompt):
+        calls.append(prompt)
+        assert len(prompt.encode("utf-8")) <= 6000
+        return model(prompt)
+
+    result = learn(root, "bounded", scope={}, complete=bounded_model)
+    assert result["operation"] == "create"
+    assert len(calls) == 2
+    offered = json.loads(calls[0].split("\n", 1)[1])
+    assert 0 < len(offered["selected"]) < len(captured_rows)
+    assert len(offered["cases"]) <= 9
+    assert len(offered["prior"]) <= 10
+    assert not journal.buffer("bounded", scope={})
+
+
+def test_oversize_capture_keeps_later_actionable_work_unsealed(tmp_path):
+    journal = Journal(str(tmp_path))
+    journal.capture("r", "UserPromptSubmit", {"prompt": "😀" * 4000}, scope={"agent": "a"})
+    captured(str(tmp_path))
+    before = journal.buffer("r", scope={"agent": "a"})
+    calls = []
+    with pytest.raises(ValueError, match="budget"):
+        learn(str(tmp_path), "r", scope={"agent": "a"}, complete=lambda prompt: calls.append(prompt))
+    assert calls == []
+    assert journal.buffer("r", scope={"agent": "a"}) == before
+    assert not journal.search("", scope={"agent": "a"}, kinds=("lesson",), statuses=("quarantined",))
+    assert learn(str(tmp_path), "r", scope={"agent": "a"}, complete=model, max_tokens=80000)["operation"] == "create"
+    assert not journal.buffer("r", scope={"agent": "a"})
+
+
+def test_writer_oversize_proposal_never_dispatches_or_seals(tmp_path):
+    journal = captured(str(tmp_path))
+    before = journal.buffer("r", scope={"agent": "a"})
+    calls = []
+
+    def oversized_model(prompt):
+        calls.append(prompt)
+        assert len(prompt.encode("utf-8")) <= 6000
+        return json.dumps({"operation": "create", "kind": "procedure", "text": "x" * 9000}), {}
+
+    with pytest.raises(ValueError, match="budget"):
+        learn(str(tmp_path), "r", scope={"agent": "a"}, complete=oversized_model)
+    assert len(calls) == 1
+    assert journal.buffer("r", scope={"agent": "a"}) == before
+
+
+def test_arena_budget_and_citations_match_supplied_evidence():
+    from commontrace.session_learning import arena
+
+    entries = [{"id": str(i), "sequence": i, "event": "PostToolUseFailure", "payload": {"text": "x" * 500}}
+               for i in range(32)]
+    calls = []
+
+    def extractor(prompt):
+        calls.append(prompt)
+        assert len(prompt.encode("utf-8")) <= 6000
+        return "candidate " + str(len(calls)), {}
+
+    result = arena(entries, extractor, extractor)
+    assert len(calls) == 2
+    assert calls[0] == calls[1] == result["prompt"]
+    supplied = json.loads(result["prompt"])
+    assert result["source_ids"] == [row["id"] for row in supplied]
+    assert 0 < len(supplied) < len(entries)
+
+
+def test_required_prior_evidence_cannot_be_dropped_to_fit(tmp_path):
+    from commontrace.memory_record import MemoryRecord
+
+    journal = captured(str(tmp_path))
+    journal.put(MemoryRecord("large-prior", "lesson", 1, {"text": "x" * 7000}, scope={"agent": "a"}))
+    before = journal.buffer("r", scope={"agent": "a"})
+    calls = []
+    with pytest.raises(ValueError, match="budget"):
+        learn(str(tmp_path), "r", scope={"agent": "a"}, complete=lambda prompt: calls.append(prompt))
+    assert calls == []
+    assert journal.buffer("r", scope={"agent": "a"}) == before
+
+
+def test_bound_token_counter_can_use_model_specific_counts():
+    entries = [{"sequence": i, "payload": {"text": "x" * 100}} for i in range(8)]
+    calls = []
+
+    def counter(prompt):
+        # Deliberately non-additive: count the complete input, including its suffix.
+        return len(prompt) // 2 + int(prompt.endswith("]"))
+
+    def boundaries(prompt):
+        calls.append(prompt)
+        assert counter(prompt) <= 256
+        return '{"boundaries": []}', {}
+
+    batches = segment(entries, max_tokens=256, count_tokens=counter, complete=boundaries)
+    assert [row for batch in batches for row in batch] == entries
+    assert calls
+    assert any(len(prompt.encode("utf-8")) > 256 for prompt in calls)
+
+
+@pytest.mark.parametrize("count", [True, -1, 1.5])
+def test_invalid_token_counter_cannot_dispatch(count):
+    calls = []
+    with pytest.raises(ValueError, match="counter"):
+        segment([{"payload": {}}], complete=lambda prompt: calls.append(prompt), count_tokens=lambda _: count)
+    assert calls == []
+
+
+def test_arena_indivisible_oversize_input_cannot_dispatch():
+    from commontrace.session_learning import arena
+
+    calls = []
+    with pytest.raises(ValueError, match="budget"):
+        arena([{"id": "big", "sequence": 1, "event": "PostToolUseFailure", "payload": {"text": "x" * 7000}}],
+              lambda prompt: calls.append(prompt), lambda prompt: calls.append(prompt))
+    assert calls == []
+
+
+def test_default_durable_worker_parks_oversize_without_sealing(tmp_path, monkeypatch):
+    from commontrace import jobs, llm
+
+    root = str(tmp_path)
+    journal = Journal(root)
+    journal.capture("r", "UserPromptSubmit", {"prompt": "x" * 7000}, scope={"agent": "a"})
+    captured(root)
+    before = journal.buffer("r", scope={"agent": "a"})
+
+    def unavailable(*args, **kwargs):
+        pytest.fail("an oversize source must fail before model dispatch")
+
+    monkeypatch.setattr(llm, "complete", unavailable)
+    monkeypatch.setattr(jobs, "BACKOFF_BASE", 0.0)
+    job = jobs.enqueue(root, "learn-session", {"session": "r", "scope": {"agent": "a"}}, max_attempts=2)
+    assert jobs.run_pending(root, limit=1)["failed"] == 1
+    failed = jobs.get(root, job.id)
+    assert failed.status == "failed" and "budget" in failed.error
+    assert jobs.run_pending(root, limit=1)["failed"] == 1
+    dead = jobs.get(root, job.id)
+    assert dead.status == "dead" and dead.attempts == 2
+    assert "source work remains unsealed" in dead.error
+    assert journal.buffer("r", scope={"agent": "a"}) == before
+
+
+def test_case_wrapper_splits_ordinary_captures_instead_of_blocking(tmp_path):
+    root = str(tmp_path)
+    journal = Journal(root)
+    for index, (event, payload) in enumerate([
+        ("UserPromptSubmit", {"prompt": "fix parser"}),
+        ("PreToolUse", {"tool_name": "pytest"}),
+        ("PostToolUseFailure", {"error": "x" * 2500}),
+        ("UserPromptSubmit", {"prompt": "continue fix"}),
+        ("PreToolUse", {"tool_name": "pytest"}),
+        ("PostToolUse", {"tool_name": "pytest", "exit_code": 0, "arguments": "x" * 2500}),
+        ("PostToolUse", {"tool_name": "pytest", "exit_code": 0}),
+        ("Stop", {}),
+    ]):
+        journal.capture("r", event, payload, scope={}, event_id=str(index))
+    calls, supplied_outcomes = [], set()
+
+    def bounded_native(prompt):
+        calls.append(prompt)
+        assert len(prompt.encode("utf-8")) <= 6000
+        if prompt.startswith("CASE:"):
+            offered = json.loads(prompt.split("\n", 1)[1])
+            supplied_outcomes.update(offered["outcomes"])
+            return json.dumps({"fix": "Validate parser boundaries.",
+                               "outcome_message_id": next(iter(offered["outcomes"]))}), {}
+        return model(prompt)
+
+    result = learn(root, "r", scope={}, complete=bounded_native)
+    assert result["operation"] == "create"
+    assert supplied_outcomes == {"2", "5", "6"}
+    assert sum(prompt.startswith("CASE:") for prompt in calls) == 2
+    assert not journal.buffer("r", scope={})
+
+
 def test_lifecycle_changes_are_atomic_and_causal_log_drift_blocks(tmp_path, monkeypatch):
     from dataclasses import replace
 
