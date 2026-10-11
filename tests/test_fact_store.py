@@ -5,6 +5,7 @@ import json
 import os
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 
 import pytest
 
@@ -14,6 +15,96 @@ from commontrace import hierarchical as h
 
 def activate(root):
     return fact_store.migrate(str(root))
+
+
+def _staged_fact():
+    fact = h.AtomicFact("staged-snapshot", "Vault uses durable storage", "general", ["tenant:a"],
+                       0.0, 1, "2026-01-01T00:00:00+00:00", None,
+                       source_traces=["trace-a"], created_at="2026-01-01T00:00:00+00:00",
+                       origin={"limit": 1, "cost": 0.0})
+    fact.updated_at = fact.created_at
+    fact.revision = h._compute_revision(fact.to_dict())
+    return fact
+
+
+def test_unchanged_staged_payload_is_encoded_once(tmp_path, monkeypatch):
+    activate(tmp_path)
+    encoded = []
+    original = fact_store._dump
+
+    def track(value):
+        if type(value) is dict and value.get("id") == "staged-snapshot" and "statement" in value:
+            encoded.append(value)
+        return original(value)
+
+    monkeypatch.setattr(fact_store, "_dump", track)
+    with fact_store.transaction(str(tmp_path), write=True) as facts:
+        fact = _staged_fact()
+        facts[fact.id] = fact
+        fact_store.StatementIndex(facts).add(fact)
+    assert len(encoded) == 1
+    assert fact_store.events(str(tmp_path))[-1]["record"]["payload"] == fact.to_dict()
+
+
+@pytest.mark.parametrize("edit", ["negative-zero", "boolean-origin", "scope", "trace", "statement", "nested-origin"])
+def test_post_stage_edits_reach_authoritative_event_and_projection(tmp_path, edit):
+    activate(tmp_path)
+    fact = _staged_fact()
+    if edit == "nested-origin":
+        fact.origin = {"nested": {"limit": 1}}
+    with fact_store.transaction(str(tmp_path), write=True) as facts:
+        facts[fact.id] = fact
+        fact_store.StatementIndex(facts).add(fact)
+        if edit == "negative-zero":
+            fact.origin["cost"] = -0.0
+        elif edit == "boolean-origin":
+            fact.origin["limit"] = True
+        elif edit == "scope":
+            fact.scopes.append("tenant:b")
+        elif edit == "trace":
+            fact.source_traces[0] = "trace-b"
+        elif edit == "statement":
+            fact.statement = "Vault now uses replicated storage"
+        else:
+            fact.origin["nested"]["limit"] = True
+    expected = fact_store._dump(fact.to_dict())
+    with fact_store.transaction(str(tmp_path)) as facts:
+        assert facts.connection.execute("SELECT payload FROM facts WHERE id=?", (fact.id,)).fetchone() == (expected,)
+        assert fact_store.StatementIndex(facts).exact(fact.statement, fact.scopes).id == fact.id
+    event = fact_store.events(str(tmp_path))[-1]["record"]
+    assert fact_store._dump(event["payload"]) == expected
+    assert event["scope"]["labels"] == fact.scopes
+    assert event["provenance"]["source_traces"] == fact.source_traces
+    fact_store.rebuild(str(tmp_path))
+    with fact_store.transaction(str(tmp_path)) as facts:
+        assert facts.connection.execute("SELECT payload FROM facts WHERE id=?", (fact.id,)).fetchone() == (expected,)
+
+
+def test_staged_subclass_snapshot_preserves_extra_mutable_fields(tmp_path):
+    @dataclass
+    class Specialized(h.AtomicFact):
+        tags: list = field(default_factory=list)
+
+    activate(tmp_path)
+    fact = Specialized(**_staged_fact().to_dict(), tags=["before"])
+    with fact_store.transaction(str(tmp_path), write=True) as facts:
+        facts[fact.id] = fact
+        fact_store.StatementIndex(facts).add(fact)
+        fact.tags.append("after")
+    assert fact_store.events(str(tmp_path))[-1]["record"]["payload"]["tags"] == ["before", "after"]
+
+
+def test_equal_valued_invalid_confidence_cannot_reuse_staged_payload(tmp_path):
+    activate(tmp_path)
+    with pytest.raises(ValueError, match="confidence"):
+        with fact_store.transaction(str(tmp_path), write=True) as facts:
+            fact = _staged_fact()
+            fact.confidence = 1
+            facts[fact.id] = fact
+            fact_store.StatementIndex(facts).add(fact)
+            fact.confidence = True
+    assert fact_store.events(str(tmp_path)) == []
+    assert h.load_facts(str(tmp_path)) == {}
 
 
 def test_migration_checksum_export_and_rebuild(tmp_path):

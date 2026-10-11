@@ -186,9 +186,10 @@ class _Projection:
     block: str
     content: frozenset
     terms: list[tuple[str, str, int]]
+    snapshot: dict[str, Any] | None = None
 
 
-def _project_metadata(connection: sqlite3.Connection, fact, payload: str) -> _Projection:
+def _project_metadata(connection: sqlite3.Connection, fact, payload: str, *, snapshot=None) -> _Projection:
     """Keep exact/slot lookup and FTS ranking current inside the owned transaction."""
     norm, block, slot, negative, numbers, content, frequencies, overlap = _features(fact)
     previous = _remove_terms(connection, fact.id)
@@ -211,7 +212,7 @@ def _project_metadata(connection: sqlite3.Connection, fact, payload: str) -> _Pr
     rowid = (previous if previous is not None else
              connection.execute("SELECT rowid FROM facts WHERE id=?", (fact.id,)).fetchone()[0])
     connection.execute("INSERT INTO fact_fts(rowid,fact_id,statement) VALUES(?,?,?)", (rowid, fact.id, fact.statement))
-    return _Projection(payload, rowid, block, content, term_rows)
+    return _Projection(payload, rowid, block, content, term_rows, snapshot)
 
 
 def _chunks(values, size=_BATCH_SIZE):
@@ -289,6 +290,33 @@ def _append(connection: sqlite3.Connection, fact, *, delete: bool = False,
             _project(connection, fact)
 
 
+def _snapshot_matches(fact, snapshot) -> bool:
+    """Identity proves unchanged flat scalar fields without JSON equality traps."""
+    from commontrace.hierarchical import _FACT_SCALARS, AtomicFact
+
+    if snapshot is None or type(fact) is not AtomicFact:
+        return False
+    for name, previous in snapshot.items():
+        current = getattr(fact, name)
+        if type(previous) in _FACT_SCALARS:
+            if current is not previous:
+                return False
+        elif type(previous) is list:
+            if (type(current) is not list or len(current) != len(previous) or
+                    any(type(old) not in _FACT_SCALARS or old is not new for old, new in zip(previous, current))):
+                return False
+        elif type(previous) is dict:
+            if (type(current) is not dict or len(current) != len(previous) or any(
+                    type(old_key) not in _FACT_SCALARS or type(old_value) not in _FACT_SCALARS or
+                    old_key is not new_key or old_value is not new_value
+                    for (old_key, old_value), (new_key, new_value) in zip(previous.items(), current.items())
+            )):
+                return False
+        else:
+            return False
+    return True
+
+
 class FactMap(MutableMapping):
     """Lazy transaction-local facts. Only loaded/changed rows are inspected at commit."""
 
@@ -309,7 +337,8 @@ class FactMap(MutableMapping):
         if previous is not None:
             for word in previous.content:
                 self.near_postings[previous.block, word].discard(fact.id)
-        projection = _project_metadata(self.connection, fact, _dump(fact.to_dict()))
+        snapshot = fact.to_dict()
+        projection = _project_metadata(self.connection, fact, _dump(snapshot), snapshot=snapshot)
         self.staged[fact.id] = projection
         for word in projection.content:
             self.near_postings.setdefault((projection.block, word), set()).add(fact.id)
@@ -375,8 +404,12 @@ class FactMap(MutableMapping):
                 removed.append(key)
                 if self.before[key] is None:
                     continue
-            payload = fact.to_dict()
-            encoded = _dump(payload)
+            staged = self.staged.get(key)
+            if staged is not None and _snapshot_matches(fact, staged.snapshot):
+                payload, encoded = staged.snapshot, staged.payload
+            else:
+                payload = fact.to_dict()
+                encoded = _dump(payload)
             delete = key in self.removed
             if delete or encoded != self.before[key]:
                 changed.append((fact, payload, delete))
