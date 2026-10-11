@@ -41,7 +41,7 @@ def bootstrap_priority(record: MemoryRecord) -> float:
         return 1.0
     alpha, beta = prior.get("alpha", 1), prior.get("beta", 1)
     if any(
-        type(value) not in (int, float) or not math.isfinite(value) or not 1 <= value <= 10001
+        type(value) not in (int, float) or not 1 <= value <= 10001 or not math.isfinite(value)
         for value in (alpha, beta)
     ):
         return 1.0

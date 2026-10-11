@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 
 from commontrace import memory_guard
 from commontrace.configuration import configured
@@ -100,12 +101,20 @@ def turn(
     profile = {"static": [], "dynamic": [], "custom": []}
     for record in kit.journal.search("", scope=scope, kinds=("profile",), limit=30):
         data = record.payload
+        half_life, initial_weight = data.get("half_life_days", 90), data.get("weight", 1)
+        if (
+            type(half_life) not in (int, float)
+            or not math.isfinite(half_life)
+            or half_life <= 0
+            or type(initial_weight) not in (int, float)
+            or not math.isfinite(initial_weight)
+            or initial_weight < 0
+        ):
+            continue
         age = max(
             0.0, (moment(now()) - moment(data.get("observed_at") or record.created_at or now())).total_seconds() / 86400
         )
-        weight = data.get("weight", 1) * (
-            1 if data.get("bucket") == "static" else 2 ** (-age / data.get("half_life_days", 90))
-        )
+        weight = initial_weight * (1 if data.get("bucket") == "static" else 2 ** (-age / half_life))
         bucket = data.get("bucket", "custom")
         profile[bucket if bucket in profile else "custom"].append(
             {"id": record.id, "text": data.get("text", ""), "weight": weight}

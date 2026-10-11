@@ -14,6 +14,14 @@ def test_offline_prior_is_bounded_and_cannot_replace_online_validation():
     assert (
         bootstrap_priority(
             MemoryRecord(
+                "candidate", "lesson", 1, {**data, "offline_prior": {"alpha": 10**1000, "beta": 1}}, status="shadow"
+            )
+        )
+        == 1
+    )
+    assert (
+        bootstrap_priority(
+            MemoryRecord(
                 "candidate", "lesson", 1, {**data, "offline_prior": {"alpha": float("nan"), "beta": 1}}, status="shadow"
             )
         )
