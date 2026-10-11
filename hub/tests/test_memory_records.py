@@ -10,6 +10,72 @@ from hub.models import Organization
 
 
 @pytest.mark.asyncio
+async def test_hosted_inactive_candidates_cannot_displace_current_memory(session_factory):
+    from sqlalchemy.dialects.postgresql import insert
+
+    from hub.models import MemoryRecordProjection
+
+    org = str(uuid.uuid4())
+    scope = {"tenant": org, "user": "u"}
+    blockers = [
+        MemoryRecord(
+            f"old-{i:03}", "fact", 1, {"text": "candidate"}, scope=scope,
+            status="retired" if i % 2 else "active", is_latest=bool(i % 2),
+        )
+        for i in range(220)
+    ]
+    current = MemoryRecord("current", "fact", 1, {"text": "candidate " + "context " * 80}, scope=scope)
+    async with session_scope(session_factory) as session:
+        session.add(Organization(id=org, name=org))
+    async with session_scope(session_factory, org_id=org) as session:
+        await session.execute(insert(MemoryRecordProjection), [
+            {"org_id": org, "id": record.id, "version": record.version,
+             "scope": record.scope, "record": record.to_dict()}
+            for record in [*blockers, current]
+        ])
+    store = PostgresJournal(session_factory, org)
+    assert [record.id for record in await store.search("candidate", scope={"user": "u"}, limit=1)] == ["current"]
+
+
+@pytest.mark.asyncio
+async def test_hosted_dense_candidates_respect_kind_scope_and_lifecycle(session_factory):
+    from types import SimpleNamespace
+
+    org = str(uuid.uuid4())
+    async with session_scope(session_factory) as session:
+        session.add(Organization(id=org, name=org))
+
+    class Vector:
+        tenant = org
+
+        async def search(self, vector, *, top_k):
+            return [SimpleNamespace(key=identity) for identity in ("episode", "retired", "other", "fact")]
+
+    store = PostgresJournal(session_factory, org, vector_index=Vector())
+    for identity, kind, status, user in (
+        ("episode", "episode", "active", "u"), ("retired", "fact", "retired", "u"),
+        ("other", "fact", "active", "other"), ("fact", "fact", "active", "u"),
+    ):
+        await store.put(
+            MemoryRecord(identity, kind, 1, {"text": "semantic match"}, status=status, scope={"user": user})
+        )
+    results = await store.search("nolexicalmatch", scope={"user": "u"}, kinds=("fact",), vector=[1.0])
+    assert [record.id for record in results] == ["fact"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query", ["", "stable"])
+async def test_hosted_equal_lexical_matches_have_stable_order(session_factory, query):
+    org = str(uuid.uuid4())
+    async with session_scope(session_factory) as session:
+        session.add(Organization(id=org, name=org))
+    store = PostgresJournal(session_factory, org)
+    for identity in ("z", "m", "a"):
+        await store.put(MemoryRecord(identity, "fact", 1, {"text": "stable match"}))
+    assert [record.id for record in await store.search(query, scope={}, limit=1)] == ["a"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("observations", ["unknown", None, True, -1, 2**2048])
 async def test_hosted_capture_recovers_invalid_preference_counter(session_factory, observations):
     from commontrace.memory_record import preference_candidates

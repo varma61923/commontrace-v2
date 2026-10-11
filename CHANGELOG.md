@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Hosted record retrieval filters retired records and older revisions before its
+  candidate limit, applies kind restrictions to vector hits, and orders equal
+  lexical matches consistently. Each lookup uses one temporal reference for
+  candidates and recursively checked sources.
+
 - Grounded history lesson seeding, atomic multi-part lesson replacement, request-local
   YAML configuration and credential-safe migration, optional background Lance HNSW
   indexing, and source-bound hosted turn/profile capture. Indexed hook admission keeps

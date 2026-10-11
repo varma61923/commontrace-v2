@@ -142,11 +142,15 @@ class PostgresJournal:
         if not limit:
             return []
         context = {**scope, "tenant": self.org_id}
+        reference = now()
         async with session_scope(self.factory, org_id=self.org_id) as session:
             from sqlalchemy import func
 
             statement = select(MemoryRecordProjection).where(
-                MemoryRecordProjection.org_id == self.org_id, MemoryRecordProjection.scope.op("<@")(context)
+                MemoryRecordProjection.org_id == self.org_id,
+                MemoryRecordProjection.scope.op("<@")(context),
+                # Apply lifecycle admission before the bounded candidate window.
+                MemoryRecordProjection.record.contains({"status": "active", "is_latest": True}),
             )
             if kinds:
                 statement = statement.where(MemoryRecordProjection.record["kind"].astext.in_(list(kinds)))
@@ -155,6 +159,7 @@ class PostgresJournal:
                 statement = statement.where(MemoryRecordProjection.search_vector.op("@@")(tsquery)).order_by(
                     func.ts_rank_cd(MemoryRecordProjection.search_vector, tsquery).desc()
                 )
+            statement = statement.order_by(MemoryRecordProjection.id)
             rows = (await session.execute(statement.limit(max(200, limit * 5)))).scalars().all()
             found = {row.id: MemoryRecord(**row.record) for row in rows}
             sparse_order = list(found)
@@ -163,9 +168,10 @@ class PostgresJournal:
                 hits = await self.vector_index.search(vector, top_k=max(100, limit * 5))
                 for hit in hits:
                     row = await session.get(MemoryRecordProjection, (self.org_id, hit.key))
-                    if row and visible(MemoryRecord(**row.record), context):
-                        found[row.id] = MemoryRecord(**row.record)
-                        dense_order.append(row.id)
+                    record = MemoryRecord(**row.record) if row else None
+                    if record and (not kinds or record.kind in kinds) and visible(record, context, at=reference):
+                        found[record.id] = record
+                        dense_order.append(record.id)
             ranks = {}
             for order in (sparse_order, dense_order):
                 for rank, identity in enumerate(order, 1):
@@ -173,7 +179,7 @@ class PostgresJournal:
             checked = {}
 
             async def grounded(record, trail=frozenset()):
-                if record.id in trail or len(trail) >= 64 or not visible(record, context):
+                if record.id in trail or len(trail) >= 64 or not visible(record, context, at=reference):
                     return False
                 if record.id in checked:
                     return checked[record.id]
