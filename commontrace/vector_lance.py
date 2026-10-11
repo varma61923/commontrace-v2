@@ -157,7 +157,8 @@ class LanceVectorIndex:
             if count < minimum_rows:
                 return {"rows": count, "approximate": False}
             if not any("key" in index.columns for index in indexes):
-                self._table.create_scalar_index("key", index_type="BTREE")
+                from lancedb.index import BTree
+                self._table.create_index("key", config=BTree())
             vector_indexes = [index for index in indexes if "vector" in index.columns]
             if not vector_indexes:
                 partitions = max(1, min(512, int(math.sqrt(count)), count // 256))

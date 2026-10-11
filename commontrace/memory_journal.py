@@ -247,7 +247,8 @@ class Journal:
                 clauses.append("record_fts MATCH ?")
                 parameters.append(expression)
                 order = "bm25(record_fts)"
-            rows = db.execute("SELECT r.body FROM " + source + " WHERE " + " AND ".join(clauses) +
+            # Identifiers and predicates above are fixed internal literals; every caller value is bound.
+            rows = db.execute("SELECT r.body FROM " + source + " WHERE " + " AND ".join(clauses) +  # nosec B608
                               " ORDER BY " + order, parameters)
             result = []
             for row in rows:

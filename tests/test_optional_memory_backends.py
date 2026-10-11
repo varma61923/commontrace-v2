@@ -348,6 +348,7 @@ def test_lance_ann_preserves_new_fragments_and_scoped_deletion(tmp_path):
             assert (await index.maintain())["approximate"]
             assert (await index.search(records[42].vector, top_k=1))[0].key == "42"
             await index.upsert([VectorRecord("new", [1.] + [0.] * 7)])
+            assert (await index.maintain())["rows"] == 513
             assert (await index.search([1.] + [0.] * 7, top_k=1))[0].key == "new"
             assert await index.delete(["new"]) == 1
             assert not await index.search([1.] + [0.] * 7, allowed_ids=["new"])

@@ -6,6 +6,19 @@ from commontrace.memory_journal import Journal
 from commontrace.memory_record import MemoryRecord
 
 
+def test_indexed_queries_bind_scope_literals_and_fts_input(tmp_path):
+    journal = Journal(str(tmp_path))
+    literal = "owner' OR 1=1 --"
+    journal.put(MemoryRecord("literal-owner", "fact", 1, {"text": "Private design notes."},
+                             scope={"agent": literal}))
+    journal.put(MemoryRecord("other-owner", "fact", 1, {"text": "Private design notes."},
+                             scope={"agent": "other"}))
+    assert [record.id for record in journal.search("notes", scope={"agent": literal})] == ["literal-owner"]
+    assert not journal.search("notes", scope={"agent": "' OR 1=1 --"})
+    journal.search("notes\"; DROP TABLE records; --", scope={"agent": literal})
+    assert [record.id for record in journal.search("notes", scope={"agent": literal})] == ["literal-owner"]
+
+
 def test_all_kinds_version_scope_and_expiry(tmp_path):
     journal = Journal(str(tmp_path))
     for kind in ("episode", "fact", "entity", "observation", "profile", "lesson", "directive"):

@@ -29,6 +29,9 @@ COPY hub/ /app/hub/
 COPY protocol/ /app/protocol/
 COPY commontrace/ /app/commontrace/
 
+# Checkouts may use a private umask; the non-root service must read packaged code.
+RUN chmod -R u=rwX,go=rX /app
+
 USER hub
 EXPOSE 8420
 
