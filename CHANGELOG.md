@@ -18,6 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Optional Lance ANN search reranks four times the requested candidates using
+  original vectors, fixing quantized cosine scores. On one retained million-vector
+  index, recall@10 improved from 0.905 to 0.98; 20 held-out queries reached 0.995.
+  Across three product-query rounds, p95 remained below 23 ms. Five real-engine
+  checks pass after the new cosine regression failed first. These measurements
+  cover the vector component; full hybrid latency remains unverified.
 - The runtime journal now shares bounded SQLite connection ownership with the
   fact ledger. Aborted reads finalize partial cursors before closing; hook
   requests reuse idle handles without changing their deadlines. All 135 focused
@@ -46,7 +52,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   queries measured 7.15 ms ANN p95 and recall@10 1.0. Four real-engine/harness
   checks pass. At 1M vectors, ANN p95 was 13.04 ms, but mean recall@10 0.91
   missed the existing 0.97 target. These component results do not verify full
-  hybrid latency; defaults still need recall tuning.
+  hybrid latency. The later refinement fix is measured separately above.
 - A signed P0 continuation audit records a million-fact write-gate miss on the
   current host: 31.43 ms p95 and 759 facts/s. Phase advancement stops; earlier
   release measurements are retained. The pinned LoCoMo retrieval regression gate

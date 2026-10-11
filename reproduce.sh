@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")"
+if [[ "${1:-}" == "--lance-vector" ]]; then
+  output="${2:-benchmark-results/lance-vector}"
+  mkdir -p "$output"
+  python3 -m benchmarks.vector_scale_bench --engine lance --n 1000000 --dim 384 \
+    --queries 20 --top-k 10 --clusters 2000 --seed 61923 --batch 10000 \
+    --check-lance --out "$output/lance-million.json"
+  echo "Vector component targets pass; full hybrid retrieval remains unverified. Reports: $output"
+  exit 0
+fi
 if [[ "${1:-}" == "--next-generation" ]]; then
   output="${2:-benchmark-results/next-generation}"
   mkdir -p "$output"

@@ -771,7 +771,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install -e '.[graph,vector-lance]' pytest
-      - run: python -m pytest tests/test_optional_memory_backends.py -q
+      - run: python -m pytest tests/test_optional_memory_backends.py tests/test_vector_scale_lance.py -q
 
   sdk-rust:
     needs: changes

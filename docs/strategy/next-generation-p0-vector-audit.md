@@ -79,3 +79,55 @@ The report's source hashes match `4dd4a38`. The 10K and million-vector workloads
 use different cluster counts and batch sizes; do not treat their difference as
 a controlled scaling experiment. The million-vector exact/ANN pair uses the
 same stored vectors and queries. Neither run includes full hybrid retrieval.
+
+## Recall remediation plan
+
+Retain a fresh matching million-vector store and compare query settings on that
+same index against exhaustive cosine neighbors. Sweep scalar-quantization
+refinement and HNSW exploration independently before changing product defaults.
+Lance's documented `refine_factor` reranks candidates using the original vectors;
+`ef` increases graph exploration. Keep scope prefilters, background maintenance
+and new-fragment visibility intact. Record individual queries and repeated rounds,
+then check additional held-out queries after selecting a setting.
+
+Before implementation, add a real-engine regression that checks returned cosine
+scores against original vectors after quantized ANN maintenance. Quantized scores
+can otherwise move relative relevance floors even when candidate recall is high.
+Run the existing owner, generation, deletion and fresh-fragment contracts again.
+The unchanged acceptance targets remain recall at least 0.97 and local p95 below
+50 ms; vector-only measurements still cannot establish the full hybrid gate.
+
+The matching retained-store baseline measured recall 0.905. Three randomized
+rounds on that same index measured recall 0.965 with refinement 2 and 0.98 with
+refinement 4 or 8. Increasing `ef` alone reached 0.94. Select refinement 4 without
+changing graph exploration: it recovers the measured recall with fewer original
+vector reads than refinement 8. Validate this choice through the product API,
+including additional queries withheld from the sweep.
+
+The product API measured recall 0.98 on the tuning queries and 0.995 on 20
+held-out queries in each of three rounds. Tuning-query p95 was 22.31, 11.43 and
+11.03 ms; held-out p95 was 15.91, 11.47 and 11.66 ms. Minimum per-query recall
+was 0.70 and 0.90 respectively: the mean target does not guarantee every query.
+The cosine-score regression failed before refinement and all five Lance tests
+passed afterward. CI's optional-engine job now includes the scale-harness tests.
+These are synthetic component results on one retained index with concurrent
+application validation, not model quality or full hybrid acceptance evidence.
+
+Add an explicit component-check option to the existing scale harness and a
+`reproduce.sh --lance-vector` entry point. Tests first must reject a smaller store,
+latency equal to 50 ms, recall below 0.97 and non-finite results. Preserve the
+default diagnostic exit semantics; the explicit check must exit nonzero on a
+component miss and cannot certify full hybrid retrieval.
+
+The five component-boundary cases failed before the gate helper existed, then
+all ten Lance contract, scale and gate checks passed. Reproduce the current
+product setting and enforce the component thresholds with an environment that
+has the declared `vector-lance` extra installed:
+
+```sh
+./reproduce.sh --lance-vector /path/to/output
+```
+
+This entry point returns nonzero when scale, latency or mean recall misses. The
+scale harness without `--check-lance` remains a diagnostic and returns zero on
+workload completion. Both reports explicitly leave full hybrid acceptance open.

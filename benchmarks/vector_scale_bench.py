@@ -151,7 +151,7 @@ async def run_lance(*, n: int, dim: int, queries: int, top_k: int, clusters: int
             and 1 <= batch <= vector_store.MAX_BATCH and seed >= 0
             and math.isfinite(spread) and spread > 0):
         raise ValueError("invalid Lance scale workload")
-    from commontrace.vector_lance import LanceVectorIndex
+    from commontrace.vector_lance import ANN_REFINE_FACTOR, LanceVectorIndex
 
     root = tempfile.mkdtemp(prefix="commontrace-lance-scale-", dir=work_dir)
     index = None
@@ -199,7 +199,8 @@ async def run_lance(*, n: int, dim: int, queries: int, top_k: int, clusters: int
             hits = await index.search(query, top_k=top_k)
             samples.append((time.perf_counter() - started) * 1000)
             recalls.append(len(truth & {hit.key for hit in hits}) / len(truth))
-        report["sweep"] = [{"configuration": "product HnswSq defaults", "samples_ms": samples,
+        report["sweep"] = [{"configuration": "product HnswSq defaults", "refine_factor": ANN_REFINE_FACTOR,
+                            "samples_ms": samples,
                             "p50_ms": statistics.median(samples), "p95_ms": _percentile(samples, .95),
                             "recall_at_k": statistics.mean(recalls), "recall_min": min(recalls)}]
         repository = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -220,10 +221,24 @@ async def run_lance(*, n: int, dim: int, queries: int, top_k: int, clusters: int
             shutil.rmtree(root)
 
 
+def lance_component_gates(report: dict) -> dict[str, bool]:
+    """Check synthetic vector targets, separately from full hybrid acceptance."""
+    rows = report.get("sweep", [])
+    return {
+        "million_vectors": report.get("n") == 1_000_000,
+        "local_vector_p95_lt_50ms": bool(rows) and all(
+            math.isfinite(row["p95_ms"]) and 0 <= row["p95_ms"] < 50 for row in rows),
+        "mean_recall_gte_0_97": bool(rows) and all(
+            math.isfinite(row["recall_at_k"]) and .97 <= row["recall_at_k"] <= 1 for row in rows),
+    }
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("--dsn", default=os.environ.get("COMMONTRACE_SCALE_DSN", ""))
     p.add_argument("--engine", choices=("postgres", "lance"), default="postgres")
+    p.add_argument("--check-lance", action="store_true",
+                   help="fail unless the 1M vector component meets p95 <50 ms and mean recall >=0.97")
     p.add_argument("--work-dir", default=None, help="parent directory for a benchmark-owned Lance store")
     p.add_argument("--n", type=int, default=1_000_000)
     p.add_argument("--dim", type=int, default=384)
@@ -240,6 +255,8 @@ def main(argv=None) -> int:
     p.add_argument("--keep", action="store_true")
     p.add_argument("--out", default=None)
     args = p.parse_args(argv)
+    if args.check_lance and args.engine != "lance":
+        p.error("--check-lance requires --engine lance")
     if args.engine == "postgres" and not args.dsn:
         p.error("--dsn (or COMMONTRACE_SCALE_DSN) is required")
     if args.engine == "lance":
@@ -251,11 +268,15 @@ def main(argv=None) -> int:
                              clusters=args.clusters, spread=args.spread, seed=args.seed, batch=args.batch,
                              ef_search=[int(x) for x in args.ef_search.split(",")], m=args.m, ef_construction=args.ef_construction,
                              keep=args.keep))
+    if args.check_lance:
+        report["vector_component_gates"] = lance_component_gates(report)
     text = json.dumps(report, indent=2)
     if args.out:
         with open(args.out, "w", encoding="utf-8") as fh:
             fh.write(text + "\n")
     print(text)
+    if args.check_lance and not all(report["vector_component_gates"].values()):
+        return 1
     return 0 if report.get("sweep") else 1
 
 

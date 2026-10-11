@@ -355,3 +355,36 @@ def test_lance_ann_preserves_new_fragments_and_scoped_deletion(tmp_path):
         finally:
             await index.close()
     asyncio.run(run())
+
+
+def test_lance_ann_scores_use_original_cosine_distances(tmp_path):
+    if os.environ.get("COMMONTRACE_TEST_LANCE") != "1":
+        pytest.skip("requires the optional LanceDB engine")
+    import math
+    import random
+
+    from commontrace.vector_lance import LanceVectorIndex
+    from commontrace.vector_store import VectorRecord
+
+    async def run():
+        rng = random.Random(61923)
+        records = [VectorRecord(str(i), [rng.uniform(-1, 1) for _ in range(32)]) for i in range(1024)]
+        original = {record.key: record.vector for record in records}
+        index = LanceVectorIndex(str(tmp_path), tenant="a", namespace="facts", model="test", dimension=32)
+        try:
+            await index.upsert(records)
+            assert (await index.maintain())["approximate"]
+            for _ in range(5):
+                query = [rng.uniform(-1, 1) for _ in range(32)]
+                hits = await index.search(query, top_k=10)
+                assert len(hits) == 10
+                for hit in hits:
+                    point = original[hit.key]
+                    cosine = math.fsum(a * b for a, b in zip(query, point)) / math.sqrt(
+                        math.fsum(a * a for a in query) * math.fsum(b * b for b in point)
+                    )
+                    assert hit.score == pytest.approx(cosine, abs=1e-5)
+        finally:
+            await index.close()
+
+    asyncio.run(run())

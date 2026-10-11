@@ -12,6 +12,10 @@ from commontrace import _jsonl, paths
 from commontrace.async_workers import STORE_WORKERS
 from commontrace.vector_store import MAX_BATCH, VectorHit, VectorRecord, _generation, _keys, _limit, _vector
 
+# Rerank bounded ANN candidates using original vectors, rather than SQ distances.
+# The matching million-vector sweep is recorded in the P0 vector audit.
+ANN_REFINE_FACTOR = 4
+
 
 def _literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
@@ -135,7 +139,7 @@ class LanceVectorIndex:
                 clauses.append("generation = " + _literal(_generation(generation)))
             if ids is not None:
                 clauses.append("key IN (" + ",".join(_literal(i) for i in ids) + ")")
-            search = self._table.search(query).distance_type("cosine")
+            search = self._table.search(query).distance_type("cosine").refine_factor(ANN_REFINE_FACTOR)
             if clauses:
                 search = search.where(" AND ".join(clauses), prefilter=True)
             return [VectorHit(r["key"], 1 - float(r["_distance"])) for r in search.limit(top_k).to_list()]
