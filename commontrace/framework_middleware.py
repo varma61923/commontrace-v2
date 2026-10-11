@@ -37,8 +37,8 @@ def maintain_preferences(journal: Journal, text: str, scope: dict, *, source_ids
     from commontrace.memory_record import preference_candidates
 
     for identity, content in preference_candidates(text, scope):
-        history = journal.history(identity)
-        prior = history[-1].payload if history else {}
+        previous = journal.latest(identity)
+        prior = previous.payload if previous else {}
         data = {**content, "observed_at": now(), "source_message_ids": source_ids or []}
         if content["bucket"] == "dynamic":
             data.update(
@@ -50,7 +50,7 @@ def maintain_preferences(journal: Journal, text: str, scope: dict, *, source_ids
             MemoryRecord(
                 identity,
                 "profile",
-                len(history) + 1,
+                previous.version + 1 if previous else 1,
                 data,
                 scope=scope,
                 created_at=now(),
@@ -104,11 +104,11 @@ def turn(
         half_life, initial_weight = data.get("half_life_days", 90), data.get("weight", 1)
         if (
             type(half_life) not in (int, float)
+            or not 0 < half_life <= 36500
             or not math.isfinite(half_life)
-            or half_life <= 0
             or type(initial_weight) not in (int, float)
+            or not 0 <= initial_weight <= 10000
             or not math.isfinite(initial_weight)
-            or initial_weight < 0
         ):
             continue
         age = max(

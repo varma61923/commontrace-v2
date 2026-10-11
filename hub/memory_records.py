@@ -285,11 +285,11 @@ class PostgresJournal:
             weight = data.get("weight", 1)
             if (
                 type(half_life) not in (int, float)
+                or not 0 < half_life <= 36500
                 or not math.isfinite(half_life)
-                or half_life <= 0
                 or type(weight) not in (int, float)
+                or not 0 <= weight <= 10000
                 or not math.isfinite(weight)
-                or weight < 0
             ):
                 continue
             weight *= 1 if bucket == "static" else 2 ** (-age / half_life)

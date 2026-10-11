@@ -177,6 +177,12 @@ class Journal:
             rows = db.execute("SELECT body FROM record_events WHERE id=? ORDER BY version", (identity,)).fetchall()
         return [replace(MemoryRecord(**json.loads(row[0])), is_latest=i == len(rows) - 1) for i, row in enumerate(rows)]
 
+    def latest(self, identity: str) -> MemoryRecord | None:
+        """Indexed revision pointer for writers; readers use grounded current/search."""
+        with self.connect() as db:
+            row = db.execute("SELECT body FROM records WHERE id=?", (identity,)).fetchone()
+        return MemoryRecord(**json.loads(row[0])) if row else None
+
     def current(self, identity: str, *, scope: dict, statuses=("active",), at=None) -> MemoryRecord | None:
         """Indexed canonical lookup with the same evidence checks as search."""
         with self.connect() as db:
