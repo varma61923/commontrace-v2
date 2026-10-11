@@ -1,0 +1,20 @@
+{
+  "format": "commontrace-public-results-v1",
+  "report": {
+    "public_aggregate_only": true,
+    "source_commit": "7e0a22402b9e69653c2fa190a374b42b92ccb83b",
+    "measured_at": "2026-10-11T21:47:07.805915+00:00",
+    "files_sha256": {
+      "docs/strategy/measurements/p0-write-cpu-diagnostics.json": "ad63182e4f270681e53700d56903dbd41a9552caeb5cb91f8257622e97f77120",
+      "docs/strategy/measurements/p0-write-cpu-validation.json": "73f2edc40329b9ab246badbbb466ea338bfa39d5514a372d4ed6d0a6486182fa",
+      "docs/strategy/measurements/p0-write-cpu-release.json": "29982a18be0aa7d1a9fa939686462c06999d017731eeee7600f60b62fd59e6c7"
+    },
+    "decision": "Fresh exact-1M write gates remain missed; unchanged targets and all diagnostics retained.",
+    "scope": "Production write helper simplification, four frozen growing-copy rounds, fresh exact-1M storage run.",
+    "limitations": [
+      "No real model-backed answer accuracy or SWE causal uplift; entire P0-P4 objective remains incomplete."
+    ]
+  },
+  "public_key": "4af25ffa4889429857e2df41a90657a23ffc5ed89ec37a614a79cf56b24f1630",
+  "signature": "lKA3ui6gBLasPFio0ayvf46drCC7C/2nDwEw2qpWM802ulRgJkipHnnLcsLiT4pimuDreeUt9qrjeY5HD4AOCg=="
+}

@@ -406,6 +406,8 @@ class FactMap(MutableMapping):
                 removed.append(key)
                 if self.before[key] is None:
                     continue
+            elif fact.id != key:
+                raise ValueError("a fact identity change must remove the old mapping and insert the new id")
             staged = self.staged.get(key)
             if staged is not None and _snapshot_matches(fact, staged.snapshot):
                 payload, encoded = staged.snapshot, staged.payload
@@ -414,22 +416,33 @@ class FactMap(MutableMapping):
                 encoded = _dump(payload)
             delete = key in self.removed
             if delete or encoded != self.before[key]:
-                changed.append((fact, payload, delete))
+                changed.append((key, fact, payload, delete))
             if not delete and (key in self.staged or encoded != self.before[key]):
-                live.append((fact, encoded))
+                live.append((key, fact, encoded))
 
         versions = {}
-        for group in _chunks([fact.id for fact, _, _ in changed]):
+        identities = [identity for identity, _, _, _ in changed]
+        for group in _chunks(identities):
             versions.update(self.connection.execute(_EVENT_VERSIONS_SQL, group + [None] * (_BATCH_SIZE - len(group))))
         # Validate the same envelope before final projection work. Failure rolls
         # back metadata/FTS already staged earlier in this transaction as well.
-        rows = [_event_row(fact, payload, versions.get(fact.id, 0) + 1, delete=delete)
-                for fact, payload, delete in changed]
+        rows = []
+        for identity, fact, payload, delete in changed:
+            event_fact, event_payload = fact, payload
+            if delete:
+                # A removed mapping may hold an object whose id and contents
+                # were edited before it was reinserted under a new key. Record
+                # the old key's tombstone from its detached pre-mutation value.
+                from commontrace.hierarchical import _coerce_fact
+
+                event_payload = json.loads(self.before[identity])
+                event_fact = _coerce_fact(event_payload)
+            rows.append(_event_row(event_fact, event_payload, versions.get(identity, 0) + 1, delete=delete))
         for key in removed:
             _remove_projection(self.connection, key)
         projections = []
-        for fact, encoded in live:
-            staged = self.staged.get(fact.id)
+        for key, fact, encoded in live:
+            staged = self.staged.get(key)
             projections.append(staged if staged is not None and staged.payload == encoded else
                                _project_metadata(self.connection, fact, encoded))
         _project_terms(self.connection, projections)

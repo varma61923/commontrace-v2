@@ -81,8 +81,15 @@ diagnostic batches miss 2,000 facts/s: candidate pairs are 1,601/1,645,
 concurrent validation prevents causal throughput claims. The final source
 passes 73 focused and 149 broader contracts, CI source/dependency checks,
 the pinned 154-question retrieval regression and Graphify (298 modules,
-300 candidates, zero dangling endpoints). Its frozen full suite is running
-separately. The latest exact-1M release measurement remains `aeadf5d` above.
+300 candidates, zero dangling endpoints). The frozen `cd8c1dc` full suite
+completed with 6,748 passed, 126 skipped and one failure in `FactMap.flush()`
+when a fact ID changes inside a mutation. The descendant source binds removal
+history to the old ID and insertion history to the new ID; 132 focused
+storage/evidence contracts pass after the fix. The fixed source has not had a
+full suite run. The fresh exact-1M workload on `7e0a224` measures 4.69 ms
+single-write p95 and 1,739 facts/s batched: the single gate passes and batch
+gate still misses. See [write CPU evidence](next-generation-p0-write-cpu.md)
+and [identity mutation evidence](next-generation-fact-identity-mutation.md).
 See [staged-write evidence](next-generation-staged-write-evidence.md).
 
 The combined branch contains P0–P4 implementation; this audit does not establish
@@ -92,7 +99,7 @@ ancestors of `codex/next-generation-complete`.
 
 | Brief | Implemented | Acceptance limits |
 | --- | --- | --- |
-| A: storage | Compact SQLite WAL/event ledger, bounded idle connection reuse, exact/near/FTS candidates, transactional migration/rebuild, durable content-hash vector projection; optional background Lance HNSW with backend-specific watermarks; tenant-pinned PostgreSQL record ledger, FTS, optional pgvector/HNSW | Current 1M single-write gate passes; batch gate misses; 1M hybrid, server latency and zero-reembedding restart remain unverified |
+| A: storage | Compact SQLite WAL/event ledger, bounded idle connection reuse, exact/near/FTS candidates, transactional migration/rebuild, durable content-hash vector projection; optional background Lance HNSW with backend-specific watermarks; tenant-pinned PostgreSQL record ledger, FTS, optional pgvector/HNSW | Fresh 1M single-write p95 4.69 ms passes; batch 1,739 facts/s misses; 1M hybrid, server latency and zero-reembedding restart remain unverified |
 | B: records | Seven kinds, five scope dimensions plus labels, six lifecycle states, version history, bi-temporal validity, typed relationships, evidence and revision-grounded derived reads | Hosted legacy SDK operations still use the Gateway; Hub implements envelope CRUD, not all legacy operations |
 | C: extraction | Dated speaker/transition extraction, no assistant echo, exact/entropy/MinHash/dense/joint-judge candidate tiers, bounded per-entity/facet observations, existing grounded mental-model refresh | Optional model quality and extraction-cost reduction need real model-backed evaluations |
 | D: learning | Durable event capture, bounded session segmentation, explicit tool/run outcomes, clustered cases, curator/writer proposals, quarantine/shadow/causal activation and retirement, four-format history import, reflection arena and DPO export | Causal activation is tested on randomized fixtures; real SWE uplift and harmful-retirement N remain unverified |

@@ -74,6 +74,36 @@ def test_failed_mutation_body_never_commits_or_revises_warm_generation(tmp_path:
     assert hierarchical.load_facts(root)[fact.id].statement == "Original configuration."
 
 
+def test_mutating_fact_identity_moves_history_and_indexes_to_new_id(tmp_path: Path) -> None:
+    from commontrace import fact_store
+
+    root = str(tmp_path)
+    fact_store.migrate(root)
+    fact, _ = hierarchical.add_fact(root, "Original instrument constraint.")
+    old_id = fact.id
+    new_id = "renamed:" + old_id
+    with hierarchical.mutate_facts(root) as facts:
+        moved = facts.pop(old_id)
+        moved.id = new_id
+        facts[new_id] = moved
+
+    stored = hierarchical.load_facts(root)
+    assert old_id not in stored and new_id in stored
+    assert stored[new_id].statement == fact.statement
+    event_rows = fact_store.events(root)
+    old_events = [row for row in event_rows if row["record"]["id"] == old_id]
+    new_events = [row for row in event_rows if row["record"]["id"] == new_id]
+    assert [(row["record"]["version"], row["operation"]) for row in old_events] == [(1, "put"), (2, "remove")]
+    assert [(row["record"]["version"], row["operation"]) for row in new_events] == [(1, "put")]
+    assert old_events[1]["record"]["payload"]["id"] == old_id
+    fact_store.rebuild(root)
+    rebuilt = hierarchical.load_facts(root)
+    assert old_id not in rebuilt and new_id in rebuilt
+    candidates = fact_store.fts_candidates(root, "instrument constraint", limit=10)
+    assert candidates[0][0].id == new_id
+    assert not any(candidate.id == old_id for candidate, _ in candidates)
+
+
 def test_serialization_error_preserves_authoritative_file(tmp_path: Path) -> None:
     root = str(tmp_path)
     fact, _ = hierarchical.add_fact(root, "Original configuration.")

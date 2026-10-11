@@ -76,7 +76,7 @@ from the older release. The full next-generation objective remains incomplete.
 | Measured storage source full suite | 6 failed, 6,666 passed, 118 skipped | **Failed** |
 | Follow-up storage/journal/hook contracts | 135 passed; all six failures reproduce before the fixes and pass afterward | **Focused pass** |
 | Frozen follow-up full application suite | `fa1ef0c`: 6,678 passed, 118 skipped, 26 warnings | **Pass**; later Lance changes separately covered by ten scoped checks |
-| Latest million-fact writes | `aeadf5d`: 3.86 ms single-write p95, 1,167 facts/s batched | **Single pass; batch miss**; benchmark exits 1 |
+| Latest fresh million-fact writes | Frozen `7e0a224`: 4.69 ms single-write p95, 1,739 facts/s batched | **Single pass; batch miss**; benchmark exits 1; no controlled gain over `aeadf5d` established |
 | Historical Node transport | 152.27 ms p95, 50/50 directives delivered; target <50 ms | **Latency miss**; reported checkout 54681d0, imported dependency binding incomplete |
 | Isolated Python transport, frozen `4b1d2eb` | Three runs: 51.59, 46.64, 48.64 ms p95; 150/150 delivered | **Latency remains open**: one of three rounds misses; full suite 6,709 passed / 126 skipped |
 | Global near-term migration, frozen `19c914b` | 1,044,020 facts; 9,396,194 → 3,132,080 lexicon rows; 55.65 s conversion; all event/payload checksums unchanged | **Migration diagnostic pass**; 192 scoped checks; frozen `d50d54b` full suite passes 6,722 /126 skipped before later staging/reuse changes |
@@ -84,7 +84,7 @@ from the older release. The full next-generation objective remains incomplete.
 | Scalar fact snapshots | 96.5–99.0K → 173.1–176.1K calls/s in a serialization-only profile; complex payloads retain recursive semantics | **Component diagnostic**; does not establish batched ingest throughput |
 | Production eager-FTS staging, `ce1abe2` | Candidate rounds 1,601 / 1,645 facts/s; frozen baseline 1,177 / 1,236 | **Batch miss**; growing million-copy under concurrent validation |
 | Transaction-local lexical reuse, `64b64f4` | Candidate 1,741 / 1,756 facts/s; baseline 1,619 / 1,667 | **Batch miss**; bounded entries/weight and physical cleanup tested |
-| Guarded staged snapshots, `cd8c1dc` | Candidate 1,722 / 1,653 facts/s; baseline 1,730 / 1,129 | **Batch miss; no causal speed claim**; 73 focused +149 broader contracts pass; current frozen full suite running |
+| Guarded staged snapshots, `cd8c1dc` | Candidate 1,722 / 1,653 facts/s; baseline 1,730 / 1,129 | **Batch miss; no causal speed claim**; 73 focused +149 broader contracts pass; frozen suite failed on ID mutation, fixed on descendant awaiting full run |
 | Latest staged-write Graphify | 298 modules, 300 candidates, zero dangling endpoints or policy violations | **Pass**, unchanged 306/303 ceilings; [signed diagnostic evidence](next-generation-staged-write-evidence.md) |
 | Follow-up Graphify | 297 modules, 303 reachability candidates, zero dangling endpoints | **Pass**, unchanged 306/303 ceilings |
 | Optional Lance at 10K vectors | ANN p95 7.15 ms, recall@10 1.0 on 20 paired synthetic queries | **Component measured**; million-fact hybrid unverified |

@@ -18,6 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- SQLite fact ID changes in `mutate_facts()` now keep the old removal event
+  under the old ID and the inserted fact under its new ID. The old tombstone
+  uses the pre-mutation record, so event versions stay unique and index replay
+  rebuilds both histories correctly. The regression failed first with a unique
+  event-version conflict; 132 storage, evidence and write-contract tests pass.
+  The frozen parent full suite had one failure in this case; the fixed source's
+  full suite has not yet run. See [fact identity mutation evidence](docs/strategy/next-generation-fact-identity-mutation.md).
+
 - SQLite writes keep FTS ranking current during admission while batching
   lexical projections and validated events. Transaction-local immutable lexical
   reuse is bounded and physically cleared; unchanged staged snapshots avoid
