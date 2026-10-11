@@ -85,8 +85,12 @@ the pinned 154-question retrieval regression and Graphify (298 modules,
 completed with 6,748 passed, 126 skipped and one failure in `FactMap.flush()`
 when a fact ID changes inside a mutation. The descendant source binds removal
 history to the old ID and insertion history to the new ID; 132 focused
-storage/evidence contracts pass after the fix. The fixed source has not had a
-full suite run. The fresh exact-1M workload on `7e0a224` measures 4.69 ms
+storage/evidence contracts pass after the fix. The integrated descendant full
+suite completed with 6,821 passed and 116 skipped; its sole failure was a static
+test requiring `pytest.importorskip("hub...")` in the new config tests. Adding
+those guards makes the config file and that static test pass 31 targeted tests.
+The full suite was not repeated after this test-only correction. The fresh
+exact-1M workload on `7e0a224` measures 4.69 ms
 single-write p95 and 1,739 facts/s batched: the single gate passes and batch
 gate still misses. See [write CPU evidence](next-generation-p0-write-cpu.md)
 and [identity mutation evidence](next-generation-fact-identity-mutation.md).

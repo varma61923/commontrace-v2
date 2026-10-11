@@ -84,7 +84,7 @@ from the older release. The full next-generation objective remains incomplete.
 | Scalar fact snapshots | 96.5–99.0K → 173.1–176.1K calls/s in a serialization-only profile; complex payloads retain recursive semantics | **Component diagnostic**; does not establish batched ingest throughput |
 | Production eager-FTS staging, `ce1abe2` | Candidate rounds 1,601 / 1,645 facts/s; frozen baseline 1,177 / 1,236 | **Batch miss**; growing million-copy under concurrent validation |
 | Transaction-local lexical reuse, `64b64f4` | Candidate 1,741 / 1,756 facts/s; baseline 1,619 / 1,667 | **Batch miss**; bounded entries/weight and physical cleanup tested |
-| Guarded staged snapshots, `cd8c1dc` | Candidate 1,722 / 1,653 facts/s; baseline 1,730 / 1,129 | **Batch miss; no causal speed claim**; 73 focused +149 broader contracts pass; frozen suite failed on ID mutation, fixed on descendant awaiting full run |
+| Guarded staged snapshots, `cd8c1dc` | Candidate 1,722 / 1,653 facts/s; baseline 1,730 / 1,129 | **Batch miss; no causal speed claim**; 73 focused +149 broader contracts pass; frozen suite's ID mutation failure was fixed on the descendant |
 | Latest staged-write Graphify | 298 modules, 300 candidates, zero dangling endpoints or policy violations | **Pass**, unchanged 306/303 ceilings; [signed diagnostic evidence](next-generation-staged-write-evidence.md) |
 | Follow-up Graphify | 297 modules, 303 reachability candidates, zero dangling endpoints | **Pass**, unchanged 306/303 ceilings |
 | Optional Lance at 10K vectors | ANN p95 7.15 ms, recall@10 1.0 on 20 paired synthetic queries | **Component measured**; million-fact hybrid unverified |
