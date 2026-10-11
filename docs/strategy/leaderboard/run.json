@@ -3,10 +3,10 @@
   "report": {
     "public_aggregate_only": true,
     "format": "commontrace-next-generation-release-v1",
-    "created_at": "2026-10-10T23:05:29.062671+00:00",
-    "source_commit": "4482532ed9bcac75a5abbe902692e6e053c65fd5",
-    "storage_measured_commit": "d19bf44ffd43339de2da38926984539b2ad3fbdc",
-    "source_role": "Runtime at source_commit; storage measured on an earlier pinned revision with unchanged recorded source-file hashes.",
+    "created_at": "2026-10-11T04:18:50.633672+00:00",
+    "source_commit": "22c50a845602dc4713792f25b83370287269b59a",
+    "storage_measured_commit": "22c50a845602dc4713792f25b83370287269b59a",
+    "source_role": "Storage measured on an earlier revision; all seven recorded storage hashes match this release. Injector/transport share the current benchmark source hash. CI records its independently tested commit.",
     "branch": "codex/next-generation-complete",
     "model": {
       "name": "BAAI/bge-small-en-v1.5",
@@ -14,44 +14,46 @@
       "dimension": 384
     },
     "files_sha256": {
-      "docs/strategy/measurements/storage-v2.json": "d860298cdf2fd6520e7be2b738ffdcc8702133b19806bb095f8e3789181e5fd9",
-      "docs/strategy/measurements/injector-bge.json": "03eac225e19f26e292a897868688b370d319d8d8543365f689a8792cbee79336",
+      "docs/strategy/measurements/storage-v2.json": "90aa57c10d1e01306feb4345c75ddd66f582bfed175750df3905345f0537d84d",
+      "docs/strategy/measurements/injector-bge.json": "d0af29ba6bf03def78d4ad8e7acfccbea9aeaa1d52a1804360ac7dfc51c2a73c",
       "docs/strategy/measurements/injector-concurrent.json": "00ad5fc08c989a32ffc819307da4aa165a0e841d0d209f333a59e1bfd7221eb8",
-      "docs/strategy/measurements/injector-transport.json": "201143768bf754f19066ffee4a262a48cad28890cdeff807541ace27b21a1566",
-      "docs/strategy/measurements/runtime-validation.json": "e23ac909cca9bd8960085df570fbfe82bb8a1ce518c24ee35815cf58c6e803b0"
+      "docs/strategy/measurements/injector-transport.json": "9be649eb2854c1891a32da8c2692ee12799dfed87c6bbdf771d72e83d5d69f1e",
+      "docs/strategy/measurements/injector-transport-baseline.json": "201143768bf754f19066ffee4a262a48cad28890cdeff807541ace27b21a1566",
+      "docs/strategy/measurements/runtime-validation.json": "8b79331d46da8265842f46be38d79c381d5d0f9596b1322825211f877bd43815"
     },
     "storage_source_files_sha256": {
-      "commontrace/hierarchical.py": "33cc54bde991467962899bb07481cef62c9675e5811ea11725f863124898c3e1",
+      "commontrace/hierarchical.py": "c8c86f8259550b5f6a51a7d113a530c33dbb12b10dd5bf3c0ca9631bb86b471f",
+      "commontrace/configuration.py": "ffb84fa77b19df36e2b6e6286dd0233ae45d215e17484e3098ff196b3a5835af",
       "commontrace/fact_store.py": "8606eb9c05f92b37e9e652ed4a38f3a1df504235b0461a5514eb394ae5dceed3",
-      "commontrace/memory_record.py": "c2ca8edc120bdd1e15df67279b676b709fce9b0b60b1568246f53fa3ac0388db",
+      "commontrace/memory_record.py": "851100333f523f84359a72dcdfd2ec226d35862d49dc8daf9a249f380471c05c",
       "commontrace/fact_index.py": "fd8fde127391b57491b04c86e7ef9f1d457d43da5c047030ffdab7577111a539",
-      "commontrace/fact_conflicts.py": "fac86d1adbaa7d169254be33dcac455de0ff6e14fbcd80c89930a5e54e9ba74a",
-      "benchmarks/next_generation_storage.py": "9f3deefb7f016ff359aa1ab042c32612b8e6765888247b9c99e0944ba3deda5b"
+      "commontrace/fact_conflicts.py": "fdd79c062229534d12794976fd88c0c9f6182ac8a17b71eb0c6da6c572bc0d31",
+      "benchmarks/next_generation_storage.py": "ea2a0f801a79ea0ab339e41ef993a1c99c2f4b8eba67c2c004b17b9d77b6bc8f"
     },
     "gates": [
       {
         "name": "1M single-write p95 <20 ms",
         "status": "measured pass",
-        "measurement": "1.253 ms",
+        "measurement": "5.031 ms",
         "scope": "20 synthetic selective trials, governed local SQLite APIs"
       },
       {
         "name": "1M batch >=2,000 facts/s",
         "status": "measured pass",
-        "measurement": "3416.5 facts/s",
+        "measurement": "3052.1 facts/s",
         "scope": "one 1,000-fact batch"
       },
       {
         "name": "Warm injector p95 <50 ms",
         "status": "idle fixture pass; load-sensitive",
-        "measurement": "20.61 ms idle; 50.90 ms under concurrent validation",
+        "measurement": "21.77 ms idle; 50.90 ms under concurrent validation",
         "scope": "actual BGE-small, 14 coding queries x5; cold call timed out; interpreter startup excluded"
       },
       {
         "name": "Native process transport p95 <50 ms",
-        "status": "measured miss",
-        "measurement": "52.50 ms",
-        "scope": "50 fresh Node processes, warm broker, fixed directive; no semantic retrieval"
+        "status": "fixture pass",
+        "measurement": "29.75 ms",
+        "scope": "50 fresh Node processes; all trials reported; warmup separate; fixed directive, no semantic model"
       },
       {
         "name": "Injector precision >=0.80",
@@ -97,9 +99,14 @@
       },
       {
         "name": "Module/config surface reduction",
-        "status": "not met",
-        "measurement": "322 Python modules; 154 env variables (80 COMMONTRACE_); 9 recommended profile options",
-        "scope": "legacy public interfaces retained"
+        "status": "primary surface met; compatibility inventory retained",
+        "measurement": "296 Python modules; 25 env variables (12 COMMONTRACE_); 155 legacy aliases; 9 profile options",
+        "scope": "29 CLI wrappers merged into 3 modules; complete compatibility inventory remains public"
+      },
+      {
+        "name": "Local/hosted API parity",
+        "status": "partial",
+        "scope": "Shared scoped envelopes, hosted turn/profile; not every legacy Gateway operation has been ported to Hub"
       },
       {
         "name": "Signed aggregate publication",
@@ -108,21 +115,22 @@
       }
     ],
     "surface": {
-      "python_modules": 322,
-      "python_lines": 85636,
-      "documented_environment_variables": 154,
-      "commontrace_environment_variables": 80,
+      "python_modules": 296,
+      "python_lines": 86906,
+      "documented_environment_variables": 25,
+      "commontrace_environment_variables": 12,
+      "legacy_environment_aliases": 155,
       "recommended_profile_options": 9,
       "top_level_commands": 69,
       "gateway_operations": 63
     },
     "graphify": {
       "version": "0.9.84",
-      "nodes": 21366,
-      "edges": 63090,
+      "nodes": 21367,
+      "edges": 63350,
       "missing_endpoints": 0,
       "possible_unreachable": 303,
-      "graph_sha256": "7f5dfd546f5f1cc39e3556da84c58d3be40f101e935dacf9d4f538141bd32a23",
+      "graph_sha256": "8c4bcd7f975e671bb3f7002479a9493d2cc54ba0712aac1d26b02650fd058863",
       "limitations": [
         "Dynamic dispatch, SDK exports, callbacks and generated entry points are incomplete in static graphs.",
         "No function is deleted or declared dead solely from this report."
@@ -130,62 +138,204 @@
     },
     "validation": {
       "public_aggregate_only": true,
+      "source_ci": {
+        "commit": "31fac7f89050b3872c1c295807b368849d594a2d",
+        "run": "https://github.com/varma61923/commontrace-v2/actions/runs/38110144760",
+        "conclusion": "success",
+        "jobs": [
+          {
+            "name": "Python coverage (80 percent minimum)",
+            "conclusion": "success"
+          },
+          {
+            "name": "helm and terraform validate",
+            "conclusion": "success"
+          },
+          {
+            "name": "test (core install, py3.10)",
+            "conclusion": "success"
+          },
+          {
+            "name": "test + lint (dev extra, py3.11)",
+            "conclusion": "success"
+          },
+          {
+            "name": "test + lint (dev extra, py3.12)",
+            "conclusion": "success"
+          },
+          {
+            "name": "test (core install, py3.11)",
+            "conclusion": "success"
+          },
+          {
+            "name": "hub tests (py3.12)",
+            "conclusion": "success"
+          },
+          {
+            "name": "test + lint (dev extra, py3.10)",
+            "conclusion": "success"
+          },
+          {
+            "name": "classify changed paths",
+            "conclusion": "success"
+          },
+          {
+            "name": "hub tests (py3.10)",
+            "conclusion": "success"
+          },
+          {
+            "name": "hub tests (py3.11)",
+            "conclusion": "success"
+          },
+          {
+            "name": "Native OpenAI and Microsoft memory middleware",
+            "conclusion": "success"
+          },
+          {
+            "name": "security scan (bandit, pip-audit, mypy)",
+            "conclusion": "success"
+          },
+          {
+            "name": "test (core install, py3.12)",
+            "conclusion": "success"
+          },
+          {
+            "name": "console browser contracts (Chromium)",
+            "conclusion": "success"
+          },
+          {
+            "name": "docker image builds and starts",
+            "conclusion": "success"
+          },
+          {
+            "name": "vector engines (SQLite + pgvector, py3.12)",
+            "conclusion": "success"
+          },
+          {
+            "name": "sdk (go)",
+            "conclusion": "success"
+          },
+          {
+            "name": "sdk (typescript)",
+            "conclusion": "success"
+          },
+          {
+            "name": "conversation quality (paired public sample)",
+            "conclusion": "success"
+          },
+          {
+            "name": "sdk (java + kotlin)",
+            "conclusion": "success"
+          },
+          {
+            "name": "optional memory engines (Neo4j, FalkorDB, LanceDB)",
+            "conclusion": "success"
+          },
+          {
+            "name": "vector engines (SQLite + pgvector, py3.10)",
+            "conclusion": "success"
+          },
+          {
+            "name": "sdk (rust)",
+            "conclusion": "success"
+          },
+          {
+            "name": "perf gate (local-tier retrieval latency)",
+            "conclusion": "success"
+          },
+          {
+            "name": "native framework tools (Google ADK, Strands, AG2)",
+            "conclusion": "success"
+          },
+          {
+            "name": "docker compose stack serves real MCP traffic",
+            "conclusion": "success"
+          },
+          {
+            "name": "OpenAPI generated SDK (java)",
+            "conclusion": "success"
+          },
+          {
+            "name": "OpenAPI generated SDK (typescript)",
+            "conclusion": "success"
+          },
+          {
+            "name": "OpenAPI generated SDK (go)",
+            "conclusion": "success"
+          },
+          {
+            "name": "OpenAPI generated SDK (kotlin)",
+            "conclusion": "success"
+          },
+          {
+            "name": "OpenAPI generated SDK (rust)",
+            "conclusion": "success"
+          }
+        ]
+      },
       "full_python": {
-        "passed": 6652,
-        "skipped": 113,
-        "coverage_percent": 84.4,
-        "scope": "full-suite snapshot before final targeted erasure/native-authorship fixes"
+        "passed": 6483,
+        "skipped": 193,
+        "coverage_percent": 82.29,
+        "scope": "GitHub Python 3.12 coverage suite on the source_ci commit, before the final shared preference-counter fix"
+      },
+      "dev_python_312": {
+        "passed": 6482,
+        "skipped": 194,
+        "scope": "GitHub development-extra suite; eight server packaging checks also passed"
       },
       "core_only": {
-        "passed": 6103,
-        "skipped": 282,
-        "scope": "full core-only suite snapshot during final source privacy fixes"
-      },
-      "focused_source_privacy": {
-        "passed": 59,
-        "skipped": 1,
-        "scope": "latest local/Hub source, ownership and erasure checks"
+        "passed": 6129,
+        "skipped": 280,
+        "python": "3.10",
+        "scope": "full core-only CI suite on source_ci commit"
       },
       "full_hub": {
-        "passed": 2497,
+        "passed": 2501,
         "skipped": 2,
+        "python": "3.12",
         "postgres": 16,
         "test_durability_disabled": true,
-        "scope": "full-suite snapshot before final source-citation fixes"
+        "scope": "full Hub CI suite on source_ci commit; local full suite also passed before final counter fix"
+      },
+      "final_preference_and_delivery": {
+        "passed": 43,
+        "skipped": 6,
+        "source_commit": "22c50a845602dc4713792f25b83370287269b59a",
+        "scope": "latest local/hosted preference updates, native delivery, crash recovery and framework-tool checks"
       },
       "native_frameworks": {
-        "passed": 24,
-        "skipped": 5,
-        "scope": "isolated OpenAI/Microsoft native SDK and framework-tool checks"
+        "status": "passed CI",
+        "scope": "actual OpenAI/Microsoft middleware and Google ADK/Strands/AG2 tool jobs"
       },
       "typescript": {
         "passed": 23,
-        "failed": 0
-      },
-      "final_record_rls": {
-        "passed": 4
+        "failed": 0,
+        "scope": "local framework suite; current SDK job separately passed CI"
       },
       "checks": [
+        "all 32 source CI jobs",
         "repository lint",
         "35-file strict CI typing list",
-        "strict MemoryRecord types",
         "medium/high Bandit",
-        "all declared optional dependency audit",
-        "Hub pinned dependency audit",
-        "generated docs",
-        "OpenAPI exports"
+        "dependency audits",
+        "generated references",
+        "OpenAPI exports",
+        "Docker runtime image",
+        "fresh PostgreSQL migration to head and Alembic drift check",
+        "Graphify module and reachability ceilings"
       ],
       "limitations": [
         "Optional services and SDKs remain skips. Test-db settings do not establish server durability.",
-        "GitHub CI is reported independently; this manifest does not assert its final result."
+        "Source CI precedes the final preference-counter change; its focused tests are recorded separately. The evidence publication gets its own final CI run."
       ]
     },
     "limitations": [
       "Fixture gates apply only to the labelled workloads and machine reported.",
       "No private trajectories, model weights or competitor implementations are included.",
-      "External model-backed quality, SWE uplift, server/hybrid scale, simplification and cold-start gates remain unverified or unmet."
+      "Model-backed quality, SWE uplift, server/hybrid scale, cold start and full hosted parity remain unverified or incomplete. The retained baseline native and concurrent semantic reports missed their latency targets."
     ]
   },
   "public_key": "2f39e407917f00d5eb1b74b2ac440888a9b35c56f838b80808e4c027e80bef69",
-  "signature": "EpBS1sk2ytup6wY0Xx+mZGwWakL4iSKQ1+OfsizLchbAGOimCL7+viDi0FCpSR8MjYsqDhtcODMs4khQbfxBDA=="
+  "signature": "1zgt3DRONmuandRf63GtXu/dwDkGGKBYses3k2A4kdlflOFl2t09nDgvkrkxuEW+ageexhFRwx3r3ZZOfpSjAw=="
 }

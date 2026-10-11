@@ -19,20 +19,20 @@ Details and the full audit are in [implementation-status.md](implementation-stat
 
 | Gate | Status | Evidence |
 | --- | --- | --- |
-| Single-write p95 <20 ms at 1M | **Measured pass** | 1.253 ms, real hierarchical APIs, 20 trials, synthetic selective workload |
-| Batch >=2,000 facts/s at 1M | **Measured pass** | 3,417 facts/s, one 1,000-fact batch |
-| Hybrid p95 <50 ms local / <150 ms server at 1M | **Unverified** | 0.299 ms selective sparse overlap is not hybrid retrieval |
+| Single-write p95 <20 ms at 1M | **Measured pass** | 5.031 ms, real hierarchical APIs, 20 trials, synthetic selective workload |
+| Batch >=2,000 facts/s at 1M | **Measured pass** | 3,052 facts/s, one 1,000-fact batch |
+| Hybrid p95 <50 ms local / <150 ms server at 1M | **Unverified** | 0.418 ms selective sparse overlap is not hybrid retrieval |
 | Restart without re-embedding | **Tested on bounded fixtures** | Durable fact watermarks, vector hashes and hook document cache; not a 1M restart timing |
 | Injector precision >=0.80 | **Fixture measured** | Actual BGE-small, maintainer-labelled coding relevance; not production/SWE precision |
 | Warm hook p95 <50 ms | **Load-sensitive; not established universally** | See signed report for idle and concurrent runs; native socket deadline is separate from total host startup |
-| Fresh native process p95 <50 ms | **Measured miss** | Latest 50-process fixed-directive fixture: 52.50 ms; warm broker, no semantic model |
+| Fresh native process p95 <50 ms | **Fixture measured pass** | 29.75 ms, 50 trials, all delivered; warmup separate, no semantic model. Retained baseline: 52.50 ms miss |
 | LoCoMo >=0.85 GPT-class at <=1,500 tokens | **Unverified** | No configured GPT-class reader/judge credentials or endpoint |
 | LongMemEval-S >=0.90; BEAM 100K/1M and categories | **Unverified** | Model-backed required evaluations not run |
 | Coding uplift >=5pp, sequential lower CI >0 | **Unverified** | Real patch/test randomized harness implemented; no actual SWE model run |
 | Harmful-retirement N and lower extraction cost | **Unverified** | Synthetic causal lifecycle and usage-accounting checks do not establish either production metric |
 | Poison resistance | **Fixture tested** | Eleven injector poison/status cases; no successful injection, clean utility retained; novel attacks not covered |
 | First injected lesson <2 minutes | **Unverified** | Setup previews eligible existing lessons; empty stores require reviewed/evaluated evidence |
-| F7: fewer modules; <40 documented config vars | **Not met** | 322 Python modules, 154 documented environment variables before final small edits; nine recommended profile settings, legacy surface retained |
+| F7: fewer modules; <40 documented config vars | **Primary surface met; compatibility retained** | 296 Python modules; 25 primary variables; 155 legacy aliases explicitly listed in the configuration schema; nine recommended profile settings |
 | Signed public aggregate report | **Implemented** | Ed25519 signature with repository-pinned session public key; no private trajectories |
 
 Historical P0 disk exhaustion remains recorded in

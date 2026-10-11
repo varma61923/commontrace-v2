@@ -1,52 +1,194 @@
 {
   "public_aggregate_only": true,
+  "source_ci": {
+    "commit": "31fac7f89050b3872c1c295807b368849d594a2d",
+    "run": "https://github.com/varma61923/commontrace-v2/actions/runs/38110144760",
+    "conclusion": "success",
+    "jobs": [
+      {
+        "name": "Python coverage (80 percent minimum)",
+        "conclusion": "success"
+      },
+      {
+        "name": "helm and terraform validate",
+        "conclusion": "success"
+      },
+      {
+        "name": "test (core install, py3.10)",
+        "conclusion": "success"
+      },
+      {
+        "name": "test + lint (dev extra, py3.11)",
+        "conclusion": "success"
+      },
+      {
+        "name": "test + lint (dev extra, py3.12)",
+        "conclusion": "success"
+      },
+      {
+        "name": "test (core install, py3.11)",
+        "conclusion": "success"
+      },
+      {
+        "name": "hub tests (py3.12)",
+        "conclusion": "success"
+      },
+      {
+        "name": "test + lint (dev extra, py3.10)",
+        "conclusion": "success"
+      },
+      {
+        "name": "classify changed paths",
+        "conclusion": "success"
+      },
+      {
+        "name": "hub tests (py3.10)",
+        "conclusion": "success"
+      },
+      {
+        "name": "hub tests (py3.11)",
+        "conclusion": "success"
+      },
+      {
+        "name": "Native OpenAI and Microsoft memory middleware",
+        "conclusion": "success"
+      },
+      {
+        "name": "security scan (bandit, pip-audit, mypy)",
+        "conclusion": "success"
+      },
+      {
+        "name": "test (core install, py3.12)",
+        "conclusion": "success"
+      },
+      {
+        "name": "console browser contracts (Chromium)",
+        "conclusion": "success"
+      },
+      {
+        "name": "docker image builds and starts",
+        "conclusion": "success"
+      },
+      {
+        "name": "vector engines (SQLite + pgvector, py3.12)",
+        "conclusion": "success"
+      },
+      {
+        "name": "sdk (go)",
+        "conclusion": "success"
+      },
+      {
+        "name": "sdk (typescript)",
+        "conclusion": "success"
+      },
+      {
+        "name": "conversation quality (paired public sample)",
+        "conclusion": "success"
+      },
+      {
+        "name": "sdk (java + kotlin)",
+        "conclusion": "success"
+      },
+      {
+        "name": "optional memory engines (Neo4j, FalkorDB, LanceDB)",
+        "conclusion": "success"
+      },
+      {
+        "name": "vector engines (SQLite + pgvector, py3.10)",
+        "conclusion": "success"
+      },
+      {
+        "name": "sdk (rust)",
+        "conclusion": "success"
+      },
+      {
+        "name": "perf gate (local-tier retrieval latency)",
+        "conclusion": "success"
+      },
+      {
+        "name": "native framework tools (Google ADK, Strands, AG2)",
+        "conclusion": "success"
+      },
+      {
+        "name": "docker compose stack serves real MCP traffic",
+        "conclusion": "success"
+      },
+      {
+        "name": "OpenAPI generated SDK (java)",
+        "conclusion": "success"
+      },
+      {
+        "name": "OpenAPI generated SDK (typescript)",
+        "conclusion": "success"
+      },
+      {
+        "name": "OpenAPI generated SDK (go)",
+        "conclusion": "success"
+      },
+      {
+        "name": "OpenAPI generated SDK (kotlin)",
+        "conclusion": "success"
+      },
+      {
+        "name": "OpenAPI generated SDK (rust)",
+        "conclusion": "success"
+      }
+    ]
+  },
   "full_python": {
-    "passed": 6652,
-    "skipped": 113,
-    "coverage_percent": 84.4,
-    "scope": "full-suite snapshot before final targeted erasure/native-authorship fixes"
+    "passed": 6483,
+    "skipped": 193,
+    "coverage_percent": 82.29,
+    "scope": "GitHub Python 3.12 coverage suite on the source_ci commit, before the final shared preference-counter fix"
+  },
+  "dev_python_312": {
+    "passed": 6482,
+    "skipped": 194,
+    "scope": "GitHub development-extra suite; eight server packaging checks also passed"
   },
   "core_only": {
-    "passed": 6103,
-    "skipped": 282,
-    "scope": "full core-only suite snapshot during final source privacy fixes"
-  },
-  "focused_source_privacy": {
-    "passed": 59,
-    "skipped": 1,
-    "scope": "latest local/Hub source, ownership and erasure checks"
+    "passed": 6129,
+    "skipped": 280,
+    "python": "3.10",
+    "scope": "full core-only CI suite on source_ci commit"
   },
   "full_hub": {
-    "passed": 2497,
+    "passed": 2501,
     "skipped": 2,
+    "python": "3.12",
     "postgres": 16,
     "test_durability_disabled": true,
-    "scope": "full-suite snapshot before final source-citation fixes"
+    "scope": "full Hub CI suite on source_ci commit; local full suite also passed before final counter fix"
+  },
+  "final_preference_and_delivery": {
+    "passed": 43,
+    "skipped": 6,
+    "source_commit": "22c50a845602dc4713792f25b83370287269b59a",
+    "scope": "latest local/hosted preference updates, native delivery, crash recovery and framework-tool checks"
   },
   "native_frameworks": {
-    "passed": 24,
-    "skipped": 5,
-    "scope": "isolated OpenAI/Microsoft native SDK and framework-tool checks"
+    "status": "passed CI",
+    "scope": "actual OpenAI/Microsoft middleware and Google ADK/Strands/AG2 tool jobs"
   },
   "typescript": {
     "passed": 23,
-    "failed": 0
-  },
-  "final_record_rls": {
-    "passed": 4
+    "failed": 0,
+    "scope": "local framework suite; current SDK job separately passed CI"
   },
   "checks": [
+    "all 32 source CI jobs",
     "repository lint",
     "35-file strict CI typing list",
-    "strict MemoryRecord types",
     "medium/high Bandit",
-    "all declared optional dependency audit",
-    "Hub pinned dependency audit",
-    "generated docs",
-    "OpenAPI exports"
+    "dependency audits",
+    "generated references",
+    "OpenAPI exports",
+    "Docker runtime image",
+    "fresh PostgreSQL migration to head and Alembic drift check",
+    "Graphify module and reachability ceilings"
   ],
   "limitations": [
     "Optional services and SDKs remain skips. Test-db settings do not establish server durability.",
-    "GitHub CI is reported independently; this manifest does not assert its final result."
+    "Source CI precedes the final preference-counter change; its focused tests are recorded separately. The evidence publication gets its own final CI run."
   ]
 }

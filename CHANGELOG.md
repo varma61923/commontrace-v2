@@ -21,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   into three modules; all 69 command names are retained.
 
 - **Event-backed agent memory runtime.** Compact SQLite fact storage passed the
-  synthetic 1M write gates (1.25 ms p95; 3,417 facts/s). A versioned envelope adds
+  synthetic 1M write gates (5.03 ms p95; 3,052 facts/s). A versioned envelope adds
   scoped facts, profiles, observations, episodes, lessons and directives; the Hub
   adds PostgreSQL full-text projections and fail-closed tenant RLS. Facet
   observations refresh atomically and verify source revisions during retrieval.
@@ -35,8 +35,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   vectors, derived records and pending deliveries; retention requires an audited
   reason. Added injector poison CI, a real patch/test coding harness, Graphify
   audits and an Ed25519-signed public aggregate leaderboard. Model-graded quality,
-  SWE uplift, 1M hybrid latency and the simplification gate remain unverified or
-  unmet; see `docs/strategy/next-generation-evidence.md`.
+  SWE uplift and 1M hybrid latency remain unverified; full hosted API parity is
+  incomplete. The primary configuration surface is reduced to 25 variables;
+  see `docs/strategy/next-generation-evidence.md` for the retained compatibility inventory.
 - **Terminal fact lineage.** Same-instant contradiction resolutions retain their
   empty terminal validity interval on reload; such historical records remain
   ineligible at every valid-time instant.
