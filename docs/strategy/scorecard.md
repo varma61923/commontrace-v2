@@ -40,6 +40,26 @@ Historical P0 disk exhaustion remains recorded in
 resolved that failure in the measured 1M run. See
 [next-generation-evidence.md](next-generation-evidence.md) for scope and reproduction.
 
+## P0 continuation gate check (2026-10-11)
+
+The latest run misses both write targets. Stop phase advancement as the attached
+build prompt requires; earlier release measurements remain historical evidence.
+
+| Gate | Measured here | Decision |
+| --- | --- | --- |
+| Million-fact single write | 31.43 ms p95; target <20 ms | **Miss** |
+| Million-fact batch | 759 facts/s; target ≥2,000 | **Miss** |
+| Sparse-overlap search | 27.68 ms p95 | Does not verify hybrid latency |
+| Hybrid/server latency and zero-re-embedding restart | Not exercised | **Unverified** |
+| Named CodeQL false positives | Alerts #10 and #1 dismissed after review and authentication tests | **Resolved** |
+| Pinned LoCoMo retrieval regression | 154 questions; no change at 1,500 or 4,000 tokens | **Pass**, not answer accuracy |
+| Full application / PostgreSQL Hub suites | Running; final results pending | **Unverified** |
+
+Commands, signed reports, source hashes and environment limitations are in
+[the P0 continuation audit](next-generation-p0-audit.md). This run used concurrent
+validation on the current host; it does not establish a causal performance change
+from the older release. The full next-generation objective remains incomplete.
+
 ## Beyond the targets
 
 | Area | Measured | Command |

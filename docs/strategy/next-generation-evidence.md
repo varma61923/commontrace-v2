@@ -109,13 +109,18 @@ search, includes unindexed writes, and uses a separate durable projection waterm
 
 ## Measurements and limitations
 
+The 2026-10-11 [P0 continuation audit](next-generation-p0-audit.md) measured
+31.43 ms write p95 and 759 facts/s at one million facts on the current host,
+missing both write gates. It stops phase advancement and retains the earlier
+release results below. The runs are not a controlled hardware comparison.
+
 The [signed aggregate leaderboard](leaderboard/index.html) links public JSON
 reports and pins its Ed25519 session public key. Signatures detect edits and
 identify the session publisher; they do not certify scientific validity. The
 storage report records the base commit and per-file source hashes. Raw trajectories,
 private signing keys, large graphs and model weights are excluded.
 
-The current 1M SQLite selective workload achieved **5.031 ms single-write p95**,
+The recorded release's 1M SQLite selective workload achieved **5.031 ms single-write p95**,
 **3,052 facts/s** for one 1,000-fact batch, and **0.418 ms sparse overlap p95**.
 All seven recorded storage source hashes match the release. The earlier combined
 branch measured 1.253 ms and 3,417 facts/s; its raw report remains in Git history

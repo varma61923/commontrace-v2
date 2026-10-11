@@ -156,7 +156,15 @@ def main() -> int:
         digest = hashlib.sha256(source.read()).hexdigest()
     with open(output + ".sha256", "w", encoding="utf-8") as manifest:
         manifest.write(digest + "  " + os.path.basename(output) + "\n")
-    return 1 if failure else 0
+    # A measured miss must stop reproduce.sh's set -e pipeline. Smaller runs
+    # remain diagnostic; their missing million-fact evidence is explicit above.
+    write_gate_missed = million is not None and not (
+        result["gates"]["single_write_p95_lt_20ms_at_1m"]
+        and result["gates"]["batch_gte_2000_facts_per_second_at_1m"]
+    )
+    if write_gate_missed:
+        print("Storage write gate missed; see measured values in", output, flush=True)
+    return 1 if failure or write_gate_missed else 0
 
 
 if __name__ == "__main__":

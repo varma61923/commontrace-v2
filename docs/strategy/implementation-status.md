@@ -12,6 +12,16 @@ Legend: **Done** · **Done (this pass)** (added or fixed in this audit) ·
 
 ## Next-generation implementation (2026-10-10)
 
+The 2026-10-11 continuation follows the attached build prompt's phase gates.
+P0 missed its current million-fact write gates: 31.43 ms single-write p95
+(target <20 ms) and 759 facts/s batched (target ≥2,000). Phase advancement stops;
+P1–P4 and every unverified acceptance criterion remain part of the objective.
+The two named CodeQL alerts (#10 and #1)
+are now dismissed after source review and authentication tests (119 passed,
+3 skipped). Security-extended queries remain enabled. The storage reproducer's
+exit-status gate is fixed with five boundary checks. See
+[the continuation audit](next-generation-p0-audit.md) for current evidence.
+
 The combined branch continues through P0–P4 under the user's explicit instruction
 not to stop at the original missed-gate rule. The earlier memory-evolution code
 was already squashed into main; its branch and `codex/next-generation-p0` are both

@@ -1,0 +1,49 @@
+{
+  "measured_at": "2026-10-11T05:46:24.439408+00:00",
+  "tool": "graphifyy[terraform,sql]==0.9.84",
+  "code_only": true,
+  "source_commit": "e9636cf9a1a010e71a91455707d224858ead679a",
+  "repositories": [
+    {
+      "name": "commontrace",
+      "source_commit": "e9636cf9a1a010e71a91455707d224858ead679a",
+      "scope": "repository code",
+      "nodes": 21370,
+      "edges": 63389,
+      "graph_sha256": "ceb3f128fff76280e2b973d1792458095bc6c6c06bcac3555f3accbac757949a"
+    },
+    {
+      "name": "mem0",
+      "source_commit": "b7ad69afda6b6ed030347c66d48a13e4de9dec08",
+      "scope": "mem0/memory",
+      "nodes": 341,
+      "edges": 803,
+      "graph_sha256": "da65a00dc834efbcca152a334e87a74182dca87681ca66fc0d5741046ea0d1e6"
+    },
+    {
+      "name": "graphiti",
+      "source_commit": "964bb11d1e7020e3cc67fab244268b0736b6c219",
+      "scope": "graphiti_core/utils/maintenance",
+      "nodes": 249,
+      "edges": 581,
+      "graph_sha256": "ac41196b024f638911da414b655bda1d9f0d8e45223b85d713424ff0ca2d0510"
+    }
+  ],
+  "commontrace_audit": {
+    "nodes": 21370,
+    "missing_endpoints": [],
+    "limitations": [
+      "Dynamic dispatch, SDK exports, callbacks and generated entry points are incomplete in static graphs.",
+      "No function is deleted or declared dead solely from this report."
+    ],
+    "python_modules": 296,
+    "policy_violations": [],
+    "possible_unreachable_count": 303
+  },
+  "limitations": [
+    "Static candidates do not prove dead code.",
+    "Competitor graphs cover the listed subdirectories and current commits, not all eight prompt snapshots.",
+    "No competitor performance or accuracy was measured.",
+    "Graphify excludes secret.example.yaml and tokens.css as potentially sensitive."
+  ]
+}

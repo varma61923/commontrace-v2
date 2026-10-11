@@ -9,9 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Dismissed the two reviewed CodeQL false positives named in the next-generation
+  brief: peppered HMAC lookup of random API keys and the console's login-view
+  condition. The CodeQL configuration documents both decisions and retains the
+  security-extended queries.
+
 - **Hub: commons sharing no longer grants DELETE.** The `traces` row-level policy put `shared_with_commons` in a `FOR ALL` USING clause, which also governs DELETE, so any org could delete another org's shared traces through a query missing its own org filter. Migration `c1d4e8f2a9b6` moves sharing into a SELECT-only policy; a regression test runs as an unprivileged role.
 
+### Fixed
+
+- The storage reproducer now returns nonzero when a measured million-fact write
+  gate fails, stopping `reproduce.sh`. Boundary checks changed from three failures
+  and two passes to five passes; smaller exploratory runs remain diagnostic.
+- Typed the console's integer-validation boundary as `object` so the mandatory
+  strict-mypy check can narrow the value without changing request behavior.
+
 ### Added
+
+- A signed P0 continuation audit records a million-fact write-gate miss on the
+  current host: 31.43 ms p95 and 759 facts/s. Phase advancement stops; earlier
+  release measurements are retained. The pinned LoCoMo retrieval regression gate
+  shows no change; full application and Hub suite results remain pending.
 
 - Hosted record retrieval filters retired records and older revisions before its
   candidate limit, applies kind restrictions to vector hits, and orders equal

@@ -1,0 +1,110 @@
+{
+  "source_commit": "e9636cf9a1a010e71a91455707d224858ead679a",
+  "scope": "P0 continuation validation; does not establish all next-generation gates",
+  "files_sha256": {
+    ".github/codeql/config.yml": "26504483d097639816c4c428fdbd2e65021a9bf878248cffcab713ed1b732c29",
+    ".github/workflows/security.yml": "7e166d5c099f0f36e2741047d56073e17028b5d79d4d83cdbac75b52e1268a36",
+    "commontrace/explorer.py": "fce1506f3b802f0eaa97c629e75e8ad9aa5445294d078b78838aad7f35f00851",
+    "benchmarks/next_generation_storage.py": "ec01a795231c8f9c75a328cb25781b75e88caf8bc64c9ffbaad20734a89987fc",
+    "tests/test_next_generation_storage.py": "7a42a03a9aaccf40c8e99c8278a5820e41b3266f717b77d43642fdd0ca1c7217"
+  },
+  "checks": {
+    "storage_gate_boundary_tests": {
+      "before": {
+        "failed": 3,
+        "passed": 2
+      },
+      "after": {
+        "passed": 5
+      },
+      "command": "python -m pytest tests/test_next_generation_storage.py -q"
+    },
+    "explorer_and_storage_tests": {
+      "passed": 29,
+      "command": "python -m pytest tests/test_explorer.py tests/test_next_generation_storage.py -q"
+    },
+    "foundation_tests": {
+      "passed": 93,
+      "skipped": 23,
+      "command": "python -m pytest tests/test_fact_store.py tests/test_memory_record.py tests/test_storage_remediations.py tests/test_empirical_storage_and_index_resilience.py tests/test_hybrid_retrieval.py -q"
+    },
+    "authentication_tests_with_hub_dependencies": {
+      "passed": 119,
+      "skipped": 3,
+      "command": "python -m pytest tests/test_authentication_approval_and_storage_security.py tests/test_gateway.py tests/test_console.py -q"
+    },
+    "ruff": {
+      "passed": true,
+      "command": "python -m ruff check ."
+    },
+    "docs_openapi_drift": {
+      "passed": true,
+      "commands": [
+        "python scripts/dev.py docs --check",
+        "python scripts/export_openapi.py --check",
+        "python scripts/export_hub_openapi.py --check"
+      ]
+    },
+    "strict_mypy": {
+      "passed": true,
+      "memory_boundary_files": 35,
+      "measurement_files": 2,
+      "commands": "Exact mandatory lists in .github/workflows/ci.yml; measurement list with mypy 1.20.2; memory-boundary list with mypy 1.20.2 and 2.4.0"
+    },
+    "bandit": {
+      "passed": true,
+      "command": "bandit -r commontrace/ hub/ memory/ -x \"*/tests/*,*/test_*\" -ll"
+    },
+    "pip_audit": {
+      "passed": true,
+      "hub": "pip-audit -r hub/requirements.txt",
+      "library": "pip-audit of all declared core and optional dependencies from pyproject.toml"
+    },
+    "graphify": {
+      "passed": true,
+      "version": "0.9.84",
+      "parser_extras": [
+        "terraform",
+        "sql"
+      ],
+      "nodes": 21370,
+      "missing_endpoints": 0,
+      "possible_unreachable": 303,
+      "python_modules": 296,
+      "limits": {
+        "max_modules": 306,
+        "max_unreachable": 303
+      }
+    },
+    "conversation_quality": {
+      "passed": true,
+      "dataset": "Pinned public LoCoMo sample",
+      "questions": 154,
+      "budgets": [
+        1500,
+        4000
+      ],
+      "reader_judge": "none; retrieval regression only",
+      "baseline_source": "973e59979f326559a863ed2dbcc02b187402dad4",
+      "seed": 61923
+    },
+    "full_application_suite": {
+      "command": "python -m pytest tests e2e_tests -q",
+      "state": "running",
+      "summary": "Still running; no final result claimed",
+      "passed": null
+    },
+    "hub_suite": {
+      "command": "HUB_TEST_DATABASE_URL=<disposable PostgreSQL 16> python -m pytest hub/tests -q",
+      "state": "running",
+      "summary": "Still running; no final result claimed",
+      "passed": null,
+      "environment": "Dedicated loopback PostgreSQL 16; default durability settings; run from repository root."
+    }
+  },
+  "measured_at": "2026-10-11T05:53:40.216134+00:00",
+  "limitations": [
+    "Optional dependency/service cases remain skips.",
+    "Local checks do not claim all hosted CI jobs or model-backed release gates passed."
+  ]
+}

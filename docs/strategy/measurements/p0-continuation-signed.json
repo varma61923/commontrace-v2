@@ -1,0 +1,88 @@
+{
+  "format": "commontrace-public-results-v1",
+  "report": {
+    "public_aggregate_only": true,
+    "measured_at": "2026-10-11T05:53:40.216134+00:00",
+    "scope": "P0 continuation audit; full next-generation objective remains incomplete",
+    "source_commit": "e9636cf9a1a010e71a91455707d224858ead679a",
+    "files_sha256": {
+      "docs/strategy/measurements/p0-continuation-storage.json": "3815d9563c713b1c96ec6cd192d89e59a8b3110d8a7e58ff574b977d6ed6b221",
+      "docs/strategy/measurements/p0-continuation-quality.json": "e2261e63b085e6ffd14f10e7b0c08ffcbb232fab6ca5939097c454ec6943148b",
+      "docs/strategy/measurements/p0-continuation-graphify.json": "9e6bec8f26e0d8a16e03b9dceff8e21a18d9b0cf2b63e4670c1f410914d1c361",
+      "docs/strategy/measurements/p0-continuation-validation.json": "fe7c76b6151e170507175b74b2f2d0efd06302a2b5c873de613b8d11f24441f7"
+    },
+    "storage": {
+      "facts_before_trials": 1000000,
+      "single_write_p50_ms": 23.35478295572102,
+      "single_write_p95_ms": 31.427550013177097,
+      "single_write_samples_ms": [
+        13.438764959573746,
+        18.30961200175807,
+        22.272335016168654,
+        29.297775006853044,
+        20.536246011033654,
+        22.836819000076503,
+        23.65794702200219,
+        26.549928006716073,
+        30.341206002049148,
+        31.427550013177097,
+        39.12387799937278,
+        24.61420895997435,
+        22.383413976058364,
+        18.483193998690695,
+        26.961827010381967,
+        23.35478295572102,
+        26.80204203352332,
+        26.92116203252226,
+        22.508933034259826,
+        18.640580994542688
+      ],
+      "sparse_overlap_search_p50_ms": 17.26347004296258,
+      "sparse_overlap_search_p95_ms": 27.678348997142166,
+      "sparse_overlap_search_samples_ms": [
+        10.693999996874481,
+        17.26347004296258,
+        22.499888960737735,
+        22.87470700684935,
+        31.06684103840962,
+        20.860238990280777,
+        27.678348997142166,
+        23.35269801551476,
+        12.172364047728479,
+        9.807694994378835,
+        10.065009002573788,
+        16.540603013709188,
+        15.408755978569388,
+        14.968571020290256,
+        18.168137001339346,
+        15.484701027162373,
+        15.297302976250648,
+        21.693788992706686,
+        26.072163018397987,
+        26.191583019681275
+      ],
+      "batch_size": 1000,
+      "batch_facts_per_second": 759.2464552296083,
+      "batch_elapsed_seconds": 1.3170953820226714,
+      "seed_elapsed_seconds": 1158.68503538199
+    },
+    "write_gates": {
+      "single_write_p95_lt_20ms_at_1m": false,
+      "batch_gte_2000_facts_per_second_at_1m": false,
+      "hybrid_search_at_1m": "unverified: sparse timings are not hybrid timings",
+      "postgres_server": "not measured by this local workload",
+      "restart_zero_reembedding": "not exercised: this workload does not write embeddings"
+    },
+    "decision": "stop at P0: measured write gate missed",
+    "limitations": [
+      "This storage run used the pre-fix benchmark at the recorded source hashes; its exit code can be zero on a gate miss.",
+      "The fixed benchmark exit behavior is covered by five injected-metric boundary tests; those fixtures are not performance measurements.",
+      "Storage seeding ran concurrently with validation on this host; these timings are not a controlled comparison with earlier hardware.",
+      "No reader, judge or coding model was run.",
+      "Hybrid and server latency and restart without re-embedding remain unverified.",
+      "Ed25519 identifies this session publisher and detects edits; it does not establish scientific validity."
+    ]
+  },
+  "public_key": "4af25ffa4889429857e2df41a90657a23ffc5ed89ec37a614a79cf56b24f1630",
+  "signature": "kyphpDhBczwYXjsenRtDZ6HxTOYrkY0GV5dbQm1Zs38n06eMpoTrZkJm7iCFKzio2Cg8dy7iMOrnfFpkP2E8BQ=="
+}

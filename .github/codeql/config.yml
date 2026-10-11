@@ -1,0 +1,10 @@
+name: CommonTrace security analysis
+
+# Alert #10 (hub/auth.py): HMAC-SHA256 indexes 256-bit random API keys with
+# a secret pepper; legacy API-key hashing still uses Argon2id.
+# Alert #1 (commontrace/ui/app.js): the token check only selects the login
+# view. Gateway.handle authenticates before protected handlers, and
+# tests/test_gateway.py checks missing, wrong and Basic credentials.
+# These individually reviewed false positives do not suppress either query.
+queries:
+  - uses: security-extended
