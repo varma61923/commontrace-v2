@@ -84,3 +84,10 @@ projection deferral has not established those contracts.
 
 Raw diagnostics, source recipes and validation are bound by the
 [signed global near-index evidence](measurements/p0-global-near-signed.json).
+
+The frozen `d50d54b` full application/e2e suite subsequently completed:
+6,722 passed, 126 skipped, 26 warnings in 4,145.44 seconds, with observed exit 0.
+This validates the global near projection and earlier snapshot source. The
+FTS-preserving staging design was later implemented on `ce1abe2`; its separate
+contracts, throughput misses and later frozen suite are recorded in
+[staged-write evidence](next-generation-staged-write-evidence.md).

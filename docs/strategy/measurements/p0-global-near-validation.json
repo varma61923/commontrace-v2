@@ -1,5 +1,5 @@
 {
-  "measured_at": "2026-10-11T14:38:48.984893+00:00",
+  "measured_at": "2026-10-11T15:42:37.807191+00:00",
   "source_commit": "d50d54b463afe450ab42c8a2b0d872ebcb527083",
   "source_files_sha256": {
     "commontrace/fact_store.py": "ed4019206320628b03ccc76b8b43ac0bb546849562353a3c01c116f4438cfa4c",
@@ -84,16 +84,18 @@
     }
   },
   "full_application_suite": {
-    "state": "running",
-    "passed": null,
+    "state": "completed",
+    "passed": true,
+    "exit_code": 0,
+    "summary": "6722 passed, 126 skipped, 26 warnings in 4145.44s (1:09:05)",
     "source_commit": "d50d54b463afe450ab42c8a2b0d872ebcb527083",
     "pid": 1565061,
     "session_id": 95049,
     "command": "env -u COMMONTRACE_ROOT -u JUSTDOIT_ROOT python -m pytest tests e2e_tests -q",
     "source_files_verified": 1242,
     "source_snapshot_sha256": "86f653634164420e8960904d88cc42812979b52809c59971b8789de919df5d38",
-    "log_prefix_sha256": "9c821c7771b5c0fb2112c72a38a702de6bb3c89fc98f997d5570e36676c48688",
-    "log_scope": "Prefix only; no completed pass claimed.",
+    "log_sha256": "19c2be1b1489ef3f42c29f71efc94a603b33f3dacefb5f6437bd52c0c3455bcf",
+    "log_scope": "Complete log with observed process exit; precedes ce1abe2 staging and later lexical/snapshot reuse.",
     "environment": "Dedicated venv with frozen package through a .pth file; isolated capture children resolve the same source."
   },
   "completed_native_suite": {
@@ -105,7 +107,7 @@
   "migration_runner_recipe": "\"\"\"Frozen real-API diagnostic on a mutable retained copy, not an acceptance run.\"\"\"\nimport argparse, hashlib, json, math, os, sqlite3, subprocess, sys, time\nfrom pathlib import Path\nparser=argparse.ArgumentParser()\nparser.add_argument('--source',required=True)\nparser.add_argument('--phase',choices=['before','after'],required=True)\nparser.add_argument('--output',required=True)\nargs=parser.parse_args()\nsys.path.insert(0,args.source)\nfrom commontrace import fact_store as fs,hierarchical as h\nfrom benchmarks.next_generation_storage import items,statement\nassert all(str(Path(module.__file__).resolve()).startswith(args.source+'/') for module in (fs,h))\nroot=Path('/tmp/commontrace-p0-million-tuning-root').read_text().strip()\nnext_path=Path('/tmp/commontrace-p0-million-tuning-next-index')\nstart=int(next_path.read_text())\npath=fs.database_path(root)\ndef counts(connection):\n return {name:connection.execute('SELECT COUNT(*) FROM '+name).fetchone()[0] for name in ('facts','events','lexicon','postings')}\ndef checksums(connection):\n result={}\n for label,sql in [('events','SELECT seq,fact_id,version,operation,record FROM events ORDER BY seq'),('payloads','SELECT id,payload FROM facts ORDER BY id')]:\n  digest=hashlib.sha256()\n  for row in connection.execute(sql):\n   digest.update(json.dumps(row,ensure_ascii=False,separators=(',',':')).encode());digest.update(b'\\n')\n  result[label]=digest.hexdigest()\n return result\nreport={'phase':args.phase,'scope':'Frozen runtime on existing mutable million-copy, concurrent full suite elsewhere. Non-randomized timings, warmed by checksum reads; not release acceptance evidence.','source_commit':subprocess.check_output(['git','rev-parse','HEAD'],cwd=args.source,text=True).strip(),'source_root':args.source,'source_files_sha256':{name:hashlib.sha256((Path(args.source)/name).read_bytes()).hexdigest() for name in subprocess.check_output(['git','ls-files','-z'],cwd=args.source).decode().split('\\0') if name and (Path(args.source)/name).is_file()},'python':sys.version,'root':root,'command':sys.argv,'batches':[]}\nwith sqlite3.connect(path) as raw:\n report['before']=counts(raw)\n if args.phase=='after':report['authoritative_before']=checksums(raw)\nprint(json.dumps({'phase':args.phase,'before':report['before']}),flush=True)\nstarted=time.perf_counter()\nwith fs.transaction(root) as facts:\n report['open_seconds']=time.perf_counter()-started\n report['after_open']=counts(facts.connection)\n if args.phase=='after':\n  report['authoritative_after']=checksums(facts.connection)\n  assert report['authoritative_before']==report['authoritative_after']\n  assert facts.connection.execute(\"SELECT value FROM meta WHERE key='near_postings'\").fetchone()==('global-v2',)\n  assert facts.connection.execute(\"SELECT 1 FROM lexicon l WHERE l.documents!=(SELECT COUNT(*) FROM postings p WHERE p.term_id=l.id) LIMIT 1\").fetchone() is None\n  report['document_frequencies_exact']=True\n samples=[]\n for n in range(20):\n  query='its event journal uses durable storage for component item'+str(n)\n  t=time.perf_counter();found=fs.StatementIndex(facts).near(query,[]);samples.append((time.perf_counter()-t)*1000)\n  assert found is not None and found.statement==statement(n)\n report['near_lookup_samples_ms']=samples\n report['near_lookup_p95_ms']=sorted(samples)[math.ceil(len(samples)*.95)-1]\nprint(json.dumps({key:report[key] for key in ('open_seconds','after_open','near_lookup_p95_ms')}),flush=True)\nfor _ in range(2):\n t=time.perf_counter();result=h.add_facts(root,items(start,1000));elapsed=time.perf_counter()-t\n assert len(result)==1000 and all(action=='ADD' for _,action in result)\n report['batches'].append({'elapsed_seconds':elapsed,'facts_per_second':1000/elapsed,'start':start})\n start+=1000;next_path.write_text(str(start))\n print(json.dumps(report['batches'][-1]),flush=True)\nwith fs.transaction(root) as facts:report['after_batches']=counts(facts.connection)\nfs.close_connections(root)\nreport['runner_source']=Path(__file__).read_text()\nPath(args.output).write_text(json.dumps(report,indent=2)+'\\n')\n",
   "reproduction": "Check out the recorded source, create a mutable copy of a quiescent event-backed million-fact fixture, and run the retained runner before/after conversion. The unchanged release command remains python -m benchmarks.next_generation_storage --sizes 1000,10000,30000,1000000 --trials 20 --legacy-max 1000 --output <report>.",
   "limitations": [
-    "Latest full suite is running, not passed.",
+    "Frozen d50d54b full suite completed with observed exit; it precedes later staged-write and lexical/snapshot reuse changes.",
     "No frozen release-level 1M ingest rerun on current source; all P0 gates retain their earlier decisions.",
     "No full hybrid/server/restart or real model/SWE acceptance evidence here.",
     "DF equality is insufficient to prove projection completeness; corrected diagnostic checks canonical near content and recall per admitted fact."

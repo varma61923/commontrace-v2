@@ -18,6 +18,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- SQLite writes keep FTS ranking current during admission while batching
+  lexical projections and validated events. Transaction-local immutable lexical
+  reuse is bounded and physically cleared; unchanged staged snapshots avoid
+  redundant encoding while final envelope validation still runs. Post-stage
+  mutations, rollback, semantic candidates beyond 100 pending facts and
+  subclass/nested payloads have regression coverage. The final source passes
+  73 focused and 149 broader checks; its frozen full suite is running. All
+  diagnostic candidate pairs miss 2,000 facts/s: 1,601/1,645, 1,741/1,756 and
+  1,722/1,653 on a growing million-copy with concurrent validation. Signed
+  evidence retains every baseline and miss; exact-1M release acceptance remains
+  the earlier 1,167 facts/s miss.
 - Native hooks now launch a stdlib Python transport with isolated imports,
   sharing response formatting with the existing adapters. Older Node commands
   retain a compatibility launcher; reinstalling remains idempotent. Bounded
@@ -32,8 +43,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   checksums on a 1,044,020-fact copy and reduces lexicon rows from 9,396,194 to
   3,132,080. Migration, rollback, concurrent readers, scopes and recall have
   scoped contracts. Ordinary fact snapshots copy scalar containers directly;
-  nested values and evidence retain recursive serialization. The current-source
-  full suite is running. Batch and hybrid acceptance remain open; corrected
+  nested values and evidence retain recursive serialization. The frozen
+  `d50d54b` full suite passes 6,722 tests with 126 skips, before later staged-write
+  and lexical/snapshot reuse changes. Batch and hybrid acceptance remain open; corrected
   private bulk prototypes are not production changes.
 - The frozen SQLite/journal follow-up passes the full application suite:
   6,678 passed and 118 skipped. The latest million-fact write run measures

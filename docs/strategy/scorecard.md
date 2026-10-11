@@ -79,9 +79,13 @@ from the older release. The full next-generation objective remains incomplete.
 | Latest million-fact writes | `aeadf5d`: 3.86 ms single-write p95, 1,167 facts/s batched | **Single pass; batch miss**; benchmark exits 1 |
 | Historical Node transport | 152.27 ms p95, 50/50 directives delivered; target <50 ms | **Latency miss**; reported checkout 54681d0, imported dependency binding incomplete |
 | Isolated Python transport, frozen `4b1d2eb` | Three runs: 51.59, 46.64, 48.64 ms p95; 150/150 delivered | **Latency remains open**: one of three rounds misses; full suite 6,709 passed / 126 skipped |
-| Global near-term migration, frozen `19c914b` | 1,044,020 facts; 9,396,194 → 3,132,080 lexicon rows; 55.65 s conversion; all event/payload checksums unchanged | **Migration diagnostic pass**; 192 scoped checks, separate current-source full suite running |
+| Global near-term migration, frozen `19c914b` | 1,044,020 facts; 9,396,194 → 3,132,080 lexicon rows; 55.65 s conversion; all event/payload checksums unchanged | **Migration diagnostic pass**; 192 scoped checks; frozen `d50d54b` full suite passes 6,722 /126 skipped before later staging/reuse changes |
 | Corrected staged/bulk/cache prototype | 1,870–1,895 facts/s; FIFO/encoder experiment 1,896–2,130 | **Unaccepted**: misses retained, staged semantic admission unverified, concurrent validation; earlier mixed-layout timings excluded |
 | Scalar fact snapshots | 96.5–99.0K → 173.1–176.1K calls/s in a serialization-only profile; complex payloads retain recursive semantics | **Component diagnostic**; does not establish batched ingest throughput |
+| Production eager-FTS staging, `ce1abe2` | Candidate rounds 1,601 / 1,645 facts/s; frozen baseline 1,177 / 1,236 | **Batch miss**; growing million-copy under concurrent validation |
+| Transaction-local lexical reuse, `64b64f4` | Candidate 1,741 / 1,756 facts/s; baseline 1,619 / 1,667 | **Batch miss**; bounded entries/weight and physical cleanup tested |
+| Guarded staged snapshots, `cd8c1dc` | Candidate 1,722 / 1,653 facts/s; baseline 1,730 / 1,129 | **Batch miss; no causal speed claim**; 73 focused +149 broader contracts pass; current frozen full suite running |
+| Latest staged-write Graphify | 298 modules, 300 candidates, zero dangling endpoints or policy violations | **Pass**, unchanged 306/303 ceilings; [signed diagnostic evidence](next-generation-staged-write-evidence.md) |
 | Follow-up Graphify | 297 modules, 303 reachability candidates, zero dangling endpoints | **Pass**, unchanged 306/303 ceilings |
 | Optional Lance at 10K vectors | ANN p95 7.15 ms, recall@10 1.0 on 20 paired synthetic queries | **Component measured**; million-fact hybrid unverified |
 | Optional Lance at 1M vectors | ANN p95 13.04 ms; mean recall@10 0.91, minimum 0.70 | **Recall target missed**; component only, full hybrid unverified |

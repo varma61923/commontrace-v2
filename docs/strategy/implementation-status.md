@@ -68,8 +68,22 @@ The ordinary fact snapshot optimization has four compatibility contracts and
 These are component diagnostics, not a new million-fact write acceptance run.
 The pinned 154-question LoCoMo retrieval regression passes at 1,500 and 4,000
 tokens against the frozen earlier report; no reader/judge answer accuracy is measured.
-The full suite for storage/snapshot source `d50d54b` is running separately.
+The frozen full application/e2e suite for storage/snapshot source `d50d54b`
+passes 6,722 tests with 126 skips and 26 warnings in 4,145.44 seconds (exit 0).
+It precedes the later staged-write and lexical/snapshot reuse changes.
 See [global near-index evidence](next-generation-global-near-index.md).
+
+The later production write path keeps FTS eager and batches lexical projections
+and validated events (`ce1abe2`), adds bounded transaction-local lexical reuse
+(`64b64f4`), and reuses unchanged staged snapshots (`cd8c1dc`). All growing-copy
+diagnostic batches miss 2,000 facts/s: candidate pairs are 1,601/1,645,
+1,741/1,756 and 1,722/1,653. All baseline rounds and misses are retained;
+concurrent validation prevents causal throughput claims. The final source
+passes 73 focused and 149 broader contracts, CI source/dependency checks,
+the pinned 154-question retrieval regression and Graphify (298 modules,
+300 candidates, zero dangling endpoints). Its frozen full suite is running
+separately. The latest exact-1M release measurement remains `aeadf5d` above.
+See [staged-write evidence](next-generation-staged-write-evidence.md).
 
 The combined branch contains P0–P4 implementation; this audit does not establish
 their acceptance gates. The earlier memory-evolution code
@@ -86,7 +100,7 @@ ancestors of `codex/next-generation-complete`.
 | F: retrieval | Indexed sparse and incremental dense candidates, graph BFS, temporal/evidence filtering, utility explainers, bounded reranking and three-round agentic completeness traces; BGE-small default in configured runtime | Exact local vector engine remains available; 1M dense/hybrid scaling is not established |
 | G: profiles | Explicit static assertions, dynamic weighted/decaying preferences, custom profiles, profile returned with one-call save/retrieve, critical preferences always eligible | Context budgets use an estimate unless the caller supplies exact counting |
 | H: privacy | Pinned scope, pre-model and post-model redaction, recursive hard erasure across local history/FTS/vectors/derived records, retention reaper and reason audit, telemetry off, poison CI | External backups/mirrors require operator erasure; PostgreSQL vector cleanup failures remain explicitly pending in a tenant-pinned retry ledger until its worker runs |
-| I: product | `up` setup/server, request-local YAML profiles and secret references, credential-safe config migration, history import, existing-lesson preview, HTTP/SDK record parity, signed aggregate leaderboard, Graphify CI budgets and pinned native SDK smoke tests; 29 CLI wrappers merged into three modules, retaining all 69 commands | No registry/service publication; empty stores wait for evaluated evidence, so first injected lesson <2 minutes is not established; 296 modules and 25 primary variables, with 155 legacy aliases retained explicitly |
+| I: product | `up` setup/server, request-local YAML profiles and secret references, credential-safe config migration, history import, existing-lesson preview, HTTP/SDK record parity, signed aggregate leaderboard, Graphify CI budgets and pinned native SDK smoke tests; 29 CLI wrappers merged into three modules, retaining all 69 commands | No registry/service publication; empty stores wait for evaluated evidence, so first injected lesson <2 minutes is not established; latest Graphify counts 298 modules; 25 primary variables plus 155 documented legacy aliases still miss the <40-variable target |
 
 Measured results and commands are in [next-generation-evidence.md](next-generation-evidence.md)
 and the [signed leaderboard](leaderboard/index.html). Historical status sections
