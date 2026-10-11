@@ -70,6 +70,12 @@ def slot_key(statement: str) -> frozenset:
     """Stemmed content words without numbers or negations: equal keys are candidate pairs."""
     from commontrace import hierarchical
 
+    return hierarchical._cached_feature("slot", statement, _slot_key_uncached)
+
+
+def _slot_key_uncached(statement: str) -> frozenset:
+    from commontrace import hierarchical
+
     words, numbers, negations = hierarchical._signature(statement)
     content = hierarchical._content(words) - negations - set(numbers)
     return frozenset(_stem(w) for w in content if not w.isdigit())

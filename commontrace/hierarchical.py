@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import hashlib
 import json
 import os
 import re
-from collections.abc import Iterator, Sequence
+import sys
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -208,7 +210,78 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _feature_weight(value: Any) -> int | None:
+    """Conservatively account for retained immutable lexical values only."""
+    if type(value) is str:
+        return sys.getsizeof(value)
+    if type(value) in (tuple, frozenset):
+        weight = sys.getsizeof(value)
+        for child in value:
+            child_weight = _feature_weight(child)
+            if child_weight is None:
+                return None
+            weight += child_weight
+        return weight
+    return None
+
+
+class _StatementFeatures:
+    """Pure lexical reuse bounded by one write transaction's lifetime."""
+
+    def __init__(self, *, max_entries: int = 4096, max_weight: int = 8 * 1024 * 1024):
+        if max_entries < 1 or max_weight < 1:
+            raise ValueError("feature cache bounds must be positive")
+        self.max_entries, self.max_weight = max_entries, max_weight
+        self.values: dict[tuple[str, Any], Any] = {}
+        self.weight = 0
+        self.closed = False
+
+    def get(self, kind: str, key: Any, build: Callable) -> Any:
+        if self.closed or not (type(key) is str or
+                               (type(key) is frozenset and all(type(word) is str for word in key))):
+            return build(key)
+        cache_key = (kind, key)
+        missing = _FEATURE_MISSING
+        value = self.values.get(cache_key, missing)
+        if value is not missing:
+            return value
+        value = build(key)
+        value_weight, key_weight = _feature_weight(value), _feature_weight(cache_key)
+        if value_weight is None or key_weight is None:
+            return value
+        # Includes a conservative allowance for the dict entry and allocator
+        # overhead. Shared strings are deliberately counted more than once.
+        weight = value_weight + key_weight + 384
+        if weight > self.max_weight:
+            return value
+        if len(self.values) >= self.max_entries or self.weight + weight > self.max_weight:
+            self.values.clear()
+            self.weight = 0
+        self.values[cache_key] = value
+        self.weight += weight
+        return value
+
+    def close(self) -> None:
+        self.values.clear()
+        self.weight = 0
+        self.closed = True
+
+
+_FEATURE_MISSING = object()
+_STATEMENT_FEATURES: contextvars.ContextVar[_StatementFeatures | None] = contextvars.ContextVar(
+    "statement_features", default=None)
+
+
+def _cached_feature(kind: str, key: Any, build: Callable) -> Any:
+    owner = _STATEMENT_FEATURES.get()
+    return build(key) if owner is None else owner.get(kind, key, build)
+
+
 def _normalize_statement(text: str) -> str:
+    return _cached_feature("norm", text, _normalize_statement_uncached)
+
+
+def _normalize_statement_uncached(text: str) -> str:
     return re.sub(r"\s+", " ", text.strip().lower())
 
 
@@ -357,12 +430,20 @@ def dedup_mode() -> str:
 def _signature(statement: str) -> tuple[frozenset, tuple, frozenset]:
     """Words, the numbers in order, and the negations: two statements that differ in a
     number or a negation are never duplicates, however similar their wording."""
+    return _cached_feature("signature", statement, _signature_uncached)
+
+
+def _signature_uncached(statement: str) -> tuple[frozenset, tuple, frozenset]:
     norm = _normalize_statement(statement)
     words = _WORD.findall(norm)
     return frozenset(words), tuple(_NUMBER.findall(norm)), frozenset(w for w in words if w in _NEGATIONS)
 
 
 def _content(words: frozenset) -> frozenset:
+    return _cached_feature("content", words, _content_uncached)
+
+
+def _content_uncached(words: frozenset) -> frozenset:
     from commontrace.conversation.profile import STOPWORDS
 
     return frozenset(w for w in words if w not in STOPWORDS or w in _NEGATIONS)

@@ -408,7 +408,13 @@ def transaction(root: str, *, write: bool = False) -> Iterator[FactMap]:
     key, connection, generation = _borrow_connection(root)
     succeeded = False
     facts = None
+    owner = token = None
     try:
+        if write:
+            from commontrace import hierarchical
+
+            owner = hierarchical._StatementFeatures()
+            token = hierarchical._STATEMENT_FEATURES.set(owner)
         connection.execute("BEGIN IMMEDIATE" if write else "BEGIN")
         facts = FactMap(connection)
         yield facts
@@ -423,6 +429,10 @@ def transaction(root: str, *, write: bool = False) -> Iterator[FactMap]:
     finally:
         if facts is not None:
             facts.clear_staged()
+        if owner is not None:
+            owner.close()
+        if token is not None:
+            hierarchical._STATEMENT_FEATURES.reset(token)
         if succeeded:
             _return_connection(key, connection, generation)
         else:
