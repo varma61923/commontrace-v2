@@ -6,6 +6,7 @@ python -m benchmarks.next_generation_storage --sizes 1000,10000,30000,1000000 \
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import math
@@ -99,6 +100,7 @@ def main() -> int:
     result['source_files_sha256'] = {
         name: hashlib.sha256(open(name, 'rb').read()).hexdigest()
         for name in ('commontrace/hierarchical.py', 'commontrace/configuration.py', 'commontrace/fact_store.py',
+                     'commontrace/entity_store.py',
                      'commontrace/memory_record.py', 'commontrace/fact_index.py',
                      'commontrace/fact_conflicts.py', 'benchmarks/next_generation_storage.py')
     }
@@ -110,9 +112,11 @@ def main() -> int:
     failure = None
     size, offset = 0, 0
     try:
-        with tempfile.TemporaryDirectory(prefix="commontrace-p0-", dir=args.work_dir) as directory:
+        with tempfile.TemporaryDirectory(prefix="commontrace-p0-", dir=args.work_dir) as directory, \
+                contextlib.ExitStack() as resources:
             sqlite_root = os.path.join(directory, "sqlite")
             fact_store.migrate(sqlite_root)
+            resources.callback(fact_store.close_connections, sqlite_root)
             cursor = 0
             for size in sizes:
                 start = time.perf_counter()

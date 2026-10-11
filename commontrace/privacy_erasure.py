@@ -39,6 +39,7 @@ def purge_fact(root: str, identity: str, *, reason: str) -> dict:
                 canonical.connection.execute("DELETE FROM events WHERE fact_id=?", (key,))
             canonical.connection.execute("DELETE FROM lexicon WHERE documents=0")
             canonical.connection.execute("INSERT INTO fact_fts(fact_fts) VALUES('rebuild')")
+        fact_store.close_connections(root)
         db = sqlite3.connect(fact_store.database_path(root), isolation_level=None)
         try:
             db.execute("PRAGMA secure_delete=ON")

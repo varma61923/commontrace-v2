@@ -76,9 +76,14 @@ def test_numbered_templates_are_identifiers_not_contradictions(tmp_path):
     assert fact_conflicts.pending(root) == []
 
 
-def test_a_batch_compares_each_fact_only_with_earlier_ones(tmp_path, monkeypatch):
+@pytest.mark.parametrize("backend", ["jsonl", "sqlite"])
+def test_a_batch_compares_each_fact_only_with_earlier_ones(tmp_path, monkeypatch, backend):
     monkeypatch.setenv("COMMONTRACE_FACT_CONFLICTS", "supersede")
     root = str(tmp_path)
+    if backend == "sqlite":
+        from commontrace import fact_store
+
+        fact_store.migrate(root)
     [(old, _), (new, _)] = hierarchical.add_facts(root, [{"statement": "Alice likes spicy food a lot"},
                                                          {"statement": "Alice does not like spicy food a lot"}])
     facts = hierarchical.load_facts(root)

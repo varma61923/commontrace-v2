@@ -573,11 +573,12 @@ def _detect_conflicts(facts: dict[str, AtomicFact], index: _StatementIndex, fact
 def _batch_conflicts(facts: dict[str, AtomicFact], index: _StatementIndex, added: list[AtomicFact],
                      root: str | None, sink: list, *, may_supersede: bool) -> None:
     """Conflict detection once a batch is indexed, so the value-variant cap sees the whole batch."""
-    ids = [f.id for f in added]
-    for position, fact in enumerate(added):
+    later = {fact.id for fact in added}
+    for fact in added:
+        later.discard(fact.id)
         if facts[fact.id].status == "active":
             _detect_conflicts(facts, index, fact, root, sink, may_supersede=may_supersede,
-                              later=frozenset(ids[position + 1:]))
+                              later=later)
 
 
 def _add_locked(

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -125,6 +126,172 @@ def test_write_does_not_scan_bank(tmp_path, monkeypatch):
     monkeypatch.setattr(h, "load_facts", forbidden)
     monkeypatch.setattr(h._StatementIndex, "__init__", forbidden)
     h.add_fact(str(tmp_path), "newcomponent requires durable storage")
+
+
+def test_projection_counts_survive_revisions_rollback_and_rebuild(tmp_path):
+    root = str(tmp_path)
+    activate(root)
+    first, _ = h.add_fact(root, "alpha records durable durable journals", scopes=["a"])
+    second, _ = h.add_fact(root, "beta records durable journals", scopes=["b"])
+
+    def projections():
+        with fact_store.transaction(root) as facts:
+            connection = facts.connection
+            assert connection.execute(
+                "SELECT count(*) FROM lexicon l WHERE l.documents != "
+                "(SELECT count(*) FROM postings p WHERE p.term_id=l.id)"
+            ).fetchone() == (0,)
+            return connection.execute(
+                "SELECT kind,term,fact_id,count FROM terms ORDER BY kind,term,fact_id"
+            ).fetchall()
+
+    original = projections()
+    assert ("bm25-v1", "durabl", first.id, 2) in original
+    events = fact_store.events(root)
+    with pytest.raises(RuntimeError, match="projection failed"):
+        with h.mutate_facts(root) as facts:
+            h._add_locked(facts, "uncommitted unique journal", "general", [], None, None, None, 0.8, "")
+            raise RuntimeError("projection failed")
+    assert projections() == original
+    assert fact_store.events(root) == events
+    h.update_fact(root, first.id, statement="alpha records revised journals")
+    with h.mutate_facts(root) as facts:
+        del facts[second.id]
+    revised = projections()
+    assert not any(term in {"durable", "durabl"} for _, term, _, _ in revised)
+    fact_store.rebuild(root)
+    assert projections() == revised
+
+
+def test_idle_connection_reuse_keeps_transactions_and_facts_separate(tmp_path):
+    root = str(tmp_path)
+    activate(root)
+    with fact_store.transaction(root) as first:
+        connection = first.connection
+        assert connection.execute("PRAGMA synchronous").fetchone() == (2,)
+        assert connection.execute("PRAGMA journal_mode").fetchone() == ("wal",)
+    assert not connection.in_transaction
+    with fact_store.transaction(root) as second:
+        assert second is not first
+        assert second.connection is connection
+    fact_store.close_connections(root)
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        connection.execute("SELECT 1")
+
+
+def test_failed_connection_is_discarded_and_next_write_recovers(tmp_path):
+    root = str(tmp_path)
+    activate(root)
+    with pytest.raises(RuntimeError, match="abort"):
+        with fact_store.transaction(root, write=True) as facts:
+            connection = facts.connection
+            h._add_locked(facts, "must not survive an abort", "general", [], None, None, None, 0.8, "")
+            raise RuntimeError("abort")
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        connection.execute("SELECT 1")
+    assert not h.load_facts(root)
+    h.add_fact(root, "a fresh writer recovers safely")
+    assert len(fact_store.events(root)) == 1
+
+
+def test_nested_readers_do_not_share_active_connections_or_snapshots(tmp_path):
+    root = str(tmp_path)
+    activate(root)
+    with fact_store.transaction(root) as older:
+        assert len(older) == 0
+        h.add_fact(root, "concurrent committed journal")
+        with fact_store.transaction(root) as newer:
+            assert newer.connection is not older.connection
+            assert len(newer) == 1
+            assert len(older) == 0
+    assert len(h.load_facts(root)) == 1
+
+
+@pytest.mark.parametrize("explicit_cursor", [False, True])
+def test_finished_transaction_closes_partial_cursors_and_releases_checkpoint(tmp_path, explicit_cursor):
+    root = str(tmp_path)
+    activate(root)
+    h.add_facts(root, [{"statement": f"component item{n} has a journal"} for n in range(4)])
+    with fact_store.transaction(root) as facts:
+        cursor = facts.connection.cursor() if explicit_cursor else facts.connection
+        cursor = cursor.execute("SELECT id FROM facts")
+        assert cursor.fetchone() is not None
+    with sqlite3.connect(fact_store.database_path(root), isolation_level=None, timeout=0.1) as other:
+        other.execute("INSERT INTO meta VALUES('checkpoint-probe','committed')")
+        assert other.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0] == 0
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        cursor.fetchone()
+
+
+def test_idle_connections_are_bounded_and_evict_closed_handles(tmp_path):
+    fact_store.close_connections()
+    connections = []
+    for n in range(6):
+        root = str(tmp_path / str(n))
+        activate(root)
+        with fact_store.transaction(root) as facts:
+            connections.append(facts.connection)
+    for connection in connections[:-4]:
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            connection.execute("SELECT 1")
+    assert all(connection.execute("SELECT 1").fetchone() == (1,) for connection in connections[-4:])
+    fact_store.close_connections()
+
+
+def test_idle_connections_follow_canonical_root_after_symlink_retarget(tmp_path):
+    roots = [str(tmp_path / name) for name in ("a", "b")]
+    for root in roots:
+        activate(root)
+    one, _ = h.add_fact(roots[0], "first independent store")
+    two, _ = h.add_fact(roots[1], "second independent store")
+    alias = tmp_path / "alias"
+    try:
+        alias.symlink_to(roots[0], target_is_directory=True)
+    except OSError:
+        pytest.skip("symlink creation is unavailable")
+    assert set(h.load_facts(str(alias))) == {one.id}
+    alias.unlink()
+    alias.symlink_to(roots[1], target_is_directory=True)
+    assert set(h.load_facts(str(alias))) == {two.id}
+    assert set(h.load_facts(roots[0])) == {one.id}
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="fork is unavailable")
+def test_warm_idle_connections_are_closed_before_fork(tmp_path):
+    import multiprocessing
+
+    root = str(tmp_path)
+    activate(root)
+    with fact_store.transaction(root) as facts:
+        parent_connection = facts.connection
+
+    def child():
+        h.add_fact(root, "child opens its own durable journal")
+        grandchild = multiprocessing.get_context("fork").Process(
+            target=h.add_fact, args=(root, "grandchild also opens its own connection")
+        )
+        grandchild.start()
+        grandchild.join(timeout=10)
+        try:
+            assert grandchild.exitcode == 0
+        finally:
+            if grandchild.is_alive():
+                grandchild.terminate()
+                grandchild.join(timeout=5)
+        h.add_fact(root, "child remains usable after a second fork")
+
+    worker = multiprocessing.get_context("fork").Process(target=child)
+    worker.start()
+    worker.join(timeout=30)
+    try:
+        assert worker.exitcode == 0
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            parent_connection.execute("SELECT 1")
+        assert len(h.load_facts(root)) == len(fact_store.events(root)) == 3
+    finally:
+        if worker.is_alive():
+            worker.terminate()
+            worker.join(timeout=5)
 
 
 def test_envelope_json_is_portable(tmp_path):

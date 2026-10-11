@@ -1,16 +1,21 @@
 """Explicit SQLite WAL migration with an authoritative event ledger.
 
 Facts, dedup postings, contradiction slots and FTS5 are projections. Existing
-JSONL stores remain unchanged until migrated. No process-global connections or
-mutable fact caches; every operation owns a coherent SQLite transaction.
+JSONL stores remain unchanged until migrated. Each operation owns a coherent
+SQLite transaction and fresh fact map. A bounded pool retains idle connections,
+never fact objects or active transactions.
 """
 from __future__ import annotations
 
+import atexit
 import contextlib
 import hashlib
 import json
 import os
 import sqlite3
+import threading
+import weakref
+from collections import OrderedDict
 from collections.abc import Iterator, Mapping, MutableMapping
 from typing import TYPE_CHECKING, Any
 
@@ -52,6 +57,115 @@ CREATE TRIGGER IF NOT EXISTS clear_counts INSTEAD OF DELETE ON term_counts BEGIN
 CREATE VIRTUAL TABLE IF NOT EXISTS fact_fts USING fts5(fact_id UNINDEXED, statement);
 """
 
+class _Connection(sqlite3.Connection):
+    """Track live cursors so an idle handle cannot retain an active statement."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.cursors: weakref.WeakSet[sqlite3.Cursor] = weakref.WeakSet()
+
+    def cursor(self, *args: Any, **kwargs: Any) -> sqlite3.Cursor:
+        cursor = super().cursor(*args, **kwargs)
+        self.cursors.add(cursor)
+        return cursor
+
+    def execute(self, *args: Any, **kwargs: Any) -> sqlite3.Cursor:
+        cursor = super().execute(*args, **kwargs)
+        self.cursors.add(cursor)
+        return cursor
+
+    def executemany(self, *args: Any, **kwargs: Any) -> sqlite3.Cursor:
+        cursor = super().executemany(*args, **kwargs)
+        self.cursors.add(cursor)
+        return cursor
+
+    def executescript(self, *args: Any, **kwargs: Any) -> sqlite3.Cursor:
+        cursor = super().executescript(*args, **kwargs)
+        self.cursors.add(cursor)
+        return cursor
+
+    def close_cursors(self) -> None:
+        for cursor in list(self.cursors):
+            cursor.close()
+        self.cursors.clear()
+
+
+_IDLE_LIMIT = 4
+_IDLE: OrderedDict[tuple[str, int, int], _Connection] = OrderedDict()
+_IDLE_LOCK = threading.Lock()
+_CONNECTION_GENERATION = 0
+
+
+def close_connections(root: str | None = None) -> None:
+    """Close retained idle handles before replacing, moving or removing a store.
+
+    Active operations still own their handles; draining does not interrupt them,
+    and they close on return. Quiesce callers before replacing database files.
+    """
+    global _CONNECTION_GENERATION
+    path = os.path.realpath(database_path(root)) if root is not None else None
+    with _IDLE_LOCK:
+        _CONNECTION_GENERATION += 1
+        for key in list(_IDLE):
+            if path is None or key[0] == path:
+                _IDLE.pop(key).close()
+
+
+def _before_fork() -> None:
+    # SQLite forbids even closing inherited handles in the child. Drain idle
+    # connections in the parent and prevent checkout/publication until fork.
+    global _CONNECTION_GENERATION
+    _IDLE_LOCK.acquire()
+    _CONNECTION_GENERATION += 1
+    while _IDLE:
+        _IDLE.popitem()[1].close()
+
+
+def _after_fork_child() -> None:
+    global _IDLE_LOCK
+    _IDLE_LOCK = threading.Lock()
+
+
+def _after_fork_parent() -> None:
+    _IDLE_LOCK.release()
+
+
+atexit.register(close_connections)
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(before=_before_fork, after_in_parent=_after_fork_parent,
+                        after_in_child=_after_fork_child)
+
+
+def _borrow_connection(root: str) -> tuple[tuple[str, int, int], _Connection, int]:
+    path = os.path.realpath(database_path(root))
+    stat = os.stat(path)
+    key = (path, stat.st_dev, stat.st_ino)
+    with _IDLE_LOCK:
+        for old in list(_IDLE):
+            if old[0] == path and old != key:
+                _IDLE.pop(old).close()
+        connection = _IDLE.pop(key, None)
+        generation = _CONNECTION_GENERATION
+    return key, connection if connection is not None else _connect(path), generation
+
+
+def _return_connection(key: tuple[str, int, int], connection: _Connection, generation: int) -> None:
+    try:
+        stat = os.stat(key[0])
+        unchanged = (stat.st_dev, stat.st_ino) == key[1:]
+    except OSError:
+        unchanged = False
+    with _IDLE_LOCK:
+        if not unchanged or generation != _CONNECTION_GENERATION:
+            connection.close()
+            return
+        previous = _IDLE.pop(key, None)
+        if previous is not None:
+            previous.close()
+        while len(_IDLE) >= _IDLE_LIMIT:
+            _IDLE.popitem(last=False)[1].close()
+        _IDLE[key] = connection
+
 
 def database_path(root: str) -> str:
     return os.path.join(paths.memory_dir(root), "facts", "facts.sqlite3")
@@ -63,14 +177,15 @@ def enabled(root: str) -> bool:
     return os.path.isfile(database_path(root))
 
 
-def _connect(path: str, *, create: bool = False) -> sqlite3.Connection:
+def _connect(path: str, *, create: bool = False) -> _Connection:
     if create:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-    connection = sqlite3.connect(path, timeout=30, isolation_level=None)
+    # Exclusive checkout serializes use of each handle across threads.
+    connection = sqlite3.connect(path, timeout=30, isolation_level=None, check_same_thread=False, factory=_Connection)
     connection.execute("PRAGMA busy_timeout=30000")
+    connection.execute("PRAGMA synchronous=FULL")
     if create:
         connection.execute("PRAGMA journal_mode=WAL")
-        connection.execute("PRAGMA synchronous=FULL")
         connection.executescript(_SCHEMA)
     elif connection.execute("SELECT type FROM sqlite_master WHERE name='terms'").fetchone() == ("table",):
         # Recheck under the writer lock: two restarting processes may observe v1.
@@ -133,17 +248,21 @@ def _project(connection: sqlite3.Connection, fact) -> None:
          fact.status, int(fact.forgotten), fact.category, fact.confidence, sum(frequencies.values())),
     )
     term_rows = [
-        (kind, term, fact.id, count) for kind, values in (
+        (kind, term, count) for kind, values in (
             ("near:" + block, {word: 1 for word in content}),
             ("overlap-v1", {word: 1 for word in overlap}), ("bm25-v1", frequencies),
         ) for term, count in values.items()
     ]
     rowid = connection.execute("SELECT rowid FROM facts WHERE id=?", (fact.id,)).fetchone()[0]
-    for kind, term, _, count in term_rows:
-        connection.execute("INSERT INTO lexicon(kind,term,documents) VALUES(?,?,1) "
-                           "ON CONFLICT(kind,term) DO UPDATE SET documents=documents+1", (kind, term))
-        tid = connection.execute("SELECT id FROM lexicon WHERE kind=? AND term=?", (kind, term)).fetchone()[0]
-        connection.execute("INSERT INTO postings VALUES(?,?,?)", (tid, rowid, count))
+    connection.executemany(
+        "INSERT INTO lexicon(kind,term,documents) VALUES(?,?,1) "
+        "ON CONFLICT(kind,term) DO UPDATE SET documents=documents+1",
+        ((kind, term) for kind, term, _ in term_rows),
+    )
+    connection.executemany(
+        "INSERT INTO postings SELECT id,?,? FROM lexicon WHERE kind=? AND term=?",
+        ((rowid, count, kind, term) for kind, term, count in term_rows),
+    )
     connection.execute("INSERT INTO fact_fts(rowid,fact_id,statement) VALUES(?,?,?)", (rowid, fact.id, fact.statement))
 
 
@@ -164,10 +283,11 @@ def _remove_projection(connection, identity):
     connection.execute("DELETE FROM facts WHERE id=?", (identity,))
 
 
-def _append(connection: sqlite3.Connection, fact, *, delete: bool = False) -> None:
+def _append(connection: sqlite3.Connection, fact, *, delete: bool = False,
+            payload: dict[str, Any] | None = None) -> None:
     version = connection.execute("SELECT MAX(version) FROM events WHERE fact_id=?", (fact.id,)).fetchone()[0]
     version = (version or 0) + 1
-    payload = fact.to_dict()
+    payload = fact.to_dict() if payload is None else payload
     relations = {"updates": [fact.id]} if version > 1 else {}
     record = MemoryRecord(
         fact.id, "fact", version, payload, status="active" if fact.status == "active" else "deprecated",
@@ -178,7 +298,7 @@ def _append(connection: sqlite3.Connection, fact, *, delete: bool = False) -> No
         evidence=payload["evidence"],
     )
     connection.execute("INSERT INTO events(fact_id,version,operation,record) VALUES(?,?,?,?)",
-                       (fact.id, version, "remove" if delete else "put", _dump(record.to_dict())))
+                       (fact.id, version, "remove" if delete else "put", _dump(vars(record))))
     if delete:
         _remove_projection(connection, fact.id)
     else:
@@ -253,25 +373,33 @@ class FactMap(MutableMapping):
                     _append(self.connection, fact, delete=True)
                 else:
                     _remove_projection(self.connection, key)
-            elif _dump(fact.to_dict()) != self.before[key]:
-                _append(self.connection, fact)
+            else:
+                payload = fact.to_dict()
+                if _dump(payload) != self.before[key]:
+                    _append(self.connection, fact, payload=payload)
 
 
 @contextlib.contextmanager
 def transaction(root: str, *, write: bool = False) -> Iterator[FactMap]:
-    connection = _connect(database_path(root))
+    key, connection, generation = _borrow_connection(root)
+    succeeded = False
     try:
         connection.execute("BEGIN IMMEDIATE" if write else "BEGIN")
         facts = FactMap(connection)
         yield facts
         if write:
             facts.flush()
+        connection.close_cursors()
         connection.commit()
+        succeeded = True
     except BaseException:
         connection.rollback()
         raise
     finally:
-        connection.close()
+        if succeeded:
+            _return_connection(key, connection, generation)
+        else:
+            connection.close()
 
 
 class _Norms:
