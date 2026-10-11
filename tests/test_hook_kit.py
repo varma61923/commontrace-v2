@@ -5,6 +5,20 @@ from commontrace.memory_journal import Journal
 from commontrace.memory_record import MemoryRecord
 
 
+def test_always_rules_survive_large_candidate_store(tmp_path):
+    kit = HookKit(str(tmp_path), "agent", embedder="none")
+    for start in range(0, 1100, 32):
+        kit.journal.put_many([
+            MemoryRecord(f"fact-{index:05d}", "fact", 1, {"text": "Unrelated archived design note."},
+                         scope={"agent": "agent"}) for index in range(start, min(start + 32, 1100))
+        ])
+    kit.journal.put(MemoryRecord("zz-owner-rule", "lesson", 1,
+                                {"text": "Keep credentials private.", "lesson_kind": "directive"},
+                                scope={"agent": "agent"}))
+    result = kit.handle("UserPromptSubmit", {"session_id": "s", "prompt": "new unrelated question"})
+    assert "zz-owner-rule" in result["injected"]
+
+
 class Embedder:
     def embed(self, texts, *, query=False):
         return [[1.0, 0.0] if "pytest" in text else [0.0, 1.0] for text in texts]

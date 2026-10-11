@@ -40,6 +40,7 @@ import time
 import urllib.request
 from dataclasses import dataclass, field
 
+from commontrace.configuration import getenv as _configuration_getenv
 from commontrace.exceptions import CapabilityError, ConfigurationError
 
 SCOPE_ADMIN = "commontrace:admin"
@@ -134,7 +135,7 @@ def load_config(root: str | None = None) -> OAuthConfig | None:
            "jwks_url": "COMMONTRACE_OAUTH_JWKS_URL", "jwks_file": "COMMONTRACE_OAUTH_JWKS_FILE",
            "algorithms": "COMMONTRACE_OAUTH_ALGORITHMS", "leeway": "COMMONTRACE_OAUTH_LEEWAY"}
     for key, name in env.items():
-        if os.environ.get(name):
+        if _configuration_getenv(name):
             values[key] = os.environ[name]
     if not values.get("issuer"):
         return None

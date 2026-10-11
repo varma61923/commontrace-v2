@@ -677,7 +677,7 @@ def test_every_subcommand_module_registers_exactly_its_own_name():
     from commontrace import cli
 
     on_disk = sorted(p.stem[:-4] for p in pathlib.Path(cli.__file__).parent.joinpath("commands").glob("*_cmd.py"))
-    assert sorted(cli._COMMANDS) == on_disk
+    assert sorted(cli._COMMANDS) == sorted([*on_disk, *cli._COMMAND_GROUPS])
     for name in cli._COMMANDS:
         sub = argparse.ArgumentParser().add_subparsers()
         (module,) = cli._command_modules(name)

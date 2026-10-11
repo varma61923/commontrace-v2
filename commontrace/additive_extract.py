@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from commontrace import hierarchical, llm
+from commontrace.configuration import configured
 
 PROMPT = """Extract only explicitly supported facts from the input. Return JSON:
 {"facts": [{"statement": "one self-contained fact", "category": "general",
@@ -18,6 +19,7 @@ Do not compute numbers. Preserve uncertainty and quoted speaker attribution.
 If no facts are supported, return an empty facts list. Input follows:\n"""
 
 
+@configured
 def extract(
     root: str,
     text: str,

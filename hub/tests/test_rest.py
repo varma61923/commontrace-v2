@@ -30,6 +30,42 @@ def _client(app: Starlette) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
 
 
+async def test_memory_runtime_turn_scopes_and_permission_requirements(session_factory, config):
+    from commontrace.memory_record import MemoryRecord
+    from hub import scopes
+
+    _org, raw_key = await _org_with_key(session_factory)
+    async with _client(_app(session_factory, config)) as client:
+        headers = _key(raw_key)
+        response = await client.post("/v1/memory/turn", headers=headers, json={
+            "session_id": "s", "query": "parser", "text": "I prefer concise answers.",
+            "context": ["agent:a", "user:u"],
+        })
+        assert response.status_code == 200
+        assert response.json()["profile"]["dynamic"][0]["text"] == "I prefer concise answers"
+        response = await client.post("/v1/memory/profile", headers=headers,
+                                     json={"context": ["agent:b", "user:u"]})
+        assert not response.json()["dynamic"]
+        response = await client.post("/v1/memory/record-put", headers=headers, json={
+            "record": MemoryRecord("mine", "fact", 1, {"text": "Parser validates fields."}).to_dict(),
+            "context": ["agent:a"],
+        })
+        assert response.status_code == 200
+        assert response.json()["record"]["scope"]["agent"] == "a"
+        response = await client.post("/v1/memory/record-forget", headers=headers,
+                                     json={"id": "mine", "reason": "erase", "context": ["agent:b"]})
+        assert response.status_code == 403
+        response = await client.post("/v1/memory/record-forget", headers=headers,
+                                     json={"id": "mine", "reason": "erase", "context": ["agent:a"]})
+        assert response.status_code == 200
+
+    _org, write_key = await _org_with_key(session_factory, scopes=[scopes.SCOPE_WRITE])
+    async with _client(_app(session_factory, config)) as client:
+        response = await client.post("/v1/memory/turn", headers=_key(write_key),
+                                     json={"session_id": "s", "query": "parser"})
+        assert response.status_code == 403
+
+
 async def _org_with_key(session_factory, name="Acme", scopes=None):
     async with session_scope(session_factory) as session:
         org = Organization(name=name)

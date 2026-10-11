@@ -60,3 +60,31 @@ def sanitize_record_content(record: MemoryRecord) -> MemoryRecord:
         if name in record.provenance:
             data["provenance"][name] = record.provenance[name]
     return MemoryRecord(**data)
+
+
+def code_evidence_current(root: str, evidence: list[dict]) -> bool:
+    """Recheck bounded local code citations; file existence alone proves no claim."""
+    import hashlib
+    import os
+
+    from commontrace import paths
+
+    if not isinstance(evidence, list) or not 0 < len(evidence) <= 16:
+        return False
+    for citation in evidence:
+        if not isinstance(citation, dict) or citation.get("method") != "path-and-quoted-symbol":
+            return False
+        relative = citation.get("path")
+        if not isinstance(relative, str) or os.path.isabs(relative):
+            return False
+        filename = os.path.realpath(os.path.join(root, relative))
+        if not paths.is_within_directory(root, filename) or not os.path.isfile(filename):
+            return False
+        try:
+            with open(filename, "rb") as stream:
+                content = stream.read(1000001)
+        except OSError:
+            return False
+        if len(content) > 1000000 or hashlib.sha256(content).hexdigest() != citation.get("sha256"):
+            return False
+    return True

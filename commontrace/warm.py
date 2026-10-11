@@ -14,6 +14,8 @@ import tempfile
 import time
 import traceback
 
+from commontrace.configuration import getenv as _configuration_getenv
+
 PROTOCOL = 1
 DEFAULT_IDLE_SECONDS = 600.0
 _SPAWN_WAIT_SECONDS = 3.0
@@ -37,7 +39,7 @@ def available() -> bool:
         return False
     if os.name != "posix" or not hasattr(socket, "AF_UNIX"):
         return False
-    return os.environ.get("COMMONTRACE_WARM", "").strip().lower() not in {"0", "false", "no", "off"}
+    return _configuration_getenv("COMMONTRACE_WARM", "").strip().lower() not in {"0", "false", "no", "off"}
 
 
 def enabled(relative: str) -> bool:
@@ -58,7 +60,7 @@ def packaged_query_script() -> str:
 
 def _idle_seconds() -> float:
     try:
-        value = float(os.environ.get("COMMONTRACE_WARM_IDLE", DEFAULT_IDLE_SECONDS))
+        value = float(_configuration_getenv("COMMONTRACE_WARM_IDLE", DEFAULT_IDLE_SECONDS))
     except ValueError:
         return DEFAULT_IDLE_SECONDS
     return value if value > 0 else DEFAULT_IDLE_SECONDS
@@ -252,7 +254,7 @@ CLI_COMMANDS = ("query",)
 def run_cli(argv: list[str]) -> tuple[int, str, str] | None:
     if not argv or argv[0] not in CLI_COMMANDS or not available():
         return None
-    if os.environ.get("COMMONTRACE_ALLOW_STORE_SCRIPTS", "").strip().lower() in {"1", "true", "yes", "on"}:
+    if _configuration_getenv("COMMONTRACE_ALLOW_STORE_SCRIPTS", "").strip().lower() in {"1", "true", "yes", "on"}:
         return None
     try:
         cwd = os.getcwd()

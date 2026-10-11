@@ -25,6 +25,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from commontrace import paths
+from commontrace.configuration import getenv as _configuration_getenv
 from commontrace.secrets_provider import env_secret
 
 RECEIPT_FIELD = "approval_receipt"
@@ -133,8 +134,8 @@ def _keys(root: str, *, create: bool = False) -> tuple[str, dict[str, bytes]]:
     try:
         configured = env_secret("COMMONTRACE_APPROVAL_KEY")
         previous = env_secret("COMMONTRACE_APPROVAL_KEY_PREVIOUS")
-        current_id = os.environ.get("COMMONTRACE_APPROVAL_KEY_ID", "deployment")
-        previous_id = os.environ.get("COMMONTRACE_APPROVAL_KEY_PREVIOUS_ID", "previous")
+        current_id = _configuration_getenv("COMMONTRACE_APPROVAL_KEY_ID", "deployment")
+        previous_id = _configuration_getenv("COMMONTRACE_APPROVAL_KEY_PREVIOUS_ID", "previous")
         if not current_id or len(current_id) > 128 or not previous_id or len(previous_id) > 128:
             raise AdmissionError("invalid lesson approval key identifier")
         if configured:

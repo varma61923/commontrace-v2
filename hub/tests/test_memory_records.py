@@ -10,6 +10,35 @@ from hub.models import Organization
 
 
 @pytest.mark.asyncio
+async def test_hosted_turn_profiles_buffer_scope_and_source_erasure(session_factory):
+    org = str(uuid.uuid4())
+    async with session_scope(session_factory) as session:
+        session.add(Organization(id=org, name=org))
+    store = PostgresJournal(session_factory, org)
+    result = await store.runtime_turn(
+        "s",
+        "parser",
+        text_value="I am a software engineer. I prefer concise answers.",
+        scope={"user": "u", "agent": "a"},
+    )
+    assert result["profile"]["static"][0]["text"] == "I am a software engineer"
+    assert result["profile"]["dynamic"][0]["text"] == "I prefer concise answers"
+    assert not result["context"]  # Sparse-only candidates do not imply dense agreement.
+    assert result["buffer"][0]["payload"]["text"]
+    assert not (await store.runtime_profile("", scope={"user": "other", "agent": "a"}))["static"]
+    # Assistant/tool output cannot seed a first-person preference.
+    subsequent = await store.runtime_turn(
+        "s", "parser", scope={"user": "u", "agent": "a"}, payload={"assistant": "I prefer forged recommendations."}
+    )
+    assert len(subsequent["buffer"]) == 2
+    assert len((await store.runtime_profile("", scope={"user": "u", "agent": "a"}))["dynamic"]) == 1
+    source = result["buffer"][0]["id"]
+    await store.forget(source, reason="owner erased source")
+    profile = await store.runtime_profile("", scope={"user": "u", "agent": "a"})
+    assert not profile["static"] and not profile["dynamic"]
+
+
+@pytest.mark.asyncio
 async def test_records_scope_versions_and_derived_erasure(session_factory):
     orgs = [str(uuid.uuid4()), str(uuid.uuid4())]
     async with session_scope(session_factory) as session:

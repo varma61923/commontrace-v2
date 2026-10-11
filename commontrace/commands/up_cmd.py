@@ -36,7 +36,7 @@ def run(args):
 
     with configuration.apply(config):
         broker = subprocess.Popen(
-            [sys.executable, "-m", "commontrace.hook_service", "--dest", root],
+            [sys.executable, "-m", "commontrace.hook_service", "--dest", root, "--profile", config["profile"]],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,

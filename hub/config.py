@@ -6,6 +6,7 @@ import ipaddress
 import os
 from dataclasses import dataclass, field
 
+from commontrace.configuration import getenv as _configuration_getenv
 from hub.secrets_provider import env_secret
 
 DEFAULT_SEARCH_LIMIT = 50
@@ -14,7 +15,7 @@ MAX_SEARCH_OFFSET = 100_000
 
 
 def _env_int(name: str, default: int) -> int:
-    raw = os.environ.get(name)
+    raw = _configuration_getenv(name)
     if raw is None or raw == "":
         return default
     try:
@@ -31,7 +32,7 @@ def _env_int_in_range(name: str, default: int, lo: int, hi: int) -> int:
 
 
 def _env_bool(name: str, default: bool) -> bool:
-    raw = os.environ.get(name)
+    raw = _configuration_getenv(name)
     if raw is None or raw == "":
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
@@ -59,7 +60,7 @@ def _market_referees(path: str) -> tuple[tuple[str, str, str], ...]:
 
 
 def _env_cidr_list(name: str) -> tuple[str, ...]:
-    raw = os.environ.get(name, "")
+    raw = _configuration_getenv(name, "")
     if not raw.strip():
         return ()
     entries = tuple(item.strip() for item in raw.split(",") if item.strip())
@@ -243,9 +244,9 @@ class HubConfig:
         encryption_key, encryption_key_previous = kms.resolve(os.environ, env_secret)
         return cls(
             database_url=database_url,
-            host=os.environ.get("HUB_HOST", "127.0.0.1"),
+            host=_configuration_getenv("HUB_HOST", "127.0.0.1"),
             port=_env_int_in_range("HUB_PORT", 8420, 1, 65535),
-            streamable_http_path=os.environ.get("HUB_STREAMABLE_HTTP_PATH", "/mcp"),
+            streamable_http_path=_configuration_getenv("HUB_STREAMABLE_HTTP_PATH", "/mcp"),
             max_request_body_bytes=_env_int_in_range("HUB_MAX_REQUEST_BODY_BYTES", 1_048_576, 1024, 64 * 1024 * 1024),
             max_title_chars=_env_int_in_range("HUB_MAX_TITLE_CHARS", 500, 1, 100_000),
             max_text_chars=_env_int_in_range("HUB_MAX_TEXT_CHARS", 20_000, 1, 10_000_000),
@@ -255,7 +256,7 @@ class HubConfig:
             rate_limit_per_minute=_env_int_in_range("HUB_RATE_LIMIT_PER_MINUTE", 120, 0, 10_000_000),
             rate_limit_burst=_env_int_in_range("HUB_RATE_LIMIT_BURST", 30, 0, 1_000_000),
             suspect_url_threshold=_env_int_in_range("HUB_SUSPECT_URL_THRESHOLD", 5, 0, 10_000),
-            rate_limit_backend=os.environ.get("HUB_RATE_LIMIT_BACKEND", "memory"),
+            rate_limit_backend=_configuration_getenv("HUB_RATE_LIMIT_BACKEND", "memory"),
             read_rate_limit_per_minute=_env_int_in_range("HUB_READ_RATE_LIMIT_PER_MINUTE", 300, 0, 10_000_000),
             read_rate_limit_burst=_env_int_in_range("HUB_READ_RATE_LIMIT_BURST", 60, 0, 1_000_000),
             auth_attempts_per_minute=_env_int_in_range("HUB_AUTH_ATTEMPTS_PER_MINUTE", 60, 0, 10_000_000),
@@ -272,11 +273,11 @@ class HubConfig:
             encryption_key_previous=encryption_key_previous,
             admin_token=env_secret("HUB_ADMIN_TOKEN"),
             metrics_token=env_secret("HUB_METRICS_TOKEN"),
-            operator_org_id=os.environ.get("HUB_OPERATOR_ORG_ID", ""),
+            operator_org_id=_configuration_getenv("HUB_OPERATOR_ORG_ID", ""),
             console_secret=env_secret("HUB_CONSOLE_SECRET"),
-            data_region=os.environ.get("HUB_DATA_REGION", ""),
-            operator_legal_name=os.environ.get("HUB_OPERATOR_LEGAL_NAME", ""),
-            operator_support_contact=os.environ.get("HUB_OPERATOR_SUPPORT_CONTACT", ""),
+            data_region=_configuration_getenv("HUB_DATA_REGION", ""),
+            operator_legal_name=_configuration_getenv("HUB_OPERATOR_LEGAL_NAME", ""),
+            operator_support_contact=_configuration_getenv("HUB_OPERATOR_SUPPORT_CONTACT", ""),
             signup_enabled=_env_bool("HUB_SIGNUP_ENABLED", False),
             rest_api_enabled=_env_bool("HUB_REST_API_ENABLED", False),
             otlp_ingest_enabled=_env_bool("HUB_OTLP_INGEST_ENABLED", False),
@@ -285,17 +286,17 @@ class HubConfig:
                 "HUB_CONNECTOR_SWEEP_INTERVAL_SECONDS", 300, 10, 86_400),
             commons_export_enabled=_env_bool("HUB_COMMONS_EXPORT_ENABLED", False),
             commons_signing_key=env_secret("HUB_COMMONS_SIGNING_KEY"),
-            commons_signing_key_id=os.environ.get("HUB_COMMONS_SIGNING_KEY_ID", "default"),
-            market_referees=_market_referees(os.environ.get("HUB_MARKET_REFEREES_FILE", "")),
+            commons_signing_key_id=_configuration_getenv("HUB_COMMONS_SIGNING_KEY_ID", "default"),
+            market_referees=_market_referees(_configuration_getenv("HUB_MARKET_REFEREES_FILE", "")),
             stripe_secret_key=env_secret("HUB_STRIPE_SECRET_KEY"),
             stripe_webhook_secret=env_secret("HUB_STRIPE_WEBHOOK_SECRET"),
-            stripe_price_team=os.environ.get("HUB_STRIPE_PRICE_TEAM", ""),
-            stripe_price_scale=os.environ.get("HUB_STRIPE_PRICE_SCALE", ""),
+            stripe_price_team=_configuration_getenv("HUB_STRIPE_PRICE_TEAM", ""),
+            stripe_price_scale=_configuration_getenv("HUB_STRIPE_PRICE_SCALE", ""),
             ledger_signing_key=env_secret("HUB_LEDGER_SIGNING_KEY"),
-            oidc_issuer=os.environ.get("HUB_OIDC_ISSUER", ""),
-            oidc_audience=os.environ.get("HUB_OIDC_AUDIENCE", ""),
-            oidc_jwks=os.environ.get("HUB_OIDC_JWKS", ""),
-            oidc_jwks_uri=os.environ.get("HUB_OIDC_JWKS_URI", ""),
+            oidc_issuer=_configuration_getenv("HUB_OIDC_ISSUER", ""),
+            oidc_audience=_configuration_getenv("HUB_OIDC_AUDIENCE", ""),
+            oidc_jwks=_configuration_getenv("HUB_OIDC_JWKS", ""),
+            oidc_jwks_uri=_configuration_getenv("HUB_OIDC_JWKS_URI", ""),
             commons_enabled=_env_bool("HUB_COMMONS_ENABLED", True),
             db_pool_size=_env_int_in_range("HUB_DB_POOL_SIZE", 10, 1, 1000),
             db_max_overflow=_env_int_in_range("HUB_DB_MAX_OVERFLOW", 5, 0, 1000),
@@ -316,5 +317,5 @@ class HubConfig:
                 "HUB_WEBHOOK_SCHEDULER_INTERVAL_SECONDS", 30, 5, 86_400),
             webhook_scheduler_batch_size=_env_int_in_range(
                 "HUB_WEBHOOK_SCHEDULER_BATCH_SIZE", 100, 1, 10_000),
-            log_level=os.environ.get("HUB_LOG_LEVEL", "INFO"),
+            log_level=_configuration_getenv("HUB_LOG_LEVEL", "INFO"),
         )

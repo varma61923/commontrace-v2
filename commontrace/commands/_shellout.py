@@ -7,6 +7,7 @@ import sys
 from typing import Literal, overload
 
 from commontrace import warm
+from commontrace.configuration import getenv as _configuration_getenv
 
 
 def has_attention_deps() -> bool:
@@ -22,7 +23,7 @@ def packaged_reference_dir() -> str:
 
 
 def _store_scripts_allowed() -> bool:
-    return os.environ.get("COMMONTRACE_ALLOW_STORE_SCRIPTS", "").strip().lower() in {
+    return _configuration_getenv("COMMONTRACE_ALLOW_STORE_SCRIPTS", "").strip().lower() in {
         "1", "true", "yes", "on",
     }
 

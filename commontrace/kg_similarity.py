@@ -11,9 +11,9 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import os
 import re
 
+from commontrace.configuration import getenv as _configuration_getenv
 from commontrace.runtime_cache import RuntimeCache
 
 _QUERY_VECTORS = RuntimeCache(
@@ -36,7 +36,7 @@ def embedder(spec=None):
         if not callable(getattr(spec, "embed", None)):
             raise TypeError("an embedder needs an embed(texts, *, query) method")
         return spec
-    tag = (spec if spec is not None else os.environ.get(ENV, "")).strip()
+    tag = (spec if spec is not None else _configuration_getenv(ENV, "")).strip()
     if not tag or tag.lower() == "none":
         return None
     from commontrace import embeddings

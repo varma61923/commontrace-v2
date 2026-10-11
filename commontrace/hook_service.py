@@ -11,6 +11,8 @@ import json
 import os
 import socket
 import threading
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 
 from commontrace import _jsonl, configuration, jobs, kg_similarity, paths
 from commontrace.hook_kit import HookKit
@@ -57,8 +59,8 @@ def acknowledge(root: str, agent: str, scope: dict, token: str):
             pass  # Missing receipts never become guessed exposure measurements.
 
 
-def serve(root: str):
-    config = configuration.load(root)
+def serve(root: str, *, profile: str | None = None):
+    config = configuration.load(root, profile=profile)
     endpoint = socket_path(root)
     paths.enforce_boundary(root, endpoint)
     Journal(root)
@@ -103,11 +105,12 @@ def serve(root: str):
             server.bind(endpoint)
             os.chmod(endpoint, 0o600)
             server.listen(32)
-            threading.Thread(target=prepare, daemon=True).start()
-            try:
-                while True:
-                    client, _ = server.accept()
-                    with client:
+            threading.Thread(target=copy_context().run, args=(prepare,), daemon=True).start()
+            slots = threading.BoundedSemaphore(8)
+
+            def handle_client(client):
+                try:
+                    with client, configuration.apply(config):
                         client.settimeout(0.1)
                         try:
                             incoming = b""
@@ -121,7 +124,7 @@ def serve(root: str):
                                 Journal(root).commit_delivery(
                                     data["delivery_token"], scope={**data["scope"], "agent": data["agent"]}
                                 )
-                                continue
+                                return
                             from commontrace.native_hooks import normalize
 
                             event, payload = normalize(data.get("format"), data["event"], data["payload"])
@@ -133,11 +136,43 @@ def serve(root: str):
                             )
                             result = kit.handle(event, payload, defer_delivery=True)
                             client.sendall(json.dumps(result).encode() + b"\n")
+                            # Native bridges acknowledge only after writing context to the host.
+                            # Legacy Python clients may instead open a separate receipt connection.
+                            if result.get("delivery_token"):
+                                client.settimeout(0.02)
+                                try:
+                                    receipt = b""
+                                    while b"\n" not in receipt and len(receipt) <= 4096:
+                                        chunk = client.recv(4096)
+                                        if not chunk:
+                                            break
+                                        receipt += chunk
+                                    if receipt:
+                                        ack = json.loads(receipt)
+                                        if (
+                                            ack.get("operation") == "ack"
+                                            and ack.get("delivery_token") == result["delivery_token"]
+                                        ):
+                                            kit.journal.commit_delivery(result["delivery_token"], scope=kit.scope)
+                                except (OSError, ValueError):
+                                    pass
                         except Exception:  # noqa: BLE001 - isolate provider failures from host hooks
                             try:
                                 client.sendall(b'{"context":"","injected":[]}\n')
                             except OSError:
                                 pass
+                finally:
+                    slots.release()
+
+            try:
+                with ThreadPoolExecutor(max_workers=8, thread_name_prefix="commontrace-hook") as workers:
+                    while True:
+                        client, _ = server.accept()
+                        if not slots.acquire(blocking=False):
+                            client.close()
+                            continue
+                        workers.submit(handle_client, client)
+
             finally:
                 os.remove(endpoint)
 
@@ -145,10 +180,11 @@ def serve(root: str):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dest", required=True)
+    parser.add_argument("--profile", choices=("local", "team", "server"))
     args = parser.parse_args(argv)
     if not hasattr(socket, "AF_UNIX"):
         return 0  # Framework/HTTP middleware remains available on platforms without Unix sockets.
-    serve(paths.resolve_root(args.dest))
+    serve(paths.resolve_root(args.dest), profile=args.profile)
     return 0
 
 

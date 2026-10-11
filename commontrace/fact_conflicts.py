@@ -27,6 +27,8 @@ import os
 import re
 from dataclasses import asdict, dataclass
 
+from commontrace.configuration import getenv as _configuration_getenv
+
 MODES = ("off", "flag", "supersede")
 _STEM = re.compile(r"(?:ing|ed)$")
 
@@ -44,7 +46,7 @@ class Conflict:
 
 
 def mode() -> str:
-    value = os.environ.get("COMMONTRACE_FACT_CONFLICTS", "flag").strip().lower() or "flag"
+    value = _configuration_getenv("COMMONTRACE_FACT_CONFLICTS", "flag").strip().lower() or "flag"
     if value not in MODES:
         raise ValueError("COMMONTRACE_FACT_CONFLICTS must be off, flag or supersede")
     return value

@@ -46,7 +46,7 @@ otel = [
     "opentelemetry-sdk>=1.20,<2.0",
 ]
 graph = ["neo4j>=6.0,<7.0", "falkordb>=1.2,<2.0"]
-vector-lance = ["lancedb>=0.26,<1.0"]
+vector-lance = ["lancedb>=0.40,<1.0"]
 vector-postgres = [
     "asyncpg>=0.31,<1.0",
 ]
@@ -69,7 +69,7 @@ commontrace = "commontrace.cli:main"
 include = ["commontrace*"]
 
 [tool.setuptools.package-data]
-commontrace = ["schemas/*.json", "reference/*.py", "fixtures/fields/*.json", "kb_packs/*.jsonl", "ui/*", "conformance_vectors.json"]
+commontrace = ["schemas/*.json", "configuration.schema.json", "reference/*.py", "fixtures/fields/*.json", "kb_packs/*.jsonl", "ui/*", "conformance_vectors.json"]
 
 [tool.ruff]
 line-length = 120

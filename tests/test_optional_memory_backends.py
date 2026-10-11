@@ -329,3 +329,28 @@ def test_lance_native_owner_generation_filter_and_prune(tmp_path):
             await index.close()
             await other.close()
     asyncio.run(run())
+
+
+def test_lance_ann_preserves_new_fragments_and_scoped_deletion(tmp_path):
+    if os.environ.get("COMMONTRACE_TEST_LANCE") != "1":
+        pytest.skip("requires the optional LanceDB engine")
+    import random
+
+    from commontrace.vector_lance import LanceVectorIndex
+    from commontrace.vector_store import VectorRecord
+
+    async def run():
+        index = LanceVectorIndex(str(tmp_path), tenant="a", namespace="facts", model="test", dimension=8)
+        rng = random.Random(42)
+        records = [VectorRecord(str(i), [rng.uniform(-1, 1) for _ in range(8)]) for i in range(512)]
+        try:
+            await index.upsert(records)
+            assert (await index.maintain())["approximate"]
+            assert (await index.search(records[42].vector, top_k=1))[0].key == "42"
+            await index.upsert([VectorRecord("new", [1.] + [0.] * 7)])
+            assert (await index.search([1.] + [0.] * 7, top_k=1))[0].key == "new"
+            assert await index.delete(["new"]) == 1
+            assert not await index.search([1.] + [0.] * 7, allowed_ids=["new"])
+        finally:
+            await index.close()
+    asyncio.run(run())

@@ -17,6 +17,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 from commontrace import paths
+from commontrace.configuration import getenv as _configuration_getenv
 from commontrace.ontology import FALLBACK_TYPE
 
 SPACY_LABELS = {
@@ -115,7 +116,7 @@ def spacy_model():
         if _NLP_TRIED:
             return _NLP
         _NLP_TRIED = True
-        name = os.environ.get("COMMONTRACE_SPACY_MODEL", "en_core_web_sm").strip()
+        name = _configuration_getenv("COMMONTRACE_SPACY_MODEL", "en_core_web_sm").strip()
         if not name or name.lower() == "none":
             return None
         try:

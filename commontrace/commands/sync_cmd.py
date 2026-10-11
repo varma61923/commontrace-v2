@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import os
 import sys
 
 from commontrace import paths
+from commontrace.configuration import getenv as _configuration_getenv
 
 _MESSAGE = """\
 [commontrace] `sync` bridges the local store to the CommonTrace Hub over MCP
@@ -98,8 +98,8 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
 def run(args: argparse.Namespace) -> int:
     if getattr(args, "connector", None):
         return _run_connector(args)
-    hub_url = args.hub_url or os.environ.get("COMMONTRACE_HUB_URL")
-    hub_api_key = args.hub_api_key or os.environ.get("COMMONTRACE_HUB_API_KEY")
+    hub_url = args.hub_url or _configuration_getenv("COMMONTRACE_HUB_URL")
+    hub_api_key = args.hub_api_key or _configuration_getenv("COMMONTRACE_HUB_API_KEY")
 
     if args.hub_api_key:
         print(
@@ -118,7 +118,7 @@ def run(args: argparse.Namespace) -> int:
             "pass --fail-if-unconfigured for exit 2).",
             file=sys.stderr,
         )
-        env_strict = os.environ.get("COMMONTRACE_SYNC_STRICT", "").strip().lower() in {
+        env_strict = _configuration_getenv("COMMONTRACE_SYNC_STRICT", "").strip().lower() in {
             "1", "true", "yes", "on",
         }
         strict = getattr(args, "fail_if_unconfigured", False) or env_strict

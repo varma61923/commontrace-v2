@@ -13,6 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Grounded history lesson seeding, atomic multi-part lesson replacement, request-local
+  YAML configuration and credential-safe migration, optional background Lance HNSW
+  indexing, and source-bound hosted turn/profile capture. Indexed hook admission keeps
+  critical rules visible in large stores; the native bridge acknowledges on its
+  existing connection after stdout delivery. Twenty-nine CLI wrappers are consolidated
+  into three modules; all 69 command names are retained.
+
 - **Event-backed agent memory runtime.** Compact SQLite fact storage passed the
   synthetic 1M write gates (1.25 ms p95; 3,417 facts/s). A versioned envelope adds
   scoped facts, profiles, observations, episodes, lessons and directives; the Hub

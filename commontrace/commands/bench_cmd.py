@@ -6,6 +6,7 @@ import sys
 
 from commontrace import paths
 from commontrace.commands._shellout import run_script
+from commontrace.configuration import getenv as _configuration_getenv
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -115,7 +116,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
 
 def _conversation_bench_script() -> str | None:
     """Locate benchmarks/conversation_bench.py in the source checkout (newest ancestor wins)."""
-    override = os.environ.get("COMMONTRACE_CONVERSATION_BENCH")
+    override = _configuration_getenv("COMMONTRACE_CONVERSATION_BENCH")
     if override and os.path.isfile(override):
         return override
     here = os.path.dirname(os.path.abspath(__file__))

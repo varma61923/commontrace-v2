@@ -32,6 +32,7 @@ import re
 from dataclasses import dataclass, field
 
 from commontrace import paths, telemetry
+from commontrace.configuration import getenv as _configuration_getenv
 
 CHARS_PER_TOKEN = 4
 CHANNELS = ("lessons", "facts", "graph", "conversations")
@@ -245,8 +246,8 @@ def _dense_facts(root: str, question: str, as_of: str | None, k: int, scope: str
     """
     from commontrace import fact_embeddings, hierarchical
 
-    if not (os.environ.get("COMMONTRACE_FACT_EMBEDDER", "").strip().lower() not in ("", "none", "off")
-            or os.environ.get("COMMONTRACE_FACT_EMBEDDER_PATH")):
+    if not (_configuration_getenv("COMMONTRACE_FACT_EMBEDDER", "").strip().lower() not in ("", "none", "off")
+            or _configuration_getenv("COMMONTRACE_FACT_EMBEDDER_PATH")):
         return {}
     facts = hierarchical.list_facts(root, scope=scope, as_of=as_of)  # validity, forgetting and TTL applied
     scores = fact_embeddings.scores(question, facts, root=root) or {}

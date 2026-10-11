@@ -10,6 +10,7 @@ import hashlib
 import json
 
 from commontrace import memory_guard
+from commontrace.configuration import configured
 from commontrace.hook_kit import HookKit
 from commontrace.memory_journal import Journal, moment, now
 from commontrace.memory_record import MemoryRecord
@@ -32,55 +33,24 @@ def scope_from_labels(labels: list[str]) -> dict:
 
 def maintain_preferences(journal: Journal, text: str, scope: dict, *, source_ids=None):
     """Explicit user preferences only; model/assistant assertions use a different author."""
-    import re
+    from commontrace.memory_record import preference_candidates
 
-    # Stable identity/occupation assertions are separate from decaying preferences.
-    for match in re.finditer(r"\bI (?:work as|am a|am an)\s+([^.!?\n]{3,120})", text, flags=re.I):
-        assertion = match.group(0).strip()
-        identity = (
-            "static-" + hashlib.sha256((json.dumps(scope, sort_keys=True) + assertion.casefold()).encode()).hexdigest()
-        )
-        history = journal.history(identity)
-        journal.put(
-            MemoryRecord(
-                identity,
-                "profile",
-                len(history) + 1,
-                {
-                    "text": assertion,
-                    "bucket": "static",
-                    "author": "user",
-                    "observed_at": now(),
-                    "source_message_ids": source_ids or [],
-                },
-                scope=scope,
-                created_at=now(),
-                provenance={"authored_by": "user"},
-            )
-        )
-    for match in re.finditer(r"\bI (?:prefer|like|always use|want)\s+([^.!?\n]{3,300})", text, flags=re.I):
-        preference = match.group(0).strip()
-        identity = (
-            "preference-"
-            + hashlib.sha256((json.dumps(scope, sort_keys=True) + preference.casefold()).encode()).hexdigest()
-        )
+    for identity, content in preference_candidates(text, scope):
         history = journal.history(identity)
         prior = history[-1].payload if history else {}
+        data = {**content, "observed_at": now(), "source_message_ids": source_ids or []}
+        if content["bucket"] == "dynamic":
+            data.update(
+                weight=min(10, prior.get("weight", 0) + 1),
+                half_life_days=90,
+                observations=prior.get("observations", 0) + 1,
+            )
         journal.put(
             MemoryRecord(
                 identity,
                 "profile",
                 len(history) + 1,
-                {
-                    "text": preference,
-                    "bucket": "dynamic",
-                    "weight": min(5.0, prior.get("weight", 0) + 1),
-                    "half_life_days": 90,
-                    "observed_at": now(),
-                    "critical": False,
-                    "author": "user",
-                    "source_message_ids": source_ids or [],
-                },
+                data,
                 scope=scope,
                 created_at=now(),
                 provenance={"authored_by": "user"},
@@ -88,6 +58,7 @@ def maintain_preferences(journal: Journal, text: str, scope: dict, *, source_ids
         )
 
 
+@configured
 def turn(
     root: str,
     session: str,

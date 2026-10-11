@@ -35,7 +35,10 @@ The Hub record engine uses a transactional PostgreSQL event/projection ledger,
 full-text candidates, canonical validation of optional owner-pinned pgvector/HNSW
 hits and migration-installed, forced tenant RLS. The same minimal stdlib envelope
 and visibility rules are used in the server image. Hub record CRUD does not imply
-that every legacy Gateway operation has been ported to the Hub.
+that every legacy Gateway operation has been ported to the Hub. Hosted `turn`
+and `profile` now capture source-bound human preferences and return a scoped
+pending buffer. Turn requires both read and write permission. Sparse-only
+candidates do not produce an inferred memory injection or causal exposure.
 
 The native hook broker keeps optional embedding imports and learning off the
 host's process startup path. The Node bridge has a 25 ms socket deadline and
@@ -83,10 +86,23 @@ design/reproduction files with this guide and the root reproducer. Historical P0
 failure measurements remain available. No query suppression or CodeQL dismissal
 was performed: GitHub's alert API returned HTTP 403 for this integration.
 
-The simplification target is still unmet: the last measured surface had 322
-Python modules, 154 documented environment variables, 69 top-level commands and
-63 Gateway operations. The recommended profile has nine settings, but that does
-not make the legacy documented surface smaller than forty.
+The continuation consolidates 29 command wrapper modules into three domains,
+preserving all 69 command names and command behavior. The package now has 296
+Python modules and 25 primary deployment variables. Advanced settings share the
+YAML file; 155 legacy environment aliases remain supported and are explicitly
+listed in the machine-readable configuration schema. The primary documentation
+surface is below forty; the compatibility inventory remains larger. Graphify CI
+checks dangling edges, the 306-module ceiling, and the reviewed static reachability
+baseline. Static candidates include dynamic SDKs, callbacks and reference scripts;
+the audit does not establish that all such functions are dead code.
+
+Imported actionable history claims now seed quarantined lessons only after their
+quoted symbols match current repository files. Review rechecks the file hashes,
+and later code changes withhold stale lessons. Split proposals contain distinct
+replacement parts, each with independent causal evidence; promotion replaces the
+target atomically after every part passes. A changed target version withholds the
+replacement. The optional Lance backend builds HNSW and scalar indexes outside
+search, includes unindexed writes, and uses a separate durable projection watermark.
 
 ## Measurements and limitations
 

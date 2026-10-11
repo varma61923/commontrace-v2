@@ -28,6 +28,8 @@ from bisect import bisect_left
 from collections.abc import Callable, Iterator
 from typing import Any
 
+from commontrace.configuration import getenv as _configuration_getenv
+
 BUCKETS_MS = (1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000)
 _MAX_ATTR = 256
 _CONTEXT: contextvars.ContextVar[dict] = contextvars.ContextVar("commontrace_telemetry", default={})  # noqa: B039
@@ -149,7 +151,7 @@ def spawn_background(
 # --- tracing ---------------------------------------------------------------------
 
 def otel_enabled() -> bool:
-    flag = os.environ.get("COMMONTRACE_OTEL", "").strip().lower()
+    flag = _configuration_getenv("COMMONTRACE_OTEL", "").strip().lower()
     if flag in ("0", "false", "off", "no"):
         return False
     return flag in ("1", "true", "on", "yes") or bool(os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"))
@@ -389,9 +391,9 @@ def configure_logging(fmt: str | None = None, level: str | None = None, stream=N
                       _logger_name: str = "commontrace") -> None:
     """Configure the `commontrace` logger once (env: COMMONTRACE_LOG_FORMAT=json|text,
     COMMONTRACE_LOG_LEVEL). Without either variable nothing changes."""
-    fmt = (fmt or os.environ.get("COMMONTRACE_LOG_FORMAT", "")).strip().lower()
-    level = (level or os.environ.get("COMMONTRACE_LOG_LEVEL", "")).strip().upper()
-    log_file = log_file or os.environ.get("COMMONTRACE_LOG_FILE", "").strip()
+    fmt = (fmt or _configuration_getenv("COMMONTRACE_LOG_FORMAT", "")).strip().lower()
+    level = (level or _configuration_getenv("COMMONTRACE_LOG_LEVEL", "")).strip().upper()
+    log_file = log_file or _configuration_getenv("COMMONTRACE_LOG_FILE", "").strip()
     if not fmt and not level and not log_file:
         return
     if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes < 1024 or (
@@ -443,5 +445,5 @@ def status() -> dict:
         otel_installed = False
     return {"otel_installed": otel_installed, "otel_enabled": otel_enabled(),
             "tracing": _TRACER is not None, "note": _TRACER_STATE["error"],
-            "log_format": os.environ.get("COMMONTRACE_LOG_FORMAT", "") or "default",
+            "log_format": _configuration_getenv("COMMONTRACE_LOG_FORMAT", "") or "default",
             "endpoint": os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "")}

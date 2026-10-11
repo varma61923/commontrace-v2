@@ -8,6 +8,7 @@ import os
 import sys
 
 from commontrace import PROTOCOL_VERSION, __version__
+from commontrace.configuration import getenv as _configuration_getenv
 from commontrace.exceptions import CommonTraceError
 
 try:
@@ -32,6 +33,48 @@ _COMMANDS = (
 
 
 
+_COMMAND_GROUPS = {
+    'codegraph': 'platform',
+    'migrate': 'platform',
+    'connect': 'platform',
+    'sql_query': 'platform',
+    'viz': 'platform',
+    'gateway': 'platform',
+    'jobs': 'platform',
+    'policy': 'governance',
+    'assurance': 'governance',
+    'gate': 'governance',
+    'conformance': 'governance',
+    'defense': 'governance',
+    'compression': 'governance',
+    'allocate': 'governance',
+    'bill': 'governance',
+    'reliability': 'governance',
+    'signals': 'governance',
+    'fleet': 'governance',
+    'function': 'governance',
+    'kb': 'knowledge',
+    'community': 'knowledge',
+    'observation': 'knowledge',
+    'procedural': 'knowledge',
+    'ontology': 'knowledge',
+    'page': 'knowledge',
+    'source': 'knowledge',
+    'agent': 'knowledge',
+    'recall': 'knowledge',
+    'memory': 'knowledge',
+}
+
+
+def _command_module(name):
+    if name in _COMMAND_GROUPS:
+        from types import SimpleNamespace
+
+        module = importlib.import_module("commontrace.commands." + _COMMAND_GROUPS[name])
+        return SimpleNamespace(add_parser=module.COMMANDS[name])
+    return importlib.import_module("commontrace.commands." + name + "_cmd")
+
+
 def _command_modules(only: str | None = None) -> list:
     names = (only,) if only in _COMMANDS else _COMMANDS
     seen = set()
@@ -40,7 +83,7 @@ def _command_modules(only: str | None = None) -> list:
         mod_name = name.replace("-", "_")
         if mod_name not in seen:
             seen.add(mod_name)
-            modules.append(importlib.import_module(f"commontrace.commands.{mod_name}_cmd"))
+            modules.append(_command_module(mod_name))
     return modules
 
 
@@ -69,7 +112,7 @@ class _LazyCommandMap(dict):
         if key not in _COMMANDS and clean not in _COMMANDS:
             raise KeyError(key)
         target = clean if clean in _COMMANDS else key
-        module = importlib.import_module(f"commontrace.commands.{target}_cmd")
+        module = _command_module(target)
         action = self._subparsers_action
         if action is None:
             raise KeyError(key)
@@ -121,7 +164,7 @@ def build_parser(only: str | None = None) -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=_MISSING_DEPENDENCY is None)
     clean_only = only.replace("-", "_") if isinstance(only, str) else None
     if clean_only in _COMMANDS:
-        importlib.import_module(f"commontrace.commands.{clean_only}_cmd").add_parser(subparsers)
+        _command_module(clean_only).add_parser(subparsers)
         return parser
     lazy: dict = _LazyCommandMap(subparsers)
     subparsers._name_parser_map = lazy  # type: ignore[assignment]
@@ -216,10 +259,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if (
-            os.environ.get("COMMONTRACE_LOG_FILE")
-            or os.environ.get("COMMONTRACE_LOG_FORMAT")
-            or os.environ.get("COMMONTRACE_LOG_LEVEL")
-            or os.environ.get("COMMONTRACE_OTEL")
+            _configuration_getenv("COMMONTRACE_LOG_FILE")
+            or _configuration_getenv("COMMONTRACE_LOG_FORMAT")
+            or _configuration_getenv("COMMONTRACE_LOG_LEVEL")
+            or _configuration_getenv("COMMONTRACE_OTEL")
             or os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
         ):
             from commontrace import telemetry

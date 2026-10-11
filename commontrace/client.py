@@ -6,6 +6,7 @@ import urllib.request
 from collections.abc import Callable
 
 from commontrace import additive_extract, memory_control
+from commontrace.configuration import configured
 
 
 class MemoryClient:
@@ -51,6 +52,7 @@ class MemoryClient:
     def forget_record(self, identity: str, *, reason: str) -> dict:
         return self._record_operation("record-forget", {"id": identity, "reason": reason})
 
+    @configured
     def _record_operation(self, operation: str, payload: dict) -> dict:
         from commontrace.api_schema import validate_request
         payload = {**payload, "context": self.context}
@@ -60,6 +62,7 @@ class MemoryClient:
         from commontrace.record_api import operate
         return operate(self.root, operation, payload, context=self.context, untrusted=bool(self.agent_id))
 
+    @configured
     def turn(self, session_id: str, query: str, *, text: str = "", budget: int = 600,
              event: str | None = None, payload: dict | None = None) -> dict:
         """Capture a user turn and return profile, memory and pending buffer in one call."""
@@ -74,6 +77,7 @@ class MemoryClient:
         return turn(self.root, session_id, query, text=text, budget=budget, context=self.context,
                     event=event, payload=capture_payload)
 
+    @configured
     def add(self, text: str, *, local: bool = True, complete=None, memory_type: str = "general",
             entity_model=None, entity_model_path: str | None = None) -> dict:
         if self.url:
@@ -88,6 +92,7 @@ class MemoryClient:
                                              scopes=self.context, memory_type=memory_type,
                                              entity_model=entity_model, entity_model_path=entity_model_path)
 
+    @configured
     def profile(self, query: str = "", *, limit: int = 10, occasion_id: str | None = None,
                 action_class: str = "") -> dict:
         occasion_id = self._occasion(occasion_id)
@@ -100,6 +105,7 @@ class MemoryClient:
             return memory_control.profile(self.root, query, context=self.context, limit=limit,
                                           occasion_id=occasion_id, action_class=action_class)
 
+    @configured
     def search(self, query: str, *, recipe: str = "balanced", retriever: str = "hybrid",
                limit: int = 10, center: str = "", as_of: str | None = None, action_class: str = "",
                **local_options) -> list[dict]:
@@ -114,6 +120,7 @@ class MemoryClient:
         return REGISTRY.retrieve(retriever, self.root, query, recipe=recipe, limit=limit, center=center,
                                  as_of=as_of, context=self.context, action_class=action_class, **local_options)
 
+    @configured
     def batch(self, items: list[dict]) -> dict:
         if self.url:
             return self._request("batch", {"items": items, "context": self.context})
@@ -127,6 +134,7 @@ class MemoryClient:
             return self._request("propose", {"text": text, "sources": sources, "context": self.context})
         return memory_control.proposal(self.root, text, sources=sources, context=self.context)
 
+    @configured
     def reflect(self, query: str, *, budget: int = 600, occasion_id: str | None = None,
                 exploration_slots: int = 0, action_class: str = "", adaptive_budget: bool = False) -> dict:
         occasion_id = self._occasion(occasion_id)

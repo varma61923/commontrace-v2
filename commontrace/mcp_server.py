@@ -133,6 +133,7 @@ from commontrace.async_workers import STORE_WORKERS, WorkerCapacityError
 from commontrace.commands._format import read_or_warn
 from commontrace.commands._traces import load_trace_candidates
 from commontrace.commands._validators import REFUSE_CHARS, check_text_size
+from commontrace.configuration import getenv as _configuration_getenv
 
 logger = logging.getLogger(__name__)
 
@@ -2658,7 +2659,7 @@ def serve(root: str, *, allow_approval: bool = True) -> int:
     import anyio  # optional: only needed to run the stdio transport
 
     mcp = build_server(root, allow_approval=allow_approval)
-    if os.environ.get(WARM_ENV, "1").strip().lower() not in ("0", "false", "no", "off"):
+    if _configuration_getenv(WARM_ENV, "1").strip().lower() not in ("0", "false", "no", "off"):
         threading.Thread(target=_warm_models, args=(root,), name="commontrace-warm", daemon=True).start()
     anyio.run(mcp.run_stdio_async)
     return 0

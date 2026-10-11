@@ -15,8 +15,9 @@ stand-in for a frontier model's answer quality.
 """
 from __future__ import annotations
 
-import os
 import threading
+
+from commontrace.configuration import getenv as _configuration_getenv
 
 DEFAULT_MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
 DEFAULT_MAX_NEW_TOKENS = 512
@@ -39,7 +40,7 @@ def _load(model: str):
             raise LLMUnavailable("COMMONTRACE_LLM_PROVIDER=local needs the optional transformers and torch "
                                  "packages: pip install transformers torch") from None
         cached_only = offline.enabled()
-        revision = os.environ.get("COMMONTRACE_LOCAL_LLM_REVISION", "").strip() or None
+        revision = _configuration_getenv("COMMONTRACE_LOCAL_LLM_REVISION", "").strip() or None
         try:
             tokenizer = AutoTokenizer.from_pretrained(model, local_files_only=cached_only, revision=revision)
             network = AutoModelForCausalLM.from_pretrained(model, local_files_only=cached_only, revision=revision,
@@ -54,7 +55,7 @@ def _load(model: str):
 
 def complete(config, prompt: str, *, max_new_tokens: int | None = None) -> tuple[str, dict]:
     """Greedy completion: (text, usage with exact input/output token counts)."""
-    limit = max_new_tokens or int(os.environ.get("COMMONTRACE_LLM_MAX_TOKENS", DEFAULT_MAX_NEW_TOKENS))
+    limit = max_new_tokens or int(_configuration_getenv("COMMONTRACE_LLM_MAX_TOKENS", DEFAULT_MAX_NEW_TOKENS))
     if limit < 1:
         raise ValueError("max_new_tokens must be positive")
     tokenizer, network, torch = _load(config.model)

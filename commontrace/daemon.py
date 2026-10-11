@@ -5,6 +5,8 @@ import json
 import os
 import time
 
+from commontrace.configuration import getenv as _configuration_getenv
+
 try:
     import fcntl
 except ImportError:  # pragma: no cover - platform fallback
@@ -207,7 +209,7 @@ def _invoke_hooks(root: str) -> dict:
         from commontrace import jobs
 
         if os.path.exists(jobs.db_path(root)):
-            budget = float(os.environ.get("COMMONTRACE_JOBS_SECONDS", "300") or 300)
+            budget = float(_configuration_getenv("COMMONTRACE_JOBS_SECONDS", "300") or 300)
             results["jobs"] = jobs.run_pending(root, limit=100, time_budget=budget)
     except Exception as exc:  # noqa: BLE001
         results["jobs"] = f"error: {exc}"

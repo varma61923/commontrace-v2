@@ -13,7 +13,7 @@ import hashlib
 import json
 import os
 
-from commontrace import _jsonl, fact_embeddings, fact_store, paths
+from commontrace import _jsonl, configuration, fact_embeddings, fact_store, paths
 from commontrace.vector_store import SQLiteVectorIndex, VectorRecord
 
 
@@ -21,7 +21,27 @@ def index_path(root: str) -> str:
     return os.path.join(paths.memory_dir(root), "facts", "vectors.sqlite3")
 
 
-async def _index(root, model, dimension):
+def _backend(root):
+    with configuration.using(root):
+        selected = configuration.getenv("COMMONTRACE_VECTOR_BACKEND", "sqlite")
+    if selected not in ("sqlite", "lance"):
+        raise ValueError("vector backend must be sqlite or lance")
+    return selected
+
+
+def _exists(root, backend):
+    return os.path.isfile(index_path(root)) if backend == "sqlite" else os.path.isdir(
+        os.path.join(paths.memory_dir(root), "lance"))
+
+
+def _watermark(model, backend):
+    return "vector-watermark:" + ("lance:" if backend == "lance" else "") + model
+
+
+async def _index(root, model, dimension, backend="sqlite"):
+    if backend == "lance":
+        from commontrace.vector_lance import LanceVectorIndex
+        return LanceVectorIndex(root, tenant="local", namespace="facts", model=model, dimension=dimension)
     filename = index_path(root)
     paths.enforce_boundary(root, filename)
     os.makedirs(os.path.dirname(filename), exist_ok=True)
@@ -40,11 +60,12 @@ def drain(root: str, *, model="bge-small", limit=128) -> dict:
         return {"processed": 0}
     if type(limit) is not int or not 1 <= limit <= 10000:
         raise ValueError("projection batch must be in 1..10000")
-    key = "vector-watermark:" + model
+    backend = _backend(root)
+    key = _watermark(model, backend)
     with _jsonl.locked(index_path(root) + ".projection"):
         with fact_store.transaction(root) as canonical:
             previous = canonical.connection.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
-            cursor = int(previous[0]) if previous and os.path.isfile(index_path(root)) else 0
+            cursor = int(previous[0]) if previous and _exists(root, backend) else 0
             events = canonical.connection.execute(
                 "SELECT seq,fact_id FROM events WHERE seq>? ORDER BY seq LIMIT ?", (cursor, limit)
             ).fetchall()
@@ -68,7 +89,7 @@ def drain(root: str, *, model="bge-small", limit=128) -> dict:
             dimension = len(fact_embeddings._encode(resolved, ["index dimension"], query=True)[0])
 
         async def publish():
-            index = await _index(root, model, dimension)
+            index = await _index(root, model, dimension, backend)
             try:
                 await index.upsert(
                     [
@@ -79,6 +100,8 @@ def drain(root: str, *, model="bge-small", limit=128) -> dict:
                     ]
                 )
                 await index.delete(removed)
+                if backend == "lance":
+                    await index.maintain()
             finally:
                 await index.close()
 
@@ -92,7 +115,8 @@ def drain(root: str, *, model="bge-small", limit=128) -> dict:
 
 
 def search(root: str, query: str, *, model="bge-small", limit=200) -> list[tuple[str, float]]:
-    if model in ("none", "off") or not os.path.isfile(index_path(root)):
+    backend = _backend(root)
+    if model in ("none", "off") or not _exists(root, backend):
         return []
     resolved, _ = fact_embeddings._resolve(model, None)
     if resolved is None:
@@ -100,7 +124,7 @@ def search(root: str, query: str, *, model="bge-small", limit=200) -> list[tuple
     vector = fact_embeddings._encode(resolved, [query], query=True)[0]
 
     async def recall():
-        index = await _index(root, model, len(vector))
+        index = await _index(root, model, len(vector), backend)
         try:
             return [(hit.key, hit.score) for hit in await index.search(vector, top_k=limit)]
         finally:
@@ -112,7 +136,7 @@ def search(root: str, query: str, *, model="bge-small", limit=200) -> list[tuple
     # A canonical edit is immediately ineligible for stale dense scores until its outbox is published.
     with fact_store.transaction(root) as canonical:
         row = canonical.connection.execute(
-            "SELECT value FROM meta WHERE key=?", ("vector-watermark:" + model,)
+            "SELECT value FROM meta WHERE key=?", (_watermark(model, backend),)
         ).fetchone()
         cursor = int(row[0]) if row else 0
         identities = [identity for identity, _score in hits]

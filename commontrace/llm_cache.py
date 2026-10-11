@@ -17,6 +17,7 @@ import time
 from collections.abc import Callable
 from contextlib import contextmanager
 
+from commontrace.configuration import getenv as _configuration_getenv
 from commontrace.runtime_cache import RuntimeCache
 
 logger = logging.getLogger(__name__)
@@ -37,7 +38,7 @@ def default_path() -> str:
 
 
 def enabled() -> bool:
-    return os.environ.get(ENV_ENABLE, "").strip().lower() in ("1", "true", "yes", "on")
+    return _configuration_getenv(ENV_ENABLE, "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def cache_key(model: str, prompt: str, *, namespace: str = "") -> str:
@@ -56,7 +57,7 @@ class LLMCache:
                  max_entries: int = DEFAULT_MAX_ENTRIES, max_bytes: int = DEFAULT_MAX_BYTES) -> None:
         if not math.isfinite(ttl) or ttl <= 0 or max_entries < 1 or max_bytes < 1:
             raise ValueError("cache ttl and max_entries must be positive and finite")
-        self.path = os.path.abspath(path or os.environ.get(ENV_PATH, "") or default_path())
+        self.path = os.path.abspath(path or _configuration_getenv(ENV_PATH, "") or default_path())
         self.ttl, self.max_entries = ttl, max_entries
         self.max_bytes = max_bytes
         self._lock = threading.Lock()

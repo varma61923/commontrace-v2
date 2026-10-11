@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from collections import defaultdict, deque
 
 
@@ -60,12 +61,27 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--graph", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--source-root")
+    parser.add_argument("--max-modules", type=int)
+    parser.add_argument("--max-unreachable", type=int)
     args = parser.parse_args()
     with open(args.graph, encoding="utf-8") as stream:
         result = audit(json.load(stream))
+    violations = []
+    if args.source_root:
+        result["python_modules"] = sum(
+            name.endswith(".py")
+            for _, _, names in os.walk(os.path.join(args.source_root, "commontrace"))
+            for name in names
+        )
+        if args.max_modules is not None and result["python_modules"] > args.max_modules:
+            violations.append("Python module surface exceeds the reviewed budget")
+    if args.max_unreachable is not None and len(result["possible_unreachable"]) > args.max_unreachable:
+        violations.append("Static reachability candidates exceed the reviewed baseline; inspect entry points")
+    result["policy_violations"] = violations
     with open(args.output, "w", encoding="utf-8") as stream:
         json.dump(result, stream, indent=2)
-    return bool(result["missing_endpoints"])
+    return bool(result["missing_endpoints"] or violations)
 
 
 if __name__ == "__main__":

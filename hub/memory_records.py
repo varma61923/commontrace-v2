@@ -6,6 +6,9 @@ Canonical records are revalidated after every ANN lookup, including erasure.
 
 from __future__ import annotations
 
+import html
+import math
+import uuid
 from dataclasses import replace
 
 from sqlalchemy import delete, or_, select, text
@@ -13,7 +16,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 
 from commontrace import memory_guard
-from commontrace.memory_record import MemoryRecord, facet_observation
+from commontrace.memory_record import MemoryRecord, facet_observation, preference_candidates
 from commontrace.record_visibility import bind_capture_sources, now, sanitize_record_content, visible
 from hub import audit
 from hub.db import session_scope
@@ -133,7 +136,7 @@ class PostgresJournal:
             observation = facet_observation(entity, facet, sources, previous=MemoryRecord(**old.record))
         await self._put(session, observation)
 
-    async def search(self, query: str, *, scope: dict, limit=20, vector=None) -> list[MemoryRecord]:
+    async def search(self, query: str, *, scope: dict, limit=20, vector=None, kinds=()) -> list[MemoryRecord]:
         if not isinstance(limit, int) or isinstance(limit, bool) or not 0 <= limit <= 1000:
             raise ValueError("record result limit must be in 0..1000")
         if not limit:
@@ -145,6 +148,8 @@ class PostgresJournal:
             statement = select(MemoryRecordProjection).where(
                 MemoryRecordProjection.org_id == self.org_id, MemoryRecordProjection.scope.op("<@")(context)
             )
+            if kinds:
+                statement = statement.where(MemoryRecordProjection.record["kind"].astext.in_(list(kinds)))
             if query.strip():
                 tsquery = func.websearch_to_tsquery("english", query[:20000])
                 statement = statement.where(MemoryRecordProjection.search_vector.op("@@")(tsquery)).order_by(
@@ -198,6 +203,177 @@ class PostgresJournal:
                 if len(eligible) >= limit:
                     break
             return eligible
+
+    async def capture_turn(self, session_id: str, query: str, *, text_value="", scope: dict, event=None, payload=None):
+        """Commit the raw turn and its source-bound profile updates together."""
+        context = {**scope, "tenant": self.org_id}
+        content = text_value or query
+        episode = MemoryRecord(
+            "turn-" + uuid.uuid4().hex,
+            "episode",
+            1,
+            {
+                "text": content,
+                "query": query,
+                "session_id": session_id,
+                "event": event or "UserPromptSubmit",
+                "payload": payload or {},
+                "author": "user",
+            },
+            scope=context,
+            created_at=now(),
+            provenance={"authored_by": "user"},
+        )
+        episode = sanitize_record_content(episode)
+        async with session_scope(self.factory, org_id=self.org_id) as session:
+            await self._lock_owner(session)
+            await self._put(session, episode)
+            # Only the explicit human message is a preference source. Tool and assistant payloads are evidence.
+            if text_value:
+                for identity, value in preference_candidates(episode.payload["text"], context):
+                    old = await session.get(MemoryRecordProjection, (self.org_id, identity))
+                    prior = old.record["payload"] if old else {}
+                    data = {**value, "observed_at": now(), "source_message_ids": [episode.id]}
+                    if value["bucket"] == "dynamic":
+                        data.update(
+                            weight=min(10, prior.get("weight", 0) + 1),
+                            half_life_days=90,
+                            observations=prior.get("observations", 0) + 1,
+                        )
+                    record = MemoryRecord(
+                        identity,
+                        "profile",
+                        (old.version if old else 0) + 1,
+                        data,
+                        scope=context,
+                        created_at=now(),
+                        relations={"derives": [episode.id]},
+                        provenance={"authored_by": "user", "source_versions": {episode.id: 1}},
+                    )
+                    await self._put(session, record)
+        return episode
+
+    async def runtime_profile(self, query: str, *, scope: dict, limit=10, occasion_id=None):
+        from commontrace.record_visibility import moment
+
+        if type(limit) is not int or not 0 <= limit <= 1000:
+            raise ValueError("profile result limit must be in 0..1000")
+        rows = await self.search("", scope=scope, limit=1000, kinds=("profile", "directive"))
+        result = {
+            "static": [],
+            "dynamic": [],
+            "custom": [],
+            "directives": [],
+            "occasion_id": occasion_id,
+            "withheld": [],
+            "recent_activity": [],
+        }
+        for record in rows:
+            if record.kind == "directive":
+                result["directives"].append(record.to_dict())
+            if record.kind != "profile":
+                continue
+            data = record.payload
+            bucket = data.get("bucket", "custom")
+            if bucket not in ("static", "dynamic", "custom"):
+                bucket = "custom"
+            age = max(
+                0.0,
+                (moment(now()) - moment(data.get("observed_at") or record.created_at or now())).total_seconds() / 86400,
+            )
+            half_life = data.get("half_life_days", 90)
+            weight = data.get("weight", 1)
+            if (
+                type(half_life) not in (int, float)
+                or not math.isfinite(half_life)
+                or half_life <= 0
+                or type(weight) not in (int, float)
+                or not math.isfinite(weight)
+                or weight < 0
+            ):
+                continue
+            weight *= 1 if bucket == "static" else 2 ** (-age / half_life)
+            if len(result[bucket]) < limit:
+                result[bucket].append(
+                    {
+                        "id": record.id,
+                        "text": data.get("text", ""),
+                        "weight": weight,
+                        "critical": bool(data.get("critical")),
+                    }
+                )
+        return result
+
+    async def runtime_turn(
+        self, session_id: str, query: str, *, scope: dict, text_value="", budget=600, event=None, payload=None
+    ):
+        from commontrace.context_template import render_context
+        from commontrace.memory_guard import scan_injection
+
+        source = await self.capture_turn(
+            session_id, query, text_value=text_value, scope=scope, event=event, payload=payload
+        )
+        profile = await self.runtime_profile(query, scope=scope, limit=10)
+        records = await self.search(query, scope=scope, limit=20)
+        # Mandatory owner rules and explicit preferences do not require inferred relevance.
+        # Sparse-only candidates remain visible in results, without guessed dense agreement or causal exposure.
+        lines, identities = [], []
+        fixed = [
+            *profile["directives"],
+            *(
+                entry
+                for bucket in ("static", "dynamic", "custom")
+                for entry in profile[bucket]
+                if entry.get("critical") or event == "SessionStart"
+            ),
+        ]
+        for entry in fixed:
+            text_value = entry.get("text", entry.get("payload", {}).get("text", ""))
+            if not isinstance(text_value, str) or scan_injection(text_value):
+                continue
+            line = "[" + entry["id"] + "] " + text_value
+            rendered = render_context([*lines, line], budget=budget)
+            if html.escape(memory_guard.sanitize_metadata({"text": line}, pii=True)[0]["text"]) in rendered:
+                lines.append(line)
+                identities.append(entry["id"])
+        async with session_scope(self.factory, org_id=self.org_id) as session:
+            rows = (
+                (
+                    await session.execute(
+                        select(MemoryRecordProjection)
+                        .where(
+                            MemoryRecordProjection.org_id == self.org_id,
+                            MemoryRecordProjection.scope.op("<@")({**scope, "tenant": self.org_id}),
+                            MemoryRecordProjection.record["kind"].astext == "episode",
+                            MemoryRecordProjection.record["payload"]["session_id"].astext == session_id,
+                            MemoryRecordProjection.record["status"].astext == "active",
+                        )
+                        .order_by(MemoryRecordProjection.record["created_at"].astext.desc())
+                        .limit(16)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            buffer = [
+                {
+                    "id": row.id,
+                    "event": row.record["payload"]["event"],
+                    "payload": row.record["payload"],
+                    "scope": row.scope,
+                }
+                for row in rows
+                if visible(MemoryRecord(**row.record), {**scope, "tenant": self.org_id})
+            ]
+        return {
+            "context": render_context(lines, budget=budget),
+            "injected": identities,
+            "profile": {k: profile[k] for k in ("static", "dynamic", "custom")},
+            "buffer": buffer,
+            "session_id": session_id,
+            "scope": source.scope,
+            "results": [record.to_dict() for record in records],
+        }
 
     async def forget(self, identity: str, *, reason: str) -> dict:
         if not reason.strip():
@@ -302,7 +478,11 @@ def add_memory_routes(app, session_factory, *, authenticate, require_scope):
         action = request.path_params["operation"].removeprefix("record-")
         authenticated, denied = await authenticate(request)
         if denied is None:
-            denied = require_scope(authenticated, scopes.SCOPE_READ if action == "search" else scopes.SCOPE_WRITE)
+            denied = require_scope(
+                authenticated, scopes.SCOPE_READ if action in ("search", "profile") else scopes.SCOPE_WRITE
+            )
+        if denied is None and action == "turn":
+            denied = require_scope(authenticated, scopes.SCOPE_READ)
         if denied is not None:
             return denied
         raw = await request.body()
@@ -312,6 +492,11 @@ def add_memory_routes(app, session_factory, *, authenticate, require_scope):
             payload = json.loads(raw)
             if not isinstance(payload, dict):
                 raise ValueError("record request must be an object")
+            from commontrace.api_schema import validate_request
+
+            name = request.path_params["operation"]
+            if name in ("record-put", "record-search", "record-forget", "turn", "profile", "search"):
+                validate_request(name, payload)
             if "context" in payload:
                 context = payload["context"]
                 if not isinstance(context, list) or any(not isinstance(label, str) for label in context):
@@ -329,8 +514,33 @@ def add_memory_routes(app, session_factory, *, authenticate, require_scope):
                     scope["labels"] = sorted(labels)
                 payload["scope"] = scope
             store = PostgresJournal(session_factory, authenticated.org_id)
+            if action == "turn":
+                return JSONResponse(
+                    await store.runtime_turn(
+                        payload["session_id"],
+                        payload["query"],
+                        scope=payload.get("scope", {}),
+                        text_value=payload.get("text", ""),
+                        budget=payload.get("budget", 600),
+                        event=payload.get("event"),
+                        payload=payload.get("payload"),
+                    )
+                )
+            if action == "profile":
+                return JSONResponse(
+                    await store.runtime_profile(
+                        payload.get("query", ""),
+                        scope=payload.get("scope", {}),
+                        limit=payload.get("limit", 10),
+                        occasion_id=payload.get("occasion_id"),
+                    )
+                )
             if action == "put":
                 record = MemoryRecord(**payload["record"])
+                context = {**payload.get("scope", {}), "tenant": authenticated.org_id}
+                if any(context.get(key) != value for key, value in record.scope.items()):
+                    raise PermissionError("record scope cannot override request context")
+                record = replace(record, scope=context)
                 # Remote writes are evidence. Only controlled causal promotion can grant active lessons/rules.
                 if record.kind in ("lesson", "directive") and record.status == "active":
                     record = replace(record, status="quarantined")
@@ -347,8 +557,15 @@ def add_memory_routes(app, session_factory, *, authenticate, require_scope):
                     }
                 )
             if action == "forget":
+                async with session_scope(session_factory, org_id=authenticated.org_id) as session:
+                    row = await session.get(MemoryRecordProjection, (authenticated.org_id, payload["id"]))
+                    context = {**payload.get("scope", {}), "tenant": authenticated.org_id}
+                    if row is not None and row.scope != context:
+                        raise PermissionError("only the owning scoped principal can erase this record")
                 return JSONResponse(await store.forget(payload["id"], reason=payload["reason"]))
             return JSONResponse({"error": "unknown_operation"}, status_code=404)
+        except PermissionError as exc:
+            return JSONResponse({"error": "forbidden", "detail": str(exc)}, status_code=403)
         except (ValueError, KeyError, TypeError) as exc:
             return JSONResponse({"error": "bad_request", "detail": str(exc)}, status_code=400)
 

@@ -31,6 +31,8 @@ import re
 from dataclasses import dataclass
 from typing import Protocol
 
+from commontrace.configuration import getenv as _configuration_getenv
+
 MAX_CHARS = 24_000
 _RETRIEVAL = "Represent this sentence for searching relevant passages: "
 LOCAL_MODELS = {
@@ -185,7 +187,7 @@ class _Hosted:
             return self._openai_like(base + "/embeddings", _secret("OPENAI_API_KEY", "COMMONTRACE_OPENAI_API_KEY"),
                                      texts)
         if p == "compat":
-            base = os.environ.get("COMMONTRACE_EMBED_BASE_URL", "").rstrip("/")
+            base = _configuration_getenv("COMMONTRACE_EMBED_BASE_URL", "").rstrip("/")
             if not base:
                 raise EmbeddingError("set COMMONTRACE_EMBED_BASE_URL to an OpenAI-compatible /v1 endpoint")
             from commontrace.secrets_provider import env_secret

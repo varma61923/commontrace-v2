@@ -49,3 +49,5 @@ cryptography==50.0.2       # AES-256-GCM envelope encryption for WebhookEndpoint
 # project's CI matrix and ruff target-version both include. numpy >= 2.3.0
 # is Python >= 3.11 only, so pinning higher silently drops 3.10 support.
 numpy==2.2.6
+
+PyYAML==6.0.3

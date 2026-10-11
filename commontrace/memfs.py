@@ -16,6 +16,7 @@ import time
 from dataclasses import dataclass, field
 
 from commontrace import memory_git, paths
+from commontrace.configuration import getenv as _configuration_getenv
 
 CONFIG = "memfs.json"
 DEFAULTS = {"max_file_bytes": 5 * 1024 * 1024, "max_files": 50_000, "max_lesson_chars": 20_000,
@@ -288,7 +289,7 @@ def repair(root: str) -> dict:
 # --- signed handoff --------------------------------------------------------------------
 
 def _key(root: str) -> bytes:
-    env = os.environ.get("COMMONTRACE_HANDOFF_KEY", "").strip()
+    env = _configuration_getenv("COMMONTRACE_HANDOFF_KEY", "").strip()
     if env:
         if len(env) < 32:
             raise MemfsError("COMMONTRACE_HANDOFF_KEY must be at least 32 characters")

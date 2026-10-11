@@ -1,7 +1,6 @@
 /** Native transport only. All admission, learning and memory logic lives in HookKit. */
 import net from 'node:net';
 import path from 'node:path';
-import {spawn} from 'node:child_process';
 import fs from 'node:fs';
 
 const options = {};
@@ -26,7 +25,8 @@ function finish(reply) {
   finished = true;
   fs.writeSync(1, format(reply) + '\n');
 }
-function captureFallback(payload) {
+async function captureFallback(payload) {
+  const {spawn} = await import('node:child_process');
   // A detached writer survives a host timeout. No transcript is passed in argv.
   const args = ['-m', 'commontrace.hook_kit', '--capture-only', '--dest', options.dest,
     '--agent-id', options['agent-id'], '--scope', options.scope || '{}', '--event', options.event];
@@ -51,7 +51,7 @@ process.stdin.on('end', () => {
     const timer = setTimeout(() => {client.destroy(); finish({...empty, timed_out: true});}, 25);
     client.on('connect', () => {
       connected = true;
-      client.end(JSON.stringify({agent: options['agent-id'], scope, event: options.event,
+      client.write(JSON.stringify({agent: options['agent-id'], scope, event: options.event,
                                 format: options.format, payload}) + '\n');
     });
     client.on('data', chunk => {
@@ -64,18 +64,16 @@ process.stdin.on('end', () => {
           const reply = JSON.parse(response);
           finish(reply);
           if (reply.delivery_token) {
-            const ack = net.createConnection({path: endpoint});
-            ack.on('error', () => {});
-            ack.on('connect', () => ack.end(JSON.stringify({operation: 'ack', agent: options['agent-id'], scope,
-                                                          delivery_token: reply.delivery_token}) + '\n'));
-            ack.setTimeout(20, () => ack.destroy());
+            client.end(JSON.stringify({operation: 'ack', delivery_token: reply.delivery_token}) + '\n');
+          } else {
+            client.end();
           }
         } catch { finish(empty); }
       }
     });
     client.on('error', () => {
       clearTimeout(timer);
-      if (!connected) captureFallback(payload);
+      if (!connected) captureFallback(payload).catch(() => {});
       finish(empty);
     });
     client.on('end', () => {clearTimeout(timer); if (!finished) finish(empty);});

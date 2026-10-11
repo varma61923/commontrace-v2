@@ -11,6 +11,7 @@ import tempfile
 from dataclasses import dataclass
 
 from commontrace import dosage, harm, paths, retrieval
+from commontrace.configuration import getenv as _configuration_getenv
 
 CONFIG_NAME = "retrieval.json"
 
@@ -34,7 +35,7 @@ DEFAULT_FUSION_ENV = "COMMONTRACE_DEFAULT_FUSION"
 
 
 def default_fusion() -> str:
-    override = os.environ.get(DEFAULT_FUSION_ENV, "")
+    override = _configuration_getenv(DEFAULT_FUSION_ENV, "")
     if override in FUSIONS:
         return override
     from commontrace import semantic_arm
@@ -45,7 +46,7 @@ def default_fusion() -> str:
 
 
 def default_rerank() -> str:
-    override = os.environ.get(DEFAULT_RERANK_ENV, "")
+    override = _configuration_getenv(DEFAULT_RERANK_ENV, "")
     if override in RERANKS:
         return override
     from commontrace import rerank_arm

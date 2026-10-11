@@ -36,6 +36,7 @@ from commontrace import (
     retrieval,
     retrieval_io,
 )
+from commontrace.configuration import getenv as _configuration_getenv
 from commontrace.exceptions import CommonTraceError
 from commontrace.gateway_tokens import load_or_create_token, token_path  # noqa: F401 - public compatibility
 from commontrace.measure import CausalMemory, HarmWatch
@@ -911,7 +912,7 @@ class Gateway:
                     scopes=context,
                     local=local,
                                                  memory_type=body.get("memory_type", "general"),
-                    entity_model_path=os.environ.get("COMMONTRACE_GLINER_MODEL_PATH"),
+                    entity_model_path=_configuration_getenv("COMMONTRACE_GLINER_MODEL_PATH"),
                 )
             query = body.get("query", "")
             if not isinstance(query, str) or len(query) > MAX_TEXT_CHARS:
@@ -1194,8 +1195,8 @@ class Gateway:
         retrieval_config = retrieval_io.load_config(self.root)
         has_embed = bool(retrieval_io.parse_embedder(retrieval_config.fusion))
         has_rerank = retrieval_config.rerank != retrieval_io.RERANK_NONE
-        provider = os.environ.get("COMMONTRACE_LLM_PROVIDER", "").strip().lower()
-        has_key = any(os.environ.get(name, "").strip() for name in (
+        provider = _configuration_getenv("COMMONTRACE_LLM_PROVIDER", "").strip().lower()
+        has_key = any(_configuration_getenv(name, "").strip() for name in (
             "COMMONTRACE_LLM_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
             "GOOGLE_API_KEY", "GEMINI_API_KEY",
         ))

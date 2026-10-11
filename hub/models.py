@@ -828,6 +828,8 @@ class MemoryRecordProjection(Base):
     __table_args__ = (
         Index("ix_memory_records_search", "search_vector", postgresql_using="gin"),
         Index("ix_memory_records_scope", "scope", postgresql_using="gin"),
+        Index("ix_memory_records_session", "org_id", text("(record->'payload'->>'session_id')"),
+              text("(record->>'created_at')")),
     )
 
 

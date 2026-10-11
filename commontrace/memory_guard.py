@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import ipaddress
-import os
 import re
 from dataclasses import dataclass, field
 from typing import Any
+
+from commontrace.configuration import getenv as _configuration_getenv
 
 CATEGORY_SECRET = "secret"
 CATEGORY_PII = "pii"
@@ -177,7 +178,7 @@ _IP_CANDIDATE_RE = re.compile(
 
 def privacy_redaction_enabled() -> bool:
     """Whether existing trace APIs should also mask PII (explicit policy)."""
-    return os.environ.get("COMMONTRACE_REDACT_PII", "").strip().lower() in {"1", "true", "yes", "on"}
+    return _configuration_getenv("COMMONTRACE_REDACT_PII", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def sanitize_metadata(value: Any, *, pii: bool = False) -> tuple[Any, list[str]]:

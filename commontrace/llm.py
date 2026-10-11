@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 
 from commontrace import llm_cache as llm_cache_mod
 from commontrace.circuit_breaker import CircuitBreaker, CircuitOpenError
+from commontrace.configuration import getenv as _configuration_getenv
 from commontrace.exceptions import InfrastructureError
 from commontrace.retry import call_with_retries, is_retryable
 from commontrace.runtime_cache import RuntimeCache
@@ -66,7 +67,7 @@ def _provider_call(cfg: Config, prompt: str, caller) -> tuple[str, dict]:
             raise
         overload.on_success()
         return value
-    if os.environ.get("COMMONTRACE_LLM_CIRCUIT_BREAKER", "1").strip().lower() in ("0", "false", "off", "no"):
+    if _configuration_getenv("COMMONTRACE_LLM_CIRCUIT_BREAKER", "1").strip().lower() in ("0", "false", "off", "no"):
         return dispatch()
     circuit = _CIRCUITS.get_or_load(key, CircuitBreaker)
     try:
@@ -96,7 +97,7 @@ class Config:
 
 def load_config() -> Config:
     """Provider settings from the environment."""
-    provider = os.environ.get("COMMONTRACE_LLM_PROVIDER", DEFAULT_PROVIDER).strip().lower()
+    provider = _configuration_getenv("COMMONTRACE_LLM_PROVIDER", DEFAULT_PROVIDER).strip().lower()
     from commontrace.providers import LLM_CREDENTIALS, LLMS
 
     if provider not in (*_SUPPORTED_PROVIDERS, *LLMS.names()):
@@ -114,21 +115,21 @@ def load_config() -> Config:
     if provider == "local":
         from commontrace import local_llm
 
-        model = os.environ.get("COMMONTRACE_LLM_MODEL", "").strip() or local_llm.DEFAULT_MODEL
+        model = _configuration_getenv("COMMONTRACE_LLM_MODEL", "").strip() or local_llm.DEFAULT_MODEL
         return Config(provider="local", model=model, api_key="",
-                      cache_namespace=os.environ.get("COMMONTRACE_LLM_CACHE_NAMESPACE", "").strip() or None)
+                      cache_namespace=_configuration_getenv("COMMONTRACE_LLM_CACHE_NAMESPACE", "").strip() or None)
     if not api_key and provider not in _CLOUD_PROVIDERS and not ollama_alias and LLM_CREDENTIALS.get(provider, True):
         raise LLMUnavailable(
             "COMMONTRACE_LLM_API_KEY is not set -- no LLM-assisted draft is possible."
         )
-    model = os.environ.get("COMMONTRACE_LLM_MODEL", "").strip() or DEFAULT_MODEL
-    cache_namespace = os.environ.get("COMMONTRACE_LLM_CACHE_NAMESPACE", "").strip() or None
+    model = _configuration_getenv("COMMONTRACE_LLM_MODEL", "").strip() or DEFAULT_MODEL
+    cache_namespace = _configuration_getenv("COMMONTRACE_LLM_CACHE_NAMESPACE", "").strip() or None
     if provider in _CLOUD_PROVIDERS:
-        model = os.environ.get("COMMONTRACE_LLM_MODEL", "").strip()
-        region = os.environ.get("COMMONTRACE_LLM_REGION", "").strip()
+        model = _configuration_getenv("COMMONTRACE_LLM_MODEL", "").strip()
+        region = _configuration_getenv("COMMONTRACE_LLM_REGION", "").strip()
         if not region and provider == "bedrock":
             region = os.environ.get("AWS_REGION", "").strip()
-        project = os.environ.get("COMMONTRACE_LLM_PROJECT", "").strip() or None
+        project = _configuration_getenv("COMMONTRACE_LLM_PROJECT", "").strip() or None
         missing = [name for name, value in (
             ("COMMONTRACE_LLM_MODEL", model), ("COMMONTRACE_LLM_REGION", region),
             *((("COMMONTRACE_LLM_PROJECT", project),) if provider == "vertex" else ())) if not value]
@@ -136,7 +137,7 @@ def load_config() -> Config:
             raise LLMUnavailable(f"COMMONTRACE_LLM_PROVIDER={provider} also needs {', '.join(missing)}.")
         return Config(provider=provider, model=model, api_key="", region=region,
                       project=project, cache_namespace=cache_namespace)
-    base_url = os.environ.get("COMMONTRACE_LLM_BASE_URL", "").strip() or None
+    base_url = _configuration_getenv("COMMONTRACE_LLM_BASE_URL", "").strip() or None
     if provider == "openai-compatible" and not base_url:
         if ollama_alias:
             base_url = _OLLAMA_DEFAULT_BASE_URL
@@ -533,7 +534,7 @@ def draft(
 def cost_usd(usage: dict, model: str, prices: dict | None = None) -> float | None:
     """What one call cost, from a price table the OWNER supplies."""
     if prices is None:
-        path = os.environ.get("COMMONTRACE_LLM_PRICES", "").strip()
+        path = _configuration_getenv("COMMONTRACE_LLM_PRICES", "").strip()
         if not path:
             return None
         try:

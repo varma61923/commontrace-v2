@@ -13,6 +13,7 @@ import weakref
 from collections import OrderedDict
 from dataclasses import dataclass
 
+from commontrace.configuration import getenv as _configuration_getenv
 from commontrace.conversation import store as _store
 
 MODELS = {
@@ -88,7 +89,7 @@ def configured() -> str | None:
 
     Any tag from `commontrace.embeddings` is accepted, e.g. ``openai:text-embedding-3-small``.
     """
-    raw = os.environ.get("COMMONTRACE_CONVERSATION_EMBEDDER", DEFAULT).strip()
+    raw = _configuration_getenv("COMMONTRACE_CONVERSATION_EMBEDDER", DEFAULT).strip()
     if raw.lower() in ("", "none", "off", "0"):
         return None
     tag = raw.lower() if raw.lower() in MODELS else canonical(raw)

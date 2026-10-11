@@ -39,7 +39,6 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import os
 import re
 from collections import Counter, defaultdict
 from collections.abc import Callable, Sequence
@@ -49,6 +48,7 @@ from typing import Any
 from commontrace import hierarchical, redundancy
 from commontrace._lexical import STOPWORDS
 from commontrace._stem import stem
+from commontrace.configuration import getenv as _configuration_getenv
 from commontrace.overlap import DEFAULT_NUM_PERM, minhash
 
 DEFAULT_THRESHOLD = 0.5
@@ -137,7 +137,7 @@ def _lexical_pairs(norms: Sequence[str], threshold: float) -> dict[tuple[int, in
 def _resolve_embedder(embedder) -> tuple[Any, str]:
     """(provider or None, tag) from a tag, a provider object, or the environment."""
     if embedder is None:
-        embedder = os.environ.get(EMBEDDER_ENV, "").strip() or None
+        embedder = _configuration_getenv(EMBEDDER_ENV, "").strip() or None
     if embedder is None or embedder in ("", "none", "off"):
         return None, ""
     if isinstance(embedder, str):

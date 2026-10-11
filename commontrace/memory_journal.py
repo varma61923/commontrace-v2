@@ -29,6 +29,9 @@ CREATE TABLE IF NOT EXISTS record_events(id TEXT, version INTEGER, body TEXT, PR
 CREATE TABLE IF NOT EXISTS records(id TEXT PRIMARY KEY, kind TEXT, body TEXT);
 CREATE INDEX IF NOT EXISTS record_facets ON records(kind, json_extract(body,'$.payload.entity'),
  json_extract(body,'$.payload.facet'), json_extract(body,'$.scope'));
+CREATE INDEX IF NOT EXISTS record_status_kind ON records(json_extract(body,'$.status'),kind,id);
+CREATE INDEX IF NOT EXISTS record_always ON records(kind,json_extract(body,'$.payload.critical'),
+ json_extract(body,'$.payload.lesson_kind'));
 CREATE VIRTUAL TABLE IF NOT EXISTS record_fts USING fts5(id UNINDEXED,text);
 CREATE TABLE IF NOT EXISTS links(source TEXT,derived TEXT,PRIMARY KEY(source,derived));
 CREATE TABLE IF NOT EXISTS captures(sequence INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT UNIQUE,session TEXT,event TEXT,
@@ -56,6 +59,7 @@ def visible(record: MemoryRecord, scope: dict, *, statuses=("active",), at=None)
 
 class Journal:
     def __init__(self, root: str):
+        self.root = root
         self.path = os.path.join(paths.memory_dir(root), "runtime.sqlite3")
         paths.enforce_boundary(root, self.path)
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
@@ -173,7 +177,23 @@ class Journal:
             rows = db.execute("SELECT body FROM record_events WHERE id=? ORDER BY version", (identity,)).fetchall()
         return [replace(MemoryRecord(**json.loads(row[0])), is_latest=i == len(rows) - 1) for i, row in enumerate(rows)]
 
+    def current(self, identity: str, *, scope: dict, statuses=("active",), at=None) -> MemoryRecord | None:
+        """Indexed canonical lookup with the same evidence checks as search."""
+        with self.connect() as db:
+            row = db.execute("SELECT body FROM records WHERE id=?", (identity,)).fetchone()
+            if row is None:
+                return None
+            record = MemoryRecord(**json.loads(row[0]))
+            if not visible(record, scope, statuses=statuses, at=at):
+                return None
+            return record if self._grounded(db, record, scope, statuses=statuses, at=at) else None
+
     def _grounded(self, db, record, scope, *, statuses, at, seen=None):
+        if record.provenance.get("code_evidence"):
+            from commontrace.record_visibility import code_evidence_current
+
+            if not code_evidence_current(self.root, record.provenance["code_evidence"]):
+                return False
         seen = set() if seen is None else seen
         if record.id in seen or len(seen) >= 64:
             return False  # cycles and unbounded grounding fail closed
@@ -193,7 +213,7 @@ class Journal:
         return True
 
     def search(
-        self, query: str, *, scope: dict | None = None, kinds=(), statuses=("active",), limit=20, at=None
+        self, query: str, *, scope: dict | None = None, kinds=(), statuses=("active",), limit=20, at=None, always=False
     ) -> list[MemoryRecord]:
         from commontrace.search_recipes import terms
 
@@ -201,15 +221,34 @@ class Journal:
             return []
         tokens = list(dict.fromkeys(terms(query)))[:32]
         with self.connect() as db:
+            clauses = ["json_extract(r.body,'$.is_latest')=1"]
+            parameters = []
+            if statuses:
+                clauses.append("json_extract(r.body,'$.status') IN (SELECT value FROM json_each(?))")
+                parameters.append(json.dumps(list(statuses)))
+            else:
+                return []
+            if kinds:
+                clauses.append("r.kind IN (SELECT value FROM json_each(?))")
+                parameters.append(json.dumps(list(kinds)))
+            for dimension in ("tenant", "user", "agent", "session", "repo"):
+                field = "json_extract(r.body,'$.scope." + dimension + "')"
+                clauses.append("(" + field + " IS NULL OR " + field + "=?)")
+                parameters.append((scope or {}).get(dimension))
+            if always:
+                clauses.append(
+                    "(r.kind='directive' OR (r.kind='profile' AND json_extract(r.body,'$.payload.critical')=1) "
+                               "OR (r.kind='lesson' AND json_extract(r.body,'$.payload.lesson_kind')='directive'))")
+            source = "records r"
+            order = "r.id"
             if tokens:
                 expression = " OR ".join('"' + t.replace('"', '""') + '"' for t in tokens)
-                rows = db.execute(
-                    "SELECT r.body FROM record_fts f JOIN records r ON r.id=f.id "
-                    "WHERE record_fts MATCH ? ORDER BY bm25(record_fts)",
-                    (expression,),
-                )
-            else:
-                rows = db.execute("SELECT body FROM records ORDER BY id")
+                source = "record_fts f JOIN records r ON r.id=f.id"
+                clauses.append("record_fts MATCH ?")
+                parameters.append(expression)
+                order = "bm25(record_fts)"
+            rows = db.execute("SELECT r.body FROM " + source + " WHERE " + " AND ".join(clauses) +
+                              " ORDER BY " + order, parameters)
             result = []
             for row in rows:
                 record = MemoryRecord(**json.loads(row[0]))

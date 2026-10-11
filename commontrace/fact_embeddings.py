@@ -22,6 +22,8 @@ import sqlite3
 import threading
 from collections import OrderedDict
 
+from commontrace.configuration import getenv as _configuration_getenv
+
 _LOCK = threading.Lock()
 _MODELS: OrderedDict = OrderedDict()
 _VECTORS: OrderedDict = OrderedDict()
@@ -48,10 +50,10 @@ def _resolve(model, model_path):
         if isinstance(model, str):
             return _cached_model(("tag", model), lambda: _Adapter(model))
         return model, model
-    tag = os.environ.get("COMMONTRACE_FACT_EMBEDDER", "").strip()
+    tag = _configuration_getenv("COMMONTRACE_FACT_EMBEDDER", "").strip()
     if tag and tag.lower() not in ("none", "off"):
         return _cached_model(("tag", tag), lambda: _Adapter(tag))
-    selected = model_path or os.environ.get("COMMONTRACE_FACT_EMBEDDER_PATH")
+    selected = model_path or _configuration_getenv("COMMONTRACE_FACT_EMBEDDER_PATH")
     if not selected:
         return None, None
     if not os.path.isdir(selected):

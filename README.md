@@ -20,6 +20,14 @@ python -m pip install -e .
 commontrace up --dest /path/to/agent-project
 ```
 
+For local semantic retrieval, install `.[attention,vector-lance]`. Configure
+models, budgets, routes and server settings in `commontrace.yaml`; optional
+`settings.runtime.vector_backend: lance` enables background HNSW indexing.
+`commontrace migrate config --dest STORE_ROOT --dry-run` previews migration
+from legacy environment settings. Migration writes credential references,
+and each request uses its own configuration context. See the
+[configuration reference](docs/environment.md).
+
 Open the printed console URL. The gateway requires its bearer token for memory
 operations; Swagger UI is at `/v1/docs`, and its schema is at `/v1/openapi.json`.
 For a scoped agent key, run `commontrace init --agent reviewer --dest STORE_ROOT`.

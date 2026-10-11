@@ -12,6 +12,7 @@ import sys
 import time
 
 from commontrace import injection_guard, kg_similarity, memory_guard, paths
+from commontrace.configuration import getenv as _configuration_getenv
 from commontrace.context_template import render_context as render_context
 from commontrace.memory_journal import Journal
 from commontrace.memory_record import MemoryRecord
@@ -44,7 +45,8 @@ class HookKit:
 
             try:
                 embedder = (
-                    os.environ.get("COMMONTRACE_GRAPH_EMBEDDER") or configuration.load(root)["options"]["embedding"]
+                    _configuration_getenv("COMMONTRACE_GRAPH_EMBEDDER")
+                    or configuration.load(root)["options"]["embedding"]
                 )
             except (OSError, ValueError):
                 embedder = "none"  # Capture remains available even with an invalid model configuration.
@@ -126,7 +128,9 @@ class HookKit:
         query = " ".join(
             str(payload.get(key, ""))[:10000] for key in ("prompt", "query", "tool_name", "tool_input", "error")
         )
-        records = self.journal.search("", scope=self.scope, statuses=("active", "shadow"), limit=1000)
+        relevant = self.journal.search(query, scope=self.scope, statuses=("active", "shadow"), limit=200)
+        always = self.journal.search("", scope=self.scope, statuses=("active",), always=True, limit=1000)
+        records = list({record.id: record for record in [*always, *relevant]}.values())
         studies = self.journal.evaluations(self.scope)
         candidates, fixed = [], []
         for record in records:
@@ -157,7 +161,9 @@ class HookKit:
             if trigger.get("path") and trigger["path"] not in str(payload.get("tool_input", "")):
                 continue
             if record.status == "active" and (
-                record.kind == "directive" or record.kind == "profile" and record.payload.get("critical")
+                record.kind == "directive"
+                or record.kind == "lesson" and record.payload.get("lesson_kind") == "directive"
+                or record.kind == "profile" and record.payload.get("critical")
             ):
                 fixed.append((record, text))
             elif query.strip():

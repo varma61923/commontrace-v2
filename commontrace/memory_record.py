@@ -156,3 +156,23 @@ def facet_observation(
             "source_versions": {record.id: record.version for record in sources},
         },
     )
+
+
+def preference_candidates(text: str, scope: dict) -> list[tuple[str, dict]]:
+    """Literal first-person assertions shared by local and hosted capture."""
+    import hashlib
+    import json
+    import re
+
+    found = {}
+    for prefix, bucket, pattern in (
+        ("static-", "static", r"\bI (?:work as|am a|am an)\s+([^.!?\n]{3,120})"),
+        ("preference-", "dynamic", r"\bI (?:prefer|like|always use|want)\s+([^.!?\n]{3,300})"),
+    ):
+        for match in re.finditer(pattern, text, flags=re.I):
+            assertion = match.group(0).strip()
+            identity = (
+                prefix + hashlib.sha256((json.dumps(scope, sort_keys=True) + assertion.casefold()).encode()).hexdigest()
+            )
+            found[identity] = {"text": assertion, "bucket": bucket, "author": "user"}
+    return list(found.items())[:32]

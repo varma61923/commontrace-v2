@@ -27,3 +27,42 @@ def test_authorship_code_verification_and_coverage(tmp_path):
     assert result["claims"][1]["code_verified"]
     assert import_history(str(root), str(history), agent="codex", scope={"agent": "a"})["messages"] == 0
     assert not Journal(str(root)).search("", scope={"agent": "a"}, kinds=("lesson",))
+
+
+def test_actionable_code_grounded_import_seeds_only_quarantined_candidates(tmp_path):
+    from commontrace.session_learning import shadow
+
+    (tmp_path / "parser.py").write_text("def parse():\n    return 1\n")
+    source = tmp_path / "history.json"
+    source.write_text(
+        json.dumps(
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "Always test `parse` in parser.py before changing its boundary handling.",
+                    },
+                    {"role": "assistant", "content": "Always use missing.py `invented` for all parser work."},
+                ]
+            }
+        )
+    )
+    result = import_history(str(tmp_path), str(source), agent="cursor", scope={"agent": "a"})
+    assert result["lessons_seeded"] == 1
+    journal = Journal(str(tmp_path))
+    assert not journal.search("", scope={"agent": "a"}, kinds=("lesson",))
+    identity = result["lesson_ids"][0]
+    lesson = shadow(str(tmp_path), identity, actor="owner")
+    assert lesson.status == "shadow"
+    assert journal.search("parse", scope={"agent": "a"}, kinds=("lesson",), statuses=("shadow",))
+    assert import_history(str(tmp_path), str(source), agent="cursor", scope={"agent": "a"})["lessons_seeded"] == 0
+    (tmp_path / "parser.py").write_text("def replacement():\n    return 2\n")
+    assert not journal.search("parse", scope={"agent": "a"}, kinds=("lesson",), statuses=("shadow",))
+
+
+def test_verification_requires_all_quoted_symbols_and_rejects_foreign_paths(tmp_path):
+    from commontrace.history_import import verify_code
+
+    (tmp_path / "parser.py").write_text("def parse():\n    return 1\n")
+    assert not verify_code(str(tmp_path), "parser.py has `parse` and `missing_symbol`")
+    assert not verify_code(str(tmp_path), "Use ../parser.py `parse`")

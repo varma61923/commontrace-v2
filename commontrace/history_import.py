@@ -51,7 +51,9 @@ def messages(data):
 
 def verify_code(root: str, quote: str) -> list[dict]:
     verified = []
-    for match in re.finditer(r"\b([\w./-]+\.(?:py|ts|js|go|rs|java))\b", quote):
+    snippets = [a or b for a, b in re.findall(r"`([^`]+)`|\b(def \w+\(\))", quote)]
+    matched = set()
+    for match in re.finditer(r"(?<![\w./-])([\w./-]+\.(?:py|ts|js|go|rs|java))\b", quote):
         relative = match.group(1)
         filename = os.path.realpath(os.path.join(root, relative))
         if not paths.is_within_directory(root, filename) or not os.path.isfile(filename):
@@ -61,8 +63,9 @@ def verify_code(root: str, quote: str) -> list[dict]:
         if len(raw) > 1000000:
             continue
         text = raw.decode("utf-8", errors="replace")
-        snippets = re.findall(r"`([^`]+)`|\b(def \w+\(\))", quote)
-        if not snippets or any((a or b) in text for a, b in snippets):
+        found = {snippet for snippet in snippets if snippet in text}
+        matched.update(found)
+        if not snippets or found:
             verified.append(
                 {
                     "path": relative,
@@ -70,7 +73,7 @@ def verify_code(root: str, quote: str) -> list[dict]:
                     "method": "path-and-quoted-symbol" if snippets else "path-exists-only",
                 }
             )
-    return verified
+    return verified if not snippets or matched == set(snippets) else []
 
 
 def import_history(root: str, filename: str, *, agent: str, scope: dict) -> dict:
@@ -87,7 +90,7 @@ def import_history(root: str, filename: str, *, agent: str, scope: dict) -> dict
         data = json.loads(text)
     source = hashlib.sha256((os.path.realpath(filename) + json.dumps(scope, sort_keys=True)).encode()).hexdigest()
     journal = Journal(root)
-    claims, imported = [], 0
+    claims, imported, seeded = [], 0, []
     for index, row in enumerate(messages(data)):
         row, _ = memory_guard.sanitize_metadata(row, pii=True)
         identity = hashlib.sha256(
@@ -124,6 +127,39 @@ def import_history(root: str, filename: str, *, agent: str, scope: dict) -> dict
             )
             journal.capture(source, "HistoryMessage", claim, scope=scope, event_id=identity)
             imported += 1
+        # A code-grounded instruction is a review candidate, not proven causal utility.
+        actionable = re.search(r"\b(always|avoid|prefer|must|should|never|use|run|test|ensure)\b", row["quote"], re.I)
+        if claim["code_verified"] and actionable and not memory_guard.scan_injection(row["quote"]):
+            lesson_id = "import-lesson-" + identity
+            if not journal.history(lesson_id):
+                journal.put(
+                    MemoryRecord(
+                        lesson_id,
+                        "lesson",
+                        1,
+                        {
+                            "text": row["quote"],
+                            "lesson_kind": "procedure",
+                            "operation": "create",
+                            "trigger": {},
+                            "source_message_ids": [identity],
+                            "offline_prior": {"alpha": 1, "beta": 1, "validated": False},
+                            "imported_claim": True,
+                        },
+                        status="quarantined",
+                        scope=scope,
+                        created_at=now(),
+                        relations={"derives": [identity]},
+                        provenance={
+                            "source_versions": {identity: journal.history(identity)[-1].version},
+                            "authored_by": row["author"],
+                            "source_agent": agent,
+                            "code_evidence": verification,
+                            "source_digest": source,
+                        },
+                    )
+                )
+                seeded.append(lesson_id)
     coverage_id = "coverage-" + source
     history = journal.history(coverage_id)
     journal.put(
@@ -143,4 +179,10 @@ def import_history(root: str, filename: str, *, agent: str, scope: dict) -> dict
             created_at=now(),
         )
     )
-    return {"messages": imported, "claims": claims, "coverage_id": coverage_id, "lessons_seeded": 0}
+    return {
+        "messages": imported,
+        "claims": claims,
+        "coverage_id": coverage_id,
+        "lessons_seeded": len(seeded),
+        "lesson_ids": seeded,
+    }

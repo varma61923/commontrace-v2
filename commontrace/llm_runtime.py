@@ -1,14 +1,14 @@
 """Per-prompt routing with explicit call/token/cost budgets and measured usage."""
 from __future__ import annotations
 
-import math
 import threading
 import time
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, replace
+from dataclasses import replace
 
 from commontrace import llm, session_ledger
+from commontrace.configuration import Budget
 
 ACTIVE: ContextVar["LLMRuntime | None"] = ContextVar("commontrace_llm_runtime", default=None)
 PURPOSE: ContextVar[str] = ContextVar("commontrace_llm_purpose", default="default")
@@ -27,19 +27,6 @@ class BudgetExceeded(llm.LLMUnavailable):
     pass
 
 
-@dataclass(frozen=True)
-class Budget:
-    calls: int = 20
-    tokens: int = 50000
-    cost_usd: float | None = None
-    seconds: float = 120.0
-
-    def __post_init__(self):
-        if any(not isinstance(value, int) or isinstance(value, bool) or value < 0
-               for value in (self.calls, self.tokens)) or not math.isfinite(self.seconds) or self.seconds <= 0 or (
-                self.cost_usd is not None
-                and (not math.isfinite(self.cost_usd) or self.cost_usd < 0)):
-            raise ValueError("budgets must be finite and nonnegative")
 
 
 class LLMRuntime:
@@ -52,7 +39,7 @@ class LLMRuntime:
                  budget: Budget | None = None, complete=None):
         self.root, self.session_id = root, session_id
         from commontrace import configuration
-        configured = configuration.load(root)
+        configured = configuration.current() or configuration.load(root)
         self.model_routes = configured['model_routes']
         self.routes = dict(routes or {})
         self.budget = budget or Budget(**configured['llm_budget'])

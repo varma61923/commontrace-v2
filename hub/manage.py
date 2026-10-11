@@ -297,7 +297,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import os
 import sys
 import uuid
 from collections import Counter
@@ -308,6 +307,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from commontrace import experiment, harm, prereg, raw_export
+from commontrace.configuration import getenv as _configuration_getenv
 from hub import abuse, alerts, audit, auth, commons, crud, events, outcomes, plans, rbac, retention
 from hub.billing import StripeError, StripeSettings, cancel_subscription
 from hub.config import HubConfig
@@ -2428,7 +2428,7 @@ async def connector_add(
 
     from hub.connectors import service as connector_service
 
-    secret = os.environ.get("HUB_CONNECTOR_SECRET", "")
+    secret = _configuration_getenv("HUB_CONNECTOR_SECRET", "")
     if not secret and sys.stdin.isatty():
         secret = getpass.getpass("Vendor signing secret (hidden): ")
     if not secret:

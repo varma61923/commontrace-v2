@@ -149,11 +149,128 @@ def test_real_randomized_log_controls_promotion_and_retirement(tmp_path, benefic
     journal.authorize_evaluation("tested", actor="test operator", occasions=1000, expires="2099-01-01T00:00:00+00:00")
     for index in range(1000):
         withheld = holdout_io.assign_and_log(
-            root, ["tested"], occasion_id=str(index), rate=config.rate, salt=config.salt,
-                revisions={"tested": revision}, durable=False
+            root,
+            ["tested"],
+            occasion_id=str(index),
+            rate=config.rate,
+            salt=config.salt,
+            revisions={"tested": revision},
+            durable=False,
         )
         injected = "tested" not in withheld
         holdout_io.record_outcome(root, str(index), injected == beneficial, durable=False)
     changed = reconcile(root)
     assert changed[0]["integrity"] == "SOUND"
     assert journal.history("tested")[-1].status == ("active" if beneficial else "retired")
+
+
+def test_split_creates_distinct_quarantined_parts_with_pinned_target(tmp_path):
+    from commontrace.memory_record import MemoryRecord
+
+    journal = captured(str(tmp_path))
+    journal.put(
+        MemoryRecord("broad", "lesson", 1, {"text": "Test parsing and database migrations."}, scope={"agent": "a"})
+    )
+
+    def split_model(prompt):
+        if "WRITER" in prompt:
+            return json.dumps({"accept": True, "reason": "two independent procedures"}), {}
+        return json.dumps(
+            {
+                "operation": "split",
+                "target_id": "broad",
+                "parts": [
+                    {
+                        "kind": "procedure",
+                        "text": "Validate parser boundaries before pytest.",
+                        "trigger": {"path": "parser"},
+                    },
+                    {
+                        "kind": "procedure",
+                        "text": "Test migration rollback before deploying database changes.",
+                        "trigger": {"path": "migration"},
+                    },
+                ],
+            }
+        ), {}
+
+    result = learn(str(tmp_path), "r", scope={"agent": "a"}, complete=split_model)
+    assert result["operation"] == "split"
+    parts = journal.search("", scope={"agent": "a"}, kinds=("lesson",), statuses=("quarantined",))
+    assert len(parts) == 2
+    assert {part.payload["target_version"] for part in parts} == {1}
+    assert all(set(part.payload["replacement_ids"]) == {p.id for p in parts} for part in parts)
+    assert journal.history("broad")[-1].status == "active"
+
+
+def test_invalid_split_never_seals_work(tmp_path):
+    captured(str(tmp_path))
+    with pytest.raises(ValueError, match="split"):
+        learn(
+            str(tmp_path),
+            "r",
+            scope={"agent": "a"},
+            complete=lambda _: (json.dumps({"operation": "split", "target_id": "old", "parts": []}), {}),
+        )
+    assert Journal(str(tmp_path)).buffer("r", scope={"agent": "a"})
+
+
+@pytest.mark.parametrize("changed_target", [False, True])
+def test_split_waits_for_each_part_and_never_overwrites_changed_target(tmp_path, changed_target):
+    from dataclasses import replace
+
+    from commontrace import holdout_io
+    from commontrace.measure import content_revision
+    from commontrace.memory_record import MemoryRecord
+    from commontrace.session_learning import reconcile
+
+    root = str(tmp_path)
+    cfg = holdout_io.configure(root, rate=0.5, salt="split-fixture")
+    journal = Journal(root)
+    old = journal.put(MemoryRecord("old", "lesson", 1, {"text": "Broad procedure"}))
+    for identity in ("left", "right"):
+        journal.put(
+            MemoryRecord(
+                identity,
+                "lesson",
+                1,
+                {
+                    "text": identity + " focused procedure",
+                    "operation": "split",
+                    "operation_id": "split-group",
+                    "target_id": "old",
+                    "target_version": 1,
+                    "replacement_ids": ["left", "right"],
+                },
+                status="shadow",
+            )
+        )
+
+    def evaluate(identity):
+        revision = content_revision(journal.history(identity)[-1].payload["text"])
+        for index in range(1000):
+            occasion = identity + ":" + str(index)
+            withheld = holdout_io.assign_and_log(
+                root,
+                [identity],
+                occasion_id=occasion,
+                rate=cfg.rate,
+                salt=cfg.salt,
+                revisions={identity: revision},
+                durable=False,
+            )
+            holdout_io.record_outcome(root, occasion, identity not in withheld, durable=False)
+
+    evaluate("left")
+    reconcile(root)
+    assert journal.history("left")[-1].status == "shadow"
+    assert journal.history("old")[-1].status == "active"
+    if changed_target:
+        journal.put(replace(old, version=2, payload={"text": "Owner corrected the procedure"}))
+    evaluate("right")
+    reconcile(root)
+    assert journal.history("old")[-1].status == ("active" if changed_target else "deprecated")
+    assert all(
+        journal.history(identity)[-1].status == ("shadow" if changed_target else "active")
+        for identity in ("left", "right")
+    )

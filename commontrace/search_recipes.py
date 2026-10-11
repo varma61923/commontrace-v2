@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from typing import Any, Protocol
 
 from commontrace import graph, hierarchical, lesson_cache
+from commontrace.configuration import configured
 from commontrace.query_plan import retrieve as planned_retrieval
 
 
@@ -100,6 +101,7 @@ def _distances(backend: GraphBackend, center: str, as_of: str | None, *, depth: 
     return distances
 
 
+@configured
 def search(root: str, query: str, *, recipe: str = "balanced", scope: str = "", limit: int = 10,
            as_of: str | None = None, dense_scores: dict[str, float] | None = None,
            entity_ids: Sequence[str] = (), center: str = "", backend: GraphBackend | None = None,

@@ -1,6 +1,9 @@
 name: Graphify architecture audit
 on:
   workflow_dispatch:
+  push:
+    branches: ['main', 'codex/**']
+    paths: ['commontrace/**', 'hub/**', 'scripts/graphify_audit.py', '.github/workflows/graphify.yml']
   pull_request:
     paths: ['commontrace/**', 'hub/**', 'scripts/graphify_audit.py']
 permissions:
@@ -15,7 +18,12 @@ jobs:
           python-version: '3.12'
       - run: python -m pip install "graphifyy[terraform,sql]==0.9.84"
       - run: graphify extract . --code-only --max-workers 2 --out "$RUNNER_TEMP/architecture"
-      - run: python scripts/graphify_audit.py --graph "$RUNNER_TEMP/architecture/graphify-out/graph.json" --output "$RUNNER_TEMP/architecture/audit.json"
+      - name: Enforce graph integrity and reviewed surface budgets
+        run: >-
+          python scripts/graphify_audit.py
+          --graph "$RUNNER_TEMP/architecture/graphify-out/graph.json"
+          --output "$RUNNER_TEMP/architecture/audit.json"
+          --source-root . --max-modules 306 --max-unreachable 303
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
           name: graphify-audit

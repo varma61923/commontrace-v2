@@ -5,6 +5,7 @@ import mimetypes
 import os
 
 from commontrace import llm as _llm_mod
+from commontrace.configuration import getenv as _configuration_getenv
 
 VISION_PROVIDERS = ("anthropic", "openai-compatible", "ollama")
 
@@ -19,7 +20,7 @@ _TRUTHY = ("1", "true", "yes", "y", "on")
 def _enabled(flag: bool | None) -> bool:
     if flag is not None:
         return bool(flag)
-    return os.environ.get(_ENABLE_ENV, "").strip().lower() in _TRUTHY
+    return _configuration_getenv(_ENABLE_ENV, "").strip().lower() in _TRUTHY
 
 
 def _mime_for(path: str, blob: bytes) -> str:

@@ -12,6 +12,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from commontrace import _jsonl, lesson_cache, paths
+from commontrace.configuration import configured
+from commontrace.configuration import getenv as _configuration_getenv
 from commontrace.fact_evidence import MAX_EVIDENCE, EvidenceError, EvidenceResolver, FactEvidence, claim_revision
 
 DEFAULT_CATEGORY = "general"
@@ -324,7 +326,7 @@ NEAR_DUPLICATE_COSINE = 0.95
 def dedup_mode() -> str:
     """``exact`` (normalized text only), ``near`` (default: also high-precision lexical
     paraphrases) or ``semantic`` (also embedding near-duplicates; needs COMMONTRACE_FACT_EMBEDDER)."""
-    mode = os.environ.get("COMMONTRACE_FACT_DEDUP", "near").strip().lower() or "near"
+    mode = _configuration_getenv("COMMONTRACE_FACT_DEDUP", "near").strip().lower() or "near"
     if mode not in ("exact", "near", "semantic"):
         raise ValueError("COMMONTRACE_FACT_DEDUP must be exact, near or semantic")
     return mode
@@ -484,7 +486,7 @@ def _semantic_duplicate(root: str | None, facts: dict[str, AtomicFact], statemen
 
     _w, numbers, negations = _signature(statement)
     pool = _semantic_pool(root, facts, statement, scopes)
-    if decision is not None and os.environ.get("COMMONTRACE_FACT_CONFLICT_JUDGE", "").lower() == "llm":
+    if decision is not None and _configuration_getenv("COMMONTRACE_FACT_CONFLICT_JUDGE", "").lower() == "llm":
         from commontrace import fact_conflicts
         ranked = fact_embeddings.similar(statement, pool, root=root, threshold=0.6)
         candidates = [fact for fact, _ in ranked[:15]] if ranked is not None else pool[:15]
@@ -539,7 +541,7 @@ def _detect_conflicts(facts: dict[str, AtomicFact], index: _StatementIndex, fact
             if len(n) == len(numbers) and sum(a != b for a, b in zip(n, numbers)) == 1:
                 for older in live(same[n]):
                     found.setdefault(older.id, (older, "value"))
-    if os.environ.get("COMMONTRACE_FACT_CONFLICT_JUDGE", "").strip().lower() == "llm":
+    if _configuration_getenv("COMMONTRACE_FACT_CONFLICT_JUDGE", "").strip().lower() == "llm":
         if joint_decision is None:
             pool = [f for f, _k in found.values()]
             if root:
@@ -689,6 +691,7 @@ def prepare_fact(statement: str, category: str, valid_from, valid_until, expires
     return statement, category, valid_from, valid_until, _normalize_expires_at(expires_at)
 
 
+@configured
 def add_fact(
     root: str,
     statement: str,
@@ -747,6 +750,7 @@ def _validate_evidence_policy(min_support: int) -> None:
         raise EvidenceError(f"min_support must be an integer in 1..{MAX_EVIDENCE}")
 
 
+@configured
 def add_facts(root: str, items: list[dict[str, Any]]) -> list[tuple[AtomicFact, str]]:
     """Add or reinforce many facts in one locked write; bad items raise ValueError."""
     prepared = []
@@ -1314,6 +1318,7 @@ def _fact_tokens(fact: AtomicFact) -> frozenset:
     return toks
 
 
+@configured
 def search_facts(
     root: str,
     query: str,
