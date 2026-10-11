@@ -433,11 +433,15 @@ class StatementIndex:
                 "SELECT COUNT(*) FROM (SELECT 1 FROM facts INDEXED BY fact_block "
                 "WHERE block=? AND status='active' LIMIT ?)", (block, count + 1)
             ).fetchone()[0]
-            source = ("facts f INDEXED BY fact_block CROSS JOIN postings p" if block_count <= count
-                      else "postings p CROSS JOIN facts f")
+            query = (
+                "SELECT f.id FROM facts f INDEXED BY fact_block CROSS JOIN postings p "
+                "WHERE f.block=? AND f.status='active' AND p.term_id=? AND p.fact_row=f.rowid"
+                if block_count <= count else
+                "SELECT f.id FROM postings p CROSS JOIN facts f "
+                "WHERE f.block=? AND f.status='active' AND p.term_id=? AND p.fact_row=f.rowid"
+            )
             candidates.update(row[0] for row in self.facts.connection.execute(
-                "SELECT f.id FROM " + source + " "
-                "WHERE f.block=? AND f.status='active' AND p.term_id=? AND p.fact_row=f.rowid", (block, identity)))
+                query, (block, identity)))
         best = None
         for key in sorted(candidates):
             fact = self.facts.get(key)
