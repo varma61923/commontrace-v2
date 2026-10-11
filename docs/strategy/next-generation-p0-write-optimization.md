@@ -183,3 +183,15 @@ remain visible and are not used to claim controlled improvements. No prototype
 has been promoted: staged semantic admission and broader behavior need contracts
 before a production rewrite. Both the new write run and application validation
 used concurrent processes; separate-run differences are not causal estimates.
+
+The later combined profile still spends time recursively copying ordinary fact
+payloads for revision calculation and event/projection serialization. Add a
+small `AtomicFact.to_dict` fast path for the exact base class when every field
+is an immutable scalar or a plain list/dict of immutable scalars. Copy those
+containers and preserve dataclass field order. Subclasses, nested containers,
+evidence records, custom scalar types and arbitrary origin values retain
+`dataclasses.asdict` semantics through the existing implementation. Test detached
+snapshots, nested dataclasses, custom copy behavior, missing instance defaults
+and subclasses before changing the method. This does not skip envelope validation
+or change persisted bytes. A local serialization profile is diagnostic; only
+the unchanged million-fact real-API workload can close the write gate.

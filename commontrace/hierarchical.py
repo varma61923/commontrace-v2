@@ -70,9 +70,27 @@ class AtomicFact:
     retracted_at: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        if type(self) is not AtomicFact:
+            return asdict(self)
+        result = {}
+        for name in AtomicFact.__dataclass_fields__:
+            value = getattr(self, name)
+            if type(value) in _FACT_SCALARS:
+                result[name] = value
+            elif type(value) is list and all(type(item) in _FACT_SCALARS for item in value):
+                result[name] = value.copy()
+            elif type(value) is dict and all(
+                type(key) in _FACT_SCALARS and type(item) in _FACT_SCALARS for key, item in value.items()
+            ):
+                result[name] = value.copy()
+            else:
+                # Preserve recursive dataclass conversion and custom deepcopy
+                # behavior for evidence, nested origins and scalar subclasses.
+                return asdict(self)
+        return result
 
 
+_FACT_SCALARS = (str, int, float, bool, type(None))
 _FACT_FIELDS = frozenset(AtomicFact.__dataclass_fields__)
 
 
