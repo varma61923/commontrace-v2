@@ -104,9 +104,9 @@ changing graph exploration: it recovers the measured recall with fewer original
 vector reads than refinement 8. Validate this choice through the product API,
 including additional queries withheld from the sweep.
 
-The product API measured recall 0.98 on the tuning queries and 0.995 on 20
-held-out queries in each of three rounds. Tuning-query p95 was 22.31, 11.43 and
-11.03 ms; held-out p95 was 15.91, 11.47 and 11.66 ms. Minimum per-query recall
+The committed product API measured recall 0.98 on the tuning queries and 0.995
+on 20 held-out queries in each of three rounds. Tuning-query p95 was 24.03,
+16.35 and 14.62 ms; held-out p95 was 21.16, 22.14 and 16.60 ms. Minimum per-query recall
 was 0.70 and 0.90 respectively: the mean target does not guarantee every query.
 The cosine-score regression failed before refinement and all five Lance tests
 passed afterward. CI's optional-engine job now includes the scale-harness tests.
@@ -131,3 +131,20 @@ has the declared `vector-lance` extra installed:
 This entry point returns nonzero when scale, latency or mean recall misses. The
 scale harness without `--check-lance` remains a diagnostic and returns zero on
 workload completion. Both reports explicitly leave full hybrid acceptance open.
+
+The fresh reproducer completed on `3a72da1` and returned 0 with all three explicit
+component checks true. Its 20 paired synthetic queries measured ANN p50 14.38 ms,
+p95 19.69 ms, mean recall@10 0.995 and minimum recall 0.90; exact p95 was
+462.97 ms. Loading took 181.77 seconds and index construction 54.22 seconds.
+This separately built index does not establish a controlled before/after effect;
+the retained-index randomized sweep above provides that comparison.
+
+The [signed refinement manifest](measurements/p0-lance-refinement-signed.json)
+binds the retained baseline, randomized sweep, committed product validation,
+fresh million-vector report and validation checks using the continuation audit's
+pinned public key. The sweep and product reports contain the diagnostic source.
+To reproduce the same-index experiment, make an isolated checkout of `eb3b528`,
+run its documented million-vector command with `--keep`, and pass that report to
+the sweep diagnostic. Run the product diagnostic from the current checkout using
+the retained baseline and full sweep report. Neither diagnostic mutates or drops
+the retained vector index. The fresh reproducer cleans its own temporary store.

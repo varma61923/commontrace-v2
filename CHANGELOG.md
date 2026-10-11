@@ -21,8 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Optional Lance ANN search reranks four times the requested candidates using
   original vectors, fixing quantized cosine scores. On one retained million-vector
   index, recall@10 improved from 0.905 to 0.98; 20 held-out queries reached 0.995.
-  Across three product-query rounds, p95 remained below 23 ms. Five real-engine
-  checks pass after the new cosine regression failed first. These measurements
+  Across three committed product-query rounds, p95 remained below 25 ms. A fresh
+  million-vector run measured 19.69 ms p95 and mean recall 0.995; the explicit
+  reproducer passes its component gates. Ten real-engine, harness and boundary
+  checks pass after the new regressions failed first. These measurements
   cover the vector component; full hybrid latency remains unverified.
 - The runtime journal now shares bounded SQLite connection ownership with the
   fact ledger. Aborted reads finalize partial cursors before closing; hook

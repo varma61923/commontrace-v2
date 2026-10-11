@@ -1,0 +1,90 @@
+{
+  "benchmark": "vector-scale",
+  "engine": "lance",
+  "n": 1000000,
+  "dim": 384,
+  "queries": 20,
+  "top_k": 10,
+  "clusters": 2000,
+  "spread": 0.05,
+  "seed": 61923,
+  "batch": 10000,
+  "cpu_count": 16,
+  "platform": "Linux-6.8.0-146-generic-x86_64-with-glibc2.39",
+  "python": "3.12.3",
+  "lancedb": "0.40.0",
+  "numpy": "2.5.4",
+  "hybrid_gate": "unverified: vector component only",
+  "load_seconds": 182.7779169959831,
+  "exact_samples_ms": [
+    496.16433901246637,
+    450.92103898059577,
+    441.3234220119193,
+    395.0272259535268,
+    379.8438369994983,
+    377.99171096412465,
+    388.7935869861394,
+    379.316417966038,
+    378.6050420021638,
+    393.4055370045826,
+    385.8392990077846,
+    378.09465697500855,
+    371.34520697873086,
+    369.02116803685203,
+    376.6419690218754,
+    371.6221179929562,
+    386.78314903518185,
+    370.5615350045264,
+    403.7774340249598,
+    438.2941730436869
+  ],
+  "exact_ms": {
+    "p50": 382.84156800364144,
+    "p95": 450.92103898059577
+  },
+  "maintenance": {
+    "rows": 1000000,
+    "approximate": true
+  },
+  "index_build_seconds": 55.08054001099663,
+  "sweep": [
+    {
+      "configuration": "product HnswSq defaults",
+      "samples_ms": [
+        7.145330018829554,
+        10.622842004522681,
+        14.4439049763605,
+        7.167036994360387,
+        10.600183974020183,
+        12.72692997008562,
+        15.545953996479511,
+        9.603806014638394,
+        17.25116604939103,
+        13.3634660160169,
+        10.456106974743307,
+        21.625633002258837,
+        15.839000989217311,
+        12.406825029756874,
+        15.162976051215082,
+        14.912200975231826,
+        15.089916007127613,
+        12.674778001382947,
+        8.50688898935914,
+        12.812333006877452
+      ],
+      "p50_ms": 12.769631488481537,
+      "p95_ms": 17.25116604939103,
+      "recall_at_k": 0.905,
+      "recall_min": 0.7
+    }
+  ],
+  "source_files_sha256": {
+    "benchmarks/vector_scale_bench.py": "7b13fe896e85673c385a969a2514a1b33926a21ade13c0c47831055be1ed6b53",
+    "commontrace/vector_lance.py": "3cc2c741d06526d8a043702fb7a927c39dfc1bfd83ced525a8cd10406a0efbdc",
+    "commontrace/vector_store.py": "873f29ef1e37543309470f65e0e06452012e7983ae010d5ab8da2bb897fb5aa9",
+    "commontrace/async_workers.py": "990d5538001d4b089bdfebfce3565b5b927ec3b79bf09c15592ff1847676e762"
+  },
+  "source_commit": "eb3b528cab6bbc2d7094acd46f2dda712fbb23a4",
+  "note": "Synthetic paired vector queries; excludes embeddings, lexical/graph fusion and canonical admission.",
+  "retained_benchmark_store": "/tmp/commontrace-lance-scale-88ok9sjw"
+}

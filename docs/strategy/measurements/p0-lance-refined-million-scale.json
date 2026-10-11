@@ -1,0 +1,95 @@
+{
+  "benchmark": "vector-scale",
+  "engine": "lance",
+  "n": 1000000,
+  "dim": 384,
+  "queries": 20,
+  "top_k": 10,
+  "clusters": 2000,
+  "spread": 0.05,
+  "seed": 61923,
+  "batch": 10000,
+  "cpu_count": 16,
+  "platform": "Linux-6.8.0-146-generic-x86_64-with-glibc2.39",
+  "python": "3.12.3",
+  "lancedb": "0.40.0",
+  "numpy": "2.5.4",
+  "hybrid_gate": "unverified: vector component only",
+  "load_seconds": 181.7653913910035,
+  "exact_samples_ms": [
+    425.74346298351884,
+    381.6680879681371,
+    401.81448101066053,
+    543.5619750060141,
+    462.9683850216679,
+    457.5482149957679,
+    407.958239025902,
+    417.9779299884103,
+    379.8249700339511,
+    370.2869309927337,
+    362.6321019837633,
+    377.6212299708277,
+    365.1640869793482,
+    407.55068900762126,
+    439.5585029851645,
+    435.09284098399803,
+    428.53593797190115,
+    432.22908600000665,
+    399.5175570016727,
+    440.3014119598083
+  ],
+  "exact_ms": {
+    "p50": 412.96808450715616,
+    "p95": 462.9683850216679
+  },
+  "maintenance": {
+    "rows": 1000000,
+    "approximate": true
+  },
+  "index_build_seconds": 54.21545805595815,
+  "sweep": [
+    {
+      "configuration": "product HnswSq defaults",
+      "refine_factor": 4,
+      "samples_ms": [
+        23.210223007481545,
+        12.185157043859363,
+        13.461679976899177,
+        11.394739034585655,
+        13.678599032573402,
+        19.69123602611944,
+        17.73608598159626,
+        17.822729947511107,
+        16.889678954612464,
+        14.600820024497807,
+        14.46786499582231,
+        17.733759013935924,
+        13.580619008280337,
+        14.022272021975368,
+        13.460605987347662,
+        15.302971005439758,
+        14.210051973350346,
+        14.216370997019112,
+        16.84815704356879,
+        14.294004009570926
+      ],
+      "p50_ms": 14.380934502696618,
+      "p95_ms": 19.69123602611944,
+      "recall_at_k": 0.995,
+      "recall_min": 0.9
+    }
+  ],
+  "source_files_sha256": {
+    "benchmarks/vector_scale_bench.py": "33c1099ac55938e11b6a284e3bdf8f6eb2ef3ba5e3012fd9e662698814e319fd",
+    "commontrace/vector_lance.py": "f720d9dc1fd857b8c0b4369b2f08f1e10c2c80113f344e75734adde4f0d82251",
+    "commontrace/vector_store.py": "873f29ef1e37543309470f65e0e06452012e7983ae010d5ab8da2bb897fb5aa9",
+    "commontrace/async_workers.py": "990d5538001d4b089bdfebfce3565b5b927ec3b79bf09c15592ff1847676e762"
+  },
+  "source_commit": "3a72da171adcd986f77d5514dfe1040c72557ff2",
+  "note": "Synthetic paired vector queries; excludes embeddings, lexical/graph fusion and canonical admission.",
+  "vector_component_gates": {
+    "million_vectors": true,
+    "local_vector_p95_lt_50ms": true,
+    "mean_recall_gte_0_97": true
+  }
+}

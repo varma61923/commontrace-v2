@@ -37,8 +37,10 @@ hybrid retrieval. The [local vector audit](next-generation-p0-vector-audit.md)
 records the scope and reproducible commands. At 1M vectors the ANN component
 measured 13.04 ms p95, but mean recall@10 0.91 misses the existing 0.97 target.
 Refinement 4 subsequently raised recall to 0.98 on a matching retained index;
-20 held-out queries reached 0.995. Three product-query rounds stayed below 23 ms
-p95, and five real-engine checks pass after the cosine-score test failed first.
+20 held-out queries reached 0.995. Three committed product-query rounds stayed
+below 25 ms p95. A fresh million-vector reproducer measured 19.69 ms p95 and
+mean recall 0.995, passing its explicit component targets. Ten real-engine,
+harness and boundary checks pass after the new regressions failed first.
 Full hybrid latency and zero-reembedding restart remain unverified.
 
 The combined branch contains P0–P4 implementation; this audit does not establish

@@ -1,0 +1,22 @@
+{
+  "format": "commontrace-public-results-v1",
+  "report": {
+    "public_aggregate_only": true,
+    "measured_at": "2026-10-11T09:50:31.568853+00:00",
+    "scope": "Optional Lance vector component; full hybrid remains unverified",
+    "source_commit": "3a72da171adcd986f77d5514dfe1040c72557ff2",
+    "files_sha256": {
+      "docs/strategy/measurements/p0-lance-retained-baseline.json": "6f5b41ab00a64de4564b736124f8a86a37830e56865c2b9a773bceaba31ff9f3",
+      "docs/strategy/measurements/p0-lance-refinement-sweep.json": "fa1d824dba300df6fb6f41ad8706d0840825aca30a9fb5325947f515547ccbc2",
+      "docs/strategy/measurements/p0-lance-refinement-product.json": "b2e85312682b75126d60c5cd5bfc292a99eec7185da5b91ecf6a845f5ab91765",
+      "docs/strategy/measurements/p0-lance-refined-million-scale.json": "aec3804092e4559b174cc3bc8e1349f365525937e808d710b92f563bdaf670c1",
+      "docs/strategy/measurements/p0-lance-refinement-validation.json": "d78f2a6a4ec09e3b425101541b566d47155010433bd44459a6fdc029f2126b24"
+    },
+    "decision": "vector component targets pass on these synthetic probes; P0 remains open",
+    "limitations": [
+      "Signatures detect edits; they do not establish scientific validity."
+    ]
+  },
+  "public_key": "4af25ffa4889429857e2df41a90657a23ffc5ed89ec37a614a79cf56b24f1630",
+  "signature": "xWRO3PxoRkmhJUcMYnkIh2AecYVcGqV4jiGJIPKARMW6iNzlrBF2xmltFK+eflh7qhhQB6Aisxp7InT7S+bZCw=="
+}
