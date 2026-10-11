@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS facts (
  category TEXT NOT NULL, confidence REAL NOT NULL, length INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS fact_norm ON facts(norm, status);
 CREATE INDEX IF NOT EXISTS fact_slot ON facts(slot, negative, numbers, status);
+CREATE INDEX IF NOT EXISTS fact_block ON facts(block, status);
 CREATE TABLE IF NOT EXISTS lexicon (
  id INTEGER PRIMARY KEY, kind TEXT NOT NULL, term TEXT NOT NULL,
  documents INTEGER NOT NULL DEFAULT 0, UNIQUE(kind,term));
@@ -85,12 +86,17 @@ def _connect(path: str, *, create: bool = False) -> _Connection:
     connection = sqlite3.connect(path, timeout=30, isolation_level=None, check_same_thread=False, factory=_Connection)
     connection.execute("PRAGMA busy_timeout=30000")
     connection.execute("PRAGMA synchronous=FULL")
-    if create:
-        connection.execute("PRAGMA journal_mode=WAL")
-        connection.executescript(_SCHEMA)
-    elif connection.execute("SELECT type FROM sqlite_master WHERE name='terms'").fetchone() == ("table",):
-        # Recheck under the writer lock: two restarting processes may observe v1.
-        try:
+    try:
+        if create:
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.executescript(_SCHEMA)
+        legacy = connection.execute("SELECT type FROM sqlite_master WHERE name='terms'").fetchone() == ("table",)
+        near_current = connection.execute(
+            "SELECT value FROM meta WHERE key='near_postings'"
+        ).fetchone() == ("global-v2",)
+        if legacy or not near_current:
+            # Recheck under the writer lock: restarting processes may see the
+            # same old projection. Neither conversion edits authoritative bytes.
             connection.execute('BEGIN IMMEDIATE')
             if connection.execute("SELECT type FROM sqlite_master WHERE name='terms'").fetchone() == ('table',):
                 connection.execute('ALTER TABLE terms RENAME TO legacy_terms')
@@ -108,12 +114,36 @@ def _connect(path: str, *, create: bool = False) -> _Connection:
                                    "JOIN facts f ON f.id=t.fact_id")
                 connection.execute('DROP TABLE legacy_terms')
                 connection.execute('DROP TABLE legacy_counts')
+            _upgrade_near_projection(connection)
             connection.commit()
-        except BaseException:
-            connection.rollback()
-            connection.close()
-            raise
+    except BaseException:
+        connection.rollback()
+        connection.close()
+        raise
     return connection
+
+
+def _upgrade_near_projection(connection: sqlite3.Connection) -> None:
+    """Replace block-specific term dictionaries in the caller's writer transaction."""
+    if connection.execute("SELECT value FROM meta WHERE key='near_postings'").fetchone() == ("global-v2",):
+        return
+    connection.execute("CREATE INDEX IF NOT EXISTS fact_block ON facts(block,status)")
+    connection.execute(
+        "INSERT INTO lexicon(kind,term,documents) SELECT 'near-v2',term,SUM(documents) FROM lexicon "
+        "WHERE kind>='near:' AND kind<'near;' GROUP BY term "
+        "ON CONFLICT(kind,term) DO UPDATE SET documents=documents+excluded.documents"
+    )
+    connection.execute(
+        "INSERT INTO postings SELECT current.id,p.fact_row,p.count FROM postings p "
+        "JOIN lexicon old ON old.id=p.term_id JOIN lexicon current ON current.kind='near-v2' AND current.term=old.term "
+        "WHERE old.kind>='near:' AND old.kind<'near;'"
+    )
+    connection.execute(
+        "DELETE FROM postings WHERE term_id IN (SELECT id FROM lexicon WHERE kind>='near:' AND kind<'near;')"
+    )
+    connection.execute("DELETE FROM lexicon WHERE kind>='near:' AND kind<'near;'")
+    connection.execute("INSERT INTO meta(key,value) VALUES('near_postings','global-v2') "
+                       "ON CONFLICT(key) DO UPDATE SET value=excluded.value")
 
 
 _CONNECTIONS = ConnectionPool(_connect)
@@ -153,7 +183,7 @@ def _project(connection: sqlite3.Connection, fact) -> None:
     )
     term_rows = [
         (kind, term, count) for kind, values in (
-            ("near:" + block, {word: 1 for word in content}),
+            ("near-v2", {word: 1 for word in content}),
             ("overlap-v1", {word: 1 for word in overlap}), ("bm25-v1", frequencies),
         ) for term, count in values.items()
     ]
@@ -378,17 +408,36 @@ class StatementIndex:
         content = h._content(words)
         if len(content) < 3:
             return None
-        block = "near:" + _dump([numbers, sorted(negative)])
+        block = _dump([numbers, sorted(negative)])
+        if self.facts.connection.execute(
+            "SELECT 1 FROM facts INDEXED BY fact_block WHERE block=? AND status='active' LIMIT 1", (block,)
+        ).fetchone() is None:
+            return None
         need = int((1 - threshold) * len(content)) + 1
         counts = []
         for term in content:
             row = self.facts.connection.execute(
-                "SELECT documents FROM term_counts WHERE kind=? AND term=?", (block, term)).fetchone()
-            counts.append((row[0] if row else 0, term))
+                "SELECT id,documents FROM lexicon WHERE kind='near-v2' AND term=?", (term,)).fetchone()
+            counts.append((row[1] if row else 0, term, row[0] if row else None))
         candidates = set()
-        for _, term in sorted(counts)[:need]:
+        # Any `need` distinct query terms preserve the Jaccard recall argument;
+        # global document frequencies only choose their lookup order.
+        for count, _term, identity in sorted(counts)[:need]:
+            if identity is None:
+                continue
+            # Drive the intersection from its smaller input. Numeric-free
+            # blocks can span the bank, whereas a common term can span many
+            # tiny numbered blocks. This bounded count selects a query plan;
+            # it never caps the returned candidates.
+            block_count = self.facts.connection.execute(
+                "SELECT COUNT(*) FROM (SELECT 1 FROM facts INDEXED BY fact_block "
+                "WHERE block=? AND status='active' LIMIT ?)", (block, count + 1)
+            ).fetchone()[0]
+            source = ("facts f INDEXED BY fact_block CROSS JOIN postings p" if block_count <= count
+                      else "postings p CROSS JOIN facts f")
             candidates.update(row[0] for row in self.facts.connection.execute(
-                "SELECT fact_id FROM terms WHERE kind=? AND term=?", (block, term)))
+                "SELECT f.id FROM " + source + " "
+                "WHERE f.block=? AND f.status='active' AND p.term_id=? AND p.fact_row=f.rowid", (block, identity)))
         best = None
         for key in sorted(candidates):
             fact = self.facts.get(key)

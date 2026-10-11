@@ -436,3 +436,194 @@ def test_legacy_postings_upgrade_is_atomic_for_concurrent_readers(tmp_path):
     assert results == ['A durable assertion exists'] * 2
     with fact_store.transaction(root) as canonical:
         assert canonical.connection.execute('SELECT COUNT(*) FROM postings').fetchone()[0] > 0
+
+
+def _restore_blocked_near_projection(root):
+    """Build the pre-global derived layout without changing ledger/payload bytes."""
+    fact_store.close_connections(root)
+    with sqlite3.connect(fact_store.database_path(root)) as connection:
+        connection.execute(
+            "INSERT INTO lexicon(kind,term,documents) "
+            "SELECT 'near:'||f.block,l.term,COUNT(*) FROM postings p "
+            "JOIN lexicon l ON l.id=p.term_id JOIN facts f ON f.rowid=p.fact_row "
+            "WHERE l.kind='near-v2' GROUP BY f.block,l.term"
+        )
+        connection.execute(
+            "INSERT INTO postings SELECT old.id,p.fact_row,p.count FROM postings p "
+            "JOIN lexicon l ON l.id=p.term_id JOIN facts f ON f.rowid=p.fact_row "
+            "JOIN lexicon old ON old.kind='near:'||f.block AND old.term=l.term WHERE l.kind='near-v2'"
+        )
+        connection.execute("DELETE FROM postings WHERE term_id IN (SELECT id FROM lexicon WHERE kind='near-v2')")
+        connection.execute("DELETE FROM lexicon WHERE kind='near-v2'")
+        connection.execute("DELETE FROM meta WHERE key='near_postings'")
+        connection.execute("DROP INDEX IF EXISTS fact_block")
+
+
+def _authoritative_fact_bytes(connection):
+    return (
+        connection.execute("SELECT seq,fact_id,version,operation,record FROM events ORDER BY seq").fetchall(),
+        connection.execute("SELECT id,payload FROM facts ORDER BY id").fetchall(),
+    )
+
+
+def test_global_near_upgrade_preserves_authoritative_bytes(tmp_path, monkeypatch):
+    root = str(tmp_path)
+    activate(root)
+    monkeypatch.setenv("COMMONTRACE_FACT_CONFLICTS", "off")
+    h.add_facts(root, [{"statement": f"Component {n} requires a durable replicated journal"} for n in range(30)])
+    _restore_blocked_near_projection(root)
+    with sqlite3.connect(fact_store.database_path(root)) as connection:
+        before = _authoritative_fact_bytes(connection)
+        blocked = connection.execute("SELECT COUNT(*) FROM lexicon WHERE kind>='near:' AND kind<'near;'").fetchone()[0]
+    with fact_store.transaction(root) as facts:
+        connection = facts.connection
+        assert _authoritative_fact_bytes(connection) == before
+        assert connection.execute("SELECT value FROM meta WHERE key='near_postings'").fetchone() == ("global-v2",)
+        assert connection.execute("SELECT 1 FROM lexicon WHERE kind>='near:' AND kind<'near;' LIMIT 1").fetchone() is None
+        assert connection.execute("SELECT COUNT(*) FROM lexicon WHERE kind='near-v2'").fetchone()[0] < blocked
+        assert connection.execute("PRAGMA synchronous").fetchone() == (2,)
+        assert connection.execute("PRAGMA journal_mode").fetchone() == ("wal",)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM lexicon l WHERE l.documents!=(SELECT COUNT(*) FROM postings p WHERE p.term_id=l.id)"
+        ).fetchone() == (0,)
+
+
+def test_global_near_upgrade_rolls_back_and_retries(tmp_path, monkeypatch):
+    root = str(tmp_path)
+    activate(root)
+    h.add_fact(root, "Component 7 requires a durable replicated journal")
+    _restore_blocked_near_projection(root)
+    with sqlite3.connect(fact_store.database_path(root)) as connection:
+        before = _authoritative_fact_bytes(connection)
+        terms = connection.execute("SELECT kind,term,fact_id,count FROM terms ORDER BY kind,term,fact_id").fetchall()
+
+    class FailingMarker(fact_store._Connection):
+        def execute(self, sql, *args, **kwargs):
+            if sql.lstrip().upper().startswith("INSERT") and "'near_postings'" in sql:
+                raise sqlite3.OperationalError("projection marker fault")
+            return super().execute(sql, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(fact_store, "_Connection", FailingMarker)
+        with pytest.raises(sqlite3.OperationalError, match="projection marker fault"):
+            h.load_facts(root)
+    with sqlite3.connect(fact_store.database_path(root)) as connection:
+        assert _authoritative_fact_bytes(connection) == before
+        assert connection.execute("SELECT kind,term,fact_id,count FROM terms ORDER BY kind,term,fact_id").fetchall() == terms
+        assert connection.execute("SELECT value FROM meta WHERE key='near_postings'").fetchone() is None
+        assert connection.execute("SELECT 1 FROM sqlite_master WHERE name='fact_block'").fetchone() is None
+    assert len(h.load_facts(root)) == 1
+    with fact_store.transaction(root) as facts:
+        assert facts.connection.execute("SELECT value FROM meta WHERE key='near_postings'").fetchone() == ("global-v2",)
+
+
+def test_global_near_upgrade_preserves_reader_snapshot_and_concurrent_openers(tmp_path):
+    import threading
+
+    root = str(tmp_path)
+    activate(root)
+    h.add_fact(root, "Component 7 requires a durable replicated journal")
+    _restore_blocked_near_projection(root)
+    reader = sqlite3.connect(fact_store.database_path(root), isolation_level=None)
+    try:
+        reader.execute("BEGIN")
+        old_terms = reader.execute("SELECT * FROM terms ORDER BY kind,term,fact_id").fetchall()
+        before = _authoritative_fact_bytes(reader)
+        barrier = threading.Barrier(2)
+
+        def open_projection(_):
+            barrier.wait(timeout=5)
+            connection = fact_store._connect(fact_store.database_path(root))
+            try:
+                return connection.execute("SELECT value FROM meta WHERE key='near_postings'").fetchone()
+            finally:
+                connection.close()
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            assert list(pool.map(open_projection, range(2))) == [("global-v2",)] * 2
+        assert reader.execute("SELECT * FROM terms ORDER BY kind,term,fact_id").fetchall() == old_terms
+        assert _authoritative_fact_bytes(reader) == before
+        reader.rollback()
+        assert reader.execute("SELECT value FROM meta WHERE key='near_postings'").fetchone() == ("global-v2",)
+        assert _authoritative_fact_bytes(reader) == before
+    finally:
+        reader.close()
+
+
+@pytest.mark.parametrize("scopes", [[], ["a"], ["b"], ["a", "b"]])
+def test_global_near_matches_brute_force_across_blocks_and_scopes(tmp_path, monkeypatch, scopes):
+    root = str(tmp_path)
+    activate(root)
+    monkeypatch.setenv("COMMONTRACE_FACT_CONFLICTS", "off")
+    monkeypatch.setenv("COMMONTRACE_FACT_DEDUP", "exact")
+    items = [
+        {"statement": f"Component {n} requires a durable replicated journal", "scopes": ["a"]}
+        for n in range(30)
+    ] + [
+        {"statement": "Component 7 requires durable replicated journal", "scopes": lane}
+        for lane in ([], ["a"], ["b"])
+    ] + [
+        {"statement": "Component 7 does not require a durable replicated journal", "scopes": ["a"]},
+        {"statement": "Component 7 needs a blue operator's testing platform", "scopes": ["a"]},
+        {"statement": "Component 7 requires 9 durable replicated journal", "scopes": ["a"]},
+        {"statement": "Component 9 requires 7 durable replicated journal", "scopes": ["a"]},
+    ]
+    h.add_facts(root, items)
+    _restore_blocked_near_projection(root)
+    query = "A replicated durable journal requires Component 7"
+    with fact_store.transaction(root) as facts:
+        expected = sorted(
+            (fact for fact in facts.values() if fact.status == "active" and not fact.forgotten
+             and h._scopes_compatible(frozenset(scopes), fact.scopes)
+             and h.near_duplicate(query, fact.statement)),
+            key=lambda fact: (-fact.confirmations, fact.id),
+        )
+        assert expected
+        actual = fact_store.StatementIndex(facts).near(query, scopes)
+        assert actual is not None and actual.id == expected[0].id
+
+
+def test_global_near_rebuild_updates_removals_and_forgotten_candidates(tmp_path, monkeypatch):
+    root = str(tmp_path)
+    activate(root)
+    monkeypatch.setenv("COMMONTRACE_FACT_CONFLICTS", "off")
+    first, _ = h.add_fact(root, "Component 7 requires a durable replicated journal")
+    second, _ = h.add_fact(root, "Component 7 records a durable replicated journal")
+    _restore_blocked_near_projection(root)
+    h.forget_fact(root, first.id)
+    h.update_fact(root, second.id, statement="Component 9 records a revised durable journal")
+    with fact_store.transaction(root, write=True) as facts:
+        assert fact_store.StatementIndex(facts).near("A durable replicated journal requires Component 7", []) is None
+        del facts[second.id]
+    with fact_store.transaction(root) as facts:
+        before = facts.connection.execute("SELECT kind,term,fact_id,count FROM terms ORDER BY kind,term,fact_id").fetchall()
+        assert all(kind == "near-v2" for kind, _, _, _ in before if kind.startswith("near"))
+    events = fact_store.events(root)
+    fact_store.rebuild(root)
+    with fact_store.transaction(root) as facts:
+        assert facts.connection.execute("SELECT kind,term,fact_id,count FROM terms ORDER BY kind,term,fact_id").fetchall() == before
+        assert facts.connection.execute(
+            "SELECT 1 FROM lexicon l WHERE l.documents!=(SELECT COUNT(*) FROM postings p WHERE p.term_id=l.id) LIMIT 1"
+        ).fetchone() is None
+    assert fact_store.events(root) == events
+
+
+def test_global_near_keeps_strongest_match_beyond_first_hundred(tmp_path, monkeypatch):
+    root = str(tmp_path)
+    activate(root)
+    monkeypatch.setenv("COMMONTRACE_FACT_CONFLICTS", "off")
+    monkeypatch.setenv("COMMONTRACE_FACT_DEDUP", "exact")
+    query = "Component requires durable replicated journal storage"
+    rows = h.add_facts(root, [
+        {"statement": query + " tag" + chr(97 + n // 26) + chr(97 + n % 26)} for n in range(150)
+    ])
+    strongest = rows[-1][0]
+    with h.mutate_facts(root) as facts:
+        facts[strongest.id].confirmations = 99
+    with fact_store.transaction(root) as facts:
+        actual = fact_store.StatementIndex(facts).near(query, [])
+        assert actual is not None and actual.id == strongest.id
+    h.forget_fact(root, strongest.id)
+    with fact_store.transaction(root) as facts:
+        actual = fact_store.StatementIndex(facts).near(query, [])
+        assert actual is not None and actual.id != strongest.id
