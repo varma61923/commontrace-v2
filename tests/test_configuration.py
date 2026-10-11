@@ -112,3 +112,49 @@ def test_environment_migration_keeps_credentials_out_of_yaml_and_report(tmp_path
     assert "private-never-copy-this" not in source + json.dumps(result)
     assert load(str(tmp_path))["secrets"]["COMMONTRACE_LLM_API_KEY"] == "env:COMMONTRACE_LLM_API_KEY"
     assert load(str(tmp_path))["settings"]["llm.max_tokens"] == "320"
+
+
+def test_nested_store_without_yaml_does_not_inherit_another_stores_routes(tmp_path, monkeypatch):
+    from commontrace.configuration import configured, getenv
+
+    monkeypatch.delenv("COMMONTRACE_LLM_MODEL", raising=False)
+    outer = tmp_path / "outer"
+    inner = tmp_path / "inner"
+    outer.mkdir()
+    inner.mkdir()
+    (outer / "commontrace.yaml").write_text("profiles:\n  local:\n    llm_model: private-model\n")
+
+    @configured
+    def operation(root):
+        return getenv("COMMONTRACE_LLM_MODEL")
+
+    with apply(load(str(outer))):
+        assert operation(str(outer)) == "private-model"
+        assert operation(str(inner)) is None
+        assert operation(str(outer)) == "private-model"
+
+
+def test_gateway_worker_retains_explicit_startup_profile_without_mutating_environment(tmp_path, monkeypatch):
+    import json
+    from concurrent.futures import ThreadPoolExecutor
+
+    from commontrace.configuration import getenv
+    from commontrace.gateway import Gateway
+
+    monkeypatch.delenv("COMMONTRACE_LLM_MODEL", raising=False)
+    (tmp_path / "commontrace.yaml").write_text(
+        "profiles:\n  local:\n    llm_model: local-model\n  team:\n    llm_model: team-model\n"
+    )
+    with apply(load(str(tmp_path), profile="team")):
+        gateway = Gateway(str(tmp_path), durable=False)
+    gateway._route(
+        "GET",
+        "/configuration-probe",
+        lambda _body, _query: {"model": getenv("COMMONTRACE_LLM_MODEL")},
+        summary="configuration probe",
+        auth=False,
+    )
+    with ThreadPoolExecutor(max_workers=1) as worker:
+        response = worker.submit(gateway.handle, "GET", "/configuration-probe").result()
+    assert response.status == 200
+    assert json.loads(response.body)["model"] == "team-model"

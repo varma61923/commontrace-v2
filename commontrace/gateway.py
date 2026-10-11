@@ -36,6 +36,7 @@ from commontrace import (
     retrieval,
     retrieval_io,
 )
+from commontrace.configuration import configured, current
 from commontrace.configuration import getenv as _configuration_getenv
 from commontrace.exceptions import CommonTraceError
 from commontrace.gateway_tokens import load_or_create_token, token_path  # noqa: F401 - public compatibility
@@ -376,6 +377,8 @@ class Gateway:
         token_provider: Callable[[], str | None] | None = None, allow_self_signup: bool = False,
     ) -> None:
         self.root = os.path.abspath(root)
+        selected = current()
+        self._runtime_configuration = selected if selected and selected.get("root") == self.root else None
         self.allow_approval = allow_approval
         self.allow_self_signup = allow_self_signup
         self.token = token
@@ -547,6 +550,7 @@ class Gateway:
             "id": "a catalog listing id", "accept_licence": "its licence id"},
             summary="Install a verified listing at status=review. Needs --allow-approval.")
 
+    @configured
     def handle(
         self, method: str, target: str, headers: Mapping[str, str] | None = None,
         body: bytes | None = None, *, trusted: bool = False,

@@ -317,7 +317,10 @@ def using(root: str):
         return
     filename = os.environ.get("COMMONTRACE_CONFIG") or os.path.join(root, "commontrace.yaml")
     if not os.path.isfile(filename):
-        yield active
+        # A nested operation for another store must not inherit its caller's
+        # credentials, model routes or budgets. Empty options preserve legacy defaults.
+        with apply({**DEFAULTS, "options": {}, "settings": {}, "secrets": {}, "root": os.path.abspath(root)}):
+            yield _ACTIVE.get()
         return
     stat = os.stat(filename)
     with apply(_cached(os.path.abspath(root), (filename, stat.st_dev, stat.st_ino, stat.st_mtime_ns, stat.st_size))):
@@ -331,7 +334,14 @@ def configured(function: Callable[_P, _T]) -> Callable[_P, _T]:
     def run(*args: _P.args, **kwargs: _P.kwargs) -> _T:
         first: Any = args[0] if args else kwargs["root"]
         root = first if isinstance(first, str) else first.root
-        with using(root):
+        selected = getattr(first, "_runtime_configuration", None)
+        active = _ACTIVE.get()
+        manager = (
+            apply(selected)
+            if selected is not None and (active is None or active.get("root") != os.path.abspath(root))
+            else using(root)
+        )
+        with manager:
             return function(*args, **kwargs)
 
     return run

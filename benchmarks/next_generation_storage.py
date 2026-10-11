@@ -98,7 +98,7 @@ def main() -> int:
     }
     result['source_files_sha256'] = {
         name: hashlib.sha256(open(name, 'rb').read()).hexdigest()
-        for name in ('commontrace/hierarchical.py', 'commontrace/fact_store.py',
+        for name in ('commontrace/hierarchical.py', 'commontrace/configuration.py', 'commontrace/fact_store.py',
                      'commontrace/memory_record.py', 'commontrace/fact_index.py',
                      'commontrace/fact_conflicts.py', 'benchmarks/next_generation_storage.py')
     }
