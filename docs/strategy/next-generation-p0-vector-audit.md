@@ -59,5 +59,23 @@ when recording subsequent measurements.
 The [10K report](measurements/p0-lance-10k-scale.json) and
 [validation record](measurements/p0-lance-validation.json) are bound by the
 [signed aggregate](measurements/p0-lance-signed.json), using the continuation
-audit's pinned public key. Source hashes match `28a5a94`. A million-vector run
-is in progress; no result from that run is claimed yet.
+audit's pinned public key. Source hashes match `28a5a94`.
+
+The [million-vector report](measurements/p0-lance-million-scale.json) completed
+on the same host with concurrent validation. Its 20 paired queries measured
+exact p95 487.89 ms and ANN p95 13.04 ms. Mean recall@10 was 0.91 and minimum
+recall 0.70, below the existing 0.97 vector-recall target. Loading took 184.81
+seconds and index construction 51.80 seconds. The diagnostic process exited 0;
+that records workload completion and does not certify a release gate. Defaults
+need recall tuning before this result can support deployment. Reproduce with:
+
+```sh
+python -m benchmarks.vector_scale_bench --engine lance --n 1000000 --dim 384 \
+  --queries 20 --top-k 10 --clusters 2000 --seed 61923 --batch 10000 \
+  --out /path/to/lance-million.json
+```
+
+The report's source hashes match `4dd4a38`. The 10K and million-vector workloads
+use different cluster counts and batch sizes; do not treat their difference as
+a controlled scaling experiment. The million-vector exact/ANN pair uses the
+same stored vectors and queries. Neither run includes full hybrid retrieval.

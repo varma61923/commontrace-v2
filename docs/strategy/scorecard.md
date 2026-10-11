@@ -75,6 +75,7 @@ from the older release. The full next-generation objective remains incomplete.
 | Follow-up native transport | 152.27 ms p95, 50/50 directives delivered; target <50 ms | **Latency miss** |
 | Follow-up Graphify | 297 modules, 303 reachability candidates, zero dangling endpoints | **Pass**, unchanged 306/303 ceilings |
 | Optional Lance at 10K vectors | ANN p95 7.15 ms, recall@10 1.0 on 20 paired synthetic queries | **Component measured**; million-fact hybrid unverified |
+| Optional Lance at 1M vectors | ANN p95 13.04 ms; mean recall@10 0.91, minimum 0.70 | **Recall target missed**; component only, full hybrid unverified |
 
 Phase advancement remains stopped. The benchmark exited 1 on the batch miss.
 These are separate runs on the same host with concurrent validation, not a

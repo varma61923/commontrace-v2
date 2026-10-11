@@ -44,7 +44,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The existing vector-scale harness can measure the optional local Lance engine
   against its exact search. At 10K synthetic 384-dimensional vectors, 20 paired
   queries measured 7.15 ms ANN p95 and recall@10 1.0. Four real-engine/harness
-  checks pass. These component results do not verify million-fact hybrid latency.
+  checks pass. At 1M vectors, ANN p95 was 13.04 ms, but mean recall@10 0.91
+  missed the existing 0.97 target. These component results do not verify full
+  hybrid latency; defaults still need recall tuning.
 - A signed P0 continuation audit records a million-fact write-gate miss on the
   current host: 31.43 ms p95 and 759 facts/s. Phase advancement stops; earlier
   release measurements are retained. The pinned LoCoMo retrieval regression gate
