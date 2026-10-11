@@ -1,0 +1,325 @@
+{
+  "scope": "Private prototypes on copied or separate synthetic stores; none changes production or establishes a release gate.",
+  "results": {
+    "term_ids_small": {
+      "scope": "Private small-store diagnostic, not acceptance evidence",
+      "results": [
+        {
+          "configuration": "baseline",
+          "batch_size": 1000,
+          "elapsed_seconds": 0.8631308740004897,
+          "facts_per_second": 1158.572853923231
+        },
+        {
+          "configuration": "candidate",
+          "batch_size": 1000,
+          "elapsed_seconds": 0.7489246219629422,
+          "facts_per_second": 1335.2478616325707
+        },
+        {
+          "configuration": "candidate",
+          "batch_size": 1000,
+          "elapsed_seconds": 0.7393220239900984,
+          "facts_per_second": 1352.5905729184565
+        },
+        {
+          "configuration": "baseline",
+          "batch_size": 1000,
+          "elapsed_seconds": 0.8017832150217146,
+          "facts_per_second": 1247.2199233715776
+        },
+        {
+          "configuration": "baseline",
+          "batch_size": 1000,
+          "elapsed_seconds": 0.7789504749816842,
+          "facts_per_second": 1283.7786638791297
+        },
+        {
+          "configuration": "candidate",
+          "batch_size": 1000,
+          "elapsed_seconds": 0.7471524809952825,
+          "facts_per_second": 1338.4148824185113
+        }
+      ],
+      "document_frequencies_exact": true
+    },
+    "deferred_document_frequencies_small": {
+      "scope": "Private small-store diagnostic, not acceptance evidence",
+      "results": [
+        {
+          "configuration": "baseline",
+          "batch_size": 1000,
+          "elapsed_seconds": 0.8763976690242998,
+          "facts_per_second": 1141.0345272977593
+        },
+        {
+          "configuration": "candidate",
+          "batch_size": 1000,
+          "elapsed_seconds": 0.7412431029952131,
+          "facts_per_second": 1349.08506528992
+        },
+        {
+          "configuration": "candidate",
+          "batch_size": 1000,
+          "elapsed_seconds": 0.7314838839811273,
+          "facts_per_second": 1367.0841175029914
+        },
+        {
+          "configuration": "baseline",
+          "batch_size": 1000,
+          "elapsed_seconds": 0.8275340250111185,
+          "facts_per_second": 1208.4095273140754
+        },
+        {
+          "configuration": "baseline",
+          "batch_size": 1000,
+          "elapsed_seconds": 0.7915689130313694,
+          "facts_per_second": 1263.3138865578094
+        },
+        {
+          "configuration": "candidate",
+          "batch_size": 1000,
+          "elapsed_seconds": 0.7385672029922716,
+          "facts_per_second": 1353.9729302202227
+        }
+      ],
+      "document_frequencies_exact": true
+    },
+    "combined_cpu_small": {
+      "scope": "Private small-store diagnostic, not acceptance evidence",
+      "results": [
+        {
+          "configuration": "baseline",
+          "batch_size": 1000,
+          "elapsed_seconds": 0.8743207349907607,
+          "facts_per_second": 1143.7450354080502
+        },
+        {
+          "configuration": "term_ids",
+          "batch_size": 1000,
+          "elapsed_seconds": 0.7509593550348654,
+          "facts_per_second": 1331.629992083356
+        },
+        {
+          "configuration": "fast_payload",
+          "batch_size": 1000,
+          "elapsed_seconds": 0.7641138389590196,
+          "facts_per_second": 1308.7055213688275
+        },
+        {
+          "configuration": "all",
+          "batch_size": 1000,
+          "elapsed_seconds": 0.6909219499793835,
+          "facts_per_second": 1447.3414834046582
+        },
+        {
+          "configuration": "all",
+          "batch_size": 1000,
+          "elapsed_seconds": 0.6563226549769752,
+          "facts_per_second": 1523.6408379580948
+        },
+        {
+          "configuration": "fast_payload",
+          "batch_size": 1000,
+          "elapsed_seconds": 0.7677735959878191,
+          "facts_per_second": 1302.4672966428311
+        },
+        {
+          "configuration": "term_ids",
+          "batch_size": 1000,
+          "elapsed_seconds": 0.7429778390214778,
+          "facts_per_second": 1345.935164522575
+        },
+        {
+          "configuration": "baseline",
+          "batch_size": 1000,
+          "elapsed_seconds": 0.7728823799989186,
+          "facts_per_second": 1293.8579347628538
+        }
+      ],
+      "document_frequencies_exact": true
+    },
+    "page_cache_small": {
+      "scope": "Small private store; not acceptance evidence",
+      "results": [
+        {
+          "cache_kib": 2000,
+          "elapsed_seconds": 0.8882803830201738,
+          "facts_per_second": 1125.7706678154673
+        },
+        {
+          "cache_kib": 8000,
+          "elapsed_seconds": 0.7538585069705732,
+          "facts_per_second": 1326.508875012317
+        },
+        {
+          "cache_kib": 32000,
+          "elapsed_seconds": 0.7715711889904924,
+          "facts_per_second": 1296.0566883120391
+        },
+        {
+          "cache_kib": 32000,
+          "elapsed_seconds": 0.7717861270066351,
+          "facts_per_second": 1295.6957439472126
+        },
+        {
+          "cache_kib": 8000,
+          "elapsed_seconds": 0.7777552470215596,
+          "facts_per_second": 1285.7515315126889
+        },
+        {
+          "cache_kib": 2000,
+          "elapsed_seconds": 0.8106079070130363,
+          "facts_per_second": 1233.642049810301
+        }
+      ]
+    },
+    "page_cache_million_copy": {
+      "scope": "Million-store diagnostic on copied fixture; not the primary release harness",
+      "results": [
+        {
+          "cache_kib": 2000,
+          "elapsed_seconds": 0.9818937790114433,
+          "facts_per_second": 1018.4401015421299
+        },
+        {
+          "cache_kib": 8000,
+          "elapsed_seconds": 0.8444966970128007,
+          "facts_per_second": 1184.1372542216611
+        },
+        {
+          "cache_kib": 32000,
+          "elapsed_seconds": 0.8438075400190428,
+          "facts_per_second": 1185.1043663077867
+        },
+        {
+          "cache_kib": 32000,
+          "elapsed_seconds": 0.8351704700035043,
+          "facts_per_second": 1197.3603424888863
+        },
+        {
+          "cache_kib": 8000,
+          "elapsed_seconds": 0.8434299569926225,
+          "facts_per_second": 1185.6349086362213
+        },
+        {
+          "cache_kib": 2000,
+          "elapsed_seconds": 0.8570353710092604,
+          "facts_per_second": 1166.8129855858597
+        }
+      ]
+    },
+    "combined_cpu_million_copy": {
+      "scope": "Private small-store diagnostic, not acceptance evidence",
+      "results": [
+        {
+          "configuration": "baseline",
+          "batch_size": 1000,
+          "elapsed_seconds": 0.946737963007763,
+          "facts_per_second": 1056.2584781358348
+        },
+        {
+          "configuration": "term_ids",
+          "batch_size": 1000,
+          "elapsed_seconds": 0.8245756619726308,
+          "facts_per_second": 1212.744986442726
+        },
+        {
+          "configuration": "fast_payload",
+          "batch_size": 1000,
+          "elapsed_seconds": 0.8306528849643655,
+          "facts_per_second": 1203.87230105497
+        },
+        {
+          "configuration": "all",
+          "batch_size": 1000,
+          "elapsed_seconds": 0.732808236964047,
+          "facts_per_second": 1364.613482161312
+        },
+        {
+          "configuration": "all",
+          "batch_size": 1000,
+          "elapsed_seconds": 0.7113677610177547,
+          "facts_per_second": 1405.7426478946682
+        },
+        {
+          "configuration": "fast_payload",
+          "batch_size": 1000,
+          "elapsed_seconds": 0.8301012869924307,
+          "facts_per_second": 1204.6722679146003
+        },
+        {
+          "configuration": "term_ids",
+          "batch_size": 1000,
+          "elapsed_seconds": 0.7831505160429515,
+          "facts_per_second": 1276.8937509646682
+        },
+        {
+          "configuration": "baseline",
+          "batch_size": 1000,
+          "elapsed_seconds": 0.827328542014584,
+          "facts_per_second": 1208.7096591215782
+        }
+      ],
+      "document_frequencies_exact": true
+    },
+    "bulk_projection_million_copy": {
+      "scope": "Private million-store prototype, not acceptance evidence; semantic staged-candidate admission and broader contracts still unverified",
+      "cold_warmup_excluded": true,
+      "results": [
+        {
+          "configuration": "baseline",
+          "batch_size": 1000,
+          "elapsed_seconds": 0.8466589099843986,
+          "facts_per_second": 1181.1131828972625
+        },
+        {
+          "configuration": "bulk",
+          "batch_size": 1000,
+          "elapsed_seconds": 0.7420761200482957,
+          "facts_per_second": 1347.5706507506509
+        },
+        {
+          "configuration": "bulk",
+          "batch_size": 1000,
+          "elapsed_seconds": 0.7291601860197261,
+          "facts_per_second": 1371.4407604434766
+        },
+        {
+          "configuration": "baseline",
+          "batch_size": 1000,
+          "elapsed_seconds": 0.8404705820139498,
+          "facts_per_second": 1189.8096392663538
+        },
+        {
+          "configuration": "baseline",
+          "batch_size": 1000,
+          "elapsed_seconds": 0.8296452130307443,
+          "facts_per_second": 1205.3345023795646
+        },
+        {
+          "configuration": "bulk",
+          "batch_size": 1000,
+          "elapsed_seconds": 0.7534575960016809,
+          "facts_per_second": 1327.2147036629904
+        }
+      ],
+      "document_frequencies_exact": true
+    }
+  },
+  "prototype_sha256": {
+    "term_ids_small": "86e783e092a9a225cff8367522466348115f84a2ac66e384663f483aa36077fc",
+    "deferred_document_frequencies_small": "0b97721f65c425a00e4eca0204e1f339c602923c20cc3b561d7a54db6dafcacf",
+    "combined_cpu_small": "6b0bb68ffad3bf8f906770cf871e27867afe642a1ccea004ea98ec80df426ec6",
+    "page_cache_small": "5ccc160b2b117745dcf02bc0a1cbd18d8692e6b6a516615d6faa6de5447bb62b",
+    "page_cache_million_copy": "c42d6eb6fdc8afb465897cba992cfab2bf1c4f0a15764f8c01aae381e3115012",
+    "combined_cpu_million_copy": "673e60d092eff84df7528f789bf4254bea2e6711e81f5bfe533d06430779a2dc",
+    "bulk_projection_million_copy": "c5b4935925dd1e37f5ce99346b00946744fdcfa991cea6d20d9b3f216c14eb71"
+  },
+  "excluded": "Initial million-copy combined tuning and profiler overlapped on the same private writer lock; those artifacts were excluded and sequentially repeated.",
+  "limitations": [
+    "Early cold-import samples in the first diagnostic groups are visible and cannot establish a controlled improvement.",
+    "The staged bulk prototype used an explicit cold warmup and preserves measured committed document frequencies, but semantic staged-candidate admission and broader contracts remain unverified.",
+    "No prototype reached the unchanged 2,000 facts/s target; no production optimization is promoted from these diagnostics."
+  ]
+}

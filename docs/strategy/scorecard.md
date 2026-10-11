@@ -53,7 +53,7 @@ build prompt requires; earlier release measurements remain historical evidence.
 | Hybrid/server latency and zero-re-embedding restart | Not exercised | **Unverified** |
 | Named CodeQL false positives | Alerts #10 and #1 dismissed after review and authentication tests | **Resolved** |
 | Pinned LoCoMo retrieval regression | 154 questions; no change at 1,500 or 4,000 tokens | **Pass**, not answer accuracy |
-| Full application / PostgreSQL Hub suites | Baseline application run superseded and interrupted; Hub 2,510 passed, 2 skipped | Storage candidate completed with six failures; fixed-source full suite pending |
+| Full application / PostgreSQL Hub suites | Baseline application run superseded and interrupted; Hub 2,510 passed, 2 skipped | Storage candidate failed; frozen follow-up `fa1ef0c` passes 6,678 tests with 118 skips |
 
 Commands, signed reports, source hashes and environment limitations are in
 [the P0 continuation audit](next-generation-p0-audit.md). This run used concurrent
@@ -71,7 +71,9 @@ from the older release. The full next-generation objective remains incomplete.
 | Storage/cursor/concurrency/erasure contracts | 92 passed | **Pass** |
 | Pinned LoCoMo retrieval regression | 154 questions; no regression at 1,500 or 4,000 tokens | **Pass**, not answer accuracy |
 | Measured storage source full suite | 6 failed, 6,666 passed, 118 skipped | **Failed** |
-| Follow-up storage/journal/hook contracts | 135 passed; all six failures reproduce before the fixes and pass afterward | **Focused pass**; fixed-source full suite pending |
+| Follow-up storage/journal/hook contracts | 135 passed; all six failures reproduce before the fixes and pass afterward | **Focused pass** |
+| Frozen follow-up full application suite | `fa1ef0c`: 6,678 passed, 118 skipped, 26 warnings | **Pass**; later Lance changes separately covered by ten scoped checks |
+| Latest million-fact writes | `aeadf5d`: 3.86 ms single-write p95, 1,167 facts/s batched | **Single pass; batch miss**; benchmark exits 1 |
 | Follow-up native transport | 152.27 ms p95, 50/50 directives delivered; target <50 ms | **Latency miss** |
 | Follow-up Graphify | 297 modules, 303 reachability candidates, zero dangling endpoints | **Pass**, unchanged 306/303 ceilings |
 | Optional Lance at 10K vectors | ANN p95 7.15 ms, recall@10 1.0 on 20 paired synthetic queries | **Component measured**; million-fact hybrid unverified |

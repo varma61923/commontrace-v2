@@ -1,0 +1,30 @@
+{
+  "measured_at": "2026-10-11T10:23:59.901427+00:00",
+  "storage_source_commit": "aeadf5d07a04f80e670269a29481ea4ac9671811",
+  "storage_exit_code": 1,
+  "actual_command": "PYTHONPATH=. python /tmp/commontrace-current-storage-with-retention.py --sizes 1000,10000,30000,1000000 --trials 20 --legacy-max 1000 --output <report>",
+  "equivalent_command": "/tmp/commontrace-goal-env/bin/python -m benchmarks.next_generation_storage --sizes 1000,10000,30000,1000000 --trials 20 --legacy-max 1000 --output /tmp/commontrace-p0-current-storage.json",
+  "runner_source": "\"\"\"Run the unchanged write harness; retain its finished 1M store after timing.\"\"\"\nimport hashlib\nimport json\nimport os\nimport shutil\nimport sys\nimport tempfile\nfrom pathlib import Path\n\nfrom benchmarks import next_generation_storage as benchmark\nfrom commontrace import fact_store\n\noriginal_measure = benchmark.measure\n\ndef measure_and_retain(root, size, trials):\n    measured = original_measure(root, size, trials)\n    if size == 1_000_000:\n        # The API operations and every timing have finished before this copy.\n        fact_store.close_connections(root)\n        parent = tempfile.mkdtemp(prefix='commontrace-p0-retained-million-')\n        destination = os.path.join(parent, 'sqlite')\n        shutil.copytree(root, destination)\n        metadata = {'root': destination, 'source_root': root,\n                    'wrapper_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),\n                    'retention': 'Only after all original measurement samples; no write settings changed'}\n        Path('/tmp/commontrace-p0-retained-million-store.json').write_text(json.dumps(metadata, indent=2)+'\\n')\n        print('Retained completed million-fact store:', destination, flush=True)\n    return measured\n\nbenchmark.measure = measure_and_retain\nraise SystemExit(benchmark.main())\n",
+  "retention": "The unchanged benchmark.measure finishes every timing before idle handles are closed and its finished 1M store is copied. Original temporary-store cleanup still runs.",
+  "retained_database_bytes": 3736133632,
+  "retained_database_rows": 1001020,
+  "frozen_full_suite_source_commit": "fa1ef0c",
+  "frozen_full_application_suite": {
+    "command": "env -u COMMONTRACE_ROOT -u JUSTDOIT_ROOT PYTHONPATH=. python -m pytest tests e2e_tests -q",
+    "state": "completed",
+    "summary": "6678 passed, 118 skipped, 26 warnings in 4219.52s (1:10:19)",
+    "counts": {
+      "passed": 6678,
+      "skipped": 118
+    },
+    "passed": true
+  },
+  "frozen_full_source_snapshot_sha256": "e23d18eb7ab2f98532363213b15e92c914928107b8de25b6f6ada931ec64039b",
+  "later_optional_changes": "3a72da1 changes the optional Lance query and scale harness; its ten scoped contracts and boundaries are bound by p0-lance-refinement-signed.json.",
+  "limitations": [
+    "Separate runs with concurrent validation; not a controlled causal comparison.",
+    "Sparse overlap timing is not full hybrid timing.",
+    "The storage workload does not exercise models, server search, embedding restart or answer accuracy.",
+    "The original 54681d0 full-suite failure and intentionally interrupted baseline remain historical evidence."
+  ]
+}

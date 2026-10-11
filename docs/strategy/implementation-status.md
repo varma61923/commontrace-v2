@@ -13,8 +13,9 @@ Legend: **Done** · **Done (this pass)** (added or fixed in this audit) ·
 ## Next-generation implementation (2026-10-10)
 
 The 2026-10-11 continuation follows the attached build prompt's phase gates.
-After write optimization, the current million-fact run records 3.23 ms
-single-write p95 (passes <20 ms) and 1,181 facts/s batched (misses ≥2,000).
+The latest million-fact run on `aeadf5d` records 3.86 ms single-write p95
+(passes <20 ms) and 1,167 facts/s batched (misses ≥2,000). The earlier
+`54681d0` optimization measured 3.23 ms and 1,181 facts/s.
 The earlier continuation recorded 31.43 ms and 759 facts/s; both runs included
 concurrent validation and are not a controlled causal comparison. Phase advancement stops;
 P1–P4 and every unverified acceptance criterion remain part of the objective.
@@ -28,7 +29,8 @@ exit-status gate is fixed with five boundary checks. See
 The measured storage commit's full application suite completed with 6 failures,
 6,666 passes and 118 skips. Shared connection ownership, abort-path cursor
 cleanup and test isolation fix the six reproduced failures in 135 focused checks;
-the fixed-source full suite is running. Native transport delivered 50/50
+the frozen `fa1ef0c` full suite passed 6,678 tests with 118 skips. The later
+Lance changes have separate optional-engine validation. Native transport delivered 50/50
 directives but measured 152.27 ms p95, missing <50 ms. Follow-up Graphify records
 297 modules and 303 reachability candidates within the unchanged ceilings.
 The optional Lance engine passes four real-engine/harness checks. At 10K

@@ -95,7 +95,7 @@ records 92 passing storage, cursor, concurrency, fork, migration and erasure
 contracts on the measured `54681d0` source. Ruff, both mandatory strict-mypy lists, Bandit's
 configured gate and docs/OpenAPI drift pass. The pinned 154-question LoCoMo
 [retrieval regression](measurements/p0-write-optimization-quality.json) passes
-at 1,500 and 4,000 tokens; this is not answer accuracy. The current candidate's
+at 1,500 and 4,000 tokens; this is not answer accuracy. The measured `54681d0` candidate's
 full application suite completed with 6 failures, 6,666 passes and 118 skips;
 no all-CI pass is claimed. The superseded baseline was intentionally interrupted. The unchanged
 Hub completed 2,510 tests with 2 skips on dedicated PostgreSQL 16.
@@ -105,9 +105,15 @@ bounded owner with the runtime journal. A root-autodetection test now imports
 after clearing overrides in a fresh process. All 135 focused checks pass on the
 follow-up, including the five hook failures reproduced on `54681d0`; production
 deadlines remain unchanged. The native transport workload delivered all 50
-directives but measured 152.27 ms p95, missing its <50 ms gate. These checks do
-not remeasure the million-fact workload or constitute a completed full suite.
+directives but measured 152.27 ms p95, missing its <50 ms gate. These checks
+alone do not remeasure the million-fact workload or constitute a full-suite result.
 The new pool also passes strict mypy and is included in the mandatory CI list.
+
+The frozen `fa1ef0c` full application run subsequently completed with **6,678
+passed, 118 skipped and 26 warnings in 4,219.52 seconds**. Its source snapshot
+was verified against the unchanged isolated checkout. This result does not
+include the later Lance changes, covered separately by ten optional-engine,
+scale-harness and gate-boundary checks.
 
 Follow-up Graphify extraction records 21,411 nodes, 63,537 edges, 297 modules,
 303 reachability candidates and no dangling endpoints. Existing limits pass.
@@ -126,3 +132,54 @@ python -m benchmarks.signed_results \
   --trusted-key "$(cat docs/strategy/measurements/p0-write-optimization-public-key.txt)" \
   --artifact-root .
 ```
+
+## Remaining batch-cost investigation
+
+The warm 1K-batch profile attributes 0.215 seconds to the two projection
+`executemany` calls, 0.166 seconds to feature extraction and 0.146 seconds to
+three fact serializations per admitted row (profiling overhead included).
+Private set-based JSON and multi-VALUES prototypes were slower and were rejected.
+
+Test a transaction-scoped cache of immutable lexicon term IDs next, inserting
+postings directly by ID while keeping document frequencies exact. Compare
+alternating 1K batches on the same private store before deciding whether to
+implement it. Keep caches bounded and discard them at transaction exit; never
+cache all facts, weaken WAL/FULL durability or omit projection/contradiction work.
+If it helps, write regression tests before production changes for updates,
+rollback, rebuild and in-batch deduplication, then remeasure the unchanged 1M
+workload. A small-store diagnostic does not satisfy the batch acceptance gate.
+
+## Latest-source write measurement
+
+The `aeadf5d` million-fact run measured **3.86 ms single-write p95** and **1,167
+facts/s** for the unchanged 1K batch. Sparse-overlap p95 was 0.210 ms; this is
+not full hybrid retrieval. Seeding the final scale took 808.78 seconds. The
+process exited **1** on the batch miss. Phase advancement remains stopped.
+
+The [latest raw report](measurements/p0-current-storage.json),
+[validation and retention runner](measurements/p0-current-storage-validation.json)
+and [private diagnostic aggregate](measurements/p0-write-diagnostics.json) are
+bound by the [signed current-source manifest](measurements/p0-current-storage-signed.json)
+using the continuation audit's pinned public key. The equivalent unchanged
+workload is:
+
+```sh
+python -m benchmarks.next_generation_storage --sizes 1000,10000,30000,1000000 \
+  --trials 20 --legacy-max 1000 --output /path/to/storage.json
+```
+
+The actual runner called that harness and copied its finished 1M store after
+every timing sample and after closing idle connections. Its source and actual
+command are in the validation record; it did not change write settings or the
+measured API. The retained source has 1,001,020 rows because the trials and
+timed batch are real writes. Diagnostics use a separate copy.
+
+Bounded term-ID caching, deferred frequency updates, fast-payload experiments,
+larger SQLite page caches and staged bulk projection did not reach 2,000 facts/s.
+The bulk prototype measured about 1.3–1.4K facts/s on the copied million-fact
+fixture with an explicit cold warmup. An initially overlapping profiler/tuning
+run was excluded and repeated sequentially. Early diagnostic cold-import samples
+remain visible and are not used to claim controlled improvements. No prototype
+has been promoted: staged semantic admission and broader behavior need contracts
+before a production rewrite. Both the new write run and application validation
+used concurrent processes; separate-run differences are not causal estimates.

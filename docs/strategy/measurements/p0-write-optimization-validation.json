@@ -1,5 +1,5 @@
 {
-  "measured_at": "2026-10-11T09:23:02.551414+00:00",
+  "measured_at": "2026-10-11T10:17:35.888327+00:00",
   "measured_source_commit": "54681d0484518762b05132b8d1e160162818a3ba",
   "source_base": "a8d223d245f9ad7835b41e4262c66ec23405e2e3",
   "postmeasurement_followup": {
@@ -145,10 +145,13 @@
     "million_fact_write_measurement": "Not rerun on this follow-up source",
     "full_application_suite": {
       "command": "env -u COMMONTRACE_ROOT -u JUSTDOIT_ROOT PYTHONPATH=. python -m pytest tests e2e_tests -q",
-      "state": "running",
-      "summary": "No completed suite result claimed",
-      "passed": null,
-      "observed_failure_count": 0
+      "state": "completed",
+      "summary": "6678 passed, 118 skipped, 26 warnings in 4219.52s (1:10:19)",
+      "counts": {
+        "passed": 6678,
+        "skipped": 118
+      },
+      "passed": true
     },
     "graphify": {
       "nodes": 21411,

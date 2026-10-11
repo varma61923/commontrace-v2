@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The frozen SQLite/journal follow-up passes the full application suite:
+  6,678 passed and 118 skipped. The latest million-fact write run measures
+  3.86 ms single-write p95 and 1,167 facts/s batched. The batch reproducer
+  correctly exits 1, so P0 remains open. Private CPU, cache and bulk-projection
+  prototypes are recorded separately and have not been promoted to production.
 - Optional Lance ANN search reranks four times the requested candidates using
   original vectors, fixing quantized cosine scores. On one retained million-vector
   index, recall@10 improved from 0.905 to 0.98; 20 held-out queries reached 0.995.
@@ -30,7 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fact ledger. Aborted reads finalize partial cursors before closing; hook
   requests reuse idle handles without changing their deadlines. All 135 focused
   checks pass. Native transport delivered 50/50 directives but measured 152.27 ms
-  p95, missing <50 ms. The fixed source has not repeated the million-fact run.
+  p95, missing <50 ms. The later million-fact and full-suite results are recorded above.
 - The root-autodetection test imports in a fresh process after clearing root
   overrides, preventing an inherited environment from contaminating its result.
 - SQLite fact operations now reuse at most four idle connections with a fresh
@@ -60,7 +65,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   release measurements are retained. The pinned LoCoMo retrieval regression gate
   shows no change. The PostgreSQL Hub suite passed 2,510 checks (2 skipped);
   its application suite completed with 6 failures, 6,666 passes and 118 skips.
-  Those failures pass focused checks on the follow-up; its full suite is pending.
+  Those failures pass focused checks on the follow-up; its frozen full suite
+  subsequently passed 6,678 tests with 118 skips.
 
 - Hosted record retrieval filters retired records and older revisions before its
   candidate limit, applies kind restrictions to vector hits, and orders equal

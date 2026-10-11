@@ -2,13 +2,13 @@
   "format": "commontrace-public-results-v1",
   "report": {
     "public_aggregate_only": true,
-    "measured_at": "2026-10-11T09:23:02.551414+00:00",
+    "measured_at": "2026-10-11T10:17:35.888327+00:00",
     "source_base": "a8d223d245f9ad7835b41e4262c66ec23405e2e3",
     "files_sha256": {
       "docs/strategy/measurements/p0-write-optimization-storage.json": "efb8c6826596f70c259e805fd0eba8b5293a88b999cf10a3294804df5a52bba0",
       "docs/strategy/measurements/p0-write-optimization-quality.json": "30749575b80916e036f8d284556fb765e4940df4b7aa1d35482c5345941edab2",
       "docs/strategy/measurements/p0-write-optimization-graphify.json": "e4ef4563ff576c5ecafad748c0da8303bfa08bb9d57b34be95b1472cd3496936",
-      "docs/strategy/measurements/p0-write-optimization-validation.json": "21a7101fe3714839c3ad5c997a511d407394c83a3699ce60ed4d285a0226c0fc"
+      "docs/strategy/measurements/p0-write-optimization-validation.json": "8dbc41d24fac5ddf41fbd137959099fe2c64771df1e1b28f1a412181c69a1ced"
     },
     "before": {
       "facts_before_trials": 1000000,
@@ -137,5 +137,5 @@
     ]
   },
   "public_key": "4af25ffa4889429857e2df41a90657a23ffc5ed89ec37a614a79cf56b24f1630",
-  "signature": "fTwngYf4RWoS4FxuyXvLldf2CpZHM91zd6GJ3Fwhzw3+x15yG6+nN+Zxnm6+0du9/L865DKDeGWXOmgXi/ZIBA=="
+  "signature": "4sZnhqaie99qdgEfHiENrfEr8nDYxzQawqwh6T9Aqrc/mCRfDv+bqHvxyvRJZWpOkqsSloyS9ldyusorBwb0Dw=="
 }
