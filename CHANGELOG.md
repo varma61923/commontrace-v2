@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Hybrid graph retrieval and multi-round coverage.** Dense-only admitted hits
+  can seed the bounded graph walk; scope, expiry, authority and evidence checks
+  apply to seeds and bridges. Gap filling retains per-query evidence blocks,
+  validates judge-selected core IDs, skips exhausted subqueries and revalidates
+  candidates after each model call. The additive protocol section has policy
+  vectors and a deterministic baseline/candidate harness. Real-model quality
+  and million-record hybrid latency remain unmeasured.
+- **Evidence-preserving learner bounds.** Every serialized segmentation, case,
+  curator and writer prompt is checked before dispatch. Complete captures are
+  packed within the remaining budget; overflow leaves the reflection cursor
+  unsealed. The default uses a conservative UTF-8 text-size bound, and callers
+  may provide their model tokenizer for an exact count. Semantic fragmentation
+  of an indivisible oversized tool output is still unavailable.
+- **Single-source OAuth, KMS and config migration.** OAuth and Hub KMS consume
+  resolved YAML/profile values with explicit environment overrides. Migration
+  shares the bounded YAML reader and selected config path, retains YAML
+  precedence, supports mounted secret files and writes atomically within the
+  store boundary. The 25-primary/155-alias environment inventory is unchanged.
+
 ### Security
 
 - Dismissed the two reviewed CodeQL false positives named in the next-generation

@@ -92,6 +92,19 @@ gate still misses. See [write CPU evidence](next-generation-p0-write-cpu.md)
 and [identity mutation evidence](next-generation-fact-identity-mutation.md).
 See [staged-write evidence](next-generation-staged-write-evidence.md).
 
+This continuation also fixes three adjacent requirements. OAuth and Hub KMS now
+use one resolved YAML/profile source, and environment migration respects the
+selected config path, mounted-secret precedence and store boundary (179 focused
+configuration/authentication/Hub tests pass). Learner prompts are checked in
+their complete serialized form; the 32-test learner contract passes and an
+oversized indivisible capture remains retryable instead of being sealed unseen.
+Hybrid graph search seeds from admitted sparse and dense results, and bounded
+multi-round retrieval preserves distinct query blocks and revalidates facts
+after judging. Its 19 retrieval contracts pass; a deterministic synthetic
+comparison recovers 2/2 distinct facets rather than 1/2 and excludes withdrawn
+facts and stale seeds. These are component results, not answer-quality or
+latency acceptance. The integrated full suite still needs to run.
+
 The combined branch contains P0–P4 implementation; this audit does not establish
 their acceptance gates. The earlier memory-evolution code
 was already squashed into main; its branch and `codex/next-generation-p0` are both
@@ -102,12 +115,12 @@ ancestors of `codex/next-generation-complete`.
 | A: storage | Compact SQLite WAL/event ledger, bounded idle connection reuse, exact/near/FTS candidates, transactional migration/rebuild, durable content-hash vector projection; optional background Lance HNSW with backend-specific watermarks; tenant-pinned PostgreSQL record ledger, FTS, optional pgvector/HNSW | Fresh 1M single-write p95 4.69 ms passes; batch 1,739 facts/s misses; 1M hybrid, server latency and zero-reembedding restart remain unverified |
 | B: records | Seven kinds, five scope dimensions plus labels, six lifecycle states, version history, bi-temporal validity, typed relationships, evidence and revision-grounded derived reads | Hosted legacy SDK operations still use the Gateway; Hub implements envelope CRUD, not all legacy operations |
 | C: extraction | Dated speaker/transition extraction, no assistant echo, exact/entropy/MinHash/dense/joint-judge candidate tiers, bounded per-entity/facet observations, existing grounded mental-model refresh | Optional model quality and extraction-cost reduction need real model-backed evaluations |
-| D: learning | Durable event capture, bounded session segmentation, explicit tool/run outcomes, clustered cases, curator/writer proposals, quarantine/shadow/causal activation and retirement, four-format history import, reflection arena and DPO export | Causal activation is tested on randomized fixtures; real SWE uplift and harmful-retirement N remain unverified |
+| D: learning | Durable event capture, bounded session segmentation and complete serialized prompts, explicit tool/run outcomes, clustered cases, curator/writer proposals, quarantine/shadow/causal activation and retirement, four-format history import, reflection arena and DPO export | Oversized indivisible captures can block their session until a larger explicit budget is used; causal activation is tested on randomized fixtures, while real SWE uplift and harmful-retirement N remain unverified |
 | E: integration | Shared ten-event core, eight native-agent serializers, framework model hooks, RRF admission, persistent once/inherit decisions, delivery acknowledgements, escaped templates, unextracted buffer, background broker | Host-supported events vary; Kimi needs config selection, Cline needs Hooks enabled, Windsurf hooks capture only; cold startup and loaded-system latency need further measurement |
-| F: retrieval | Indexed sparse and incremental dense candidates, graph BFS, temporal/evidence filtering, utility explainers, bounded reranking and three-round agentic completeness traces; BGE-small default in configured runtime | Exact local vector engine remains available; 1M dense/hybrid scaling is not established |
+| F: retrieval | Indexed sparse and incremental dense candidates, first-pass sparse/dense graph seeds, canonical temporal/evidence/scope/authority filtering, utility explainers, bounded reranking and three-round per-query completeness traces | Deterministic policy coverage improved in paired synthetic fixtures; real-model answer quality and 1M dense/hybrid latency remain unmeasured |
 | G: profiles | Explicit static assertions, dynamic weighted/decaying preferences, custom profiles, profile returned with one-call save/retrieve, critical preferences always eligible | Context budgets use an estimate unless the caller supplies exact counting |
 | H: privacy | Pinned scope, pre-model and post-model redaction, recursive hard erasure across local history/FTS/vectors/derived records, retention reaper and reason audit, telemetry off, poison CI | External backups/mirrors require operator erasure; PostgreSQL vector cleanup failures remain explicitly pending in a tenant-pinned retry ledger until its worker runs |
-| I: product | `up` setup/server, request-local YAML profiles and secret references, credential-safe config migration, history import, existing-lesson preview, HTTP/SDK record parity, signed aggregate leaderboard, Graphify CI budgets and pinned native SDK smoke tests; 29 CLI wrappers merged into three modules, retaining all 69 commands | No registry/service publication; empty stores wait for evaluated evidence, so first injected lesson <2 minutes is not established; latest Graphify counts 298 modules; 25 primary variables plus 155 documented legacy aliases still miss the <40-variable target |
+| I: product | `up` setup/server, request-local YAML profiles and secret references, OAuth/KMS YAML resolution and bounded credential-safe config migration, history import, existing-lesson preview, HTTP/SDK record parity, signed aggregate leaderboard, Graphify CI budgets and pinned native SDK smoke tests; 29 CLI wrappers merged into three modules, retaining all 69 commands | No registry/service publication; empty stores wait for evaluated evidence, so first injected lesson <2 minutes is not established; latest Graphify counts 298 modules; 25 primary variables plus 155 documented legacy aliases still miss the <40-variable target |
 
 Measured results and commands are in [next-generation-evidence.md](next-generation-evidence.md)
 and the [signed leaderboard](leaderboard/index.html). Historical status sections

@@ -97,6 +97,21 @@ These are separate runs on the same host with concurrent validation, not a
 controlled causal comparison. Commands, source hashes and signed aggregates are
 in the [write optimization report](next-generation-p0-write-optimization.md).
 
+## Continued feature slices (2026-10-11)
+
+| Feature slice | Measured here | Decision |
+| --- | --- | --- |
+| OAuth/KMS and config migration consistency | 179 focused configuration, authentication, gateway, Hub and KMS tests passed | **Component pass**; full suite pending |
+| Learner prompt bounds | 32 learner contract tests passed, including whole-prompt wrapper sizing and cursor preservation | **Component pass**; default UTF-8 text bound excludes provider templates; model-token usage and SWE lift remain unmeasured |
+| Hybrid graph seeds and multi-round evidence | 19 focused tests passed; paired synthetic baseline/candidate raised distinct facets 1/2 → 2/2, prevented withdrawn-fact return, and reduced repeated-query judge calls 3 → 2 | **Policy behavior pass**; model answer quality and 1M hybrid latency remain unmeasured |
+| Integrated full suite after these slices | Not yet run | **Pending**; prior frozen parent had one fact-ID mutation failure, fixed and covered by 132 focused storage/evidence tests |
+
+The retrieval comparison is a deterministic policy harness over temporary SQLite
+stores, with synthetic dense scores and judge responses. Its artifact includes
+the measured sources and hashes at
+[hybrid-evidence.json](measurements/hybrid-evidence.json); it is not a quality or
+latency benchmark.
+
 ## Beyond the targets
 
 | Area | Measured | Command |
