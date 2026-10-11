@@ -223,6 +223,24 @@ def test_finished_transaction_closes_partial_cursors_and_releases_checkpoint(tmp
         cursor.fetchone()
 
 
+@pytest.mark.parametrize("explicit_cursor", [False, True])
+def test_aborted_transaction_releases_cursor_checkpoint_lock(tmp_path, explicit_cursor):
+    root = str(tmp_path)
+    activate(root)
+    h.add_facts(root, [{"statement": f"component item{n} has a journal"} for n in range(4)])
+    with pytest.raises(RuntimeError, match="abort read"):
+        with fact_store.transaction(root) as facts:
+            cursor = facts.connection.cursor() if explicit_cursor else facts.connection
+            cursor = cursor.execute("SELECT id FROM facts")
+            assert cursor.fetchone() is not None
+            raise RuntimeError("abort read")
+    with sqlite3.connect(fact_store.database_path(root), isolation_level=None, timeout=0.1) as other:
+        other.execute("INSERT INTO meta VALUES('abort-checkpoint-probe','committed')")
+        assert other.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0] == 0
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        cursor.fetchone()
+
+
 def test_idle_connections_are_bounded_and_evict_closed_handles(tmp_path):
     fact_store.close_connections()
     connections = []

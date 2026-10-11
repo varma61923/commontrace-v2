@@ -7,15 +7,11 @@ never fact objects or active transactions.
 """
 from __future__ import annotations
 
-import atexit
 import contextlib
 import hashlib
 import json
 import os
 import sqlite3
-import threading
-import weakref
-from collections import OrderedDict
 from collections.abc import Iterator, Mapping, MutableMapping
 from typing import TYPE_CHECKING, Any
 
@@ -24,6 +20,8 @@ if TYPE_CHECKING:
 
 from commontrace import _jsonl, paths
 from commontrace.memory_record import MemoryRecord
+from commontrace.sqlite_pool import Connection as _Connection
+from commontrace.sqlite_pool import ConnectionPool
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -57,114 +55,17 @@ CREATE TRIGGER IF NOT EXISTS clear_counts INSTEAD OF DELETE ON term_counts BEGIN
 CREATE VIRTUAL TABLE IF NOT EXISTS fact_fts USING fts5(fact_id UNINDEXED, statement);
 """
 
-class _Connection(sqlite3.Connection):
-    """Track live cursors so an idle handle cannot retain an active statement."""
-
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        super().__init__(*args, **kwargs)
-        self.cursors: weakref.WeakSet[sqlite3.Cursor] = weakref.WeakSet()
-
-    def cursor(self, *args: Any, **kwargs: Any) -> sqlite3.Cursor:
-        cursor = super().cursor(*args, **kwargs)
-        self.cursors.add(cursor)
-        return cursor
-
-    def execute(self, *args: Any, **kwargs: Any) -> sqlite3.Cursor:
-        cursor = super().execute(*args, **kwargs)
-        self.cursors.add(cursor)
-        return cursor
-
-    def executemany(self, *args: Any, **kwargs: Any) -> sqlite3.Cursor:
-        cursor = super().executemany(*args, **kwargs)
-        self.cursors.add(cursor)
-        return cursor
-
-    def executescript(self, *args: Any, **kwargs: Any) -> sqlite3.Cursor:
-        cursor = super().executescript(*args, **kwargs)
-        self.cursors.add(cursor)
-        return cursor
-
-    def close_cursors(self) -> None:
-        for cursor in list(self.cursors):
-            cursor.close()
-        self.cursors.clear()
-
-
-_IDLE_LIMIT = 4
-_IDLE: OrderedDict[tuple[str, int, int], _Connection] = OrderedDict()
-_IDLE_LOCK = threading.Lock()
-_CONNECTION_GENERATION = 0
-
-
 def close_connections(root: str | None = None) -> None:
-    """Close retained idle handles before replacing, moving or removing a store.
-
-    Active operations still own their handles; draining does not interrupt them,
-    and they close on return. Quiesce callers before replacing database files.
-    """
-    global _CONNECTION_GENERATION
-    path = os.path.realpath(database_path(root)) if root is not None else None
-    with _IDLE_LOCK:
-        _CONNECTION_GENERATION += 1
-        for key in list(_IDLE):
-            if path is None or key[0] == path:
-                _IDLE.pop(key).close()
-
-
-def _before_fork() -> None:
-    # SQLite forbids even closing inherited handles in the child. Drain idle
-    # connections in the parent and prevent checkout/publication until fork.
-    global _CONNECTION_GENERATION
-    _IDLE_LOCK.acquire()
-    _CONNECTION_GENERATION += 1
-    while _IDLE:
-        _IDLE.popitem()[1].close()
-
-
-def _after_fork_child() -> None:
-    global _IDLE_LOCK
-    _IDLE_LOCK = threading.Lock()
-
-
-def _after_fork_parent() -> None:
-    _IDLE_LOCK.release()
-
-
-atexit.register(close_connections)
-if hasattr(os, "register_at_fork"):
-    os.register_at_fork(before=_before_fork, after_in_parent=_after_fork_parent,
-                        after_in_child=_after_fork_child)
+    """Drain idle handles before replacing a quiescent store; active owners finish."""
+    _CONNECTIONS.close(database_path(root) if root is not None else None)
 
 
 def _borrow_connection(root: str) -> tuple[tuple[str, int, int], _Connection, int]:
-    path = os.path.realpath(database_path(root))
-    stat = os.stat(path)
-    key = (path, stat.st_dev, stat.st_ino)
-    with _IDLE_LOCK:
-        for old in list(_IDLE):
-            if old[0] == path and old != key:
-                _IDLE.pop(old).close()
-        connection = _IDLE.pop(key, None)
-        generation = _CONNECTION_GENERATION
-    return key, connection if connection is not None else _connect(path), generation
+    return _CONNECTIONS.borrow(database_path(root))
 
 
 def _return_connection(key: tuple[str, int, int], connection: _Connection, generation: int) -> None:
-    try:
-        stat = os.stat(key[0])
-        unchanged = (stat.st_dev, stat.st_ino) == key[1:]
-    except OSError:
-        unchanged = False
-    with _IDLE_LOCK:
-        if not unchanged or generation != _CONNECTION_GENERATION:
-            connection.close()
-            return
-        previous = _IDLE.pop(key, None)
-        if previous is not None:
-            previous.close()
-        while len(_IDLE) >= _IDLE_LIMIT:
-            _IDLE.popitem(last=False)[1].close()
-        _IDLE[key] = connection
+    _CONNECTIONS.release(key, connection, generation)
 
 
 def database_path(root: str) -> str:
@@ -213,6 +114,9 @@ def _connect(path: str, *, create: bool = False) -> _Connection:
             connection.close()
             raise
     return connection
+
+
+_CONNECTIONS = ConnectionPool(_connect)
 
 
 def _dump(value: Any) -> str:

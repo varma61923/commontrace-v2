@@ -1,9 +1,60 @@
 import json
+import sqlite3
 
 import pytest
 
 from commontrace.memory_journal import Journal
 from commontrace.memory_record import MemoryRecord
+
+
+def test_idle_journal_connection_reuse_and_nested_ownership(tmp_path):
+    journal = Journal(str(tmp_path))
+    with journal.connect() as first:
+        assert first.execute("PRAGMA synchronous").fetchone() == (2,)
+        assert first.execute("PRAGMA journal_mode").fetchone() == ("wal",)
+        with journal.connect() as nested:
+            assert nested is not first
+    with Journal(str(tmp_path)).connect() as reused:
+        assert reused is first
+        assert not reused.in_transaction
+
+
+@pytest.mark.parametrize("abort", [False, True])
+def test_journal_partial_cursor_releases_checkpoint_on_return(tmp_path, abort):
+    journal = Journal(str(tmp_path))
+    journal.put_many([MemoryRecord(str(i), "fact", 1, {"text": str(i)}) for i in range(4)])
+    cursors = []
+
+    def read():
+        with journal.connect() as db:
+            cursor = db.cursor().execute("SELECT id FROM records")
+            cursors.append(cursor)
+            assert cursor.fetchone() is not None
+            if abort:
+                raise RuntimeError("abort read")
+    if abort:
+        with pytest.raises(RuntimeError, match="abort read"):
+            read()
+    else:
+        read()
+    with sqlite3.connect(journal.path, isolation_level=None, timeout=0.1) as writer:
+        writer.execute("INSERT INTO cursors VALUES('checkpoint-probe',1)")
+        assert writer.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0] == 0
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        cursors[0].fetchone()
+
+
+def test_aborted_journal_writer_is_discarded(tmp_path):
+    journal = Journal(str(tmp_path))
+    with pytest.raises(RuntimeError, match="abort write"):
+        with journal.connect(write=True) as failed:
+            failed.execute("INSERT INTO cursors VALUES('failed',1)")
+            raise RuntimeError("abort write")
+    with journal.connect() as fresh:
+        assert fresh is not failed
+        assert fresh.execute("SELECT COUNT(*) FROM cursors").fetchone() == (0,)
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        failed.execute("SELECT 1")
 
 
 def test_indexed_queries_bind_scope_literals_and_fts_input(tmp_path):

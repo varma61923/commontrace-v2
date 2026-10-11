@@ -468,7 +468,7 @@ jobs:
             commontrace/fact_evidence.py commontrace/vector_snapshots.py \
             commontrace/sqlite_vector_snapshots.py commontrace/postgres_vector_snapshots.py \
             commontrace/evidence_context.py commontrace/explorer.py commontrace/vector_scoring.py \
-            commontrace/fact_index.py commontrace/runtime_cache.py commontrace/_jsonl.py \
+            commontrace/fact_index.py commontrace/runtime_cache.py commontrace/sqlite_pool.py commontrace/_jsonl.py \
             benchmarks/memory_contracts.py benchmarks/vector_search.py \
             benchmarks/fact_search.py benchmarks/fact_retrieval.py benchmarks/fact_mutation.py \
             benchmarks/conversation_retrieval.py

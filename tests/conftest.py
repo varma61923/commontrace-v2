@@ -14,9 +14,10 @@ os.environ.setdefault("COMMONTRACE_WARM", "0")
 @pytest.fixture(autouse=True)
 def close_idle_fact_connections():
     yield
-    from commontrace import fact_store
+    from commontrace import fact_store, memory_journal
 
     fact_store.close_connections()
+    memory_journal.close_connections()
 
 
 def pytest_collection_modifyitems(items):

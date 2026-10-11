@@ -52,3 +52,77 @@ Returning a handle also finalizes all live cursors. A partially consumed SELECT
 can hold a WAL read mark after COMMIT; releasing a transaction therefore closes
 its cursors before commit and reuse. Regression tests cover both connection-made
 and explicitly created cursors, including a separate writer's TRUNCATE checkpoint.
+
+Follow-up investigation reproduced five hook failures in isolation: the runtime
+journal opened four connections before relevance selection, taking about 40 ms
+in a diagnostic profile and exhausting the unchanged 50 ms deadline. Share the
+bounded connection owner between the fact ledger and runtime journal, with a
+separate four-handle bound for each store. Preserve each journal method's existing
+transaction boundary and default FULL durability. Add tests first for nested
+ownership, rollback/discard and partially consumed cursor cleanup. Keep the
+million-fact measurements below tied to `54681d0`; follow-up code is unmeasured
+at that scale until a new workload completes.
+
+## Measured result: batch gate still missed
+
+The corrected run used the real hierarchical APIs, default dedup/conflict policy,
+SQLite WAL and FULL synchronization at one million synthetic facts:
+
+| Metric | Before | After | Required | Decision |
+| --- | --- | --- | --- | --- |
+| Single-write p95 | 31.43 ms | 3.23 ms | <20 ms | Pass |
+| One 1,000-fact batch | 759 facts/s | 1,181 facts/s | ≥2,000 facts/s | Miss |
+| Sparse-overlap search p95 | 27.68 ms | 0.261 ms | No sparse-only target | Diagnostic only |
+| Hybrid/server latency and zero-reembedding restart | Not exercised | Not exercised | Required | Unverified |
+
+Phase advancement stops. The reproducer exited 1 on the measured batch miss.
+The full next-generation objective remains incomplete. These are separate runs
+on the same host with concurrent validation, not a controlled causal comparison.
+The interrupted preliminary candidate is excluded from acceptance evidence.
+No reader, judge or coding model ran. Reproduce with:
+
+```sh
+python -m benchmarks.next_generation_storage --sizes 1000,10000,30000,1000000 \
+  --trials 20 --legacy-max 1000 --output /path/to/storage.json
+```
+
+The [raw storage report](measurements/p0-write-optimization-storage.json) binds
+the measured source hashes. The run started from `a8d223d` with the candidate
+changes present; those source files were subsequently committed as `54681d0`.
+
+The [validation report](measurements/p0-write-optimization-validation.json)
+records 92 passing storage, cursor, concurrency, fork, migration and erasure
+contracts on the measured `54681d0` source. Ruff, both mandatory strict-mypy lists, Bandit's
+configured gate and docs/OpenAPI drift pass. The pinned 154-question LoCoMo
+[retrieval regression](measurements/p0-write-optimization-quality.json) passes
+at 1,500 and 4,000 tokens; this is not answer accuracy. The current candidate's
+full application suite completed with 6 failures, 6,666 passes and 118 skips;
+no all-CI pass is claimed. The superseded baseline was intentionally interrupted. The unchanged
+Hub completed 2,510 tests with 2 skips on dedicated PostgreSQL 16.
+
+Postmeasurement fixes finalize cursors on aborted connection close and share the
+bounded owner with the runtime journal. A root-autodetection test now imports
+after clearing overrides in a fresh process. All 135 focused checks pass on the
+follow-up, including the five hook failures reproduced on `54681d0`; production
+deadlines remain unchanged. The native transport workload delivered all 50
+directives but measured 152.27 ms p95, missing its <50 ms gate. These checks do
+not remeasure the million-fact workload or constitute a completed full suite.
+The new pool also passes strict mypy and is included in the mandatory CI list.
+
+Follow-up Graphify extraction records 21,411 nodes, 63,537 edges, 297 modules,
+303 reachability candidates and no dangling endpoints. Existing limits pass.
+
+[Graphify](measurements/p0-write-optimization-graphify.json) records 21,399 nodes,
+zero dangling endpoints, 303 static reachability candidates and 296 modules,
+using the CI-pinned version and parser extras. No limit was raised.
+
+The [signed manifest](measurements/p0-write-optimization-signed.json) binds these
+four aggregate reports. Its signature detects edits and identifies the session
+publisher; it does not establish scientific validity. Verify with:
+
+```sh
+python -m benchmarks.signed_results \
+  --manifest docs/strategy/measurements/p0-write-optimization-signed.json --verify \
+  --trusted-key "$(cat docs/strategy/measurements/p0-write-optimization-public-key.txt)" \
+  --artifact-root .
+```

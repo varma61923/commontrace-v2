@@ -21,6 +21,19 @@ from commontrace.record_visibility import bind_capture_sources, now, sanitize_re
 from commontrace.record_visibility import moment as moment
 from commontrace.record_visibility import visible as _visible
 from commontrace.runtime_cache import RuntimeCache
+from commontrace.sqlite_pool import Connection, ConnectionPool
+
+
+def _connect(path: str) -> Connection:
+    return sqlite3.connect(path, timeout=2, isolation_level=None, check_same_thread=False, factory=Connection)
+
+
+_CONNECTIONS = ConnectionPool(_connect)
+
+
+def close_connections(root: str | None = None) -> None:
+    """Drain idle journal handles before removing or replacing a quiescent store."""
+    _CONNECTIONS.close(os.path.join(paths.memory_dir(root), "runtime.sqlite3") if root is not None else None)
 
 _INITIALIZED = RuntimeCache(max_entries=128, max_bytes=256 * 1024, ttl=600, weigh=lambda key, value: len(repr(key)) + 1)
 
@@ -82,19 +95,21 @@ class Journal:
 
     @contextmanager
     def connect(self, *, write=False):
-        db = sqlite3.connect(self.path, timeout=2, isolation_level=None)
+        key, db, generation = _CONNECTIONS.borrow(self.path)
         try:
             if write:
                 db.execute("BEGIN IMMEDIATE")
             yield db
+            db.close_cursors()
             if write:
                 db.commit()
-        except BaseException:
-            if write:
+            elif db.in_transaction:
                 db.rollback()
-            raise
-        finally:
+        except BaseException:
             db.close()
+            raise
+        else:
+            _CONNECTIONS.release(key, db, generation)
 
     def put(self, record: MemoryRecord, *, expected_version: int | None = None) -> MemoryRecord:
         with self.connect(write=True) as db:
@@ -515,6 +530,7 @@ class Journal:
             }
             db.execute("INSERT INTO erasures(body) VALUES(?)", (json.dumps(audit),))
         # Purge WAL copies before reporting completion. Backups remain the owner's responsibility.
+        close_connections(self.root)
         with self.connect() as db:
             db.execute("VACUUM")
             if db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0]:
