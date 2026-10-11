@@ -12,7 +12,9 @@ import hashlib
 import json
 import os
 import sqlite3
+from collections import Counter
 from collections.abc import Iterator, Mapping, MutableMapping
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -22,6 +24,18 @@ from commontrace import _jsonl, paths
 from commontrace.memory_record import MemoryRecord
 from commontrace.sqlite_pool import Connection as _Connection
 from commontrace.sqlite_pool import ConnectionPool
+
+_BATCH_SIZE = 200
+# Fixed SQL shapes reuse prepared statements, stay below legacy variable limits,
+# and bind every value. NULL padding cannot match non-null ids/kinds/terms.
+_TERM_IDS_SQL = "".join((
+    "SELECT kind,term,id FROM lexicon WHERE (kind,term) IN (VALUES ",
+    ",".join("(?,?)" for _ in range(_BATCH_SIZE)), ")",
+))
+_EVENT_VERSIONS_SQL = "".join((
+    "SELECT fact_id,MAX(version) FROM events WHERE fact_id IN (",
+    ",".join("?" for _ in range(_BATCH_SIZE)), ") GROUP BY fact_id",
+))
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -160,25 +174,32 @@ def _features(fact):
 
     words, numbers, negative = h._signature(fact.statement)
     content = h._content(words)
-    from collections import Counter
-
     return (h._normalize_statement(fact.statement), _dump([numbers, sorted(negative)]),
             _dump(sorted(fact_conflicts.slot_key(fact.statement))), int(bool(negative)), _dump(numbers),
             content, Counter(_bm25_tokens(fact.statement)), h._fact_tokens(fact))
 
 
-def _project(connection: sqlite3.Connection, fact) -> None:
+@dataclass(frozen=True)
+class _Projection:
+    payload: str
+    rowid: int
+    block: str
+    content: frozenset
+    terms: list[tuple[str, str, int]]
+
+
+def _project_metadata(connection: sqlite3.Connection, fact, payload: str) -> _Projection:
+    """Keep exact/slot lookup and FTS ranking current inside the owned transaction."""
     norm, block, slot, negative, numbers, content, frequencies, overlap = _features(fact)
-    _remove_terms(connection, fact.id)
-    previous = connection.execute("SELECT rowid FROM facts WHERE id=?", (fact.id,)).fetchone()
-    if previous:
-        connection.execute("DELETE FROM fact_fts WHERE rowid=?", previous)
+    previous = _remove_terms(connection, fact.id)
+    if previous is not None:
+        connection.execute("DELETE FROM fact_fts WHERE rowid=?", (previous,))
     connection.execute(
         "INSERT INTO facts VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET "
         "payload=excluded.payload,norm=excluded.norm,block=excluded.block,slot=excluded.slot,"
         "negative=excluded.negative,numbers=excluded.numbers,status=excluded.status,"
         "forgotten=excluded.forgotten,category=excluded.category,confidence=excluded.confidence,length=excluded.length",
-        (fact.id, _dump(fact.to_dict()), norm, block, slot, negative, numbers,
+        (fact.id, payload, norm, block, slot, negative, numbers,
          fact.status, int(fact.forgotten), fact.category, fact.confidence, sum(frequencies.values())),
     )
     term_rows = [
@@ -187,17 +208,40 @@ def _project(connection: sqlite3.Connection, fact) -> None:
             ("overlap-v1", {word: 1 for word in overlap}), ("bm25-v1", frequencies),
         ) for term, count in values.items()
     ]
-    rowid = connection.execute("SELECT rowid FROM facts WHERE id=?", (fact.id,)).fetchone()[0]
-    connection.executemany(
-        "INSERT INTO lexicon(kind,term,documents) VALUES(?,?,1) "
-        "ON CONFLICT(kind,term) DO UPDATE SET documents=documents+1",
-        ((kind, term) for kind, term, _ in term_rows),
-    )
-    connection.executemany(
-        "INSERT INTO postings SELECT id,?,? FROM lexicon WHERE kind=? AND term=?",
-        ((rowid, count, kind, term) for kind, term, count in term_rows),
-    )
+    rowid = (previous if previous is not None else
+             connection.execute("SELECT rowid FROM facts WHERE id=?", (fact.id,)).fetchone()[0])
     connection.execute("INSERT INTO fact_fts(rowid,fact_id,statement) VALUES(?,?,?)", (rowid, fact.id, fact.statement))
+    return _Projection(payload, rowid, block, content, term_rows)
+
+
+def _chunks(values, size=_BATCH_SIZE):
+    for offset in range(0, len(values), size):
+        yield values[offset:offset + size]
+
+
+def _project_terms(connection: sqlite3.Connection, projections: list[_Projection]) -> None:
+    if not projections:
+        return
+    frequencies = Counter((kind, term) for projection in projections for kind, term, _ in projection.terms)
+    connection.executemany(
+        "INSERT INTO lexicon(kind,term,documents) VALUES(?,?,?) "
+        "ON CONFLICT(kind,term) DO UPDATE SET documents=documents+excluded.documents",
+        ((kind, term, count) for (kind, term), count in frequencies.items()),
+    )
+    identities = {}
+    for group in _chunks(list(frequencies)):
+        parameters = [value for pair in group for value in pair] + [None] * (2 * (_BATCH_SIZE - len(group)))
+        identities.update(((kind, term), identity) for kind, term, identity in connection.execute(
+            _TERM_IDS_SQL, parameters))
+    connection.executemany(
+        "INSERT INTO postings VALUES(?,?,?)",
+        ((identities[kind, term], projection.rowid, count)
+         for projection in projections for kind, term, count in projection.terms),
+    )
+
+
+def _project(connection: sqlite3.Connection, fact) -> None:
+    _project_terms(connection, [_project_metadata(connection, fact, _dump(fact.to_dict()))])
 
 
 def _remove_terms(connection, identity):
@@ -206,22 +250,19 @@ def _remove_terms(connection, identity):
         connection.execute("UPDATE lexicon SET documents=documents-1 WHERE id IN "
                            "(SELECT term_id FROM postings WHERE fact_row=?)", row)
         connection.execute("DELETE FROM postings WHERE fact_row=?", row)
+        return row[0]
+    return None
 
 
 
 def _remove_projection(connection, identity):
-    _remove_terms(connection, identity)
-    previous = connection.execute("SELECT rowid FROM facts WHERE id=?", (identity,)).fetchone()
-    if previous:
-        connection.execute("DELETE FROM fact_fts WHERE rowid=?", previous)
+    previous = _remove_terms(connection, identity)
+    if previous is not None:
+        connection.execute("DELETE FROM fact_fts WHERE rowid=?", (previous,))
     connection.execute("DELETE FROM facts WHERE id=?", (identity,))
 
 
-def _append(connection: sqlite3.Connection, fact, *, delete: bool = False,
-            payload: dict[str, Any] | None = None) -> None:
-    version = connection.execute("SELECT MAX(version) FROM events WHERE fact_id=?", (fact.id,)).fetchone()[0]
-    version = (version or 0) + 1
-    payload = fact.to_dict() if payload is None else payload
+def _event_row(fact, payload: dict[str, Any], version: int, *, delete: bool = False):
     relations = {"updates": [fact.id]} if version > 1 else {}
     record = MemoryRecord(
         fact.id, "fact", version, payload, status="active" if fact.status == "active" else "deprecated",
@@ -231,8 +272,15 @@ def _append(connection: sqlite3.Connection, fact, *, delete: bool = False,
         retracted_at=fact.retracted_at, confidence=fact.confidence,
         evidence=payload["evidence"],
     )
+    return fact.id, version, "remove" if delete else "put", _dump(vars(record))
+
+
+def _append(connection: sqlite3.Connection, fact, *, delete: bool = False,
+            payload: dict[str, Any] | None = None) -> None:
+    version = connection.execute("SELECT MAX(version) FROM events WHERE fact_id=?", (fact.id,)).fetchone()[0]
+    payload = fact.to_dict() if payload is None else payload
     connection.execute("INSERT INTO events(fact_id,version,operation,record) VALUES(?,?,?,?)",
-                       (fact.id, version, "remove" if delete else "put", _dump(vars(record))))
+                       _event_row(fact, payload, (version or 0) + 1, delete=delete))
     if delete:
         _remove_projection(connection, fact.id)
     else:
@@ -249,6 +297,26 @@ class FactMap(MutableMapping):
         self.loaded: dict[str, Any] = {}
         self.before: dict[str, str | None] = {}
         self.removed: set[str] = set()
+        self.staged: dict[str, _Projection] = {}
+        self.near_postings: dict[tuple[str, str], set[str]] = {}
+
+    def clear_staged(self):
+        self.staged.clear()
+        self.near_postings.clear()
+
+    def stage(self, fact):
+        previous = self.staged.get(fact.id)
+        if previous is not None:
+            for word in previous.content:
+                self.near_postings[previous.block, word].discard(fact.id)
+        projection = _project_metadata(self.connection, fact, _dump(fact.to_dict()))
+        self.staged[fact.id] = projection
+        for word in projection.content:
+            self.near_postings.setdefault((projection.block, word), set()).add(fact.id)
+
+    def near_candidates(self, block, content, need):
+        rare = sorted(content, key=lambda word: (len(self.near_postings.get((block, word), ())), word))[:need]
+        return set().union(*(self.near_postings.get((block, word), ()) for word in rare))
 
     def __getitem__(self, key):
         if key in self.removed:
@@ -301,22 +369,45 @@ class FactMap(MutableMapping):
         return total + added - removed
 
     def flush(self):
+        changed, live, removed = [], [], []
         for key, fact in self.loaded.items():
             if key in self.removed:
-                if self.before[key] is not None:
-                    _append(self.connection, fact, delete=True)
-                else:
-                    _remove_projection(self.connection, key)
-            else:
-                payload = fact.to_dict()
-                if _dump(payload) != self.before[key]:
-                    _append(self.connection, fact, payload=payload)
+                removed.append(key)
+                if self.before[key] is None:
+                    continue
+            payload = fact.to_dict()
+            encoded = _dump(payload)
+            delete = key in self.removed
+            if delete or encoded != self.before[key]:
+                changed.append((fact, payload, delete))
+            if not delete and (key in self.staged or encoded != self.before[key]):
+                live.append((fact, encoded))
+
+        versions = {}
+        for group in _chunks([fact.id for fact, _, _ in changed]):
+            versions.update(self.connection.execute(_EVENT_VERSIONS_SQL, group + [None] * (_BATCH_SIZE - len(group))))
+        # Validate the same envelope before final projection work. Failure rolls
+        # back metadata/FTS already staged earlier in this transaction as well.
+        rows = [_event_row(fact, payload, versions.get(fact.id, 0) + 1, delete=delete)
+                for fact, payload, delete in changed]
+        for key in removed:
+            _remove_projection(self.connection, key)
+        projections = []
+        for fact, encoded in live:
+            staged = self.staged.get(fact.id)
+            projections.append(staged if staged is not None and staged.payload == encoded else
+                               _project_metadata(self.connection, fact, encoded))
+        _project_terms(self.connection, projections)
+        if rows:
+            self.connection.executemany("INSERT INTO events(fact_id,version,operation,record) VALUES(?,?,?,?)", rows)
+        self.clear_staged()
 
 
 @contextlib.contextmanager
 def transaction(root: str, *, write: bool = False) -> Iterator[FactMap]:
     key, connection, generation = _borrow_connection(root)
     succeeded = False
+    facts = None
     try:
         connection.execute("BEGIN IMMEDIATE" if write else "BEGIN")
         facts = FactMap(connection)
@@ -330,6 +421,8 @@ def transaction(root: str, *, write: bool = False) -> Iterator[FactMap]:
         connection.rollback()
         raise
     finally:
+        if facts is not None:
+            facts.clear_staged()
         if succeeded:
             _return_connection(key, connection, generation)
         else:
@@ -383,7 +476,7 @@ class StatementIndex:
         self.by_norm, self.slots = _Norms(self), _Slots(self)
 
     def add(self, fact):
-        _project(self.facts.connection, fact)
+        self.facts.stage(fact)
 
     def candidates(self, kind, arguments):
         queries = {
@@ -419,7 +512,7 @@ class StatementIndex:
             row = self.facts.connection.execute(
                 "SELECT id,documents FROM lexicon WHERE kind='near-v2' AND term=?", (term,)).fetchone()
             counts.append((row[1] if row else 0, term, row[0] if row else None))
-        candidates = set()
+        candidates = self.facts.near_candidates(block, content, need)
         # Any `need` distinct query terms preserve the Jaccard recall argument;
         # global document frequencies only choose their lookup order.
         for count, _term, identity in sorted(counts)[:need]:

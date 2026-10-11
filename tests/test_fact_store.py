@@ -422,6 +422,9 @@ def test_legacy_postings_upgrade_is_atomic_for_concurrent_readers(tmp_path):
     root = str(tmp_path)
     fact_store.migrate(root)
     fact, _ = hierarchical.add_fact(root, 'A durable assertion exists', category='test')
+    # Build the historical layout only after draining pooled handles. Both
+    # readers must exercise cold opening, even if their workers run serially.
+    _restore_blocked_near_projection(root)
     db = sqlite3.connect(fact_store.database_path(root))
     db.executescript('DROP TRIGGER clear_terms; DROP TRIGGER clear_counts; '
                      'CREATE TABLE legacy_terms AS SELECT * FROM terms; '
@@ -627,3 +630,181 @@ def test_global_near_keeps_strongest_match_beyond_first_hundred(tmp_path, monkey
     with fact_store.transaction(root) as facts:
         actual = fact_store.StatementIndex(facts).near(query, [])
         assert actual is not None and actual.id != strongest.id
+
+
+def test_batch_amortizes_shared_near_term_frequency_updates(tmp_path, monkeypatch):
+    root = str(tmp_path)
+    activate(root)
+    monkeypatch.setenv("COMMONTRACE_FACT_CONFLICTS", "off")
+    with fact_store.transaction(root) as facts:
+        connection = facts.connection
+    statements = []
+    connection.set_trace_callback(statements.append)
+    try:
+        rows = h.add_facts(root, [
+            {"statement": f"Component item{n} requires durable replicated storage"} for n in range(20)
+        ])
+    finally:
+        connection.set_trace_callback(None)
+    assert len(rows) == 20 and all(action == "ADD" for _, action in rows)
+    updates = [sql for sql in statements if sql.startswith("INSERT INTO lexicon")
+               and "'near-v2'" in sql and "'durable'" in sql]
+    assert len(updates) == 1
+    with fact_store.transaction(root) as facts:
+        assert facts.connection.execute(
+            "SELECT documents FROM lexicon WHERE kind='near-v2' AND term='durable'"
+        ).fetchone() == (20,)
+
+
+def test_batched_event_failure_rolls_back_metadata_fts_and_postings(tmp_path, monkeypatch):
+    root = str(tmp_path)
+    activate(root)
+
+    class FailingEvents(fact_store._Connection):
+        def executemany(self, sql, parameters):
+            if sql.startswith("INSERT INTO events"):
+                super().execute(sql, next(iter(parameters)))
+                raise sqlite3.OperationalError("event batch fault")
+            return super().executemany(sql, parameters)
+
+    fact_store.close_connections(root)
+    with monkeypatch.context() as patch:
+        patch.setattr(fact_store, "_Connection", FailingEvents)
+        with pytest.raises(sqlite3.OperationalError, match="event batch fault"):
+            h.add_facts(root, [{"statement": "Uncommitted vault record"}, {"statement": "Uncommitted journal"}])
+    assert h.load_facts(root) == {}
+    assert fact_store.events(root) == []
+    with fact_store.transaction(root) as facts:
+        for table in ("facts", "postings", "fact_fts"):
+            assert facts.connection.execute("SELECT COUNT(*) FROM " + table).fetchone() == (0,)
+        assert facts.connection.execute("SELECT SUM(documents) FROM lexicon").fetchone()[0] in (0, None)
+    h.add_fact(root, "A fresh writer recovers after the event fault")
+    assert len(h.load_facts(root)) == 1
+
+
+def test_same_batch_semantic_match_keeps_fts_ranking_beyond_pending_cap(tmp_path, monkeypatch):
+    from commontrace import fact_embeddings, fact_vector_projection
+
+    root = str(tmp_path)
+    activate(root)
+    monkeypatch.setenv("COMMONTRACE_FACT_CONFLICTS", "off")
+    monkeypatch.setenv("COMMONTRACE_FACT_DEDUP", "semantic")
+    query = "Offshore vault protects classified material"
+    target = "Vault secures this project's encrypted artifact"
+    seen = []
+
+    def similar(statement, candidates, **kwargs):
+        if statement != query:
+            return []
+        seen.extend(fact.statement for fact in candidates)
+        return [(fact, 0.99) for fact in candidates if fact.statement == target]
+
+    monkeypatch.setattr(fact_embeddings, "similar", similar)
+    monkeypatch.setattr(fact_vector_projection, "search", lambda *args, **kwargs: [])
+    rows = h.add_facts(root, [
+        {"statement": f"Offshore sensor item{n} performs a routine observation"} for n in range(119)
+    ] + [{"statement": target}, {"statement": query}])
+    assert target in seen
+    assert rows[-2][1] == "ADD" and rows[-1][1] == "NOOP"
+    assert rows[-2][0].id == rows[-1][0].id
+    assert h.load_facts(root)[rows[-1][0].id].confirmations == 2
+
+
+def test_same_batch_near_lookup_reinforces_strongest_pending_fact(tmp_path, monkeypatch):
+    root = str(tmp_path)
+    activate(root)
+    monkeypatch.setenv("COMMONTRACE_FACT_CONFLICTS", "off")
+    base = "Component requires durable replicated journal storage"
+    with h.mutate_facts(root) as facts:
+        index = h._statement_index(facts)
+        first, _ = h._add_locked(facts, base + " alpha", "general", [], None, None, None, 0.8, "a", index=index)
+        second, _ = h._add_locked(facts, base + " beta", "general", [], None, None, None, 0.8, "b", index=index)
+        second.confirmations = 5
+        result, action = h._add_locked(facts, base, "general", [], None, None, None, 0.8, "c",
+                                       index=index, dedupe="near")
+        assert action == "NOOP" and result.id == second.id and result.id != first.id
+    assert h.load_facts(root)[second.id].confirmations == 6
+
+
+def test_pending_projection_remove_readd_and_envelope_validation(tmp_path):
+    root = str(tmp_path)
+    activate(root)
+    fact, _ = h.add_fact(root, "Original durable journal")
+    with h.mutate_facts(root) as facts:
+        index = h._statement_index(facts)
+        del facts[fact.id]
+        replacement = h._coerce_fact({**fact.to_dict(), "statement": "Replacement vault archive"})
+        facts[fact.id] = replacement
+        index.add(replacement)
+        del facts[fact.id]
+        facts[fact.id] = replacement
+        index.add(replacement)
+    assert h.load_facts(root)[fact.id].statement == replacement.statement
+    assert [event["record"]["version"] for event in fact_store.events(root)] == [1, 2]
+    assert h.search_facts(root, "original") == []
+    assert h.search_facts(root, "vault")[0][0].id == fact.id
+    with pytest.raises(ValueError, match="confidence"):
+        with h.mutate_facts(root) as facts:
+            facts[fact.id].confidence = float("nan")
+    assert h.load_facts(root)[fact.id].confidence == 0.8
+    before = h.load_facts(root)
+    fact_store.rebuild(root)
+    assert h.load_facts(root) == before
+
+
+@pytest.mark.parametrize("abort", [False, True])
+def test_transaction_releases_transient_projection_buffers(tmp_path, abort):
+    root = str(tmp_path)
+    activate(root)
+    owner = None
+    try:
+        with h.mutate_facts(root) as facts:
+            owner = facts
+            h._add_locked(facts, "Transient projection payload", "general", [], None, None, None, 0.8, "")
+            assert facts.staged and facts.near_postings
+            if abort:
+                raise RuntimeError("abort before flush")
+    except RuntimeError as exc:
+        assert abort and str(exc) == "abort before flush"
+    assert owner is not None and not owner.staged and not owner.near_postings
+    assert len(h.load_facts(root)) == (0 if abort else 1)
+
+
+def test_reverted_staged_edit_cannot_diverge_from_authoritative_events(tmp_path):
+    root = str(tmp_path)
+    activate(root)
+    fact, _ = h.add_fact(root, "Original vault journal")
+    before = fact_store.events(root)
+    with h.mutate_facts(root) as facts:
+        edited = facts[fact.id]
+        edited.statement = "Abandoned maritime archive"
+        h._statement_index(facts).add(edited)
+        edited.statement = fact.statement
+    assert fact_store.events(root) == before
+    assert h.load_facts(root)[fact.id].statement == fact.statement
+    assert h.search_facts(root, "maritime") == []
+    assert h.search_facts(root, "vault")[0][0].id == fact.id
+    fact_store.rebuild(root)
+    assert h.load_facts(root)[fact.id].statement == fact.statement
+
+
+def test_large_batch_reinforcement_keeps_all_versions_and_document_counts(tmp_path, monkeypatch):
+    root = str(tmp_path)
+    activate(root)
+    monkeypatch.setenv("COMMONTRACE_FACT_CONFLICTS", "off")
+    items = [{"statement": f"Journal item{n} retains durable storage", "source_trace_id": "first"}
+             for n in range(513)]
+    first = h.add_facts(root, items)
+    second = h.add_facts(root, [{**item, "source_trace_id": "second"} for item in items])
+    assert all(action == "ADD" for _, action in first)
+    assert all(action == "NOOP" and fact.confirmations == 2 for fact, action in second)
+    history = fact_store.events(root)
+    assert len(history) == 1026
+    assert [event["record"]["version"] for event in history] == [1] * 513 + [2] * 513
+    with fact_store.transaction(root) as facts:
+        assert facts.connection.execute(
+            "SELECT documents FROM lexicon WHERE kind='near-v2' AND term='durable'"
+        ).fetchone() == (513,)
+        assert facts.connection.execute(
+            "SELECT 1 FROM lexicon l WHERE l.documents!=(SELECT COUNT(*) FROM postings p WHERE p.term_id=l.id) LIMIT 1"
+        ).fetchone() is None
