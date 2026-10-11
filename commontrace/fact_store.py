@@ -163,8 +163,11 @@ def _upgrade_near_projection(connection: sqlite3.Connection) -> None:
 _CONNECTIONS = ConnectionPool(_connect)
 
 
+_JSON_ENCODER = json.JSONEncoder(sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+
+
 def _dump(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return _JSON_ENCODER.encode(value)
 
 
 def _features(fact):
@@ -195,7 +198,7 @@ def _project_metadata(connection: sqlite3.Connection, fact, payload: str, *, sna
     previous = _remove_terms(connection, fact.id)
     if previous is not None:
         connection.execute("DELETE FROM fact_fts WHERE rowid=?", (previous,))
-    connection.execute(
+    inserted = connection.execute(
         "INSERT INTO facts VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET "
         "payload=excluded.payload,norm=excluded.norm,block=excluded.block,slot=excluded.slot,"
         "negative=excluded.negative,numbers=excluded.numbers,status=excluded.status,"
@@ -209,8 +212,7 @@ def _project_metadata(connection: sqlite3.Connection, fact, payload: str, *, sna
             ("overlap-v1", {word: 1 for word in overlap}), ("bm25-v1", frequencies),
         ) for term, count in values.items()
     ]
-    rowid = (previous if previous is not None else
-             connection.execute("SELECT rowid FROM facts WHERE id=?", (fact.id,)).fetchone()[0])
+    rowid = previous if previous is not None else inserted.lastrowid
     connection.execute("INSERT INTO fact_fts(rowid,fact_id,statement) VALUES(?,?,?)", (rowid, fact.id, fact.statement))
     return _Projection(payload, rowid, block, content, term_rows, snapshot)
 

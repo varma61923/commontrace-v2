@@ -217,7 +217,7 @@ def _feature_weight(value: Any) -> int | None:
     if type(value) in (tuple, frozenset):
         weight = sys.getsizeof(value)
         for child in value:
-            child_weight = _feature_weight(child)
+            child_weight = sys.getsizeof(child) if type(child) is str else _feature_weight(child)
             if child_weight is None:
                 return None
             weight += child_weight
@@ -237,8 +237,7 @@ class _StatementFeatures:
         self.closed = False
 
     def get(self, kind: str, key: Any, build: Callable) -> Any:
-        if self.closed or not (type(key) is str or
-                               (type(key) is frozenset and all(type(word) is str for word in key))):
+        if self.closed or type(key) is not str:
             return build(key)
         cache_key = (kind, key)
         missing = _FEATURE_MISSING
@@ -440,10 +439,6 @@ def _signature_uncached(statement: str) -> tuple[frozenset, tuple, frozenset]:
 
 
 def _content(words: frozenset) -> frozenset:
-    return _cached_feature("content", words, _content_uncached)
-
-
-def _content_uncached(words: frozenset) -> frozenset:
     from commontrace.conversation.profile import STOPWORDS
 
     return frozenset(w for w in words if w not in STOPWORDS or w in _NEGATIONS)

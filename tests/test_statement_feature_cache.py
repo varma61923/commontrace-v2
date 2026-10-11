@@ -1,6 +1,7 @@
 """Pure lexical reuse must stay bounded and end with its write transaction."""
 from __future__ import annotations
 
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
@@ -129,3 +130,30 @@ def test_concurrent_writers_have_separate_feature_contexts(tmp_path):
         results = list(pool.map(write, roots))
     assert results[0][0] is not results[1][0]
     assert results[0][1] is not results[1][1]
+
+
+def test_content_sets_remain_immutable_without_retained_set_keys(tmp_path):
+    root = str(tmp_path)
+    fact_store.migrate(root)
+    text = "Vault does not retain seven durable journal replicas"
+    expected = features(text)
+    with fact_store.transaction(root, write=True):
+        owner = h._STATEMENT_FEATURES.get()
+        assert features(text) == expected
+        assert h._content(h._signature(text)[0]) == expected[2]
+        assert type(expected[2]) is frozenset
+        assert owner.values
+        assert all(kind != "content" and type(key) is str for kind, key in owner.values)
+
+
+def test_nested_immutable_feature_weight_keeps_all_retained_children():
+    value = ("normalized", (frozenset({"vault", "durable"}), ("17",), frozenset({"not"})))
+    pending = [value]
+    expected = 0
+    while pending:
+        item = pending.pop()
+        expected += sys.getsizeof(item)
+        if type(item) in (tuple, frozenset):
+            pending.extend(item)
+    assert h._feature_weight(value) == expected
+    assert h._feature_weight(("text", ["mutable"])) is None

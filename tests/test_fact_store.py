@@ -17,6 +17,31 @@ def activate(root):
     return fact_store.migrate(str(root))
 
 
+def test_compact_json_encoding_is_reused_and_thread_isolated(monkeypatch):
+    values = [{"statement": "部署 uses journal <data>", "scopes": ["tenant:a"], "origin": {"zero": -0.0}},
+              [("7.5",), ["not"]], {"finite": float("inf"), "nan": float("nan")}, "é"]
+    expected = [json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":")) for value in values]
+    constructors = []
+    original = json.JSONEncoder
+
+    class CountingEncoder(original):
+        def __init__(self, *args, **kwargs):
+            constructors.append(1)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(json, "JSONEncoder", CountingEncoder)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        actual = list(pool.map(fact_store._dump, values * 20))
+    assert actual == expected * 20
+    cycle = []
+    cycle.append(cycle)
+    with pytest.raises(ValueError, match="Circular"):
+        fact_store._dump(cycle)
+    with pytest.raises(TypeError, match="serializable"):
+        fact_store._dump(object())
+    assert constructors == []
+
+
 def _staged_fact():
     fact = h.AtomicFact("staged-snapshot", "Vault uses durable storage", "general", ["tenant:a"],
                        0.0, 1, "2026-01-01T00:00:00+00:00", None,
@@ -25,6 +50,45 @@ def _staged_fact():
     fact.updated_at = fact.created_at
     fact.revision = h._compute_revision(fact.to_dict())
     return fact
+
+
+def test_new_fact_projection_does_not_reselect_its_inserted_rowid(tmp_path):
+    activate(tmp_path)
+    statements = []
+    with fact_store.transaction(str(tmp_path), write=True) as facts:
+        fact = _staged_fact()
+        facts[fact.id] = fact
+        facts.connection.set_trace_callback(statements.append)
+        fact_store.StatementIndex(facts).add(fact)
+        facts.connection.set_trace_callback(None)
+        assert facts.staged[fact.id].rowid == facts.connection.execute(
+            "SELECT rowid FROM facts WHERE id=?", (fact.id,)).fetchone()[0]
+    assert sum(query.startswith("SELECT rowid FROM facts WHERE id=") for query in statements) == 1
+
+
+def test_upsert_uses_its_original_rowid_after_an_unrelated_insert(tmp_path):
+    activate(tmp_path)
+    with fact_store.transaction(str(tmp_path), write=True) as facts:
+        first, second = _staged_fact(), _staged_fact()
+        second.id, second.statement = "unrelated-insert", "Operator uses remote archive"
+        for fact in (first, second):
+            facts[fact.id] = fact
+            fact_store.StatementIndex(facts).add(fact)
+        original_rowid = facts.staged[first.id].rowid
+        assert original_rowid != facts.staged[second.id].rowid
+        first.statement = "Archive uses replicated journal"
+        fact_store.StatementIndex(facts).add(first)
+        assert facts.staged[first.id].rowid == original_rowid
+    with fact_store.transaction(str(tmp_path)) as facts:
+        assert facts.connection.execute(
+            "SELECT rowid,fact_id FROM fact_fts WHERE fact_fts MATCH 'replicated'").fetchall() == [(original_rowid, first.id)]
+        for fact in (first, second):
+            expected = h._content(h._signature(fact.statement)[0])
+            actual = frozenset(row[0] for row in facts.connection.execute(
+                "SELECT l.term FROM lexicon l JOIN postings p ON p.term_id=l.id JOIN facts f ON f.rowid=p.fact_row "
+                "WHERE f.id=? AND l.kind='near-v2'", (fact.id,)))
+            assert actual == expected
+            assert fact_store.StatementIndex(facts).near(fact.statement, fact.scopes).id == fact.id
 
 
 def test_unchanged_staged_payload_is_encoded_once(tmp_path, monkeypatch):
