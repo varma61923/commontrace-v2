@@ -35,5 +35,6 @@ def test_multiround_bound_and_trace(tmp_path):
         return json.dumps({"grade": "PARTIAL", "queries": ["pytest"]}), {}
 
     result = search_recipes.multi_round(root, "parser", complete=judge, max_rounds=3, embedder="none")
-    assert len(result["trace"]) == 3
+    assert len(result["trace"]) == 2
+    assert result["trace"][-1]["stopped"] == "no-new-queries"
     assert result["results"]

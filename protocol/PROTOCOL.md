@@ -383,3 +383,43 @@ Extension vectors are in `conformance/memory-record-vectors.json` and exercised
 by `tests/test_memory_record.py`, independently of the v1 vector set. This phase
 implements fact envelopes; it does not claim migration of other memory kinds,
 automatic lesson activation or a new hosted API.
+
+## 15. Optional hybrid retrieval policy
+
+This extension describes indexed hybrid retrieval and bounded gap filling. It
+changes neither the Trace/Lesson schemas nor the section 13 causal operations.
+Passing those causal operations does not imply retrieval-policy conformance.
+
+An indexed retriever supporting this extension adds independent lexical and
+dense candidates and fuses their ranks with RRF k=60. Its bounded graph walk is
+seeded from the admitted first-pass union, including dense-only hits, together
+with explicit center/entity seeds. Seeds are deduplicated in order and capped
+at eight; each walk has at most two hops and 2,000 visited nodes. Every added
+fact must pass current scope, authority, evidence, forgetting, expiry and valid
+time admission. An inadmissible `memory:` node cannot seed or bridge a walk.
+Graph explanations expose admitted seeds and the number of graph-ranked facts.
+Unavailable local models retain the existing lexical fallback.
+
+A gap-filling retriever keeps labelled result blocks for each subquery, permits
+an optional `core_ids` decision selecting only previously retrieved candidate
+ids, and assembles unique results in this order: accumulated core, each block's
+first eligible hit, then remaining candidates by strongest per-block inverse
+rank `1 / (60 + rank)` with id tie-breaking. These priorities yield to the
+requested result limit; a smaller limit cannot guarantee all facets. Repeated
+hits across subqueries do not gain additional consensus votes.
+
+The completeness decision retains the existing `grade` and `queries` fields;
+`core_ids` is optional and defaults to an empty list. Invalid or unavailable core
+ids are rejected. There are at most three rounds and three new subqueries per
+round. Already searched subqueries are skipped after NFKC, case and whitespace
+normalization, and exhaustion stops the loop. The original query's resolved
+valid time and scope are pinned across its gap queries. After each model call,
+all accumulated candidates must pass fresh canonical admission; a withdrawn or
+revised fact cannot survive through an earlier block. Redacted training traces
+include query blocks, retained core ids and stop reasons.
+
+`conformance/retrieval-vectors.json` exercises semantic graph expansion, scope
+bridges, expiry, facet retention and grounded core selection through
+`tests/test_retrieval_policy_vectors.py`. These deterministic policy vectors
+measure correctness only; they do not establish model answer quality, model
+availability, or latency at a million records.
