@@ -45,6 +45,17 @@ mean recall 0.995, passing its explicit component targets. Ten real-engine,
 harness and boundary checks pass after the new regressions failed first.
 Full hybrid latency and zero-reembedding restart remain unverified.
 
+The existing native bridge is replaced by an isolated stdlib Python transport
+on `4b1d2eb`, retaining one broker/core and a compatibility launcher for older
+commands. Three frozen 50-call runs delivered all directives and measured
+51.59, 46.64 and 48.64 ms p95. One round misses <50 ms, so native latency remains
+open. The historical 152.27 ms Node report has limited dependency provenance;
+it is not a controlled comparison. Scoped validation passes 129 tests with
+8 skips and installed-wheel capture/delivery checks. The new full application
+and end-to-end suite is running on frozen source; it is not yet a pass.
+Graphify now reports 298 modules and 300 candidates within the unchanged
+306/303 limits. See [native transport evidence](next-generation-native-transport.md).
+
 The combined branch contains P0–P4 implementation; this audit does not establish
 their acceptance gates. The earlier memory-evolution code
 was already squashed into main; its branch and `codex/next-generation-p0` are both

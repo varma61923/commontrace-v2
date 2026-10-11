@@ -74,7 +74,8 @@ from the older release. The full next-generation objective remains incomplete.
 | Follow-up storage/journal/hook contracts | 135 passed; all six failures reproduce before the fixes and pass afterward | **Focused pass** |
 | Frozen follow-up full application suite | `fa1ef0c`: 6,678 passed, 118 skipped, 26 warnings | **Pass**; later Lance changes separately covered by ten scoped checks |
 | Latest million-fact writes | `aeadf5d`: 3.86 ms single-write p95, 1,167 facts/s batched | **Single pass; batch miss**; benchmark exits 1 |
-| Follow-up native transport | 152.27 ms p95, 50/50 directives delivered; target <50 ms | **Latency miss** |
+| Historical Node transport | 152.27 ms p95, 50/50 directives delivered; target <50 ms | **Latency miss**; reported checkout 54681d0, imported dependency binding incomplete |
+| Isolated Python transport, frozen `4b1d2eb` | Three runs: 51.59, 46.64, 48.64 ms p95; 150/150 delivered | **Latency remains open**: one of three rounds misses; scoped 129 passed / 8 skipped, new full suite running |
 | Follow-up Graphify | 297 modules, 303 reachability candidates, zero dangling endpoints | **Pass**, unchanged 306/303 ceilings |
 | Optional Lance at 10K vectors | ANN p95 7.15 ms, recall@10 1.0 on 20 paired synthetic queries | **Component measured**; million-fact hybrid unverified |
 | Optional Lance at 1M vectors | ANN p95 13.04 ms; mean recall@10 0.91, minimum 0.70 | **Recall target missed**; component only, full hybrid unverified |

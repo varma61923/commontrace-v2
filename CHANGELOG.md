@@ -18,6 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Native hooks now launch a stdlib Python transport with isolated imports,
+  sharing response formatting with the existing adapters. Older Node commands
+  retain a compatibility launcher; reinstalling remains idempotent. Bounded
+  frames, detached capture recovery and post-stdout receipts have real-process
+  and installed-wheel checks. Windsurf UI output no longer claims model exposure.
+  Three frozen 50-call runs delivered all 150 directives at 51.59, 46.64 and
+  48.64 ms p95. One round misses <50 ms, so the latency gate remains open.
+  Scoped checks pass 129 tests with 8 skips; the new full suite is still running.
 - The frozen SQLite/journal follow-up passes the full application suite:
   6,678 passed and 118 skipped. The latest million-fact write run measures
   3.86 ms single-write p95 and 1,167 facts/s batched. The batch reproducer

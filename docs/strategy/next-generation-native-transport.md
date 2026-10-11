@@ -4,7 +4,7 @@ P0 remains open on batch ingest and unverified hybrid/restart gates. This note
 investigates the existing injector's measured transport miss; it does not
 establish P1 acceptance or semantic relevance.
 
-The frozen `fa1ef0c` transport fixture delivered 50/50 directives through fresh
+The historical Node transport fixture delivered 50/50 directives through fresh
 Node processes and a warm broker, but measured 152.27 ms p95. A separate
 20-process startup diagnostic on the same host measured an empty Node process
 at 105.42 ms p95. Improving broker selection alone cannot make that fresh-process
@@ -68,7 +68,44 @@ core test failed on the unchanged baseline because it imported causal-measuremen
 dependencies inside the operation deadline. Initializing that dependency with
 the core preserves the deadline and passes the isolated regression.
 
-The first working-tree diagnostic delivered 50/50 directives at 49.96 ms p95;
-it is provisional and close to the threshold. Final frozen-source repetitions
-must be recorded separately. Neither these transport checks nor earlier startup
-controls establish model relevance, safety precision or any remaining P0 gate.
+The first working-tree diagnostic delivered 50/50 directives at 49.96 ms p95.
+Three subsequent sequential runs on frozen `4b1d2eb` retain every sample and
+report warmup separately:
+
+| Run | Fresh process p95 | Delivery | Exit status |
+| --- | --- | --- | --- |
+| 1 | 51.59 ms | 50/50 | 1: latency miss |
+| 2 | 46.64 ms | 50/50 | 0 |
+| 3 | 48.64 ms | 50/50 | 0 |
+
+The replacement is faster on these observations, but one of three runs misses
+the unchanged 50 ms target. The native latency gate remains open. The historical
+Node JSON reports checkout `54681d0`, despite being nested under the `fa1ef0c`
+follow-up evidence. Node bridge and harness bytes match both commits; the raw
+report does not bind every imported core dependency. Its 152.27 ms result is a
+historical separate-run observation, not a proven frozen-`fa1ef0c` measurement
+or a controlled causal comparison.
+
+Validation passes 129 scoped tests with 8 skips, the isolated cold-core and
+installer regressions, installed-wheel delivery and capture, Ruff, strict mypy,
+Bandit, docs and both OpenAPI checks. Graphify reports 21,455 nodes, 63,732 edges,
+298 modules, 300 reachability candidates, no dangling endpoints and no policy
+violations. The ceilings remain 306 modules and 303 candidates; the new bridge
+is an actual generated absolute-script entry point. The full application and
+end-to-end suite is running against the same frozen commit in a dedicated
+environment. An initial tests-only invocation was stopped early and is not
+counted as a validation pass.
+
+Reproduce each transport run with:
+
+```sh
+python -m benchmarks.injector_bench --transport-only --repetitions 50 --out native-transport.json
+# Or, with the installed environment on PATH:
+./reproduce.sh --native-transport benchmark-results/native-transport
+```
+
+The [signed native evidence](measurements/p0-native-transport-signed.json) binds
+the raw historical result, all three new rounds and validation/source hashes.
+Signatures detect edits; they do not certify scientific validity. Neither these
+transport checks nor earlier startup controls establish model relevance, safety
+precision or any remaining P0 gate.
