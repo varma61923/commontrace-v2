@@ -12,6 +12,7 @@ import os
 import re
 
 from commontrace import _jsonl, paths
+from commontrace.hook_bridge import format_reply as format_reply
 
 PROJECT_CONFIGS = {
     "claude": os.path.join(".claude", "settings.local.json"),
@@ -159,21 +160,3 @@ def normalize(agent: str | None, event: str, payload: dict) -> tuple[str, dict]:
     elif agent == "openhands":
         data.setdefault("prompt", data.get("message", ""))
     return event, data
-
-
-def format_reply(agent: str | None, event: str, reply: dict) -> dict | str:
-    reply = {k: v for k, v in reply.items() if k != "delivery_token"}
-    context = reply.get("context", "")
-    if agent == "cline":
-        return {"cancel": False, "contextModification": context}
-    if agent == "openhands":
-        return {"decision": "allow", "additionalContext": context}
-    if agent == "windsurf":
-        return {}  # Capture only; use the shared MCP/HTTP adapter for context injection.
-    if agent == "kimi":
-        return context
-    if agent == "cursor":
-        return {"additional_context": context}
-    if agent in ("claude", "codex", "gemini") and context:
-        return {"hookSpecificOutput": {"hookEventName": event, "additionalContext": context}}
-    return reply

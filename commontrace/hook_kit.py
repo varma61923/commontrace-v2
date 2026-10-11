@@ -15,23 +15,12 @@ import time
 from commontrace import injection_guard, kg_similarity, memory_guard, paths
 from commontrace.configuration import getenv as _configuration_getenv
 from commontrace.context_template import render_context as render_context
+from commontrace.hook_bridge import AGENTS as AGENTS
+from commontrace.hook_bridge import EVENTS as EVENTS
+from commontrace.measure import CausalMemory
 from commontrace.memory_journal import Journal
 from commontrace.memory_record import MemoryRecord
 from commontrace.search_recipes import _bm25, terms
-
-EVENTS = (
-    "SessionStart",
-    "UserPromptSubmit",
-    "PreToolUse",
-    "PostToolUse",
-    "PostToolUseFailure",
-    "PreCompact",
-    "SubagentStart",
-    "SubagentStop",
-    "Stop",
-    "SessionEnd",
-)
-AGENTS = ("claude", "codex", "cursor", "cline", "gemini", "kimi", "windsurf", "openhands")
 
 
 def bootstrap_priority(record: MemoryRecord) -> float:
@@ -270,8 +259,6 @@ class HookKit:
             if html.escape(memory_guard.sanitize_metadata({"text": line}, pii=True)[0]["text"]) in block:
                 lines.append(line)
                 eligible.append(record.id)
-        from commontrace.measure import CausalMemory
-
         measured = CausalMemory(
             lambda _: [
                 record
@@ -313,18 +300,12 @@ class HookKit:
     def manifest(self, agent: str) -> dict:
         if agent not in AGENTS:
             raise ValueError("unsupported coding agent")
-        import shutil
-
-        node = shutil.which("node")
-        executable = (
-            [node, os.path.join(os.path.dirname(__file__), "ui", "hook-bridge.mjs")]
-            if node
-            else [sys.executable, "-m", "commontrace.hook_kit"]
-        )
         command = shlex.join(
             [
-                *executable,
-                *(["--python", sys.executable] if node else []),
+                sys.executable,
+                "-I",
+                "-S",
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), "hook_bridge.py"),
                 "--dest",
                 os.path.abspath(self.root),
                 "--agent-id",

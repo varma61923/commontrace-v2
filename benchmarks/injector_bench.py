@@ -160,14 +160,13 @@ def measure(*, model="bge-small", repetitions=5) -> dict:
 def measure_transport(*, repetitions=50) -> dict:
     """Fresh native process through a warm broker; measure transport separately from model quality."""
     import shlex
-    import shutil
     import subprocess
     import sys
 
     from commontrace.memory_journal import Journal
 
-    if not shutil.which("node") or not hasattr(__import__("socket"), "AF_UNIX"):
-        raise RuntimeError("native transport measurement requires Node and Unix sockets")
+    if not hasattr(__import__("socket"), "AF_UNIX"):
+        raise RuntimeError("native transport measurement requires Unix sockets")
     samples, warmup, withheld = [], [], []
     with tempfile.TemporaryDirectory(prefix="commontrace-native-measure-") as root:
         with open(os.path.join(root, "commontrace.yaml"), "w", encoding="utf-8") as stream:
@@ -232,7 +231,7 @@ def measure_transport(*, repetitions=50) -> dict:
         "passed": p95 < 50 and not withheld and any(row["delivered"] for row in warmup),
         "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
         "source_sha256": hashlib.sha256(open(__file__, "rb").read()).hexdigest(),
-        "measurement": "fresh Node process through warm broker, stdout and acknowledgement; fixed directive; no semantic model",
+        "measurement": "fresh isolated Python process through warm broker, stdout and acknowledgement; fixed directive; no semantic model",
         "limitations": ["Transport-only fixture does not measure semantic relevance or cold broker/model startup."],
     }
 

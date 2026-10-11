@@ -92,7 +92,10 @@ def merge_hooks(filename: str, generated: dict):
             hooks[event] = [
                 entry
                 for entry in previous
-                if "commontrace.hook_kit" not in json.dumps(entry) and "hook-bridge.mjs" not in json.dumps(entry)
+                if not any(
+                    name in json.dumps(entry)
+                    for name in ("commontrace.hook_kit", "hook-bridge.mjs", "hook_bridge.py")
+                )
             ] + entries
         _jsonl.write_json(filename, {**generated, **existing})
 

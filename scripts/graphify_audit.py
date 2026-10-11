@@ -31,6 +31,7 @@ def audit(graph: dict) -> dict:
             "commontrace/record_api.py",
             "commontrace/hook_kit.py",
             "commontrace/hook_service.py",
+            "commontrace/hook_bridge.py",  # Absolute script entry point in generated native manifests.
         )
     }
     reachable, queue = set(roots), deque(roots)

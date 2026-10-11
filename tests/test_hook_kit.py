@@ -107,7 +107,7 @@ def test_all_agent_adapters_share_event_core(tmp_path, agent):
     manifest = kit.manifest(agent)
     assert set(manifest["events"]) == set(EVENTS)
     assert all(
-        "commontrace.hook_kit" in command or "hook-bridge.mjs" in command for command in manifest["events"].values()
+        "hook_bridge.py" in command for command in manifest["events"].values()
     )
 
 

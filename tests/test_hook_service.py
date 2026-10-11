@@ -1,7 +1,6 @@
 import json
 import os
 import shlex
-import shutil
 import socket
 import subprocess
 import sys
@@ -16,8 +15,8 @@ from commontrace.memory_record import MemoryRecord
 
 
 def test_native_transport_capture_receipt_and_crash_recovery(tmp_path):
-    if not shutil.which("node") or not hasattr(__import__("socket"), "AF_UNIX"):
-        pytest.skip("native Unix transport requires Node and Unix sockets")
+    if not hasattr(socket, "AF_UNIX"):
+        pytest.skip("native Unix transport requires Unix sockets")
     root = str(tmp_path)
     (tmp_path / "commontrace.yaml").write_text("profiles:\n  local:\n    embedding: none\n")
     journal = Journal(root)
@@ -72,6 +71,16 @@ def test_native_transport_capture_receipt_and_crash_recovery(tmp_path):
         assert stat_private(tmp_path / "memory" / "hooks.sock")
         with journal.connect() as db:
             before_fallback = db.execute("SELECT COUNT(*) FROM captures").fetchone()[0]
+            before_exposures = db.execute("SELECT COUNT(*) FROM injected").fetchone()[0]
+        ui_only = subprocess.run(
+            command + ["--format", "windsurf"], input=json.dumps({"trajectory_id": "capture-only"}),
+            text=True, capture_output=True, timeout=5, check=True,
+        )
+        assert json.loads(ui_only.stdout) == {}
+        with journal.connect() as db:
+            assert db.execute("SELECT COUNT(*) FROM injected").fetchone()[0] == before_exposures
+            assert db.execute("SELECT COUNT(*) FROM captures").fetchone()[0] > before_fallback
+            before_fallback = db.execute("SELECT COUNT(*) FROM captures").fetchone()[0]
     finally:
         broker.kill()
         broker.wait(timeout=5)
@@ -101,8 +110,8 @@ def stat_private(path):
 
 @pytest.mark.parametrize("reply", [b"invalid-json\n", b'{"context":"","delivery_token":"receipt"}\n'])
 def test_native_bridge_closes_malformed_or_stalled_receipt_peer(tmp_path, reply):
-    if not shutil.which("node") or not hasattr(socket, "AF_UNIX"):
-        pytest.skip("native Unix transport requires Node and Unix sockets")
+    if not hasattr(socket, "AF_UNIX"):
+        pytest.skip("native Unix transport requires Unix sockets")
     (tmp_path / "memory").mkdir()
     disconnected = threading.Event()
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:

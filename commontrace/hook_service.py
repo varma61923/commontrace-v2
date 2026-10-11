@@ -134,7 +134,9 @@ def serve(root: str, *, profile: str | None = None):
                                 scope=data["scope"],
                                 embedder=provider if ready.is_set() else "none",
                             )
-                            result = kit.handle(event, payload, defer_delivery=True)
+                            result = kit.handle(
+                                event, payload, defer_delivery=True, capture_only=data.get("format") == "windsurf"
+                            )
                             client.sendall(json.dumps(result).encode() + b"\n")
                             # Native bridges acknowledge only after writing context to the host.
                             # Legacy Python clients may instead open a separate receipt connection.

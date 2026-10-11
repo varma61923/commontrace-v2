@@ -35,3 +35,40 @@ separately, per-call samples and withheld deliveries. Require p95 below 50 ms
 and complete fixture delivery. Keep model-backed injection precision and safety
 evidence separate. Run the affected contracts, static checks, packaging checks
 and Graphify audit before accepting a replacement.
+
+## Replacement implementation
+
+Generated commands now use the installed interpreter and the absolute packaged
+`commontrace/hook_bridge.py` script with `-I -S`. The script imports only the
+stdlib. It shares host response formatting and event/agent constants with the
+existing adapters. The old Node file is a compatibility launcher for previously
+installed commands; reinstalling hooks replaces it with the direct Python
+command without duplicating entries or removing other tools' hooks.
+
+The response deadline remains 25 ms across connection, request and response;
+receipt waiting remains bounded by 20 ms. Host input and broker replies are
+bounded at 100,000 bytes. Invalid JSON, invalid reply types, excessive nesting,
+oversized frames, timeouts and failed stdout produce no receipt. Writes use
+unbuffered stdout and acknowledge only after every byte is delivered. Windsurf
+is capture-only and cannot acknowledge context delivery through UI stdout.
+
+When the broker cannot connect, the existing capture-only HookKit runs detached
+under the installed interpreter with `-I`, retaining site packages while
+excluding foreign working-directory and `PYTHONPATH` imports. An inherited
+anonymous temporary file holds stdin, so a large payload cannot block the
+parent on a cold child's pipe. Capture, normalization, scope and redaction
+continue through the existing core; no transcript is placed in argv.
+
+Real-process contracts cover the shared formats, malformed/deep/oversized
+frames, partial responses and stalled receipt peers, failed stdout, capture
+recovery, old commands, reinstall idempotence and foreign import isolation.
+An installed-wheel experiment also exercises interpreter/store paths containing
+spaces and delivery/capture from an unrelated directory. A pre-existing cold
+core test failed on the unchanged baseline because it imported causal-measurement
+dependencies inside the operation deadline. Initializing that dependency with
+the core preserves the deadline and passes the isolated regression.
+
+The first working-tree diagnostic delivered 50/50 directives at 49.96 ms p95;
+it is provisional and close to the threshold. Final frozen-source repetitions
+must be recorded separately. Neither these transport checks nor earlier startup
+controls establish model relevance, safety precision or any remaining P0 gate.
