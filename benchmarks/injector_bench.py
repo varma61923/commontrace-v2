@@ -168,7 +168,7 @@ def measure_transport(*, repetitions=50) -> dict:
 
     if not shutil.which("node") or not hasattr(__import__("socket"), "AF_UNIX"):
         raise RuntimeError("native transport measurement requires Node and Unix sockets")
-    samples = []
+    samples, warmup, withheld = [], [], []
     with tempfile.TemporaryDirectory(prefix="commontrace-native-measure-") as root:
         with open(os.path.join(root, "commontrace.yaml"), "w", encoding="utf-8") as stream:
             stream.write("profiles:\n  local:\n    embedding: none\n")
@@ -192,28 +192,44 @@ def measure_transport(*, repetitions=50) -> dict:
             command = shlex.split(
                 HookKit(root, "fixture", embedder="none").manifest("claude")["events"]["UserPromptSubmit"]
             )
+            def run_native(session_id):
+                return subprocess.run(
+                    command + ["--format", "claude"],
+                    input=json.dumps({"session_id": session_id, "prompt": "edit code"}),
+                    text=True, capture_output=True, timeout=15, check=True,
+                )
+
+            def delivered(result):
+                return "rule" in json.loads(result.stdout).get("hookSpecificOutput", {}).get("additionalContext", "")
+
+            # A bound socket is not a warm broker. Report initialization separately
+            # rather than silently mixing it into a fixture labelled warm.
+            for index in range(10):
+                started = time.perf_counter()
+                ready = delivered(run_native("warmup-" + str(index)))
+                warmup.append({"ms": (time.perf_counter() - started) * 1000, "delivered": ready})
+                if ready:
+                    break
             for index in range(repetitions):
                 started = time.perf_counter()
-                result = subprocess.run(
-                    command + ["--format", "claude"],
-                    input=json.dumps({"session_id": str(index), "prompt": "edit code"}),
-                    text=True,
-                    capture_output=True,
-                    timeout=2,
-                    check=True,
-                )
+                result = run_native(str(index))
                 samples.append((time.perf_counter() - started) * 1000)
-                if "rule" not in json.loads(result.stdout).get("hookSpecificOutput", {}).get("additionalContext", ""):
-                    raise RuntimeError("native transport withheld the fixture's critical directive")
+                if not delivered(result):
+                    withheld.append(index)
         finally:
             broker.terminate()
             broker.wait(timeout=5)
+    p95 = sorted(samples)[max(0, int(0.95 * len(samples) + 0.999) - 1)]
     return {
         "public_aggregate_only": True,
         "benchmark": "Native transport process latency",
         "samples_ms": samples,
         "p50_ms": sorted(samples)[len(samples) // 2],
-        "p95_ms": sorted(samples)[max(0, int(0.95 * len(samples) + 0.999) - 1)],
+        "p95_ms": p95,
+        "warmup": warmup,
+        "withheld_samples": withheld,
+        "delivery_rate": 1 - len(withheld) / len(samples),
+        "passed": p95 < 50 and not withheld and any(row["delivered"] for row in warmup),
         "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
         "source_sha256": hashlib.sha256(open(__file__, "rb").read()).hexdigest(),
         "measurement": "fresh Node process through warm broker, stdout and acknowledgement; fixed directive; no semantic model",
