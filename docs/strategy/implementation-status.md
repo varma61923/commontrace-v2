@@ -19,8 +19,11 @@ fact writes, raw-score retrieval telemetry, and a harmful-label CodingLessonBenc
 path that only reports retirement N after a real SOUND journal retirement.
 Competitor patterns from Hindsight and EverOS informed the isolation and score
 semantics; no competitor code was copied. The P0 single-write target passes at
-4.263 ms p95 on one million facts, while batch ingest reaches 1,819 facts/s and
-misses the 2,000 facts/s gate. Separate runs provide no causal speedup claim.
+6.127 ms p95 on one million facts, while batch ingest reaches 1,962.476 facts/s
+and narrowly misses the 2,000 facts/s gate. The sparse conflict-slot fast path
+avoids empty candidate-bucket reads; separate runs provide no causal speedup
+claim. See [the latest candidate note](next-generation-p0-conflict-slot-fastpath.md)
+and [the earlier FTS candidate](next-generation-p0-batch-projection.md).
 
 A paired, retrieval-only LoCoMo comparison covers a stratified 154-question
 sample at 1,500 and 4,000 tokens. All reported non-latency aggregate metrics
@@ -172,7 +175,7 @@ ancestors of `codex/next-generation-complete`.
 
 | Brief | Implemented | Acceptance limits |
 | --- | --- | --- |
-| A: storage | Compact SQLite WAL/event ledger, bounded idle connection reuse, exact/near/FTS candidates, transactional migration/rebuild, durable content-hash vector projection; optional background Lance HNSW with backend-specific watermarks; tenant-pinned PostgreSQL record ledger, FTS, optional pgvector/HNSW | Latest bounded-FTS candidate: fresh 1M single-write p95 4.263 ms passes; batch 1,819 facts/s still misses; 1M hybrid, server latency and zero-reembedding restart remain unverified; see [candidate measurement](next-generation-p0-batch-projection.md) |
+| A: storage | Compact SQLite WAL/event ledger, bounded idle connection reuse, exact/near/FTS candidates, transactional migration/rebuild, durable content-hash vector projection; optional background Lance HNSW with backend-specific watermarks; tenant-pinned PostgreSQL record ledger, FTS, optional pgvector/HNSW | Latest sparse-slot candidate: fresh 1M single-write p95 6.127 ms passes; batch 1,962.476 facts/s still misses; 1M hybrid, server latency and zero-reembedding restart remain unverified; see [latest measurement](measurements/p0-batch-conflict-slot-candidate.json) and [candidate note](next-generation-p0-conflict-slot-fastpath.md) |
 | B: records | Seven kinds, five scope dimensions plus labels, six lifecycle states, version history, bi-temporal validity, typed relationships, evidence and revision-grounded derived reads | Hosted legacy SDK operations still use the Gateway; Hub implements envelope CRUD, not all legacy operations |
 | C: extraction | Dated speaker/transition extraction, no assistant echo, exact/entropy/MinHash/dense/joint-judge candidate tiers, bounded per-entity/facet observations, existing grounded mental-model refresh | Optional model quality and extraction-cost reduction need real model-backed evaluations |
 | D: learning | Durable event capture, bounded session segmentation and complete serialized prompts, explicit tool/run outcomes, clustered cases, curator/writer proposals, quarantine/shadow/causal activation and retirement, four-format history import, reflection arena and DPO export; CodingLessonBench measures N from actual isolated journal retirement transitions | Oversized indivisible captures can block their session until a larger explicit budget is used; real SWE uplift and harmful-retirement N remain unmeasured until a labeled real-runner evaluation |
