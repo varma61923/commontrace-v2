@@ -19,10 +19,10 @@ python3 scripts/graphify_audit.py \
 ```
 
 The committed audit report is [measurements/graphify-audit-2026-10-12.json](measurements/graphify-audit-2026-10-12.json)
-with SHA-256 `222cdbebd4234f8e26ed64cdd5ed1333924f604ffd722205534ee83fea484653`.
+with SHA-256 `b75e6177edf5720c13a6e03cc41b6bff2e051a5da78b69c9adf49ce5f818b714`.
 The source graph had SHA-256
-`2b7c25025652bba16bbf3b1ee2f481dd6f517edde278cd2ae936766a457b6219` and was
+`9d4ca349c5eb278887fb59f6ff30bd44ee710b05336221d96ed41d0bab3e1d76` and was
 extracted from the source tree that includes the framework and extraction
 changes in this release. Its code state is commit
-`a6fe848cf484d46c5444c8b1c5764f72b168e822`; no code changed between extraction
+`afa5369837730960c7df9c85e913bb7d665d7b33`; no code changed between extraction
 and that commit.
