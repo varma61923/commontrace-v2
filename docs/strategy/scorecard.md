@@ -25,7 +25,7 @@ its current write and native-latency acceptance claims.
 | Single-write p95 <20 ms at 1M | **Measured pass** | 5.031 ms, real hierarchical APIs, 20 trials, synthetic selective workload |
 | Batch >=2,000 facts/s at 1M | **Measured pass** | 3,052 facts/s, one 1,000-fact batch |
 | Hybrid p95 <50 ms local / <150 ms server at 1M | **Unverified** | 64-fact synthetic-adapter `search_recipes.search` smoke: 13.85 ms p95; plumbing only, not the 1M or server gate |
-| Restart without re-embedding | **Tested on bounded fixtures** | Durable fact watermarks, vector hashes and hook document cache; not a 1M restart timing |
+| Restart without re-embedding | **Fixture contract pass** | 64-fact fresh-process smoke retained both hybrid candidates, excluded the scoped-out row, replayed zero projection events and made zero document-embedding calls; 1M restart timing remains unverified |
 | Injector precision >=0.80 | **Fixture measured** | Actual BGE-small, maintainer-labelled coding relevance; not production/SWE precision |
 | Warm hook p95 <50 ms | **Load-sensitive; not established universally** | See signed report for idle and concurrent runs; native socket deadline is separate from total host startup |
 | Fresh native process p95 <50 ms | **Fixture measured pass** | 29.75 ms, 50 trials, all delivered; warmup separate, no semantic model. Retained baseline: 52.50 ms miss |
@@ -120,6 +120,7 @@ latency benchmark.
 | Feature / gate | Measured here | Decision |
 | --- | --- | --- |
 | Bounded FTS batch projection at 1M | Single-write p95 4.263 ms; batch 1,819 facts/s | **Single-write pass; batch miss** against <20 ms / ≥2,000 facts/s. Separate runs do not establish a causal throughput gain; see [candidate report](next-generation-p0-batch-projection.md) |
+| Hybrid restart contract | 64-fact synthetic-adapter fixture; 14.16 ms p95 over two samples | **Fixture pass**: fresh-process dense and lexical candidates survived, scope exclusion held, projection replayed zero events and document embeddings stayed at zero; 1M restart remains unverified |
 | Sparse conflict-slot fast path at 1M | Single-write p95 6.127 ms; batch 1,962.476 facts/s | **Single-write pass; batch miss** against <20 ms / ≥2,000 facts/s; 37.524 facts/s short. See [measurement](measurements/p0-batch-conflict-slot-candidate.json) and [candidate note](next-generation-p0-conflict-slot-fastpath.md) |
 | Retrieval telemetry regression | 154 stratified LoCoMo questions; retrieval aggregates unchanged at 1,500 and 4,000 tokens | **Pass**, retrieval-only; judged answer accuracy remains unmeasured. [Paired report](measurements/retrieval-telemetry-regression.json) |
 | Harmful lesson retirement lifecycle | Randomized assignment uses isolated shadow memory and journal; fixtures require actual SOUND retirement before reporting N | **Implementation and fixture pass**; real-runner N and extraction-cost comparison remain unmeasured |

@@ -43,9 +43,11 @@ model-judged answer quality also remain unmeasured.
 
 The F1 hybrid acceptance harness exercises `search_recipes.search` end to end,
 including FTS, dense candidates, canonical admission and fusion. A 64-fact
-synthetic-adapter smoke measured 13.85 ms p95 and verified dense-only and
-lexical-only results plus restart cache behavior. This is plumbing evidence;
-the 1M local, real-model and server gates remain unverified. See the
+synthetic-adapter smoke measured 14.16 ms p95 over two samples. Its fresh
+process retained dense-only and lexical-only candidates, excluded the
+out-of-scope row, replayed zero projection events and requested zero document
+embeddings. This is plumbing evidence; the 1M local, real-model and server
+gates remain unverified. See the
 [hybrid acceptance note](next-generation-hybrid-acceptance.md).
 
 Aggregate facts recall now uses a bounded Lance candidate set for current-time

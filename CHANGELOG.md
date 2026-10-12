@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Hybrid search acceptance harness.** The reproducible harness measures the
   indexed fact-search API through FTS, dense candidates, canonical admission,
   RRF and recipe ordering, and checks restart vector-cache behavior. Its
-  64-fact synthetic-adapter smoke measured 13.85 ms p95; this does not establish
+  64-fact synthetic-adapter smoke measured 14.16 ms p95 over two samples; this does not establish
   the 1M, real-model or server targets.
 - **Bounded dense candidates for aggregate recall.** Current-time recalls use
   the completed Lance projection and exact-score only post-watermark writes;

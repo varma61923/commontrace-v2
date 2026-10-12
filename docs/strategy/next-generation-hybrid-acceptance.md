@@ -67,9 +67,10 @@ remain unmeasured until the corresponding commands are run on the intended
 hardware and backend.
 
 The restart candidate and scope checks were exercised by a 64-fact synthetic
-smoke (`--facts 64 --trials 2 --synthetic-adapter`): both expected candidates
-were present after restart, the out-of-scope candidate was absent, the vector
-projection processed zero events, and the child requested zero document-vector
-embeddings and one query embedding. This closes the restart plumbing check on a
-fixture only; the hybrid gate remains unverified below exactly one million
-facts, and synthetic timing is not production-model evidence.
+smoke (`--facts 64 --trials 2 --synthetic-adapter`): the 14.16 ms p95 covers
+two samples; both expected candidates were present after restart, the
+out-of-scope candidate was absent, the vector projection processed zero events,
+and the child requested zero document-vector embeddings and one query embedding.
+This closes the restart plumbing check on a fixture only; the hybrid gate
+remains unverified below exactly one million facts, and synthetic timing is not
+production-model evidence.
