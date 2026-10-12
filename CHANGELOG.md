@@ -12,9 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Google ADK before-model callback.** `commontrace.integrations.google_adk`
   provides a lazy-import-safe `LlmAgent.before_model_callback` factory that
   scopes the existing one-call capture/retrieval path by ADK app, user and
-  session. Two focused tests cover round-trip injection, user isolation, and
-  import safety without ADK installed; live framework execution and repeated
-  callback deduplication remain unverified.
+  session. Three focused tests cover round-trip injection, user isolation, and
+  import safety and fail-open storage errors without ADK installed; live
+  framework execution and repeated callback deduplication remain unverified.
 - **CrewAI kickoff callbacks.** Scoped before/after callbacks inject memory
   through a reserved kickoff input, capture a bounded result, and fail open
   while returning CrewAI output unchanged. Fixture tests cover user isolation,

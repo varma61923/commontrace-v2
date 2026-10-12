@@ -121,3 +121,24 @@ def test_adk_callback_saves_and_retrieves_once_in_adk_user_scope(monkeypatch, tm
     assert "user:bob" in calls[-1][0]
     assert "session:session-b" in calls[-1][0]
     assert "Use dark mode for the dashboard." not in calls[-1][-1]["context"]
+
+
+def test_adk_callback_fails_open_when_memory_is_unavailable(monkeypatch, tmp_path):
+    Content, Part = _install_fake_genai_types(monkeypatch)
+    from commontrace.integrations.google_adk import before_model_callback
+
+    def fail_turn(self, session_id, query, **kwargs):
+        raise RuntimeError("memory store unavailable")
+
+    monkeypatch.setattr(MemoryClient, "turn", fail_turn)
+    callback = before_model_callback(MemoryClient(str(tmp_path), agent_id="adk-agent", context={"user": "alice"}))
+    user_content = Content(role="user", parts=[Part(text="Continue the task")])
+    request = SimpleNamespace(contents=[user_content])
+    context = SimpleNamespace(
+        user_id="alice",
+        app_name="adk-app",
+        session=SimpleNamespace(id="session-a", user_id="alice", app_name="adk-app"),
+    )
+
+    assert callback(context, request) is None
+    assert request.contents == [user_content]

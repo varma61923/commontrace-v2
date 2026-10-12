@@ -8,6 +8,7 @@ when it has context to inject.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from typing import Any
 
@@ -63,8 +64,14 @@ def before_model_callback(memory: Any, *, budget: int = 600) -> Callable[[Any, A
             agent_id=memory.agent_id,
             context=scope,
         )
-        return Middleware(scoped_memory, str(session_id), budget=budget).process_llm_request(
-            callback_context, llm_request
-        )
+        try:
+            return Middleware(scoped_memory, str(session_id), budget=budget).process_llm_request(
+                callback_context, llm_request
+            )
+        except Exception:
+            logging.getLogger(__name__).debug(
+                "Google ADK memory retrieval failed; continuing without injection", exc_info=True
+            )
+            return None
 
     return callback

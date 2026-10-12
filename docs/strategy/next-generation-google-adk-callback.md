@@ -13,7 +13,8 @@ Google packages are not imported when the integration module is imported or
 the callback factory is created. `google.genai.types` is imported only when a
 nonempty context block must be appended. A missing session ID or user ID (and
 no configured user scope) raises `ValueError` rather than using an unscoped
-memory lane.
+memory lane. Storage and retrieval errors are debug-logged and return `None`,
+letting ADK continue without injected memory.
 
 The adapter follows Google's documented synchronous
 `before_model_callback(callback_context, llm_request)` lifecycle and `None`
@@ -31,11 +32,12 @@ completed session events with explicit role mapping. CommonTrace adopts its
 identity scoping, while using the framework middleware's single turn API
 instead of a separate ADK memory service.
 
-The focused test uses fake `google.genai.types` classes and a real temporary
-CommonTrace journal. It checks exactly one `MemoryClient.turn` call, stored
-user text, retrieval and injection of an Alice-scoped record, and exclusion of
-that record for Bob. A separate import test blocks all Google imports and
-checks that importing this adapter creates no memory store.
+The focused tests use fake `google.genai.types` classes and a real temporary
+CommonTrace journal. They check exactly one `MemoryClient.turn` call, stored
+user text, retrieval and injection of an Alice-scoped record, exclusion of
+that record for Bob, and fail-open behavior when the memory store raises. A
+separate import test blocks all Google imports and checks that importing this
+adapter creates no memory store.
 
 This is a component contract test, not a live ADK run. It covers textual user
 parts only. It does not implement ADK `BaseMemoryService`, save completed
