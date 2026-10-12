@@ -116,6 +116,52 @@ def _seed(root: str, count: int) -> dict[str, str]:
     return identities
 
 
+def _seed_canonical_fixture(root: str, count: int, *, batch_size: int = 10_000) -> dict[str, str]:
+    """Write canonical indexed facts without unrelated per-fact entity linking.
+
+    This benchmark-only path uses the same fact admission, transaction, event,
+    metadata, and FTS projection code as ``hierarchical.add_facts``. It omits
+    only the entity sidecar, which is outside the timed hybrid search path and
+    otherwise dominates million-row fixture setup with one file operation per
+    fact. Small public-ingestion checks should continue using ``_seed``.
+    """
+    from commontrace import fact_store, hierarchical
+
+    fact_store.migrate(root)
+    identities: dict[str, str] = {}
+    rows = _fixture_rows(count)
+    for start in range(0, len(rows), batch_size):
+        conflicts: list = []
+        added = []
+        with fact_store.transaction(root, write=True) as facts:
+            index = hierarchical._statement_index(facts)
+            for item in rows[start:start + batch_size]:
+                statement, category, valid_from, valid_until, expires_at = hierarchical.prepare_fact(
+                    item.get("statement", ""), item.get("category", hierarchical.DEFAULT_CATEGORY),
+                    item.get("valid_from"), item.get("valid_until"), item.get("expires_at"))
+                fact, action = hierarchical._add_locked(
+                    facts, statement, category, hierarchical._clean_scopes(item.get("scopes")),
+                    valid_from, valid_until, expires_at, float(item.get("confidence", 0.8)),
+                    str(item.get("source_trace_id", "") or ""),
+                    hierarchical._normalize_stability(item.get("stability", "")),
+                    item.get("created_at"), item.get("evidence"), item.get("min_support", 1),
+                    index=index, dedupe=hierarchical.dedup_mode(), root=root, conflicts=conflicts,
+                )
+                if action != "ADD":
+                    raise RuntimeError("fixture facts were not uniquely admitted")
+                added.append(fact)
+                if "lynx rests beside" in fact.statement:
+                    identities["dense_only"] = fact.id
+                elif "Runtime policy" in fact.statement:
+                    identities["lexical_only"] = fact.id
+                elif "private workspace" in fact.statement:
+                    identities["out_of_scope"] = fact.id
+            hierarchical._batch_conflicts(facts, index, added, root, conflicts, may_supersede=True)
+        if conflicts:
+            raise RuntimeError("fixture facts unexpectedly generated canonical conflicts")
+    return identities
+
+
 def _projection_drain(root: str, embedder: str) -> dict[str, int]:
     from commontrace import fact_vector_projection
 
@@ -207,6 +253,18 @@ def _run_restart(source: str, root: str, embedder: str, sample_ids: list[str],
     return report
 
 
+def _clear_embedding_memory_cache() -> None:
+    """Ensure this corpus populates its own persistent content-hash cache."""
+    from commontrace import fact_embeddings
+
+    # The process-local vector cache key omits the store root. Without clearing
+    # it, a second benchmark using identical fixture text could reuse vectors
+    # from another temporary store and falsely fail its fresh-process check.
+    with fact_embeddings._LOCK:
+        fact_embeddings._VECTORS.clear()
+        fact_embeddings._ARRAYS.clear()
+
+
 def restart_status(report: dict[str, Any], *, facts: int = 0, synthetic: bool = False) -> str:
     expected = report.get("candidate_ids_expected")
     found = report.get("candidate_ids_found")
@@ -249,16 +307,27 @@ def worker_restart(source: str, root: str, embedder: str, sample_ids: list[str],
 
 
 def measure(*, source: str, count: int, trials: int, embedder: str, synthetic: bool,
-            run_restart: bool, work_dir: str | None = None) -> dict[str, Any]:
+            run_restart: bool, work_dir: str | None = None,
+            seed_mode: str = "public") -> dict[str, Any]:
     sys.path.insert(0, source)
     if synthetic:
         _register_synthetic()
     from commontrace import fact_store, fact_vector_projection
 
+    _clear_embedding_memory_cache()
     source_hashes = _implementation_hash(source)
     with tempfile.TemporaryDirectory(prefix="commontrace-hybrid-", dir=work_dir) as temp_root:
         root = os.path.abspath(temp_root)
-        identities = _seed(root, count)
+        seed_started = time.perf_counter_ns()
+        if seed_mode == "public":
+            identities = _seed(root, count)
+            seed_method = "hierarchical.add_facts"
+        elif seed_mode == "canonical_fixture":
+            identities = _seed_canonical_fixture(root, count)
+            seed_method = "canonical_fixture_transaction"
+        else:
+            raise ValueError(f"unknown seed mode: {seed_mode}")
+        seed_ms = (time.perf_counter_ns() - seed_started) / 1_000_000
         build_started = time.perf_counter_ns()
         projection = _projection_drain(root, embedder)
         build_ms = (time.perf_counter_ns() - build_started) / 1_000_000
@@ -326,6 +395,8 @@ def measure(*, source: str, count: int, trials: int, embedder: str, synthetic: b
             "platform": platform.platform(),
             "facts": count,
             "trials": trials,
+            "seed": {"method": seed_method, "facts": count, "elapsed_ms": seed_ms,
+                     "entity_sidecar_built": seed_mode == "public"},
             "warmup_queries": 1,
             "query": query,
             "query_context": ["agent:a"],
@@ -365,6 +436,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--synthetic-adapter", action="store_true",
                         help="use a deterministic plumbing fixture; reported separately from real-provider runs")
     parser.add_argument("--skip-restart", action="store_true")
+    parser.add_argument("--seed-mode", choices=("public", "canonical_fixture"), default="public",
+                        help="canonical_fixture skips the unrelated entity sidecar for large search fixtures")
     parser.add_argument("--work-dir", help="parent directory for the temporary canonical fact store")
     parser.add_argument("--output", help="JSON report path; defaults to stdout")
     parser.add_argument("--source", default=str(Path(__file__).resolve().parent.parent), help=argparse.SUPPRESS)
@@ -387,7 +460,8 @@ def main(argv: list[str] | None = None) -> int:
     embedder = EMBEDDER if args.synthetic_adapter else (args.embedder or "bge-small")
     report = measure(source=os.path.realpath(args.source), count=args.facts, trials=args.trials,
                      embedder=embedder, synthetic=args.synthetic_adapter,
-                     run_restart=not args.skip_restart, work_dir=args.work_dir)
+                     run_restart=not args.skip_restart, work_dir=args.work_dir,
+                     seed_mode=args.seed_mode)
     report["command"] = " ".join(sys.argv if argv is None else [sys.argv[0], *argv])
     encoded = json.dumps(report, indent=2, sort_keys=True) + "\n"
     if args.output:

@@ -31,6 +31,24 @@ def test_synthetic_hybrid_acceptance_measures_production_api_and_fresh_restart(t
     assert report["server_gate"]["status"] == "unsupported_by_current_fact_projection"
 
 
+def test_bulk_fixture_seeder_builds_canonical_search_rows_and_restart_cache(tmp_path):
+    source = str(Path(__file__).resolve().parent.parent)
+    report = benchmark.measure(source=source, count=64, trials=2, embedder=benchmark.EMBEDDER,
+                               synthetic=True, run_restart=True, work_dir=str(tmp_path),
+                               seed_mode="canonical_fixture")
+
+    assert report["seed"]["method"] == "canonical_fixture_transaction"
+    assert report["seed"]["facts"] == 64
+    assert report["index_build"]["projection"]["processed"] == 64
+    assert report["fixture_checks"]["dense_only_id_found"]
+    assert report["fixture_checks"]["lexical_only_id_found"]
+    assert report["fixture_checks"]["out_of_scope_id_excluded"]
+    assert report["hybrid_api"]["p95_ms"] > 0
+    assert report["restart"]["document_vectors_requested"] == 0
+    assert report["restart"]["candidate_inclusion_verified"]
+    assert report["restart"]["out_of_scope_excluded"]
+
+
 def test_hybrid_gate_requires_exact_scale_and_strict_latency_threshold():
     assert benchmark.hybrid_status(facts=999_999, p95_ms=1.0) == \
         "unverified: requires exactly 1,000,000 canonical facts"
