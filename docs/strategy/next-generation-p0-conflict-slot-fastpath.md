@@ -24,6 +24,16 @@ measured 1,819 facts/s, but the runs were not controlled pairs and do not
 establish a causal gain. The separate 100K same-harness run measured 2,120.9
 versus 2,064.4 facts/s. Keep all gate outcomes explicit.
 
+A follow-up candidate batched sparse-slot peer checks after all staged rows
+existed. It passed the same 98 focused fact-store, conflict and deduplication
+tests, but the 30K smoke was effectively flat: 2,308.9 facts/s versus 2,306.1
+on the same-HEAD baseline. The exact 1M run measured 1,841.019 facts/s and
+3.757 ms single-write p95, so it was not integrated. Its command, source hashes
+and failed batch gate are preserved in the
+[rejected candidate report](measurements/p0-batch-sparse-slot-batching-candidate.json);
+the SHA-256 sidecar is adjacent to that report. This is a separate worktree
+measurement, not a controlled comparison or a causal result.
+
 Focused validation on the integrated source:
 
 ```sh
