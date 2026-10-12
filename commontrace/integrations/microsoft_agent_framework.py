@@ -10,7 +10,7 @@ import asyncio
 import hashlib
 import logging
 from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from agent_framework import ContextProvider as _ContextProvider
@@ -95,7 +95,8 @@ def _query_key(session_id: str, query: str) -> str:
     return hashlib.sha256(f"{session_id}\0{query}".encode("utf-8")).hexdigest()
 
 
-class CommonTraceContextProvider(_ContextProvider):
+# Mypy cannot resolve an optional package that is imported only at construction.
+class CommonTraceContextProvider(_ContextProvider):  # type: ignore[misc]
     """Inject scoped memory before an agent run and capture its final response.
 
     Supply a user scope either through ``user_id`` or through the provided
@@ -126,7 +127,7 @@ class CommonTraceContextProvider(_ContextProvider):
                 (CommonTraceContextProvider, ContextProvider),
                 {"__module__": __name__},
             )
-        return super().__new__(cls)
+        return cast(CommonTraceContextProvider, super().__new__(cls))
 
     def __init__(
         self,

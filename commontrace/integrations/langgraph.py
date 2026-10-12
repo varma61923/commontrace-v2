@@ -11,10 +11,10 @@ STATE_KEY = "commontrace_lessons"
 logger = logging.getLogger(__name__)
 
 
-def thread_id(config: dict | None) -> str:
+def thread_id(config: dict[str, Any] | None) -> str:
     """LangGraph's own per-invocation identifier."""
     value = ((config or {}).get("configurable") or {}).get("thread_id")
-    if not value or not isinstance(value, str):
+    if not isinstance(value, str) or not value:
         raise ValueError(
             "no config['configurable']['thread_id'] found -- pass a config carrying "
             "one, e.g. graph.invoke(state, config={'configurable': {'thread_id': 'conv-42'}})."
@@ -23,13 +23,13 @@ def thread_id(config: dict | None) -> str:
 
 
 def with_lessons(
-    node: Callable[[dict, dict | None], dict],
+    node: Callable[[dict[str, Any], dict[str, Any] | None], dict[str, Any]],
     memory: CausalMemory,
     *,
-    state_query: Callable[[dict], Any] = lambda state: state.get("input", ""),
+    state_query: Callable[[dict[str, Any]], Any] = lambda state: state.get("input", ""),
     state_key: str = STATE_KEY,
-) -> Callable[[dict, dict | None], dict]:
-    def wrapped(state, config=None):
+) -> Callable[[dict[str, Any], dict[str, Any] | None], dict[str, Any]]:
+    def wrapped(state: dict[str, Any], config: dict[str, Any] | None = None) -> dict[str, Any]:
         items: list[Any] = []
         try:
             occasion_id = thread_id(config)
@@ -41,7 +41,7 @@ def with_lessons(
     return wrapped
 
 
-def _latest_user_query(state: dict) -> str:
+def _latest_user_query(state: dict[str, Any]) -> str:
     # Reuse the common SDK message parser so tool and assistant messages never
     # become memory queries. The framework module itself has no SDK imports.
     from commontrace.framework_middleware import user_query
@@ -82,9 +82,9 @@ def _memory_context(items: list[Any]) -> str | None:
 def create_pre_model_hook(
     memory: CausalMemory,
     *,
-    state_query: Callable[[dict], Any] = _latest_user_query,
-    recall_kwargs: Callable[[dict | None], dict[str, Any]] | None = None,
-) -> Callable[[dict, dict | None], dict[str, Any]]:
+    state_query: Callable[[dict[str, Any]], Any] = _latest_user_query,
+    recall_kwargs: Callable[[dict[str, Any] | None], dict[str, Any]] | None = None,
+) -> Callable[[dict[str, Any], dict[str, Any] | None], dict[str, Any]]:
     """Build a LangGraph prebuilt ``pre_model_hook`` backed by CausalMemory.
 
     Register the returned function as ``create_react_agent(...,
@@ -100,7 +100,7 @@ def create_pre_model_hook(
     CausalMemory's retrieval interface is synchronous.
     """
 
-    def hook(state: dict, config: dict | None = None) -> dict[str, Any]:
+    def hook(state: dict[str, Any], config: dict[str, Any] | None = None) -> dict[str, Any]:
         messages = list(state.get("messages") or [])
         try:
             occasion_id = thread_id(config)
@@ -121,7 +121,7 @@ def create_pre_model_hook(
     return hook
 
 
-def record_outcome(memory: CausalMemory, config: dict | None, *, succeeded: bool) -> bool:
+def record_outcome(memory: CausalMemory, config: dict[str, Any] | None, *, succeeded: bool) -> bool:
     try:
         occasion_id = thread_id(config)
     except ValueError:
