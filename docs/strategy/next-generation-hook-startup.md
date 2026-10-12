@@ -10,8 +10,9 @@ remain unchanged.
 
 The test-first regression asserts that a successful bridge invocation does not
 import `argparse`. It failed on the baseline and passes on the candidate. The
-focused hook suite covers the generated option forms, invalid/missing values,
-all output formats, receipt ordering and fail-safe behavior.
+focused bridge, service and hook-kit suite passes 56 tests and covers the
+generated option forms, invalid/missing values, all output formats, receipt
+ordering and fail-safe behavior.
 
 Three sequential runs used the same command and fixed directive through a warm
 broker:
