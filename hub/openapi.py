@@ -1436,12 +1436,16 @@ def _operations() -> dict[tuple[str, str], dict]:
     ops[("POST", "/api/v1/memory/records/{operation}")] = _api(
         "memoryRecordOperation",
         "Memory",
-        "Versioned scoped records: put, search or hard forget",
+        "Versioned scoped records: put, search, hard forget or reap due expirations",
         body=_json_body(
-            _free_object("Versioned memory data"), "MemoryRecord envelope, scoped query, or id and erasure reason."
+            _free_object("Versioned memory data"),
+            "MemoryRecord envelope, scoped query, erasure id and reason, or optional expiration batch limit.",
         ),
         ok={
-            "200": _json("Versioned record, search results, or erasure audit.", _free_object("Versioned memory data")),
+            "200": _json(
+                "Versioned record, search results, erasure audit, or expiration reaping results.",
+                _free_object("Versioned memory data"),
+            ),
             "400": _error("Invalid record or version conflict."),
             "413": _error("Payload exceeds 100 kB."),
         },
@@ -1449,12 +1453,16 @@ def _operations() -> dict[tuple[str, str], dict]:
     ops[("POST", "/v1/memory/{operation}")] = _api(
         "memoryRecordSDKOperation",
         "Memory",
-        "Local SDK record-put, record-search and record-forget wire parity",
+        "Local SDK record-put, record-search, record-forget and record-reap-due wire parity",
         body=_json_body(
-            _free_object("Scoped record SDK data"), "Record envelope or query, context labels, or erasure reason."
+            _free_object("Scoped record SDK data"),
+            "Record envelope, query, context labels, erasure reason, or expiration batch limit.",
         ),
         ok={
-            "200": _json("Record SDK response", _free_object("Record SDK data")),
+            "200": _json(
+                "Record SDK response, including bounded expiration reaping results",
+                _free_object("Record SDK data"),
+            ),
             "400": _error("Invalid record or version conflict."),
             "413": _error("Payload exceeds 100 kB."),
         },

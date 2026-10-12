@@ -106,6 +106,11 @@ def test_live_responses_match_the_declared_schemas(tmp_path):
     call("POST", "/v1/memory/record-put", {"record": {
         "id": "api-fact", "kind": "fact", "version": 1, "payload": {"text": "scoped parser fact"}}})
     call("POST", "/v1/memory/record-search", {"query": "parser"})
+    call("POST", "/v1/memory/record-put", {"record": {
+        "id": "expired-fact", "kind": "fact", "version": 1,
+        "payload": {"text": "expired contract record", "forget_after": "2000-01-01T00:00:00Z",
+                    "forget_reason": "contract retention"}}})
+    call("POST", "/v1/memory/record-reap-due", {"limit": 1})
     call("POST", "/v1/memory/record-forget", {"id": "api-fact", "reason": "contract test erasure"})
     call("POST", "/v1/agent/signup", {"agent_id": "bot-1", "scopes": ["team"]})
     enrolled = call("POST", "/v1/agent/enroll", {})

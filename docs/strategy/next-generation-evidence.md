@@ -126,6 +126,13 @@ The candidate and frozen `7e0a224` runs are separate source revisions, so no
 controlled gain is claimed. The raw report and source hashes are retained in
 `measurements/p0-batch-projection-candidate.json`.
 
+A later detached-snapshot candidate measured 1.797 ms single-write p95 and
+2,071.287 facts/s for one 1,000-fact batch at 1M, clearing both write
+thresholds on the local synthetic workload. The batch result has a 3.6% margin;
+there is no same-HEAD 1M baseline, so it is a measured candidate pass rather
+than a causal comparison. See the [snapshot-reuse note](next-generation-f1-snapshot-reuse.md)
+and [source-hashed 1M report](measurements/f1-snapshot-reuse-candidate-1m.json).
+
 The measured storage source's application suite completed with 6 failures,
 6,666 passes and 118 skips. Follow-up connection and isolation fixes pass 135
 focused checks, with a separate full suite running. Its native transport fixture
@@ -185,8 +192,9 @@ on real labeled runs, and lower extraction cost remain unverified. CodingLessonB
 now drives isolated per-task assignments through the production journal
 reconciliation path; synthetic harmful and neutral fixtures verify that N is
 reported only after a SOUND retirement transition. Multi-task causal estimates
-remain per-task, with no pooled uplift gate until a stratified aggregate method
-exists. The real patch/test harness reports token usage, unpriced calls and
+now use a fixed target-weighted task-stratified estimator and a Bonferroni
+simultaneous interval built from per-task anytime-valid bounds; fixture coverage
+does not establish real SWE uplift. The real patch/test harness reports token usage, unpriced calls and
 explicit relevance labels; it never fills missing measurements with synthetic
 scores. One-million-record dense/hybrid latency,
 first injected lesson from an empty store in two minutes, live-host coverage of

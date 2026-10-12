@@ -178,7 +178,7 @@ def segment(
     if complete:
         result = []
         for batch in batches:
-            with purpose("segment"):
+            with purpose("session-segmentation"):
                 text, _ = complete(
                     _prompt(_SEGMENT_PROMPT, batch, max_tokens=max_tokens, count_tokens=count_tokens)
                 )
@@ -245,7 +245,7 @@ def learn(
             return {"operation": "none", "reason": "session still open; cursor unchanged"}
         entries = [entry for entry in entries if entry["sequence"] <= boundary["sequence"]]
         if not any(entry["event"] in ("PreToolUse", "PostToolUse", "PostToolUseFailure") for entry in entries):
-            journal.seal(session, entries[-1]["sequence"])
+            journal.seal(session, entries[-1]["sequence"], scope=scope)
             return {"operation": "none", "reason": "thin trajectory", "cases": 0}
         batches = segment(entries, complete=(complete or llm.complete) if semantic_segments else None,
                           max_tokens=max_tokens, count_tokens=count_tokens,
@@ -304,10 +304,17 @@ def learn(
                 journal.put(record)
             cases.append(record)
         if not cases:
-            journal.seal(session, entries[-1]["sequence"])
+            journal.seal(session, entries[-1]["sequence"], scope=scope)
             return {"operation": "none", "reason": "thin or unevaluated trajectory", "cases": 0}
+        # Keep the bounded prior slice relevant to the task. An empty query
+        # orders by record id, so a large lesson library could omit the very
+        # prior rule needed to update or avoid duplicating a proposal.
         prior = journal.search(
-            "", scope=scope, kinds=("lesson",), statuses=("active", "shadow", "quarantined"), limit=10
+            intent,
+            scope=scope,
+            kinds=("lesson",),
+            statuses=("active", "shadow", "quarantined"),
+            limit=10,
         )
         call = complete or llm.complete
         # Intent clusters reuse source cases; they never count as new independent outcomes.
@@ -401,7 +408,7 @@ def learn(
                 if len(missing) != len(records):
                     raise ValueError("partial lifecycle group cannot be silently completed")
                 journal.put_many(missing)
-        journal.seal(session, entries[-1]["sequence"])
+        journal.seal(session, entries[-1]["sequence"], scope=scope)
         return {
             "operation": operation if accepted else "none",
             "cases": len(cases),

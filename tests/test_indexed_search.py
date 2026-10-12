@@ -38,3 +38,27 @@ def test_multiround_bound_and_trace(tmp_path):
     assert len(result["trace"]) == 2
     assert result["trace"][-1]["stopped"] == "no-new-queries"
     assert result["results"]
+
+
+def test_candidate_fact_hydration_uses_bounded_id_batches():
+    class Connection:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, statement, parameters):
+            self.calls.append((statement, tuple(parameters)))
+            return []
+
+    class Canonical:
+        removed = set()
+        loaded = {}
+
+        def __init__(self):
+            self.connection = Connection()
+
+    canonical = Canonical()
+    identities = [f"fact:{index}" for index in range(501)]
+    candidates = search_recipes._load_candidate_facts(canonical, [*identities, identities[0]])
+
+    assert set(candidates) == set(identities)
+    assert [len(parameters) for _, parameters in canonical.connection.calls] == [500, 1]

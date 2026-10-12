@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import math
+import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -25,6 +27,8 @@ def _unit(v):
     ("arctic-m", "local", "arctic-m", None),
     ("nomic", "local", "nomic", None),
     ("local:BAAI/bge-base-en-v1.5", "local", "BAAI/bge-base-en-v1.5", None),
+    ("fastembed:baai/bge-small-en-v1.5", "fastembed", "BAAI/bge-small-en-v1.5", None),
+    ("fastembed:BAAI/bge-base-en-v1.5", "fastembed", "BAAI/bge-base-en-v1.5", None),
     ("openai:text-embedding-3-large@1024", "openai", "text-embedding-3-large", 1024),
     ("gemini:gemini-embedding-001", "gemini", "gemini-embedding-001", None),
     ("voyage:voyage-3.5@512", "voyage", "voyage-3.5", 512),
@@ -43,6 +47,13 @@ def test_tags_parse_to_a_provider_model_and_dimensions(tag, provider, model, dim
 def test_bad_tags_are_refused(bad):
     with pytest.raises(embeddings.EmbeddingError):
         embeddings.parse(bad)
+
+
+def test_fastembed_rejects_unregistered_models_and_dimensions():
+    with pytest.raises(embeddings.EmbeddingError, match="unsupported FastEmbed model"):
+        embeddings.parse("fastembed:BAAI/bge-large-en-v1.5")
+    with pytest.raises(embeddings.EmbeddingError, match="come from its model registry"):
+        embeddings.parse("fastembed:BAAI/bge-small-en-v1.5@256")
 
 
 def test_openai_request_shape_dimensions_order_and_normalization(monkeypatch):
@@ -123,6 +134,102 @@ def test_offline_mode_refuses_hosted_providers(monkeypatch):
         embeddings.provider("openai:text-embedding-3-small").embed(["a"], query=False)
 
 
+def test_fastembed_uses_bounded_cpu_batches_and_query_document_apis(monkeypatch, tmp_path):
+    calls = []
+
+    class FakeTextEmbedding:
+        def __init__(self, **kwargs):
+            calls.append(("init", kwargs))
+
+        def query_embed(self, texts, *, batch_size, parallel):
+            calls.append(("query", list(texts), batch_size, parallel))
+            return iter([[3.0, 4.0] for _ in texts])
+
+        def passage_embed(self, texts, *, batch_size, parallel):
+            calls.append(("passage", list(texts), batch_size, parallel))
+            return iter([[3.0, 4.0] for _ in texts])
+
+    monkeypatch.setitem(sys.modules, "fastembed", SimpleNamespace(TextEmbedding=FakeTextEmbedding))
+    monkeypatch.setenv("FASTEMBED_CACHE_PATH", str(tmp_path))
+    provider = embeddings.provider("fastembed:BAAI/bge-small-en-v1.5", local_files_only=True)
+
+    query_vectors = provider.embed(["question"] * 65, query=True)
+    document_vectors = provider.embed(["fact"], query=False)
+
+    assert len(query_vectors) == 65 and all(_unit(row) for row in query_vectors)
+    assert document_vectors == [[0.6, 0.8]]
+    assert calls[0] == ("init", {
+        "model_name": "BAAI/bge-small-en-v1.5", "cache_dir": str(tmp_path), "threads": 2,
+        "local_files_only": True,
+    })
+    assert [(call[0], len(call[1]), call[2], call[3]) for call in calls[1:]] == [
+        ("query", 64, 64, None), ("query", 1, 64, None), ("passage", 1, 64, None),
+    ]
+
+
+def test_fastembed_cache_miss_is_cache_only_and_does_not_touch_network(monkeypatch):
+    modes = []
+
+    class CacheOnlyMiss:
+        def __init__(self, *, local_files_only, **kwargs):
+            modes.append(local_files_only)
+            if not local_files_only:
+                raise AssertionError("a cache miss must not retry through the download path")
+            raise FileNotFoundError("model missing from cache")
+
+    monkeypatch.setitem(sys.modules, "fastembed", SimpleNamespace(TextEmbedding=CacheOnlyMiss))
+    monkeypatch.setenv("COMMONTRACE_OFFLINE", "1")
+    provider = embeddings.provider("fastembed:BAAI/bge-small-en-v1.5")
+
+    with pytest.raises(embeddings.EmbeddingError, match="not available in the local cache"):
+        provider.embed(["question"], query=True)
+    assert modes == [True]
+
+
+def test_fastembed_projection_identity_binds_model_revision_version_and_dimension(
+        monkeypatch, tmp_path):
+    model_dir = tmp_path / "cached-model"
+    model_dir.mkdir()
+    (model_dir / "model.onnx").write_bytes(b"fake onnx artifact")
+    dimensions = {"BAAI/bge-small-en-v1.5": 384, "BAAI/bge-base-en-v1.5": 768}
+
+    class FakeTextEmbedding:
+        def __init__(self, *, model_name, **kwargs):
+            dimension = dimensions[model_name]
+            self.embedding_size = dimension
+            self.model = SimpleNamespace(_model_dir=str(model_dir))
+
+            def query_embed(texts, **_kwargs):
+                return iter([[1.0] + [0.0] * (dimension - 1) for _ in texts])
+
+            self.query_embed = query_embed
+            self.passage_embed = query_embed
+
+    monkeypatch.setitem(sys.modules, "fastembed", SimpleNamespace(TextEmbedding=FakeTextEmbedding))
+    monkeypatch.setattr("importlib.metadata.version", lambda package: "0.8.0")
+
+    small = embeddings.provider("fastembed:BAAI/bge-small-en-v1.5")
+    base = embeddings.provider("fastembed:BAAI/bge-base-en-v1.5")
+    small_identity, small_dimension = small.projection_identity()
+    base_identity, base_dimension = base.projection_identity()
+
+    assert small_dimension == 384 and base_dimension == 768
+    assert small_identity != base_identity
+    assert "BAAI/bge-small-en-v1.5" in small_identity
+    assert "BAAI/bge-base-en-v1.5" in base_identity
+    assert "v0.8.0-sha256-" in small_identity
+
+
+def test_fastembed_conversation_availability_needs_numpy_and_fastembed(monkeypatch):
+    from commontrace.conversation import embed
+
+    found = {"numpy": object(), "fastembed": object()}
+    monkeypatch.setattr(embed.importlib.util, "find_spec", lambda name: found.get(name))
+    assert embed.available_for("fastembed:BAAI/bge-small-en-v1.5")
+    found["fastembed"] = None
+    assert not embed.available_for("fastembed:BAAI/bge-small-en-v1.5")
+
+
 def test_custom_providers_register_once():
     class Fixed:
         def __init__(self, spec):
@@ -153,7 +260,13 @@ def test_conversation_vectors_from_a_hosted_provider_are_cached_by_content(tmp_p
             calls.append((tuple(texts), query))
             return [[float(len(t)), 1.0, 0.5] for t in texts]
 
-    monkeypatch.setattr(embeddings, "provider", lambda tag, post=None: Counting(embeddings.parse(tag)))
+    local_files_modes = []
+
+    def build_provider(tag, post=None, *, local_files_only=False):
+        local_files_modes.append(local_files_only)
+        return Counting(embeddings.parse(tag))
+
+    monkeypatch.setattr(embeddings, "provider", build_provider)
     encoder = embed.Embedder(str(tmp_path), "openai:text-embedding-3-small")
     first = encoder.vectors([("h1", "alpha"), ("h2", "beta")])
     again = encoder.vectors([("h1", "alpha"), ("h2", "beta"), ("h1", "alpha")])
@@ -161,6 +274,7 @@ def test_conversation_vectors_from_a_hosted_provider_are_cached_by_content(tmp_p
     encoder.encode(["question"], query=True)
     encoder.encode(["question"], query=True)
     assert calls[-1] == (("question",), True) and len(calls) == 2
+    assert local_files_modes == [False]
     encoder.close()
     assert embed.model_identity("openai:text-embedding-3-small") == "openai:text-embedding-3-small"
     assert embed.model_identity("arctic-m") == embed.MODELS["arctic-m"][0]

@@ -5,6 +5,7 @@ import sys
 
 import pytest
 
+from commontrace import cli as cli_module
 from commontrace import frontmatter, paths, trace_io, validate
 from commontrace.cli import main
 from commontrace.commands import _shellout
@@ -23,6 +24,23 @@ def test_init_scaffolds_store_for_any_agent_type(store):
     assert os.path.isdir(store / "memory" / "traces")
     assert not os.path.isdir(store / "memory" / "episodes")
     assert os.path.isfile(store / "memory" / "INDEX.md")
+
+
+def test_cli_adds_a_deterministic_remediation_hint_to_generic_errors(monkeypatch, capsys):
+    def fail(_args):
+        raise ValueError("invalid field")
+
+    monkeypatch.setattr(cli_module, "_configured_call", fail)
+
+    assert main(["init"]) == 1
+    error = capsys.readouterr().err
+    assert "ValueError: invalid field" in error
+    assert "Check field types, limits, timestamps and configuration." in error
+
+    from commontrace.exceptions import remediation_hint
+    from commontrace.remediation import hint
+
+    assert hint is remediation_hint
 
 
 def test_init_creates_episodes_dir_for_code_agent_type(store):

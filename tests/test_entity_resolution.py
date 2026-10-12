@@ -160,6 +160,76 @@ def test_tiered_minhash_threshold_is_explicit_and_observable(tmp_path):
     assert strict["pairs"] == []
 
 
+def test_tiered_lsh_shortlist_preserves_every_default_minhash_match():
+    from itertools import combinations
+
+    from commontrace.overlap import estimate_jaccard
+
+    names = [
+        "International Business Machine",
+        "International Business Machines",
+        "International Business Machin",
+        "PostgreSQL connection pool",
+        "PostgreSQL connection pools",
+        "Kubernetes controller reconciliation",
+        "Quasar rotates encrypted archives nightly",
+        "Zebra migration deadline follows September release",
+    ]
+    surfaces = [entity_resolution._tiered_surface([name]) for name in names]
+    candidates = entity_resolution._tiered_minhash_pairs(
+        surfaces, entropy_threshold=2.0, minhash_threshold=0.8
+    )
+    from commontrace import overlap
+
+    eligible = [i for i, surface in enumerate(surfaces) if surface.entropy >= 2.0]
+    exhaustive, accepted_from_shortlist = set(), set()
+    for a, b in combinations(eligible, 2):
+        similarity = estimate_jaccard(surfaces[a].signature, surfaces[b].signature)
+        jaccard = kg_similarity.jaccard(surfaces[a].grams, surfaces[b].grams)
+        if similarity >= 0.8 and jaccard >= 0.8:
+            exhaustive.add((a, b))
+        if (a, b) in candidates and similarity >= 0.8 and jaccard >= 0.8:
+            accepted_from_shortlist.add((a, b))
+
+    assert exhaustive
+    assert accepted_from_shortlist == exhaustive
+    assert len(candidates) < len(list(combinations(eligible, 2)))
+    assert overlap.DEFAULT_NUM_PERM == 128
+
+
+def test_tiered_lsh_falls_back_to_exhaustive_at_low_threshold():
+    from itertools import combinations
+
+    surfaces = [
+        entity_resolution._tiered_surface(["International Business Machine"]),
+        entity_resolution._tiered_surface(["International Business Machines"]),
+        entity_resolution._tiered_surface(["Quasar rotates encrypted archives nightly"]),
+    ]
+    eligible = [i for i, surface in enumerate(surfaces) if surface.entropy >= 2.0]
+    pairs = entity_resolution._tiered_minhash_pairs(
+        surfaces, entropy_threshold=2.0, minhash_threshold=0.75
+    )
+    assert pairs == set(combinations(eligible, 2))
+
+
+def test_tiered_exact_aliases_survive_entropy_gate(tmp_path):
+    root = str(tmp_path)
+    graph.add_node(root, "concept:ibm_short", "concept", name="IBM")
+    graph.add_node(root, "concept:ibm_short_alias", "concept", name=" ibm ")
+
+    result = entity_resolution.tiered_candidates(root)
+
+    assert result["pairs"] == [{
+        "a": "concept:ibm_short",
+        "b": "concept:ibm_short_alias",
+        "score": 1.0,
+        "tier": "exact",
+        "a_type": "concept",
+        "b_type": "concept",
+        "compatible": True,
+    }]
+
+
 def test_tiered_embedding_candidates_are_batched_and_llm_sees_only_remainder(tmp_path):
     root = str(tmp_path)
     graph.add_node(root, "concept:ibm", "concept", name="IBM")

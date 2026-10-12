@@ -162,9 +162,15 @@ def test_derivatives_hide_when_grounding_retracted(tmp_path):
 
     journal = Journal(str(tmp_path))
     source = journal.put(MemoryRecord("f", "fact", 1, {"text": "original"}))
-    journal.put(MemoryRecord("o", "observation", 1, {"text": "derived"}, relations={"derives": ["f"]}))
+    observation = journal.put(
+        MemoryRecord("o", "observation", 1, {"text": "derived"}, relations={"derives": ["f"]})
+    )
     journal.put(replace(source, version=2, status="retired"))
     assert journal.search("derived") == []
+    assert journal.current("o", scope={}) is None
+    # Retraction hides the derived record from current retrieval without erasing
+    # its versioned audit entry. Explicit forgetting has separate erasure rules.
+    assert [record.id for record in journal.history("o")] == [observation.id]
 
 
 def test_capture_collision_rejects_changed_evidence(tmp_path):

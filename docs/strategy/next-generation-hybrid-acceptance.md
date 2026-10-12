@@ -103,8 +103,45 @@ latency miss into a gate pass.
 
 Postgres/server hybrid search remains unsupported by this API: there is no
 governed Postgres full-text + vector adapter wired into `search_recipes.search`.
+The Hub's `memory_records` search already demonstrates scoped sparse/dense
+candidate fusion and grounding, but its records are a different authoritative
+model: Hub `MemoryRecord`s are partitioned by authenticated `org_id`, while
+CommonTrace fact retrieval is governed by local `AtomicFact` events and their
+scope, temporal, authority and evidence checks. There is no AtomicFact sync
+outbox or source watermark for the Hub projection, and the Postgres vector API
+is async while the current `search_recipes` vector callback is synchronous.
+The Hub path now loads dense ANN candidate rows with bounded `id IN (...)`
+queries of at most 500 IDs, applying tenant, exact scope, lifecycle and kind
+filters before hydration; Python visibility and derivation checks still run
+before results return. A fake-session contract verifies the batching at 501
+candidates, but the Hub's real-Postgres tests were skipped because a local test
+database is unavailable, and no server latency was measured.
+Reusing Hub records as fact candidates would therefore have no freshness
+contract. A safe adapter needs an owner-pinned projection fed from canonical
+fact events with replay/deletion watermarks; each bounded FTS and ANN arm must
+filter by authenticated owner and exact scope before RRF, then hydrate candidate
+IDs from the canonical fact snapshot and pass them through the existing
+`_eligible_fact`/`EvidenceResolver` path before graph expansion or return.
+The Hub integration fixture requires a real Postgres database and drops its
+test schema; its database-backed tests were skipped in this local audit.
+
 Real-model local latency, server latency and answer quality remain unmeasured.
 The exact reports, source hashes and commands are archived in
 [the SQLite report](measurements/f1-hybrid-1m-synthetic-sqlite.json) and
 [the Lance report](measurements/f1-hybrid-1m-synthetic-lance.json); verify the
 adjacent `.sha256` sidecars before using the aggregates.
+
+The report's diagnostic component timings point to dense search as the main
+local bottleneck. At 1M, dense projection p95 was 2,848.97 ms on SQLite and
+223.07 ms on Lance; FTS5 candidate p95 was 0.436 ms and 0.592 ms respectively.
+A separate 10K SQLite fixture measured full API p95 46.21 ms, dense p95
+44.21 ms and FTS5 p95 0.321 ms. Its [raw report](measurements/hybrid-small-baseline-sqlite.json)
+records all five samples, the benchmark command and source hashes. This is a
+diagnostic fixture, not the 1M gate. The current SQLite vector implementation
+streams the exact vector corpus and scores it in Python when no published
+snapshot is available, which explains its linear read cost. The 1M Lance
+fixture uses the synthetic adapter's four-dimensional repeated axes, so its
+latency does not establish performance on representative 384-dimensional
+vectors. A useful next measurement needs diverse vectors (or the configured
+embedding model) and must report exact recall@10 alongside scope and lifecycle
+checks before changing ANN limits or relying on an index cache.

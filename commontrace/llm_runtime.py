@@ -1,6 +1,7 @@
 """Per-prompt routing with explicit call/token/cost budgets and measured usage."""
 from __future__ import annotations
 
+import math
 import threading
 import time
 from contextlib import contextmanager
@@ -42,10 +43,15 @@ class LLMRuntime:
         configured = configuration.current() or configuration.load(root)
         self.model_routes = configured['model_routes']
         self.routes = dict(routes or {})
+        self.selected_routes: dict[str, dict[str, str]] = {}
         self.budget = budget or Budget(**configured['llm_budget'])
         self.caller = complete or llm.complete
         self.calls = self.tokens = 0
         self.cost = 0.0
+        self.cached_calls = self.cached_tokens = 0
+        self.cached_historical_cost = 0.0
+        self.cached_unpriced_calls = 0
+        self.unpriced_calls = 0
         self.failed = 0
         self.unpriced = False
         self.accounting_unknown = False
@@ -69,6 +75,10 @@ class LLMRuntime:
             cfg = self.routes.get(purpose, self.routes.get("default")) or config or llm.load_config()
             if purpose not in self.routes and purpose in self.model_routes:
                 cfg = replace(cfg, model=self.model_routes[purpose])
+            # Keep the actual provider/model decision in the run manifest.
+            # This is especially useful when model_routes comes from project
+            # config and the base provider config itself contains credentials.
+            self.selected_routes[purpose] = {"provider": cfg.provider, "model": cfg.model}
             self.calls += 1
             token = ACTIVE.set(None)
             try:
@@ -86,22 +96,48 @@ class LLMRuntime:
                 self.accounting_unknown = self.unpriced = True
                 self.failed += 1
                 raise llm.LLMUnavailable("provider usage is missing or invalid; further dispatch stopped")
+            cache_hit = isinstance(usage, dict) and usage.get("_commontrace_cache_hit") is True
             self.tokens += input_tokens + output_tokens
-            cost = llm.cost_usd({"input_tokens": input_tokens, "output_tokens": output_tokens}, cfg.model)
-            if cost is None:
-                # Unpriced providers cannot silently evade a monetary budget.
+            if cache_hit:
+                cached_cost = usage.get("_commontrace_cached_cost_usd")
+                cost = (float(cached_cost) if isinstance(cached_cost, (float, int))
+                        and not isinstance(cached_cost, bool) and math.isfinite(cached_cost)
+                        and cached_cost >= 0 else None)
+            else:
+                cost = llm.cost_usd({"input_tokens": input_tokens, "output_tokens": output_tokens}, cfg.model)
+            if cache_hit:
+                self.cached_calls += 1
+                self.cached_tokens += input_tokens + output_tokens
+                if cost is None:
+                    self.cached_unpriced_calls += 1
+                else:
+                    self.cached_historical_cost += cost
+            elif cost is None:
+                # Unpriced provider calls cannot silently evade a monetary budget.
                 self.unpriced = True
-            elif cost is not None:
+                self.unpriced_calls += 1
+            else:
                 self.cost += cost
+            ledger_cost = 0.0 if cache_hit or cost is None else cost
             session_ledger.record_usage(self.root, self.session_id, cfg.model, input_tokens,
-                                        output_tokens, provider=cfg.provider, cost_usd=cost if cost is not None else 0,
-                                        occasion=purpose, metadata={"cost_known": cost is not None})
+                                        output_tokens, provider=cfg.provider, cost_usd=ledger_cost,
+                                        occasion=purpose,
+                                        metadata={"cost_known": cache_hit or cost is not None,
+                                                  "cache_hit": cache_hit,
+                                                  "historical_cost_known": cost is not None if cache_hit else None,
+                                                  "historical_cost_usd": (
+                                                      cost if cache_hit and cost is not None else None)})
             return text, usage
 
     def manifest(self) -> dict:
         return {"routes": {key: {"provider": cfg.provider, "model": cfg.model}
                            for key, cfg in self.routes.items()},
+                "configured_model_routes": dict(self.model_routes),
+                "selected_routes": {key: dict(value) for key, value in self.selected_routes.items()},
                 "calls": self.calls, "failed_calls": self.failed, "tokens": self.tokens,
-                "known_cost_usd": self.cost, "unpriced_calls": self.unpriced,
+                "known_cost_usd": self.cost, "unpriced_calls": self.unpriced_calls,
+                "cached_calls": self.cached_calls, "cached_tokens": self.cached_tokens,
+                "historical_cached_cost_usd": self.cached_historical_cost,
+                "cached_unpriced_calls": self.cached_unpriced_calls,
                 "accounting_unknown": self.accounting_unknown,
                 "elapsed_seconds": time.monotonic() - self.started}

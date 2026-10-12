@@ -258,7 +258,11 @@ def add_rest_routes(
             return denied
         return Response(status_code=204)
 
+    from hub.memory_embedding import ProjectionFactory
     from hub.memory_records import add_memory_routes
+
+    if not hasattr(app.state, "memory_projection_factory"):
+        app.state.memory_projection_factory = ProjectionFactory(session_factory, config.database_url)
     add_memory_routes(app, session_factory, authenticate=_authenticate, require_scope=_require_scope)
     add_market_routes(app, session_factory, config=config, authenticate=_authenticate,
                       require_scope=_require_scope)

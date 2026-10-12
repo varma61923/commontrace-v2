@@ -542,6 +542,18 @@ def _statement_index(facts):
     return fact_store.StatementIndex(facts) if isinstance(facts, fact_store.FactMap) else _StatementIndex(facts)
 
 
+def _index_add(index, fact: AtomicFact, snapshot: dict[str, Any]) -> None:
+    """Pass a detached payload to the built-in SQLite index, preserving legacy add overrides."""
+    from commontrace import fact_store
+
+    add_with_snapshot = getattr(index, "add_with_snapshot", None)
+    if (isinstance(index, fact_store.StatementIndex) and callable(add_with_snapshot)
+            and getattr(type(index), "add", None) is fact_store.StatementIndex.add):
+        add_with_snapshot(fact, snapshot)
+    else:
+        index.add(fact)
+
+
 def _matching_active(facts: dict[str, AtomicFact], statement: str, scopes: list[str],
                      index: _StatementIndex | None = None) -> AtomicFact | None:
     return (index or _statement_index(facts)).exact(statement, scopes)
@@ -777,9 +789,11 @@ def _add_locked(
     if fact.evidence_bound:
         fact.confirmations = len({(r.kind, r.source_id) for r in fact.evidence if r.polarity == "support"})
         fact.evidence_revision = claim_revision(fact)
-    fact.revision = _compute_revision(fact.to_dict())
+    snapshot = fact.to_dict()
+    fact.revision = _compute_revision(snapshot)
+    snapshot["revision"] = fact.revision
     facts[fact.id] = fact
-    index.add(fact)
+    _index_add(index, fact, snapshot)
     if conflicts is not None:
         _detect_conflicts(facts, index, fact, root, conflicts, may_supersede=True, joint_decision=decision or None)
     return fact, "ADD"

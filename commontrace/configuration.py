@@ -94,21 +94,21 @@ DEFAULTS = {
     "secrets": {},
     "profiles": {
         "local": {
-            "embedding": "bge-small",
+            "embedding": "fastembed:BAAI/bge-small-en-v1.5",
             "reranker": "cross-encoder-fast",
             "redact_pii": True,
             "telemetry": False,
             "llm_cache": True,
         },
         "team": {
-            "embedding": "bge-small",
+            "embedding": "fastembed:BAAI/bge-small-en-v1.5",
             "reranker": "cross-encoder-fast",
             "redact_pii": True,
             "telemetry": False,
             "llm_cache": True,
         },
         "server": {
-            "embedding": "bge-small",
+            "embedding": "fastembed:BAAI/bge-small-en-v1.5",
             "reranker": "cross-encoder-fast",
             "redact_pii": True,
             "telemetry": False,
@@ -166,7 +166,10 @@ def _validate(data, *, root, profile=None):
     supplied = profiles.get(selected, {})
     if not isinstance(supplied, dict):
         raise ValueError("profile options must be a mapping")
-    options = {**DEFAULTS["profiles"][selected], **{k: v for k, v in supplied.items() if k != "settings"}}
+    options = {
+        **DEFAULTS["profiles"][selected],
+        **{k: v for k, v in supplied.items() if k not in ("settings", "secrets")},
+    }
     if set(options) - set(PRIMARY) or any(not isinstance(v, (str, bool, int)) for v in options.values()):
         raise ValueError("unsupported profile options")
     if any(
@@ -181,20 +184,11 @@ def _validate(data, *, root, profile=None):
     secret_paths.add("runtime.root")
     if set(settings) & secret_paths:
         raise ValueError("credentials and process paths require secrets references or explicit environment settings")
-    secrets = result["secrets"]
-    if (
-        not isinstance(secrets, dict)
-        or len(secrets) > 64
-        or any(
-            not isinstance(k, str)
-            or not re.fullmatch(r"(?:COMMONTRACE|HUB)_[A-Z0-9_]{1,100}", k)
-            or not isinstance(v, str)
-            or not 0 < len(v) <= 4096
-            or not v.startswith(("env:", "file:", "aws:"))
-            or not v.partition(":")[2]
-            for k, v in secrets.items()
-        )
-    ):
+    profile_secrets = supplied.get("secrets", {})
+    if not _valid_secret_references(result["secrets"]) or not _valid_secret_references(profile_secrets):
+        raise ValueError("secrets require bounded env:, file: or aws: references")
+    secrets = {**result["secrets"], **profile_secrets}
+    if len(secrets) > 64:
         raise ValueError("secrets require bounded env:, file: or aws: references")
     if (
         not isinstance(result["agents"], dict)
@@ -233,8 +227,24 @@ def _validate(data, *, root, profile=None):
         Budget(**result["llm_budget"])
     except TypeError as exc:
         raise ValueError("unsupported LLM budget options") from exc
-    result.update(profile=selected, options=options, settings=settings, root=os.path.abspath(root))
+    result.update(profile=selected, options=options, settings=settings, secrets=secrets, root=os.path.abspath(root))
     return result
+
+
+def _valid_secret_references(secrets: Any) -> bool:
+    return (
+        isinstance(secrets, dict)
+        and len(secrets) <= 64
+        and all(
+            isinstance(name, str)
+            and re.fullmatch(r"(?:COMMONTRACE|HUB)_[A-Z0-9_]{1,100}", name)
+            and isinstance(reference, str)
+            and 0 < len(reference) <= 4096
+            and reference.startswith(("env:", "file:", "aws:"))
+            and bool(reference.partition(":")[2])
+            for name, reference in secrets.items()
+        )
+    )
 
 
 def _flatten(data: dict, prefix="") -> dict:

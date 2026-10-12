@@ -26,6 +26,40 @@ def test_observation_date_and_assistant_authorship(tmp_path):
         additive_extract.extract(str(tmp_path), "text", speaker="unknown", complete=complete)
 
 
+def test_transition_preserves_both_states_and_observation_date(tmp_path):
+    prompts = []
+
+    def complete(prompt):
+        prompts.append(prompt)
+        return json.dumps(
+            {
+                "facts": [
+                    {
+                        "statement": "Alice switched from the local cache to Redis on 2026-10-09 after local invalidation proved unreliable.",
+                        "valid_from": "2026-10-09",
+                    }
+                ]
+            }
+        ), {}
+
+    result = additive_extract.extract(
+        str(tmp_path),
+        "Yesterday Alice switched from the local cache to Redis after local invalidation proved unreliable.",
+        observed_at="2026-10-10T00:00:00Z",
+        complete=complete,
+    )
+
+    prompt = prompts[0]
+    assert "current execution date" in prompt
+    assert "bounded approximate period" in prompt
+    assert "both its prior and new state" in prompt
+    inputs = json.loads(prompt.split("Input follows:\n", 1)[1])
+    assert inputs["observed_at"] == "2026-10-10T00:00:00Z"
+    fact = result["facts"][0]
+    assert fact["valid_from"] == "2026-10-09T00:00:00+00:00"
+    assert "from the local cache to Redis" in fact["statement"]
+
+
 def test_tool_extraction_keeps_tool_attribution_and_source_lineage(tmp_path):
     prompts = []
 

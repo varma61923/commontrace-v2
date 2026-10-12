@@ -257,12 +257,14 @@ def run_index(args) -> int:
     encoder = None
     try:
         tag = args.model or embed.configured()
-        if not tag or not embed.available():
-            raise ConversationError("local semantic indexing requires the attention extra and an enabled embedder")
+        if not tag or not embed.available_for(tag):
+            raise ConversationError(
+                "semantic indexing requires an enabled embedding provider and its optional dependency"
+            )
         with _store(args, create=False) as store:
             encoder = embed.Embedder(store.root, tag)
             result = embed.prepare(store, encoder, sessions=args.session)
-    except (ConversationError, OSError) as exc:
+    except (ConversationError, ImportError, RuntimeError, OSError) as exc:
         print(f"[commontrace] {exc}", file=sys.stderr)
         return 2
     finally:

@@ -5,6 +5,8 @@ A provider is chosen by a tag:
 - ``arctic-m``, ``minilm``, ``bge-small``, ``e5-small``, ``nomic``: local
   sentence-transformers models (the attention extra), run on CPU;
 - ``local:<huggingface-model>``: any other local sentence-transformers model;
+- ``fastembed:BAAI/bge-small-en-v1.5``: optional CPU ONNX model (the
+  ``fastembed`` extra); the shipped default only reads cached weights;
 - ``openai:<model>``: OpenAI embeddings (``OPENAI_API_KEY``);
 - ``gemini:<model>``: Google Gemini embeddings (``GEMINI_API_KEY`` or ``GOOGLE_API_KEY``);
 - ``voyage:<model>``: Voyage AI (``VOYAGE_API_KEY``);
@@ -43,9 +45,24 @@ LOCAL_MODELS = {
     "nomic": ("nomic-ai/nomic-embed-text-v1.5", "search_query: ", "search_document: "),
 }
 HOSTED = ("openai", "gemini", "voyage", "cohere", "ollama", "compat")
+LOCAL_PROVIDERS = ("local", "fastembed")
+DEFAULT_LOCAL_TAG = "fastembed:BAAI/bge-small-en-v1.5"
+FASTEMBED_MODELS = {
+    "baai/bge-small-en-v1.5": ("BAAI/bge-small-en-v1.5", 384),
+    "baai/bge-base-en-v1.5": ("BAAI/bge-base-en-v1.5", 768),
+}
 DEFAULT_MODELS = {"openai": "text-embedding-3-small", "gemini": "gemini-embedding-001", "voyage": "voyage-3.5",
                   "cohere": "embed-v4.0", "ollama": "nomic-embed-text"}
-BATCH = {"openai": 128, "gemini": 100, "voyage": 128, "cohere": 96, "ollama": 64, "compat": 64, "local": 64}
+BATCH = {
+    "openai": 128,
+    "gemini": 100,
+    "voyage": 128,
+    "cohere": 96,
+    "ollama": 64,
+    "compat": 64,
+    "local": 64,
+    "fastembed": 64,
+}
 _TAG = re.compile(r"^(?:(?P<provider>[a-z]+):)?(?P<model>[A-Za-z0-9._/\-]{1,128})(?:@(?P<dims>[0-9]{1,5}))?$")
 
 
@@ -55,7 +72,7 @@ class EmbeddingError(RuntimeError):
 
 @dataclass(frozen=True)
 class Spec:
-    provider: str  # "local" or one of HOSTED
+    provider: str  # one of LOCAL_PROVIDERS or HOSTED
     model: str
     dimensions: int | None = None
 
@@ -80,7 +97,8 @@ def parse(tag: str) -> Spec:
     match = _TAG.match((tag or "").strip())
     if not match:
         raise EmbeddingError(f"embedder {tag!r} is not a tag: use a local name ({', '.join(sorted(LOCAL_MODELS))}), "
-                             "local:<model>, or <provider>:<model>[@dims] with provider in " + ", ".join(HOSTED))
+                             "local:<model>, fastembed:<supported-model>, or "
+                             "<provider>:<model>[@dims] with provider in " + ", ".join(HOSTED))
     provider, model, dims = match.group("provider"), match.group("model"), match.group("dims")
     dimensions = int(dims) if dims else None
     if dimensions is not None and not 32 <= dimensions <= 8192:
@@ -93,8 +111,20 @@ def parse(tag: str) -> Spec:
         return Spec("local", model)
     if provider == "local":
         return Spec("local", model)
+    if provider == "fastembed":
+        if dimensions:
+            raise EmbeddingError("fastembed model dimensions come from its model registry")
+        registered = FASTEMBED_MODELS.get(model.lower())
+        if registered is None:
+            raise EmbeddingError(
+                f"unsupported FastEmbed model {model!r}; known: "
+                + ", ".join(model for model, _ in FASTEMBED_MODELS.values())
+            )
+        return Spec("fastembed", registered[0])
     if provider not in HOSTED:
-        raise EmbeddingError(f"unknown embedding provider {provider!r}; known: local, {', '.join(HOSTED)}")
+        raise EmbeddingError(
+            f"unknown embedding provider {provider!r}; known: local, fastembed, {', '.join(HOSTED)}"
+        )
     return Spec(provider, model, dimensions)
 
 
@@ -129,8 +159,9 @@ def _clip(texts: list[str]) -> list[str]:
 
 
 class _Local:
-    def __init__(self, spec: Spec):
+    def __init__(self, spec: Spec, *, local_files_only: bool = False):
         self.spec = spec
+        self.local_files_only = local_files_only
         name, self._query_prefix, self._doc_prefix = LOCAL_MODELS.get(spec.model, (spec.model, "", ""))
         self._name = name
         self._model = None
@@ -146,11 +177,28 @@ class _Local:
             from commontrace.rerank_arm import _no_progress_bars
 
             with _no_progress_bars():
+                from commontrace import offline
+
+                cache_only = self.local_files_only or offline.enabled()
                 try:
-                    model = SentenceTransformer(self._name, device="cpu", local_files_only=True,
-                                                trust_remote_code=self.spec.model == "nomic")
-                except Exception:  # noqa: BLE001 - not cached yet: fetch it once
-                    model = SentenceTransformer(self._name, device="cpu", trust_remote_code=self.spec.model == "nomic")
+                    model = SentenceTransformer(
+                        self._name,
+                        device="cpu",
+                        local_files_only=True,
+                        trust_remote_code=self.spec.model == "nomic",
+                    )
+                except Exception as exc:  # noqa: BLE001 - backend-specific cache misses vary
+                    if offline.enabled():
+                        raise offline.OfflineError(
+                            f"offline mode: local embedding model {self._name!r} is not available in the cache"
+                        ) from exc
+                    if cache_only:
+                        raise EmbeddingError(
+                            f"local embedding model {self._name!r} is not available in the cache"
+                        ) from exc
+                    model = SentenceTransformer(
+                        self._name, device="cpu", trust_remote_code=self.spec.model == "nomic"
+                    )
             model.max_seq_length = 256
             self._model = model
         return self._model
@@ -160,6 +208,116 @@ class _Local:
         vectors = self._load().encode([prefix + t for t in _clip(texts)], batch_size=BATCH["local"],
                                       normalize_embeddings=True, convert_to_numpy=True, show_progress_bar=False)
         return [_normalize(v) for v in vectors]
+
+
+class _FastEmbed:
+    """Optional bounded CPU provider; server callers must use its local cache."""
+
+    def __init__(self, spec: Spec, *, local_files_only: bool = False):
+        self.spec = spec
+        self.local_files_only = local_files_only
+        self._model = None
+        self._cache_dir = _configuration_getenv("FASTEMBED_CACHE_PATH", "").strip() or None
+
+    def _load(self):
+        if self._model is None:
+            from commontrace import offline
+
+            try:
+                from fastembed import TextEmbedding
+            except ImportError as exc:
+                raise EmbeddingError(
+                    "FastEmbed embeddings need the optional dependency: "
+                    "pip install 'commontrace[fastembed]'"
+                ) from exc
+            cache_only = self.local_files_only or offline.enabled()
+            try:
+                # FastEmbed 0.8.0 forwards local_files_only to its model manager,
+                # which prevents both Hub and GCS downloads on the server path.
+                self._model = TextEmbedding(
+                    model_name=self.spec.model,
+                    cache_dir=self._cache_dir,
+                    threads=2,
+                    local_files_only=cache_only,
+                )
+            except Exception as exc:  # noqa: BLE001 - optional backend errors vary
+                if cache_only:
+                    raise EmbeddingError(
+                        f"FastEmbed model {self.spec.model!r} is not available in the local cache"
+                    ) from exc
+                raise EmbeddingError(f"FastEmbed could not load model {self.spec.model!r}") from exc
+        return self._model
+
+    def embed(self, texts: list[str], *, query: bool) -> list[list[float]]:
+        if not texts:
+            return []
+        model = self._load()
+        method = model.query_embed if query else model.passage_embed
+        out: list[list[float]] = []
+        # Keep inference batches and ONNX thread use bounded in the caller.
+        for start in range(0, len(texts), BATCH["fastembed"]):
+            batch = _clip(texts[start:start + BATCH["fastembed"]])
+            rows = list(method(batch, batch_size=BATCH["fastembed"], parallel=None))
+            if len(rows) != len(batch):
+                raise EmbeddingError(
+                    f"fastembed returned {len(rows)} vectors for {len(batch)} texts"
+                )
+            out.extend(_normalize(row) for row in rows)
+        dimensions = {len(row) for row in out}
+        if len(dimensions) > 1:
+            raise EmbeddingError("fastembed returned vectors of different dimensions")
+        return out
+
+    def projection_identity(self) -> tuple[str, int]:
+        """Identify the exact HF snapshot or hash the cached model artifacts."""
+        import re
+        from hashlib import sha256
+        from importlib.metadata import version
+        from pathlib import Path
+
+        model = self._load()
+        model_dir = getattr(getattr(model, "model", None), "_model_dir", None)
+        if not isinstance(model_dir, (str, Path)):
+            raise EmbeddingError("FastEmbed model has no verifiable artifact directory")
+        path = Path(model_dir)
+        if not path.is_dir():
+            raise EmbeddingError("FastEmbed model artifact directory is unavailable")
+
+        parts = path.parts
+        revision = next(
+            (
+                parts[index + 1]
+                for index, part in enumerate(parts[:-1])
+                if part == "snapshots"
+                and re.fullmatch(r"[0-9a-f]{40,64}", parts[index + 1])
+            ),
+            None,
+        )
+        if revision is None:
+            digest = sha256()
+            files = sorted(
+                file for file in path.rglob("*")
+                if file.is_file() and file.name != "files_metadata.json"
+            )
+            if not files:
+                raise EmbeddingError("FastEmbed model cache contains no artifacts")
+            for file in files:
+                relative = file.relative_to(path).as_posix().encode("utf-8")
+                digest.update(len(relative).to_bytes(4, "big"))
+                digest.update(relative)
+                with file.open("rb") as handle:
+                    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                        digest.update(chunk)
+            revision = "sha256-" + digest.hexdigest()
+
+        expected_dimension = FASTEMBED_MODELS.get(self.spec.model.lower(), (None, None))[1]
+        dimension = getattr(model, "embedding_size", None)
+        if type(dimension) is not int or dimension != expected_dimension:
+            raise EmbeddingError("FastEmbed model dimension does not match the registered model")
+        probe = self.embed(["CommonTrace local projection identity probe."], query=True)
+        if len(probe) != 1 or len(probe[0]) != dimension:
+            raise EmbeddingError("FastEmbed model output does not match its registered dimension")
+        return f"fastembed-{self.spec.model}-v{version('fastembed')}-{revision}", dimension
 
 
 class _Hosted:
@@ -256,23 +414,29 @@ _CUSTOM: dict[str, object] = {}
 
 def register(name: str, factory) -> None:
     """Register trusted code: ``factory(spec) -> Provider`` for tags ``<name>:<model>``."""
-    if not re.fullmatch(r"[a-z][a-z0-9]{1,31}", name) or name in ("local", *HOSTED) or name in _CUSTOM:
+    if not re.fullmatch(r"[a-z][a-z0-9]{1,31}", name) or name in (*LOCAL_PROVIDERS, *HOSTED) or name in _CUSTOM:
         raise EmbeddingError("provider names are lowercase, new and not built in")
     _CUSTOM[name] = factory
 
 
-def provider(tag: str | Spec, *, post=None) -> Provider:
+def provider(tag: str | Spec, *, post=None, local_files_only: bool = False) -> Provider:
     """The provider for a tag. Building it is cheap; local models load on first use."""
     if isinstance(tag, str) and ":" in tag and tag.split(":", 1)[0] in _CUSTOM:
         name, model = tag.split(":", 1)
         return _CUSTOM[name](Spec(name, model))  # type: ignore[operator]
     spec = tag if isinstance(tag, Spec) else parse(tag)
     if spec.provider == "local":
-        return _Local(spec)
+        return _Local(spec, local_files_only=local_files_only)
+    if spec.provider == "fastembed":
+        return _FastEmbed(spec, local_files_only=local_files_only)
     return _Hosted(spec, post=post)
 
 
 def known() -> dict[str, list[str]]:
     """What can be selected, for help text and the capability matrix."""
-    return {"local": sorted(LOCAL_MODELS), "hosted": [f"{p}:{DEFAULT_MODELS.get(p, '<model>')}" for p in HOSTED],
-            "custom": sorted(_CUSTOM)}
+    return {
+        "local": sorted(LOCAL_MODELS),
+        "local_providers": ["fastembed:<supported-model>"],
+        "hosted": [f"{p}:{DEFAULT_MODELS.get(p, '<model>')}" for p in HOSTED],
+        "custom": sorted(_CUSTOM),
+    }

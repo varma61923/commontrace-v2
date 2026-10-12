@@ -12,20 +12,22 @@ task went? Retrieval benchmarks cannot answer it, and correlational signals
 from production answer it wrongly, because the occasions on which a memory is
 eligible differ systematically from those on which it is not. We describe
 CommonTrace, a memory layer that randomizes every memory's delivery per
-occasion with a deterministic, published hash; reads each memory's effect with
-a confidence sequence that stays valid however often it is checked; withdraws
-memories proven to hurt; binds every record to the authority of whoever wrote
-it; and packages the evidence so a third party can recompute every verdict. In
+occasion with a deterministic, published hash; reads fixed holdouts with a
+prespecified beta-mixture confidence sequence and adaptive schedules with an
+asymptotic AIPW confidence sequence; withdraws memories proven to hurt; binds
+every record to the authority of whoever wrote it; and packages the evidence
+so a third party can recompute every verdict. In
 a confounded simulation where a correlational policy withdrew a truly helpful
 memory in 10 of 10 runs, the randomized policy withdrew no memory that does
 not hurt, at any holdout rate. Adaptive allocation in published eras, read by
-an augmented inverse-propensity-weighted (AIPW) confidence sequence, kept
-time-uniform coverage at or above 96.7% in all 45 simulated cells and detected
-a +10-point memory in 96-100% of runs by 2,000 occasions, against 2-7% for a
-fixed 10% holdout, while withholding the memory half as often as a fixed 50%
-holdout. A +5-point effect within 2,000 occasions at 80% power was not reached
-(best 0.70), and we explain why no anytime-valid design can reach it at a 50%
-baseline without a strongly predictive covariate.
+an augmented inverse-propensity-weighted (AIPW) confidence sequence, showed
+empirical time-uniform coverage of at least 96.75% in all 45 simulated cells;
+this does not establish finite-sample coverage for the asymptotic AIPW
+sequence. It detected a +10-point memory in 95.75-99.75% of runs by 2,000
+occasions, against 2.0-7.5% for a fixed 10% holdout, while withholding the
+memory on 25-29% of occasions instead of 50% for a fixed 50% holdout. A
++5-point effect within 2,000 occasions at 80% power was not reached (best
+0.70); strongly predictive covariates improve power but do not close the gap.
 
 ## 1. Introduction
 
@@ -98,6 +100,12 @@ verdict is not undone when a later era's lower propensities make the scores
 noisier. Optional strata (a short pre-treatment label) let the running means
 condition on the occasion.
 
+`experiment.analyze` selects this horizon before reading outcome values. Its
+default is the required per-arm sample size for the configured target effect
+at a fixed 50% baseline; callers with a known schedule can provide a scalar
+or per-lesson planned horizon. This removes the former data-dependent horizon
+selection. The AIPW sequence's coverage remains asymptotic, as described below.
+
 **Authority.** Every record is bound at write time to its authenticated writer
 and signed (Ed25519). Derived records inherit the least trusted source, so a
 trusted summarizer cannot launder an external claim. An operator can require a
@@ -146,13 +154,16 @@ with base rates of 50% (`flat`), 20/50/80% (`moderate`) or 5/50/95% (`strong`).
 | flat | +5 | 0.00 | 0.00 | 0.30 | 0.33 | 0.45 vs 0.50 |
 | strong | +5 | 0.00 | 0.00 | 0.70 | 0.64 | 0.41 vs 0.50 |
 
-Power is the share of runs detected by 2,000 occasions. Time-uniform coverage
-was at least 96.7% in every one of the 45 cells, and with no effect an interval
-excluded zero at any checkpoint in at most 3.0% of runs.
+Power is the share of runs detected by 2,000 occasions. The beta-mixture designs
+use a fixed horizon of 99 observations per arm, selected before outcomes from a
+20-point target effect at a 50% baseline. Empirical time-uniform coverage was
+at least 96.75% in every one of the 45 cells, and with no effect an interval
+excluded zero at any checkpoint in at most 3.0% of runs. AIPW sequence coverage
+is asymptotic under its assumptions.
 
 Two findings. First, most of the gain comes from the estimator, not from the
 allocation: at the same 50% rate the AIPW sequence detects a +10-point memory
-in 83-94% of runs where the beta-mixture interval detects it in 12-28%.
+in 83-94% of runs where the beta-mixture interval detects it in 12-29%.
 Second, adaptive allocation keeps that power while halving how often a proven
 memory is withheld. It does not make a +5-point effect detectable within 2,000
 occasions: at a 50% baseline a fixed-sample test needs 3,140 occasions for 80%

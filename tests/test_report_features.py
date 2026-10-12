@@ -322,6 +322,32 @@ def test_wiki_refresh_is_source_driven_and_provider_failure_keeps_watermark(tmp_
     assert "Osaka" in knowledge_pages.get_page(root, "company/office").content
 
 
+def test_withdrawn_wiki_source_hides_current_page_but_keeps_audit_history(tmp_path):
+    root = str(tmp_path)
+    fact = hierarchical.add_fact(root, "Office is Tokyo", scopes=["project:test"])[0]
+    registration = wiki.register(
+        root, "company/office", "Where is the office?", [fact.id], context=["project:test"]
+    )
+    wiki.refresh(root, registration["id"])
+
+    assert "Tokyo" in knowledge_pages.get_page(root, "company/office").content
+    assert len(knowledge_pages.page_history(root, "company/office")) == 1
+
+    hierarchical.invalidate_fact(root, fact.id)
+
+    # A source-bound page is excluded from all current retrieval surfaces as soon
+    # as its grounding is withdrawn, even before its queued refresh can run.
+    assert knowledge_pages.get_page(root, "company/office") is None
+    assert knowledge_pages.list_pages(root) == []
+    assert knowledge_pages.search_pages(root, "Tokyo") == []
+    assert knowledge_pages.page_history(root, "company/office") == []
+
+    # The immutable revision remains available through the explicit audit path;
+    # this is a retraction, not a forgetting/erasure request.
+    audit = knowledge_pages.page_history(root, "company/office", _check_sources=False)
+    assert len(audit) == 1 and "Tokyo" in audit[0]["content"]
+
+
 def test_gmail_stream_imports_native_body_and_preserves_failed_page_checkpoint(tmp_path):
     calls = []
     def fetch(url):

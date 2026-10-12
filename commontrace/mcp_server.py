@@ -76,7 +76,6 @@ nothing new until someone opts in.
 
 from __future__ import annotations
 
-import argparse
 import contextlib
 import dataclasses
 import datetime
@@ -215,31 +214,6 @@ async def _run_cli_async(command: str, argv: list[str]) -> tuple[int, str, str]:
         return completed.returncode, completed.stdout, completed.stderr
 
     return await STORE_WORKERS.run(invoke)
-
-
-def _run_cli(command: str, argv: list[str]) -> tuple[int, str, str]:
-    """Run one `commontrace` subcommand in-process and return (rc, stdout, stderr).
-
-    In-process, through the real argparse parser, rather than reconstructing a
-    Namespace by hand: the parser is the definition of what the command
-    accepts, so an added flag or a renamed dest can never leave this surface
-    silently passing something the command does not read. (It already had:
-    `--frustration` binds to `frustration`, and a hand-built namespace spelled
-    it `frustration_signal` -- accepted in silence, recorded nowhere.)
-    """
-    module = importlib.import_module(f"commontrace.commands.{command}_cmd")
-    parser = argparse.ArgumentParser(prog="commontrace")
-    subparsers = parser.add_subparsers(dest="command", required=True)
-    module.add_parser(subparsers)
-
-    out, err = io.StringIO(), io.StringIO()
-    try:
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            args = parser.parse_args([command, *argv])
-            rc = args.func(args)
-    except SystemExit as exc:
-        rc = exc.code if isinstance(exc.code, int) else 2
-    return int(rc or 0), out.getvalue(), err.getvalue()
 
 
 def _agent_actor(who: str = "") -> str:

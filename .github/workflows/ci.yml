@@ -799,16 +799,33 @@ jobs:
         working-directory: sdk/jvm
 
   test-native-memory-middleware:
-    name: Native OpenAI and Microsoft memory middleware
+    name: Native memory lifecycle (${{ matrix.sdk }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - sdk: OpenAI Agents
+            dependency: openai-agents==0.23.1
+            tests: tests/test_openai_agents_middleware.py tests/test_optional_sdk_live_contracts.py
+          - sdk: Pydantic AI
+            dependency: pydantic-ai==2.55.0
+            tests: tests/test_pydantic_ai_capabilities.py tests/test_optional_sdk_live_contracts.py
+          - sdk: Microsoft Agent Framework
+            dependency: agent-framework-core==1.21.0
+            tests: tests/test_microsoft_agent_framework.py tests/test_optional_microsoft_agent_framework_lifecycle.py
+          - sdk: LangGraph
+            dependency: langgraph==1.2.1
+            tests: tests/test_integrations_langgraph.py tests/test_langgraph_premodel_hook.py tests/test_optional_langgraph_lifecycle.py
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.12'
       # Client SDKs use MCP 1.x; keep them separate from the Hub's MCP 2.x environment.
-      - run: python -m pip install -e . pytest openai-agents==0.14.6 openai==2.26.0 agent-framework-core==1.0.0rc5
-      - run: python -m pytest tests/test_runtime_turn.py tests/test_integrations_agents.py -q
+      - run: python -m pip install -e . pytest pytest-asyncio '${{ matrix.dependency }}'
+      # Deterministic models exercise actual SDK runners without provider keys.
+      - run: python -m pytest tests/test_runtime_turn.py tests/test_integrations_agents.py ${{ matrix.tests }} -q
 
   test-new-frameworks:
     needs: changes

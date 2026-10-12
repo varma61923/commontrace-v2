@@ -212,6 +212,17 @@ over the official MCP TypeScript SDK — for a project that would rather
 have typed request/response shapes than hand-write raw tool calls.
 Mobile/JVM/.NET clients remain unbuilt.
 
+The same package also exports a scoped `MemoryClient` and TypeScript framework
+middleware for Vercel AI SDK and Mastra. The Vercel adapter uses the V4 language
+model middleware contract, retrieves once on a new user turn, preserves context
+through tool calls, and records final successful text. Mastra uses tagged
+`MessageList` input and output processors with an optional request-context
+session resolver. Both use bounded memory requests and fail open. Isolated
+smokes passed through Vercel AI SDK `generateText`/`streamText` and a full
+Mastra Agent run with a mock model; host hook latency remains unmeasured. Setup
+and examples are in the
+[TypeScript SDK reference](../sdk/typescript/README.md).
+
 ### 4 — Capture experience and curate lessons
 
 ```bash
@@ -1008,7 +1019,31 @@ Reference `{commontrace_memory}` in a task prompt to use retrieved context. The
 after callback returns CrewAI's output unchanged and records kickoff completion;
 completion does not claim application-level success. See
 [`next-generation-crewai-kickoff-memory.md`](strategy/next-generation-crewai-kickoff-memory.md)
-for scope and fail-open behavior.
+for scope and fail-open behavior. A provider-free runtime test passed both
+`kickoff()` and `akickoff()` on CrewAI 1.15.27; it also confirmed that the
+synchronous callbacks block native `akickoff()`'s event loop. See the
+[`runtime validation note`](strategy/next-generation-crewai-runtime-validation.md).
+
+For Google ADK, pair a scoped before-model callback with a completion callback
+on `LlmAgent`:
+
+```python
+from google.adk.agents.llm_agent import LlmAgent
+from commontrace.integrations.google_adk import after_agent_callback, before_model_callback
+
+agent = LlmAgent(
+    name="support_agent",
+    model=model,
+    before_model_callback=before_model_callback(memory),
+    after_agent_callback=after_agent_callback(memory),
+)
+```
+
+The first callback captures the user turn and injects retrieved context into
+the model request. The second records current-invocation assistant text while
+returning `None` so ADK preserves its result. A provider-free runtime smoke
+passed with ADK's `InMemoryRunner` and `MockModel`; see the
+[`Google ADK evidence note`](strategy/next-generation-google-adk-runtime.md).
 
 The optional Microsoft Agent Framework provider uses its current async context
 provider lifecycle. Install `agent-framework-core`, pin a user scope, and add
@@ -1034,6 +1069,57 @@ the assistant response once per turn in `after_run`; both paths fail open on
 memory outages. Missing user or session identity is a configuration error to
 prevent an unscoped request. See
 [`next-generation-microsoft-agent-framework-provider.md`](strategy/next-generation-microsoft-agent-framework-provider.md).
+
+For the OpenAI Agents SDK, `OpenAIAgentsMemory` adds automatic retrieval via
+`RunConfig.call_model_input_filter` and final result capture through
+`RunHooks.on_agent_end`. Create one adapter per `Runner.run()` so model/tool
+loops reuse the same memory context, and provide both session and user scope:
+
+```python
+from agents import RunConfig, Runner
+from commontrace.integrations.openai_agents import OpenAIAgentsMemory
+
+run_memory = OpenAIAgentsMemory(
+    memory,
+    session_id=lambda context: context["session_id"],
+    user_id=lambda context: context["user_id"],
+)
+result = await Runner.run(
+    agent,
+    prompt,
+    context={"session_id": "run-42", "user_id": "alice"},
+    hooks=run_memory.run_hooks(),
+    run_config=RunConfig(call_model_input_filter=run_memory.call_model_input_filter),
+)
+```
+
+For Pydantic AI, `memory_capabilities()` installs current `ProcessHistory` and
+`Hooks(after_run)` integrations. The history hook deduplicates retrieval within
+each run, adds a marked system context part, and records the final result after
+success:
+
+```python
+from pydantic_ai import Agent
+from commontrace.integrations.pydantic_ai import memory_capabilities
+
+agent = Agent("openai:gpt-5.2", capabilities=memory_capabilities(memory))
+result = await agent.run("What response style do I prefer?", conversation_id="chat-42")
+```
+
+Both SDKs remain optional dependencies. Provider-free lifecycle smokes
+passed with OpenAI Agents `ScriptedModel` (`openai-agents==0.23.1`) and Pydantic
+AI `TestModel` (`pydantic-ai==2.55.0`). They did not exercise provider transport
+or credentials. See the dedicated [OpenAI](strategy/next-generation-openai-agents-middleware.md)
+and [Pydantic AI](strategy/next-generation-pydantic-ai-capabilities.md)
+evidence notes.
+
+For TypeScript agents, `@commontrace/hub-client` exports
+`vercelMemoryMiddleware`, `mastraMemoryProcessor`, and
+`mastraMemoryOutputProcessor`. Vercel's wrapper follows its current V4
+middleware contract; Mastra's processors use its tagged `MessageList` API.
+Session IDs should be resolved per request when sharing an adapter across
+threads. See the [SDK setup and examples](../sdk/typescript/README.md) and the
+[adapter evidence note](strategy/next-generation-typescript-framework-middleware.md).
 
 For sustained asynchronous ingestion, use `async with await
 AsyncStore.open(root, space)` from `commontrace.conversation` and pass the store
@@ -1550,8 +1636,16 @@ Ben: Congrats, what is his name?
   `conversation_profile` / `conversation_summarize` / `conversation_forget`,
   and gateway routes `POST /v1/conversation/add` and
   `/v1/conversation/recall` for agents in any language.
-  `COMMONTRACE_CONVERSATION_EMBEDDER` picks `arctic-m` (default), `minilm`
-  (seven times faster to embed) or `none` (keyword only, no extra installed).
+  `COMMONTRACE_CONVERSATION_EMBEDDER` picks the cache-only local
+  `fastembed:BAAI/bge-small-en-v1.5` default when its optional extra and weights
+  are available, with lexical fallback on a missing dependency or cache;
+  `arctic-m`, `minilm` and `none` remain selectable.
+
+With the default `--rerank auto`, conversation recall also uses the local
+cross-encoder only when its weights are already cached. A cache miss keeps the
+first-stage ranking and records `explain.rerank_fallback`; automatic retrieval
+does not download model weights. Selecting `--rerank cross-encoder` explicitly
+retains the existing online first-use download behavior.
 
 **Measured on LoCoMo** (all 1,540 questions in its four answerable
 categories; `benchmarks/conversation_bench.py`). The question is how much of

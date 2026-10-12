@@ -1,11 +1,21 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import threading
+from collections import OrderedDict
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Optional
 
 from commontrace.measure import CausalMemory, default_text
+
+try:
+    from langchain_core.runnables import RunnableConfig
+except ImportError:
+    # Keep the adapter importable without the optional framework. The parameter
+    # name AND its annotation are part of LangGraph's config-injection contract.
+    RunnableConfig = dict[str, Any]
 
 STATE_KEY = "commontrace_lessons"
 logger = logging.getLogger(__name__)
@@ -29,7 +39,7 @@ def with_lessons(
     state_query: Callable[[dict[str, Any]], Any] = lambda state: state.get("input", ""),
     state_key: str = STATE_KEY,
 ) -> Callable[[dict[str, Any], dict[str, Any] | None], dict[str, Any]]:
-    def wrapped(state: dict[str, Any], config: dict[str, Any] | None = None) -> dict[str, Any]:
+    def wrapped(state: dict[str, Any], config: Optional[RunnableConfig] = None) -> dict[str, Any]:
         items: list[Any] = []
         try:
             occasion_id = thread_id(config)
@@ -79,17 +89,49 @@ def _memory_context(items: list[Any]) -> str | None:
     )
 
 
+def turn_occasion_id(
+    state: dict[str, Any], config: dict[str, Any] | None, *, scope: dict[str, Any] | None = None,
+) -> str:
+    """Stable, scope-partitioned identity for one human turn, including tool loops.
+
+    LangGraph assigns message IDs before the hook runs. For custom graphs without
+    IDs, full-history position and content provide a fallback; callers that trim
+    history should supply IDs or ``configurable.commontrace_turn_id``.
+    """
+    from commontrace.framework_middleware import native_user_text
+
+    conversation = thread_id(config)
+    configurable = (config or {}).get("configurable") or {}
+    turn = configurable.get("commontrace_turn_id")
+    if turn is None:
+        for position, message in reversed(list(enumerate(state.get("messages") or []))):
+            if native_user_text(message):
+                message_id = message.get("id") if isinstance(message, dict) else getattr(message, "id", None)
+                turn = ["message", message_id] if message_id else ["position", position, native_user_text(message)]
+                break
+    if turn is None:
+        raise ValueError("no human turn found; supply configurable.commontrace_turn_id")
+    labels = {key: configurable[key] for key in (
+        "tenant", "tenant_id", "user", "user_id", "agent", "agent_id",
+        "session", "session_id", "repo", "repo_id",
+    ) if key in configurable}
+    payload = json.dumps([conversation, turn, labels, scope or {}], sort_keys=True, ensure_ascii=False)
+    return "langgraph-turn:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def create_pre_model_hook(
     memory: CausalMemory,
     *,
     state_query: Callable[[dict[str, Any]], Any] = _latest_user_query,
     recall_kwargs: Callable[[dict[str, Any] | None], dict[str, Any]] | None = None,
+    cache_size: int = 256,
 ) -> Callable[[dict[str, Any], dict[str, Any] | None], dict[str, Any]]:
     """Build a LangGraph prebuilt ``pre_model_hook`` backed by CausalMemory.
 
     Register the returned function as ``create_react_agent(...,
     pre_model_hook=...)``. It retrieves against the latest human message and
-    the configured LangGraph ``thread_id``. Optional ``recall_kwargs`` can
+    a scoped identity derived from ``thread_id`` and the human message ID.
+    Optional ``recall_kwargs`` can
     forward tenant or user scope from invocation configuration to the existing
     retrieval callable wrapped by ``memory``.
 
@@ -97,19 +139,35 @@ def create_pre_model_hook(
     channel, so it is sent to the model for this call without becoming part of
     checkpointed conversation history. Missing identity and retrieval errors
     fail open with the original messages. The callback is synchronous because
-    CausalMemory's retrieval interface is synchronous.
+    CausalMemory's retrieval interface is synchronous. A bounded, in-process
+    cache reuses the context through tool loops, including empty/error results.
+    Pass the final state to ``record_outcome`` to join that turn's exposure.
     """
+    if not isinstance(cache_size, int) or isinstance(cache_size, bool) or cache_size < 1:
+        raise ValueError("cache_size must be a positive integer")
+    contexts: OrderedDict[str, str | None] = OrderedDict()
+    lock = threading.Lock()
 
-    def hook(state: dict[str, Any], config: dict[str, Any] | None = None) -> dict[str, Any]:
+    def hook(state: dict[str, Any], config: Optional[RunnableConfig] = None) -> dict[str, Any]:
         messages = list(state.get("messages") or [])
         try:
-            occasion_id = thread_id(config)
             query = state_query(state)
             if not query:
                 return {"llm_input_messages": messages}
             kwargs = recall_kwargs(config) if recall_kwargs is not None else {}
-            items = memory.recall(query, occasion_id=occasion_id, **kwargs)
-            context = _memory_context(items)
+            occasion_id = turn_occasion_id(state, config, scope=kwargs)
+            with lock:
+                if occasion_id not in contexts:
+                    try:
+                        items = memory.recall(query, occasion_id=occasion_id, **kwargs)
+                        contexts[occasion_id] = _memory_context(items)
+                    except Exception:  # noqa: BLE001 - fail open once per turn
+                        logger.debug("LangGraph memory retrieval failed; continuing without injection", exc_info=True)
+                        contexts[occasion_id] = None
+                    while len(contexts) > cache_size:
+                        contexts.popitem(last=False)
+                contexts.move_to_end(occasion_id)
+                context = contexts[occasion_id]
         except Exception:  # noqa: BLE001 - retrieval must never fail the graph
             logger.debug("LangGraph memory retrieval failed; continuing without injection", exc_info=True)
             context = None
@@ -121,9 +179,20 @@ def create_pre_model_hook(
     return hook
 
 
-def record_outcome(memory: CausalMemory, config: dict[str, Any] | None, *, succeeded: bool) -> bool:
+def record_outcome(
+    memory: CausalMemory, config: dict[str, Any] | None, *, succeeded: bool,
+    state: dict[str, Any] | None = None,
+    recall_kwargs: Callable[[dict[str, Any] | None], dict[str, Any]] | None = None,
+) -> bool:
+    """Report a hook turn's outcome with ``state``, or legacy with_lessons thread.
+
+    If the hook forwards scope using ``recall_kwargs``, pass the same callback
+    here. Final graph state preserves the human message ID across tool calls.
+    """
     try:
-        occasion_id = thread_id(config)
-    except ValueError:
+        occasion_id = thread_id(config) if state is None else turn_occasion_id(
+            state, config, scope=recall_kwargs(config) if recall_kwargs is not None else None,
+        )
+    except (ValueError, TypeError, KeyError):
         return False
     return memory.record_outcome(occasion_id, succeeded=succeeded)

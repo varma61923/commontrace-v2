@@ -60,6 +60,8 @@ CREATE TABLE IF NOT EXISTS captures(sequence INTEGER PRIMARY KEY AUTOINCREMENT,i
  body TEXT,scope TEXT);
 CREATE INDEX IF NOT EXISTS capture_session ON captures(session,sequence);
 CREATE TABLE IF NOT EXISTS cursors(session TEXT PRIMARY KEY,through INTEGER);
+CREATE TABLE IF NOT EXISTS scoped_cursors(session TEXT,scope TEXT,through INTEGER,
+ PRIMARY KEY(session,scope));
 CREATE TABLE IF NOT EXISTS injected(session TEXT,id TEXT,PRIMARY KEY(session,id));
 CREATE TABLE IF NOT EXISTS decisions(session TEXT,id TEXT,PRIMARY KEY(session,id));
 CREATE TABLE IF NOT EXISTS studies(id TEXT PRIMARY KEY,scope TEXT,actor TEXT,remaining INTEGER,
@@ -316,33 +318,83 @@ class Journal:
             return {"id": identity, "sequence": row[0], "event": row[2], "payload": json.loads(row[3]), "scope": scope}
 
     def buffer(self, session: str, *, scope: dict, limit=128) -> list[dict]:
+        through = self._cursor_through(session, scope)
         with self.connect() as db:
             return [
                 {"sequence": row[0], "id": row[1], "event": row[2], "payload": json.loads(row[3])}
                 for row in db.execute(
-                    "SELECT sequence,id,event,body FROM captures WHERE session=? AND scope=? "
-                    "AND sequence>COALESCE((SELECT through FROM cursors WHERE session=?),0) "
+                    "SELECT sequence,id,event,body FROM captures WHERE session=? AND scope=? AND sequence>? "
                     "ORDER BY sequence LIMIT ?",
-                    (session, json.dumps(scope, sort_keys=True), session, limit),
+                    (session, json.dumps(scope, sort_keys=True), through, limit),
                 )
             ]
 
-    def seal(self, session: str, through: int):
+    def _cursor_through(self, session: str, scope: dict) -> int:
+        scope_key = json.dumps(scope, sort_keys=True)
+        with self.connect() as db:
+            scoped = db.execute(
+                "SELECT through FROM scoped_cursors WHERE session=? AND scope=?", (session, scope_key)
+            ).fetchone()
+            legacy = db.execute("SELECT through FROM cursors WHERE session=?", (session,)).fetchone()
+        if legacy is None:
+            return int(scoped[0]) if scoped else 0
+
+        # Legacy cursors were keyed only by session. Attribute the old watermark
+        # to the scope of the capture it actually sealed; other scopes replay
+        # from zero rather than losing interleaved work.
         with self.connect(write=True) as db:
-            db.execute(
-                "INSERT INTO cursors VALUES(?,?) ON CONFLICT(session) DO UPDATE SET through="
-                "MAX(through,excluded.through)",
-                (session, through),
-            )
+            legacy = db.execute("SELECT through FROM cursors WHERE session=?", (session,)).fetchone()
+            if legacy:
+                through = int(legacy[0])
+                owner = db.execute(
+                    "SELECT scope FROM captures WHERE session=? AND sequence=?", (session, through)
+                ).fetchone()
+                if owner:
+                    db.execute(
+                        "INSERT INTO scoped_cursors(session,scope,through) VALUES(?,?,?) "
+                        "ON CONFLICT(session,scope) DO UPDATE SET through=MAX(through,excluded.through)",
+                        (session, owner[0], through),
+                    )
+                db.execute("DELETE FROM cursors WHERE session=?", (session,))
+            scoped = db.execute(
+                "SELECT through FROM scoped_cursors WHERE session=? AND scope=?", (session, scope_key)
+            ).fetchone()
+            return int(scoped[0]) if scoped else 0
+
+    def seal(self, session: str, through: int, *, scope: dict | None = None):
+        with self.connect(write=True) as db:
+            if scope is None:
+                owner = db.execute(
+                    "SELECT scope FROM captures WHERE session=? AND sequence=?", (session, through)
+                ).fetchone()
+                scope = json.loads(owner[0]) if owner else None
+            if scope is None:
+                db.execute(
+                    "INSERT INTO cursors VALUES(?,?) ON CONFLICT(session) DO UPDATE SET through="
+                    "MAX(through,excluded.through)",
+                    (session, through),
+                )
+            else:
+                scope_key = json.dumps(scope, sort_keys=True)
+                owner = db.execute(
+                    "SELECT scope FROM captures WHERE session=? AND sequence=?", (session, through)
+                ).fetchone()
+                if owner and owner[0] != scope_key:
+                    raise ValueError("cursor scope must match the sealed capture")
+                db.execute(
+                    "INSERT INTO scoped_cursors(session,scope,through) VALUES(?,?,?) "
+                    "ON CONFLICT(session,scope) DO UPDATE SET through=MAX(through,excluded.through)",
+                    (session, scope_key, through),
+                )
 
     def closed_boundary(self, session: str, *, scope: dict) -> dict | None:
+        through = self._cursor_through(session, scope)
         with self.connect() as db:
             row = db.execute(
                 "SELECT sequence,id,event,body FROM captures WHERE session=? AND scope=? "
-                "AND event IN ('Stop','SessionEnd','SubagentStop') "
-                "AND sequence>COALESCE((SELECT through FROM cursors WHERE session=?),0) "
+                "AND event IN ('Stop','SessionEnd','SubagentStop') AND sequence>? "
                 "ORDER BY sequence LIMIT 1",
-                (session, json.dumps(scope, sort_keys=True), session),
+                (session, json.dumps(scope, sort_keys=True), through),
             ).fetchone()
             return {"sequence": row[0], "id": row[1], "event": row[2], "payload": json.loads(row[3])} if row else None
 

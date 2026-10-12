@@ -257,6 +257,24 @@ class PostgresSnapshots:
                                  lease.target_revision, lease.generation, lease.full):
                 await self._remove_build(db, lease.token)
 
+    async def erase(self, keys: Iterable[str]) -> int:
+        """Privacy erasure removes history and revokes earlier private builds."""
+        deleted = snapshot_deletes(keys)
+        if not deleted:
+            return 0
+        async with self._pool.acquire() as db, db.transaction():
+            await self._locked(db)
+            removed = await db.fetchval(
+                "WITH erased AS (DELETE FROM commontrace_vector_versions WHERE tenant=$1 AND namespace=$2 "
+                "AND model=$3 AND dimension=$4 AND key=ANY($5::text[]) RETURNING 1) SELECT count(*) FROM erased",
+                *self._scope, deleted,
+            )
+            await db.execute("DELETE FROM commontrace_vector_builds WHERE tenant=$1 AND namespace=$2 "
+                             "AND model=$3 AND dimension=$4", *self._scope)
+            await db.execute("DELETE FROM commontrace_vector_stages WHERE tenant=$1 AND namespace=$2 "
+                             "AND model=$3 AND dimension=$4", *self._scope)
+        return int(removed)
+
     async def pin(self, generation: str, *, lease_seconds: float = 60) -> ReadLease:
         _generation(generation)
         duration = lease_duration(lease_seconds)

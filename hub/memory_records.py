@@ -7,27 +7,53 @@ Canonical records are revalidated after every ANN lookup, including erasure.
 from __future__ import annotations
 
 import html
+import logging
 import math
 import uuid
 from dataclasses import replace
+from datetime import datetime, timezone
 
-from sqlalchemy import delete, or_, select, text
+from sqlalchemy import DateTime, cast, delete, func, or_, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 
 from commontrace import memory_guard
-from commontrace.memory_record import MemoryRecord, facet_observation, preference_candidates, preference_statistics
+from commontrace.fact_evidence import MAX_CHECKS, EvidenceResolver
+from commontrace.memory_record import (
+    MemoryRecord,
+    atomic_fact_from_record,
+    facet_observation,
+    preference_candidates,
+    preference_statistics,
+    rerank_profile_results,
+)
 from commontrace.record_visibility import bind_capture_sources, now, sanitize_record_content, visible
 from hub import audit
 from hub.db import session_scope
+from hub.memory_vector_events import append_change, redact_changes
 from hub.models import MemoryRecordEvent, MemoryRecordProjection, MemoryVectorErasure
+
+_VECTOR_CANDIDATE_BATCH = 500
+_ATOMIC_FACT_FORMAT = "commontrace.atomic-fact.v1"
+
+
+class _HostedEvidenceResolver(EvidenceResolver):
+    """Resolve hosted fact evidence without reading an unrelated local lesson store."""
+
+    def _lesson(self, identity):
+        # Hosted lessons need their own typed, tenant-scoped receipt before they
+        # can support an AtomicFact. A local filesystem lesson is never authority
+        # for a server-side record.
+        self._lessons[identity] = None
+        return None
 
 
 class PostgresJournal:
-    def __init__(self, session_factory, org_id: str, *, vector_index=None):
+    def __init__(self, session_factory, org_id: str, *, vector_index=None, projection_factory=None):
         if not org_id or vector_index is not None and vector_index.tenant != org_id:
             raise ValueError("vector and record owners must match authenticated tenancy")
         self.factory, self.org_id, self.vector_index = session_factory, org_id, vector_index
+        self.projection_factory = projection_factory
 
     async def put(self, record: MemoryRecord) -> MemoryRecord:
         if record.scope.get("tenant", self.org_id) != self.org_id:
@@ -35,6 +61,8 @@ class PostgresJournal:
         record = bind_capture_sources(
             replace(sanitize_record_content(record), scope={**record.scope, "tenant": self.org_id})
         )
+        if "atomic_fact_format" in record.provenance:
+            atomic_fact_from_record(record)
         try:
             async with session_scope(self.factory, org_id=self.org_id) as session:
                 await self._lock_owner(session)
@@ -88,17 +116,20 @@ class PostgresJournal:
         session.add(
             MemoryRecordEvent(org_id=self.org_id, id=record.id, version=record.version, record=record.to_dict())
         )
+        change_seq = await append_change(session, self.org_id, record)
         statement = insert(MemoryRecordProjection).values(
             org_id=self.org_id,
             id=record.id,
             version=record.version,
+            change_seq=change_seq,
             record=record.to_dict(),
             scope=record.scope,
         )
         await session.execute(
             statement.on_conflict_do_update(
                 index_elements=["org_id", "id"],
-                set_={"version": record.version, "record": record.to_dict(), "scope": record.scope},
+                set_={"version": record.version, "change_seq": change_seq,
+                      "record": record.to_dict(), "scope": record.scope},
             )
         )
 
@@ -136,6 +167,52 @@ class PostgresJournal:
             observation = facet_observation(entity, facet, sources, previous=MemoryRecord(**old.record))
         await self._put(session, observation)
 
+    async def _hosted_evidence_resolver(self, session, roots, context, *, at):
+        """Load the bounded, visible fact dependency closure for one search."""
+        facts, invalid, pending = {}, set(), set()
+
+        def decode(record):
+            if record.provenance.get("atomic_fact_format") != _ATOMIC_FACT_FORMAT:
+                return
+            if not visible(record, context, at=at):
+                invalid.add(record.id)
+                return
+            try:
+                fact = atomic_fact_from_record(record)
+            except (TypeError, ValueError):
+                invalid.add(record.id)
+                return
+            facts[record.id] = fact
+            if fact.evidence_bound:
+                pending.update(receipt.source_id for receipt in fact.evidence if receipt.kind == "fact")
+
+        for record in roots:
+            decode(record)
+
+        seen = set(facts) | invalid
+        while pending and len(seen) < MAX_CHECKS:
+            requested = sorted(pending - seen)
+            pending.clear()
+            if not requested:
+                break
+            requested = requested[: MAX_CHECKS - len(seen)]
+            seen.update(requested)
+            for start in range(0, len(requested), _VECTOR_CANDIDATE_BATCH):
+                rows = (await session.execute(
+                    select(MemoryRecordProjection).where(
+                        MemoryRecordProjection.org_id == self.org_id,
+                        MemoryRecordProjection.id.in_(requested[start:start + _VECTOR_CANDIDATE_BATCH]),
+                        MemoryRecordProjection.scope.op("<@")(context),
+                        MemoryRecordProjection.record.contains({
+                            "kind": "fact",
+                            "provenance": {"atomic_fact_format": _ATOMIC_FACT_FORMAT},
+                        }),
+                    )
+                )).scalars().all()
+                for row in rows:
+                    decode(MemoryRecord(**row.record))
+        return _HostedEvidenceResolver("", facts), invalid
+
     async def search(self, query: str, *, scope: dict, limit=20, vector=None, kinds=()) -> list[MemoryRecord]:
         if not isinstance(limit, int) or isinstance(limit, bool) or not 0 <= limit <= 1000:
             raise ValueError("record result limit must be in 0..1000")
@@ -143,7 +220,23 @@ class PostgresJournal:
             return []
         context = {**scope, "tenant": self.org_id}
         reference = now()
+        projected_hits = None
+        projection_cursor = None
+        if vector is None and query.strip() and self.projection_factory is not None:
+            try:
+                async with self.projection_factory.acquire(self.org_id) as projection:
+                    if projection.org_id != self.org_id:
+                        raise ValueError("projection owner cannot override authenticated organization")
+                    await projection.drain(limit=128)
+                    projection_cursor, projected_hits = await projection.candidates(
+                        query, top_k=max(100, limit * 5))
+            except Exception as exc:  # noqa: BLE001 - optional dense failure preserves lexical retrieval
+                logging.getLogger(__name__).debug("Hosted dense fallback: %s", type(exc).__name__)
         async with session_scope(self.factory, org_id=self.org_id) as session:
+            if self.projection_factory is not None:
+                # Keep candidate hydration and recursive proof checks on one
+                # tenant revision while writes and erasures use the same fence.
+                await self._lock_owner(session)
             from sqlalchemy import func
 
             statement = select(MemoryRecordProjection).where(
@@ -164,23 +257,56 @@ class PostgresJournal:
             found = {row.id: MemoryRecord(**row.record) for row in rows}
             sparse_order = list(found)
             dense_order = []
-            if vector is not None and self.vector_index is not None:
-                hits = await self.vector_index.search(vector, top_k=max(100, limit * 5))
+            if projected_hits is not None or vector is not None and self.vector_index is not None:
+                hits = projected_hits if projected_hits is not None else await self.vector_index.search(
+                    vector, top_k=max(100, limit * 5))
+                hit_ids = list(dict.fromkeys(hit.key for hit in hits))
+                dense_records: dict[str, MemoryRecord] = {}
+                for start in range(0, len(hit_ids), _VECTOR_CANDIDATE_BATCH):
+                    group = hit_ids[start:start + _VECTOR_CANDIDATE_BATCH]
+                    dense_statement = select(MemoryRecordProjection).where(
+                        MemoryRecordProjection.org_id == self.org_id,
+                        MemoryRecordProjection.id.in_(group),
+                        MemoryRecordProjection.scope.op("<@")(context),
+                        MemoryRecordProjection.record.contains({"status": "active", "is_latest": True}),
+                    )
+                    if projection_cursor is not None:
+                        dense_statement = dense_statement.where(
+                            MemoryRecordProjection.change_seq <= projection_cursor)
+                    if kinds:
+                        dense_statement = dense_statement.where(
+                            MemoryRecordProjection.record["kind"].astext.in_(list(kinds)))
+                    dense_rows = (await session.execute(dense_statement)).scalars().all()
+                    dense_records.update((row.id, MemoryRecord(**row.record)) for row in dense_rows)
                 for hit in hits:
-                    row = await session.get(MemoryRecordProjection, (self.org_id, hit.key))
-                    record = MemoryRecord(**row.record) if row else None
-                    if record and (not kinds or record.kind in kinds) and visible(record, context, at=reference):
+                    record = dense_records.get(hit.key)
+                    if record and visible(record, context, at=reference):
                         found[record.id] = record
                         dense_order.append(record.id)
-            ranks = {}
+            atomic_roots = [
+                record for record in found.values()
+                if record.provenance.get("atomic_fact_format") == _ATOMIC_FACT_FORMAT
+            ]
+            evidence_resolver, invalid_atomic = None, set()
+            if atomic_roots:
+                evidence_resolver, invalid_atomic = await self._hosted_evidence_resolver(
+                    session, atomic_roots, context, at=reference
+                )
+            ranks: dict[str, float] = {}
             for order in (sparse_order, dense_order):
                 for rank, identity in enumerate(order, 1):
                     ranks[identity] = ranks.get(identity, 0) + 1 / (60 + rank)
-            checked = {}
+            checked: dict[str, bool] = {}
 
             async def grounded(record, trail=frozenset()):
                 if record.id in trail or len(trail) >= 64 or not visible(record, context, at=reference):
                     return False
+                if record.provenance.get("atomic_fact_format") == _ATOMIC_FACT_FORMAT:
+                    if evidence_resolver is None or record.id in invalid_atomic:
+                        return False
+                    assessment = evidence_resolver.assess(record.id)
+                    if not assessment.eligible:
+                        return False
                 if record.id in checked:
                     return checked[record.id]
                 for identity in record.relations.get("derives", []):
@@ -255,7 +381,9 @@ class PostgresJournal:
                     await self._put(session, record)
         return episode
 
-    async def runtime_profile(self, query: str, *, scope: dict, limit=10, occasion_id=None):
+    async def runtime_profile(
+        self, query: str, *, scope: dict, limit=10, occasion_id=None, include_preference_rankers=False
+    ):
         from commontrace.record_visibility import moment
 
         if type(limit) is not int or not 0 <= limit <= 1000:
@@ -270,6 +398,8 @@ class PostgresJournal:
             "withheld": [],
             "recent_activity": [],
         }
+        if include_preference_rankers:
+            result["preference_rankers"] = []
         for record in rows:
             if record.kind == "directive":
                 result["directives"].append(record.to_dict())
@@ -296,14 +426,22 @@ class PostgresJournal:
                 continue
             weight *= 1 if bucket == "static" else 2 ** (-age / half_life)
             if len(result[bucket]) < limit:
-                result[bucket].append(
-                    {
-                        "id": record.id,
-                        "text": data.get("text", ""),
-                        "weight": weight,
-                        "critical": bool(data.get("critical")),
-                    }
-                )
+                entry = {
+                    "id": record.id,
+                    "text": data.get("text", ""),
+                    "weight": weight,
+                    "critical": bool(data.get("critical")),
+                }
+                result[bucket].append(entry)
+                if (
+                    include_preference_rankers
+                    and bucket == "dynamic"
+                    and data.get("author") == "user"
+                    and record.provenance.get("authored_by") == "user"
+                    and isinstance(data.get("source_message_ids"), list)
+                    and any(isinstance(identity, str) and identity for identity in data["source_message_ids"])
+                ):
+                    result["preference_rankers"].append({**entry, "bucket": bucket, "author": "user"})
         return result
 
     async def runtime_turn(
@@ -315,11 +453,15 @@ class PostgresJournal:
         source = await self.capture_turn(
             session_id, query, text_value=text_value, scope=scope, event=event, payload=payload
         )
-        profile = await self.runtime_profile(query, scope=scope, limit=10)
+        profile = await self.runtime_profile(query, scope=scope, limit=10, include_preference_rankers=True)
         records = await self.search(query, scope=scope, limit=20)
+        ranked_records = rerank_profile_results(
+            [record.to_dict() for record in records], profile["preference_rankers"]
+        )
         # Mandatory owner rules and explicit preferences do not require inferred relevance.
         # Sparse-only candidates remain visible in results, without guessed dense agreement or causal exposure.
-        lines, identities = [], []
+        lines: list[str] = []
+        identities: list[str] = []
         fixed = [
             *profile["directives"],
             *(
@@ -374,14 +516,72 @@ class PostgresJournal:
             "buffer": buffer,
             "session_id": session_id,
             "scope": source.scope,
-            "results": [record.to_dict() for record in records],
+            "results": ranked_records,
         }
 
-    async def forget(self, identity: str, *, reason: str) -> dict:
-        if not reason.strip():
+    async def reap_due(self, *, limit: int = 16) -> list[dict]:
+        """Erase a bounded batch of tenant-owned records whose forget_after has passed."""
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError("expiration batch must be in 1..100")
+        expires_at = cast(
+            func.nullif(MemoryRecordProjection.record["payload"]["forget_after"].astext, ""),
+            DateTime(timezone=True),
+        )
+        async with session_scope(self.factory, org_id=self.org_id) as session:
+            # Match record_visibility.moment(): naive ISO timestamps mean UTC.
+            await session.execute(text("SET LOCAL TIME ZONE 'UTC'"))
+            rows = (
+                await session.execute(
+                    select(
+                        MemoryRecordProjection.id,
+                        MemoryRecordProjection.version,
+                        MemoryRecordProjection.record,
+                    )
+                    .where(
+                        MemoryRecordProjection.org_id == self.org_id,
+                        expires_at <= datetime.now(timezone.utc),
+                    )
+                    .order_by(expires_at, MemoryRecordProjection.id)
+                    .limit(limit)
+                )
+            ).all()
+
+        results = []
+        for identity, version, body in rows:
+            record = MemoryRecord(**body)
+            if record.version != version:
+                raise ValueError("expiration projection version is inconsistent")
+            reason = record.payload.get("forget_reason")
+            if not isinstance(reason, str) or not reason.strip():
+                raise ValueError("expiration requires a reason")
+            try:
+                results.append(
+                    await self.forget(identity, reason=reason, expected_version=version)
+                )
+            except ValueError as exc:
+                if str(exc) != "expiration record version changed":
+                    raise
+        return results
+
+    async def forget(
+        self, identity: str, *, reason: str, expected_version: int | None = None
+    ) -> dict:
+        if not isinstance(reason, str) or not reason.strip():
             raise ValueError("erasure requires a reason")
+        if expected_version is not None and (
+            type(expected_version) is not int or expected_version < 1
+        ):
+            raise ValueError("expected version must be a positive integer")
         async with session_scope(self.factory, org_id=self.org_id) as session:
             await self._lock_owner(session)
+            if expected_version is not None:
+                current = await session.get(
+                    MemoryRecordProjection,
+                    (self.org_id, identity),
+                    with_for_update=True,
+                )
+                if current is None or current.version != expected_version:
+                    raise ValueError("expiration record version changed")
             rows = (
                 (await session.execute(select(MemoryRecordEvent).where(MemoryRecordEvent.org_id == self.org_id)))
                 .scalars()
@@ -404,6 +604,17 @@ class PostgresJournal:
                 derived = sources | {
                     row.id for row in rows if any(set(ids) & deleted for ids in row.record["relations"].values())
                 }
+                # Evidence receipts are causal links too. Retire and erase a
+                # derived fact when any fact or lesson it cites is forgotten.
+                evidence_derived = {
+                    row.id for row in rows
+                    if row.record["provenance"].get("atomic_fact_format") == _ATOMIC_FACT_FORMAT
+                    and any(
+                        isinstance(receipt, dict) and receipt.get("source_id") in deleted
+                        for receipt in row.record["payload"].get("evidence", [])
+                    )
+                }
+                derived |= evidence_derived
                 if derived <= deleted:
                     break
                 deleted |= derived
@@ -413,9 +624,17 @@ class PostgresJournal:
                     .values([{"org_id": self.org_id, "record_id": value} for value in sorted(deleted)])
                     .on_conflict_do_nothing()
                 )
+            await redact_changes(session, self.org_id, deleted)
+            versions: dict[str, int] = {}
+            for row in rows:
+                versions[row.id] = max(versions.get(row.id, 0), row.version)
+            for removed in sorted(deleted):
+                await append_change(session, self.org_id, None, record_id=removed,
+                                    version=versions.get(removed, 1))
             for model in (MemoryRecordProjection, MemoryRecordEvent):
                 await session.execute(delete(model).where(model.org_id == self.org_id, model.id.in_(deleted)))
-            result = {"deleted": sorted(deleted), "reason": memory_guard.redact_secrets(reason)[0], "at": now()}
+            safe_reason = memory_guard.sanitize_metadata({"reason": reason}, pii=True)[0]["reason"]
+            result = {"deleted": sorted(deleted), "reason": safe_reason, "at": now()}
             await audit.record(
                 session,
                 actor="memory-erasure",
@@ -423,10 +642,21 @@ class PostgresJournal:
                 org_id=self.org_id,
                 target_type="memory",
                 target_id=identity,
-                summary="records=" + str(len(deleted)),
+                summary="records=" + str(len(deleted)) + " reason=" + safe_reason,
             )
         if self.vector_index is not None:
             result["vector_cleanup"] = await self.retry_vector_erasures()
+        if self.projection_factory is not None:
+            try:
+                if hasattr(self.projection_factory, "erase_records"):
+                    result["vector_cleanup"] = await self.projection_factory.erase_records(self.org_id, sorted(deleted))
+                else:
+                    async with self.projection_factory.acquire(self.org_id) as projection:
+                        completed = await projection.erase_records(sorted(deleted))
+                    result["vector_cleanup"] = {"completed": completed, "pending": False}
+            except Exception:  # noqa: BLE001 - committed tombstones retain cleanup work for every projection
+                result["vector_cleanup"] = {"completed": 0, "pending": True,
+                                            "reason": "vector cleanup retry required"}
         return result
 
     async def retry_vector_erasures(self, *, limit=256) -> dict:
@@ -480,9 +710,14 @@ def add_memory_routes(app, session_factory, *, authenticate, require_scope):
         action = request.path_params["operation"].removeprefix("record-")
         authenticated, denied = await authenticate(request)
         if denied is None:
-            denied = require_scope(
-                authenticated, scopes.SCOPE_READ if action in ("search", "profile") else scopes.SCOPE_WRITE
+            required_scope = (
+                scopes.SCOPE_ADMIN
+                if action == "reap-due"
+                else scopes.SCOPE_READ
+                if action in ("search", "profile")
+                else scopes.SCOPE_WRITE
             )
+            denied = require_scope(authenticated, required_scope)
         if denied is None and action == "turn":
             denied = require_scope(authenticated, scopes.SCOPE_READ)
         if denied is not None:
@@ -497,7 +732,15 @@ def add_memory_routes(app, session_factory, *, authenticate, require_scope):
             from commontrace.api_schema import validate_request
 
             name = request.path_params["operation"]
-            if name in ("record-put", "record-search", "record-forget", "turn", "profile", "search"):
+            if name in (
+                "record-put",
+                "record-search",
+                "record-forget",
+                "record-reap-due",
+                "turn",
+                "profile",
+                "search",
+            ):
                 validate_request(name, payload)
             if "context" in payload:
                 context = payload["context"]
@@ -515,7 +758,8 @@ def add_memory_routes(app, session_factory, *, authenticate, require_scope):
                 if labels:
                     scope["labels"] = sorted(labels)
                 payload["scope"] = scope
-            store = PostgresJournal(session_factory, authenticated.org_id)
+            store = PostgresJournal(session_factory, authenticated.org_id,
+                projection_factory=getattr(app.state, "memory_projection_factory", None))
             if action == "turn":
                 return JSONResponse(
                     await store.runtime_turn(
@@ -565,6 +809,8 @@ def add_memory_routes(app, session_factory, *, authenticate, require_scope):
                     if row is not None and row.scope != context:
                         raise PermissionError("only the owning scoped principal can erase this record")
                 return JSONResponse(await store.forget(payload["id"], reason=payload["reason"]))
+            if action == "reap-due":
+                return JSONResponse({"results": await store.reap_due(limit=payload.get("limit", 16))})
             return JSONResponse({"error": "unknown_operation"}, status_code=404)
         except PermissionError as exc:
             return JSONResponse({"error": "forbidden", "detail": str(exc)}, status_code=403)

@@ -11,6 +11,7 @@ import os
 import socket
 import sys
 import time
+import uuid
 
 EVENTS = (
     "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure",
@@ -156,7 +157,6 @@ def _capture(args, payload):
 
 
 def _exchange(args, scope, payload):
-    connected = False
     if not hasattr(socket, "AF_UNIX"):
         _capture(args, payload)
         return False
@@ -165,7 +165,6 @@ def _exchange(args, scope, payload):
             deadline = time.monotonic() + RESPONSE_SECONDS
             _remaining(client, deadline)
             client.connect(os.path.join(args.dest, "memory", "hooks.sock"))
-            connected = True
             request = {"agent": args.agent_id, "scope": scope, "event": args.event,
                        "format": args.format, "payload": payload}
             _remaining(client, deadline)
@@ -202,9 +201,12 @@ def _exchange(args, scope, payload):
                 except OSError:
                     pass
             return True
-        except OSError:
-            if not connected:
-                _capture(args, payload)
+        except (OSError, ValueError, TypeError, RecursionError):
+            # A broker can accept a frame and then disappear before its durable
+            # capture or reply. Retry capture through the detached writer for any
+            # failed exchange. The shared event_id makes this safe when the broker
+            # committed the capture just before the response failed.
+            _capture(args, payload)
             raise
 
 
@@ -222,6 +224,10 @@ def main(argv=None):
         payload, scope = json.loads(raw), json.loads(args.scope)
         if not isinstance(payload, dict) or not isinstance(scope, dict):
             raise ValueError("host payload and scope must be objects")
+        payload = dict(payload)
+        event_id = payload.get("event_id")
+        if not isinstance(event_id, str) or not event_id or len(event_id) > 256:
+            payload["event_id"] = uuid.uuid4().hex
         if _exchange(args, scope, payload):
             return 0
     except TimeoutError:

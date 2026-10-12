@@ -38,8 +38,11 @@ that record for Bob, and fail-open behavior when the memory store raises. A
 separate import test blocks all Google imports and checks that importing this
 adapter creates no memory store.
 
-This is a component contract test, not a live ADK run. It covers textual user
-parts only. It does not implement ADK `BaseMemoryService`, save completed
-assistant responses, or deduplicate repeated before-model callback invocations
-within an ADK tool loop. The callback's `MemoryClient` store is supplied by the
+The paired `after_agent_callback(memory)` captures text from the current ADK
+invocation and agent through `Middleware.after_run`, preserving the original
+ADK response. A provider-free live `LlmAgent` smoke with ADK's official
+`InMemoryRunner` and `MockModel` validates injection, user capture and
+`SessionEnd` result capture; see the [runtime evidence note](next-generation-google-adk-runtime.md).
+This does not measure provider transport, answer quality, multi-agent
+orchestration or hook latency. The `MemoryClient` store is supplied by the
 caller, and external stores still need their normal lifecycle/provisioning.

@@ -312,6 +312,21 @@ store, gateway). The reference answers are in `protocol/conformance/vectors.json
 first three functions, written from this section alone, is in `protocol/conformance/examples/go`. An
 implementation may cover a subset (`--only assign,ledger,digest`) and says which.
 
+The optional policies in sections 14–18 have separate, explicitly opted-in
+reference checks. From the repository root, run:
+
+```bash
+python -m pytest tests/test_memory_record.py tests/test_retrieval_policy_vectors.py tests/test_conformance_extensions.py -q
+```
+
+This command runs committed extension vectors against the reference runtime
+using isolated temporary stores and deterministic providers. It requires the
+repository's test dependencies (including `jsonschema` for envelope schema
+checks). The causal CLI retains its v1 operation set and does not imply that
+these extensions passed. Other implementations can consume the JSON vectors
+without adopting Python; the runtime scenarios describe store and delivery
+semantics rather than additional causal stdio operations.
+
 **13.1 Assignment.** Whether memory `lesson` is withheld on occasion `occasion` in the experiment named `salt` at
 holdout rate `rate`:
 `rate <= 0` is never; `rate >= 1` is always; otherwise
@@ -367,10 +382,10 @@ time. `is_latest` is evaluated against the committed history. Historical event
 payloads are immutable; an envelope written with `is_latest: true` describes the
 state at that event, not a promise that it stays current forever. A current read
 must exclude non-latest, forgotten, expired and inadmissible records unless an
-explicit historical/governance operation allows them. Status remains an open
-vocabulary to preserve legacy states (`invalidated`, `deleted`, `superseded`).
-Proposed, quarantined, shadow, active, deprecated and retired states can be
-represented without changing the envelope.
+explicit historical/governance operation allows them. The envelope status is
+one of `proposed`, `quarantined`, `shadow`, `active`, `deprecated` or `retired`.
+Legacy payload states (`invalidated`, `deleted`, `superseded`) remain inside
+`payload`; they do not extend the envelope's status vocabulary.
 
 Local fact storage can opt into an append-only transactional event ledger.
 Materialized facts, dedup postings, contradiction slots and search indexes must
@@ -380,9 +395,10 @@ preserve the old source and publish a checksum of normalized source and target
 facts; a malformed or duplicate-id source row must abort activation.
 
 Extension vectors are in `conformance/memory-record-vectors.json` and exercised
-by `tests/test_memory_record.py`, independently of the v1 vector set. This phase
-implements fact envelopes; it does not claim migration of other memory kinds,
-automatic lesson activation or a new hosted API.
+by `tests/test_memory_record.py`, independently of the v1 vector set. The local
+record journal and hosted record API use this envelope for all seven kinds;
+this does not imply automatic migration of every legacy store or automatic
+lesson activation.
 
 ## 15. Optional hybrid retrieval policy
 
@@ -423,3 +439,141 @@ bridges, expiry, facet retention and grounded core selection through
 `tests/test_retrieval_policy_vectors.py`. These deterministic policy vectors
 measure correctness only; they do not establish model answer quality, model
 availability, or latency at a million records.
+
+## 16. Optional record expiration and erasure
+
+An envelope may schedule erasure with `payload.forget_after`, an ISO 8601
+timestamp, and a nonblank `payload.forget_reason`. These are additive payload
+fields, not new top-level envelope properties. A timestamp without an offset
+is interpreted as UTC. Current retrieval excludes the record at or after that
+instant, even before physical cleanup runs. Valid-time end and retraction are
+also exclusive boundaries; valid-time start is inclusive. All declared scope
+dimensions must match, and requested labels must include the record's labels.
+
+`record-reap-due` accepts an optional integer `limit` in 1..100 (default 16)
+and returns `results`, an array of erasure receipts. The limit bounds selected
+due roots; one root can erase additional dependent records. Reaping uses the
+selected version: a concurrent revision cannot be erased using an obsolete
+expiration decision. Cleanup removes record history and derived records and
+their vectors through the store's hard-erasure path, retaining a redacted audit
+receipt with `at`, `deleted` ids and `reason`. Due roots can disappear through
+an earlier root's cascade, so fewer receipts than the limit is permitted.
+Local reaping requires the trusted owner; the hosted operation requires an
+admin credential and limits selection and erasure to its tenant. Physical
+cleanup does not promise removal from owner-managed backups.
+
+`conformance/governance-vectors.json` and
+`tests/test_conformance_extensions.py` exercise shared admission boundaries,
+local version races and cascading erasure. They do not certify hosted database
+execution or backup retention.
+
+## 17. Optional just-in-time injection policy
+
+The portable hook core accepts session start, prompt submission, pre-tool,
+post-tool failure, pre-compaction, subagent start/stop and stop/session-end
+events. Native adapters expose only events supported by their host; a generated
+core manifest is not evidence that a host supports every event.
+
+Ordinary relevance-gated candidates need positive BM25 support and dense cosine
+at least 0.6, then RRF k=60 at least 0.012 and at least 93% of the best fused
+score. Trigger event, tool, error substring and path substring restrictions
+must also match when present. Active directives and critical profiles use
+always-inject slots, still subject to scope, safety and budget admission.
+Quarantined records never enter injected context. Unauthorised shadow records
+can be logged as counterfactual matches but are not shown; a reviewed,
+revision-bound, expiring evaluation authorization can permit a limited number
+of randomized shadow-study occasions. Offline replay priors alone cannot
+authorize exposure or promotion.
+
+Capture and rendering redact secrets and PII. Context is escaped and framed
+as read-only data inside a delimited `memory_update` block, with the rendered
+block included in the budget. The reference renderer conservatively bounds
+UTF-8 bytes to four times the requested budget; this is not a tokenizer-specific
+token count. Delivery claims are session-scoped and inherited
+only within the same principal's scope. Ordinary events skip delivered items;
+pre-compaction may carry them again without creating another causal decision.
+A deferred offer records exposure only after acknowledgement; an empty budget
+or timeout cannot create a false exposure. Adapter failures and exhausted hook
+deadlines yield no injection. Provider failure may retain safe always-inject
+items; it does not bypass the dense gate for ordinary candidates.
+
+Injection vectors in `conformance/learning-injection-vectors.json`, exercised
+by `tests/test_conformance_extensions.py`, cover refusal, shadow-only matching,
+budgeting and acknowledged delivery with a deterministic embedding provider.
+They establish policy correctness, not embedding quality or hook latency.
+
+## 18. Optional session learning policy
+
+Reflection processes a closed task boundary using a per-session cursor. An
+open task remains unsealed. The curator proposes at most one operation from
+`create`, `update`, `extend`, `deprecate`, `split` and `none`, with `none` the
+default preference. The writer must explicitly accept or reject non-`none`
+proposals against the offered prior lessons. Prompts contain at most ten prior
+lessons and nine supporting cases. Accepted proposals retain source case ids,
+source revisions and session/trace lineage and begin quarantined; proposing an
+update does not immediately replace the active target.
+
+Curator/writer errors, invalid responses or persistence failures must leave
+unprocessed captures available for retry. Successful rejection or an explicit
+`none` may advance the cursor. Retrying a successful reflection does not create
+another lesson or duplicate its cases. Thin, closed trajectories may be sealed
+without producing a lesson. Explicit review can move a quarantined lesson to
+shadow; replay evidence is a prior, not a causal lift certificate. Promotion and
+retirement remain subject to the existing measured-outcome governance.
+
+Learning vectors in `conformance/learning-injection-vectors.json`, exercised
+by `tests/test_conformance_extensions.py`, cover failed-curator/failed-writer
+retry, explicit rejection, quarantine and idempotent reflection. They do not
+establish lesson usefulness, causal lift or model extraction quality. Sections
+16–18 leave the section 13 v1 operations and vectors unchanged.
+
+## 19. Optional lossless AtomicFact bridge
+
+An implementation may opt a legacy AtomicFact into the section 14 envelope
+using `provenance.atomic_fact_format: "commontrace.atomic-fact.v1"`. The marker
+is required: an ordinary record with `kind: "fact"` is not implicitly an
+AtomicFact. Unsupported marker versions must be rejected. This extension does
+not change the existing local fact wire format or migrate existing journals.
+
+The payload contains **every** field of the original AtomicFact wire object,
+including its original scope array and order, evidence receipts and policy,
+revision strings, origin, valid/transaction timestamps, expiry, forgotten flag
+and legacy status. A single additional `text` field must equal `statement` so
+the shared search path can index it. Missing or unknown fields, coercible but
+incorrect types, non-finite numbers, non-JSON origins and malformed receipts
+must be rejected rather than normalized or silently discarded. Blank legacy
+timestamps and revision strings remain blank; the bridge must not invent a
+recording time, revision, confirmation count or evidence assertion.
+
+Envelope id, confidence, created time, valid start, retraction time and evidence
+must match the original payload. Envelope `valid_until` is the earlier instant
+of payload `valid_until` and `expires_at`, when present; equal instants retain
+the original `valid_until` spelling. Naive timestamps mean UTC. Both original
+strings remain unchanged in the payload. Expiry hides current reads and does
+**not** set `forget_after` or authorize hard erasure. Explicit history remains
+available under its existing authorization policy.
+
+The envelope is active only when the payload status is `active` and
+`forgotten` is false. Payload `retired` maps to envelope `retired`;
+`superseded`, `invalidated`, `deleted` and forgotten facts map to `deprecated`.
+Original payload statuses remain intact and do not extend the six envelope
+states. Envelope version is an independent positive integer, not a
+replacement for the original fact's content/evidence revisions.
+
+Scope labels starting with `tenant:`, `user:`, `agent:`, `session:` or `repo:`
+map to their envelope dimension. Empty values or conflicting values for the
+same dimension are rejected. Repeated identical labels remain in the original
+array; other labels map to `scope.labels` in original order. A hosted tenant
+may be added when the original array has no tenant, but must agree with any
+tenant already present. The decoder must reject scope or lifecycle mirrors
+that disagree with the payload. Scope representation alone never grants
+authorization. `provenance.source_traces` mirrors the original source array.
+
+The reference APIs are `atomic_fact_record(fact, version, tenant=...)` and
+`atomic_fact_from_record(record)`. The latter reconstructs the original
+AtomicFact without migration coercion. Bridge vectors in
+`conformance/atomic-fact-vectors.json` are exercised independently with
+`python -m pytest tests/test_atomic_fact_envelope.py -q`. They establish wire
+fidelity and refusal behavior, not hosted evidence admissibility, extraction
+quality or storage performance. Sections 1–18 and the causal v1 vectors remain
+unchanged by this optional bridge.

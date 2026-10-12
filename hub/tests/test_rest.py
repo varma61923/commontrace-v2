@@ -66,6 +66,47 @@ async def test_memory_runtime_turn_scopes_and_permission_requirements(session_fa
         assert response.status_code == 403
 
 
+async def test_record_expiration_reaper_requires_admin_and_stays_tenant_bound(session_factory, config):
+    from commontrace.memory_record import MemoryRecord
+    from hub import scopes
+    from hub.memory_records import PostgresJournal
+    from hub.models import MemoryRecordProjection
+
+    owner, owner_key = await _org_with_key(session_factory)
+    other, _other_key = await _org_with_key(session_factory)
+    _reader, reader_key = await _org_with_key(session_factory, scopes=[scopes.SCOPE_READ])
+    _writer, writer_key = await _org_with_key(session_factory, scopes=[scopes.SCOPE_WRITE])
+    for org, identity in ((owner, "owned-expired"), (other, "other-expired")):
+        await PostgresJournal(session_factory, org).put(
+            MemoryRecord(
+                identity,
+                "fact",
+                1,
+                {
+                    "text": "tenant expiration",
+                    "forget_after": "2000-01-01T00:00:00Z",
+                    "forget_reason": "retention deadline",
+                },
+            )
+        )
+
+    async with _client(_app(session_factory, config)) as client:
+        response = await client.post(
+            "/v1/memory/record-reap-due", headers=_key(owner_key), json={"limit": 1}
+        )
+        assert response.status_code == 200
+        assert response.json()["results"][0]["deleted"] == ["owned-expired"]
+        denied = await client.post("/v1/memory/record-reap-due", headers=_key(reader_key), json={})
+        assert denied.status_code == 403
+        denied = await client.post("/v1/memory/record-reap-due", headers=_key(writer_key), json={})
+        assert denied.status_code == 403
+
+    async with session_scope(session_factory, org_id=owner) as session:
+        assert await session.get(MemoryRecordProjection, (owner, "owned-expired")) is None
+    async with session_scope(session_factory, org_id=other) as session:
+        assert await session.get(MemoryRecordProjection, (other, "other-expired")) is not None
+
+
 async def _org_with_key(session_factory, name="Acme", scopes=None):
     async with session_scope(session_factory) as session:
         org = Organization(name=name)

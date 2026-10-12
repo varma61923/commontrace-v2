@@ -40,9 +40,13 @@ dynamic weights by `half_life_days` on read.
 
 ## Scope and remaining work
 
-This slice repairs search results for the existing combined turn API. The
-separate `MemoryClient.profile()` operation remains a profile-only endpoint.
-The test exercises the in-process gateway request handler and production turn
-path, not a listening HTTP server. No request-latency or competitor-latency
-claim is measured here. It does not evaluate profile extraction quality,
-always-inject policy, preference-ranking uplift, or large-store behavior.
+This slice repairs search results for the existing combined turn API. A
+follow-up now uses effective user-authored dynamic preference weights to
+rerank only the bounded result list; see
+[the preference-ranking note](next-generation-profile-preference-ranking.md).
+The separate `MemoryClient.profile()` operation remains a profile-only
+endpoint. The test exercises the in-process gateway request handler and
+production turn path, not a listening HTTP server. No request-latency or
+competitor-latency claim is measured here. It does not evaluate profile
+extraction quality, always-inject policy, preference-ranking uplift, or
+large-store behavior.

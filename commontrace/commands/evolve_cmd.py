@@ -21,6 +21,11 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     runtime.add_argument("--agent-id", default="local")
     runtime.add_argument("--context", action="append", default=[])
     runtime.add_argument("--session-id")
+    runtime.add_argument(
+        "--semantic-segments",
+        action="store_true",
+        help="Use bounded LLM boundary detection to split captured sessions into task segments.",
+    )
     runtime.add_argument("--id")
     runtime.add_argument("--actor")
     runtime.add_argument("--reason")
@@ -179,7 +184,9 @@ def run_runtime(args):
     if args.action == "learn":
         if not args.session_id:
             raise ValueError("--session-id is required")
-        result = session_learning.learn(root, args.session_id, scope=scope)
+        result = session_learning.learn(
+            root, args.session_id, scope=scope, semantic_segments=args.semantic_segments
+        )
     elif args.action == "evaluate":
         if not args.id or not args.actor or not args.expires_at:
             raise ValueError("--id, --actor and --expires-at are required")

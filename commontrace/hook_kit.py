@@ -13,6 +13,7 @@ import sys
 import time
 
 from commontrace import injection_guard, kg_similarity, memory_guard, paths
+from commontrace._lexical import STOPWORDS as LEXICAL_STOPWORDS
 from commontrace.configuration import getenv as _configuration_getenv
 from commontrace.context_template import render_context as render_context
 from commontrace.hook_bridge import AGENTS as AGENTS
@@ -21,6 +22,8 @@ from commontrace.measure import CausalMemory
 from commontrace.memory_journal import Journal
 from commontrace.memory_record import MemoryRecord
 from commontrace.search_recipes import _bm25, terms
+
+_HOOK_GENERIC_TERMS = LEXICAL_STOPWORDS | frozenset({"after", "before"})
 
 
 def bootstrap_priority(record: MemoryRecord) -> float:
@@ -139,7 +142,7 @@ class HookKit:
         candidates, fixed = [], []
         for record in records:
             if record.payload.get("canonical_path"):
-                from commontrace import frontmatter, lesson_cache
+                from commontrace import frontmatter, lesson_cache, lesson_io
 
                 canonical = os.path.join(self.root, record.payload["canonical_path"])
                 try:
@@ -147,7 +150,8 @@ class HookKit:
                     fm, body = frontmatter.read(canonical)
                     digest = hashlib.sha256((json.dumps(fm, sort_keys=True, default=str) + body).encode()).hexdigest()
                     if digest != record.payload.get("source_digest") or not lesson_cache.fresh_eligible(
-                        canonical, fm, slug=os.path.basename(canonical), body=body, root=self.root
+                        canonical, fm, slug=lesson_io.canonical_slug(os.path.basename(canonical)),
+                        body=body, root=self.root,
                     ):
                         continue
                 except (OSError, ValueError, TypeError):
@@ -181,7 +185,29 @@ class HookKit:
             try:
                 provider = kg_similarity.embedder(self.embedder)
                 if provider is not None:
-                    sparse = _bm25(terms(query), [terms(text) for _, text in candidates])
+                    query_terms = terms(query)
+                    document_terms = [terms(text) for _, text in candidates]
+                    if event == "PostToolUseFailure":
+                        error_terms = set(terms(str(payload.get("error", ""))))
+                        # Tool errors commonly spell the same timeout as "timed out",
+                        # while lessons use "timeout(s)". Normalize only this explicit
+                        # failure signal so other event queries keep their lexical gate.
+                        if (
+                            {"timed", "out"}.issubset(error_terms)
+                            or {"time", "out"}.issubset(error_terms)
+                            or error_terms.intersection({"timeout", "timeouts"})
+                        ):
+                            query_terms.extend(("timeout", "timeouts"))
+                    informative_query_terms = {
+                        term for term in query_terms if len(term) > 1 and term not in _HOOK_GENERIC_TERMS
+                    }
+                    informative_overlap = [
+                        bool(informative_query_terms.intersection(
+                            term for term in document if len(term) > 1 and term not in _HOOK_GENERIC_TERMS
+                        ))
+                        for document in document_terms
+                    ]
+                    sparse = _bm25(query_terms, document_terms)
                     model = str(
                         getattr(
                             getattr(provider, "spec", None), "tag", getattr(provider, "model", type(provider).__name__)
@@ -205,7 +231,7 @@ class HookKit:
                     scores = {
                         i: 1 / (60 + lex_rank[i]) + 1 / (60 + dense_rank[i])
                         for i in range(len(candidates))
-                        if sparse[i] > 0 and dense[i] >= 0.6
+                        if sparse[i] > 0 and dense[i] >= 0.6 and informative_overlap[i]
                     }
                     top = max(scores.values(), default=0)
                     for i in sorted(

@@ -1635,7 +1635,12 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
                 allow_bypass=config.allow_rls_bypass,
                 require=config.require_rls,
             )
-            yield
+            try:
+                yield
+            finally:
+                factory = getattr(app.state, "memory_projection_factory", None)
+                if factory is not None and hasattr(factory, "close"):
+                    await factory.close()
 
     @contextlib.asynccontextmanager
     async def _lifespan_with_scheduler(app):

@@ -1,6 +1,38 @@
 {
   "schema_version": "1.0.0",
-  "source": "hand-authored synthetic fixtures; no production traffic or model judgments",
+  "source": "hand-authored synthetic fixtures; selected patterns adapted from Graphiti at commit 964bb11d1e7020e3cc67fab244268b0736b6c219; no production traffic or model judgments",
+  "sources": {
+    "graphiti-node-prompt": {
+      "repository": "Graphiti",
+      "commit": "964bb11d1e7020e3cc67fab244268b0736b6c219",
+      "path": "graphiti_core/prompts/dedupe_nodes.py",
+      "patterns": "NYC versus New York City and New York Knicks; Java homonyms; person aliases; car/vehicle semantic equivalence; related-but-distinct entities"
+    },
+    "graphiti-node-similarity": {
+      "repository": "Graphiti",
+      "commit": "964bb11d1e7020e3cc67fab244268b0736b6c219",
+      "path": "graphiti_core/utils/maintenance/dedup_helpers.py",
+      "patterns": "normalized-name exact matching, entropy-gated fuzzy candidates, character shingles, MinHash and Jaccard; added typo and near-name cases are synthetic adaptations"
+    },
+    "graphiti-node-tests": {
+      "repository": "Graphiti",
+      "commit": "964bb11d1e7020e3cc67fab244268b0736b6c219",
+      "path": "tests/utils/maintenance/test_node_operations.py",
+      "patterns": "short-name ambiguity, low-entropy deferral, repeated Java homonyms, and entity candidate resolution"
+    },
+    "graphiti-edge-prompt": {
+      "repository": "Graphiti",
+      "commit": "964bb11d1e7020e3cc67fab244268b0736b6c219",
+      "path": "graphiti_core/prompts/dedupe_edges.py",
+      "patterns": "identical fact duplicate, changed job title contradiction, distinct dated events, numeric qualifiers, and updates compatible with ownership"
+    },
+    "graphiti-edge-scenarios": {
+      "repository": "Graphiti",
+      "commit": "964bb11d1e7020e3cc67fab244268b0736b6c219",
+      "path": "tests/utils/maintenance/test_edge_dedup_scenarios.py",
+      "patterns": "same-pair duplicate, reverse-direction duplicate, cross-endpoint same-text isolation, and contradiction candidates on a new pair"
+    }
+  },
   "entity_pairs": [
     {"id": "er-01", "stratum": "exact", "a": {"name": "Acme Corp"}, "b": {"name": "ACME CORP."}, "duplicate": true},
     {"id": "er-02", "stratum": "exact", "a": {"name": "Northstar Health, Inc."}, "b": {"name": "Northstar Health Inc"}, "duplicate": true},
@@ -23,7 +55,37 @@
     {"id": "er-19", "stratum": "easy-negative", "a": {"name": "Quartz Cache"}, "b": {"name": "Vesper Database"}, "duplicate": false},
     {"id": "er-20", "stratum": "easy-negative", "a": {"name": "Juniper Mobile App"}, "b": {"name": "Cobalt Scheduler"}, "duplicate": false},
     {"id": "er-21", "stratum": "exact-alias", "a": {"name": "The Billing API", "aliases": ["billing-api"]}, "b": {"name": "billing api"}, "duplicate": true},
-    {"id": "er-22", "stratum": "near-negative", "a": {"name": "Meridian Billing Platform"}, "b": {"name": "Meridian Billing Portal"}, "duplicate": false}
+    {"id": "er-22", "stratum": "near-negative", "a": {"name": "Meridian Billing Platform"}, "b": {"name": "Meridian Billing Portal"}, "duplicate": false},
+    {"id": "er-23", "stratum": "alias", "a": {"name": "NYC", "context": "The city's transit authority approved the route."}, "b": {"name": "New York City", "context": "The same municipal location is discussed."}, "duplicate": true, "source_ref": "graphiti-node-prompt#nyc-abbreviation"},
+    {"id": "er-24", "stratum": "hard-negative", "a": {"name": "New York Knicks", "context": "Professional basketball organization."}, "b": {"name": "New York City", "context": "Municipal location."}, "duplicate": false, "source_ref": "graphiti-node-prompt#knicks-versus-city", "label_rationale": "Shared words do not make an organization and a city the same entity."},
+    {"id": "er-25", "stratum": "semantic-paraphrase", "a": {"name": "Marco's vehicle", "context": "Marco drives a red sedan."}, "b": {"name": "Marco's car", "context": "The same red sedan owned by Marco."}, "duplicate": true, "source_ref": "graphiti-node-prompt#vehicle-car-synonym"},
+    {"id": "er-26", "stratum": "alias", "a": {"name": "Sam", "context": "The engineer who maintains the billing queue."}, "b": {"name": "Samuel Chen", "context": "The same engineer who maintains the billing queue."}, "duplicate": true, "source_ref": "graphiti-node-prompt#same-person-context"},
+    {"id": "er-27", "stratum": "homonym-negative", "a": {"name": "Java", "context": "The programming language used by the service."}, "b": {"name": "Java", "context": "The Indonesian island visited on vacation."}, "duplicate": false, "source_ref": "graphiti-node-prompt#java-homonym", "label_rationale": "The exact same surface name refers to different concepts when context differs."},
+    {"id": "er-28", "stratum": "semantic-paraphrase", "a": {"name": "Dizzy", "context": "The jazz trumpeter discussed in the music archive."}, "b": {"name": "Dizzy Gillespie", "context": "The same jazz trumpeter discussed in the music archive."}, "duplicate": true, "source_ref": "graphiti-node-prompt#same-person-context"},
+    {"id": "er-29", "stratum": "near-duplicate-positive", "a": {"name": "Northstar Reliability Service"}, "b": {"name": "Northstar Reliability Servcie"}, "duplicate": true, "source_ref": "graphiti-node-similarity#transposition-typo"},
+    {"id": "er-30", "stratum": "near-duplicate-positive", "a": {"name": "Quartz Event Collector"}, "b": {"name": "Quartz Event Collecter"}, "duplicate": true, "source_ref": "graphiti-node-similarity#vowel-typo"},
+    {"id": "er-31", "stratum": "near-duplicate-positive", "a": {"name": "Redwood Analytics Gateway"}, "b": {"name": "Redwood Analytics Gateways"}, "duplicate": true, "source_ref": "graphiti-node-similarity#plural-variant"},
+    {"id": "er-32", "stratum": "near-duplicate-negative", "a": {"name": "Orion Metrics Worker", "context": "Background metrics processor."}, "b": {"name": "Orion Metrics Workbench", "context": "Interactive dashboard for analysts."}, "duplicate": false, "source_ref": "graphiti-node-prompt#related-but-distinct"},
+    {"id": "er-33", "stratum": "near-duplicate-negative", "a": {"name": "Vesper Identity API", "context": "Authentication endpoint."}, "b": {"name": "Vesper Identity App", "context": "Separate mobile client."}, "duplicate": false, "source_ref": "graphiti-node-prompt#related-but-distinct"},
+    {"id": "er-34", "stratum": "near-duplicate-negative", "a": {"name": "Cobalt Billing Service", "context": "Production service for invoices."}, "b": {"name": "Cobalt Billing Services", "context": "A separately registered support organization."}, "duplicate": false, "source_ref": "graphiti-node-prompt#related-but-distinct"},
+    {"id": "er-35", "stratum": "alias", "a": {"name": "New York City Planning Office", "context": "The municipal planning department."}, "b": {"name": "NYC Planning Office", "context": "The same municipal planning department."}, "duplicate": true, "source_ref": "graphiti-node-prompt#nyc-abbreviation"},
+    {"id": "er-36", "stratum": "homonym-negative", "a": {"name": "Mercury", "context": "The planet closest to the Sun."}, "b": {"name": "Mercury", "context": "The chemical element in a laboratory inventory."}, "duplicate": false, "source_ref": "graphiti-node-prompt#java-homonym", "label_rationale": "This adapts the prompt's same-name/different-concept case to a second common homonym."},
+    {"id": "er-37", "stratum": "semantic-paraphrase", "a": {"name": "Payments API", "context": "The service endpoint receiving payment requests."}, "b": {"name": "Payment application programming interface", "context": "The same service endpoint receiving payment requests."}, "duplicate": true, "source_ref": "graphiti-node-prompt#semantic-equivalence"},
+    {"id": "er-38", "stratum": "near-duplicate-positive", "a": {"name": "Harbor Incident Reporter"}, "b": {"name": "Harbor Incident Reportor"}, "duplicate": true, "source_ref": "graphiti-node-similarity#vowel-typo"},
+    {"id": "er-39", "stratum": "near-duplicate-negative", "a": {"name": "Atlas Identity Service", "context": "Credential verification service."}, "b": {"name": "Atlas Identity Services", "context": "A distinct identity consulting company."}, "duplicate": false, "source_ref": "graphiti-node-prompt#related-but-distinct"},
+    {"id": "er-40", "stratum": "alias", "a": {"name": "Samuel Chen", "context": "The person who enjoys hiking and maintains the billing queue."}, "b": {"name": "Sam", "context": "The same person who enjoys hiking and maintains the billing queue."}, "duplicate": true, "source_ref": "graphiti-node-prompt#same-person-context"}
+  ],
+  "edge_pairs": [
+    {"id": "ed-01", "stratum": "exact-duplicate", "existing_fact": "Alice joined Acme Corp in 2020", "new_fact": "Alice joined Acme Corp in 2020", "expected": "duplicate", "source_ref": "graphiti-edge-prompt#identical-fact"},
+    {"id": "ed-02", "stratum": "explicit-correction", "existing_fact": "Alice works at Acme Corp as a software engineer", "new_fact": "Alice works at Acme Corp as a senior engineer", "expected": "contradiction", "source_ref": "graphiti-edge-prompt#title-change"},
+    {"id": "ed-03", "stratum": "different-event", "existing_fact": "Bob ran 5 miles on Tuesday", "new_fact": "Bob ran 3 miles on Wednesday", "expected": "independent", "source_ref": "graphiti-edge-prompt#different-dated-events"},
+    {"id": "ed-04", "stratum": "relationship-change", "existing_fact": "Alice works at Acme", "new_fact": "Alice works at BetaCorp", "expected": "contradiction", "source_ref": "graphiti-edge-scenarios#contradiction-on-new-pair"},
+    {"id": "ed-05", "stratum": "compatible-progress", "existing_fact": "Ravi owns the payment migration", "new_fact": "Ravi shipped a patch for the payment migration", "expected": "independent", "source_ref": "graphiti-edge-prompt#progress-does-not-replace-ownership"},
+    {"id": "ed-06", "stratum": "normalized-duplicate", "existing_fact": "User likes yoga poses", "new_fact": "  user LIKES yoga poses ", "expected": "duplicate", "source_ref": "graphiti-edge-scenarios#same-pair-duplicate"},
+    {"id": "ed-07", "stratum": "reverse-direction-duplicate", "existing_fact": "Alice manages Bob", "new_fact": "Alice manages Bob", "existing_endpoints": ["bob", "alice"], "new_endpoints": ["alice", "bob"], "expected": "duplicate", "source_ref": "graphiti-edge-scenarios#reverse-direction-duplicate"},
+    {"id": "ed-08", "stratum": "cross-endpoint-same-text", "existing_fact": "Dan likes yoga", "new_fact": "Dan likes yoga", "existing_endpoints": ["dan_jones", "yoga"], "new_endpoints": ["dan_smith", "yoga"], "expected": "independent", "source_ref": "graphiti-edge-scenarios#cross-endpoint-identical-text"},
+    {"id": "ed-09", "stratum": "paraphrase-duplicate", "existing_fact": "Mira published the reliability report", "new_fact": "The reliability report was published by Mira", "expected": "duplicate", "source_ref": "graphiti-edge-prompt#same-factual-information"},
+    {"id": "ed-10", "stratum": "dated-state-observation", "existing_fact": "The service timeout was 5 seconds on Monday", "new_fact": "The service timeout was 4 seconds on Tuesday", "expected": "independent", "source_ref": "graphiti-edge-prompt#dates-and-qualifiers"}
   ],
   "classifications": [
     {"id": "cl-01", "name": "Orders Database", "context": "Orders Database stores invoices.", "expected": "service"},

@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 import dataclasses
 import datetime as dt
+import heapq
 import json
 import math
 import re
@@ -621,6 +622,23 @@ def _recall_size(result: Recall) -> int:
         + 128 * (len(result.ranked) + len(result.turns)) + 4096
 
 
+def _recall_telemetry(result: Recall) -> dict:
+    """Export only a fixed numeric summary, never explain text or identities."""
+    summary = result.explain.get("retrieval_score", {})
+    confidence = result.explain.get("confidence", 0.0)
+    coverage = result.explain.get("coverage", {})
+    return {
+        "tokens": result.tokens,
+        "turns": len(result.turns),
+        "recall_top_score_raw": summary.get("top", 0.0),
+        "recall_score_margin_raw": summary.get("margin", 0.0),
+        "recall_score_scale": "conversation_weighted_rrf",
+        "recall_score_stage": "first_stage",
+        "recall_assessment_confidence": confidence,
+        "recall_abstained": coverage.get("abstain", result.explain.get("abstain", confidence == 0.0)),
+    }
+
+
 def forget_store(store: Store) -> None:
     with _RECALL_LOCK:
         for key in list(_RECALL_CACHE):
@@ -723,7 +741,7 @@ def recall(store: Store, question: str, *, now=None, options: Options | None = N
         _context_strategy((options or Options()).context_strategy)
         store.prepare_lexical(question)
     with store.read_snapshot(), telemetry.span(
-            "conversation.recall", space=store.space, queries=1 + len(extra_queries)) as handle:
+            "conversation.recall", queries=1 + len(extra_queries)) as handle:
         opts = options or Options()
         _context_strategy(opts.context_strategy)
         key = _recall_key(store, question, now, opts, extra_queries) if dense_candidates is None else None
@@ -732,11 +750,11 @@ def recall(store: Store, question: str, *, now=None, options: Options | None = N
                 hit = _RECALL_CACHE.get(key)
                 if hit is not None:
                     _RECALL_CACHE.move_to_end(key)
-                    handle.set(tokens=hit.tokens, turns=len(hit.turns), cached=True)
+                    handle.set(**_recall_telemetry(hit), cached=True)
                     return copy.deepcopy(hit)
         result = _recall(store, question, now=now, options=options, extra_queries=extra_queries,
                          dense_candidates=dense_candidates)
-        handle.set(tokens=result.tokens, turns=len(result.turns))
+        handle.set(**_recall_telemetry(result))
         if key is not None and _recall_size(result) <= _RECALL_CACHE_BYTES:
             with _RECALL_LOCK:
                 # Remove older revisions of this store before retaining another
@@ -774,7 +792,12 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
         if dense_candidates.identity != (store._units_identity or store.cache_identity) \
                 or dense_candidates.stamp != store.unit_stamp() or dense_candidates.model != expected_model:
             raise ConversationError("external vector candidates are stale or use a different embedding model")
-    embedder = _embedder(store, opts.embedder) if dense_candidates is None else None
+    dense_fallback: list[str] = []
+    try:
+        embedder = _embedder(store, opts.embedder) if dense_candidates is None else None
+    except (ImportError, RuntimeError, ValueError, OSError) as exc:
+        embedder = None
+        dense_fallback.append(type(exc).__name__)
     until: str | dt.datetime | None = opts.until
     if now is not None and moment is not None:
         parsed_until = timeparse.parse_moment(opts.until) if opts.until else moment
@@ -793,16 +816,24 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
         query: list(units) for query, units in dense_candidates.rankings.items()
     } if dense_candidates is not None else {}
     def encode_dense(batch_queries: list[str]) -> None:
+        nonlocal embedder
         if embedder is None or allowed == set() or pool <= 0 or not batch_queries:
             return
         from commontrace.conversation import embed
 
         # Encode related facets together and scan each bounded query batch once.
-        for start in range(0, len(batch_queries), embed.QUERY_BATCH):
-            batch = batch_queries[start:start + embed.QUERY_BATCH]
-            vectors = embedder.encode(batch, query=True)
-            pages = embed.search_many(store, embedder, vectors, pool, allowed=allowed)
-            dense_rankings.update((q, [u for u, _s in hits]) for q, hits in zip(batch, pages))
+        try:
+            for start in range(0, len(batch_queries), embed.QUERY_BATCH):
+                batch = batch_queries[start:start + embed.QUERY_BATCH]
+                vectors = embedder.encode(batch, query=True)
+                pages = embed.search_many(store, embedder, vectors, pool, allowed=allowed)
+                dense_rankings.update((q, [u for u, _s in hits]) for q, hits in zip(batch, pages))
+        except (ImportError, RuntimeError, ValueError, OSError) as exc:
+            # A missing optional model or a cache-only miss must not suppress
+            # the lexical arm; discard any partial vector rankings as well.
+            embedder = None
+            dense_rankings.clear()
+            dense_fallback.append(type(exc).__name__)
 
     encode_dense(queries)
 
@@ -827,6 +858,8 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
 
     scores = turn_scores(queries)
     explain: dict = {"subqueries": queries}
+    if dense_fallback:
+        explain["dense_fallback"] = dense_fallback[-1]
     if allowed is not None:
         explain["filtered_to"] = len(allowed)
     if opts.entity_boost and scores:
@@ -909,10 +942,14 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
             ranked.insert(min(2 + 2 * i, len(ranked)), turn)
         explain["graph_paths"] = paths
     rerank = opts.rerank
+    auto_rerank = rerank == "auto"
     if rerank == "auto":
         rerank = "cross-encoder" if embedder is not None else None
     if rerank and ranked:
-        ranked = _rerank(store, question, ranked, rerank, opts.rerank_depth, explain, opts.rerank_blend)
+        ranked = _rerank(
+            store, question, ranked, rerank, opts.rerank_depth, explain, opts.rerank_blend,
+            local_files_only=auto_rerank,
+        )
         explain["rerank"] = rerank
     withheld: list[int] = []
     # Relative deltas are shown only when the caller supplies a reference
@@ -938,7 +975,17 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
     if opts.second_pass:
         ranked, withheld, (context, used, n_tokens), selection, coverage = _second_pass(
             store, question, ranked, withheld, (context, used, n_tokens), selection, coverage, opts, explain,
-            encode_dense, turn_scores, pack)
+            encode_dense, turn_scores, pack, candidate_scores=scores)
+        if dense_fallback:
+            explain["dense_fallback"] = dense_fallback[-1]
+    # The ranking score is uncalibrated and precedes reranking. Retain only two
+    # scalar aggregates over delivered scored turns, including accepted second-
+    # pass additions. Graph-only/profile context does not invent ranking scores.
+    top = heapq.nlargest(2, (scores[turn] for turn in used if turn in scores))
+    explain["retrieval_score"] = {
+        "top": top[0] if top else 0.0,
+        "margin": top[0] - top[1] if len(top) > 1 else 0.0,
+    }
     explain["context_selection"] = selection
     if explain.get("graph_paths"):
         chosen = set(used)
@@ -956,7 +1003,8 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
 
 
 def _second_pass(store: Store, question: str, ranked: list[int], withheld: list[int], packed: tuple,
-                 selection: dict, coverage, opts: Options, explain: dict, encode_dense, turn_scores, pack):
+                 selection: dict, coverage, opts: Options, explain: dict, encode_dense, turn_scores, pack,
+                 *, candidate_scores: dict[int, float] | None = None):
     """Search facet queries for the subject terms the first context missed.
 
     Runs only when the first pass did not abstain, some subject term is
@@ -999,23 +1047,36 @@ def _second_pass(store: Store, question: str, ranked: list[int], withheld: list[
     if not new:
         report["skipped"] = "the new turns did not fit the remaining budget"
         return unchanged
+    if candidate_scores is not None:
+        candidate_scores.update((turn, scores[turn]) for turn in added)
     return merged, second_withheld, packed2, selection2, coverage2
 
 
 def _rerank(store: Store, question: str, ranked: list[int], mode: str, depth: int,
-            explain: dict | None = None, blend: float = 0.0) -> list[int]:
+            explain: dict | None = None, blend: float = 0.0, *, local_files_only: bool = False) -> list[int]:
     from commontrace import rerank_arm
 
     if mode not in rerank_arm.MODELS:
         return _rerank_provider(store, question, ranked, mode, depth, explain, blend)
-    if rerank_arm.ready(mode):
+    unavailable = (
+        rerank_arm.ready(mode, local_files_only=True)
+        if local_files_only else rerank_arm.ready(mode)
+    )
+    if unavailable:
+        if explain is not None:
+            explain["rerank_fallback"] = unavailable
         return ranked
     head = ranked[:depth]
     turns = store.turns(head)
     # the cross-encoder reads ~512 tokens: give it the passages of a long turn that bear on
     # the question rather than its opening, which is also several times faster
     text_of = {str(t): _excerpt(turns[t], question, 300) for t in head if t in turns}
-    page, _ = rerank_arm.rerank(question, list(text_of), text_of, len(text_of), mode=mode)
+    if local_files_only:
+        page, _ = rerank_arm.rerank(
+            question, list(text_of), text_of, len(text_of), mode=mode, local_files_only=True,
+        )
+    else:
+        page, _ = rerank_arm.rerank(question, list(text_of), text_of, len(text_of), mode=mode)
     order = [int(s) for s, _x in page]
     if explain is not None and page:
         explain["rerank_top"] = round(float(page[0][1]), 4)

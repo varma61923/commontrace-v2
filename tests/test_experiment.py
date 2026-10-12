@@ -169,6 +169,83 @@ def _obs(slug, n, injected, success_rate, offset=0):
 
 
 class TestAnalyze:
+    def test_sequential_mixture_horizon_is_fixed_before_outcomes(self, monkeypatch):
+        low_rate = _obs("l", 200, True, 0.10) + _obs("l", 200, False, 0.10)
+        middle_rate = _obs("l", 200, True, 0.50) + _obs("l", 200, False, 0.50)
+        target = ex.required_n_per_arm(
+            ex.SEQUENTIAL_TARGET_EFFECT_MULTIPLE * ex.DEFAULT_PRACTICAL_EFFECT,
+            0.5,
+        )
+        observed_targets = []
+        anytime_interval = ex.anytime_confidence_interval
+
+        def capture_horizon(*args, **kwargs):
+            observed_targets.append(kwargs["target_n_per_arm"])
+            return anytime_interval(*args, **kwargs)
+
+        monkeypatch.setattr(ex, "anytime_confidence_interval", capture_horizon)
+
+        low_effect, = ex.analyze(low_rate, sequential=True)
+        middle_effect, = ex.analyze(middle_rate, sequential=True)
+
+        assert target == ex.required_n_per_arm(
+            ex.SEQUENTIAL_TARGET_EFFECT_MULTIPLE * ex.DEFAULT_PRACTICAL_EFFECT, 0.5
+        )
+        expected_low = anytime_interval(20, 200, 20, 200, target_n_per_arm=target)
+        expected_middle = anytime_interval(100, 200, 100, 200, target_n_per_arm=target)
+        assert observed_targets == [target, target]
+        assert (low_effect.ci_low, low_effect.ci_high) == tuple(round(value, 4) for value in expected_low)
+        assert (middle_effect.ci_low, middle_effect.ci_high) == tuple(round(value, 4) for value in expected_middle)
+
+    def test_sequential_mapping_supplies_a_per_lesson_horizon(self):
+        rows = _obs("a", 40, True, 0.6) + _obs("a", 40, False, 0.5)
+        rows += _obs("b", 40, True, 0.6) + _obs("b", 40, False, 0.5)
+        effects = {effect.lesson_slug: effect for effect in ex.analyze(
+            rows, sequential=True, target_n_per_arm={"a": 17, "b": 43}
+        )}
+        for slug, target in (("a", 17), ("b", 43)):
+            inj = [row for row in rows if row.lesson_slug == slug and row.injected]
+            wit = [row for row in rows if row.lesson_slug == slug and not row.injected]
+            expected = ex.anytime_confidence_interval(
+                sum(row.succeeded for row in inj), len(inj),
+                sum(row.succeeded for row in wit), len(wit), target_n_per_arm=target,
+            )
+            assert (effects[slug].ci_low, effects[slug].ci_high) == tuple(
+                round(value, 4) for value in expected
+            )
+
+    def test_sequential_horizons_reject_missing_or_zero_observed_strata(self):
+        rows = _obs("a", 20, True, 0.6) + _obs("a", 20, False, 0.5)
+        with pytest.raises(ValueError, match="missing observed lessons"):
+            ex.analyze(rows, sequential=True, target_n_per_arm={"b": 10})
+        with pytest.raises(ValueError, match="positive target horizon"):
+            ex.analyze(rows, sequential=True, target_n_per_arm={"a": 0})
+
+    def test_aipw_horizon_uses_the_fixed_per_lesson_target(self, monkeypatch):
+        from commontrace import aipw
+
+        horizons = []
+
+        def capture(_observations, *, alpha, horizon, sequential):
+            horizons.append(horizon)
+            return aipw.Estimate(0.0, -0.1, 0.1, 1.0, 20, 20, "fixture")
+
+        monkeypatch.setattr(aipw, "estimate", capture)
+        rows = []
+        for i in range(40):
+            rows.append(ex.HoldoutObservation(
+                "l", str(i), i % 2 == 0, False, rate=0.2 if i < 20 else 0.5, scheduled=True
+            ))
+        changed_outcomes = [
+            ex.HoldoutObservation(row.lesson_slug, row.occasion_id, row.injected, True, row.rate, row.scheduled)
+            for row in rows
+        ]
+
+        ex.analyze(rows, sequential=True, target_n_per_arm={"l": 31})
+        ex.analyze(changed_outcomes, sequential=True, target_n_per_arm={"l": 31})
+
+        assert horizons == [62, 62]
+
     def test_a_lesson_that_clearly_helps_is_reported_as_helps(self):
         obs = _obs("l", 100, True, 0.90) + _obs("l", 100, False, 0.50)
         (effect,) = ex.analyze(obs)

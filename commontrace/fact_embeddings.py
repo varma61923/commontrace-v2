@@ -3,9 +3,10 @@
 The embedder is, in order: an injected adapter (``model``: anything with
 ``encode(texts, normalize_embeddings=True)``, or a `commontrace.embeddings`
 tag string), ``COMMONTRACE_FACT_EMBEDDER`` (any tag, e.g. ``arctic-m`` or
-``openai:text-embedding-3-small``), or the legacy ``COMMONTRACE_FACT_EMBEDDER_PATH``
-(a local sentence-transformers directory). With none configured, scores are
-None and fact search keeps its lexical, entity and temporal signals.
+``openai:text-embedding-3-small``), the legacy ``COMMONTRACE_FACT_EMBEDDER_PATH``
+(a local sentence-transformers directory), or the cache-only local BGE-small
+FastEmbed default. If its optional dependency is absent, scores are None and
+fact search keeps its lexical, entity and temporal signals.
 
 Fact vectors are cached by statement hash: in memory, and on disk under
 ``memory/facts/embeddings-<model>.db`` when a store root is given, so a
@@ -16,6 +17,7 @@ from __future__ import annotations
 
 import array
 import hashlib
+import importlib.util
 import math
 import os
 import sqlite3
@@ -35,10 +37,13 @@ MAX_CACHED = 50_000
 class _Adapter:
     """A provider from `commontrace.embeddings`, behind the legacy ``encode`` shape."""
 
-    def __init__(self, tag: str):
+    def __init__(self, tag: str, *, local_files_only: bool = False):
         from commontrace import embeddings
 
-        self.provider = embeddings.provider(tag)
+        if local_files_only:
+            self.provider = embeddings.provider(tag, local_files_only=True)
+        else:
+            self.provider = embeddings.provider(tag)
         self.key = ("provider", self.provider.spec.tag)
 
     def encode(self, texts, normalize_embeddings=True, query=False):
@@ -48,14 +53,18 @@ class _Adapter:
 def _resolve(model, model_path):
     if model is not None:
         if isinstance(model, str):
-            return _cached_model(("tag", model), lambda: _Adapter(model))
+            if model.strip().lower() in ("", "none", "off"):
+                return None, None
+            return _tag_model(model)
         return model, model
     tag = _configuration_getenv("COMMONTRACE_FACT_EMBEDDER", "").strip()
     if tag and tag.lower() not in ("none", "off"):
-        return _cached_model(("tag", tag), lambda: _Adapter(tag))
+        return _tag_model(tag)
     selected = model_path or _configuration_getenv("COMMONTRACE_FACT_EMBEDDER_PATH")
     if not selected:
-        return None, None
+        from commontrace import embeddings
+
+        return _tag_model(embeddings.DEFAULT_LOCAL_TAG)
     if not os.path.isdir(selected):
         raise ValueError("fact embeddings require an existing local model directory")
     selected = os.path.realpath(selected)
@@ -68,6 +77,25 @@ def _resolve(model, model_path):
                       os.stat(os.path.join(selected, name)).st_size)
                      for name in sorted(os.listdir(selected)) if os.path.isfile(os.path.join(selected, name)))
     return _cached_model((selected, identity), lambda: SentenceTransformer(selected, local_files_only=True))
+
+
+def _tag_model(tag: str):
+    """Build a configured provider, retaining lexical behavior without optional local deps."""
+    from commontrace import embeddings
+
+    spec = embeddings.parse(tag)
+    if spec.provider == "fastembed":
+        # The optional local default is deliberately a cache-only capability.
+        # If the extra is absent, retrieval can stay lexical without trying to
+        # import a backend or reach a model host.
+        try:
+            available = all(importlib.util.find_spec(name) is not None for name in ("numpy", "fastembed"))
+        except (ImportError, ValueError):
+            available = False
+        if not available:
+            return None, None
+    local_files_only = spec.tag == embeddings.DEFAULT_LOCAL_TAG
+    return _cached_model(("tag", spec.tag), lambda: _Adapter(spec.tag, local_files_only=local_files_only))
 
 
 def _cached_model(key, build):

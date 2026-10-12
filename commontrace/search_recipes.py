@@ -5,6 +5,7 @@ proof admission run before ranking; unavailable signals are never fabricated.
 """
 from __future__ import annotations
 
+import json
 import math
 import re
 import unicodedata
@@ -160,7 +161,12 @@ def search(root: str, query: str, *, recipe: str = "balanced", scope: str = "", 
     if dense_scores is None:
         from commontrace import fact_embeddings
 
-        dense_scores = fact_embeddings.scores(query, facts, model=embedder, root=root)
+        try:
+            dense_scores = fact_embeddings.scores(query, facts, model=embedder, root=root)
+        except (ImportError, RuntimeError, ValueError, OSError) as exc:
+            dense_scores = None
+            if explain is not None:
+                explain["dense_fallback"] = type(exc).__name__
     documents = [terms(f.statement) for f in facts]
     sparse = _bm25(terms(query), documents)
     backend = backend or LocalGraph(root)
@@ -338,6 +344,34 @@ def _eligible_fact(root, fact, moment, as_of, context, action_class, resolver):
             and (not fact.evidence_bound or resolver.assess(fact.id).eligible))
 
 
+def _load_candidate_facts(canonical, identities):
+    """Hydrate one bounded retrieval candidate union in the canonical snapshot."""
+    candidates = {}
+    missing = []
+    for identity in dict.fromkeys(identities):
+        if identity in canonical.removed:
+            candidates[identity] = None
+        elif identity in canonical.loaded:
+            candidates[identity] = canonical.loaded[identity]
+        else:
+            candidates[identity] = None
+            missing.append(identity)
+
+    from commontrace.hierarchical import _coerce_fact
+
+    # Keep below SQLite's portable bound-variable limit. The candidate lists
+    # are ranked independently, so SQL row order does not affect retrieval.
+    for offset in range(0, len(missing), 500):
+        group = missing[offset:offset + 500]
+        placeholders = ",".join("?" for _ in group)
+        rows = canonical.connection.execute(
+            f"SELECT id, payload FROM facts WHERE id IN ({placeholders})", group
+        )
+        for identity, payload in rows:
+            candidates[identity] = _coerce_fact(json.loads(payload))
+    return candidates
+
+
 def indexed_search(
     root: str,
     query: str,
@@ -366,6 +400,7 @@ def indexed_search(
     Missing models retain indexed lexical retrieval without a network requirement.
     """
     from commontrace import fact_embeddings, fact_store, memory_authority
+    from commontrace.embeddings import DEFAULT_LOCAL_TAG
 
     lexical = fact_store.fts_candidates(root, query, context=context, limit=max(200, limit * 5), as_of=as_of)
     facts = {fact.id: fact for fact, _ in lexical
@@ -388,16 +423,20 @@ def indexed_search(
         try:
             dense.update(
                 dict(
-                    fact_vector_projection.search(root, query, model=embedder or "bge-small", limit=max(200, limit * 5))
+                    fact_vector_projection.search(
+                        root, query, model=embedder or DEFAULT_LOCAL_TAG, limit=max(200, limit * 5),
+                    )
                 )
             )
             report["dense_candidates"] = bool(dense)
-        except (ImportError, RuntimeError, ValueError, OSError) as exc:
+        except Exception as exc:  # optional local dense arm must not suppress lexical results
             report["dense_fallback"] = type(exc).__name__
     if not dense and facts and embedder not in ("none", "off"):
         try:
-            dense = fact_embeddings.scores(query, list(facts.values()), model=embedder or "bge-small", root=root) or {}
-        except (ImportError, ValueError, RuntimeError, OSError) as exc:
+            dense = fact_embeddings.scores(
+                query, list(facts.values()), model=embedder or DEFAULT_LOCAL_TAG, root=root
+            ) or {}
+        except Exception as exc:  # model/cache providers may raise backend-specific exception types
             report["dense_fallback"] = type(exc).__name__
     dense_order = sorted((identity for identity in dense if dense[identity] >= 0.6),
                          key=lambda identity: (-dense[identity], identity))
@@ -411,13 +450,14 @@ def indexed_search(
         # Model/ANN lookup may have outlived the original FTS snapshot.
         facts = {}
         rejected = set()
+        candidate_facts = _load_candidate_facts(canonical, (*sparse_order, *dense_order))
 
         def admit(identity):
             if identity in facts:
                 return facts[identity]
             if identity in rejected:
                 return None
-            fact = canonical.get(identity)
+            fact = candidate_facts[identity] if identity in candidate_facts else canonical.get(identity)
             if _eligible_fact(root, fact, moment, as_of, context, action_class, resolver):
                 facts[identity] = fact
                 return fact

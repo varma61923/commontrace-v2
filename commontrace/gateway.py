@@ -414,6 +414,7 @@ class Gateway:
             "record-put",
             "record-search",
             "record-forget",
+            "record-reap-due",
             "turn",
             "add",
             "batch",

@@ -20,7 +20,14 @@ python -m pip install -e .
 commontrace up --dest /path/to/agent-project
 ```
 
-For local semantic retrieval, install `.[attention,vector-lance]`. Configure
+To verify local memory before connecting an agent, run `python scripts/first_recall_smoke.py`.
+It creates a temporary store, adds one explicit fact, and checks that offline recall returns it;
+the smoke needs no model key, server, or optional extra.
+
+For local semantic retrieval, install `.[fastembed,vector-lance]` and place
+FastEmbed's BGE-small weights in its local cache; the default profile is
+cache-only and keeps lexical search available until weights are present.
+Install `.[attention]` for other sentence-transformer models. Configure
 models, budgets, routes and server settings in `commontrace.yaml`; optional
 `settings.runtime.vector_backend: lance` enables background HNSW indexing.
 `commontrace migrate config --dest STORE_ROOT --dry-run` previews migration
@@ -34,26 +41,35 @@ For a scoped agent key, run `commontrace init --agent reviewer --dest STORE_ROOT
 The key is returned once. See [installation and scope rules](docs/MEMORY_EVOLUTION.md).
 In containers, `docker compose --profile local up` runs the gateway on `:8787` and
 the MCP server on `:8421` over one store volume (`Dockerfile.local`).
+For Docker daemons that ignore `Dockerfile.local.dockerignore`, build with
+`python scripts/build_local_image.py --tag commontrace-local:dev`; it stages only
+the local image inputs in a temporary context and removes that context after the build.
 
 `up` initializes transactional storage, detects supported agents and installs
 project-local hooks. Use `--setup-only` to configure without starting the API.
+Add `--import-agent-history` to opt into a bounded import of Claude Code and
+Codex transcripts whose recorded working directory belongs to the project.
 A single `commontrace.yaml` selects the `local`, `team` or `server` profile:
 
 ```yaml
 profile: local
 profiles:
   local:
-    embedding: bge-small
+    embedding: fastembed:BAAI/bge-small-en-v1.5
     reranker: cross-encoder-fast
     redact_pii: true
     telemetry: false
 ```
 
-Local model packages are optional; install `.[attention]` for the local embedding/model
-runtime. Existing explicit environment settings take precedence. Empty stores
+Local model packages are optional; the default BGE-small path uses the
+`fastembed` extra and cached weights, while `attention` provides other local
+embedding and reranking models. Existing explicit environment settings take
+precedence. Empty stores
 wait for evaluated runs or reviewed history; setup never invents a first lesson.
-Kimi requires its generated config flag, Cline requires Hooks enabled, and
-Windsurf's native hooks capture events; use framework middleware for context.
+Kimi setup merges hooks into the active user config at `~/.kimi-code/config.toml`
+(or `$KIMI_CODE_HOME/config.toml`) and returns `kimi` as the activation command.
+Cline requires Hooks enabled, and Windsurf's native hooks capture events; use
+framework middleware for context.
 
 ## Add memory to your agent
 

@@ -1,0 +1,71 @@
+{
+  "decision": "rejected; same bounded numeric/negation-block prefetch candidate as the earlier experiment, no stable throughput lift",
+  "workload": "benchmarks.next_generation_storage: 10K or 30K facts_before_trials; measure() adds five single facts, performs five sparse searches, then times one 1,000-fact add_facts batch",
+  "profile_10k": {
+    "baseline": {
+      "batch_elapsed_seconds": 0.7346904019941576,
+      "batch_facts_per_second_under_profiler": 1361.1175500397408,
+      "calls": 715609,
+      "sqlite_connection_execute_calls": 6027,
+      "near_block_point_probes": 1000,
+      "add_locked_cumulative_seconds": 0.467,
+      "near_cumulative_seconds": 0.055
+    },
+    "candidate": {
+      "batch_elapsed_seconds": 0.7354991380125284,
+      "batch_facts_per_second_under_profiler": 1359.6209000355975,
+      "calls": 735664,
+      "sqlite_connection_execute_calls": 5032,
+      "batch_prefetch_cumulative_seconds": 0.047,
+      "near_block_point_probes": 0
+    },
+    "interpretation": "995 fewer SQLite execute calls, but preprocessing consumed about 47 ms and overall profiled batch time was flat/slightly slower. cProfile timings are diagnostic, not acceptance measurements."
+  },
+  "matched_30k_rounds": [
+    {"run": "baseline-1", "prefetch_enabled": false, "batch_facts_per_second": 2105.998954033803, "batch_elapsed_seconds": 0.4748340439982712, "seed_elapsed_seconds": 13.480592196981888},
+    {"run": "candidate-1", "prefetch_enabled": true, "batch_facts_per_second": 2271.6538648165542, "batch_elapsed_seconds": 0.44020790996728465, "seed_elapsed_seconds": 13.186157715972513},
+    {"run": "candidate-2", "prefetch_enabled": true, "batch_facts_per_second": 2129.2325337031875, "batch_elapsed_seconds": 0.46965278999414295, "seed_elapsed_seconds": 13.24385260901181},
+    {"run": "baseline-2", "prefetch_enabled": false, "batch_facts_per_second": 2161.4207130048544, "batch_elapsed_seconds": 0.4626586550148204, "seed_elapsed_seconds": 13.523024127993267}
+  ],
+  "matched_run_interpretation": "The two candidate rounds differ materially from one another and straddle the baseline rounds; no stable lift is established.",
+  "prior_rejection": {
+    "candidate": "Batch block-presence reads in groups of 200, replacing 1,000 point probes with five prefetch queries.",
+    "baseline_facts_per_second": 2291.688389716975,
+    "candidate_facts_per_second": 2261.888012292108,
+    "evidence": "docs/strategy/next-generation-f1-near-block-prefetch.md and its two 30K reports"
+  },
+  "standalone_candidate_run": {
+    "batch_facts_per_second": 2175.901524085301,
+    "batch_elapsed_seconds": 0.4595796220237389,
+    "report": "/tmp/f1-near-block-prefetch-candidate-30k.json",
+    "report_sha256": "644d0eb3ff5527149ffd39c25cdd4499aae72c6ade4218e6cfb48af279dbc6b7"
+  },
+  "source_hashes": {
+    "baseline_profile": {
+      "commontrace/fact_store.py": "af2690606586de7b381a9bec451bf0e77cbfde75a91413f588349fe33eca1a11",
+      "commontrace/hierarchical.py": "f709bce0c80b640872a9dd503004ea9020d7ba989537e49884ece45e41cd4a8c",
+      "benchmarks/next_generation_storage.py": "35278d33fc902e4c7e7e6bc8c0b6688cf8d435d7e2feec62b00e86444d80ee1a"
+    },
+    "candidate_profile_and_standalone_report": {
+      "commontrace/fact_store.py": "bc769fbcf826e583f83d741b800523e1a8900e1597dea5dcfd63a0784bac0591",
+      "commontrace/hierarchical.py": "72d26eda408fde44a11b966d2bcb7183d9a50a135a47ff3f43e13cedfe0d3c01",
+      "benchmarks/next_generation_storage.py": "35278d33fc902e4c7e7e6bc8c0b6688cf8d435d7e2feec62b00e86444d80ee1a"
+    }
+  },
+  "commands": {
+    "graphify_commontrace_path": "graphify path commontrace_hierarchical_add_facts commontrace_hierarchical_link_entities_best_effort --graph /tmp/commontrace-current-graphify/graph.json",
+    "graphify_graphiti_bulk": "graphify explain graphiti_core_utils_bulk_utils_add_nodes_and_edges_bulk --graph /root/Test/graphiti/graphify-out/graph.json",
+    "graphify_hindsight_bulk": "graphify explain hindsight_api_slim_hindsight_api_engine_retain_fact_storage_insert_facts_batch --graph /root/Test/hindsight/graphify-out/graph.json",
+    "standalone_candidate": "/root/Test/commontrace-v2/.venv/bin/python -m benchmarks.next_generation_storage --sizes 30000 --trials 5 --legacy-max 0 --output /tmp/f1-near-block-prefetch-candidate-30k.json",
+    "profile_shell": "cd /root/Test/commontrace-v2 && /root/Test/commontrace-v2/.venv/bin/python -",
+    "profile_stdin_program": "import cProfile, io, pstats, tempfile, time\nfrom commontrace import fact_store, hierarchical as h\nfrom benchmarks import next_generation_storage as bench\nroot = tempfile.mkdtemp(prefix='commontrace-f1-profile-')\nfact_store.migrate(root)\nfor start in range(0, 10_000, 1000):\n    h.add_facts(root, bench.items(start, min(1000, 10_000 - start)))\nbatch = bench.items(10_010, 1000)\nprof = cProfile.Profile()\nstarted = time.perf_counter(); prof.enable(); result = h.add_facts(root, batch); prof.disable(); elapsed = time.perf_counter() - started\nprint('exact_batch_elapsed_seconds', elapsed, 'facts_per_second', len(result)/elapsed)\nstream = io.StringIO(); pstats.Stats(prof, stream=stream).strip_dirs().sort_stats('cumtime').print_stats(35)\nprint(stream.getvalue())\nfact_store.close_connections(root)",
+    "matched_30k_stdin_program": "import json, tempfile, time\nfrom commontrace import fact_store, hierarchical as h\nfrom benchmarks import next_generation_storage as bench\noriginal = fact_store.StatementIndex.prime_near_blocks\nrounds = []\ntry:\n    for label, enabled in [('baseline-1', False), ('candidate-1', True), ('candidate-2', True), ('baseline-2', False)]:\n        fact_store.StatementIndex.prime_near_blocks = original if enabled else (lambda self, statements: None)\n        with tempfile.TemporaryDirectory(prefix='commontrace-f1-matched-30k-') as root:\n            fact_store.migrate(root)\n            started = time.perf_counter()\n            for start in range(0, 30_000, 1000):\n                h.add_facts(root, bench.items(start, min(1000, 30_000 - start)))\n            seeded_seconds = time.perf_counter() - started\n            measured = bench.measure(root, 30_000, 5)\n            row = {'run': label, 'prefetch_enabled': enabled, 'seed_elapsed_seconds': seeded_seconds, **measured}\n            rounds.append(row)\n            print(label, json.dumps({k: row[k] for k in ('single_write_p50_ms','single_write_p95_ms','sparse_overlap_search_p50_ms','sparse_overlap_search_p95_ms','batch_facts_per_second','batch_elapsed_seconds','seed_elapsed_seconds')}), flush=True)\n            fact_store.close_connections(root)\nfinally:\n    fact_store.StatementIndex.prime_near_blocks = original\nprint('summary_json', json.dumps(rounds), flush=True)"
+  },
+  "limits": [
+    "No 1M database benchmark was run.",
+    "Profile rounds are single 1,000-fact batches at 10K with profiler overhead.",
+    "Matched 30K rounds each time one 1,000-fact batch; a no-op monkeypatch disabled prefetch for baseline rounds, keeping the same candidate source loaded.",
+    "The synthetic benchmark does not measure hybrid retrieval, server performance, or answer quality.",
+    "The candidate was removed; current production sources match the recorded baseline source hashes."
+  ]
+}

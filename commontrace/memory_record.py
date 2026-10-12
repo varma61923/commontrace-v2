@@ -7,9 +7,13 @@ formats. Legacy payloads remain intact inside it.
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from commontrace.hierarchical import AtomicFact
 
 MemoryKind = Literal["episode", "fact", "entity", "observation", "profile", "lesson", "directive"]
 
@@ -119,6 +123,156 @@ class MemoryRecord:
         return asdict(self)
 
 
+_ATOMIC_FACT_FORMAT = "commontrace.atomic-fact.v1"
+_ATOMIC_SCOPE_DIMENSIONS = frozenset({"tenant", "user", "agent", "session", "repo"})
+
+
+def _atomic_fact_scope(scopes: list[str], tenant: str | None = None) -> dict[str, Any]:
+    scope: dict[str, Any] = {}
+    labels = []
+    for label in scopes:
+        dimension, separator, value = label.partition(":")
+        if separator and dimension in _ATOMIC_SCOPE_DIMENSIONS:
+            if not value or len(value) > 256 or dimension in scope and scope[dimension] != value:
+                raise ValueError("conflicting or invalid AtomicFact scope dimension")
+            scope[dimension] = value
+        else:
+            if len(label) > 256:
+                raise ValueError("AtomicFact scope label exceeds envelope bounds")
+            labels.append(label)
+    if tenant is not None:
+        if not isinstance(tenant, str) or not tenant or len(tenant) > 256:
+            raise ValueError("tenant must be a bounded nonempty string")
+        if "tenant" in scope and scope["tenant"] != tenant:
+            raise ValueError("AtomicFact tenant does not match hosted tenant")
+        scope["tenant"] = tenant
+    if labels:
+        scope["labels"] = labels
+    return scope
+
+
+def _atomic_fact_payload(payload: dict[str, Any]) -> AtomicFact:
+    """Validate the exact bridge wire; legacy migration coercion would lose data."""
+    import copy
+
+    from commontrace.fact_evidence import MAX_EVIDENCE, FactEvidence
+    from commontrace.hierarchical import AtomicFact
+
+    fields = set(AtomicFact.__dataclass_fields__)
+    if set(payload) != fields | {"text"}:
+        raise ValueError("AtomicFact envelope must preserve exactly every fact field and text")
+    for name in ("id", "statement", "category", "valid_from", "status", "revision", "created_at",
+                 "updated_at", "stability", "evidence_revision", "memory_type"):
+        if not isinstance(payload[name], str):
+            raise ValueError(f"AtomicFact {name} must be a string")
+    if not payload["id"] or len(payload["id"]) > 256 or not payload["statement"].strip():
+        raise ValueError("AtomicFact requires an id and nonempty statement")
+    if payload["text"] != payload["statement"]:
+        raise ValueError("AtomicFact text must mirror statement")
+    for name in ("valid_until", "expires_at", "superseded_by", "retracted_at"):
+        if payload[name] is not None and not isinstance(payload[name], str):
+            raise ValueError(f"AtomicFact {name} must be a string or null")
+    for name in ("valid_from", "valid_until", "expires_at", "created_at", "updated_at", "retracted_at"):
+        value = payload[name]
+        if value:
+            try:
+                datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError as exc:
+                raise ValueError(f"AtomicFact {name} must be ISO 8601 or blank") from exc
+    for name in ("scopes", "source_traces"):
+        if not isinstance(payload[name], list) or any(not isinstance(value, str) for value in payload[name]):
+            raise ValueError(f"AtomicFact {name} must be a list of strings")
+    for name in ("forgotten", "evidence_bound"):
+        if type(payload[name]) is not bool:
+            raise ValueError(f"AtomicFact {name} must be boolean")
+    confidence = payload["confidence"]
+    if type(confidence) not in (int, float) or not 0 <= confidence <= 1 or not math.isfinite(confidence):
+        raise ValueError("AtomicFact confidence must be finite in [0, 1]")
+    if type(payload["confirmations"]) is not int or payload["confirmations"] < 0:
+        raise ValueError("AtomicFact confirmations must be a nonnegative integer")
+    if type(payload["min_support"]) is not int or not 1 <= payload["min_support"] <= MAX_EVIDENCE:
+        raise ValueError("AtomicFact min_support is outside evidence bounds")
+    if payload["status"] not in {"active", "superseded", "invalidated", "deleted", "retired"}:
+        raise ValueError("unsupported AtomicFact status")
+    if payload["stability"] not in {"", "stable", "dynamic"}:
+        raise ValueError("unsupported AtomicFact stability")
+    if not isinstance(payload["origin"], dict):
+        raise ValueError("AtomicFact origin must be a JSON object")
+
+    def json_value(value: Any) -> bool:
+        if value is None or type(value) in (str, bool, int):
+            return True
+        if type(value) is float:
+            return math.isfinite(value)
+        if type(value) is list:
+            return all(json_value(item) for item in value)
+        if type(value) is dict:
+            return all(isinstance(key, str) and json_value(item) for key, item in value.items())
+        return False
+
+    try:
+        portable = json_value(payload["origin"])
+    except RecursionError as exc:
+        raise ValueError("AtomicFact origin must be finite JSON") from exc
+    if not portable:
+        raise ValueError("AtomicFact origin must be finite JSON")
+    if not isinstance(payload["evidence"], list) or len(payload["evidence"]) > MAX_EVIDENCE:
+        raise ValueError("invalid AtomicFact evidence ledger")
+    try:
+        evidence = [FactEvidence.from_dict(row) for row in payload["evidence"]]
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise ValueError("invalid AtomicFact evidence receipt") from exc
+    values = copy.deepcopy({name: payload[name] for name in fields})
+    values["evidence"] = evidence
+    return AtomicFact(**values)
+
+
+def atomic_fact_record(fact: AtomicFact, version: int, *, tenant: str | None = None) -> MemoryRecord:
+    """Opt an exact local fact into the hosted envelope without legacy coercion."""
+    from commontrace.hierarchical import AtomicFact
+
+    if type(fact) is not AtomicFact:
+        raise ValueError("atomic_fact_record requires an AtomicFact")
+    if type(version) is not int or version < 1:
+        raise ValueError("record version must be a positive integer")
+    payload = {**fact.to_dict(), "text": fact.statement}
+    checked = _atomic_fact_payload(payload)
+    effective_end = checked.valid_until
+    if checked.expires_at:
+        def instant(value: str) -> datetime:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
+
+        if not effective_end or instant(checked.expires_at) < instant(effective_end):
+            effective_end = checked.expires_at
+    return MemoryRecord(
+        checked.id, "fact", version, payload,
+        status=("active" if checked.status == "active" and not checked.forgotten else
+                "retired" if checked.status == "retired" else "deprecated"),
+        relations={"updates": [checked.id]} if version > 1 else {},
+        provenance={"atomic_fact_format": _ATOMIC_FACT_FORMAT, "source_traces": checked.source_traces.copy()},
+        scope=_atomic_fact_scope(checked.scopes, tenant), valid_from=checked.valid_from,
+        valid_until=effective_end, created_at=checked.created_at, retracted_at=checked.retracted_at,
+        confidence=checked.confidence, evidence=[receipt.to_dict() for receipt in checked.evidence],
+    )
+
+
+def atomic_fact_from_record(record: MemoryRecord) -> AtomicFact:
+    """Decode only the marked bridge, rejecting inconsistent envelope mirrors."""
+    if not isinstance(record, MemoryRecord) or record.kind != "fact" or \
+            record.provenance.get("atomic_fact_format") != _ATOMIC_FACT_FORMAT:
+        raise ValueError("record is not a supported AtomicFact envelope")
+    fact = _atomic_fact_payload(record.payload)
+    expected = atomic_fact_record(fact, record.version, tenant=record.scope.get("tenant"))
+    for name in ("id", "status", "scope", "valid_from", "valid_until", "created_at", "retracted_at",
+                 "confidence", "evidence"):
+        if getattr(record, name) != getattr(expected, name):
+            raise ValueError(f"AtomicFact envelope {name} does not mirror payload")
+    if record.provenance.get("source_traces") != fact.source_traces:
+        raise ValueError("AtomicFact provenance source_traces do not mirror payload")
+    return fact
+
+
 def facet_observation(
     entity: str,
     facet: str,
@@ -158,11 +312,31 @@ def facet_observation(
     )
 
 
-def preference_statistics(prior: dict[str, Any]) -> dict[str, int | float]:
-    """Bound update metadata, including unvalidated counters from older records."""
+def preference_statistics(prior: dict[str, Any], *, at: str | None = None) -> dict[str, int | float]:
+    """Reinforce effective weight, retaining decay since the previous assertion.
+
+    Like Cognee's preference update, decay precedes new evidence rather than
+    resetting the age of the raw accumulated weight. Legacy rows without an
+    observation time retain their prior behavior; malformed decay metadata
+    contributes no old weight. Both local and hosted capture use this helper.
+    """
     weight = prior.get("weight", 0)
     if type(weight) not in (int, float) or not 0 <= weight <= 10000 or not math.isfinite(weight):
         weight = 0
+    observed_at = prior.get("observed_at")
+    if observed_at is not None and observed_at != "":
+        from commontrace.record_visibility import moment
+
+        half_life = prior.get("half_life_days", 90)
+        if type(half_life) not in (int, float) or not 0 < half_life <= 36500 or not math.isfinite(half_life):
+            weight = 0
+        else:
+            try:
+                reference = moment(at) if at is not None else datetime.now(timezone.utc)
+                age = max(0.0, (reference - moment(observed_at)).total_seconds() / 86400)
+                weight *= 2 ** (-age / half_life)
+            except (ValueError, TypeError, AttributeError):
+                weight = 0
     observations = prior.get("observations", 0)
     if type(observations) is not int or not 0 <= observations <= 1000000:
         observations = 0
@@ -188,3 +362,84 @@ def preference_candidates(text: str, scope: dict) -> list[tuple[str, dict]]:
             )
             found[identity] = {"text": assertion, "bucket": bucket, "author": "user"}
     return list(found.items())[:32]
+
+
+_PREFERENCE_PREFIX = re.compile(r"^\s*I\s+(?:prefer|like|want|always\s+use)\s+", re.I)
+_PREFERENCE_STOP_WORDS = frozenset(
+    "a an and are as at be by for from i in is it of on or the to use with".split()
+)
+_PREFERENCE_NEGATION = re.compile(r"\b(?:no|not|never|avoid|without|against)\b", re.I)
+
+
+def rerank_profile_results(results: list[dict], preferences: list[dict]) -> list[dict]:
+    """Apply a small, bounded boost from explicit dynamic user preferences.
+
+    The caller supplies only preferences visible in the current scope and
+    already decayed on read. Candidate retrieval and its budget stay fixed;
+    this reorders only that bounded result list. Scored candidates receive at
+    most a 20% score boost; when the backend exposes only order, the same
+    support can move a result by at most 20% of the candidate window.
+    """
+    if not results or not preferences:
+        return results
+
+    from commontrace.search_recipes import terms
+
+    weighted_terms = []
+    for preference in preferences:
+        if (
+            not isinstance(preference, dict)
+            or preference.get("bucket") != "dynamic"
+            or preference.get("author") != "user"
+        ):
+            continue
+        text = preference.get("text")
+        weight = preference.get("weight")
+        if (
+            not isinstance(text, str)
+            or type(weight) not in (int, float)
+            or not 0 < weight <= 10000
+            or not math.isfinite(weight)
+        ):
+            continue
+        assertion = _PREFERENCE_PREFIX.sub("", text, count=1)
+        if assertion == text or _PREFERENCE_NEGATION.search(assertion):
+            continue
+        tokens = set(terms(assertion)) - _PREFERENCE_STOP_WORDS
+        if tokens:
+            weighted_terms.append((tokens, float(weight) / (float(weight) + 1.0)))
+    if not weighted_terms:
+        return results
+
+    ranked = []
+    for position, row in enumerate(results):
+        if not isinstance(row, dict):
+            ranked.append((-(1.0 / (position + 1)), position, row))
+            continue
+        candidate_text = row.get("text")
+        if not isinstance(candidate_text, str):
+            payload = row.get("payload")
+            candidate_text = payload.get("text", "") if isinstance(payload, dict) else ""
+        candidate_terms = set(terms(candidate_text)) if isinstance(candidate_text, str) else set()
+
+        support = max(
+            (
+                len(candidate_terms & pref_terms) / len(pref_terms) * strength
+                for pref_terms, strength in weighted_terms
+            ),
+            default=0.0,
+        )
+        base_score = row.get("score")
+        try:
+            finite_score = type(base_score) in (int, float) and math.isfinite(float(base_score))
+        except OverflowError:
+            finite_score = False
+        if not finite_score:
+            # Hosted record search exposes an order but no numeric relevance.
+            base_score = -position + 0.2 * len(results) * support
+        else:
+            base_score = float(base_score) * (1.0 + 0.2 * support)
+        ranked.append((-float(base_score), position, row))
+
+    ranked.sort(key=lambda item: (item[0], item[1]))
+    return [row for _score, _position, row in ranked]

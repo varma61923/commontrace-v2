@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import shlex
@@ -137,3 +138,65 @@ def test_native_bridge_closes_malformed_or_stalled_receipt_peer(tmp_path, reply)
         assert json.loads(result.stdout)["context"] == ""
         worker.join(timeout=5)
         assert disconnected.is_set()
+
+
+@pytest.mark.parametrize("failure_mode", ["malformed", "timeout"])
+@pytest.mark.parametrize("capture_before_failure", [False, True])
+def test_native_bridge_recovers_capture_after_accepted_broker_failure(tmp_path, failure_mode, capture_before_failure):
+    if not hasattr(socket, "AF_UNIX"):
+        pytest.skip("native Unix transport requires Unix sockets")
+    root = str(tmp_path)
+    kit = HookKit(root, "agent")
+    journal = kit.journal
+    run = hashlib.sha256(json.dumps([kit.scope, "accepted"], sort_keys=True).encode()).hexdigest()
+    endpoint = tmp_path / "memory" / "hooks.sock"
+    endpoint.parent.mkdir(parents=True, exist_ok=True)
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+        server.bind(str(endpoint))
+        server.listen(1)
+
+        def peer():
+            with server.accept()[0] as client:
+                frame = b""
+                while b"\n" not in frame:
+                    frame += client.recv(4096)
+                request = json.loads(frame.split(b"\n", 1)[0])
+                if capture_before_failure:
+                    journal.capture(
+                        run,
+                        request["event"],
+                        request["payload"],
+                        scope={**request["scope"], "agent": request["agent"]},
+                        event_id=request["payload"]["event_id"],
+                    )
+                if failure_mode == "malformed":
+                    client.sendall(b"not-json\n")
+                else:
+                    # The bridge's response deadline is 25 ms. Keep this
+                    # accepted request open until the client times out.
+                    while client.recv(4096):
+                        pass
+
+        worker = threading.Thread(target=peer)
+        worker.start()
+        command = shlex.split(kit.manifest("claude")["events"]["UserPromptSubmit"])
+        result = subprocess.run(
+            command + ["--format", "claude"],
+            input='{"session_id":"accepted","prompt":"code"}',
+            text=True,
+            capture_output=True,
+            timeout=15,
+            check=True,
+        )
+        assert json.loads(result.stdout)["context"] == ""
+        worker.join(timeout=5)
+        assert not worker.is_alive()
+
+    for _ in range(100):
+        captures = journal.buffer(run, scope=kit.scope)
+        if captures:
+            break
+        time.sleep(0.02)
+    assert len(captures) == 1
+    assert captures[0]["event"] == "UserPromptSubmit"
+    assert captures[0]["payload"]["event_id"]

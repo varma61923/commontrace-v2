@@ -40,13 +40,27 @@ def _borderline():
 
 
 class TestUnifiedSequentialRule:
+    def test_default_anytime_horizon_is_fixed_across_outcome_counts(self):
+        target = ex.required_n_per_arm(
+            ex.SEQUENTIAL_TARGET_EFFECT_MULTIPLE * ex.DEFAULT_PRACTICAL_EFFECT,
+            0.5,
+        )
+        for counts in ((12, 20, 7, 20), (600, 1000, 400, 1000)):
+            assert ex.anytime_confidence_interval(*counts) == ex.anytime_confidence_interval(
+                *counts, target_n_per_arm=target
+            )
+        with pytest.raises(ValueError, match="positive integer"):
+            ex.anytime_confidence_interval(12, 20, 7, 20, target_n_per_arm=0)
+
     def test_a_clear_help_reports_the_anytime_interval_that_drove_it(self):
         (effect,) = ex.analyze(_obs("l", 100, True, 0.90) + _obs("l", 100, False, 0.50), sequential=True)
         assert effect.verdict == ex.VERDICT_HELPS
         assert effect.significant and effect.ci_low > 0
 
-        baseline = (90 + 50) / (100 + 100)
-        target = ex.required_n_per_arm(ex.SEQUENTIAL_TARGET_EFFECT_MULTIPLE * 0.10, baseline)
+        target = ex.required_n_per_arm(
+            ex.SEQUENTIAL_TARGET_EFFECT_MULTIPLE * ex.DEFAULT_PRACTICAL_EFFECT,
+            0.5,
+        )
         lo, hi = ex.anytime_confidence_interval(90, 100, 50, 100, target_n_per_arm=target)
         assert (effect.ci_low, effect.ci_high) == (round(lo, 4), round(hi, 4))
 

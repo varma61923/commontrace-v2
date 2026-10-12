@@ -118,6 +118,46 @@ def record_usage(
     return entry
 
 
+def _new_usage_stat() -> dict[str, Any]:
+    return {
+        "calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
+        "cache_hit_calls": 0, "cached_tokens": 0, "known_cost_usd": 0.0,
+        "unpriced_calls": 0, "historical_cached_cost_usd": 0.0,
+        "cached_unpriced_calls": 0,
+    }
+
+
+def _add_usage(stat: dict[str, Any], entry: LedgerEntry) -> None:
+    metadata = entry.metadata if isinstance(entry.metadata, dict) else {}
+    cache_hit = metadata.get("cache_hit") is True
+    stat["calls"] += 1
+    stat["prompt_tokens"] += entry.prompt_tokens
+    stat["completion_tokens"] += entry.completion_tokens
+    stat["total_tokens"] += entry.total_tokens
+    if metadata.get("cost_known", True) is False:
+        stat["unpriced_calls"] += 1
+    else:
+        stat["known_cost_usd"] = round(stat["known_cost_usd"] + entry.cost_usd, 6)
+    if cache_hit:
+        stat["cache_hit_calls"] += 1
+        stat["cached_tokens"] += entry.total_tokens
+        history_known = metadata.get("historical_cost_known", metadata.get("cost_known", True)) is not False
+        if history_known:
+            history_cost = metadata.get("historical_cost_usd", entry.cost_usd)
+            if isinstance(history_cost, (float, int)) and not isinstance(history_cost, bool):
+                stat["historical_cached_cost_usd"] = round(
+                    stat["historical_cached_cost_usd"] + float(history_cost), 6)
+        else:
+            stat["cached_unpriced_calls"] += 1
+
+
+def _finish_usage_stat(stat: dict[str, Any]) -> dict[str, Any]:
+    stat["cost_usd"] = stat["known_cost_usd"] if stat["unpriced_calls"] == 0 else None
+    if stat["cached_unpriced_calls"]:
+        stat["historical_cached_cost_usd"] = None
+    return stat
+
+
 def session_summary(root: str, session_id: str) -> dict[str, Any]:
     """Aggregate token usage and costs for a given session with per-model attribution."""
     clean_session = str(session_id or "").strip()
@@ -125,33 +165,27 @@ def session_summary(root: str, session_id: str) -> dict[str, Any]:
 
     total_prompt = 0
     total_completion = 0
-    total_cost = 0.0
+    overall = _new_usage_stat()
     by_model: dict[str, dict[str, Any]] = {}
     by_occasion: dict[str, dict[str, Any]] = {}
 
     for e in entries:
         total_prompt += e.prompt_tokens
         total_completion += e.completion_tokens
-        total_cost += e.cost_usd
+        _add_usage(overall, e)
 
         # By model
-        m_stat = by_model.setdefault(e.model, {
-            "calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "cost_usd": 0.0,
-        })
-        m_stat["calls"] += 1
-        m_stat["prompt_tokens"] += e.prompt_tokens
-        m_stat["completion_tokens"] += e.completion_tokens
-        m_stat["total_tokens"] += e.total_tokens
-        m_stat["cost_usd"] = round(m_stat["cost_usd"] + e.cost_usd, 6)
+        _add_usage(by_model.setdefault(e.model, _new_usage_stat()), e)
 
         # By occasion
         occ = e.occasion or "unspecified"
-        o_stat = by_occasion.setdefault(occ, {
-            "calls": 0, "total_tokens": 0, "cost_usd": 0.0,
-        })
-        o_stat["calls"] += 1
-        o_stat["total_tokens"] += e.total_tokens
-        o_stat["cost_usd"] = round(o_stat["cost_usd"] + e.cost_usd, 6)
+        _add_usage(by_occasion.setdefault(occ, _new_usage_stat()), e)
+
+    for stat in by_model.values():
+        _finish_usage_stat(stat)
+    for stat in by_occasion.values():
+        _finish_usage_stat(stat)
+    _finish_usage_stat(overall)
 
     return {
         "session_id": clean_session,
@@ -159,7 +193,13 @@ def session_summary(root: str, session_id: str) -> dict[str, Any]:
         "prompt_tokens": total_prompt,
         "completion_tokens": total_completion,
         "total_tokens": total_prompt + total_completion,
-        "total_cost_usd": round(total_cost, 6),
+        "total_cost_usd": overall["cost_usd"],
+        "known_cost_usd": overall["known_cost_usd"],
+        "unpriced_calls": overall["unpriced_calls"],
+        "cache_hit_count": overall["cache_hit_calls"],
+        "cached_tokens": overall["cached_tokens"],
+        "historical_cached_cost_usd": overall["historical_cached_cost_usd"],
+        "cached_unpriced_calls": overall["cached_unpriced_calls"],
         "by_model": by_model,
         "by_occasion": by_occasion,
     }
@@ -175,9 +215,10 @@ def overall_ledger_summary(
 
     total_prompt = 0
     total_completion = 0
-    total_cost = 0.0
+    overall = _new_usage_stat()
     sessions_seen: set[str] = set()
     by_model: dict[str, dict[str, Any]] = {}
+    filtered_count = 0
 
     for e in entries:
         if since and e.timestamp < since:
@@ -186,26 +227,29 @@ def overall_ledger_summary(
             continue
 
         sessions_seen.add(e.session_id)
+        filtered_count += 1
         total_prompt += e.prompt_tokens
         total_completion += e.completion_tokens
-        total_cost += e.cost_usd
+        _add_usage(overall, e)
+        _add_usage(by_model.setdefault(e.model, _new_usage_stat()), e)
 
-        m_stat = by_model.setdefault(e.model, {
-            "calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "cost_usd": 0.0,
-        })
-        m_stat["calls"] += 1
-        m_stat["prompt_tokens"] += e.prompt_tokens
-        m_stat["completion_tokens"] += e.completion_tokens
-        m_stat["total_tokens"] += e.total_tokens
-        m_stat["cost_usd"] = round(m_stat["cost_usd"] + e.cost_usd, 6)
+    for stat in by_model.values():
+        _finish_usage_stat(stat)
+    _finish_usage_stat(overall)
 
     return {
-        "call_count": len(entries),
+        "call_count": filtered_count,
         "session_count": len(sessions_seen),
         "prompt_tokens": total_prompt,
         "completion_tokens": total_completion,
         "total_tokens": total_prompt + total_completion,
-        "total_cost_usd": round(total_cost, 6),
+        "total_cost_usd": overall["cost_usd"],
+        "known_cost_usd": overall["known_cost_usd"],
+        "unpriced_calls": overall["unpriced_calls"],
+        "cache_hit_count": overall["cache_hit_calls"],
+        "cached_tokens": overall["cached_tokens"],
+        "historical_cached_cost_usd": overall["historical_cached_cost_usd"],
+        "cached_unpriced_calls": overall["cached_unpriced_calls"],
         "by_model": by_model,
     }
 

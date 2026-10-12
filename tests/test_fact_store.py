@@ -90,6 +90,87 @@ def test_batch_additions_batch_the_fts_projection_when_semantic_search_is_unused
         assert facts.connection.execute("SELECT COUNT(*) FROM fact_fts").fetchone() == (20,)
 
 
+def test_batch_near_dedup_preserves_staged_matches_and_same_block_siblings(tmp_path, monkeypatch):
+    monkeypatch.setenv("COMMONTRACE_FACT_DEDUP", "near")
+    monkeypatch.setenv("COMMONTRACE_FACT_CONFLICTS", "off")
+    root = str(tmp_path)
+    activate(root)
+    near_pair = [
+        {"statement": "component item900 requires durable replicated storage with reliable checksum validation "
+                      "and bounded recovery after a failed write in the primary journal"},
+        {"statement": "component item900 requires durable replicated storage with reliable checksum validation "
+                      "and bounded recovery after a failed transaction in the primary journal"},
+        {"statement": "component item900 enforces access limits through signed tokens and isolated tenant policies"},
+    ]
+    paired = h.add_facts(root, near_pair)
+    assert [action for _, action in paired] == ["ADD", "NOOP", "ADD"]
+    assert paired[0][0].id == paired[1][0].id
+    assert paired[0][0].id != paired[2][0].id
+
+    matching = h.add_facts(root, [{
+        "statement": "component item900 requires durable replicated storage with reliable checksum validation "
+                     "and bounded recovery after a failed operation in the primary journal",
+    }])
+    assert matching[0][1] == "NOOP"
+    assert matching[0][0].id == paired[0][0].id
+
+
+def test_new_fact_revision_and_projection_share_one_detached_snapshot(tmp_path, monkeypatch):
+    monkeypatch.setenv("COMMONTRACE_FACT_CONFLICTS", "off")
+    root = str(tmp_path)
+    activate(root)
+    statements = [
+        "Snapshot reuse item810 keeps event payloads and projections aligned",
+        "Snapshot reuse item811 keeps rollback behavior unchanged",
+    ]
+    calls = {}
+    original = h.AtomicFact.to_dict
+
+    def count_to_dict(fact):
+        if fact.statement in statements:
+            calls[fact.statement] = calls.get(fact.statement, 0) + 1
+        return original(fact)
+
+    monkeypatch.setattr(h.AtomicFact, "to_dict", count_to_dict)
+    result = h.add_facts(root, [{"statement": statement} for statement in statements])
+    monkeypatch.setattr(h.AtomicFact, "to_dict", original)
+
+    assert [action for _, action in result] == ["ADD", "ADD"]
+    assert calls == {statement: 1 for statement in statements}
+    events = fact_store.events(root)
+    by_id = {event["record"]["payload"]["id"]: event["record"]["payload"] for event in events}
+    with fact_store.transaction(root) as facts:
+        for fact, _action in result:
+            expected = fact.to_dict()
+            assert by_id[fact.id] == expected
+            assert json.loads(facts.connection.execute(
+                "SELECT payload FROM facts WHERE id=?", (fact.id,)).fetchone()[0]) == expected
+            assert facts.connection.execute(
+                "SELECT statement FROM fact_fts WHERE fact_id=?", (fact.id,)).fetchone() == (fact.statement,)
+
+
+def test_snapshot_reuse_preserves_one_argument_statement_index_overrides(tmp_path):
+    root = str(tmp_path)
+    activate(root)
+    statements = []
+
+    class LegacyStatementIndex(fact_store.StatementIndex):
+        def add(self, fact):
+            statements.append(fact.statement)
+            super().add(fact)
+
+    with fact_store.transaction(root, write=True) as facts:
+        index = LegacyStatementIndex(facts)
+        fact, action = h._add_locked(
+            facts, "Subclass keeps the legacy add signature", "general", [], None, None, None, 0.8, "",
+            index=index, dedupe="exact",
+        )
+
+    assert action == "ADD"
+    assert statements == [fact.statement]
+    assert fact_store.events(root)[-1]["record"]["payload"] == fact.to_dict()
+
+
 def test_sparse_conflict_slots_skip_candidate_queries(tmp_path, monkeypatch):
     monkeypatch.setenv("COMMONTRACE_FACT_DEDUP", "near")
     monkeypatch.setenv("COMMONTRACE_FACT_CONFLICTS", "flag")

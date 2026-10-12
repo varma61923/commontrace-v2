@@ -47,4 +47,7 @@ The adapter callbacks are synchronous. CrewAI's `kickoff_async()` currently
 runs the synchronous `kickoff()` in a worker thread, so this pair can be used
 there. Its native `akickoff()` path calls `prepare_kickoff()` synchronously;
 these callbacks can block that event loop, so use them only when that blocking
-behavior is acceptable. The current adapter does not provide async callbacks.
+behavior is acceptable. A provider-free lifecycle test reproduced blocking in
+both before- and after-kickoff callbacks against `crewai==1.15.27`; see the
+[runtime validation note](next-generation-crewai-runtime-validation.md). The
+current adapter does not provide async callbacks.

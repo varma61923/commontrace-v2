@@ -279,7 +279,7 @@ def _mixture_proportion_interval(
 def anytime_confidence_interval(
     s1: int, n1: int, s2: int, n2: int,
     alpha: float = 0.05,
-    target_n_per_arm: int = 0,
+    target_n_per_arm: int | None = None,
 ) -> tuple[float, float]:
     """Anytime-valid confidence interval for the difference in proportions.
 
@@ -287,7 +287,10 @@ def anytime_confidence_interval(
     Minkowski subtraction of the two confidence sequences gives a valid
     interval for ``p_injected - p_withheld`` at every stopping time. The
     target horizon controls the symmetric mixture's prior concentration, which
-    changes efficiency without changing the coverage guarantee.
+    changes efficiency without changing the coverage guarantee. If omitted,
+    the horizon is the fixed required sample size for the default 20-point
+    target effect at a 50% baseline; it never depends on the observed counts.
+    Callers with a planned design can supply a positive per-arm horizon.
     """
     _check_success_count(s1, n1, "injected arm")
     _check_success_count(s2, n2, "withheld arm")
@@ -295,9 +298,15 @@ def anytime_confidence_interval(
         return (-1.0, 1.0)
     if not math.isfinite(alpha) or not 0.0 < alpha < 1.0:
         raise ValueError(f"alpha must be in (0, 1), got {alpha}")
-    if target_n_per_arm < 0:
-        raise ValueError(f"target_n_per_arm must be non-negative, got {target_n_per_arm}")
-    target = target_n_per_arm or min(n1, n2)
+    if target_n_per_arm is None:
+        target = required_n_per_arm(
+            SEQUENTIAL_TARGET_EFFECT_MULTIPLE * DEFAULT_PRACTICAL_EFFECT,
+            0.5,
+        )
+    elif type(target_n_per_arm) is int and target_n_per_arm > 0:
+        target = target_n_per_arm
+    else:
+        raise ValueError(f"target_n_per_arm must be a positive integer, got {target_n_per_arm!r}")
     # A square-root horizon prior is too conservative for practical effects;
     # logarithmic concentration keeps the mixture anytime-valid while retaining
     # power for the effect sizes agents actually need to detect.
@@ -470,6 +479,7 @@ def analyze(
     spending_shape: str = SPEND_OBRIEN_FLEMING,
     fixed_horizon: bool = False,
     target_effect_multiple: float = SEQUENTIAL_TARGET_EFFECT_MULTIPLE,
+    target_n_per_arm: int | dict[str, int] | None = None,
 ) -> list[CausalEffect]:
     """Estimate each lesson's causal effect from its holdout arms.
 
@@ -481,7 +491,13 @@ def analyze(
     Sequential (``sequential=True``) — ONE rule, valid at every look. Each
     testable lesson is judged against its own anytime-valid confidence
     interval at level ``alpha`` (see anytime_confidence_interval), whose
-    horizon is sized for ``target_effect_multiple * detectable``:
+    horizon is fixed before outcomes. By default it is sized for
+    ``target_effect_multiple * detectable`` at a conservative 50% baseline;
+    ``target_n_per_arm`` can supply a fixed horizon for every lesson or a
+    per-lesson mapping. A mapping may include planned lessons with no observed
+    rows, using zero for those unscheduled lessons. Every observed lesson must
+    have a positive horizon. The AIPW branch uses the same fixed horizon, but
+    its confidence-sequence coverage remains asymptotic (see ``commontrace.aipw``).
     HELPS iff the whole interval is above zero, HURTS iff the whole
     interval is below zero. Otherwise the lesson is not established, and a
     power gate decides what that means: UNDERPOWERED when this sample could
@@ -518,6 +534,24 @@ def analyze(
         )
     if not target_effect_multiple > 0.0:
         raise ValueError(f"target_effect_multiple must be > 0, got {target_effect_multiple}")
+    default_target = required_n_per_arm(target_effect_multiple * detectable, 0.5)
+    if target_n_per_arm is None:
+        fixed_targets: dict[str, int] | None = None
+        scalar_target = default_target
+    elif type(target_n_per_arm) is int:
+        if target_n_per_arm < 0:
+            raise ValueError("target_n_per_arm must be a non-negative integer")
+        fixed_targets = None
+        scalar_target = target_n_per_arm
+    elif isinstance(target_n_per_arm, dict):
+        fixed_targets = target_n_per_arm
+        scalar_target = None
+        if any(not isinstance(slug, str) or not slug for slug in fixed_targets):
+            raise ValueError("target_n_per_arm mapping keys must be non-empty lesson slugs")
+        if any(type(value) is not int or value < 0 for value in fixed_targets.values()):
+            raise ValueError("target_n_per_arm mapping values must be non-negative integers")
+    else:
+        raise ValueError("target_n_per_arm must be an integer, a lesson mapping, or None")
     if fixed_horizon and sequential:
         raise ValueError(
             "analyze() got fixed_horizon=True together with sequential=True: "
@@ -528,6 +562,19 @@ def analyze(
     by_lesson: dict[str, list[HoldoutObservation]] = {}
     for obs in observations:
         by_lesson.setdefault(obs.lesson_slug, []).append(obs)
+
+    if fixed_targets is None:
+        horizon_by_slug = {slug: scalar_target for slug in by_lesson}
+    else:
+        missing = set(by_lesson) - set(fixed_targets)
+        if missing:
+            raise ValueError(
+                "target_n_per_arm mapping is missing observed lessons: "
+                + ", ".join(sorted(missing))
+            )
+        horizon_by_slug = {slug: fixed_targets[slug] for slug in by_lesson}
+    if sequential and any(horizon < 1 for horizon in horizon_by_slug.values()):
+        raise ValueError("sequential analysis requires a positive target horizon for every observed lesson")
 
     staged: list[tuple[str, int, int, int, int]] = []
     for slug, rows in sorted(by_lesson.items()):
@@ -548,9 +595,7 @@ def analyze(
         for slug, s_inj, n_inj, s_wit, n_wit in testable:
             if slug not in weighted:
                 continue
-            baseline = ((s_inj + s_wit) / (n_inj + n_wit)) if (n_inj + n_wit) else 0.0
-            horizon = (2 * required_n_per_arm(target_effect_multiple * detectable, baseline)
-                       if 0.0 < baseline < 1.0 else 2 * (n_inj + n_wit))
+            horizon = 2 * horizon_by_slug[slug]
             aipw[slug] = allocation.estimate(
                 [allocation.Observation(r.injected, r.succeeded, r.rate) for r in by_lesson[slug]],
                 alpha=alpha, horizon=horizon, sequential=not use_fixed)
@@ -573,13 +618,9 @@ def analyze(
                 interval_by_slug[slug] = (aipw[slug].ci_low, aipw[slug].ci_high)
                 sig_by_slug[slug] = aipw[slug].ci_low > 0.0 or aipw[slug].ci_high < 0.0
                 continue
-            baseline = ((s_inj + s_wit) / (n_inj + n_wit)) if (n_inj + n_wit) else 0.0
-            target = (
-                required_n_per_arm(target_effect_multiple * detectable, baseline)
-                if 0.0 < baseline < 1.0 else 0
-            )
             lo, hi = anytime_confidence_interval(
-                s_inj, n_inj, s_wit, n_wit, alpha=alpha, target_n_per_arm=target
+                s_inj, n_inj, s_wit, n_wit, alpha=alpha,
+                target_n_per_arm=horizon_by_slug[slug],
             )
             interval_by_slug[slug] = (lo, hi)
             sig_by_slug[slug] = lo > 0.0 or hi < 0.0

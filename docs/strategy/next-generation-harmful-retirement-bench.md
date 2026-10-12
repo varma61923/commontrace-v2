@@ -23,9 +23,12 @@ are excluded from randomized-effect estimates. Runner, patch-application,
 launch and timeout errors remain unresolved outcomes; they stop further
 exposure for that lesson and cannot count as causal failures. The report keeps
 execution time and assignment/reconciliation overhead in separate fields.
-Effects are estimated separately for each task. A multi-task run does not emit
-an aggregate uplift gate because the benchmark has no stratified aggregate
-estimator; the gate is evaluated only for a single-task run.
+Effects remain reported separately for each task. Multi-task runs now also use
+the fixed-weight task-stratified estimator and simultaneous interval documented
+in the [stratified uplift note](next-generation-codinglesson-stratified-uplift.md);
+the earlier single-task-only limitation is superseded. This estimator changes
+the gate calculation, not the fixture-only evidence or the requirement for a
+real SWE model run.
 Temporary task stores are isolated by task, and their SQLite handles and
 per-root holdout caches are cleared before disk cleanup. This follows
 Hindsight's useful per-run sandbox

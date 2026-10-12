@@ -126,6 +126,50 @@ def test_curator_preselector_cannot_reintroduce_unbounded_captures(tmp_path):
     assert not journal.buffer("bounded", scope={})
 
 
+def test_curator_prior_slice_uses_task_relevance_before_top_k(tmp_path):
+    from commontrace.memory_record import MemoryRecord
+
+    root = str(tmp_path)
+    journal = captured(root)
+    for index in range(15):
+        journal.put(MemoryRecord(
+            f"a-unrelated-{index:02}", "lesson", 1,
+            {"text": f"Document the on-call rotation for service {index}."},
+            scope={"agent": "a"},
+        ))
+    journal.put(MemoryRecord(
+        "z-relevant", "lesson", 1,
+        {"text": "When pytest fails on parser boundaries, validate the parser input first."},
+        scope={"agent": "a"},
+    ))
+    calls = []
+
+    def update_relevant_prior(prompt):
+        calls.append(prompt)
+        if "WRITER" in prompt:
+            return json.dumps({"accept": True, "reason": "grounded update"}), {}
+        offered = json.loads(prompt.split("\n", 1)[1])
+        offered_prior_ids = {record["id"] for record in offered["prior"]}
+        assert "z-relevant" in offered_prior_ids
+        assert not any(identity.startswith("a-unrelated-") for identity in offered_prior_ids)
+        return json.dumps({
+            "operation": "update",
+            "target_id": "z-relevant",
+            "kind": "procedure",
+            "text": "Validate parser boundaries before running pytest.",
+            "trigger": {},
+        }), {}
+
+    result = learn(root, "r", scope={"agent": "a"}, complete=update_relevant_prior)
+    assert result["operation"] == "update"
+    assert len(calls) == 2
+    updated = journal.search(
+        "parser", scope={"agent": "a"}, kinds=("lesson",), statuses=("quarantined",), limit=1
+    )[0]
+    assert updated.relations["updates"] == ["z-relevant"]
+    assert updated.provenance["source_case_ids"]
+
+
 def test_oversize_capture_keeps_later_actionable_work_unsealed(tmp_path):
     journal = Journal(str(tmp_path))
     journal.capture("r", "UserPromptSubmit", {"prompt": "😀" * 4000}, scope={"agent": "a"})
@@ -181,7 +225,9 @@ def test_required_prior_evidence_cannot_be_dropped_to_fit(tmp_path):
     from commontrace.memory_record import MemoryRecord
 
     journal = captured(str(tmp_path))
-    journal.put(MemoryRecord("large-prior", "lesson", 1, {"text": "x" * 7000}, scope={"agent": "a"}))
+    journal.put(MemoryRecord(
+        "large-prior", "lesson", 1, {"text": "Fix parser " + "x" * 7000}, scope={"agent": "a"}
+    ))
     before = journal.buffer("r", scope={"agent": "a"})
     calls = []
     with pytest.raises(ValueError, match="budget"):
@@ -332,6 +378,34 @@ def test_reflection_leaves_new_task_unsealed(tmp_path):
     assert pending[0]["payload"]["prompt"] == "new unfinished task"
 
 
+def test_reflection_cursor_is_scoped_when_session_ids_interleave(tmp_path):
+    root = str(tmp_path)
+    journal = Journal(root)
+    scope_a, scope_b = {"agent": "a"}, {"agent": "b"}
+    journal.capture("shared", "UserPromptSubmit", {"prompt": "task A"}, scope=scope_a)
+    event_b = journal.capture("shared", "UserPromptSubmit", {"prompt": "task B"}, scope=scope_b)
+    journal.capture("shared", "Stop", {}, scope=scope_a)
+
+    assert learn(root, "shared", scope=scope_a, complete=model)["reason"] == "thin trajectory"
+    pending_b = journal.buffer("shared", scope=scope_b)
+    assert [entry["id"] for entry in pending_b] == [event_b["id"]]
+
+
+def test_legacy_session_cursor_migrates_to_its_capture_scope(tmp_path):
+    journal = Journal(str(tmp_path))
+    scope_a, scope_b = {"agent": "a"}, {"agent": "b"}
+    journal.capture("shared", "UserPromptSubmit", {"prompt": "task A"}, scope=scope_a)
+    event_b = journal.capture("shared", "UserPromptSubmit", {"prompt": "task B"}, scope=scope_b)
+    stop_a = journal.capture("shared", "Stop", {}, scope=scope_a)
+    with journal.connect(write=True) as db:
+        db.execute("INSERT INTO cursors(session,through) VALUES(?,?)", ("shared", stop_a["sequence"]))
+
+    assert journal.buffer("shared", scope=scope_a) == []
+    assert [entry["id"] for entry in journal.buffer("shared", scope=scope_b)] == [event_b["id"]]
+    with journal.connect() as db:
+        assert db.execute("SELECT 1 FROM cursors WHERE session='shared'").fetchone() is None
+
+
 def test_native_tool_case_does_not_infer_run_success(tmp_path):
     root = str(tmp_path)
     journal = Journal(root)
@@ -388,7 +462,10 @@ def test_split_creates_distinct_quarantined_parts_with_pinned_target(tmp_path):
 
     journal = captured(str(tmp_path))
     journal.put(
-        MemoryRecord("broad", "lesson", 1, {"text": "Test parsing and database migrations."}, scope={"agent": "a"})
+        MemoryRecord(
+            "broad", "lesson", 1,
+            {"text": "Validate parser boundaries and test database migrations."}, scope={"agent": "a"},
+        )
     )
 
     def split_model(prompt):

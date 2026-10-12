@@ -122,6 +122,69 @@ def tiered_pair_signals(a_forms: list[str], b_forms: list[str]) -> dict[str, flo
     }
 
 
+def _tiered_exact_pairs(surfaces: list[_TieredSurface]) -> set[tuple[int, int]]:
+    """Index exact normalized forms instead of comparing every entity pair."""
+    from collections import defaultdict
+
+    by_form: dict[str, list[int]] = defaultdict(list)
+    for index, surface in enumerate(surfaces):
+        for form in surface.forms:
+            by_form[form].append(index)
+
+    pairs: set[tuple[int, int]] = set()
+    for members in by_form.values():
+        for offset, a in enumerate(members):
+            for b in members[offset + 1:]:
+                pairs.add((a, b))
+    return pairs
+
+
+def _tiered_minhash_pairs(
+    surfaces: list[_TieredSurface], *, entropy_threshold: float, minhash_threshold: float
+) -> set[tuple[int, int]]:
+    """Return lossless MinHash candidates for the current threshold using LSH bands.
+
+    With the default 128-position signature and four-position bands, a pair with
+    more than 96 agreeing positions must share a complete band. Thus for
+    thresholds above 0.75 the index cannot omit a pair that passes the existing
+    MinHash predicate. Lower thresholds use the exhaustive high-entropy pair
+    set because this guarantee no longer holds.
+    """
+    from collections import defaultdict
+
+    from commontrace.overlap import DEFAULT_NUM_PERM
+
+    eligible = [
+        index for index, surface in enumerate(surfaces)
+        if surface.entropy >= entropy_threshold
+    ]
+    if len(eligible) < 2:
+        return set()
+
+    signatures_match_expected = all(
+        len(surfaces[index].signature) == DEFAULT_NUM_PERM for index in eligible
+    )
+    if minhash_threshold <= 0.75 or not signatures_match_expected:
+        return {
+            (a, b)
+            for offset, a in enumerate(eligible)
+            for b in eligible[offset + 1:]
+        }
+
+    band_size = 4
+    buckets: dict[tuple[int, tuple[int, ...]], list[int]] = defaultdict(list)
+    pairs: set[tuple[int, int]] = set()
+    for index in eligible:
+        signature = surfaces[index].signature
+        for band_index, start in enumerate(range(0, DEFAULT_NUM_PERM, band_size)):
+            band = tuple(signature[start:start + band_size])
+            key = (band_index, band)
+            for other in buckets[key]:
+                pairs.add((other, index))
+            buckets[key].append(index)
+    return pairs
+
+
 def candidates(root: str, *, embedder=None, threshold: float | None = None, context: bool = False,
                limit: int = 100) -> dict:
     """Merge candidates, best first: {"method", "threshold", "pairs": [{a, b, score,
@@ -225,19 +288,22 @@ def tiered_candidates(root: str, *, embedder=None, complete=None, limit=100,
     found, remainder = {}, {}
     surfaces = [_tiered_surface(_forms(node)) for node in nodes]
 
-    for a in range(len(nodes)):
-        for b in range(a + 1, len(nodes)):
-            if not compatible(onto, nodes[a].entity_type, nodes[b].entity_type):
-                continue
-            if surfaces[a].forms & surfaces[b].forms:
-                found[(a, b)] = ("exact", 1.0)
-            else:
-                entropy = min(surfaces[a].entropy, surfaces[b].entropy)
-                similarity = (estimate_jaccard(surfaces[a].signature, surfaces[b].signature)
-                              if surfaces[a].signature and surfaces[b].signature else 0.0)
-                jaccard = kg_similarity.jaccard(surfaces[a].grams, surfaces[b].grams)
-                if entropy >= entropy_threshold and similarity >= minhash_threshold and jaccard >= jaccard_threshold:
-                    found[(a, b)] = ("minhash", similarity)
+    for a, b in _tiered_exact_pairs(surfaces):
+        if compatible(onto, nodes[a].entity_type, nodes[b].entity_type):
+            found[(a, b)] = ("exact", 1.0)
+
+    for a, b in _tiered_minhash_pairs(
+        surfaces, entropy_threshold=entropy_threshold, minhash_threshold=minhash_threshold
+    ):
+        if (a, b) in found or not compatible(onto, nodes[a].entity_type, nodes[b].entity_type):
+            continue
+        similarity = (
+            estimate_jaccard(surfaces[a].signature, surfaces[b].signature)
+            if surfaces[a].signature and surfaces[b].signature else 0.0
+        )
+        jaccard = kg_similarity.jaccard(surfaces[a].grams, surfaces[b].grams)
+        if similarity >= minhash_threshold and jaccard >= jaccard_threshold:
+            found[(a, b)] = ("minhash", similarity)
     provider = kg_similarity.embedder(embedder)
     if provider is not None:
         scores = _embedding_scores(root, nodes, provider, False)

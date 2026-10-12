@@ -52,6 +52,10 @@ class MemoryClient:
     def forget_record(self, identity: str, *, reason: str) -> dict:
         return self._record_operation("record-forget", {"id": identity, "reason": reason})
 
+    def reap_due_records(self, *, limit: int = 16) -> list[dict]:
+        """Erase a bounded batch of records whose forget_after timestamp has passed."""
+        return self._record_operation("record-reap-due", {"limit": limit})["results"]
+
     @configured
     def _record_operation(self, operation: str, payload: dict) -> dict:
         from commontrace.api_schema import validate_request

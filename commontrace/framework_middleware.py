@@ -15,7 +15,7 @@ from commontrace import memory_guard
 from commontrace.configuration import configured
 from commontrace.hook_kit import HookKit
 from commontrace.memory_journal import Journal, moment, now
-from commontrace.memory_record import MemoryRecord
+from commontrace.memory_record import MemoryRecord, rerank_profile_results
 
 
 def scope_from_labels(labels: list[str]) -> dict:
@@ -96,6 +96,7 @@ def turn(
         maintain_preferences(kit.journal, text, scope, source_ids=[captured["id"], event_payload["event_id"]])
     result = kit.handle(event or "UserPromptSubmit", event_payload)
     profile = {"static": [], "dynamic": [], "custom": []}
+    preference_rankers = []
     for record in kit.journal.search("", scope=scope, kinds=("profile",), limit=30):
         data = record.payload
         half_life, initial_weight = data.get("half_life_days", 90), data.get("weight", 1)
@@ -113,9 +114,16 @@ def turn(
         )
         weight = initial_weight * (1 if data.get("bucket") == "static" else 2 ** (-age / half_life))
         bucket = data.get("bucket", "custom")
-        profile[bucket if bucket in profile else "custom"].append(
-            {"id": record.id, "text": data.get("text", ""), "weight": weight}
-        )
+        entry = {"id": record.id, "text": data.get("text", ""), "weight": weight}
+        profile[bucket if bucket in profile else "custom"].append(entry)
+        if (
+            bucket == "dynamic"
+            and data.get("author") == "user"
+            and record.provenance.get("authored_by") == "user"
+            and isinstance(data.get("source_message_ids"), list)
+            and any(isinstance(identity, str) and identity for identity in data["source_message_ids"])
+        ):
+            preference_rankers.append({**entry, "bucket": bucket, "author": "user"})
     buffer = kit.journal.buffer(run, scope=scope, limit=16)
     # The unextracted buffer is evidence, never silently promoted to a fact or rule.
     clean, _ = memory_guard.sanitize_metadata(buffer, pii=True)
@@ -124,6 +132,7 @@ def turn(
     found = []
     if query.strip():
         found = search_recipes.search(root, query, context=context, limit=10)
+        found = rerank_profile_results(found, preference_rankers)
     return {
         "context": result["context"],
         "injected": result["injected"],

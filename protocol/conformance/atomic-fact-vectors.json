@@ -1,0 +1,181 @@
+{
+  "extension": "atomic-fact-envelope-v1",
+  "marker": "commontrace.atomic-fact.v1",
+  "roundtrip": [
+    {
+      "name": "full-fidelity-with-earlier-expiry",
+      "fact": {
+        "id": "bridge-example",
+        "statement": "Ada prefers SQLite.",
+        "category": "preference",
+        "scopes": [
+          "user:ada",
+          "tenant:team",
+          "repo:demo",
+          "personal"
+        ],
+        "confidence": 0.8123456789,
+        "confirmations": 3,
+        "valid_from": "2026-01-01T00:00:00Z",
+        "valid_until": "2030-01-01T00:00:00Z",
+        "expires_at": "2028-01-01T00:00:00Z",
+        "forgotten": false,
+        "source_traces": [
+          "trace-2",
+          "trace-1"
+        ],
+        "status": "active",
+        "superseded_by": null,
+        "revision": "legacy-revision",
+        "created_at": "2026-01-02T00:00:00Z",
+        "updated_at": "2026-01-03T00:00:00Z",
+        "stability": "dynamic",
+        "evidence": [
+          {
+            "kind": "fact",
+            "source_id": "supporting-fact",
+            "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "polarity": "support",
+            "recorded_at": "2026-01-02T00:00:00Z"
+          }
+        ],
+        "evidence_bound": true,
+        "min_support": 1,
+        "evidence_revision": "bound-revision",
+        "memory_type": "world",
+        "origin": {
+          "author": "user",
+          "nested": {
+            "ordinal": [
+              1,
+              true,
+              null
+            ]
+          }
+        },
+        "retracted_at": null
+      },
+      "version": 2,
+      "tenant": "team",
+      "scope": {
+        "tenant": "team",
+        "user": "ada",
+        "repo": "demo",
+        "labels": [
+          "personal"
+        ]
+      },
+      "status": "active"
+    },
+    {
+      "name": "blank-legacy-forgotten",
+      "fact": {
+        "id": "blank-legacy",
+        "statement": "Ada prefers SQLite.",
+        "category": "preference",
+        "scopes": [
+          "user:ada",
+          "user:ada",
+          "custom:label"
+        ],
+        "confidence": 0.8123456789,
+        "confirmations": 3,
+        "valid_from": "",
+        "valid_until": null,
+        "expires_at": null,
+        "forgotten": true,
+        "source_traces": [
+          "trace-2",
+          "trace-1"
+        ],
+        "status": "active",
+        "superseded_by": null,
+        "revision": "",
+        "created_at": "",
+        "updated_at": "",
+        "stability": "dynamic",
+        "evidence": [],
+        "evidence_bound": false,
+        "min_support": 1,
+        "evidence_revision": "",
+        "memory_type": "world",
+        "origin": {
+          "author": "user",
+          "nested": {
+            "ordinal": [
+              1,
+              true,
+              null
+            ]
+          }
+        },
+        "retracted_at": null
+      },
+      "version": 1,
+      "tenant": "team",
+      "scope": {
+        "tenant": "team",
+        "user": "ada",
+        "labels": [
+          "custom:label"
+        ]
+      },
+      "status": "deprecated"
+    }
+  ],
+  "rejected": [
+    {
+      "name": "unknown-field",
+      "payload_patch": {
+        "future_field": true
+      }
+    },
+    {
+      "name": "statement-text-mismatch",
+      "payload_patch": {
+        "text": "different claim"
+      }
+    },
+    {
+      "name": "conflicting-user-dimension",
+      "payload_patch": {
+        "scopes": [
+          "user:ada",
+          "user:mallory"
+        ]
+      }
+    },
+    {
+      "name": "nonboolean-forgotten",
+      "payload_patch": {
+        "forgotten": "false"
+      }
+    },
+    {
+      "name": "missing-format-marker",
+      "record_patch": {
+        "provenance": {}
+      }
+    },
+    {
+      "name": "unsupported-format-version",
+      "record_patch": {
+        "provenance": {
+          "atomic_fact_format": "commontrace.atomic-fact.v2"
+        }
+      }
+    },
+    {
+      "name": "unmirrored-confidence",
+      "record_patch": {
+        "confidence": 0.2
+      }
+    },
+    {
+      "name": "inactive-reactivated",
+      "payload_patch": {
+        "status": "deleted"
+      }
+    }
+  ]
+}

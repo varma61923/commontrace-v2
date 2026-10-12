@@ -192,3 +192,49 @@ async def test_missing_user_identity_does_not_run_unscoped_memory(monkeypatch, r
 
     with pytest.raises(ValueError, match="requires user_id"):
         await provider.before_run(agent=None, session=SimpleNamespace(session_id="run-1"), context=context, state={})
+
+
+@pytest.mark.asyncio
+async def test_loop_nudges_reuse_context_without_overwriting_user_turn(monkeypatch, request, tmp_path):
+    module = _install_fake_agent_framework(monkeypatch, request)
+    provider = module.CommonTraceContextProvider(
+        MemoryClient(str(tmp_path), agent_id="af-agent", context={"user": "alice"})
+    )
+    calls = []
+    original_turn = MemoryClient.turn
+
+    def tracked_turn(memory, session_id, query, **kwargs):
+        calls.append(query)
+        result = original_turn(memory, session_id, query, **kwargs)
+        result["context"] = "Read-only retrieved context"
+        return result
+
+    monkeypatch.setattr(MemoryClient, "turn", tracked_turn)
+    session = SimpleNamespace(session_id="run-1")
+    state = {}
+    loop_token = object()
+    original = FakeSessionContext(session_id="run-1", user_id="alice", query="Original user request")
+    original.options["_agent_loop_iteration"] = loop_token
+    await provider.before_run(agent=None, session=session, context=original, state=state)
+    # Provider state can be persisted without serializing the SDK's object token.
+    json.dumps(state)
+
+    nudge = FakeSessionContext(session_id="run-1", user_id="alice", query="Synthetic continuation")
+    nudge.options["_agent_loop_iteration"] = loop_token
+    await provider.before_run(agent=None, session=session, context=nudge, state=state)
+    assert calls == ["Original user request"]
+    assert nudge.instructions == original.instructions
+
+    original.options.pop("_agent_loop_iteration")
+    original.response = SimpleNamespace(messages=[FakeMessage("assistant", "Completed task")])
+    await provider.after_run(agent=None, session=session, context=original, state=state)
+    assert state == {}
+    scope = {"agent": "af-agent", "user": "alice"}
+    events = Journal(str(tmp_path)).buffer(_run_key(scope, "run-1"), scope=scope)
+    assert [entry["payload"]["text"] for entry in events if entry["event"] == "UserMessage"] == ["Original user request"]
+    assert [entry["payload"]["result"] for entry in events if entry["event"] == "SessionEnd"] == ["Completed task"]
+
+    # A later loop, even in the same session with the same request, is a new turn.
+    original.options["_agent_loop_iteration"] = object()
+    await provider.before_run(agent=None, session=session, context=original, state=state)
+    assert calls == ["Original user request", "Original user request"]

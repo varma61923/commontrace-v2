@@ -65,6 +65,75 @@ def test_advanced_settings_and_secret_references_share_the_yaml(tmp_path, monkey
         load(str(tmp_path))
 
 
+def test_profile_scoped_secret_references_preserve_environment_compatibility(tmp_path, monkeypatch):
+    import json
+
+    import jsonschema
+    import yaml
+
+    from commontrace.configuration import SETTING_PATHS, apply, getenv, load, migrate_environment
+    from commontrace.secrets_provider import env_secret
+
+    for name in SETTING_PATHS:
+        for suffix in ("", "_FILE", "_AWS_SECRET_ID", "_AWS_SECRET_FIELD", "_AWS_REGION"):
+            monkeypatch.delenv(name + suffix, raising=False)
+    monkeypatch.delenv("COMMONTRACE_CONFIG", raising=False)
+    (tmp_path / "shared-key").write_text("shared-profile-key")
+    (tmp_path / "local-key").write_text("local-profile-key")
+    (tmp_path / "team-key").write_text("team-profile-key")
+    source = (
+        "profile: team\n"
+        "secrets:\n  COMMONTRACE_LLM_API_KEY: file:shared-key\n"
+        "profiles:\n"
+        "  local:\n"
+        "    settings:\n      runtime:\n        query_cache: true\n"
+        "    secrets:\n      COMMONTRACE_LLM_API_KEY: file:local-key\n"
+        "  team:\n"
+        "    settings:\n      runtime:\n        query_cache: false\n"
+        "    secrets:\n      COMMONTRACE_LLM_API_KEY: file:team-key\n"
+    )
+    config_path = tmp_path / "commontrace.yaml"
+    config_path.write_text(source)
+
+    schema_path = os.path.join(os.path.dirname(__file__), "..", "commontrace", "configuration.schema.json")
+    with open(schema_path, encoding="utf-8") as stream:
+        schema = json.load(stream)
+    jsonschema.Draft202012Validator(schema).validate(yaml.safe_load(source))
+
+    monkeypatch.setenv("COMMONTRACE_LLM_API_KEY", "legacy-env-key")
+    preview = migrate_environment(str(tmp_path))
+    assert "COMMONTRACE_LLM_API_KEY" in preview["retained_names"]
+    assert "COMMONTRACE_LLM_API_KEY" not in preview["migrated_names"]
+    assert "legacy-env-key" not in config_path.read_text() + json.dumps(preview)
+    monkeypatch.delenv("COMMONTRACE_LLM_API_KEY")
+
+    for profile, expected_key, expected_cache in (
+        ("local", "local-profile-key", "1"),
+        ("team", "team-profile-key", "0"),
+        ("server", "shared-profile-key", None),
+    ):
+        with apply(load(str(tmp_path), profile=profile)):
+            assert env_secret("COMMONTRACE_LLM_API_KEY") == expected_key
+            assert getenv("COMMONTRACE_LLM_API_KEY") == expected_key
+            if expected_cache is None:
+                assert getenv("COMMONTRACE_QUERY_CACHE") is None
+            else:
+                assert getenv("COMMONTRACE_QUERY_CACHE") == expected_cache
+
+    monkeypatch.setenv("COMMONTRACE_LLM_API_KEY", "explicit-env-key")
+    with apply(load(str(tmp_path), profile="local")):
+        assert env_secret("COMMONTRACE_LLM_API_KEY") == "explicit-env-key"
+        assert getenv("COMMONTRACE_LLM_API_KEY") == "explicit-env-key"
+
+
+def test_profile_secret_references_reject_plaintext_values(tmp_path):
+    (tmp_path / "commontrace.yaml").write_text(
+        "profiles:\n  team:\n    secrets:\n      COMMONTRACE_LLM_API_KEY: plaintext-secret\n"
+    )
+    with pytest.raises(ValueError, match="secrets"):
+        load(str(tmp_path), profile="team")
+
+
 @pytest.mark.parametrize("value", [".nan", ".inf", "-.inf"])
 def test_nonfinite_configuration_rejected(tmp_path, value):
     (tmp_path / "commontrace.yaml").write_text("settings:\n  runtime:\n    warm_idle: " + value + "\n")

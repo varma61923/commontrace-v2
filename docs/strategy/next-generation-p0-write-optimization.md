@@ -184,14 +184,19 @@ has been promoted: staged semantic admission and broader behavior need contracts
 before a production rewrite. Both the new write run and application validation
 used concurrent processes; separate-run differences are not causal estimates.
 
-The later combined profile still spends time recursively copying ordinary fact
-payloads for revision calculation and event/projection serialization. Add a
-small `AtomicFact.to_dict` fast path for the exact base class when every field
-is an immutable scalar or a plain list/dict of immutable scalars. Copy those
-containers and preserve dataclass field order. Subclasses, nested containers,
-evidence records, custom scalar types and arbitrary origin values retain
-`dataclasses.asdict` semantics through the existing implementation. Test detached
-snapshots, nested dataclasses, custom copy behavior, missing instance defaults
-and subclasses before changing the method. This does not skip envelope validation
-or change persisted bytes. A local serialization profile is diagnostic; only
-the unchanged million-fact real-API workload can close the write gate.
+The ordinary-fact snapshot fast path is implemented in `AtomicFact.to_dict`.
+It copies scalar containers while preserving dataclass field order, and retains
+`dataclasses.asdict` behavior for subclasses, evidence, nested values and custom
+scalar types. Contract tests cover detached snapshots, nested dataclasses,
+custom copy behavior, missing instance defaults and subclass fields. The
+serialization-only profile rose from 96.5–99.0K to 173.1–176.1K calls/s; this
+is a component diagnostic, not evidence of faster batch ingestion. The latest
+million-fact clean baseline still measures 6.198 ms single-write p95 and
+1,858.199 facts/s batched, so the batch gate remains open. The measured source
+and command are in the [scorecard](scorecard.md) and its linked reports.
+
+A later near-block-prefetch experiment reduced the 1K batch's point-probe count
+to five bounded queries, but the single 30K diagnostic measured 2,291.688
+facts/s on baseline and 2,261.888 on the candidate. The implementation was
+removed because this did not show a throughput lift; neither result establishes
+the exact 1M write gate. See the preserved [candidate report](next-generation-f1-near-block-prefetch.md).

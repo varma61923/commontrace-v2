@@ -11,6 +11,46 @@ from commontrace.vector_snapshots import SnapshotConflict
 from commontrace.vector_store import SQLiteVectorIndex, VectorRecord
 
 
+def test_hard_erasure_overrides_old_pins_and_revokes_private_builders(tmp_path):
+    async def run():
+        path = str(tmp_path / "vectors.db")
+        index = await SQLiteVectorIndex.open(path, tenant="owner", namespace="memory", model="model", dimension=3)
+        other = await SQLiteVectorIndex.open(path, tenant="other", namespace="memory", model="model", dimension=3)
+        try:
+            snapshots = index.snapshots
+            first = await snapshots.begin(0, "first", full=True)
+            await snapshots.stage(first, [VectorRecord("a", [1, 0, 0]), VectorRecord("b", [0, 1, 0])])
+            assert await snapshots.publish(first)
+            old = await snapshots.pin("first")
+            next_build = await snapshots.begin(1, "next")
+            await snapshots.stage(next_build, [VectorRecord("a", [-1, 0, 0])])
+            assert await snapshots.publish(next_build)
+            pending = await snapshots.begin(2, "pending")
+            await snapshots.stage(pending, [VectorRecord("a", [1, 0, 0])])
+            unrelated = await other.snapshots.begin(0, "other", full=True)
+            await other.snapshots.stage(unrelated, [VectorRecord("a", [1, 0, 0])])
+            assert await other.snapshots.publish(unrelated)
+            assert await snapshots.erase(["a"]) == 2
+            assert [hit.key for hit in await snapshots.search(old, [1, 0, 0])] == ["b"]
+            assert not await snapshots.publish(pending)
+            with pytest.raises(SnapshotConflict):
+                await snapshots.stage(pending, [VectorRecord("a", [1, 0, 0])])
+            with sqlite3.connect(path) as db:
+                assert db.execute("SELECT count(*) FROM commontrace_snapshot_versions WHERE tenant='owner' "
+                                  "AND key='a'").fetchone()[0] == 0
+                assert db.execute("SELECT count(*) FROM commontrace_snapshot_stage WHERE tenant='owner' "
+                                  "AND key='a'").fetchone()[0] == 0
+            other_read = await other.snapshots.pin("other")
+            assert [hit.key for hit in await other.snapshots.search(other_read, [1, 0, 0])] == ["a"]
+            assert await snapshots.erase(["a"]) == 0
+            await snapshots.release(old)
+            await other.snapshots.release(other_read)
+        finally:
+            await index.close()
+            await other.close()
+    asyncio.run(run())
+
+
 def test_private_builds_atomic_winner_stable_reads_and_erasure(tmp_path):
     async def run():
         index = await SQLiteVectorIndex.open(str(tmp_path / 'vectors.db'), tenant='owner', namespace='memory',

@@ -4819,7 +4819,7 @@
               }
             }
           },
-          "description": "MemoryRecord envelope, scoped query, or id and erasure reason.",
+          "description": "MemoryRecord envelope, scoped query, erasure id and reason, or optional expiration batch limit.",
           "required": true
         },
         "responses": {
@@ -4833,7 +4833,7 @@
                 }
               }
             },
-            "description": "Versioned record, search results, or erasure audit."
+            "description": "Versioned record, search results, erasure audit, or expiration reaping results."
           },
           "400": {
             "content": {
@@ -4867,7 +4867,7 @@
             "apiKey": []
           }
         ],
-        "summary": "Versioned scoped records: put, search or hard forget",
+        "summary": "Versioned scoped records: put, search, hard forget or reap due expirations",
         "tags": [
           "Memory"
         ]
@@ -8931,7 +8931,7 @@
               }
             }
           },
-          "description": "Record envelope or query, context labels, or erasure reason.",
+          "description": "Record envelope, query, context labels, erasure reason, or expiration batch limit.",
           "required": true
         },
         "responses": {
@@ -8945,7 +8945,7 @@
                 }
               }
             },
-            "description": "Record SDK response"
+            "description": "Record SDK response, including bounded expiration reaping results"
           },
           "400": {
             "content": {
@@ -8979,7 +8979,7 @@
             "apiKey": []
           }
         ],
-        "summary": "Local SDK record-put, record-search and record-forget wire parity",
+        "summary": "Local SDK record-put, record-search, record-forget and record-reap-due wire parity",
         "tags": [
           "Memory"
         ]

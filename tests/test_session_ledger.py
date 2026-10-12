@@ -53,6 +53,9 @@ def test_session_ledger_usage(store):
     assert summary["total_tokens"] == 3600
     assert "gpt-4o" in summary["by_model"]
     assert "claude-sonnet-5" in summary["by_model"]
+    assert summary["by_occasion"]["qa"]["prompt_tokens"] == 2000
+    assert summary["by_occasion"]["qa"]["completion_tokens"] == 500
+    assert summary["by_occasion"]["qa"]["total_tokens"] == 2500
 
     # Global summary
     overall = session_ledger.overall_ledger_summary(store)

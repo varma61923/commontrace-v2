@@ -22,6 +22,269 @@ from dataclasses import asdict
 
 from commontrace import experiment
 
+_UPLIFT_ALPHA = 0.05
+_UPLIFT_THRESHOLD = 0.05
+
+
+def _planned_task_slots(tasks: list[dict], occasions: int) -> dict[str, int]:
+    base, remainder = divmod(occasions, len(tasks))
+    return {
+        task["id"]: base + int(index < remainder)
+        for index, task in enumerate(tasks)
+    }
+
+
+def _normalize_task_weights(
+    tasks: list[dict], task_weights: dict[str, float] | None, occasions: int
+) -> dict[str, float]:
+    """Return fixed target weights, normalized and in task-manifest order."""
+    task_ids = [task["id"] for task in tasks]
+    if task_weights is None:
+        raw = _planned_task_slots(tasks, occasions)
+    else:
+        if not isinstance(task_weights, dict) or set(task_weights) != set(task_ids):
+            raise ValueError("task weights must name every task exactly once")
+        raw = task_weights
+    weights = {}
+    for task_id in task_ids:
+        value = raw[task_id]
+        if type(value) not in (int, float):
+            raise ValueError("task weights must be finite numbers")
+        try:
+            value = float(value)
+        except OverflowError as exc:
+            raise ValueError("task weights must be finite numbers") from exc
+        if not math.isfinite(value):
+            raise ValueError("task weights must be finite numbers")
+        if (task_weights is not None and value <= 0) or value < 0:
+            raise ValueError("explicit task weights must be positive; scheduled weights cannot be negative")
+        weights[task_id] = value
+    total = sum(weights.values())
+    if not math.isfinite(total) or total <= 0:
+        raise ValueError("task weights must have a finite positive sum")
+    return {task_id: value / total for task_id, value in weights.items()}
+
+
+def _stratified_uplift(
+    tasks: list[dict],
+    rows: list[dict],
+    effects: list[dict],
+    weights: dict[str, float],
+    planned_slots: dict[str, int],
+    *,
+    weighting: str,
+) -> dict:
+    """Build a weighted estimate with preplanned, simultaneous anytime intervals."""
+    observed = {
+        effect["lesson_slug"]: effect
+        for effect in effects
+        if effect.get("effect") is not None
+    }
+    effect_rows = {effect["lesson_slug"]: effect for effect in effects}
+    target_tasks = [task for task in tasks if weights[task["id"]] > 0]
+    task_counts = {}
+    for task in tasks:
+        task_counts[task["id"]] = {
+            "randomized": 0,
+            "unresolved": 0,
+            "injected_n": 0,
+            "injected_successes": 0,
+            "withheld_n": 0,
+            "withheld_successes": 0,
+        }
+    for row in rows:
+        if row["randomized"]:
+            counts = task_counts[row["task"]]
+            counts["randomized"] += 1
+            if row["succeeded"] is None:
+                counts["unresolved"] += 1
+            elif row["injected"]:
+                counts["injected_n"] += 1
+                counts["injected_successes"] += int(row["succeeded"])
+            else:
+                counts["withheld_n"] += 1
+                counts["withheld_successes"] += int(row["succeeded"])
+
+    per_task = []
+    raw_intervals = {}
+    raw_effects = {}
+    all_have_estimate = True
+    all_testable = True
+    for task in tasks:
+        task_id = task["id"]
+        counts = task_counts[task_id]
+        effect = observed.get(task_id)
+        injected_n = counts["injected_n"]
+        withheld_n = counts["withheld_n"]
+        target_n = (planned_slots[task_id] + 1) // 2
+        has_estimate = injected_n > 0 and withheld_n > 0
+        if effect is None or not has_estimate:
+            if weights[task_id] > 0:
+                all_have_estimate = False
+                all_testable = False
+            task_effect = effect_rows.get(task_id)
+            if task_effect is not None:
+                task_effect.update({
+                    "n_injected": injected_n,
+                    "n_withheld": withheld_n,
+                    "planned_occasions": planned_slots[task_id],
+                    "target_n_per_arm": target_n,
+                    "unresolved_randomized_occasions": counts["unresolved"],
+                    "ci_low": None,
+                    "ci_high": None,
+                    "significant": False,
+                    "verdict": experiment.VERDICT_UNDERPOWERED,
+                    "interval_method": "withheld: task has no resolved observations in both arms",
+                    "note": (
+                        "Unresolved randomized outcomes prevent a task-level interval."
+                        if counts["unresolved"] else
+                        "Resolved outcomes are missing from one randomized arm."
+                    ),
+                })
+            per_task.append({
+                "task": task_id,
+                "weight": weights[task_id],
+                "randomized_occasions": counts["randomized"],
+                "unresolved_occasions": counts["unresolved"],
+                "planned_occasions": planned_slots[task_id],
+                "target_n_per_arm": target_n,
+                "n_injected": injected_n,
+                "n_withheld": withheld_n,
+                "effect": (
+                    round(
+                        counts["injected_successes"] / injected_n
+                        - counts["withheld_successes"] / withheld_n,
+                        4,
+                    )
+                    if has_estimate else None
+                ),
+                "ci_low": None,
+                "ci_high": None,
+                "status": "no_resolved_randomized_outcomes",
+            })
+            continue
+        testable = injected_n >= experiment.DEFAULT_MIN_ARM and withheld_n >= experiment.DEFAULT_MIN_ARM
+        unresolved_task = counts["unresolved"] > 0
+        if weights[task_id] > 0:
+            all_testable = all_testable and testable
+        if testable and not unresolved_task:
+            raw_intervals[task_id] = experiment.anytime_confidence_interval(
+                counts["injected_successes"],
+                injected_n,
+                counts["withheld_successes"],
+                withheld_n,
+                alpha=_UPLIFT_ALPHA / len(tasks),
+                target_n_per_arm=target_n,
+            )
+        raw_effects[task_id] = (
+            counts["injected_successes"] / injected_n
+            - counts["withheld_successes"] / withheld_n
+        )
+        effect["planned_occasions"] = planned_slots[task_id]
+        effect["target_n_per_arm"] = target_n
+        effect["unresolved_randomized_occasions"] = counts["unresolved"]
+        effect["interval_method"] = "CommonTrace anytime-valid interval with preplanned round-robin horizon"
+        if task_id in raw_intervals:
+            interval_low, interval_high = raw_intervals[task_id]
+            effect["ci_low"] = math.floor(interval_low * 10000 + 1e-10) / 10000
+            effect["ci_high"] = math.ceil(interval_high * 10000 - 1e-10) / 10000
+            effect["significant"] = interval_low > 0.0 or interval_high < 0.0
+            if interval_low > 0.0:
+                effect["verdict"] = experiment.VERDICT_HELPS
+                effect["note"] = "The fixed-horizon anytime-valid interval supports a positive task effect."
+            elif interval_high < 0.0:
+                effect["verdict"] = experiment.VERDICT_HURTS
+                effect["note"] = "The fixed-horizon anytime-valid interval supports a negative task effect."
+            else:
+                effect["verdict"] = experiment.VERDICT_UNDERPOWERED
+                effect["note"] = "The fixed-horizon anytime-valid interval spans zero; no directional verdict is established."
+        else:
+            effect["ci_low"] = None
+            effect["ci_high"] = None
+            effect["significant"] = False
+            effect["verdict"] = experiment.VERDICT_UNDERPOWERED
+            if unresolved_task:
+                effect["note"] = "Unresolved randomized outcomes prevent a task-level interval."
+            else:
+                effect["note"] = (
+                    f"At least {experiment.DEFAULT_MIN_ARM} resolved outcomes in each arm are required "
+                    "before reporting an anytime-valid task interval."
+                )
+        per_task.append({
+            "task": task_id,
+            "weight": weights[task_id],
+            "randomized_occasions": counts["randomized"],
+            "unresolved_occasions": counts["unresolved"],
+            "planned_occasions": planned_slots[task_id],
+            "target_n_per_arm": target_n,
+            "n_injected": injected_n,
+            "n_withheld": withheld_n,
+            "effect": round(
+                counts["injected_successes"] / injected_n
+                - counts["withheld_successes"] / withheld_n,
+                4,
+            ),
+            "ci_low": raw_intervals.get(task_id, (None, None))[0],
+            "ci_high": raw_intervals.get(task_id, (None, None))[1],
+            "status": "testable" if testable else "underpowered",
+        })
+
+    target_unresolved = sum(task_counts[task["id"]]["unresolved"] for task in target_tasks)
+    point = (
+        sum(
+            weights[task["id"]] * raw_effects[task["id"]]
+            for task in target_tasks
+        )
+        if all_have_estimate and target_unresolved == 0 else None
+    )
+    interval_available = all_have_estimate and all_testable and target_unresolved == 0
+    for row in per_task:
+        if row["task"] in raw_intervals:
+            row["ci_low"] = math.floor(row["ci_low"] * 10000 + 1e-10) / 10000
+            row["ci_high"] = math.ceil(row["ci_high"] * 10000 - 1e-10) / 10000
+    if interval_available:
+        ci_low = sum(
+            weights[task["id"]] * raw_intervals[task["id"]][0]
+            for task in target_tasks
+        )
+        ci_high = sum(
+            weights[task["id"]] * raw_intervals[task["id"]][1]
+            for task in target_tasks
+        )
+        # Keep displayed confidence bounds conservative by rounding out.
+        ci_low = math.floor(ci_low * 10000 + 1e-10) / 10000
+        ci_high = math.ceil(ci_high * 10000 - 1e-10) / 10000
+    else:
+        ci_low = ci_high = None
+    if target_unresolved:
+        reason = "unresolved randomized outcomes prevent aggregate inference"
+    elif not all_have_estimate:
+        reason = "one or more tasks have no resolved randomized outcomes"
+    elif not all_testable:
+        reason = f"each task needs at least {experiment.DEFAULT_MIN_ARM} resolved outcomes in both arms"
+    else:
+        reason = None
+
+    return {
+        "estimand": "weighted_average_of_task_specific_success_rate_differences",
+        "weighting": weighting,
+        "task_weights": weights,
+        "effect": round(point, 4) if point is not None else None,
+        "effect_unrounded": point,
+        "ci_low": ci_low,
+        "ci_high": ci_high,
+        "evaluated": interval_available,
+        "reason": reason,
+        "confidence_level": 0.95,
+        "alpha": _UPLIFT_ALPHA,
+        "per_task_alpha": _UPLIFT_ALPHA / len(tasks),
+        "positive_weight_strata": len(target_tasks),
+        "interval_method": "weighted sum of CommonTrace anytime-valid intervals with preplanned round-robin horizons and Bonferroni familywise correction",
+        "min_resolved_per_arm": experiment.DEFAULT_MIN_ARM,
+        "unresolved_randomized_occasions": target_unresolved,
+        "per_task": per_task,
+    }
+
 
 class _HarmfulRetirementTracker:
     """Run the production randomized-assignment and lesson-retirement path per task."""
@@ -228,7 +491,15 @@ class _HarmfulRetirementTracker:
         self._temporary.cleanup()
 
 
-def run(tasks: list[dict], runner: list[str], *, occasions=100, seed=61923, timeout=120) -> dict:
+def run(
+    tasks: list[dict],
+    runner: list[str],
+    *,
+    occasions=100,
+    seed=61923,
+    timeout=120,
+    task_weights: dict[str, float] | None = None,
+) -> dict:
     if not tasks or not runner or type(occasions) is not int or occasions < 2:
         raise ValueError("tasks, an executable runner and at least two occasions are required")
     required = ("id", "repo", "prompt", "test_command", "lesson")
@@ -243,6 +514,9 @@ def run(tasks: list[dict], runner: list[str], *, occasions=100, seed=61923, time
             raise ValueError("test command must be an argument vector")
     if len({task["id"] for task in tasks}) != len(tasks):
         raise ValueError("coding task ids must be unique for isolated lifecycle measurements")
+    normalized_weights = _normalize_task_weights(tasks, task_weights, occasions)
+    planned_slots = _planned_task_slots(tasks, occasions)
+    target_n_by_task = {task_id: (slots + 1) // 2 for task_id, slots in planned_slots.items()}
     rng = random.Random(seed)
     observations, rows = [], []
     retirement_tracker = _HarmfulRetirementTracker(tasks, occasions, seed)
@@ -339,10 +613,52 @@ def run(tasks: list[dict], runner: list[str], *, occasions=100, seed=61923, time
                     "label_harmful": task.get("lesson_harmful") if type(task.get("lesson_harmful")) is bool else None,
                 }
             )
-        effects = experiment.analyze(observations, sequential=True)
-        effects_by_task = [asdict(item) for item in effects]
-        effect = effects_by_task[0] if len(tasks) == 1 and effects_by_task else None
-        uplift_gate_evaluated = len(tasks) == 1 and effect is not None
+        effects = experiment.analyze(
+            observations,
+            sequential=True,
+            alpha=_UPLIFT_ALPHA / len(tasks),
+            target_n_per_arm=target_n_by_task,
+        )
+        observed_effects = {item.lesson_slug: asdict(item) for item in effects}
+        effects_by_task = []
+        for task in tasks:
+            effect_row = observed_effects.get(task["id"])
+            if effect_row is not None:
+                effects_by_task.append(effect_row)
+                continue
+            assignment_rows = [
+                row for row in rows if row["task"] == task["id"] and row["randomized"]
+            ]
+            effects_by_task.append({
+                "lesson_slug": task["id"],
+                "planned_occasions": planned_slots[task["id"]],
+                "target_n_per_arm": target_n_by_task[task["id"]],
+                "n_injected": 0,
+                "n_withheld": 0,
+                "rate_injected": 0.0,
+                "rate_withheld": 0.0,
+                "effect": None,
+                "ci_low": None,
+                "ci_high": None,
+                "p_value": None,
+                "significant": False,
+                "min_detectable_effect": None,
+                "verdict": experiment.VERDICT_UNDERPOWERED,
+                "note": "No resolved randomized outcome for this task.",
+                "unresolved_randomized_occasions": sum(
+                    row["succeeded"] is None for row in assignment_rows
+                ),
+            })
+        effect = observed_effects.get(tasks[0]["id"]) if len(tasks) == 1 else None
+        aggregate = _stratified_uplift(
+            tasks,
+            rows,
+            effects_by_task,
+            normalized_weights,
+            planned_slots,
+            weighting="explicit_task_weights" if task_weights is not None else "round_robin_schedule",
+        )
+        uplift_gate_evaluated = aggregate["evaluated"]
         labelled = [row for row in rows if row["injected"] and row["label_relevant"] is not None]
         precision = sum(row["label_relevant"] for row in labelled) / len(labelled) if labelled else None
         priced = [row for row in rows if row["cost_usd"] is not None]
@@ -355,7 +671,8 @@ def run(tasks: list[dict], runner: list[str], *, occasions=100, seed=61923, time
             "task_manifest_sha256": hashlib.sha256(json.dumps(tasks, sort_keys=True).encode()).hexdigest(),
             "causal_effect": effect,
             "causal_effects_by_task": effects_by_task,
-            "causal_effect_scope": "single_task" if len(tasks) == 1 else "per_task_no_pooled_gate",
+            "causal_effect_aggregate": aggregate,
+            "causal_effect_scope": "single_task" if len(tasks) == 1 else "weighted_task_stratified",
             "injection_precision": precision,
             "labelled_injections": len(labelled),
             "cost": {
@@ -367,12 +684,16 @@ def run(tasks: list[dict], runner: list[str], *, occasions=100, seed=61923, time
             "precision_gate_met": precision is not None and precision >= 0.8,
             "uplift_gate_evaluated": uplift_gate_evaluated,
             "uplift_gate_met": bool(
-                uplift_gate_evaluated and effect["effect"] >= 0.05 and effect["ci_low"] > 0
+                uplift_gate_evaluated
+                and aggregate["effect_unrounded"] >= _UPLIFT_THRESHOLD
+                and aggregate["ci_low"] > 0
             ),
             "uplift_gate_reason": (
-                None if uplift_gate_evaluated else
-                "No resolved randomized outcome." if len(tasks) == 1 else
-                "Multi-task results remain stratified; no pooled uplift estimator is implemented."
+                aggregate["reason"]
+                if not uplift_gate_evaluated
+                else None
+                if aggregate["effect_unrounded"] >= _UPLIFT_THRESHOLD and aggregate["ci_low"] > 0
+                else "The weighted task-average estimate did not meet the existing +5 pp and positive lower-CI gate."
             ),
             "limitations": [
                 "Results apply only to the supplied task distribution and runner.",
@@ -393,12 +714,26 @@ def main():
         "--model", required=True, help="Actual runner/model identity, including deterministic fixture labels."
     )
     parser.add_argument("--output", required=True)
+    parser.add_argument(
+        "--task-weights",
+        help="Optional JSON object mapping every task id to a positive target-population weight; defaults to round-robin schedule weights.",
+    )
     parser.add_argument("--occasions", type=int, default=100)
     parser.add_argument("--seed", type=int, default=61923)
     args = parser.parse_args()
     with open(args.tasks, encoding="utf-8") as stream:
         tasks = json.load(stream)
-    result = run(tasks, shlex.split(args.runner), occasions=args.occasions, seed=args.seed)
+    task_weights = None
+    if args.task_weights:
+        with open(args.task_weights, encoding="utf-8") as stream:
+            task_weights = json.load(stream)
+    result = run(
+        tasks,
+        shlex.split(args.runner),
+        occasions=args.occasions,
+        seed=args.seed,
+        task_weights=task_weights,
+    )
     result["runner_model"] = args.model
     with open(args.output, "w", encoding="utf-8") as stream:
         json.dump(result, stream, indent=2)

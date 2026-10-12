@@ -1,11 +1,20 @@
 {
-  "description": "Maintainer-labelled coding relevance fixtures; precision here does not establish precision on production coding tasks.",
+  "description": "Maintainer-labelled component fixtures for synthetic coding-agent hook events; these labels do not establish production precision.",
   "lessons": [
-    {"id":"tests","text":"Run pytest before committing changes to catch test failures."},
-    {"id":"validation","text":"Validate request fields at the API boundary before parsing JSON."},
-    {"id":"sql","text":"Use parameterized SQL queries to isolate tenant data."},
-    {"id":"timeouts","text":"Handle network timeouts by returning a safe empty memory context."},
-    {"id":"cursor","text":"Preserve capture cursors until lesson writing successfully persists."}
+    {"id":"tests","text":"Run pytest before committing changes to catch test failures.","trigger":{"event":"UserPromptSubmit"}},
+    {"id":"validation","text":"Validate request fields at the API boundary before parsing JSON.","trigger":{"event":"UserPromptSubmit"}},
+    {"id":"sql","text":"Use parameterized SQL queries to isolate tenant data.","trigger":{"event":"UserPromptSubmit"}},
+    {"id":"timeouts","text":"Handle network timeouts by returning a safe empty memory context.","trigger":{"event":"UserPromptSubmit"}},
+    {"id":"cursor","text":"Preserve capture cursors until lesson writing successfully persists.","trigger":{"event":"UserPromptSubmit"}},
+    {"id":"pretool-tests","text":"Run pytest before committing changes to catch test failures.","trigger":{"event":"PreToolUse","tool":"Bash"}},
+    {"id":"pretool-validation","text":"Validate request fields at the API boundary before parsing JSON.","trigger":{"event":"PreToolUse"}},
+    {"id":"pretool-sql","text":"Use parameterized SQL queries to isolate tenant data.","trigger":{"event":"PreToolUse"}},
+    {"id":"failure-timeouts","text":"Handle network timeouts by returning a safe empty memory context.","trigger":{"event":"PostToolUseFailure","error":"timed out"}},
+    {"id":"failure-sql","text":"Use parameterized SQL queries to isolate tenant data.","trigger":{"event":"PostToolUseFailure","error":"SQL"}},
+    {"id":"failure-validation","text":"Validate request fields at the API boundary before parsing JSON.","trigger":{"event":"PostToolUseFailure","error":"validation"}},
+    {"id":"compact-cursor","text":"Preserve capture cursors until lesson writing successfully persists.","trigger":{"event":"PreCompact"}},
+    {"id":"compact-sql","text":"Use parameterized SQL queries to isolate tenant data.","trigger":{"event":"PreCompact"}},
+    {"id":"compact-timeouts","text":"Handle network timeouts by returning a safe empty memory context.","trigger":{"event":"PreCompact"}}
   ],
   "cases": [
     {"query":"Run pytest before committing changes to catch test failures.","relevant":["tests"]},
@@ -22,5 +31,28 @@
     {"query":"What is the weather in Tokyo tomorrow?","relevant":[]},
     {"query":"Write a poem about the moon","relevant":[]},
     {"query":"Find the museum opening hours","relevant":[]}
-  ]
+  ],
+  "event_cases": {
+    "PreToolUse": [
+      {"payload":{"tool_name":"Bash","tool_input":{"command":"pytest tests/test_cli.py before commit"}},"relevant":["pretool-tests"]},
+      {"payload":{"tool_name":"Bash","tool_input":{"command":"check that request fields are validated before JSON parsing"}},"relevant":["pretool-validation"]},
+      {"payload":{"tool_name":"Bash","tool_input":{"command":"audit SQL parameterization for tenant isolation"}},"relevant":["pretool-sql"]},
+      {"payload":{"tool_name":"Bash","tool_input":{"command":"format the README headings"}},"relevant":[]},
+      {"payload":{"tool_name":"Bash","tool_input":{"command":"list files in docs/"}},"relevant":[]}
+    ],
+    "PostToolUseFailure": [
+      {"payload":{"tool_name":"Bash","tool_input":{"command":"download package index"},"error":"Read timed out while fetching package index"},"relevant":["failure-timeouts"]},
+      {"payload":{"tool_name":"Bash","tool_input":{"command":"run database check"},"error":"SQL query failed; tenant filter used string concatenation"},"relevant":["failure-sql"]},
+      {"payload":{"tool_name":"Bash","tool_input":{"command":"parse request body"},"error":"validation failed after JSON parsing"},"relevant":["failure-validation"]},
+      {"payload":{"tool_name":"Bash","tool_input":{"command":"install formatter"},"error":"ModuleNotFoundError: formatter"},"relevant":[]},
+      {"payload":{"tool_name":"Bash","tool_input":{"command":"render docs"},"error":"unsupported output theme"},"relevant":[]}
+    ],
+    "PreCompact": [
+      {"payload":{"prompt":"Before compaction, preserve the capture cursor until lesson writing successfully persists."},"relevant":["compact-cursor"]},
+      {"payload":{"prompt":"Summarize the rule for parameterized SQL queries and tenant isolation."},"relevant":["compact-sql"]},
+      {"payload":{"prompt":"Keep the guidance that network timeouts return a safe empty memory context."},"relevant":["compact-timeouts"]},
+      {"payload":{"prompt":"Condense the discussion about tonight's dinner plans."},"relevant":[]},
+      {"payload":{"prompt":"Summarize how to format the project README."},"relevant":[]}
+    ]
+  }
 }

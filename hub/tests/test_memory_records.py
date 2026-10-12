@@ -64,6 +64,132 @@ async def test_hosted_dense_candidates_respect_kind_scope_and_lifecycle(session_
 
 
 @pytest.mark.asyncio
+async def test_hosted_dense_candidate_rows_load_in_bounded_queries(monkeypatch):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    import hub.memory_records as memory_records
+
+    org = str(uuid.uuid4())
+
+    class Vector:
+        tenant = org
+
+        async def search(self, vector, *, top_k):
+            return [SimpleNamespace(key=f"fact-{index}") for index in range(501)]
+
+    records = [
+        MemoryRecord(f"fact-{index}", "fact", 1, {"text": "semantic result"},
+                     scope={"tenant": org, "user": "u"})
+        for index in range(501)
+    ]
+    rows = {record.id: SimpleNamespace(id=record.id, record=record.to_dict()) for record in records}
+
+    class Result:
+        def __init__(self, values):
+            self.values = values
+
+        def scalars(self):
+            return self
+
+        def all(self):
+            return self.values
+
+    class Session:
+        def __init__(self):
+            self.statements = []
+            self.gets = []
+
+        async def execute(self, statement):
+            self.statements.append(statement)
+            return Result([] if len(self.statements) == 1 else list(rows.values()))
+
+        async def get(self, _model, key):
+            self.gets.append(key)
+            return rows.get(key[1])
+
+    session = Session()
+
+    @asynccontextmanager
+    async def fake_scope(_factory, *, org_id=None):
+        assert org_id == org
+        yield session
+
+    monkeypatch.setattr(memory_records, "session_scope", fake_scope)
+    store = PostgresJournal(object(), org, vector_index=Vector())
+    results = await store.search("no lexical match", scope={"user": "u"}, limit=1000,
+                                 kinds=("fact",), vector=[1.0])
+
+    assert len(results) == 501
+    assert len(session.statements) == 3  # one sparse query and two bounded dense-ID batches
+    assert all("memory_records.id IN" in str(statement) for statement in session.statements[1:])
+    assert session.gets == []
+
+
+@pytest.mark.asyncio
+async def test_hosted_reaper_uses_a_bounded_batch_and_version_checked_forget(monkeypatch):
+    from contextlib import asynccontextmanager
+
+    from sqlalchemy.dialects import postgresql
+
+    import hub.memory_records as memory_records
+
+    org = str(uuid.uuid4())
+    records = [
+        MemoryRecord(
+            f"due-{index}",
+            "fact",
+            3,
+            {"text": "expires", "forget_after": "2000-01-01T00:00:00Z", "forget_reason": f"reason {index}"},
+            scope={"tenant": org},
+        )
+        for index in range(2)
+    ]
+
+    class Result:
+        def all(self):
+            return [(record.id, record.version, record.to_dict()) for record in records]
+
+    class Session:
+        def __init__(self):
+            self.statements = []
+
+        async def execute(self, statement):
+            self.statements.append(statement)
+            return Result()
+
+    session = Session()
+
+    @asynccontextmanager
+    async def fake_scope(_factory, *, org_id=None):
+        assert org_id == org
+        yield session
+
+    monkeypatch.setattr(memory_records, "session_scope", fake_scope)
+    store = PostgresJournal(object(), org)
+    calls = []
+
+    async def forget(identity, *, reason, expected_version):
+        calls.append((identity, reason, expected_version))
+        if identity == "due-0":
+            raise ValueError("expiration record version changed")
+        return {"deleted": [identity]}
+
+    monkeypatch.setattr(store, "forget", forget)
+    result = await store.reap_due(limit=2)
+
+    assert "SET LOCAL TIME ZONE 'UTC'" in str(session.statements[0])
+    statement = str(session.statements[1].compile(dialect=postgresql.dialect()))
+    assert "memory_records.org_id" in statement
+    assert "TIMESTAMP WITH TIME ZONE" in statement
+    assert "ORDER BY" in statement and "LIMIT" in statement
+    assert calls == [("due-0", "reason 0", 3), ("due-1", "reason 1", 3)]
+    assert result == [{"deleted": ["due-1"]}]
+    with pytest.raises(ValueError, match="expiration batch"):
+        await store.reap_due(limit=True)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("query", ["", "stable"])
 async def test_hosted_equal_lexical_matches_have_stable_order(session_factory, query):
     org = str(uuid.uuid4())
@@ -97,6 +223,31 @@ async def test_hosted_capture_recovers_invalid_preference_counter(session_factor
 
 
 @pytest.mark.asyncio
+async def test_hosted_capture_reinforces_decayed_preference_weight(session_factory):
+    from datetime import datetime, timedelta, timezone
+
+    from commontrace.memory_record import preference_candidates
+
+    org = str(uuid.uuid4())
+    async with session_scope(session_factory) as session:
+        session.add(Organization(id=org, name=org))
+    scope = {"tenant": org, "user": "u"}
+    identity, content = preference_candidates("I prefer pytest.", scope)[0]
+    observed_at = (datetime.now(timezone.utc) - timedelta(days=180)).isoformat()
+    store = PostgresJournal(session_factory, org)
+    await store.put(MemoryRecord(identity, "profile", 1, {
+        **content, "weight": 10, "half_life_days": 90, "observations": 4, "observed_at": observed_at,
+    }, scope=scope))
+
+    await store.capture_turn("s", "pytest", text_value="I prefer pytest.", scope=scope)
+    records = await store.search("", scope=scope, kinds=("profile",))
+    updated = next(record for record in records if record.id == identity)
+    assert updated.version == 2
+    assert updated.payload["observations"] == 5
+    assert updated.payload["weight"] == pytest.approx(3.5, abs=0.01)
+
+
+@pytest.mark.asyncio
 async def test_hosted_turn_profiles_buffer_scope_and_source_erasure(session_factory):
     org = str(uuid.uuid4())
     async with session_scope(session_factory) as session:
@@ -126,6 +277,40 @@ async def test_hosted_turn_profiles_buffer_scope_and_source_erasure(session_fact
 
 
 @pytest.mark.asyncio
+async def test_hosted_turn_uses_decayed_user_preference_to_rerank_bounded_results(session_factory, monkeypatch):
+    org = str(uuid.uuid4())
+    async with session_scope(session_factory) as session:
+        session.add(Organization(id=org, name=org))
+    store = PostgresJournal(session_factory, org)
+    scope = {"tenant": org, "user": "u", "agent": "a"}
+    records = [
+        MemoryRecord(
+            f"fact-{index:02}",
+            "fact",
+            1,
+            {"text": "Give concise answers" if index == 1 else f"Unrelated response {index}"},
+            scope=scope,
+        )
+        for index in range(20)
+    ]
+    original_search = store.search
+
+    async def search(query, *, scope, limit=20, vector=None, kinds=()):
+        if kinds:
+            return await original_search(query, scope=scope, limit=limit, vector=vector, kinds=kinds)
+        return records[:limit]
+
+    monkeypatch.setattr(store, "search", search)
+    result = await store.runtime_turn(
+        "s", "write a response", text_value="I prefer concise answers.", scope={"user": "u", "agent": "a"}
+    )
+
+    assert result["profile"]["dynamic"][0]["weight"] == pytest.approx(1, abs=1e-5)
+    assert result["results"][0]["id"] == "fact-01"
+    assert result["results"][0]["payload"]["text"] == "Give concise answers"
+
+
+@pytest.mark.asyncio
 async def test_records_scope_versions_and_derived_erasure(session_factory):
     orgs = [str(uuid.uuid4()), str(uuid.uuid4())]
     async with session_scope(session_factory) as session:
@@ -151,6 +336,53 @@ async def test_records_scope_versions_and_derived_erasure(session_factory):
     assert not await a.search("pytest", scope={"user": "alice"})
     async with session_scope(session_factory, org_id=orgs[0]) as session:
         assert not (await session.execute(text("SELECT id FROM memory_record_events"))).all()
+
+
+@pytest.mark.asyncio
+async def test_hosted_reap_due_cascades_and_rejects_stale_versions(session_factory):
+    org = str(uuid.uuid4())
+    async with session_scope(session_factory) as session:
+        session.add(Organization(id=org, name=org))
+    store = PostgresJournal(session_factory, org)
+    await store.put(
+        MemoryRecord(
+            "expiring",
+            "fact",
+            1,
+            {"text": "private source", "forget_after": "2000-01-01T00:00:00Z", "forget_reason": "owner request"},
+        )
+    )
+    await store.put(
+        MemoryRecord(
+            "derived",
+            "observation",
+            1,
+            {"text": "derived conclusion"},
+            relations={"derives": ["expiring"]},
+        )
+    )
+    assert not await store.search("private source", scope={})
+    assert not await store.search("derived conclusion", scope={})
+    await store.put(
+        MemoryRecord(
+            "future",
+            "fact",
+            1,
+            {
+                "text": "keep this",
+                "forget_after": "2999-01-01T00:00:00Z",
+                "forget_reason": "future request",
+            },
+        )
+    )
+    result = await store.reap_due(limit=1)
+    assert len(result) == 1
+    assert set(result[0]["deleted"]) == {"expiring", "derived"}
+    assert result[0]["reason"] == "owner request"
+    assert [record.id for record in await store.search("keep this", scope={})] == ["future"]
+    with pytest.raises(ValueError, match="expiration record version changed"):
+        await store.forget("future", reason="stale expiration", expected_version=2)
+    assert [record.id for record in await store.search("keep this", scope={})] == ["future"]
 
 
 @pytest.mark.asyncio

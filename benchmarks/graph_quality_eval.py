@@ -17,7 +17,14 @@ import sys
 from collections import defaultdict
 from typing import Any
 
-from commontrace import entity_resolution, ontology, ontology_classify, relation_extraction
+from commontrace import (
+    entity_resolution,
+    fact_conflicts,
+    hierarchical,
+    ontology,
+    ontology_classify,
+    relation_extraction,
+)
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_FIXTURE = os.path.join(_HERE, "fixtures", "graph_quality_v1.json")
@@ -31,13 +38,13 @@ LEGACY_NGRAM_SWEEP = (0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 1.0)
 def load_fixture(path: str = DEFAULT_FIXTURE) -> dict[str, Any]:
     with open(path, encoding="utf-8") as stream:
         data = json.load(stream)
-    required = {"entity_pairs", "classifications", "relation_extraction"}
+    required = {"entity_pairs", "classifications", "relation_extraction", "edge_pairs"}
     if data.get("schema_version") != SCHEMA_VERSION or not required <= set(data):
         raise ValueError("graph quality fixture has an unsupported or incomplete schema")
     for key in required:
         if not isinstance(data[key], list):
             raise ValueError(f"graph quality fixture field {key!r} must be a list")
-    if not data["entity_pairs"] or not data["classifications"] or not data["relation_extraction"]:
+    if not data["entity_pairs"] or not data["classifications"] or not data["relation_extraction"] or not data["edge_pairs"]:
         raise ValueError("each graph quality fixture task needs at least one labeled example")
     return data
 
@@ -265,6 +272,93 @@ def _relation_report(rows: list[dict]) -> dict[str, Any]:
     }
 
 
+def _endpoint_pair(row: dict[str, Any], side: str) -> tuple[str, str] | None:
+    """Return an undirected endpoint key when a fixture row supplies one."""
+    endpoints = row.get(f"{side}_endpoints")
+    if endpoints is None:
+        return None
+    if (not isinstance(endpoints, list) or len(endpoints) != 2
+            or any(not isinstance(value, str) or not value.strip() for value in endpoints)):
+        raise ValueError(f"edge pair {row.get('id', '<unknown>')} has invalid {side}_endpoints")
+    # Graphiti's duplicate-candidate search accepts either endpoint orientation.
+    # Endpoint IDs are opaque, so compare them exactly rather than case-folding.
+    return tuple(sorted(value.strip() for value in endpoints))
+
+
+def _edge_pair_outcome(row: dict[str, Any]) -> tuple[str, str]:
+    """Score only decisions represented by CommonTrace's deterministic paths.
+
+    This intentionally abstains on semantic judgments and on value conflicts,
+    which CommonTrace flags as candidates rather than superseding automatically.
+    """
+    old_endpoints = _endpoint_pair(row, "existing")
+    new_endpoints = _endpoint_pair(row, "new")
+    if (old_endpoints is None) != (new_endpoints is None):
+        return "unknown", "incomplete endpoint attribution"
+    if old_endpoints is not None and old_endpoints != new_endpoints:
+        return "independent", "different endpoint pair"
+
+    older, newer = row["existing_fact"], row["new_fact"]
+    if not isinstance(older, str) or not isinstance(newer, str):
+        raise ValueError(f"edge pair {row.get('id', '<unknown>')} facts must be strings")
+    old_norm = hierarchical._normalize_statement(older)
+    new_norm = hierarchical._normalize_statement(newer)
+    if old_norm == new_norm:
+        return "duplicate", "normalized exact statement on the same endpoint pair"
+    if hierarchical.near_duplicate(older, newer):
+        return "duplicate", "CommonTrace high-precision lexical near-duplicate on the same endpoint pair"
+
+    conflict = fact_conflicts.classify(older, newer)
+    if conflict == "negation":
+        return "contradiction", "deterministic negation conflict candidate"
+    if conflict == "value":
+        return "unknown", "numeric value conflict requires a judge"
+    return "unknown", "no deterministic duplicate or contradiction decision"
+
+
+def _edge_pair_report(rows: list[dict]) -> dict[str, Any]:
+    labels = ("duplicate", "contradiction", "independent", "unknown")
+    details = []
+    matrix = {expected: {predicted: 0 for predicted in labels} for expected in labels[:-1]}
+    for row in rows:
+        predicted, reason = _edge_pair_outcome(row)
+        expected = row["expected"]
+        if expected not in matrix:
+            raise ValueError(f"edge pair {row.get('id', '<unknown>')} has an unsupported expected label")
+        matrix[expected][predicted] += 1
+        details.append({
+            "id": row["id"],
+            "stratum": row.get("stratum", "unspecified"),
+            "expected": expected,
+            "predicted": predicted,
+            "reason": reason,
+            "source_ref": row.get("source_ref"),
+        })
+
+    predicted_counts = {label: sum(item["predicted"] == label for item in details) for label in labels}
+    resolved = [item for item in details if item["predicted"] != "unknown"]
+    correct = sum(item["predicted"] == item["expected"] for item in resolved)
+    return {
+        "scope": "deterministic CommonTrace statement deduplication and conflict signals, endpoint-aware",
+        "examples": len(rows),
+        "expected_counts": {label: sum(item["expected"] == label for item in details) for label in labels[:-1]},
+        "predicted_counts": predicted_counts,
+        "resolved_examples": len(resolved),
+        "coverage": round(len(resolved) / len(details), 4) if details else 0.0,
+        "resolved_accuracy": round(correct / len(resolved), 4) if resolved else None,
+        "confusion_matrix": matrix,
+        "pair_outcomes": details,
+        "semantic_duplicate_judge": "unmeasured",
+        "contradiction_judge": "unmeasured",
+        "notes": [
+            "Fixture rows without endpoint IDs assume the same endpoint pair; rows with IDs are matched as undirected pairs.",
+            "Unknown is an abstention: a non-match is not treated as proof of independence or contradiction.",
+            "Numeric value conflicts remain unknown because CommonTrace requires a judge before acting on them.",
+            "Labels are hand-authored synthetic examples; coverage and resolved accuracy are fixture diagnostics, not production estimates.",
+        ],
+    }
+
+
 def evaluate(fixture: str = DEFAULT_FIXTURE) -> dict[str, Any]:
     data = load_fixture(fixture)
     with open(fixture, "rb") as stream:
@@ -287,6 +381,7 @@ def evaluate(fixture: str = DEFAULT_FIXTURE) -> dict[str, Any]:
         "entity_resolution": _entity_report(data["entity_pairs"]),
         "classification": _classification_report(data["classifications"]),
         "relation_extraction": _relation_report(data["relation_extraction"]),
+        "edge_pair_resolution": _edge_pair_report(data["edge_pairs"]),
         "threshold_decisions": {
             "legacy_ngram_report_and_apply": "preserved; fixture is too small and synthetic for production retuning",
             "entity_entropy_minhash_jaccard": "preserved; fixture is too small and synthetic for production retuning",
@@ -316,6 +411,21 @@ def render(report: dict[str, Any]) -> str:
                            ("Offline relation patterns", relation)):
         lines.append(f"| {label} | {metrics['examples']} | {metrics['tp']} | {metrics['fp']} | {metrics['fn']} | "
                      f"{metrics['precision']:.4f} | {metrics['recall']:.4f} | {metrics['f1']:.4f} |")
+    edge_pairs = report["edge_pair_resolution"]
+    lines.extend([
+        "",
+        "## Edge-pair duplicate and contradiction decisions",
+        "",
+        f"The endpoint-aware deterministic path resolved {edge_pairs['resolved_examples']} of "
+        f"{edge_pairs['examples']} pairs ({edge_pairs['coverage']:.4f} coverage); "
+        f"resolved accuracy was {edge_pairs['resolved_accuracy']!s}. Unknown cases are abstentions.",
+        "",
+        "| Expected | Duplicate | Contradiction | Independent | Unknown |",
+        "|---|---:|---:|---:|---:|",
+    ])
+    for expected, counts in edge_pairs["confusion_matrix"].items():
+        lines.append(f"| {expected} | {counts['duplicate']} | {counts['contradiction']} | "
+                     f"{counts['independent']} | {counts['unknown']} |")
     lines.extend([
         "",
         "Embedding and LLM tiers are marked unmeasured. The entity-resolution and classification sweeps are diagnostic;",

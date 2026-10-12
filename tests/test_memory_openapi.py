@@ -66,6 +66,30 @@ def test_gateway_enforces_the_schema_before_any_write(tmp_path):
     assert not (tmp_path/"memory"/"facts.jsonl").exists()
 
 
+def test_record_reaping_contract_is_bounded_and_local_gateway_owner_only(tmp_path):
+    from commontrace.memory_journal import Journal
+    from commontrace.memory_record import MemoryRecord
+    from commontrace.record_api import operate
+
+    due = MemoryRecord(
+        "due-local",
+        "fact",
+        1,
+        {"text": "due", "forget_after": "2000-01-01T00:00:00Z", "forget_reason": "retention"},
+    )
+    journal = Journal(str(tmp_path))
+    journal.put(due)
+    api_schema.validate_request("record-reap-due", {})
+    api_schema.validate_request("record-reap-due", {"limit": 100})
+    for limit in (0, 101, True):
+        with pytest.raises(ValueError):
+            api_schema.validate_request("record-reap-due", {"limit": limit})
+    with pytest.raises(PermissionError, match="local owner"):
+        operate(str(tmp_path), "record-reap-due", {}, context=[], untrusted=True)
+    assert journal.latest(due.id) is not None
+    assert api_schema.components()["RecordReapDueResponse"]["properties"]["results"]["type"] == "array"
+
+
 def test_swagger_ui_assets_are_pinned_and_cannot_send_credentials_off_origin(tmp_path):
     gateway = Gateway(str(tmp_path), token="operator-token")
     response = gateway.handle("GET", "/v1/docs", {"Host": "localhost"}, None)

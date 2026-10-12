@@ -44,6 +44,15 @@ from benchmarks.judges import (  # noqa: E402
     get_judge,
     is_scorable_category,
 )
+from benchmarks.judges.context_completeness import (
+    PROFILE as CONTEXT_COMPLETENESS_PROFILE,
+)
+from benchmarks.judges.context_completeness import (
+    SYSTEM_PROMPT as CONTEXT_COMPLETENESS_SYSTEM_PROMPT,
+)
+from benchmarks.judges.context_completeness import (  # noqa: E402
+    ContextCompletenessJudge,
+)
 from benchmarks.measurement import (  # noqa: E402
     SCHEMA_VERSION,
     adapter_digest,
@@ -847,6 +856,47 @@ def grade_all(pending: list, workers: int, *, grade=None, rounds: int | None = N
                        "rerun the same command to resume from the cache")
 
 
+def grade_model_context_completeness(
+    question: dict,
+    context: str,
+    model: str,
+    cache: BenchmarkCache | None,
+    cost_guard: CostGuard,
+    output_limit: int = 1536,
+) -> dict:
+    """Grade retrieved-context sufficiency independently of generated answers."""
+    judge = ContextCompletenessJudge(model=model)
+    prompt = judge.format_prompt(question["question"], question.get("answer", ""), context)
+    cfg = _get_llm_config(model)
+    binding = benchmark_binding(cfg, output_limit=output_limit) if cache is not None else None
+    start = time.perf_counter()
+    hit = cache.get(model, prompt, binding=binding) if cache is not None else None
+    if hit is not None:
+        response, _usage, historical_cost = hit
+        cost_guard.record_call(historical_cost, is_cached=True)
+        latency = 0.0
+        cost = 0.0
+    else:
+        response, usage, cost = bounded_complete(prompt, cfg, cost_guard, output_limit=output_limit)
+        latency = time.perf_counter() - start
+        historical_cost = 0.0
+        if cache is not None:
+            cache.put(model, prompt, response, usage, cost, binding=binding)
+    parsed = judge.parse_response(response)
+    return {
+        "grade": parsed["grade"],
+        "reasoning": parsed["reasoning"],
+        "present_elements": parsed["present_elements"],
+        "missing_elements": parsed["missing_elements"],
+        "model": model,
+        "profile": judge.profile,
+        "latency_s": round(latency, 6),
+        "cost_usd": cost,
+        "historical_cached_cost_usd": historical_cost,
+        "cache_hit": hit is not None,
+    }
+
+
 def _embedder_choice(value: str) -> str:
     if value in ("auto", "none"):
         return value
@@ -909,13 +959,16 @@ def run(args) -> dict:
         j_name = judge_choice
         _, def_j_model = get_default_judge_for_dataset(j_name)
     j_model = getattr(args, "judge_model", None) or def_j_model
+    context_completeness_enabled = bool(getattr(args, "context_completeness", False))
+    context_completeness_model = (getattr(args, "completeness_model", None) or j_model)
     ans_model = getattr(args, "answer_model", None) or os.environ.get("COMMONTRACE_LLM_MODEL") or "claude-sonnet-5"
 
     judge_inst = None
     cache = None
     cost_guard = None
-    if args.answer:
-        judge_inst = get_judge(j_name, model=j_model)
+    if args.answer or context_completeness_enabled:
+        if args.answer:
+            judge_inst = get_judge(j_name, model=j_model)
         if not getattr(args, "no_cache", False):
             cdir = getattr(args, "cache_dir", None) or os.path.join(args.root, "benchmark_cache")
             cache = BenchmarkCache(cdir)
@@ -961,7 +1014,9 @@ def run(args) -> dict:
         "vendor_adapters_sha256": dataset_digest(os.path.join(repository, "benchmarks", "vendor_adapters.py")),
         "artifacts_source_sha256": dataset_digest(os.path.join(repository, "benchmarks", "artifacts.py")),
         "sampling": {"seed": args.seed, "limit": args.limit, "personas": getattr(args, "personas", "")},
-        "evaluation": {"answer_enabled": args.answer, "token_accounting": "ceil-characters-divided-by-four",
+        "evaluation": {"answer_enabled": args.answer,
+                       "context_completeness_enabled": context_completeness_enabled,
+                       "token_accounting": "ceil-characters-divided-by-four",
                        "adaptive_budget": bool(getattr(args, "adaptive_budget", False)),
                        "completeness_sha256": dataset_digest(os.path.join(repository, "benchmarks", "completeness.py"))},
     }
@@ -981,13 +1036,35 @@ def run(args) -> dict:
             "bounded_requests_sha256": dataset_digest(os.path.join(repository, "benchmarks", "requests.py")),
         })
 
+    if context_completeness_enabled:
+        cfg_c = _get_llm_config(context_completeness_model)
+        provenance["evaluation"]["bounded_requests_sha256"] = dataset_digest(
+            os.path.join(repository, "benchmarks", "requests.py"))
+        provenance["evaluation"]["context_completeness"] = {
+            "profile": CONTEXT_COMPLETENESS_PROFILE,
+            "model": context_completeness_model,
+            "configuration": evaluation_config_binding(cfg_c),
+            "source_sha256": dataset_digest(os.path.join(repository, "benchmarks", "judges", "context_completeness.py")),
+            "system_prompt_sha256": question_digest({"prompt": CONTEXT_COMPLETENESS_SYSTEM_PROMPT}),
+            "generation": {"max_tokens": getattr(args, "max_output_tokens", 1536), "temperature": 0,
+                           "retries": 0},
+            "bounded_requests_sha256": dataset_digest(os.path.join(repository, "benchmarks", "requests.py")),
+        }
+
     profile_config = None
     model_bindings = {}
     if memory_adapter == "commontrace":
         from commontrace import rerank_arm
         from commontrace.conversation import embed
-        for name in ([embed.MODELS[args.embedder][0]] if args.embedder in embed.MODELS else []) + (
-                [rerank_arm.MODELS[args.rerank][0]] if args.rerank in rerank_arm.MODELS else []):
+        embedding_names = [embed.MODELS[args.embedder][0]] if args.embedder in embed.MODELS else []
+        if args.embedder == "auto":
+            configured_embedder = embed.configured()
+            if configured_embedder and configured_embedder.startswith("fastembed:"):
+                embedding_names.append(configured_embedder)
+        elif isinstance(args.embedder, str) and args.embedder.startswith("fastembed:"):
+            embedding_names.append(embed.canonical(args.embedder))
+        reranker_names = [rerank_arm.MODELS[args.rerank][0]] if args.rerank in rerank_arm.MODELS else []
+        for name in (*embedding_names, *reranker_names):
             model_bindings[name] = model_artifact(name)
     provenance["evaluation"]["context_text_tokenizer"] = getattr(args, "tokenizer", None)
     if strict_budget:
@@ -1148,6 +1225,11 @@ def run(args) -> dict:
                             }
                             if "rubric" in q:
                                 row["rubric"] = q["rubric"]
+                            if context_completeness_enabled:
+                                row["context_completeness_judge"] = grade_model_context_completeness(
+                                    q, ctx, context_completeness_model, cache, cost_guard,
+                                    output_limit=getattr(args, "max_output_tokens", 1536),
+                                )
                             if args.answer:
                                 grading = dict(
                                     question=q,
@@ -1183,20 +1265,25 @@ def run(args) -> dict:
         "judge_model": j_model,
         "answer_model": ans_model,
     } if args.answer else {}
+    completeness_judge_info = ({"model": context_completeness_model,
+                                "profile": CONTEXT_COMPLETENESS_PROFILE}
+                               if context_completeness_enabled else None)
 
     results = {}
     for b in budgets:
         if len(modes) == 1:
             m = modes[0]
             results[b] = summarize(
-                rows_by_mode[m][b], args, b, ingest_s, recall_seconds[b] / n, full_tokens, mode=m, judge_info=judge_info
+                rows_by_mode[m][b], args, b, ingest_s, recall_seconds[b] / n, full_tokens, mode=m,
+                judge_info=judge_info, completeness_judge_info=completeness_judge_info,
             )
             results[b]["chunk_set"] = chunk_info
             results[b].update({"comparison_schema": SCHEMA_VERSION, "provenance": provenance})
         else:
             mode_summaries = {
                 m: summarize(
-                    rows_by_mode[m][b], args, b, ingest_s, recall_seconds[b] / n, full_tokens, mode=m, judge_info=judge_info
+                    rows_by_mode[m][b], args, b, ingest_s, recall_seconds[b] / n, full_tokens, mode=m,
+                    judge_info=judge_info, completeness_judge_info=completeness_judge_info,
                 )
                 for m in modes
             }
@@ -1243,7 +1330,11 @@ def run(args) -> dict:
                 or dataset_digest(os.path.join(repository, "benchmarks", "requests.py")) != contract["counter_source_sha256"]
                 or text_counter_binding(tokenizer) != counter_binding):
             raise RuntimeError("strict context budget implementation or counter changed during measurement")
-    if args.answer:
+    if args.answer or context_completeness_enabled:
+        if context_completeness_enabled:
+            source_path = os.path.join(repository, "benchmarks", "judges", "context_completeness.py")
+            if dataset_digest(source_path) != provenance["evaluation"]["context_completeness"]["source_sha256"]:
+                raise RuntimeError("context-completeness judge source changed during measurement")
         if dataset_digest(os.path.join(repository, "benchmarks", "requests.py")) != provenance["evaluation"]["bounded_requests_sha256"]:
             raise RuntimeError("bounded completion source changed during measurement")
         for summary in results.values():
@@ -1261,7 +1352,8 @@ def _mean(values) -> float | None:
     return round(statistics.mean(values), 4) if values else None
 
 
-def summarize(rows, args, budget, ingest_s, recall_s, full_tokens, mode="memory", judge_info=None) -> dict:
+def summarize(rows, args, budget, ingest_s, recall_s, full_tokens, mode="memory", judge_info=None,
+              completeness_judge_info=None) -> dict:
     def block(rs):
         b_dict = {
             "n": len(rs),
@@ -1314,6 +1406,20 @@ def summarize(rows, args, budget, ingest_s, recall_s, full_tokens, mode="memory"
         else:
             b_dict["accuracy"] = None
 
+        if completeness_judge_info:
+            graded = [r["context_completeness_judge"] for r in rs
+                      if isinstance(r.get("context_completeness_judge"), dict)]
+            b_dict["context_completeness_judge"] = {
+                **completeness_judge_info,
+                "n": len(graded),
+                "grades": bucket_counts(g.get("grade") for g in graded),
+                "latency": _p50_p95([g.get("latency_s") for g in graded if not g.get("cache_hit")]),
+                "current_run_cost_usd": round(sum(g.get("cost_usd", 0.0) for g in graded), 6),
+                "historical_cached_cost_usd": round(sum(
+                    g.get("historical_cached_cost_usd", 0.0) for g in graded), 6),
+                "cache_hits": sum(bool(g.get("cache_hit")) for g in graded),
+            }
+
         return b_dict
 
     by_type = defaultdict(list)
@@ -1341,6 +1447,14 @@ def summarize(rows, args, budget, ingest_s, recall_s, full_tokens, mode="memory"
     }
     if judge_info:
         summary.update(judge_info)
+    if completeness_judge_info:
+        summary["context_completeness_judge"] = {
+            **completeness_judge_info,
+            "n": len(rows),
+            "grades": bucket_counts(
+                r.get("context_completeness_judge", {}).get("grade") for r in rows
+            ),
+        }
 
     if args.dataset == "beam" and args.answer:
         # BEAM official ability breakdown
@@ -1404,6 +1518,8 @@ def main(argv=None) -> int:
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--question-exclusions", help="JSON list of question IDs excluded before stratified sampling")
     p.add_argument("--answer", action="store_true", help="answer and judge with COMMONTRACE_LLM_*")
+    p.add_argument("--context-completeness", action="store_true",
+                   help="judge retrieved-context sufficiency (COMPLETE/PARTIAL/INSUFFICIENT), separate from answer accuracy")
     p.add_argument("--answer-workers", type=int, default=1,
                    help="concurrent reader/judge calls after retrieval (default 1: inline, in order)")
     p.add_argument(
@@ -1429,6 +1545,8 @@ def main(argv=None) -> int:
         default=None,
         help="model used to judge answers (default: the configured judge profile's model)",
     )
+    p.add_argument("--completeness-model", default=None,
+                   help="model used for --context-completeness (default: dataset judge model)")
     p.add_argument(
         "--modes",
         default="memory",

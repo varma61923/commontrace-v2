@@ -1,0 +1,176 @@
+{
+  "scope": "Same-HEAD exact benchmark-path diagnostic; 30K is diagnostic only and does not establish the 1M gate.",
+  "source_commit": "91d0fb8e3f8ca64b5b388c10ad92fa0775a7429e",
+  "source_files_sha256": {
+    "commontrace/fact_store.py": "496b6116fd9e1d394a1a211561fe9ff5936100006b648651768879b95b86caee",
+    "commontrace/hierarchical.py": "a2da3efb75e2bdb90bbdcb594c34662a83346512064c457ecab341cbf8280689",
+    "tests/test_fact_store.py": "b89beeb48d8d206eefb9a7fbebcdaa7d627301cec2d18bdc1f62e9e1aff7d7fd",
+    "benchmarks/next_generation_storage.py": "35278d33fc902e4c7e7e6bc8c0b6688cf8d435d7e2feec62b00e86444d80ee1a"
+  },
+  "python": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+  "platform": "Linux-6.8.0-146-generic-x86_64-with-glibc2.39",
+  "runner_command": "/root/Test/commontrace-v2/.venv/bin/python /tmp/f1_snapshot_reuse_diagnostic.py --source /root/Test/commontrace-v2 --output /tmp/f1-snapshot-reuse-profile-matched.json --profile-size 10000 --compare-size 30000 --batch-size 1000 --trials 5",
+  "runner_sha256": "dae15bd8508cf65b8bcbd720f800b1cd7bec30b27d047ab44e65e33cc738ea87",
+  "runner_source": "\"\"\"Profile snapshot reuse and compare 30K-store ABBA diagnostic rounds.\"\"\"\nfrom __future__ import annotations\n\nimport argparse\nimport cProfile\nimport hashlib\nimport json\nimport os\nimport platform\nimport pstats\nimport subprocess\nimport sys\nimport tempfile\nimport time\nfrom pathlib import Path\n\nparser = argparse.ArgumentParser()\nparser.add_argument(\"--source\", required=True)\nparser.add_argument(\"--output\", required=True)\nparser.add_argument(\"--profile-size\", type=int, default=10_000)\nparser.add_argument(\"--compare-size\", type=int, default=30_000)\nparser.add_argument(\"--batch-size\", type=int, default=1_000)\nparser.add_argument(\"--trials\", type=int, default=5)\nargs = parser.parse_args()\nsys.path.insert(0, args.source)\n\nfrom benchmarks import next_generation_storage as bench\nfrom commontrace import fact_store\nfrom commontrace import hierarchical as h\n\nsource = Path(args.source)\nroot_git = subprocess.check_output([\"git\", \"rev-parse\", \"HEAD\"], cwd=source, text=True).strip()\nsource_files = (\"commontrace/fact_store.py\", \"commontrace/hierarchical.py\", \"tests/test_fact_store.py\",\n                \"benchmarks/next_generation_storage.py\")\nsource_hashes = {name: hashlib.sha256((source / name).read_bytes()).hexdigest() for name in source_files}\noriginal_index_add = h._index_add\n\n\ndef seed(root: str, count: int) -> None:\n    fact_store.migrate(root)\n    for offset in range(0, count, 1_000):\n        h.add_facts(root, bench.items(offset, min(1_000, count - offset)))\n\n\ndef with_reuse(enabled: bool):\n    if enabled:\n        h._index_add = original_index_add\n    else:\n        h._index_add = lambda index, fact, snapshot: index.add(fact)\n\n\ndef profile_batch(size: int, reuse: bool) -> dict:\n    with tempfile.TemporaryDirectory(prefix=\"f1-snapshot-profile-\") as temp:\n        root = os.path.join(temp, \"sqlite\")\n        seed(root, size)\n        with_reuse(reuse)\n        batch = bench.items(size + args.trials, args.batch_size)\n        profiler = cProfile.Profile()\n        started = time.perf_counter()\n        profiler.enable()\n        result = h.add_facts(root, batch)\n        profiler.disable()\n        elapsed = time.perf_counter() - started\n        if len(result) != args.batch_size or any(action != \"ADD\" for _fact, action in result):\n            raise AssertionError(\"profile batch did not durably admit every fact\")\n        stats = pstats.Stats(profiler).stats\n        to_dict = [value for (filename, _line, function), value in stats.items()\n                   if filename.endswith(\"commontrace/hierarchical.py\") and function == \"to_dict\"]\n        revision = [value for (filename, _line, function), value in stats.items()\n                    if filename.endswith(\"commontrace/hierarchical.py\") and function == \"_compute_revision\"]\n        fact_store.close_connections(root)\n        return {\n            \"snapshot_reuse_enabled\": reuse,\n            \"seed_facts\": size,\n            \"batch_size\": args.batch_size,\n            \"batch_elapsed_seconds_under_cprofile\": elapsed,\n            \"batch_facts_per_second_under_cprofile\": args.batch_size / elapsed,\n            \"atomic_fact_to_dict_calls\": sum(value[0] for value in to_dict),\n            \"atomic_fact_to_dict_cumtime_seconds\": sum(value[3] for value in to_dict),\n            \"compute_revision_calls\": sum(value[0] for value in revision),\n            \"compute_revision_cumtime_seconds\": sum(value[3] for value in revision),\n        }\n\n\ndef compare_round(label: str, reuse: bool) -> dict:\n    with tempfile.TemporaryDirectory(prefix=\"f1-snapshot-30k-\") as temp:\n        root = os.path.join(temp, \"sqlite\")\n        seed(root, args.compare_size)\n        with_reuse(reuse)\n        result = bench.measure(root, args.compare_size, args.trials)\n        fact_store.close_connections(root)\n        return {\"round\": label, \"snapshot_reuse_enabled\": reuse,\n                \"seed_facts\": args.compare_size, **result}\n\n\nreport = {\n    \"scope\": \"Same-HEAD exact benchmark-path diagnostic; 30K is diagnostic only and does not establish the 1M gate.\",\n    \"source_commit\": root_git,\n    \"source_files_sha256\": source_hashes,\n    \"python\": sys.version,\n    \"platform\": platform.platform(),\n    \"runner_command\": \" \".join([sys.executable, str(Path(__file__).resolve()), *sys.argv[1:]]),\n    \"runner_sha256\": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),\n    \"runner_source\": Path(__file__).read_text(encoding=\"utf-8\"),\n    \"environment\": {key: os.environ[key] for key in sorted(os.environ)\n                    if key.startswith(\"COMMONTRACE_FACT_\")},\n    \"profile\": {\n        \"runner\": \"cProfile around hierarchical.add_facts of one batch after seeding the requested store size; baseline disables only the internal snapshot capability by routing to index.add(fact).\",\n        \"baseline\": profile_batch(args.profile_size, False),\n        \"candidate\": profile_batch(args.profile_size, True),\n    },\n    \"matched_30k\": [\n        compare_round(\"baseline-1\", False),\n        compare_round(\"candidate-1\", True),\n        compare_round(\"candidate-2\", True),\n        compare_round(\"baseline-2\", False),\n    ],\n    \"limitations\": [\n        \"No 1M database benchmark was run by this diagnostic.\",\n        \"30K synthetic independent facts and 1K batches are a workload diagnostic, not release acceptance.\",\n        \"The baseline is the same worktree and runner with only snapshot reuse disabled at the internal index-add dispatch.\",\n        \"Wall-clock rounds remain subject to local scheduling and storage noise.\",\n    ],\n}\nh._index_add = original_index_add\nPath(args.output).write_text(json.dumps(report, indent=2) + \"\\n\", encoding=\"utf-8\")\nprint(json.dumps({\"output\": args.output, \"profile\": report[\"profile\"],\n                  \"matched_30k\": report[\"matched_30k\"]}, indent=2))\n",
+  "environment": {},
+  "profile": {
+    "runner": "cProfile around hierarchical.add_facts of one batch after seeding the requested store size; baseline disables only the internal snapshot capability by routing to index.add(fact).",
+    "baseline": {
+      "snapshot_reuse_enabled": false,
+      "seed_facts": 10000,
+      "batch_size": 1000,
+      "batch_elapsed_seconds_under_cprofile": 0.7317521219956689,
+      "batch_facts_per_second_under_cprofile": 1366.5829861521315,
+      "atomic_fact_to_dict_calls": 2000,
+      "atomic_fact_to_dict_cumtime_seconds": 0.053744235,
+      "compute_revision_calls": 1000,
+      "compute_revision_cumtime_seconds": 0.036135071000000005
+    },
+    "candidate": {
+      "snapshot_reuse_enabled": true,
+      "seed_facts": 10000,
+      "batch_size": 1000,
+      "batch_elapsed_seconds_under_cprofile": 0.7195532189798541,
+      "batch_facts_per_second_under_cprofile": 1389.7512701252995,
+      "atomic_fact_to_dict_calls": 1000,
+      "atomic_fact_to_dict_cumtime_seconds": 0.029222092,
+      "compute_revision_calls": 1000,
+      "compute_revision_cumtime_seconds": 0.03557234
+    }
+  },
+  "matched_30k": [
+    {
+      "round": "baseline-1",
+      "snapshot_reuse_enabled": false,
+      "seed_facts": 30000,
+      "facts_before_trials": 30000,
+      "single_write_p50_ms": 2.50915001379326,
+      "single_write_p95_ms": 3.748048038687557,
+      "single_write_samples_ms": [
+        3.748048038687557,
+        2.308651979546994,
+        2.50915001379326,
+        2.4501659790985286,
+        2.8150019934400916
+      ],
+      "sparse_overlap_search_p50_ms": 0.21814898354932666,
+      "sparse_overlap_search_p95_ms": 3.6268149851821363,
+      "sparse_overlap_search_samples_ms": [
+        3.6268149851821363,
+        0.24820398539304733,
+        0.21814898354932666,
+        0.1810170360840857,
+        0.18036802066490054
+      ],
+      "batch_size": 1000,
+      "batch_facts_per_second": 2170.7341119015477,
+      "batch_elapsed_seconds": 0.4606736470013857
+    },
+    {
+      "round": "candidate-1",
+      "snapshot_reuse_enabled": true,
+      "seed_facts": 30000,
+      "facts_before_trials": 30000,
+      "single_write_p50_ms": 3.82330798311159,
+      "single_write_p95_ms": 8.69343098020181,
+      "single_write_samples_ms": [
+        3.82330798311159,
+        2.4105499614961445,
+        3.2544289715588093,
+        4.961424041539431,
+        8.69343098020181
+      ],
+      "sparse_overlap_search_p50_ms": 0.19271596102043986,
+      "sparse_overlap_search_p95_ms": 0.40178000926971436,
+      "sparse_overlap_search_samples_ms": [
+        0.40178000926971436,
+        0.22848497610539198,
+        0.19271596102043986,
+        0.17678597941994667,
+        0.1745170447975397
+      ],
+      "batch_size": 1000,
+      "batch_facts_per_second": 2260.125220294458,
+      "batch_elapsed_seconds": 0.4424533609999344
+    },
+    {
+      "round": "candidate-2",
+      "snapshot_reuse_enabled": true,
+      "seed_facts": 30000,
+      "facts_before_trials": 30000,
+      "single_write_p50_ms": 2.4693470331840217,
+      "single_write_p95_ms": 3.979703993536532,
+      "single_write_samples_ms": [
+        3.979703993536532,
+        2.2957880282774568,
+        2.4693470331840217,
+        2.2600949741899967,
+        2.5600899825803936
+      ],
+      "sparse_overlap_search_p50_ms": 0.1872180146165192,
+      "sparse_overlap_search_p95_ms": 0.3898930153809488,
+      "sparse_overlap_search_samples_ms": [
+        0.3898930153809488,
+        0.21013699006289244,
+        0.1872180146165192,
+        0.17949799075722694,
+        0.17744203796610236
+      ],
+      "batch_size": 1000,
+      "batch_facts_per_second": 2319.6514223381932,
+      "batch_elapsed_seconds": 0.4310992549872026
+    },
+    {
+      "round": "baseline-2",
+      "snapshot_reuse_enabled": false,
+      "seed_facts": 30000,
+      "facts_before_trials": 30000,
+      "single_write_p50_ms": 2.397497999481857,
+      "single_write_p95_ms": 3.619589959271252,
+      "single_write_samples_ms": [
+        3.619589959271252,
+        2.2427939693443477,
+        2.4136400315910578,
+        2.3500529932789505,
+        2.397497999481857
+      ],
+      "sparse_overlap_search_p50_ms": 0.19404798513278365,
+      "sparse_overlap_search_p95_ms": 0.365055981092155,
+      "sparse_overlap_search_samples_ms": [
+        0.365055981092155,
+        0.22838800214231014,
+        0.187613011803478,
+        0.19404798513278365,
+        0.1799209858290851
+      ],
+      "batch_size": 1000,
+      "batch_facts_per_second": 2182.2090336977662,
+      "batch_elapsed_seconds": 0.4582512420020066
+    }
+  ],
+  "limitations": [
+    "No 1M database benchmark was run by this diagnostic.",
+    "30K synthetic independent facts and 1K batches are a workload diagnostic, not release acceptance.",
+    "The baseline is the same worktree and runner with only snapshot reuse disabled at the internal index-add dispatch.",
+    "Wall-clock rounds remain subject to local scheduling and storage noise."
+  ],
+  "analysis": {
+    "baseline_median_facts_per_second": 2176.471572799657,
+    "candidate_median_facts_per_second": 2289.8883213163253,
+    "candidate_median_delta_percent": 5.211037439408273,
+    "profile_to_dict_call_reduction": 1000,
+    "profile_to_dict_call_reduction_percent": 50.0,
+    "profile_to_dict_cumtime_reduction_percent": 45.627485440996594,
+    "release_gate_status": "1M not measured; 30K comparison is diagnostic only"
+  },
+  "first_unsealed_abba": {
+    "note": "An initial same-HEAD ABBA run preceded preserving the harness; retained here for completeness, while the reproducible matched_30k section above is the sealed rerun.",
+    "rates_facts_per_second": {
+      "baseline-1": 2083.929519348847,
+      "candidate-1": 2367.7661167762253,
+      "candidate-2": 2318.3170726856056,
+      "baseline-2": 2163.821539528255
+    },
+    "runner_source_retained": false
+  }
+}

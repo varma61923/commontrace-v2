@@ -9,7 +9,7 @@ import sys
 
 from commontrace import PROTOCOL_VERSION, __version__
 from commontrace.configuration import getenv as _configuration_getenv
-from commontrace.exceptions import CommonTraceError
+from commontrace.exceptions import CommonTraceError, remediation_hint
 
 try:
     from commontrace.frontmatter import FrontmatterError
@@ -305,7 +305,11 @@ def main(argv: list[str] | None = None) -> int:
         IndexError,
         AttributeError,
     ) as exc:
-        print(f"[commontrace] error: {type(exc).__name__}: {exc}", file=sys.stderr)
+        print(
+            f"[commontrace] error: {type(exc).__name__}: {exc}\n"
+            f"  Remediation: {remediation_hint(exc)}",
+            file=sys.stderr,
+        )
         return 1
 
 

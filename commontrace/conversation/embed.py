@@ -21,7 +21,7 @@ MODELS = {
                  "Represent this sentence for searching relevant passages: "),
     "minilm": ("sentence-transformers/all-MiniLM-L6-v2", ""),
 }
-DEFAULT = "arctic-m"
+DEFAULT = "fastembed:BAAI/bge-small-en-v1.5"
 MAX_SEQ = 256
 BATCH = 64
 
@@ -62,7 +62,12 @@ def available_for(tag: str) -> bool:
         spec = embeddings.parse(tag)
     except embeddings.EmbeddingError:
         return False
-    return importlib.util.find_spec("numpy") is not None if spec.hosted else available()
+    if spec.hosted:
+        return importlib.util.find_spec("numpy") is not None
+    if spec.provider == "fastembed":
+        return (importlib.util.find_spec("numpy") is not None
+                and importlib.util.find_spec("fastembed") is not None)
+    return available()
 
 
 def canonical(tag: str) -> str:
@@ -126,7 +131,12 @@ class Embedder:
         if tag not in MODELS:
             from commontrace import embeddings
 
-            self._provider = embeddings.provider(tag)
+            # The shipped local default is cache-only. A first-run cache miss
+            # should leave the lexical arm usable without a surprise download.
+            if tag == embeddings.DEFAULT_LOCAL_TAG:
+                self._provider = embeddings.provider(tag, local_files_only=True)
+            else:
+                self._provider = embeddings.provider(tag)
         directory = _store.conversations_dir(root)
         safe = tag if tag in MODELS else re.sub(r"[^A-Za-z0-9._-]+", "_", tag)
         path = os.path.join(directory, f"embeddings-{safe}.db")

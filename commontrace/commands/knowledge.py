@@ -942,7 +942,7 @@ def recall_add_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     p.add_argument("--as-of", default=None, help="Read every channel as it stood at this moment.")
     p.add_argument("--space", action="append", default=None, help="Conversation spaces (default: all).")
-    p.add_argument("--embedder", default="none", help="Conversation embedder: none (lexical), auto, or a tag.")
+    p.add_argument("--embedder", default="auto", help="Conversation embedder: auto, none (lexical), or a tag.")
     p.add_argument(
         "--evidence-budget",
         type=int,

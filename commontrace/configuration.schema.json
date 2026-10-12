@@ -103,16 +103,7 @@
       "$ref": "#/$defs/settings"
     },
     "secrets": {
-      "type": "object",
-      "maxProperties": 64,
-      "propertyNames": {
-        "pattern": "^(COMMONTRACE|HUB)_[A-Z0-9_]{1,100}$"
-      },
-      "additionalProperties": {
-        "type": "string",
-        "pattern": "^(env|file|aws):.+$",
-        "maxLength": 4096
-      }
+      "$ref": "#/$defs/secret_references"
     }
   },
   "x-legacy-environment-aliases": {
@@ -1573,7 +1564,22 @@
         },
         "settings": {
           "$ref": "#/$defs/settings"
+        },
+        "secrets": {
+          "$ref": "#/$defs/secret_references"
         }
+      }
+    },
+    "secret_references": {
+      "type": "object",
+      "maxProperties": 64,
+      "propertyNames": {
+        "pattern": "^(COMMONTRACE|HUB)_[A-Z0-9_]{1,100}$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^(env|file|aws):.+$",
+        "maxLength": 4096
       }
     }
   }

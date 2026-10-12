@@ -51,6 +51,16 @@ prevents an unrelated response from being recorded. The provider opts into
 an agent loop completes. Retrieval and capture failures are debug-logged and
 fail open; missing identity remains a configuration error.
 
+For an `AgentLoopMiddleware` turn, the provider preserves the original user
+query and reuses the retrieved context across iterations. Framework-generated
+continuation and progress messages are not captured as user statements or
+preferences. The framework calls the deferred `after_run` with the original
+input and completed response, so it can save one paired `SessionEnd`. This
+uses the SDK's `_agent_loop_iteration` options marker, as implemented in
+`agent-framework-core 1.21.0`; the experimental harness may change that internal
+contract in a future SDK release. Provider state stores only the marker's
+integer identity, not its nonserializable object.
+
 This adapts the lifecycle and scoping lessons in Zep's
 `integrations/ms-agent-framework/python/src/zep_ms_agent_framework/context_provider.py`
 and Supermemory's
@@ -62,6 +72,12 @@ falling back to a shared agent scope.
 CommonTrace keeps its own storage and scope contract: it reuses the existing
 turn and SessionEnd operations rather than adding an SDK-specific memory
 client or store.
+
+The local Graphify graphs located those providers before source inspection.
+The inspected Zep checkout was `cfa2ab2bbc3c7085d636479b719bcf64608162cc`;
+Supermemory was `709723dea69dba8340fc42c0aafd86a2b6a4a0f4`. This is adaptation
+of their native lifecycle pattern; CommonTrace's existing scoped journal and
+combined save-and-retrieve operation remain the implementation.
 
 The current API contract was checked against Microsoft's maintained
 [`ContextProvider` source](https://github.com/microsoft/agent-framework/blob/main/python/packages/core/agent_framework/_sessions.py),
@@ -79,3 +95,28 @@ per user run, Alice/Bob retrieval and capture isolation, fail-open outages,
 output preservation, missing-scope rejection, and import safety without the
 optional SDK. No live model or installed Agent Framework distribution is
 required for these contract tests.
+
+The optional `tests/test_optional_microsoft_agent_framework_lifecycle.py` also
+runs the real SDK's `Agent`, `AgentSession`, `ContextProvider` pipeline and
+`FunctionInvocationLayer` with a deterministic local chat client. On Python
+3.12 with `agent-framework-core 1.21.0`, the new loop regression failed before
+the fix: it captured the SDK's synthetic continuation as a second user message
+and lost the final paired capture. After preserving the original turn across
+loop iterations, all five optional lifecycle tests and five core contracts
+pass. They cover concurrent Alice/Bob sessions, repeated turns, a real SDK tool
+round trip, a two-iteration agent loop, unavailable memory, and missing identity.
+The tool round trip executes a local function through the SDK; it makes no
+provider transport or live-model claim. The loop test emits the SDK's expected
+experimental-harness warning.
+
+Reproduce in an isolated environment (the optional file skips when the SDK is
+absent):
+
+```bash
+python3 -m venv /tmp/commontrace-microsoft-live-venv
+/tmp/commontrace-microsoft-live-venv/bin/python -m pip install \
+  'agent-framework-core==1.21.0' pytest pytest-asyncio PyYAML
+/tmp/commontrace-microsoft-live-venv/bin/python -m pytest \
+  tests/test_microsoft_agent_framework.py \
+  tests/test_optional_microsoft_agent_framework_lifecycle.py -q
+```

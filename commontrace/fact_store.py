@@ -354,12 +354,15 @@ class FactMap(MutableMapping):
         self.staged.clear()
         self.near_postings.clear()
 
-    def stage(self, fact):
+    def stage(self, fact, *, snapshot=None):
+        if snapshot is None:
+            snapshot = fact.to_dict()
+        elif snapshot.get("id") != fact.id or snapshot.get("statement") != fact.statement:
+            raise ValueError("a staged fact snapshot must match its identity and statement")
         previous = self.staged.get(fact.id)
         if previous is not None:
             for word in previous.content:
                 self.near_postings[previous.block, word].discard(fact.id)
-        snapshot = fact.to_dict()
         new_record = self.before.get(fact.id, False) is None
         projection = _project_metadata(
             self.connection, fact, _dump(snapshot), snapshot=snapshot,
@@ -571,6 +574,10 @@ class StatementIndex:
 
     def add(self, fact):
         self.facts.stage(fact)
+
+    def add_with_snapshot(self, fact, snapshot):
+        """Stage a fact from the detached payload already used for its revision."""
+        self.facts.stage(fact, snapshot=snapshot)
 
     def candidates(self, kind, arguments):
         queries = {

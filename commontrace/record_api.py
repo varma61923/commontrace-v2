@@ -39,4 +39,8 @@ def operate(root: str, operation: str, body: dict, *, context: list[str], untrus
         ):
             raise PermissionError("record does not belong to this context")
         return journal.forget(body["id"], reason=body["reason"])
+    if operation == "record-reap-due":
+        if untrusted:
+            raise PermissionError("expiration reaping requires the local owner")
+        return {"results": journal.reap_due(limit=body.get("limit", 16))}
     raise ValueError("unsupported record operation")

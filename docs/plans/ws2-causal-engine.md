@@ -8,7 +8,7 @@
 
 **Tests.** `tests/test_experiment*.py`, `tests/test_integrity.py`, `tests/test_allocation.py` (including a signed proof round trip and tamper detection), `tests/test_conformance.py` (40 allocation vectors).
 
-**Benchmark to move.** Target E. Measured in `docs/benchmarks/adaptive-allocation.md`: coverage >= 96.7% in every cell; +10pp detected in 96-100% of runs by 2,000 occasions; +5pp not reached (best 0.70).
+**Benchmark to move.** Target E. The fixed-prior run in `docs/benchmarks/adaptive-allocation.md` has empirical time-uniform coverage >= 96.75% in every cell; the AIPW sequence remains asymptotic. +10pp adaptive power is 0.96-1.00; +5pp is not reached (best strong-strata power 0.70).
 
 **Risks.** The AIPW sequence's coverage is asymptotic; it claims nothing before 50 scores and is measured from 100 occasions on. Low monitoring rates make scores noisy; the running intersection keeps verdicts from flipping.
 

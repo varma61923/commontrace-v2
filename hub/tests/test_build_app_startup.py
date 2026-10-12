@@ -122,6 +122,22 @@ class TestTheProductionAppBoots:
         messages = await _run_lifespan(build_app(cfg, session_factory))
         assert "lifespan.startup.complete" in [m["type"] for m in messages]
 
+    async def test_hosted_projection_resources_close_with_the_server(self, config, session_factory):
+        cfg = dataclasses.replace(config, rest_api_enabled=True, signup_enabled=False)
+        app = build_app(cfg, session_factory)
+
+        class ProjectionResources:
+            close_calls = 0
+
+            async def close(self):
+                self.close_calls += 1
+
+        resources = ProjectionResources()
+        app.state.memory_projection_factory = resources
+        messages = await _run_lifespan(app)
+        assert "lifespan.shutdown.complete" in [message["type"] for message in messages]
+        assert resources.close_calls == 1
+
     async def test_it_boots_with_an_ip_allowlist_configured(self, config, session_factory):
         cfg = dataclasses.replace(config, ip_allowlist=("10.0.0.0/8",))
         messages = await _run_lifespan(build_app(cfg, session_factory))

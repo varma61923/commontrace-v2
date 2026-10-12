@@ -6,7 +6,8 @@
   "horizon": 2000,
   "alpha": 0.05,
   "checkpoints": "every 50 from 100",
-  "source_sha256": "9a84602db9a228b4aff7ef64b51f61531221f2dc9eb943c71b3c8023fbf0fe4f",
+  "mixture_target_n_per_arm": 99,
+  "source_sha256": "6c0565fd94dc56222a6e6e53fcb8f6d6d69b92f3f55c2618eb81a452afea4007",
   "cells": [
     {
       "strata": "flat",

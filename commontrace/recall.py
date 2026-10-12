@@ -250,7 +250,11 @@ def _dense_facts(root: str, question: str, as_of: str | None, k: int, scope: str
     model = _configuration_getenv("COMMONTRACE_FACT_EMBEDDER", "").strip()
     model_path = _configuration_getenv("COMMONTRACE_FACT_EMBEDDER_PATH")
     if model.lower() in ("none", "off"):
-        model = ""
+        return {}
+    if not model and not model_path:
+        from commontrace import embeddings
+
+        model = embeddings.DEFAULT_LOCAL_TAG
     if not (model or model_path):
         return {}
 
@@ -320,9 +324,13 @@ def _dense_facts(root: str, question: str, as_of: str | None, k: int, scope: str
                 pass
 
     facts = hierarchical.list_facts(root, scope=scope, as_of=as_of)  # validity, forgetting and TTL applied
-    scores = fact_embeddings.scores(
-        question, facts, model_path=model_path or None, model=model or None, root=root
-    ) or {}
+    try:
+        scores = fact_embeddings.scores(
+            question, facts, model_path=model_path or None, model=model or None, root=root
+        ) or {}
+    except (ImportError, RuntimeError, ValueError, OSError):
+        # A cache-only optional dense default must never suppress fact recall.
+        scores = {}
     ranked = sorted(((f, scores.get(f.id, 0.0)) for f in facts), key=lambda pair: (-pair[1], pair[0].id))
     best = ranked[0][1] if ranked else 0.0
     # Cosines are not calibrated across models; a relative floor drops the tail that only shares noise.
@@ -626,7 +634,7 @@ def _fits(items: list[Item], budget: int) -> bool:
 
 def recall(root: str, question: str, *, budget: int | None = None, agent: str | None = None,
            channels: tuple[str, ...] = CHANNELS, as_of: str | None = None, weights: dict[str, float] | None = None,
-           spaces: list[str] | None = None, embedder: str = "none", per_channel: int = 12,
+           spaces: list[str] | None = None, embedder: str = "auto", per_channel: int = 12,
            evidence_budget: int = 0, scope: str = "", fact_scorer: str = "overlap-v1",
            reranker: str | None = None, rerank_depth: int | None = None, rerank_blend: float | None = None,
            adaptive_budget: bool | None = None, max_budget: int | None = None) -> Result:

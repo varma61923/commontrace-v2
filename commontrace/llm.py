@@ -460,12 +460,23 @@ def complete(prompt: str, config: Config | None = None) -> tuple[str, dict]:
                             hashlib.sha256(cfg.api_key.encode("utf-8")).hexdigest()])
     key = llm_cache_mod.cache_key(cfg.model, prompt, namespace=namespace)
 
+    computed = False
+
     def compute():
+        nonlocal computed
+        computed = True
         text, usage = _provider_call(cfg, prompt, caller)
-        return {"text": text, "usage": usage}
+        return {"text": text, "usage": usage, "cost_usd": cost_usd(usage, cfg.model)}
 
     value = cache.get_or_compute(key, compute)
-    return value["text"], value.get("usage", {})
+    usage = value.get("usage", {})
+    usage = dict(usage) if isinstance(usage, dict) else {}
+    # Only the call that actually invokes the provider is fresh spend. Hot,
+    # disk-cache, and coalesced waiters all carry the historical usage record.
+    usage["_commontrace_cache_hit"] = not computed
+    if not computed:
+        usage["_commontrace_cached_cost_usd"] = value.get("cost_usd")
+    return value["text"], usage
 
 
 def draft(

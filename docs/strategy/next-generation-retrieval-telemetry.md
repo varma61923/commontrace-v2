@@ -33,6 +33,12 @@ The tests capture the OpenTelemetry span boundary and verify both a populated
 and empty recall. They do not measure judged answer quality or retrieval-score
 calibration.
 
+The direct `conversation.recall` API now records the same kind of bounded raw
+score, margin, coverage confidence and abstention fields on fresh and cached
+calls. Its scale is explicitly `conversation_weighted_rrf` with the stage
+`first_stage`; its caller-supplied space label was removed. See the
+[direct conversation implementation and validation](next-generation-conversation-retrieval-telemetry.md).
+
 ## Paired retrieval regression
 
 The integrated candidate was compared with frozen reference `973e599` using a

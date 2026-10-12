@@ -1,8 +1,30 @@
 # Environment reference
 
-Use `commontrace.yaml` for runtime options, model routes, budgets and server settings.
-The recommended deployment surface has 25 environment variables for paths and credentials.
-Explicit environment settings take precedence over YAML, without changing other requests.
+Use `commontrace.yaml` profiles for runtime options, model routes, budgets, server settings and secrets.
+The first-class environment override surface documents 25 names for paths, provider selection and credentials.
+Explicit environment settings take precedence over YAML during rolling upgrades.
+Choose a profile in `commontrace.yaml`; settings can be tailored per local, team or server deployment:
+
+```yaml
+profile: local
+profiles:
+  local:
+    offline: true
+    llm_provider: local
+    settings:
+      llm:
+        max_tokens: 240
+  team:
+    llm_provider: openai
+    llm_model: your-model
+    secrets:
+      COMMONTRACE_LLM_API_KEY: env:TEAM_MODEL_KEY
+  server:
+    settings:
+      server:
+        host: 0.0.0.0
+        port: 8765
+```
 
 `commontrace migrate config --dest . --dry-run` previews migration by name.
 Omit `--dry-run` to atomically write nonsecret settings and credential references.
@@ -10,15 +32,27 @@ Credentials use `secrets: {COMMONTRACE_LLM_API_KEY: "env:MODEL_KEY"}`;
 `file:` sources resolve against the store root and reread mounted secrets after rotation.
 `aws:` sources use the existing bounded AWS Secrets Manager cache.
 
-Legacy aliases remain supported for rolling upgrades. Their full, machine-readable inventory
-and YAML paths are in [the configuration schema](../commontrace/configuration.schema.json)
-under `x-legacy-environment-aliases`.
-The schema has 155 alias entries; 24 also appear in the primary list.
-That leaves 156 unique supported environment-variable names.
-The fewer-than-40 public-variable target remains unmet while the full compatibility inventory is
-supported and documented.
+Profile secrets override top-level secret references; explicit environment values still take precedence.
+This lets each profile select its own mounted credential while keeping environment migration compatible:
 
-| Name | First source reference |
+```yaml
+profile: team
+profiles:
+  team:
+    secrets:
+      COMMONTRACE_LLM_API_KEY: file:keys/team-llm
+```
+
+Compatibility is retained: `commontrace migrate config` recognizes the complete legacy alias
+inventory and its YAML paths in [the configuration schema](../commontrace/configuration.schema.json)
+under `x-legacy-environment-aliases`.
+The schema has 155 alias entries; 24 also appear in the first-class list.
+These aliases remain supported for upgrades; 156 unique names are accepted
+when the first-class environment list is combined with the legacy aliases.
+Use profiles for new deployments and migrate legacy settings gradually; migration does not delete
+the original environment values.
+
+| First-class environment override | First source reference |
 | --- | --- |
 | `COMMONTRACE_CONFIG` | [commontrace/configuration.py:26](../commontrace/configuration.py#L26) |
 | `COMMONTRACE_ROOT` | [commontrace/commands/_shellout.py:85](../commontrace/commands/_shellout.py#L85) |
