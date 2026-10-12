@@ -23,6 +23,9 @@ def test_synthetic_hybrid_acceptance_measures_production_api_and_fresh_restart(t
     assert report["restart"]["query_vectors_requested"] == 1
     assert report["restart"]["sample_cache_vectors"] == 2
     assert report["restart"]["content_hash_cache_entries"] == 64
+    assert report["restart"]["candidate_inclusion_verified"]
+    assert len(report["restart"]["candidate_ids_found"]) == 2
+    assert report["restart"]["out_of_scope_excluded"]
     assert report["restart"]["status"].startswith("pass_on_fixture")
     assert report["hybrid_api"]["gate"].startswith("unverified")
     assert report["server_gate"]["status"] == "unsupported_by_current_fact_projection"
@@ -37,9 +40,24 @@ def test_hybrid_gate_requires_exact_scale_and_strict_latency_threshold():
 
 def test_restart_gate_rejects_document_embedding_or_missing_cache():
     good = {"document_vectors_requested": 0, "sample_cache_vectors": 1,
-            "content_hash_cache_entries": 1_000_000, "projection_drain": {"processed": 0}}
+            "content_hash_cache_entries": 1_000_000, "projection_drain": {"processed": 0},
+            "candidate_ids_expected": ["dense", "lexical"],
+            "candidate_ids_found": ["dense", "lexical"], "out_of_scope_excluded": True}
     assert benchmark.restart_status(good).startswith("pass_on_fixture")
     assert benchmark.restart_status(good, facts=1_000_000).startswith("pass:")
     assert benchmark.restart_status(good, facts=1_000_000, synthetic=True).startswith("pass_on_fixture")
     assert benchmark.restart_status({**good, "document_vectors_requested": 1}).startswith("fail:")
     assert benchmark.restart_status({**good, "content_hash_cache_entries": 0}).startswith("fail:")
+
+
+def test_restart_gate_requires_candidate_inclusion_and_scope_exclusion():
+    good = {"document_vectors_requested": 0, "sample_cache_vectors": 2,
+            "content_hash_cache_entries": 1_000_000, "projection_drain": {"processed": 0},
+            "candidate_ids_expected": ["dense", "lexical"],
+            "candidate_ids_found": ["dense", "lexical"], "out_of_scope_excluded": True}
+    missing_dense = {**good, "candidate_ids_found": ["lexical"]}
+    leaked_scope = {**good, "out_of_scope_excluded": False}
+
+    assert benchmark.restart_status(good).startswith("pass_on_fixture")
+    assert benchmark.restart_status(missing_dense).startswith("fail:")
+    assert benchmark.restart_status(leaked_scope).startswith("fail:")

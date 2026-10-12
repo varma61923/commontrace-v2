@@ -148,7 +148,7 @@ def _implementation_hash(source: str) -> dict[str, str]:
 
 
 def _restart_worker(source: str, root: str, embedder: str, sample_ids: list[str],
-                    synthetic: bool) -> dict[str, Any]:
+                    excluded_id: str, synthetic: bool) -> dict[str, Any]:
     from commontrace import fact_embeddings, fact_store, fact_vector_projection
 
     counts = {"document_vectors_requested": 0, "query_vectors_requested": 0}
@@ -170,6 +170,9 @@ def _restart_worker(source: str, root: str, embedder: str, sample_ids: list[str]
     if len(cached) != len(sample):
         raise RuntimeError("restart cache did not return every sampled vector")
     rows, explain = _hybrid_search(root, "feline runtime", embedder, context=["agent:a"])
+    row_ids = {row["id"] for row in rows}
+    found_ids = sorted(set(sample_ids) & row_ids)
+    out_of_scope_excluded = not excluded_id or excluded_id not in row_ids
     vector_db = os.path.join(os.path.dirname(fact_store.database_path(root)),
                              "embeddings-" + "".join(c if c.isalnum() or c in ".-_" else "_" for c in
                                                        ("synthetic:fixture-v1" if synthetic else embedder))[:120]
@@ -181,13 +184,18 @@ def _restart_worker(source: str, root: str, embedder: str, sample_ids: list[str]
     return {"projection_drain": drain, **counts, "sample_cache_vectors": len(sample),
             "content_hash_cache_entries": cache_entries, "hybrid_rows": len(rows),
             "hybrid_dense_candidates": bool(explain.get("dense_candidates")),
+            "candidate_ids_expected": sample_ids, "candidate_ids_found": found_ids,
+            "candidate_inclusion_verified": bool(sample_ids) and len(found_ids) == len(set(sample_ids)),
+            "out_of_scope_id_expected": excluded_id, "out_of_scope_excluded": out_of_scope_excluded,
             "provider_kind": "synthetic_adapter" if synthetic else "configured_embedding_provider"}
 
 
-def _run_restart(source: str, root: str, embedder: str, sample_ids: list[str], synthetic: bool) -> dict[str, Any]:
+def _run_restart(source: str, root: str, embedder: str, sample_ids: list[str],
+                 excluded_id: str, synthetic: bool) -> dict[str, Any]:
     output_file = os.path.join(root, "restart-report.json")
     command = [sys.executable, "-I", os.path.abspath(__file__), "--worker-restart", "--source", source,
                "--root", root, "--embedder", embedder, "--sample-ids", ",".join(sample_ids),
+               "--excluded-id", excluded_id,
                "--restart-output", output_file]
     if synthetic:
         command.append("--synthetic-adapter")
@@ -200,6 +208,13 @@ def _run_restart(source: str, root: str, embedder: str, sample_ids: list[str], s
 
 
 def restart_status(report: dict[str, Any], *, facts: int = 0, synthetic: bool = False) -> str:
+    expected = report.get("candidate_ids_expected")
+    found = report.get("candidate_ids_found")
+    if not isinstance(expected, list) or not expected or not isinstance(found, list) \
+            or not set(expected) <= set(found):
+        return "fail: one or more expected hybrid candidates were missing after restart"
+    if report.get("out_of_scope_excluded") is not True:
+        return "fail: canonical scope filter admitted an out-of-scope restart candidate"
     if report.get("document_vectors_requested") != 0:
         return "fail: document vectors were recomputed after restart"
     if report.get("sample_cache_vectors", 0) <= 0 or report.get("content_hash_cache_entries", 0) <= 0:
@@ -222,11 +237,11 @@ def hybrid_status(*, facts: int, p95_ms: float, backend: str = "sqlite") -> str:
 
 
 def worker_restart(source: str, root: str, embedder: str, sample_ids: list[str],
-                   synthetic: bool, output: str) -> int:
+                   excluded_id: str, synthetic: bool, output: str) -> int:
     sys.path.insert(0, source)
     if synthetic:
         _register_synthetic()
-    report = _restart_worker(source, root, embedder, sample_ids, synthetic)
+    report = _restart_worker(source, root, embedder, sample_ids, excluded_id, synthetic)
     with open(output, "w", encoding="utf-8") as stream:
         json.dump(report, stream, indent=2, sort_keys=True)
         stream.write("\n")
@@ -287,7 +302,8 @@ def measure(*, source: str, count: int, trials: int, embedder: str, synthetic: b
         restart = None
         if run_restart:
             restart = _run_restart(source, root, embedder,
-                                   [identities["dense_only"], identities["lexical_only"]], synthetic)
+                                   [identities["dense_only"], identities["lexical_only"]],
+                                   identities["out_of_scope"], synthetic)
             restart["status"] = restart_status(restart, facts=count, synthetic=synthetic)
 
         vector_backend = fact_vector_projection._backend(root)
@@ -355,6 +371,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--worker-restart", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--root", help=argparse.SUPPRESS)
     parser.add_argument("--sample-ids", default="", help=argparse.SUPPRESS)
+    parser.add_argument("--excluded-id", default="", help=argparse.SUPPRESS)
     parser.add_argument("--restart-output", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if args.worker_restart:
@@ -362,7 +379,7 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("restart worker requires --root and --restart-output")
         return worker_restart(os.path.realpath(args.source), args.root, args.embedder,
                               [value for value in args.sample_ids.split(",") if value],
-                              args.synthetic_adapter, args.restart_output)
+                              args.excluded_id, args.synthetic_adapter, args.restart_output)
     if args.facts < 3 or args.trials < 1:
         parser.error("--facts must be >=3 and --trials must be positive")
     if args.synthetic_adapter and args.embedder not in (None, EMBEDDER):

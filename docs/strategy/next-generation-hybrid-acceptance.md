@@ -22,10 +22,13 @@ projection, checks a dense-only canary and an FTS-only canary through the full
 API, then measures warm queries. It also launches a new Python process, checks
 that the content-hash vector cache returns sampled vectors without document
 embedding calls, verifies the projection watermark replays no events, and
-counts the query embedding separately. On a million-fact run the cache entry
-count is included in the report. The output labels the embedding provider and
-keeps index-build, FTS-only and vector-projection component timings outside the
-hybrid p95 gate.
+counts the query embedding separately. The restarted process also reruns the
+hybrid query and requires both the dense-only and lexical-only fixture IDs to
+remain candidates while the out-of-scope ID stays excluded. A restart report
+that loses either candidate or leaks the scoped-out row fails. On a
+million-fact run the cache entry count is included in the report. The output
+labels the embedding provider and keeps index-build, FTS-only and
+vector-projection component timings outside the hybrid p95 gate.
 
 `--synthetic-adapter` uses fixed semantic axes so tests can prove the dense
 candidate union, lexical candidate union and scope filter without downloading a
@@ -41,6 +44,11 @@ The call graph was traced with Graphify in CommonTrace and the available
 Graphiti, Hindsight and EverOS repositories. Graphiti's
 `graphiti_core/search/search_utils.py::hybrid_node_search` issues full-text and
 vector searches in parallel, deduplicates each result set and applies RRF.
+Hindsight's `hindsight_api/engine/memory_engine.py::search_knowledge_pages`
+delegates BM25/vector fusion to the configured page store and hydrates the
+returned IDs through Postgres; its `engine/search/fusion.py` defines the RRF
+merge. This is an adjacent server-side design, not an adapter currently wired
+to CommonTrace's governed fact path.
 CommonTrace already has the corresponding bounded candidate-union and RRF
 path, so no competitor code was copied. EverOS preserves a separate RRF block
 for each follow-up query in `src/everos/memory/search/llm_multiround.py`; this
@@ -57,3 +65,11 @@ It validates candidate and restart contracts only. A 1M local timed workload,
 real-model 1M latency, Postgres/server hybrid latency and the 1M restart run
 remain unmeasured until the corresponding commands are run on the intended
 hardware and backend.
+
+The restart candidate and scope checks were exercised by a 64-fact synthetic
+smoke (`--facts 64 --trials 2 --synthetic-adapter`): both expected candidates
+were present after restart, the out-of-scope candidate was absent, the vector
+projection processed zero events, and the child requested zero document-vector
+embeddings and one query embedding. This closes the restart plumbing check on a
+fixture only; the hybrid gate remains unverified below exactly one million
+facts, and synthetic timing is not production-model evidence.
