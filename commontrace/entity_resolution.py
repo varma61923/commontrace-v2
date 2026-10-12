@@ -12,11 +12,14 @@ an ancestor of the other, and neither the untyped fallback) are reported as bloc
 and never merged."""
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from commontrace import kg_similarity
 
 THRESHOLDS = {"embedding": (0.85, 0.95), "ngram": (0.6, 0.85)}
 MAX_ENTITIES = 2000
 SKIPPED_TYPES = frozenset({"lesson", "memory", "scope"})
+TIERED_THRESHOLDS = {"entropy": 2.0, "minhash": 0.8, "jaccard": 0.8, "cosine": 0.6, "top_k": 15}
 
 
 def _forms(node) -> list[str]:
@@ -73,6 +76,50 @@ def _embedding_scores(root: str, nodes, provider, context: bool) -> dict[tuple[i
         texts.append(text)
     matrix = kg_similarity.pairwise(kg_similarity.embed(provider, texts, query=False))
     return {(a, b): matrix[a][b] for a in range(len(nodes)) for b in range(a + 1, len(nodes))}
+
+
+@dataclass(frozen=True)
+class _TieredSurface:
+    forms: frozenset[str]
+    grams: frozenset[str]
+    entropy: float
+    signature: list[int]
+
+
+def _tiered_surface(forms: list[str]) -> _TieredSurface:
+    """Precompute the exact, entropy, MinHash and trigram signals for one entity."""
+    import math
+    from collections import Counter
+
+    from commontrace.overlap import minhash
+
+    normalized = frozenset(value for form in forms if (value := kg_similarity.normalize(form)))
+    grams = frozenset().union(*(kg_similarity.ngrams(form) for form in normalized)) if normalized else frozenset()
+    text = " ".join(sorted(normalized))
+    counts = Counter(text)
+    total = max(1, len(text))
+    entropy = -sum((count / total) * math.log2(count / total) for count in counts.values())
+    signature_text = " ".join(value.replace(" ", "_") for value in sorted(grams))
+    signature = minhash(signature_text) if grams else []
+    return _TieredSurface(normalized, grams, entropy, signature)
+
+
+def tiered_pair_signals(a_forms: list[str], b_forms: list[str]) -> dict[str, float | bool]:
+    """Deterministic signals used by tiered entity resolution and its labeled eval.
+
+    This reports scores without making a decision. The caller applies entropy and
+    similarity floors, and exact aliases always remain the first tier.
+    """
+    from commontrace.overlap import estimate_jaccard
+
+    a, b = _tiered_surface(a_forms), _tiered_surface(b_forms)
+    minhash_score = estimate_jaccard(a.signature, b.signature) if a.signature and b.signature else 0.0
+    return {
+        "exact": bool(a.forms & b.forms),
+        "entropy": min(a.entropy, b.entropy),
+        "minhash": minhash_score,
+        "jaccard": kg_similarity.jaccard(a.grams, b.grams),
+    }
 
 
 def candidates(root: str, *, embedder=None, threshold: float | None = None, context: bool = False,
@@ -146,7 +193,12 @@ def resolve(root: str, *, embedder=None, threshold: float | None = None, apply: 
     return found
 
 
-def tiered_candidates(root: str, *, embedder=None, complete=None, limit=100) -> dict:
+def tiered_candidates(root: str, *, embedder=None, complete=None, limit=100,
+                      entropy_threshold: float = TIERED_THRESHOLDS["entropy"],
+                      minhash_threshold: float = TIERED_THRESHOLDS["minhash"],
+                      jaccard_threshold: float = TIERED_THRESHOLDS["jaccard"],
+                      cosine_threshold: float = TIERED_THRESHOLDS["cosine"],
+                      top_k: int = TIERED_THRESHOLDS["top_k"]) -> dict:
     """Exact aliases → entropy-gated MinHash → top-15 cosine → one batched judge.
 
     Suggestions remain reviewable; ontology compatibility still gates merging.
@@ -154,48 +206,53 @@ def tiered_candidates(root: str, *, embedder=None, complete=None, limit=100) -> 
     universally correct from a static graph or a competitor's defaults.
     """
     import math
-    from collections import Counter
 
     from commontrace import llm, ontology
     from commontrace.llm_runtime import purpose
-    from commontrace.overlap import minhash
+    from commontrace.overlap import estimate_jaccard
+
+    for name, value in (("minhash_threshold", minhash_threshold), ("jaccard_threshold", jaccard_threshold),
+                        ("cosine_threshold", cosine_threshold)):
+        if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+            raise ValueError(f"{name} must be in [0, 1]")
+    if not math.isfinite(entropy_threshold) or entropy_threshold < 0:
+        raise ValueError("entropy_threshold must be finite and non-negative")
+    if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k < 1:
+        raise ValueError("top_k must be a positive integer")
 
     nodes = _candidates_nodes(root)
     onto = ontology.load(root)
     found, remainder = {}, {}
-    forms = [set(kg_similarity.normalize(form) for form in _forms(node)) for node in nodes]
-    grams = [frozenset().union(*(kg_similarity.ngrams(form) for form in values)) for values in forms]
-    signatures = [minhash(" ".join(value.replace(" ", "_") for value in sorted(values))) for values in grams]
-
-    def entropy(text):
-        counts = Counter(text)
-        total = max(1, len(text))
-        return -sum((count / total) * math.log2(count / total) for count in counts.values())
+    surfaces = [_tiered_surface(_forms(node)) for node in nodes]
 
     for a in range(len(nodes)):
         for b in range(a + 1, len(nodes)):
             if not compatible(onto, nodes[a].entity_type, nodes[b].entity_type):
                 continue
-            if forms[a] & forms[b]:
+            if surfaces[a].forms & surfaces[b].forms:
                 found[(a, b)] = ("exact", 1.0)
-            elif min(entropy(" ".join(forms[a])), entropy(" ".join(forms[b]))) >= 2:
-                similarity = sum(x == y for x, y in zip(signatures[a], signatures[b])) / len(signatures[a])
-                if similarity >= 0.8 and kg_similarity.jaccard(grams[a], grams[b]) >= 0.8:
+            else:
+                entropy = min(surfaces[a].entropy, surfaces[b].entropy)
+                similarity = (estimate_jaccard(surfaces[a].signature, surfaces[b].signature)
+                              if surfaces[a].signature and surfaces[b].signature else 0.0)
+                jaccard = kg_similarity.jaccard(surfaces[a].grams, surfaces[b].grams)
+                if entropy >= entropy_threshold and similarity >= minhash_threshold and jaccard >= jaccard_threshold:
                     found[(a, b)] = ("minhash", similarity)
     provider = kg_similarity.embedder(embedder)
     if provider is not None:
         scores = _embedding_scores(root, nodes, provider, False)
         for a in range(len(nodes)):
             candidates = sorted(
-                [(b, score) for (x, b), score in scores.items() if x == a and score >= 0.6],
+                [(b, score) for (x, b), score in scores.items() if x == a and score >= cosine_threshold],
                 key=lambda pair: (-pair[1], nodes[pair[0]].id),
-            )[:15]
+            )[:top_k]
             for b, score in candidates:
                 if (a, b) not in found and compatible(onto, nodes[a].entity_type, nodes[b].entity_type):
                     remainder[(a, b)] = score
     if remainder and complete is not None:
         offered = [
-            {"a": nodes[a].id, "b": nodes[b].id, "a_names": sorted(forms[a]), "b_names": sorted(forms[b])}
+            {"a": nodes[a].id, "b": nodes[b].id, "a_names": sorted(surfaces[a].forms),
+             "b_names": sorted(surfaces[b].forms)}
             for a, b in list(remainder)[: max(1, min(limit, 100))]
         ]
         with purpose("entity-dedup"):
@@ -230,5 +287,6 @@ def tiered_candidates(root: str, *, embedder=None, complete=None, limit=100) -> 
         "entities": len(nodes),
         "pairs": sorted(pairs, key=lambda pair: (-pair["score"], pair["a"], pair["b"]))[:limit],
         "llm_batches": int(bool(remainder and complete)),
-        "thresholds": {"entropy": 2.0, "minhash": 0.8, "cosine": 0.6, "top_k": 15},
+        "thresholds": {"entropy": entropy_threshold, "minhash": minhash_threshold,
+                       "jaccard": jaccard_threshold, "cosine": cosine_threshold, "top_k": top_k},
     }

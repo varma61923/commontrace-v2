@@ -143,3 +143,62 @@ def test_cli_resolve(root, capsys, monkeypatch):
     text = capsys.readouterr().out
     assert "merged concept:acme_corporation into organization:acme_corp" in text and "[blocked" in text
     assert cli.main(["graph", "resolve", "--embedder", "not a tag!", "--dest", root]) == 2
+
+
+def test_tiered_minhash_threshold_is_explicit_and_observable(tmp_path):
+    root = str(tmp_path)
+    graph.add_node(root, "concept:machine_a", "concept", name="International Business Machine")
+    graph.add_node(root, "concept:machine_b", "concept", name="International Business Machines")
+
+    default = entity_resolution.tiered_candidates(root)
+    strict = entity_resolution.tiered_candidates(root, minhash_threshold=0.99)
+
+    assert default["pairs"][0]["tier"] == "minhash"
+    assert default["thresholds"] == {
+        "entropy": 2.0, "minhash": 0.8, "jaccard": 0.8, "cosine": 0.6, "top_k": 15,
+    }
+    assert strict["pairs"] == []
+
+
+def test_tiered_embedding_candidates_are_batched_and_llm_sees_only_remainder(tmp_path):
+    root = str(tmp_path)
+    graph.add_node(root, "concept:ibm", "concept", name="IBM")
+    graph.add_node(root, "concept:international_business_machines", "concept", name="International Business Machines")
+
+    class Embedder:
+        calls = 0
+
+        def embed(self, texts, *, query):
+            self.calls += 1
+            return [[1.0, 0.0] for _ in texts]
+
+    provider = Embedder()
+    seen = []
+
+    def judge(prompt):
+        import json
+
+        offered = json.loads(prompt.rsplit("\n", 1)[1])
+        seen.append(offered)
+        return json.dumps({"duplicates": [[offered[0]["a"], offered[0]["b"]]]}), {}
+
+    result = entity_resolution.tiered_candidates(root, embedder=provider, complete=judge)
+
+    assert result["pairs"][0]["tier"] == "llm"
+    assert result["llm_batches"] == 1 and len(seen) == 1
+    assert provider.calls == 1
+    assert seen[0][0]["a_names"] == ["ibm"]
+
+
+def test_tiered_embedding_floor_and_top_k_are_validated(tmp_path):
+    root = str(tmp_path)
+    graph.add_node(root, "concept:a", "concept", name="IBM")
+    graph.add_node(root, "concept:b", "concept", name="International Business Machines")
+
+    class Embedder:
+        def embed(self, texts, *, query):
+            return [[1.0, 0.0] if text.startswith("IBM") else [0.0, 1.0] for text in texts]
+
+    assert entity_resolution.tiered_candidates(root, embedder=Embedder(), cosine_threshold=0.9)["pairs"] == []
+    with pytest.raises(ValueError, match="top_k"):
+        entity_resolution.tiered_candidates(root, top_k=0)
