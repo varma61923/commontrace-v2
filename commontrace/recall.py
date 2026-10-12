@@ -30,6 +30,7 @@ import math
 import os
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 from commontrace import paths, telemetry
 from commontrace.configuration import getenv as _configuration_getenv
@@ -241,16 +242,87 @@ def _lessons(root: str, question: str, as_of: str | None, k: int, scope: str = "
 def _dense_facts(root: str, question: str, as_of: str | None, k: int, scope: str) -> dict:
     """{fact id: (fact, cosine)} for the `k` facts nearest the question, or {} without a fact embedder.
 
-    Uses the embedder `commontrace.fact_embeddings` is configured with
-    (``COMMONTRACE_FACT_EMBEDDER``), so vectors come from its persistent cache.
+    Use a completed Lance fact projection when available; falling back to exact
+    cached-vector scoring preserves the small-store and legacy-store behavior.
     """
     from commontrace import fact_embeddings, hierarchical
 
-    if not (_configuration_getenv("COMMONTRACE_FACT_EMBEDDER", "").strip().lower() not in ("", "none", "off")
-            or _configuration_getenv("COMMONTRACE_FACT_EMBEDDER_PATH")):
+    model = _configuration_getenv("COMMONTRACE_FACT_EMBEDDER", "").strip()
+    model_path = _configuration_getenv("COMMONTRACE_FACT_EMBEDDER_PATH")
+    if model.lower() in ("none", "off"):
+        model = ""
+    if not (model or model_path):
         return {}
+
+    # A configured Lance projection avoids enumerating and embedding the full
+    # million-fact corpus on every aggregate recall. Keep the exact path below
+    # for stores and configurations that do not have an indexed projection.
+    from commontrace import fact_store, fact_vector_projection
+
+    if model and not model_path and not as_of and fact_store.enabled(root) \
+            and fact_vector_projection._backend(root) == "lance":
+        watermark = fact_vector_projection._watermark(model, "lance")
+        moment = datetime.now(timezone.utc)
+        with fact_store.transaction(root) as current:
+            row = current.connection.execute("SELECT value FROM meta WHERE key=?", (watermark,)).fetchone()
+            try:
+                cursor = int(row[0]) if row else 0
+                indexed = row is not None
+            except (TypeError, ValueError):
+                cursor, indexed = 0, False
+            pending_ids = list(dict.fromkeys(row[0] for row in current.connection.execute(
+                "SELECT fact_id FROM events WHERE seq>? ORDER BY seq", (cursor,)
+            ))) if indexed else []
+            pending_facts = []
+            for identity in pending_ids:
+                fact = current.get(identity)
+                if fact is not None and not fact.forgotten and fact.status == "active" \
+                        and (not scope or not fact.scopes or scope in fact.scopes) \
+                        and hierarchical._valid_at(fact, moment) and not hierarchical._is_expired(fact, moment):
+                    pending_facts.append(fact)
+        if indexed:
+            try:
+                candidates = fact_vector_projection.search(root, question, model=model,
+                                                           limit=max(200, min(1000, k * 16)))
+                # A stale projection can omit newly added or revised facts. Score
+                # just that bounded outbox tail exactly instead of rescanning the
+                # full canonical store, then merge it with indexed candidates.
+                pending_scores = fact_embeddings.scores(
+                    question, pending_facts, model=model, root=root
+                ) or {}
+                candidate_scores = dict(candidates)
+                candidate_scores.update(pending_scores)
+                from commontrace import memory_authority
+                from commontrace.fact_evidence import EvidenceResolver
+
+                with fact_store.transaction(root) as current:
+                    resolver = EvidenceResolver(root, current)
+                    ranked = []
+                    for identity, cosine in candidate_scores.items():
+                        fact = current.get(identity)
+                        if fact is None or fact.forgotten or fact.status != "active" \
+                                or scope and fact.scopes and scope not in fact.scopes \
+                                or not hierarchical._valid_at(fact, moment) \
+                                or hierarchical._is_expired(fact, moment) \
+                                or memory_authority.lineage_blocked(root, fact.id):
+                            continue
+                        if fact.evidence_bound and not resolver.assess(fact.id).eligible:
+                            continue
+                        ranked.append((fact, cosine))
+                best = max((cosine for _, cosine in ranked), default=0.0)
+                return {
+                    fact.id: (fact, cosine)
+                    for fact, cosine in sorted(ranked, key=lambda pair: (-pair[1], pair[0].id))[:k]
+                    if cosine > 0 and cosine >= DENSE_RELATIVE_FLOOR * best
+                }
+            except (ImportError, RuntimeError, ValueError, OSError):
+                # Optional/index failures retain the established exact fallback.
+                pass
+
     facts = hierarchical.list_facts(root, scope=scope, as_of=as_of)  # validity, forgetting and TTL applied
-    scores = fact_embeddings.scores(question, facts, root=root) or {}
+    scores = fact_embeddings.scores(
+        question, facts, model_path=model_path or None, model=model or None, root=root
+    ) or {}
     ranked = sorted(((f, scores.get(f.id, 0.0)) for f in facts), key=lambda pair: (-pair[1], pair[0].id))
     best = ranked[0][1] if ranked else 0.0
     # Cosines are not calibrated across models; a relative floor drops the tail that only shares noise.
