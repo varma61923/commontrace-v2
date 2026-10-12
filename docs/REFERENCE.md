@@ -961,6 +961,33 @@ langgraph_tools = tools.tools("langgraph")
 # Also: langchain, autogen, crewai, llamaindex; native_tools() needs no SDK.
 ```
 
+For kickoff-level CrewAI context and result capture, bind a scoped middleware
+to CrewAI's synchronous callback lists. Names and signatures follow the
+[`Crew` callback fields](https://github.com/crewAIInc/crewAI/blob/main/lib/crewai/src/crewai/crew.py#L298-L310):
+
+```python
+from crewai import Crew
+from commontrace.client import MemoryClient
+from commontrace.framework_middleware import Middleware
+
+middleware = Middleware(
+    MemoryClient("./memory", agent_id="research-crew", context={"user": "alice"}),
+    session_id="run-42",
+)
+crew = Crew(
+    agents=agents,
+    tasks=tasks,
+    before_kickoff_callbacks=[middleware.crewai_before_kickoff],
+    after_kickoff_callbacks=[middleware.crewai_after_kickoff],
+)
+```
+
+Reference `{commontrace_memory}` in a task prompt to use retrieved context. The
+after callback returns CrewAI's output unchanged and records kickoff completion;
+completion does not claim application-level success. See
+[`next-generation-crewai-kickoff-memory.md`](strategy/next-generation-crewai-kickoff-memory.md)
+for scope and fail-open behavior.
+
 For sustained asynchronous ingestion, use `async with await
 AsyncStore.open(root, space)` from `commontrace.conversation` and pass the store
 to `MemoryTools(..., async_store=store)`. The bounded writer reuses a dedicated

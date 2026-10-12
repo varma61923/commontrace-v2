@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 
 from commontrace import memory_guard
@@ -244,9 +245,37 @@ class Middleware:
         return replace_memory_update(messages, result["context"])
 
     def crewai_before_kickoff(self, inputs: dict) -> dict:
-        inputs = {key: value for key, value in inputs.items() if key != "commontrace_memory"}
-        result = self.before_run(json.dumps(inputs))
-        return {**inputs, "commontrace_memory": result["context"]}
+        if not isinstance(inputs, dict):
+            return inputs
+        clean = {key: value for key, value in inputs.items() if key != "commontrace_memory"}
+        try:
+            result = self.before_run(json.dumps(clean, ensure_ascii=False, sort_keys=True))
+            context = result.get("context", "")
+            return {**clean, "commontrace_memory": context} if isinstance(context, str) else clean
+        except Exception:
+            logging.getLogger(__name__).debug(
+                "CrewAI memory retrieval failed; continuing without injected context", exc_info=True
+            )
+            return clean
+
+    def crewai_after_kickoff(self, output, *, succeeded: bool = True):
+        """Capture a completed CrewAI result and return it unchanged.
+
+        The default ``succeeded`` value records that kickoff returned normally;
+        it does not claim that the application-level result was useful or correct.
+        """
+        if type(succeeded) is not bool:
+            return output
+        try:
+            result = getattr(output, "raw", output)
+            if not isinstance(result, str):
+                result = str(result)
+            self.after_run({"succeeded": succeeded, "result": result[:20_000]})
+        except Exception:
+            logging.getLogger(__name__).debug(
+                "CrewAI result capture failed; returning the original output", exc_info=True
+            )
+        return output
 
     def openai_call_model_input_filter(self, data):
         """OpenAI Agents RunConfig.call_model_input_filter callback."""
