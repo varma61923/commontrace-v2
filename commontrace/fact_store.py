@@ -579,6 +579,13 @@ class StatementIndex:
         }
         return [row[0] for row in self.facts.connection.execute(queries[kind], arguments)]
 
+    def has_other_slot(self, slot, fact_id: str) -> bool:
+        """Check whether contradiction lookup can find any other active fact in a slot."""
+        return self.facts.connection.execute(
+            "SELECT 1 FROM facts INDEXED BY fact_slot WHERE slot=? AND status='active' AND id<>? LIMIT 1",
+            (_dump(sorted(slot)), fact_id),
+        ).fetchone() is not None
+
     def exact(self, statement, scopes):
         from commontrace import hierarchical as h
         norm = h._normalize_statement(statement)

@@ -628,6 +628,10 @@ def _detect_conflicts(facts: dict[str, AtomicFact], index: _StatementIndex, fact
         numbers, negations, slot = prepared
     if len(slot) < 2:
         return
+    has_other_slot = getattr(index, "has_other_slot", None)
+    joint_judge = _configuration_getenv("COMMONTRACE_FACT_CONFLICT_JUDGE", "").strip().lower() == "llm"
+    if callable(has_other_slot) and not joint_judge and not has_other_slot(slot, fact.id):
+        return
 
     def live(ids) -> list[AtomicFact]:
         return [facts[i] for i in ids if i != fact.id and i not in later and i in facts and facts[i].status == "active"

@@ -90,6 +90,38 @@ def test_batch_additions_batch_the_fts_projection_when_semantic_search_is_unused
         assert facts.connection.execute("SELECT COUNT(*) FROM fact_fts").fetchone() == (20,)
 
 
+def test_sparse_conflict_slots_skip_candidate_queries(tmp_path, monkeypatch):
+    monkeypatch.setenv("COMMONTRACE_FACT_DEDUP", "near")
+    monkeypatch.setenv("COMMONTRACE_FACT_CONFLICTS", "flag")
+    root = str(tmp_path)
+    activate(root)
+    original = fact_store._Connection.execute
+    slot_probes = []
+    candidate_queries = []
+
+    def track(self, sql, parameters=()):
+        normalized = " ".join(sql.split())
+        if normalized.startswith("SELECT 1 FROM facts INDEXED BY fact_slot WHERE slot=?"):
+            slot_probes.append(normalized)
+        if normalized.startswith("SELECT id FROM facts WHERE slot=?") or normalized.startswith(
+                "SELECT DISTINCT numbers FROM facts WHERE slot=?"):
+            candidate_queries.append(normalized)
+        return original(self, sql, parameters)
+
+    monkeypatch.setattr(fact_store._Connection, "execute", track)
+    rows = h.add_facts(root, [
+        {"statement": f"Component item{n} uses durable storage for its event journal"}
+        for n in range(20)
+    ])
+
+    assert len(rows) == 20 and all(action == "ADD" for _, action in rows)
+    assert len(slot_probes) == 20
+    assert candidate_queries == []
+    from commontrace import fact_conflicts
+
+    assert fact_conflicts.pending(root) == []
+
+
 def test_deferred_fts_survives_new_fact_remove_and_readd(tmp_path):
     root = str(tmp_path)
     activate(root)
