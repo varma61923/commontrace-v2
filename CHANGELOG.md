@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Google ADK before-model callback.** `commontrace.integrations.google_adk`
+  provides a lazy-import-safe `LlmAgent.before_model_callback` factory that
+  scopes the existing one-call capture/retrieval path by ADK app, user and
+  session. Two focused tests cover round-trip injection, user isolation, and
+  import safety without ADK installed; live framework execution and repeated
+  callback deduplication remain unverified.
 - **Hybrid search acceptance harness.** The reproducible harness measures the
   indexed fact-search API through FTS, dense candidates, canonical admission,
   RRF and recipe ordering, and checks restart vector-cache behavior. Its

@@ -286,7 +286,7 @@ taken on this machine; where no quality benchmark has been run, the row says so.
 | CLI with agent signup | **Done**; `init --agent-caller NAME` added **(this pass)** | `commands/init_cmd.py` |
 | Dashboard | **Done** (no-build console, not Next.js, by design) | `commontrace/ui/` |
 | User profiles (static + dynamic) | **Done** | `MemoryClient.profile`, `profile_activity.py` |
-| Framework integrations | **Done**: LangChain/LangGraph, AutoGen/AG2, CrewAI, LlamaIndex, Google ADK, Strands, OpenAI Agents, Pydantic AI; Vercel AI and Mastra in TS | `frameworks.py`, `integrations/`, `sdk/typescript` |
+| Framework integrations | **Done**: LangChain/LangGraph, AutoGen/AG2, CrewAI, LlamaIndex, Google ADK `LlmAgent.before_model_callback`, Strands, OpenAI Agents, Pydantic AI; Vercel AI and Mastra in TS | `frameworks.py`, `integrations/google_adk.py`, `integrations/`, `sdk/typescript`; ADK callback contract has fixture coverage, live ADK remains unverified |
 | Observations and reflection | **Done** | `observations.py`, `memory_control.py` |
 | Knowledge wiki | **Done** | `wiki.py`, `knowledge_pages.py` |
 | Data connectors | **Done**: GitHub, Slack, Drive, Gmail, Notion, OneDrive, Confluence, Jira, Linear, Zendesk, ServiceNow, Salesforce, Intercom, Greenhouse | `connectors/knowledge.py` |
