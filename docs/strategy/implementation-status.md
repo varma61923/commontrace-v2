@@ -36,6 +36,31 @@ The P1 native hook p95 remains unresolved: frozen rounds were 51.59, 46.64 and
 zero-reembedding restart at scale, model-backed SWE uplift, harmful-task N, and
 model-judged answer quality also remain unmeasured.
 
+### Additional feature slices (2026-10-12)
+
+The F1 hybrid acceptance harness exercises `search_recipes.search` end to end,
+including FTS, dense candidates, canonical admission and fusion. A 64-fact
+synthetic-adapter smoke measured 13.85 ms p95 and verified dense-only and
+lexical-only results plus restart cache behavior. This is plumbing evidence;
+the 1M local, real-model and server gates remain unverified. See the
+[hybrid acceptance note](next-generation-hybrid-acceptance.md).
+
+Aggregate facts recall now uses a bounded Lance candidate set for current-time
+queries, scores only post-watermark facts directly, and retains exact cached
+scoring for historical queries. Projection admission tests and the existing
+bootstrap, retrieval and fact-store regressions pass 120 tests; no 1M latency or
+real-model recall result is established. See the
+[recall projection note](next-generation-recall-projection.md).
+
+The F5/F8 quality evaluator records a reproducible hand-labeled synthetic
+baseline for legacy entity thresholds, exact/MinHash resolution, keyword
+classification and pattern relations. No defaults were tuned; embedding and
+LLM quality remain unmeasured. The F6 one-call profile/search route now returns
+search hits from a fresh non-indexed store through the existing fallback, with
+19 focused tests passing and 2 optional skips. See the dedicated
+[graph-quality](next-generation-graph-quality-evaluation.md) and
+[profile-tier](next-generation-profile-tier.md) notes.
+
 The 2026-10-11 continuation follows the attached build prompt's phase gates.
 The latest million-fact run on `aeadf5d` records 3.86 ms single-write p95
 (passes <20 ms) and 1,167 facts/s batched (misses ≥2,000). The earlier

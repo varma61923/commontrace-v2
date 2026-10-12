@@ -32,7 +32,10 @@ candidate union, lexical candidate union and scope filter without downloading a
 model. That run exercises the real CommonTrace APIs and storage, but its timing
 is explicitly `production_api_with_synthetic_adapter`; it is not production
 latency or model-quality evidence. The facts-channel `recall.recall` path is
-also outside this harness because it has a separate dense-scoring path.
+also outside this harness because it has a separate dense-scoring path. That
+path now uses bounded Lance candidates for current-time recalls, scores
+post-watermark writes directly, and keeps historical queries on exact
+cached-vector scoring; see [the recall projection note](next-generation-recall-projection.md).
 
 The call graph was traced with Graphify in CommonTrace and the available
 Graphiti, Hindsight and EverOS repositories. Graphiti's

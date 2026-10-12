@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Hybrid search acceptance harness.** The reproducible harness measures the
+  indexed fact-search API through FTS, dense candidates, canonical admission,
+  RRF and recipe ordering, and checks restart vector-cache behavior. Its
+  64-fact synthetic-adapter smoke measured 13.85 ms p95; this does not establish
+  the 1M, real-model or server targets.
+- **Bounded dense candidates for aggregate recall.** Current-time recalls use
+  the completed Lance projection and exact-score only post-watermark writes;
+  historical queries retain exact scoring so superseded facts remain visible
+  at their valid times. This has focused correctness coverage but no 1M latency
+  or real-model recall measurement.
+- **Graph-quality evaluation baseline.** A hand-labeled synthetic fixture
+  measures legacy entity thresholds, exact/MinHash resolution, keyword
+  classification and relation patterns. Defaults remain unchanged; embedding
+  and LLM quality are unmeasured. See the dedicated strategy report.
+- **Profile plus search on fresh stores.** `POST /v1/memory/turn` now returns
+  retrieval results when facts are present before SQLite index migration,
+  using the existing hierarchical fallback. One request returns static,
+  dynamic and custom profile buckets alongside the search results.
 - **Batched fact projection.** Exact and lexical batch writes defer new-row
   FTS5 entries to bounded multi-row inserts at transaction flush; semantic
   duplicate search and LLM conflict judging retain eager FTS visibility. New

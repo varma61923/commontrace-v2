@@ -24,7 +24,7 @@ its current write and native-latency acceptance claims.
 | --- | --- | --- |
 | Single-write p95 <20 ms at 1M | **Measured pass** | 5.031 ms, real hierarchical APIs, 20 trials, synthetic selective workload |
 | Batch >=2,000 facts/s at 1M | **Measured pass** | 3,052 facts/s, one 1,000-fact batch |
-| Hybrid p95 <50 ms local / <150 ms server at 1M | **Unverified** | 0.418 ms selective sparse overlap is not hybrid retrieval |
+| Hybrid p95 <50 ms local / <150 ms server at 1M | **Unverified** | 64-fact synthetic-adapter `search_recipes.search` smoke: 13.85 ms p95; plumbing only, not the 1M or server gate |
 | Restart without re-embedding | **Tested on bounded fixtures** | Durable fact watermarks, vector hashes and hook document cache; not a 1M restart timing |
 | Injector precision >=0.80 | **Fixture measured** | Actual BGE-small, maintainer-labelled coding relevance; not production/SWE precision |
 | Warm hook p95 <50 ms | **Load-sensitive; not established universally** | See signed report for idle and concurrent runs; native socket deadline is separate from total host startup |
