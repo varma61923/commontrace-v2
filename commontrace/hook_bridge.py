@@ -6,7 +6,6 @@ broker. This client only frames requests, formats replies and confirms delivery.
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import socket
@@ -41,9 +40,82 @@ def format_reply(agent: str | None, event: str, reply: dict) -> dict | str:
     return reply
 
 
-class _Parser(argparse.ArgumentParser):
-    def error(self, message):
-        raise ValueError(message)  # Invalid host input must not fail the host's tool call.
+class _Arguments:
+    __slots__ = ("dest", "agent_id", "scope", "event", "format", "python")
+
+    def __init__(self, values):
+        for name in self.__slots__:
+            setattr(self, name, values[name])
+
+
+_HELP = object()
+_OPTIONS = {
+    "--dest": "dest",
+    "--agent-id": "agent_id",
+    "--scope": "scope",
+    "--event": "event",
+    "--format": "format",
+    "--python": "python",  # Compatibility with previously generated Node commands.
+}
+
+
+def _parse_args(argv):
+    """Parse the fixed native hook interface without importing argparse at startup."""
+    tokens = sys.argv[1:] if argv is None else argv
+    values = {"dest": None, "agent_id": None, "scope": "{}", "event": None, "format": None, "python": None}
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token in ("-h", "--help"):
+            return _HELP
+        option, separator, value = token.partition("=")
+        name = _OPTIONS.get(option)
+        if name is None and option.startswith("--"):
+            matches = [candidate for candidate in _OPTIONS if candidate.startswith(option)]
+            if len(matches) == 1:
+                name = _OPTIONS[matches[0]]
+        if name is None:
+            raise ValueError("unrecognized native hook option")
+        if not separator:
+            index += 1
+            if index == len(tokens) or tokens[index].startswith("-"):
+                raise ValueError("native hook option requires a value")
+            value = tokens[index]
+        values[name] = value
+        index += 1
+
+    if values["dest"] is None or values["agent_id"] is None or values["event"] is None:
+        raise ValueError("missing required native hook option")
+    if values["event"] not in EVENTS:
+        raise ValueError("unsupported native hook event")
+    if values["format"] is not None and values["format"] not in AGENTS:
+        raise ValueError("unsupported native hook format")
+    return _Arguments(values)
+
+
+def _print_help():
+    events = "{" + ",".join(EVENTS) + "}"
+    agents = "{" + ",".join(AGENTS) + "}"
+    prog = os.path.basename(sys.argv[0])
+    prefix = "usage: " + prog + " "
+    lines = [
+        prefix + "[-h] --dest DEST --agent-id AGENT_ID [--scope SCOPE]",
+        " " * len(prefix) + f"--event {events} [--format {agents}] [--python PYTHON]",
+        "",
+        *__doc__.splitlines(),
+        "",
+        "options:",
+        "  -h, --help           show this help message and exit",
+        "  --dest DEST",
+        "  --agent-id AGENT_ID",
+        "  --scope SCOPE",
+        f"  --event {events}",
+        f"  --format {agents}",
+        "  --python PYTHON      compatibility with previously generated Node commands",
+        "",
+    ]
+    sys.stdout.write("\n".join(lines))
+    sys.stdout.flush()
 
 
 def _emit(agent, event, reply):
@@ -137,19 +209,13 @@ def _exchange(args, scope, payload):
 
 
 def main(argv=None):
-    # A generated hook is not a terminal UI. Fixed help width also avoids
-    # importing shutil/compression modules just to probe terminal dimensions.
-    parser = _Parser(description=__doc__, formatter_class=lambda prog: argparse.HelpFormatter(prog, width=80))
-    parser.add_argument("--dest", required=True)
-    parser.add_argument("--agent-id", required=True)
-    parser.add_argument("--scope", default="{}")
-    parser.add_argument("--event", required=True, choices=EVENTS)
-    parser.add_argument("--format", choices=AGENTS)
-    parser.add_argument("--python")  # Compatibility with previously generated Node commands.
     args = None
     empty = {"context": "", "injected": []}
     try:
-        args = parser.parse_args(argv)
+        args = _parse_args(argv)
+        if args is _HELP:
+            _print_help()
+            return 0
         raw = sys.stdin.buffer.read(FRAME_LIMIT + 1)
         if len(raw) > FRAME_LIMIT:
             raise ValueError("oversized host input")

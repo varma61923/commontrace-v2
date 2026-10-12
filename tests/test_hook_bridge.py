@@ -76,6 +76,93 @@ def test_manifest_selects_isolated_installed_interpreter(tmp_path):
     assert os.path.isfile(args[3])
 
 
+def test_warm_transport_avoids_argparse_import(tmp_path):
+    def handler(client):
+        frame(client)
+        client.sendall(b'{"context":"","injected":[]}\n')
+
+    args = command(tmp_path)
+    args[1:1] = ["-X", "importtime"]
+    with peer(tmp_path, handler):
+        result = subprocess.run(
+            args, input='{"session_id":"s"}', text=True, capture_output=True, timeout=5, check=True
+        )
+    assert "argparse" not in result.stderr
+    assert json.loads(result.stdout) == {"context": "", "injected": []}
+
+
+def test_help_and_invalid_options_keep_native_hook_fail_safe(tmp_path):
+    help_result = subprocess.run(
+        command(tmp_path) + ["--help"], input="", text=True, capture_output=True, timeout=5, check=True
+    )
+    assert "--dest" in help_result.stdout
+    assert "--agent-id" in help_result.stdout
+    assert "--event" in help_result.stdout
+    assert "Admission, normalization, capture" in help_result.stdout
+    assert not help_result.stderr
+
+    invalid = subprocess.run(
+        command(tmp_path) + ["--not-a-hook-option"],
+        input='{"session_id":"s"}', text=True, capture_output=True, timeout=5, check=True,
+    )
+    assert json.loads(invalid.stdout) == {"context": "", "injected": []}
+    assert not invalid.stderr
+
+
+def test_equals_options_and_legacy_python_flag_preserve_delivery(tmp_path):
+    observed = {}
+
+    def handler(client):
+        observed["request"] = json.loads(frame(client))
+        client.sendall(b'{"context":"delivered","delivery_token":"receipt"}\n')
+        observed["receipt"] = json.loads(frame(client))
+
+    generated = command(tmp_path)
+    equal_form = generated[:4] + [
+        "--dest=" + generated[5],
+        "--agent-i=" + generated[7],
+        "--scope=" + generated[9],
+        "--eve=" + generated[11],
+        "--format=claude",
+        "--python=/legacy/interpreter",
+    ]
+    with peer(tmp_path, handler):
+        result = subprocess.run(
+            equal_form,
+            input='{"session_id":"s","prompt":"code"}',
+            text=True,
+            capture_output=True,
+            timeout=5,
+            check=True,
+        )
+    assert json.loads(result.stdout) == {
+        "hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": "delivered"}
+    }
+    assert observed["request"] == {
+        "agent": "agent",
+        "scope": {"agent": "agent"},
+        "event": "UserPromptSubmit",
+        "format": "claude",
+        "payload": {"session_id": "s", "prompt": "code"},
+    }
+    assert observed["receipt"] == {"operation": "ack", "delivery_token": "receipt"}
+    assert not result.stderr
+
+
+@pytest.mark.parametrize("invalid_option", ["--event=NotAnEvent", "--format=not-an-agent", "--event"])
+def test_invalid_choices_and_missing_values_fail_closed(tmp_path, invalid_option):
+    result = subprocess.run(
+        command(tmp_path) + [invalid_option],
+        input='{"session_id":"s"}',
+        text=True,
+        capture_output=True,
+        timeout=5,
+        check=True,
+    )
+    assert json.loads(result.stdout) == {"context": "", "injected": []}
+    assert not result.stderr
+
+
 @pytest.mark.parametrize("agent", [None, *AGENTS])
 def test_all_formats_preserve_protocol_and_receipt(tmp_path, agent):
     offered = {"context": "<memory_update>Keep credentials private. ☃</memory_update>",
