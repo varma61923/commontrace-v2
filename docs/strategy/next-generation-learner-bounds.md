@@ -35,7 +35,7 @@ The design adapts the successful-work watermark rule inspected in cognee
 selection inspected in EverOS `fcd41b57cab6c577211120e166f801038d21b7ae`,
 `src/everos/memory/strategies/extract_agent_skill.py` and
 `src/everos/service/_boundary.py` (both Apache-2.0). No source is copied. The
-checked-out `/root/Test/letta` is the retired Letta server repository at
+checked-out `letta` repository is the retired Letta server repository at
 `5bcdd177d70fa2b31a754cfcd801e77b2e1ab16a`, not the brief's `letta-code`
 `d31b879`; its reflection source is unavailable locally and was not claimed as
 inspected or adapted. Graphify's existing source graph confirmed the shared

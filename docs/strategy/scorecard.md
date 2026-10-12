@@ -35,7 +35,7 @@ its current write and native-latency acceptance claims.
 | Harmful-retirement N and lower extraction cost | **Unverified** | CodingLessonBench drives per-task randomized assignments through the real journal retirement path and reports N only on a SOUND transition; fixtures validate lifecycle wiring, but no labeled real-runner N or extraction-cost comparison has been measured |
 | Poison resistance | **Fixture tested** | Eleven injector poison/status cases; no successful injection, clean utility retained; novel attacks not covered |
 | First injected lesson <2 minutes | **Unverified** | Setup previews eligible existing lessons; empty stores require reviewed/evaluated evidence |
-| F7: fewer modules; <40 documented config vars | **Not met** | 298 Python modules in the latest audit; 25 primary variables and 155 schema alias entries overlap on 24 names, leaving 156 unique supported environment variables |
+| F7: fewer modules; <40 documented config vars | **Not met** | 300 Python modules in the 2026-10-12 Graphify audit; 25 primary variables and 155 schema alias entries overlap on 24 names, leaving 156 unique supported environment variables |
 | Signed public aggregate report | **Implemented** | Ed25519 signature with repository-pinned session public key; no private trajectories |
 
 Historical P0 disk exhaustion remains recorded in

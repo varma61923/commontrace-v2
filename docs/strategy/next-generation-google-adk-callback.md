@@ -20,13 +20,12 @@ The adapter follows Google's documented synchronous
 `before_model_callback(callback_context, llm_request)` lifecycle and `None`
 continuation contract (official source:
 `https://github.com/google/adk-python/blob/main/.agents/skills/adk-agent-builder/references/callbacks-and-plugins.md#the-eight-agent-callbacks`);
-see
-`/root/Test/zep/integrations/adk/typescript/src/before-model-callback.ts:62-82,110-128`
-for Zep's per-turn callback and one-round-trip persist/retrieve pattern, and
-`/root/Test/zep/integrations/adk/go/seam_test.go:120-148` for its assertion
+see Zep's
+`integrations/adk/typescript/src/before-model-callback.ts:62-82,110-128`
+for its per-turn callback and one-round-trip persist/retrieve pattern, and
+`integrations/adk/go/seam_test.go:120-148` for its assertion
 that one call persists one message and injects returned context. The Mem0
-reference at
-`/root/Test/mem0/docs/integrations/google-ai-adk.mdx:40-104,108-128` maps
+reference in `docs/integrations/google-ai-adk.mdx:40-104,108-128` maps
 ADK's `BaseMemoryService` search on both `user_id` and `app_name` and persists
 completed session events with explicit role mapping. CommonTrace adopts its
 identity scoping, while using the framework middleware's single turn API

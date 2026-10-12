@@ -34,10 +34,9 @@ replace or fail the result.
 
 This shape adapts the before/after memory lifecycle rather than Zep's backend:
 the sibling competitor integration at
-`/root/Test/zep/integrations/crewai/python/src/zep_crewai/memory.py` separates
-`search()` and `save()`, and its
-`/root/Test/zep/integrations/crewai/python/tests/test_basic.py` and
-`/root/Test/zep/integrations/crewai/python/tests/test_context_builder.py`
+`integrations/crewai/python/src/zep_crewai/memory.py` separates `search()` and
+`save()`, and its `integrations/crewai/python/tests/test_basic.py` and
+`integrations/crewai/python/tests/test_context_builder.py`
 verify that storage/search failures degrade safely.
 CommonTrace uses the same fail-open boundary with its own `MemoryClient` and
 `Middleware`, keeping scope, capture, and outcome handling in the existing

@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Framework memory adapters.** Added a LangGraph prebuilt `pre_model_hook`
+  that injects retrieved context through `llm_input_messages`, retaining the
+  checkpointed conversation while using `thread_id` for causal tracking. Added
+  an optional Microsoft Agent Framework `ContextProvider` that captures user
+  turns and assistant responses through the existing one-call middleware and
+  SessionEnd path, with explicit user scoping and fail-open storage behavior.
+  LangGraph hook contracts pass 3 tests with 1 optional integration skip;
+  Microsoft lifecycle fixtures pass 4 tests. Live framework execution remains
+  unverified. See the two framework strategy notes.
+- **Tool attribution in additive extraction.** Tool-originated claims now stay
+  labeled as tool output in both model and local extraction paths, preserving
+  the source trace instead of treating tool text as an unqualified world fact.
+  The focused extraction contract passes 5 tests.
 - **Google ADK before-model callback.** `commontrace.integrations.google_adk`
   provides a lazy-import-safe `LlmAgent.before_model_callback` factory that
   scopes the existing one-call capture/retrieval path by ADK app, user and

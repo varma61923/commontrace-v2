@@ -732,7 +732,29 @@ python -m commons.eval.coverage_harness        # per memory adapter, 200 seeds
 commontrace retrieval --on-harm withdraw       # stop delivering a memory measured to hurt (any store)
 ```
 
-LangGraph: `commontrace.integrations.langgraph.with_lessons(node, memory)`.
+For the LangGraph prebuilt agent API, inject one-turn memory without writing it
+to checkpointed `messages` history:
+
+```python
+from commontrace.client import MemoryClient
+from commontrace.integrations.langgraph import create_pre_model_hook
+from commontrace.measure import CausalMemory
+from langgraph.prebuilt import create_react_agent
+
+client = MemoryClient("./memory", agent_id="review-agent", context={"user": "alice"})
+memory = CausalMemory(client.search, root="./memory")
+agent = create_react_agent(
+    model,
+    tools,
+    pre_model_hook=create_pre_model_hook(memory),
+)
+```
+
+The hook uses `configurable.thread_id` for causal occasion tracking and fails
+open when recall is unavailable. This adapter targets LangGraph's explicit
+`pre_model_hook` contract; `create_react_agent` is deprecated in favor of
+`langchain.agents.create_agent` middleware. See
+[`next-generation-langgraph-pre-model-hook.md`](strategy/next-generation-langgraph-pre-model-hook.md).
 Hub: `HUB_OTLP_INGEST_ENABLED=true` accepts OTLP/JSON spans at `POST /v1/traces`.
 
 Hub outcome connectors (Zendesk, GitHub): a system of record's signed webhooks record how occasions
@@ -987,6 +1009,31 @@ after callback returns CrewAI's output unchanged and records kickoff completion;
 completion does not claim application-level success. See
 [`next-generation-crewai-kickoff-memory.md`](strategy/next-generation-crewai-kickoff-memory.md)
 for scope and fail-open behavior.
+
+The optional Microsoft Agent Framework provider uses its current async context
+provider lifecycle. Install `agent-framework-core`, pin a user scope, and add
+the provider to the agent's `context_providers` list:
+
+```python
+from agent_framework import Agent
+from commontrace.client import MemoryClient
+from commontrace.integrations.microsoft_agent_framework import CommonTraceContextProvider
+
+memory = MemoryClient(
+    "./memory", agent_id="support-agent", context={"tenant": "acme", "user": "alice"}
+)
+provider = CommonTraceContextProvider(memory)
+# `client` is your configured Microsoft Agent Framework chat client.
+agent = Agent(client=client, context_providers=[provider])
+session = agent.create_session()
+response = await agent.run("What is the release procedure?", session=session)
+```
+
+The provider captures the user turn and retrieves in `before_run`, then records
+the assistant response once per turn in `after_run`; both paths fail open on
+memory outages. Missing user or session identity is a configuration error to
+prevent an unscoped request. See
+[`next-generation-microsoft-agent-framework-provider.md`](strategy/next-generation-microsoft-agent-framework-provider.md).
 
 For sustained asynchronous ingestion, use `async with await
 AsyncStore.open(root, space)` from `commontrace.conversation` and pass the store
