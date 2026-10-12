@@ -32,8 +32,17 @@ _CONNECTIONS = ConnectionPool(_connect)
 
 
 def close_connections(root: str | None = None) -> None:
-    """Drain idle journal handles before removing or replacing a quiescent store."""
-    _CONNECTIONS.close(os.path.join(paths.memory_dir(root), "runtime.sqlite3") if root is not None else None)
+    """Drain idle handles and init metadata before removing a quiescent store."""
+    if root is None:
+        _CONNECTIONS.close()
+        return
+    path = os.path.join(paths.memory_dir(root), "runtime.sqlite3")
+    _CONNECTIONS.close(path)
+    try:
+        stamp = os.stat(path)
+    except OSError:
+        return
+    _INITIALIZED.invalidate((path, stamp.st_dev, stamp.st_ino))
 
 _INITIALIZED = RuntimeCache(max_entries=128, max_bytes=256 * 1024, ttl=600, weigh=lambda key, value: len(repr(key)) + 1)
 

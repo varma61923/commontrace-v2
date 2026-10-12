@@ -619,8 +619,13 @@ def _detect_conflicts(facts: dict[str, AtomicFact], index: _StatementIndex, fact
     mode = fact_conflicts.mode()
     if mode == "off":
         return
-    _words, numbers, negations = _signature(fact.statement)
-    slot = fact_conflicts.slot_key(fact.statement)
+    cached_features = getattr(facts, "conflict_features", None)
+    prepared = cached_features(fact) if callable(cached_features) else None
+    if prepared is None:
+        _words, numbers, negations = _signature(fact.statement)
+        slot = fact_conflicts.slot_key(fact.statement)
+    else:
+        numbers, negations, slot = prepared
     if len(slot) < 2:
         return
 
@@ -867,6 +872,11 @@ def add_facts(root: str, items: list[dict[str, Any]]) -> list[tuple[AtomicFact, 
     mode = dedup_mode()
     found: list = []
     with mutate_facts(root) as facts:
+        if hasattr(facts, "defer_new_fts"):
+            facts.defer_new_fts = (
+                mode != "semantic"
+                and _configuration_getenv("COMMONTRACE_FACT_CONFLICT_JUDGE", "").strip().lower() != "llm"
+            )
         index = _statement_index(facts)
         results = []
         for s, c, sc, vf, vu, ea, conf, src, stab, created, receipts, minimum in prepared:

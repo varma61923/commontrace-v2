@@ -177,9 +177,10 @@ def _features(fact):
 
     words, numbers, negative = h._signature(fact.statement)
     content = h._content(words)
-    return (h._normalize_statement(fact.statement), _dump([numbers, sorted(negative)]),
-            _dump(sorted(fact_conflicts.slot_key(fact.statement))), int(bool(negative)), _dump(numbers),
-            content, Counter(_bm25_tokens(fact.statement)), h._fact_tokens(fact))
+    slot = fact_conflicts.slot_key(fact.statement)
+    return (h._normalize_statement(fact.statement), _dump([numbers, sorted(negative)]), _dump(sorted(slot)),
+            int(bool(negative)), _dump(numbers), content, Counter(_bm25_tokens(fact.statement)),
+            h._fact_tokens(fact), numbers, negative, slot)
 
 
 @dataclass(frozen=True)
@@ -190,12 +191,17 @@ class _Projection:
     content: frozenset
     terms: list[tuple[str, str, int]]
     snapshot: dict[str, Any] | None = None
+    statement: str = ""
+    conflict_features: tuple[Any, Any, Any] | None = None
+    deferred_fts: tuple[int, str, str] | None = None
 
 
-def _project_metadata(connection: sqlite3.Connection, fact, payload: str, *, snapshot=None) -> _Projection:
+def _project_metadata(connection: sqlite3.Connection, fact, payload: str, *, snapshot=None,
+                      skip_term_removal=False, defer_fts=False) -> _Projection:
     """Keep exact/slot lookup and FTS ranking current inside the owned transaction."""
-    norm, block, slot, negative, numbers, content, frequencies, overlap = _features(fact)
-    previous = _remove_terms(connection, fact.id)
+    (norm, block, slot, negative, numbers, content, frequencies, overlap,
+     conflict_numbers, conflict_negative, slot_key) = _features(fact)
+    previous = None if skip_term_removal else _remove_terms(connection, fact.id)
     if previous is not None:
         connection.execute("DELETE FROM fact_fts WHERE rowid=?", (previous,))
     inserted = connection.execute(
@@ -213,13 +219,26 @@ def _project_metadata(connection: sqlite3.Connection, fact, payload: str, *, sna
         ) for term, count in values.items()
     ]
     rowid = previous if previous is not None else inserted.lastrowid
-    connection.execute("INSERT INTO fact_fts(rowid,fact_id,statement) VALUES(?,?,?)", (rowid, fact.id, fact.statement))
-    return _Projection(payload, rowid, block, content, term_rows, snapshot)
+    deferred = (rowid, fact.id, fact.statement) if defer_fts else None
+    if not defer_fts:
+        connection.execute("INSERT INTO fact_fts(rowid,fact_id,statement) VALUES(?,?,?)",
+                           (rowid, fact.id, fact.statement))
+    return _Projection(payload, rowid, block, content, term_rows, snapshot, fact.statement,
+                       (conflict_numbers, conflict_negative, slot_key), deferred)
 
 
 def _chunks(values, size=_BATCH_SIZE):
     for offset in range(0, len(values), size):
         yield values[offset:offset + size]
+
+
+def _insert_fts(connection: sqlite3.Connection, rows: list[tuple[int, str, str]]) -> None:
+    """Insert a bounded set of FTS rows with a few multi-value SQL statements."""
+    for group in _chunks(rows):
+        values = ",".join("(?,?,?)" for _ in group)
+        parameters = tuple(value for row in group for value in row)
+        connection.execute(
+            f"INSERT INTO fact_fts(rowid,fact_id,statement) VALUES{values}", parameters)
 
 
 def _project_terms(connection: sqlite3.Connection, projections: list[_Projection]) -> None:
@@ -329,6 +348,7 @@ class FactMap(MutableMapping):
         self.removed: set[str] = set()
         self.staged: dict[str, _Projection] = {}
         self.near_postings: dict[tuple[str, str], set[str]] = {}
+        self.defer_new_fts = False
 
     def clear_staged(self):
         self.staged.clear()
@@ -340,10 +360,21 @@ class FactMap(MutableMapping):
             for word in previous.content:
                 self.near_postings[previous.block, word].discard(fact.id)
         snapshot = fact.to_dict()
-        projection = _project_metadata(self.connection, fact, _dump(snapshot), snapshot=snapshot)
+        new_record = self.before.get(fact.id, False) is None
+        projection = _project_metadata(
+            self.connection, fact, _dump(snapshot), snapshot=snapshot,
+            skip_term_removal=new_record and previous is None,
+            defer_fts=new_record and self.defer_new_fts,
+        )
         self.staged[fact.id] = projection
         for word in projection.content:
             self.near_postings.setdefault((projection.block, word), set()).add(fact.id)
+
+    def conflict_features(self, fact):
+        projection = self.staged.get(fact.id)
+        if projection is None or projection.statement != fact.statement:
+            return None
+        return projection.conflict_features
 
     def near_candidates(self, block, content, need):
         rare = sorted(content, key=lambda word: (len(self.near_postings.get((block, word), ())), word))[:need]
@@ -444,7 +475,12 @@ class FactMap(MutableMapping):
         for key, fact, encoded in live:
             staged = self.staged.get(key)
             projections.append(staged if staged is not None and staged.payload == encoded else
-                               _project_metadata(self.connection, fact, encoded))
+                               _project_metadata(self.connection, fact, encoded,
+                                                 skip_term_removal=self.before[key] is None and staged is None,
+                                                 defer_fts=self.before[key] is None and self.defer_new_fts))
+        deferred_fts = [projection.deferred_fts for projection in projections if projection.deferred_fts is not None]
+        if deferred_fts:
+            _insert_fts(self.connection, deferred_fts)
         _project_terms(self.connection, projections)
         if rows:
             self.connection.executemany("INSERT INTO events(fact_id,version,operation,record) VALUES(?,?,?,?)", rows)

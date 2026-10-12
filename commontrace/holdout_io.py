@@ -224,6 +224,14 @@ _outcome_cache: dict[str, _OutcomeCache] = {}
 _outcome_cache_lock = threading.Lock()
 
 
+def clear_root_caches(root: str) -> None:
+    """Forget assignment and outcome rows for a store that is being removed."""
+    with _outcome_cache_lock:
+        _outcome_cache.pop(outcomes_log_path(root), None)
+    with _log_cache_lock:
+        _log_cache.pop(holdout_log_path(root), None)
+
+
 def _outcomes_shared(path: str) -> dict[str, bool]:
     try:
         st = os.stat(path)

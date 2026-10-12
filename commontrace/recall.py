@@ -661,6 +661,21 @@ def recall(root: str, question: str, *, budget: int | None = None, agent: str | 
             decision["effective"] = result.budget = total
             result.explain["budget"] = decision
         result.explain["completeness"] = completeness.grade_question(question, result.context)
-        handle.set(tokens=result.tokens, items=len(result.items), confidence=result.assessment.confidence)
+        # Weighted RRF is useful for diagnosing ranking changes, but it is not
+        # a calibrated probability. Keep it explicitly separate from the
+        # heuristic evidence assessment; do not manufacture a recall-hit label.
+        scores = sorted((item.fused for item in result.items), reverse=True)
+        top_score = scores[0] if scores else 0.0
+        score_margin = scores[0] - scores[1] if len(scores) > 1 else 0.0
+        handle.set(
+            tokens=result.tokens,
+            items=len(result.items),
+            confidence=result.assessment.confidence,
+            recall_top_score_raw=top_score,
+            recall_score_margin_raw=score_margin,
+            recall_score_scale="weighted_rrf",
+            recall_assessment_confidence=result.assessment.confidence,
+            recall_abstained=result.assessment.abstain,
+        )
     telemetry.observe("commontrace_recall_tokens", float(result.tokens))
     return result

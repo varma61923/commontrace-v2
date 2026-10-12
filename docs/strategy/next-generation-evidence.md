@@ -118,6 +118,13 @@ measured 3.23 ms write p95 and 1,181 facts/s at one million facts. Single writes
 pass; batched ingest still misses 2,000 facts/s and keeps phase advancement
 stopped. Neither run exercises the hybrid/server or zero-reembedding restart gates.
 
+The latest [bounded-FTS batch candidate](next-generation-p0-batch-projection.md)
+measured 4.263 ms single-write p95 and 1,819 facts/s at 1M on the candidate
+source. Single writes pass; batch ingest still misses the 2,000 facts/s gate.
+The candidate and frozen `7e0a224` runs are separate source revisions, so no
+controlled gain is claimed. The raw report and source hashes are retained in
+`measurements/p0-batch-projection-candidate.json`.
+
 The measured storage source's application suite completed with 6 failures,
 6,666 passes and 118 skips. Follow-up connection and isolation fixes pass 135
 focused checks, with a separate full suite running. Its native transport fixture
@@ -172,10 +179,15 @@ source revision rather than claiming a result for an as-yet uncommitted report.
 
 No GPT-class reader/judge endpoint or coding-model credentials were configured.
 LoCoMo >=0.85, LongMemEval-S >=0.90, BEAM 100K/1M/category completeness, real SWE
-uplift >=5pp with positive sequential lower bound, harmful-retirement N and lower
-extraction cost remain unverified. The real patch/test harness reports token
-usage, unpriced calls and explicit relevance labels; it never fills missing
-measurements with synthetic scores. One-million-record dense/hybrid latency,
+uplift >=5pp with positive sequential lower bound, measured harmful-retirement N
+on real labeled runs, and lower extraction cost remain unverified. CodingLessonBench
+now drives isolated per-task assignments through the production journal
+reconciliation path; synthetic harmful and neutral fixtures verify that N is
+reported only after a SOUND retirement transition. Multi-task causal estimates
+remain per-task, with no pooled uplift gate until a stratified aggregate method
+exists. The real patch/test harness reports token usage, unpriced calls and
+explicit relevance labels; it never fills missing measurements with synthetic
+scores. One-million-record dense/hybrid latency,
 first injected lesson from an empty store in two minutes, live-host coverage of
 all adapters and complete local/hosted API parity are also outstanding. The primary
 configuration surface now meets the count target; its legacy compatibility

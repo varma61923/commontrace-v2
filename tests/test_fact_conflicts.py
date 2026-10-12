@@ -91,6 +91,67 @@ def test_a_batch_compares_each_fact_only_with_earlier_ones(tmp_path, monkeypatch
     assert facts[old.id].superseded_by == new.id
 
 
+def test_batch_conflicts_reuse_staged_slot_features(tmp_path, monkeypatch):
+    from commontrace import fact_store
+
+    monkeypatch.setenv("COMMONTRACE_FACT_CONFLICTS", "flag")
+    monkeypatch.setenv("COMMONTRACE_FACT_DEDUP", "exact")
+    root = str(tmp_path)
+    fact_store.migrate(root)
+    original = fact_conflicts.slot_key
+    calls = []
+
+    def track(statement):
+        calls.append(statement)
+        return original(statement)
+
+    monkeypatch.setattr(fact_conflicts, "slot_key", track)
+    result = hierarchical.add_facts(root, [
+        {"statement": "Service alpha archives incident reports"},
+        {"statement": "Service beta validates signed requests"},
+        {"statement": "Service gamma rotates encryption keys"},
+    ])
+
+    assert len(result) == 3 and all(action == "ADD" for _, action in result)
+    assert calls == [fact.statement for fact, _action in result]
+
+
+def test_batch_llm_conflict_judge_keeps_eager_fts_candidates_beyond_overlay_cap(tmp_path, monkeypatch):
+    from commontrace import fact_embeddings, fact_store, fact_vector_projection
+
+    monkeypatch.setenv("COMMONTRACE_FACT_CONFLICTS", "flag")
+    monkeypatch.setenv("COMMONTRACE_FACT_CONFLICT_JUDGE", "llm")
+    monkeypatch.setenv("COMMONTRACE_FACT_DEDUP", "exact")
+    root = str(tmp_path)
+    fact_store.migrate(root)
+    target = "Vault protects classified material after review"
+    query = "Vault protects classified material"
+    seen = []
+    semantic_candidates = []
+
+    def judge(newer, candidates, complete=None):
+        seen.append((newer, [fact.statement for fact in candidates]))
+        return set()
+
+    def similar(statement, candidates, **kwargs):
+        candidates = list(candidates)
+        if statement == query:
+            semantic_candidates.extend(fact.statement for fact in candidates)
+        return [(fact, 0.99) for fact in candidates if fact.statement == target]
+
+    monkeypatch.setattr(fact_conflicts, "judge", judge)
+    monkeypatch.setattr(fact_embeddings, "similar", similar)
+    monkeypatch.setattr(fact_vector_projection, "search", lambda *args, **kwargs: [])
+    rows = hierarchical.add_facts(root, [
+        {"statement": f"Vault stores public artifacts after routine review item{n}"}
+        for n in range(119)
+    ] + [{"statement": target}, {"statement": query}])
+
+    assert len(rows) == 121 and all(action == "ADD" for _, action in rows)
+    assert target in semantic_candidates
+    assert seen[-1][0] == query and target in seen[-1][1]
+
+
 def test_off_mode_and_scope_isolation(tmp_path, monkeypatch):
     root = str(tmp_path)
     hierarchical.add_fact(root, "Alice likes spicy food a lot", scopes=["tenant-a"])

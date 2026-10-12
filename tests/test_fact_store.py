@@ -63,7 +63,51 @@ def test_new_fact_projection_does_not_reselect_its_inserted_rowid(tmp_path):
         facts.connection.set_trace_callback(None)
         assert facts.staged[fact.id].rowid == facts.connection.execute(
             "SELECT rowid FROM facts WHERE id=?", (fact.id,)).fetchone()[0]
-    assert sum(query.startswith("SELECT rowid FROM facts WHERE id=") for query in statements) == 1
+    assert sum(query.startswith("SELECT rowid FROM facts WHERE id=") for query in statements) == 0
+
+
+def test_batch_additions_batch_the_fts_projection_when_semantic_search_is_unused(tmp_path, monkeypatch):
+    monkeypatch.setenv("COMMONTRACE_FACT_DEDUP", "near")
+    monkeypatch.setenv("COMMONTRACE_FACT_CONFLICTS", "off")
+    original = fact_store._Connection.execute
+    fts_inserts = []
+
+    def track(self, sql, parameters=()):
+        if sql.startswith("INSERT INTO fact_fts"):
+            fts_inserts.append((sql, tuple(parameters)))
+        return original(self, sql, parameters)
+
+    monkeypatch.setattr(fact_store._Connection, "execute", track)
+    root = str(tmp_path)
+    activate(root)
+    result = h.add_facts(root, [
+        {"statement": f"Component item{n} requires durable replicated storage"} for n in range(20)
+    ])
+
+    assert len(result) == 20 and all(action == "ADD" for _, action in result)
+    assert len(fts_inserts) == 1 and len(fts_inserts[0][1]) == 60
+    with fact_store.transaction(root) as facts:
+        assert facts.connection.execute("SELECT COUNT(*) FROM fact_fts").fetchone() == (20,)
+
+
+def test_deferred_fts_survives_new_fact_remove_and_readd(tmp_path):
+    root = str(tmp_path)
+    activate(root)
+    fact = _staged_fact()
+    with fact_store.transaction(root, write=True) as facts:
+        facts.defer_new_fts = True
+        facts[fact.id] = fact
+        index = fact_store.StatementIndex(facts)
+        index.add(fact)
+        del facts[fact.id]
+        facts[fact.id] = fact
+        index.add(fact)
+        assert facts.connection.execute(
+            "SELECT COUNT(*) FROM fact_fts WHERE fact_id=?", (fact.id,)).fetchone() == (0,)
+    with fact_store.transaction(root) as facts:
+        rows = facts.connection.execute(
+            "SELECT fact_id,statement FROM fact_fts WHERE fact_id=?", (fact.id,)).fetchall()
+    assert rows == [(fact.id, fact.statement)]
 
 
 def test_upsert_uses_its_original_rowid_after_an_unrelated_insert(tmp_path):

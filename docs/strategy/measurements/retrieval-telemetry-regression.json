@@ -1,0 +1,78 @@
+{
+  "benchmark": "paired LoCoMo retrieval-only regression",
+  "run_date": "2026-10-12",
+  "dataset": {
+    "name": "locomo",
+    "source_sha256": "79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4",
+    "sample_sha256": "b59071f8666172d15bf3ca31236f91c3f7b9f4f37ba71b4153c4a96c5b929858",
+    "cases": 10,
+    "questions": 154,
+    "stratified_type_counts": {
+      "multi-hop": 28,
+      "temporal": 32,
+      "open-domain": 10,
+      "single-hop": 84
+    }
+  },
+  "configuration": {
+    "budgets": [1500, 4000],
+    "mode": "memory",
+    "embedder": "none",
+    "reranker": "none",
+    "adaptive_budget": false,
+    "answer_generation_and_judging": false,
+    "token_accounting": "ceil-characters-divided-by-four"
+  },
+  "provenance": {
+    "reference_commit": "973e59979f326559a863ed2dbcc02b187402dad4",
+    "reference_product_sha256": "90ebdd9d00d5bdfa088f554ccd42d556cd1cccbb16e235f39a8e8634cd315844",
+    "candidate_base_commit": "b7b493d61c602120395907ff707e42e1b16c0caa",
+    "candidate_product_sha256": "48ca851bb087b23202c5e0497e6589fea106bf4818ed522171a400ef7b2cf50e",
+    "harness_sha256": "2ed15db4b2ca9ce537412e9da716ff3a51cdfa129272a26d27bcb64c32839301",
+    "reference_report_sha256": "2dd25202247cc7a82aeec9f6c9f2cdd2939c51809b538929c756e0980e8aa3e2",
+    "candidate_report_sha256": "08655ab4b8adffb1c2175428398af47598b326d3c2f4c863bf92071ac9a4f689",
+    "comparison_report_sha256": "30749575b80916e036f8d284556fb765e4940df4b7aa1d35482c5345941edab2"
+  },
+  "metrics": {
+    "1500": {
+      "questions": 154,
+      "evidence_share": {"reference": 0.7574, "candidate": 0.7574},
+      "complete_share": {"reference": 0.6974, "candidate": 0.6974},
+      "session_share": {"reference": 0.9255, "candidate": 0.9255},
+      "answer_in_context_share": {"reference": 0.5417, "candidate": 0.5417},
+      "mean_tokens": {"reference": 1448.4091, "candidate": 1448.4091},
+      "recall_latency_ms": {
+        "reference_p50": 12.9,
+        "reference_p95": 16.9,
+        "candidate_p50": 12.9,
+        "candidate_p95": 16.7
+      }
+    },
+    "4000": {
+      "questions": 154,
+      "evidence_share": {"reference": 0.8517, "candidate": 0.8517},
+      "complete_share": {"reference": 0.8026, "candidate": 0.8026},
+      "session_share": {"reference": 0.9759, "candidate": 0.9759},
+      "answer_in_context_share": {"reference": 0.575, "candidate": 0.575},
+      "mean_tokens": {"reference": 3877.0844, "candidate": 3877.0844},
+      "recall_latency_ms": {
+        "reference_p50": 21.0,
+        "reference_p95": 28.2,
+        "candidate_p50": 21.3,
+        "candidate_p95": 28.6
+      }
+    }
+  },
+  "result": {
+    "gate_failures": {"1500": [], "4000": []},
+    "all_reported_non_latency_aggregate_metrics_identical": true,
+    "answer_accuracy": null,
+    "interpretation": "Retrieval-only regression passed; answer_in_context is an evidence-support measure, not model-judged answer accuracy.",
+    "question_level_rows_retained": false
+  },
+  "commands": {
+    "reference": "cd /tmp/commontrace-goal-reference && env -u COMMONTRACE_ROOT -u JUSTDOIT_ROOT /tmp/commontrace-goal-env/bin/python benchmarks/conversation_bench.py --dataset locomo --data /tmp/commontrace-quality-run/locomo-sample.json --root /tmp/commontrace-quality-run/reference-store --budget 1500,4000 --embedder none --rerank none --out /tmp/commontrace-quality-run/reference.json",
+    "candidate": "cd /root/Test/commontrace-v2 && env -u COMMONTRACE_ROOT -u JUSTDOIT_ROOT /tmp/commontrace-goal-env/bin/python benchmarks/conversation_bench.py --dataset locomo --data /tmp/commontrace-quality-run/locomo-sample.json --root /tmp/commontrace-quality-run/candidate-store --budget 1500,4000 --embedder none --rerank none --out /tmp/commontrace-quality-run/candidate.json",
+    "comparison": "cd /root/Test/commontrace-v2 && env -u COMMONTRACE_ROOT -u JUSTDOIT_ROOT /tmp/commontrace-goal-env/bin/python -m benchmarks.compare --baseline /tmp/commontrace-quality-run/reference.json --candidate /tmp/commontrace-quality-run/candidate.json --check --seed 61923"
+  }
+}

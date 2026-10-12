@@ -12,6 +12,30 @@ Legend: **Done** · **Done (this pass)** (added or fixed in this audit) ·
 
 ## Next-generation implementation (2026-10-10)
 
+### Integrated continuation (2026-10-12)
+
+The integrated source adds bounded multi-row FTS projection on exact/lexical
+fact writes, raw-score retrieval telemetry, and a harmful-label CodingLessonBench
+path that only reports retirement N after a real SOUND journal retirement.
+Competitor patterns from Hindsight and EverOS informed the isolation and score
+semantics; no competitor code was copied. The P0 single-write target passes at
+4.263 ms p95 on one million facts, while batch ingest reaches 1,819 facts/s and
+misses the 2,000 facts/s gate. Separate runs provide no causal speedup claim.
+
+A paired, retrieval-only LoCoMo comparison covers a stratified 154-question
+sample at 1,500 and 4,000 tokens. All reported non-latency aggregate metrics
+match the frozen reference, and no comparison gates fail. The run has no answer
+generator or judge, so answer accuracy remains unmeasured. See the
+[compact provenance report](measurements/retrieval-telemetry-regression.json).
+The final integrated `tests/` and `e2e_tests/` run passes 6,825 tests with 126
+skips and 26 warnings (4,194.17 seconds). Ruff, docs drift, both OpenAPI checks,
+Bandit, strict mypy, and pip-audit pass as well.
+
+The P1 native hook p95 remains unresolved: frozen rounds were 51.59, 46.64 and
+48.64 ms, so one round misses the <50 ms target. Hybrid/server latency,
+zero-reembedding restart at scale, model-backed SWE uplift, harmful-task N, and
+model-judged answer quality also remain unmeasured.
+
 The 2026-10-11 continuation follows the attached build prompt's phase gates.
 The latest million-fact run on `aeadf5d` records 3.86 ms single-write p95
 (passes <20 ms) and 1,167 facts/s batched (misses ≥2,000). The earlier
@@ -123,12 +147,12 @@ ancestors of `codex/next-generation-complete`.
 
 | Brief | Implemented | Acceptance limits |
 | --- | --- | --- |
-| A: storage | Compact SQLite WAL/event ledger, bounded idle connection reuse, exact/near/FTS candidates, transactional migration/rebuild, durable content-hash vector projection; optional background Lance HNSW with backend-specific watermarks; tenant-pinned PostgreSQL record ledger, FTS, optional pgvector/HNSW | Fresh 1M single-write p95 4.69 ms passes; batch 1,739 facts/s misses; 1M hybrid, server latency and zero-reembedding restart remain unverified |
+| A: storage | Compact SQLite WAL/event ledger, bounded idle connection reuse, exact/near/FTS candidates, transactional migration/rebuild, durable content-hash vector projection; optional background Lance HNSW with backend-specific watermarks; tenant-pinned PostgreSQL record ledger, FTS, optional pgvector/HNSW | Latest bounded-FTS candidate: fresh 1M single-write p95 4.263 ms passes; batch 1,819 facts/s still misses; 1M hybrid, server latency and zero-reembedding restart remain unverified; see [candidate measurement](next-generation-p0-batch-projection.md) |
 | B: records | Seven kinds, five scope dimensions plus labels, six lifecycle states, version history, bi-temporal validity, typed relationships, evidence and revision-grounded derived reads | Hosted legacy SDK operations still use the Gateway; Hub implements envelope CRUD, not all legacy operations |
 | C: extraction | Dated speaker/transition extraction, no assistant echo, exact/entropy/MinHash/dense/joint-judge candidate tiers, bounded per-entity/facet observations, existing grounded mental-model refresh | Optional model quality and extraction-cost reduction need real model-backed evaluations |
-| D: learning | Durable event capture, bounded session segmentation and complete serialized prompts, explicit tool/run outcomes, clustered cases, curator/writer proposals, quarantine/shadow/causal activation and retirement, four-format history import, reflection arena and DPO export | Oversized indivisible captures can block their session until a larger explicit budget is used; causal activation is tested on randomized fixtures, while real SWE uplift and harmful-retirement N remain unverified |
+| D: learning | Durable event capture, bounded session segmentation and complete serialized prompts, explicit tool/run outcomes, clustered cases, curator/writer proposals, quarantine/shadow/causal activation and retirement, four-format history import, reflection arena and DPO export; CodingLessonBench measures N from actual isolated journal retirement transitions | Oversized indivisible captures can block their session until a larger explicit budget is used; real SWE uplift and harmful-retirement N remain unmeasured until a labeled real-runner evaluation |
 | E: integration | Shared ten-event core, eight native-agent serializers, framework model hooks, RRF admission, persistent once/inherit decisions, delivery acknowledgements, escaped templates, unextracted buffer, background broker | Host-supported events vary; Kimi needs config selection, Cline needs Hooks enabled, Windsurf hooks capture only; cold startup and loaded-system latency need further measurement |
-| F: retrieval | Indexed sparse and incremental dense candidates, first-pass sparse/dense graph seeds, canonical temporal/evidence/scope/authority filtering, utility explainers, bounded reranking and three-round per-query completeness traces | Deterministic policy coverage improved in paired synthetic fixtures; real-model answer quality and 1M dense/hybrid latency remain unmeasured |
+| F: retrieval | Indexed sparse and incremental dense candidates, first-pass sparse/dense graph seeds, canonical temporal/evidence/scope/authority filtering, utility explainers, bounded reranking and three-round per-query completeness traces; opt-in OTel spans report raw weighted-RRF top score and margin plus heuristic confidence/abstention | Deterministic policy coverage improved in paired synthetic fixtures; real-model answer quality and 1M dense/hybrid latency remain unmeasured; raw ranking scores are not treated as calibrated hits |
 | G: profiles | Explicit static assertions, dynamic weighted/decaying preferences, custom profiles, profile returned with one-call save/retrieve, critical preferences always eligible | Context budgets use an estimate unless the caller supplies exact counting |
 | H: privacy | Pinned scope, pre-model and post-model redaction, recursive hard erasure across local history/FTS/vectors/derived records, retention reaper and reason audit, telemetry off, poison CI | External backups/mirrors require operator erasure; PostgreSQL vector cleanup failures remain explicitly pending in a tenant-pinned retry ledger until its worker runs |
 | I: product | `up` setup/server, request-local YAML profiles and secret references, OAuth/KMS YAML resolution and bounded credential-safe config migration, history import, existing-lesson preview, HTTP/SDK record parity, signed aggregate leaderboard, Graphify CI budgets and pinned native SDK smoke tests; 29 CLI wrappers merged into three modules, retaining all 69 commands | No registry/service publication; empty stores wait for evaluated evidence, so first injected lesson <2 minutes is not established; latest Graphify counts 298 modules; 25 primary variables plus 155 documented legacy aliases still miss the <40-variable target |

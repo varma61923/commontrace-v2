@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Batched fact projection.** Exact and lexical batch writes defer new-row
+  FTS5 entries to bounded multi-row inserts at transaction flush; semantic
+  duplicate search and LLM conflict judging retain eager FTS visibility. New
+  facts also skip an unnecessary existing-row probe and reuse staged conflict
+  features. The fresh 1M candidate measured 4.263 ms single-write p95 and
+  1,819 facts/s batched; the batch target remains unmet. See the P0 candidate
+  measurement note.
+- **Raw retrieval quality telemetry.** Opt-in OpenTelemetry spans include the
+  top packed weighted-RRF score, the top-to-runner-up margin, their raw score
+  scale, and the existing heuristic evidence confidence and abstention result.
+  No query text, memory text, or memory IDs are exported, and no calibrated
+  `recall_hit` is inferred.
+- **CodingLessonBench causal retirement reporting.** Labeled harmful lessons
+  use isolated shadow records, salted randomized assignments and the production
+  reconciliation path. The report emits N only after a SOUND journal retirement,
+  stops exposure after retirement, and censors unresolved task errors. It
+  reports lifecycle overhead separately; no real SWE runner retirement result
+  has been measured.
 - **Hybrid graph retrieval and multi-round coverage.** Dense-only admitted hits
   can seed the bounded graph walk; scope, expiry, authority and evidence checks
   apply to seeds and bridges. Gap filling retains per-query evidence blocks,

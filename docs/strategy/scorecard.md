@@ -32,7 +32,7 @@ its current write and native-latency acceptance claims.
 | LoCoMo >=0.85 GPT-class at <=1,500 tokens | **Unverified** | No configured GPT-class reader/judge credentials or endpoint |
 | LongMemEval-S >=0.90; BEAM 100K/1M and categories | **Unverified** | Model-backed required evaluations not run |
 | Coding uplift >=5pp, sequential lower CI >0 | **Unverified** | Real patch/test randomized harness implemented; no actual SWE model run |
-| Harmful-retirement N and lower extraction cost | **Unverified** | Synthetic causal lifecycle and usage-accounting checks do not establish either production metric |
+| Harmful-retirement N and lower extraction cost | **Unverified** | CodingLessonBench drives per-task randomized assignments through the real journal retirement path and reports N only on a SOUND transition; fixtures validate lifecycle wiring, but no labeled real-runner N or extraction-cost comparison has been measured |
 | Poison resistance | **Fixture tested** | Eleven injector poison/status cases; no successful injection, clean utility retained; novel attacks not covered |
 | First injected lesson <2 minutes | **Unverified** | Setup previews eligible existing lessons; empty stores require reviewed/evaluated evidence |
 | F7: fewer modules; <40 documented config vars | **Not met** | 298 Python modules in the latest audit; 25 primary variables plus 155 explicitly documented legacy aliases still exceed the variable target |
@@ -77,6 +77,7 @@ from the older release. The full next-generation objective remains incomplete.
 | Follow-up storage/journal/hook contracts | 135 passed; all six failures reproduce before the fixes and pass afterward | **Focused pass** |
 | Frozen follow-up full application suite | `fa1ef0c`: 6,678 passed, 118 skipped, 26 warnings | **Pass**; later Lance changes separately covered by ten scoped checks |
 | Latest fresh million-fact writes | Frozen `7e0a224`: 4.69 ms single-write p95, 1,739 facts/s batched | **Single pass; batch miss**; benchmark exits 1; no controlled gain over `aeadf5d` established |
+| Bounded-FTS batch candidate (2026-10-12) | 4.263 ms single-write p95; 1,819 facts/s batched at 1M | **Single pass; batch miss**; source hashes and command in [candidate measurement](next-generation-p0-batch-projection.md); no controlled gain claimed |
 | Historical Node transport | 152.27 ms p95, 50/50 directives delivered; target <50 ms | **Latency miss**; reported checkout 54681d0, imported dependency binding incomplete |
 | Isolated Python transport, frozen `4b1d2eb` | Three runs: 51.59, 46.64, 48.64 ms p95; 150/150 delivered | **Latency remains open**: one of three rounds misses; full suite 6,709 passed / 126 skipped |
 | Global near-term migration, frozen `19c914b` | 1,044,020 facts; 9,396,194 → 3,132,080 lexicon rows; 55.65 s conversion; all event/payload checksums unchanged | **Migration diagnostic pass**; 192 scoped checks; frozen `d50d54b` full suite passes 6,722 /126 skipped before later staging/reuse changes |
@@ -112,6 +113,22 @@ stores, with synthetic dense scores and judge responses. Its artifact includes
 the measured sources and hashes at
 [hybrid-evidence.json](measurements/hybrid-evidence.json); it is not a quality or
 latency benchmark.
+
+## Integrated continuation (2026-10-12)
+
+| Feature / gate | Measured here | Decision |
+| --- | --- | --- |
+| Bounded FTS batch projection at 1M | Single-write p95 4.263 ms; batch 1,819 facts/s | **Single-write pass; batch miss** against <20 ms / ≥2,000 facts/s. Separate runs do not establish a causal throughput gain; see [candidate report](next-generation-p0-batch-projection.md) |
+| Retrieval telemetry regression | 154 stratified LoCoMo questions; retrieval aggregates unchanged at 1,500 and 4,000 tokens | **Pass**, retrieval-only; judged answer accuracy remains unmeasured. [Paired report](measurements/retrieval-telemetry-regression.json) |
+| Harmful lesson retirement lifecycle | Randomized assignment uses isolated shadow memory and journal; fixtures require actual SOUND retirement before reporting N | **Implementation and fixture pass**; real-runner N and extraction-cost comparison remain unmeasured |
+| Integrated application and e2e suite | 6,825 passed, 126 skipped, 26 warnings; 4,194.17 seconds | **Pass**; `env -u COMMONTRACE_ROOT -u JUSTDOIT_ROOT /tmp/commontrace-goal-env/bin/python -m pytest tests/ e2e_tests/ -q` |
+| Native hook transport | Frozen rounds: 51.59, 46.64, 48.64 ms p95 | **Still open**: one round exceeds <50 ms |
+
+Security scanning, strict typing, OpenAPI generation checks, docs drift checks,
+and dependency audits also passed on the integrated source. The complete
+feature objective remains open: the 1M batch-rate threshold, hybrid/server
+retrieval and restart gates, real model-backed SWE outcomes, judged answer
+quality, and universal hook latency are not established.
 
 ## Beyond the targets
 
