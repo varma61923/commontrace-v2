@@ -118,10 +118,10 @@ def turn(
     buffer = kit.journal.buffer(run, scope=scope, limit=16)
     # The unextracted buffer is evidence, never silently promoted to a fact or rule.
     clean, _ = memory_guard.sanitize_metadata(buffer, pii=True)
-    from commontrace import fact_store, search_recipes
+    from commontrace import search_recipes
 
     found = []
-    if fact_store.enabled(root) and query.strip():
+    if query.strip():
         found = search_recipes.search(root, query, context=context, limit=10)
     return {
         "context": result["context"],
