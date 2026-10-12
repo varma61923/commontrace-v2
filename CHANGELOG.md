@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   RRF and recipe ordering, and checks restart vector-cache behavior. Its
   64-fact synthetic-adapter smoke measured 14.16 ms p95 over two samples; this does not establish
   the 1M, real-model or server targets.
+- **Native hook bridge startup.** The successful warm-socket path now parses
+  its fixed CLI options without importing `argparse`, preserving delivery,
+  receipt acknowledgements and fail-safe formatting. Three frozen transport
+  rounds measured 42.58–43.47 ms p95, with 150/150 deliveries; the baseline
+  had one round at 55.16 ms. Cold broker startup and broader host-load latency
+  remain outside this measurement.
 - **Bounded dense candidates for aggregate recall.** Current-time recalls use
   the completed Lance projection and exact-score only post-watermark writes;
   historical queries retain exact scoring so superseded facts remain visible

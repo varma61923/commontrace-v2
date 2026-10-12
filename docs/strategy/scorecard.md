@@ -126,7 +126,7 @@ latency benchmark.
 | Retrieval telemetry regression | 154 stratified LoCoMo questions; retrieval aggregates unchanged at 1,500 and 4,000 tokens | **Pass**, retrieval-only; judged answer accuracy remains unmeasured. [Paired report](measurements/retrieval-telemetry-regression.json) |
 | Harmful lesson retirement lifecycle | Randomized assignment uses isolated shadow memory and journal; fixtures require actual SOUND retirement before reporting N | **Implementation and fixture pass**; real-runner N and extraction-cost comparison remain unmeasured |
 | Integrated application and e2e suite | 6,825 passed, 126 skipped, 26 warnings; 4,194.17 seconds | **Pass**; `env -u COMMONTRACE_ROOT -u JUSTDOIT_ROOT /tmp/commontrace-goal-env/bin/python -m pytest tests/ e2e_tests/ -q` |
-| Native hook transport | Frozen rounds: 51.59, 46.64, 48.64 ms p95 | **Still open**: one round exceeds <50 ms |
+| Native hook transport | Baseline p95: 55.16, 49.51, 49.02 ms; candidate p95: 43.47, 42.58, 43.37 ms; 150/150 deliveries per candidate round | **Transport fixture pass**: candidate passes <50 ms in all three rounds; cold broker startup and broad host-load variation remain unmeasured. See [measurement and analysis](next-generation-hook-startup.md) |
 
 Security scanning, strict typing, OpenAPI generation checks, docs drift checks,
 and dependency audits also passed on the integrated source. The complete

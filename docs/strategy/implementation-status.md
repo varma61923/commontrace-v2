@@ -34,8 +34,11 @@ The final integrated `tests/` and `e2e_tests/` run passes 6,825 tests with 126
 skips and 26 warnings (4,194.17 seconds). Ruff, docs drift, both OpenAPI checks,
 Bandit, strict mypy, and pip-audit pass as well.
 
-The P1 native hook p95 remains unresolved: frozen rounds were 51.59, 46.64 and
-48.64 ms, so one round misses the <50 ms target. Hybrid/server latency,
+The native hook transport now passes three frozen rounds at 43.47, 42.58 and
+43.37 ms p95, with 150/150 deliveries; the matching baseline had one round at
+55.16 ms. Removing `argparse` from the successful bridge startup path preserves
+the fixed hook CLI and receipt behavior. This transport-only fixture does not
+cover cold broker startup or broad host-load variation. Hybrid/server latency,
 zero-reembedding restart at scale, model-backed SWE uplift, harmful-task N, and
 model-judged answer quality also remain unmeasured.
 
