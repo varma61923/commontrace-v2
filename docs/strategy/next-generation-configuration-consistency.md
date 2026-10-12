@@ -44,8 +44,11 @@ contracts after implementing the fix.
 
 This change removes real requirements to keep OAuth and KMS routing options in
 the environment. It does not reduce the documented compatibility inventory:
-25 primary names and 155 legacy aliases remain, so the original fewer-than-40
-documented-variable acceptance gate is still missed. No acceptance definition or
+the primary list has 25 names and the schema has 155 alias entries, with 24
+overlapping names. That is 156 unique supported environment-variable names, so
+the original fewer-than-40 documented-variable acceptance gate is still missed.
+Reducing that surface safely requires a compatibility deprecation policy or an
+explicitly narrower definition of the gate; this change does neither. No
 time-to-first-injection claim changes.
 
 ## Observed validation

@@ -92,9 +92,10 @@ was performed: GitHub's alert API returned HTTP 403 for this integration.
 The continuation consolidates 29 command wrapper modules into three domains,
 preserving all 69 command names and command behavior. The package now has 296
 Python modules and 25 primary deployment variables. Advanced settings share the
-YAML file; 155 legacy environment aliases remain supported and are explicitly
-listed in the machine-readable configuration schema. The primary documentation
-surface is below forty; the compatibility inventory remains larger. Graphify CI
+YAML file; the machine-readable configuration schema has 155 legacy alias entries,
+24 of which overlap the primary list. This leaves 156 unique supported
+environment-variable names. The primary documentation surface is below forty;
+the compatibility inventory remains larger. Graphify CI
 checks dangling edges, the 306-module ceiling, and the reviewed static reachability
 baseline. Static candidates include dynamic SDKs, callbacks and reference scripts;
 the audit does not establish that all such functions are dead code.

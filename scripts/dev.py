@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import json
 import os
 import re
 import subprocess
@@ -35,6 +36,13 @@ def references() -> dict[str, str]:
             and any(getattr(target, "id", "") == "PRIMARY_ENVIRONMENT" for target in node.targets)
         )
     )
+    legacy_aliases = json.loads(
+        (ROOT / "commontrace/configuration.schema.json").read_text(encoding="utf-8")
+    )["x-legacy-environment-aliases"]
+    primary_names = set(primary)
+    alias_names = set(legacy_aliases)
+    alias_overlap = len(primary_names & alias_names)
+    unique_environment_names = len(primary_names | alias_names)
     env = [
         "# Environment reference",
         "",
@@ -52,7 +60,11 @@ def references() -> dict[str, str]:
         "",
         "Legacy aliases remain supported for rolling upgrades. Their full, machine-readable inventory",
         "and YAML paths are in [the configuration schema](../commontrace/configuration.schema.json)",
-        "under `x-legacy-environment-aliases`. This compatibility inventory is separate from the primary surface.",
+        "under `x-legacy-environment-aliases`.",
+        f"The schema has {len(alias_names)} alias entries; {alias_overlap} also appear in the primary list.",
+        f"That leaves {unique_environment_names} unique supported environment-variable names.",
+        "The fewer-than-40 public-variable target remains unmet while the full compatibility inventory is",
+        "supported and documented.",
         "",
         "| Name | First source reference |",
         "| --- | --- |",

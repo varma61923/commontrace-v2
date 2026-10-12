@@ -12,7 +12,11 @@ Credentials use `secrets: {COMMONTRACE_LLM_API_KEY: "env:MODEL_KEY"}`;
 
 Legacy aliases remain supported for rolling upgrades. Their full, machine-readable inventory
 and YAML paths are in [the configuration schema](../commontrace/configuration.schema.json)
-under `x-legacy-environment-aliases`. This compatibility inventory is separate from the primary surface.
+under `x-legacy-environment-aliases`.
+The schema has 155 alias entries; 24 also appear in the primary list.
+That leaves 156 unique supported environment-variable names.
+The fewer-than-40 public-variable target remains unmet while the full compatibility inventory is
+supported and documented.
 
 | Name | First source reference |
 | --- | --- |
