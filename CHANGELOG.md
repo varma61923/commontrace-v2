@@ -15,11 +15,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   session. Two focused tests cover round-trip injection, user isolation, and
   import safety without ADK installed; live framework execution and repeated
   callback deduplication remain unverified.
+- **CrewAI kickoff callbacks.** Scoped before/after callbacks inject memory
+  through a reserved kickoff input, capture a bounded result, and fail open
+  while returning CrewAI output unchanged. Fixture tests cover user isolation,
+  capture, outcomes, failure passthrough and lazy optional imports. Live CrewAI
+  execution remains unverified; native `akickoff()` can block its event loop
+  because it invokes synchronous callbacks.
 - **Hybrid search acceptance harness.** The reproducible harness measures the
   indexed fact-search API through FTS, dense candidates, canonical admission,
-  RRF and recipe ordering, and checks restart vector-cache behavior. Its
-  64-fact synthetic-adapter smoke measured 14.16 ms p95 over two samples; this does not establish
-  the 1M, real-model or server targets.
+  RRF and recipe ordering, and checks restart vector-cache behavior. A
+  benchmark-only canonical fixture seeder enabled a 1M end-to-end run with a
+  synthetic adapter: `search_recipes.search` p95 was 2,828.93 ms on SQLite and
+  200.82 ms on Lance across 30 trials, so both missed the local <50 ms gate.
+  Fresh-process restart passed on that fixture with zero document re-embedding
+  and projection replay. The earlier 64-fact smoke measured 14.16 ms p95 over
+  two samples. Neither run establishes real-model or server latency; see the
+  exact reports and checksums in `docs/strategy/measurements/`.
 - **Native hook bridge startup.** The successful warm-socket path now parses
   its fixed CLI options without importing `argparse`, preserving delivery,
   receipt acknowledgements and fail-safe formatting. Three frozen transport

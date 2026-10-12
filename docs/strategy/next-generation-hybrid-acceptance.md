@@ -14,7 +14,21 @@ Use a real configured model for production evidence:
 
 ```sh
 python -m benchmarks.hybrid_acceptance --facts 1000000 --trials 30 \
-  --embedder bge-small --output /tmp/hybrid-1m.json
+  --seed-mode canonical_fixture --embedder bge-small --output /tmp/hybrid-1m.json
+```
+
+`canonical_fixture` uses canonical fact admission, event, metadata and FTS
+projections while skipping the unrelated per-fact entity sidecar. It is a
+benchmark setup mode, not a change to public ingestion. The recorded synthetic
+backend commands were:
+
+```sh
+python -m benchmarks.hybrid_acceptance --facts 1000000 --trials 30 \
+  --synthetic-adapter --seed-mode canonical_fixture \
+  --output /tmp/f1-hybrid-1m-synthetic-sqlite.json
+COMMONTRACE_VECTOR_BACKEND=lance python -m benchmarks.hybrid_acceptance \
+  --facts 1000000 --trials 30 --synthetic-adapter \
+  --seed-mode canonical_fixture --output /tmp/f1-hybrid-1m-synthetic-lance.json
 ```
 
 The run seeds a fresh synthetic fact corpus, builds the durable vector
@@ -61,16 +75,36 @@ python -m benchmarks.hybrid_acceptance --facts 64 --trials 2 \
   --synthetic-adapter --output /tmp/hybrid-smoke.json
 ```
 
-It validates candidate and restart contracts only. A 1M local timed workload,
-real-model 1M latency, Postgres/server hybrid latency and the 1M restart run
-remain unmeasured until the corresponding commands are run on the intended
-hardware and backend.
+It validates candidate and restart contracts only. The 1M synthetic-adapter
+results are recorded below; they do not establish real-model latency or quality.
+Server hybrid is unsupported by this API, and a real-model 1M run remains
+unmeasured.
 
-The restart candidate and scope checks were exercised by a 64-fact synthetic
-smoke (`--facts 64 --trials 2 --synthetic-adapter`): the 14.16 ms p95 covers
-two samples; both expected candidates were present after restart, the
-out-of-scope candidate was absent, the vector projection processed zero events,
-and the child requested zero document-vector embeddings and one query embedding.
-This closes the restart plumbing check on a fixture only; the hybrid gate
-remains unverified below exactly one million facts, and synthetic timing is not
-production-model evidence.
+The 64-fact synthetic smoke (`--facts 64 --trials 2 --synthetic-adapter`)
+measured 14.16 ms p95 across two samples and verified the restart candidate and
+scope checks. The full 1M synthetic fixture was then run through the same
+`search_recipes.search` path with both local vector backends, 30 warm trials,
+one warmup, and a fresh-process restart check:
+
+| Backend | Seed | Projection build | Search p50 | Search p95 | Local <50 ms gate |
+| --- | ---: | ---: | ---: | ---: | --- |
+| SQLite | 756,528 ms | 123,363 ms | 2,797.91 ms | 2,828.93 ms | **Miss** |
+| Lance | 756,528 ms | 168,518 ms | 169.16 ms | 200.82 ms | **Miss** |
+
+Both reports are `production_api_with_synthetic_adapter`, not real-model
+latency: the fixed adapter is named `synthetic:fixture-v1`, and the corpus
+contains duplicate vectors for neutral fixture rows. Lance emitted empty
+k-means cluster warnings for those duplicates. Each backend passed the
+1M-fixture fresh-process restart contract: all 1,000,000 content-hash cache
+entries were present, projection replay was zero, document embedding requests
+were zero, one query embedding was counted, both expected candidates survived,
+and the out-of-scope ID was excluded. The restart result does not turn the
+latency miss into a gate pass.
+
+Postgres/server hybrid search remains unsupported by this API: there is no
+governed Postgres full-text + vector adapter wired into `search_recipes.search`.
+Real-model local latency, server latency and answer quality remain unmeasured.
+The exact reports, source hashes and commands are archived in
+[the SQLite report](measurements/f1-hybrid-1m-synthetic-sqlite.json) and
+[the Lance report](measurements/f1-hybrid-1m-synthetic-lance.json); verify the
+adjacent `.sha256` sidecars before using the aggregates.

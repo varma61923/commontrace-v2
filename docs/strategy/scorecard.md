@@ -121,18 +121,21 @@ latency benchmark.
 | Feature / gate | Measured here | Decision |
 | --- | --- | --- |
 | Bounded FTS batch projection at 1M | Single-write p95 4.263 ms; batch 1,819 facts/s | **Single-write pass; batch miss** against <20 ms / ≥2,000 facts/s. Separate runs do not establish a causal throughput gain; see [candidate report](next-generation-p0-batch-projection.md) |
-| Hybrid restart contract | 64-fact synthetic-adapter fixture; 14.16 ms p95 over two samples | **Fixture pass**: fresh-process dense and lexical candidates survived, scope exclusion held, projection replayed zero events and document embeddings stayed at zero; 1M restart remains unverified |
+| Hybrid search and restart at 1M | Synthetic-adapter production API, 30 trials per backend: SQLite p50/p95 2,797.91/2,828.93 ms; Lance 169.16/200.82 ms. Both miss the local p95 <50 ms gate. | **Latency miss** on both local backends. Fresh-process restart passed on the fixture for each backend: 1M cached vectors, zero projection replay and document embeddings, one query embedding, expected candidates retained, and out-of-scope ID excluded. Real-model latency and server latency remain unmeasured; Postgres hybrid is unsupported by the current API. See [acceptance note](next-generation-hybrid-acceptance.md) and [reports](measurements/f1-hybrid-1m-synthetic-sqlite.json), [Lance](measurements/f1-hybrid-1m-synthetic-lance.json) |
 | Sparse conflict-slot fast path at 1M | Single-write p95 6.127 ms; batch 1,962.476 facts/s | **Single-write pass; batch miss** against <20 ms / ≥2,000 facts/s; 37.524 facts/s short. See [measurement](measurements/p0-batch-conflict-slot-candidate.json) and [candidate note](next-generation-p0-conflict-slot-fastpath.md) |
 | Retrieval telemetry regression | 154 stratified LoCoMo questions; retrieval aggregates unchanged at 1,500 and 4,000 tokens | **Pass**, retrieval-only; judged answer accuracy remains unmeasured. [Paired report](measurements/retrieval-telemetry-regression.json) |
 | Harmful lesson retirement lifecycle | Randomized assignment uses isolated shadow memory and journal; fixtures require actual SOUND retirement before reporting N | **Implementation and fixture pass**; real-runner N and extraction-cost comparison remain unmeasured |
 | Integrated application and e2e suite | 6,825 passed, 126 skipped, 26 warnings; 4,194.17 seconds | **Pass**; `env -u COMMONTRACE_ROOT -u JUSTDOIT_ROOT /tmp/commontrace-goal-env/bin/python -m pytest tests/ e2e_tests/ -q` |
 | Native hook transport | Baseline p95: 55.16, 49.51, 49.02 ms; candidate p95: 43.47, 42.58, 43.37 ms; 150/150 deliveries per candidate round; 56 focused tests pass | **Transport fixture pass**: candidate passes <50 ms in all three rounds; cold broker startup and broad host-load variation remain unmeasured. See [measurement and analysis](next-generation-hook-startup.md) |
+| Google ADK and CrewAI kickoff integrations | One-call scoped ADK before-model adapter; CrewAI sync before/after kickoff callbacks; combined hook, middleware, hybrid, and integration contracts: 94 passed, 6 skipped | **Component contract pass**; live framework execution remains unverified. Native CrewAI `akickoff()` may block its event loop with synchronous callbacks; see [ADK note](next-generation-google-adk-callback.md) and [CrewAI note](next-generation-crewai-kickoff-memory.md) |
 
 Security scanning, strict typing, OpenAPI generation checks, docs drift checks,
 and dependency audits also passed on the integrated source. The complete
-feature objective remains open: the 1M batch-rate threshold, hybrid/server
-retrieval and restart gates, real model-backed SWE outcomes, judged answer
-quality, and universal hook latency are not established.
+feature objective remains open: the 1M batch-rate threshold, the local hybrid
+latency gate (missed on both tested backends), server retrieval, real-model
+retrieval quality, real model-backed SWE outcomes, and universal hook latency
+are not established. The 1M restart behavior passed only on the synthetic
+fixture.
 
 ## Beyond the targets
 
