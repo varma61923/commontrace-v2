@@ -102,8 +102,11 @@ def format_prompt(rubric_item: str, response: str, question: str = "") -> str:
     prompt = UNIFIED_LLM_JUDGE_BASE_PROMPT.replace("<rubric_item>", rubric_item).replace(
         "<llm_response>", response.strip()
     )
-    if "<question>" in prompt and question:
-        prompt = prompt.replace("<question>", question.strip())
+    if question:
+        # The responsiveness rubric refers to QUESTION, but the upstream base
+        # template has no question placeholder. Supply the actual question so
+        # the judge can distinguish responsiveness from merely avoiding a word.
+        prompt += "\n\nQUESTION:\n" + question.strip()
     return prompt
 
 

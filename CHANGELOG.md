@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Production conversation read reuse.** HTTP and MCP recall use bounded,
+  exclusive read-only leases with schema/file identity checks, snapshot
+  consistency, Unicode maintenance and fork-safe service caches. The measured
+  10K-turn loopback workload improved repeated-request p50 by 17.37× and varied
+  request p50 by 1.11× with identical delivered evidence. See
+  [production contracts and limits](docs/production-retrieval.md).
+- **Cited conversation answers and history evidence.** Optional `--grounded`
+  answers validate source citations and abstain on malformed responses.
+  `coverage-v2` exposes actual delivered excerpts and diversifies relevant
+  sessions/time for history queries. Citation membership does not prove entailment.
+- **Faster, fresher recall bookkeeping.** Coverage tokenizes each passage once,
+  snapshot version checks are reused, and response cache metadata is counted
+  once with model-aware bindings. Transient backend fallbacks remain retryable.
+  Relevant old directives survive recent-rule caps; fractional conversation
+  timestamps survive storage and cutoff filtering.
 - **Bounded offline XLSX and PPTX ingestion.** Stored spreadsheet values and
   slide text/speaker notes retain source-part attribution without evaluating
   formulas or fetching links. Archive, XML and extracted-text budgets bound

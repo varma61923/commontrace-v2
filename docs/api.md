@@ -39,35 +39,35 @@ Use per-contribution idempotency keys. Batch delete is permanent; do not replay 
 | `graph_viz_html` | `as_of` | Render the knowledge graph as a self-contained interactive HTML page. [source](../commontrace/mcp_server.py#L1879) |
 | `conversation_add` | `space, session, messages, session_at, ctx` | Remember messages from a conversation, in order, under a space (one user, agent or thread). [source](../commontrace/mcp_server.py#L1905) |
 | `conversation_recall` | `space, question, budget, now, sessions, speakers, since, until, ctx, context_strategy, adaptive_budget` | What was said that answers `question`: the matching turns with their neighbours, [source](../commontrace/mcp_server.py#L1934) |
-| `memory_recall` | `question, budget, agent, as_of, channels, spaces, evidence_budget, scope, ctx, fact_scorer, reranker, adaptive_budget` | One context from every kind of memory: approved lessons, atomic facts, graph [source](../commontrace/mcp_server.py#L1974) |
-| `conversation_profile` | `space, history` | What the user has said about themselves in a space (preferences, identity, plans, [source](../commontrace/mcp_server.py#L2009) |
-| `conversation_forget` | `space, session, before, expired` | Delete from a space: one `session`, messages said `before` a date, and/or messages [source](../commontrace/mcp_server.py#L2025) |
-| `conversation_summarize` | `space, session, ctx` | Write an extractive summary (the most central dated sentences) for each session [source](../commontrace/mcp_server.py#L2044) |
-| `graph_timeline` | `entity` | How an entity's relations changed over time: each edge that began or ended, when [source](../commontrace/mcp_server.py#L2064) |
-| `lessons_from_trace` | `trace_id` | Lessons that cite `trace_id` in their `source_traces` (trace -> lesson lookup). [source](../commontrace/mcp_server.py#L2075) |
-| `traces_for_lesson` | `slug` | The source trace ids a lesson cites in its frontmatter (lesson -> trace provenance lookup). [source](../commontrace/mcp_server.py#L2097) |
-| `community_members` | `name` | Members of one topic community by name (from `commontrace community build`). [source](../commontrace/mcp_server.py#L2110) |
-| `observation_evidence` | `id` | One consolidated observation with its cited evidence (quote + source_id). [source](../commontrace/mcp_server.py#L2129) |
-| `list_skills` | `none` | List the reusable procedures (skills) available in this project, by name and description. [source](../commontrace/mcp_server.py#L2143) |
-| `load_skill` | `name` | Load the full instructions of one skill named by `list_skills`. [source](../commontrace/mcp_server.py#L2157) |
-| `ingest_job_status` | `job_id` | Inspect the current stage and progress of an ingestion job. [source](../commontrace/mcp_server.py#L2178) |
-| `ingest_documents_list` | `query, limit` | List lightweight document summaries in the catalog (NOT dumping full contents). [source](../commontrace/mcp_server.py#L2191) |
-| `ingest_document_get` | `doc_id_or_path, chunk_index` | Retrieve a registered document snapshot or chunk by ID or registered source path. [source](../commontrace/mcp_server.py#L2203) |
-| `saga_create` | `saga_id, title, tags, brief, status` | Create an ordered incident or migration narrative saga with a [source](../commontrace/mcp_server.py#L2220) |
-| `saga_get` | `saga_id` | Fetch a saga narrative along with its complete chronological event timeline, [source](../commontrace/mcp_server.py#L2239) |
-| `saga_list` | `status, tag, limit` | List all recorded incident or migration sagas, optionally filtered [source](../commontrace/mcp_server.py#L2251) |
-| `saga_append_event` | `saga_id, title, description, actor, new_brief, watermark` | Append a milestone, telemetry update, or incident response event to [source](../commontrace/mcp_server.py#L2261) |
-| `saga_update_brief` | `saga_id, brief, watermark` | Update the rolling synthesis running brief of an ongoing saga narrative, [source](../commontrace/mcp_server.py#L2285) |
-| `knowledge_page_list` | `tag, limit` | List all curated knowledge pages and mental model synthesis documents, [source](../commontrace/mcp_server.py#L2300) |
-| `knowledge_page_get` | `slug, version` | Fetch the latest or a specific historical revision of a curated knowledge page, [source](../commontrace/mcp_server.py#L2310) |
-| `knowledge_page_update` | `slug, content, title, tags, expected_version, dry_run, comment` | Update or create a curated knowledge page with dry-run diff preview. [source](../commontrace/mcp_server.py#L2322) |
-| `session_ledger_record` | `session_id, model, prompt_tokens, completion_tokens, provider, cost_usd, occasion` | Record an LLM model call with prompt tokens, completion tokens, provider, [source](../commontrace/mcp_server.py#L2355) |
-| `session_ledger_get` | `session_id` | Get aggregate token usage and estimated costs for a session with per-model breakdown. [source](../commontrace/mcp_server.py#L2376) |
-| `session_ledger_summary` | `since, until` | Get global token usage and cost expenditure aggregated across all sessions, [source](../commontrace/mcp_server.py#L2384) |
-| `procedural_memory_create` | `task_objective, progress_status, steps, agent_id, metadata` | Create and persist a structured procedural memory trajectory recording sequential [source](../commontrace/mcp_server.py#L2394) |
-| `procedural_memory_replay` | `memory_id, token_budget` | Replay a procedural memory trajectory rendered into a structured markdown prompt context [source](../commontrace/mcp_server.py#L2433) |
-| `sql_guarded_query` | `db_path, sql, max_rows, timeout_seconds` | Validate, cap, and safely execute a read-only SELECT query against a SQLite database with guardrails. [source](../commontrace/mcp_server.py#L2449) |
-| `defense_screen_content` | `content, action` | Screen content against known sensitive data, credentials, PII, and injection patterns [source](../commontrace/mcp_server.py#L2475) |
+| `memory_recall` | `question, budget, agent, as_of, channels, spaces, evidence_budget, scope, ctx, fact_scorer, reranker, adaptive_budget` | One context from every kind of memory: approved lessons, atomic facts, graph [source](../commontrace/mcp_server.py#L1977) |
+| `conversation_profile` | `space, history` | What the user has said about themselves in a space (preferences, identity, plans, [source](../commontrace/mcp_server.py#L2012) |
+| `conversation_forget` | `space, session, before, expired` | Delete from a space: one `session`, messages said `before` a date, and/or messages [source](../commontrace/mcp_server.py#L2028) |
+| `conversation_summarize` | `space, session, ctx` | Write an extractive summary (the most central dated sentences) for each session [source](../commontrace/mcp_server.py#L2047) |
+| `graph_timeline` | `entity` | How an entity's relations changed over time: each edge that began or ended, when [source](../commontrace/mcp_server.py#L2067) |
+| `lessons_from_trace` | `trace_id` | Lessons that cite `trace_id` in their `source_traces` (trace -> lesson lookup). [source](../commontrace/mcp_server.py#L2078) |
+| `traces_for_lesson` | `slug` | The source trace ids a lesson cites in its frontmatter (lesson -> trace provenance lookup). [source](../commontrace/mcp_server.py#L2100) |
+| `community_members` | `name` | Members of one topic community by name (from `commontrace community build`). [source](../commontrace/mcp_server.py#L2113) |
+| `observation_evidence` | `id` | One consolidated observation with its cited evidence (quote + source_id). [source](../commontrace/mcp_server.py#L2132) |
+| `list_skills` | `none` | List the reusable procedures (skills) available in this project, by name and description. [source](../commontrace/mcp_server.py#L2146) |
+| `load_skill` | `name` | Load the full instructions of one skill named by `list_skills`. [source](../commontrace/mcp_server.py#L2160) |
+| `ingest_job_status` | `job_id` | Inspect the current stage and progress of an ingestion job. [source](../commontrace/mcp_server.py#L2181) |
+| `ingest_documents_list` | `query, limit` | List lightweight document summaries in the catalog (NOT dumping full contents). [source](../commontrace/mcp_server.py#L2194) |
+| `ingest_document_get` | `doc_id_or_path, chunk_index` | Retrieve a registered document snapshot or chunk by ID or registered source path. [source](../commontrace/mcp_server.py#L2206) |
+| `saga_create` | `saga_id, title, tags, brief, status` | Create an ordered incident or migration narrative saga with a [source](../commontrace/mcp_server.py#L2223) |
+| `saga_get` | `saga_id` | Fetch a saga narrative along with its complete chronological event timeline, [source](../commontrace/mcp_server.py#L2242) |
+| `saga_list` | `status, tag, limit` | List all recorded incident or migration sagas, optionally filtered [source](../commontrace/mcp_server.py#L2254) |
+| `saga_append_event` | `saga_id, title, description, actor, new_brief, watermark` | Append a milestone, telemetry update, or incident response event to [source](../commontrace/mcp_server.py#L2264) |
+| `saga_update_brief` | `saga_id, brief, watermark` | Update the rolling synthesis running brief of an ongoing saga narrative, [source](../commontrace/mcp_server.py#L2288) |
+| `knowledge_page_list` | `tag, limit` | List all curated knowledge pages and mental model synthesis documents, [source](../commontrace/mcp_server.py#L2303) |
+| `knowledge_page_get` | `slug, version` | Fetch the latest or a specific historical revision of a curated knowledge page, [source](../commontrace/mcp_server.py#L2313) |
+| `knowledge_page_update` | `slug, content, title, tags, expected_version, dry_run, comment` | Update or create a curated knowledge page with dry-run diff preview. [source](../commontrace/mcp_server.py#L2325) |
+| `session_ledger_record` | `session_id, model, prompt_tokens, completion_tokens, provider, cost_usd, occasion` | Record an LLM model call with prompt tokens, completion tokens, provider, [source](../commontrace/mcp_server.py#L2358) |
+| `session_ledger_get` | `session_id` | Get aggregate token usage and estimated costs for a session with per-model breakdown. [source](../commontrace/mcp_server.py#L2379) |
+| `session_ledger_summary` | `since, until` | Get global token usage and cost expenditure aggregated across all sessions, [source](../commontrace/mcp_server.py#L2387) |
+| `procedural_memory_create` | `task_objective, progress_status, steps, agent_id, metadata` | Create and persist a structured procedural memory trajectory recording sequential [source](../commontrace/mcp_server.py#L2397) |
+| `procedural_memory_replay` | `memory_id, token_budget` | Replay a procedural memory trajectory rendered into a structured markdown prompt context [source](../commontrace/mcp_server.py#L2436) |
+| `sql_guarded_query` | `db_path, sql, max_rows, timeout_seconds` | Validate, cap, and safely execute a read-only SELECT query against a SQLite database with guardrails. [source](../commontrace/mcp_server.py#L2452) |
+| `defense_screen_content` | `content, action` | Screen content against known sensitive data, credentials, PII, and injection patterns [source](../commontrace/mcp_server.py#L2478) |
 | `approve_lesson` | `slug, rationale, approved_by` | Activate a reviewed lesson so retrieval starts injecting it. [source](../commontrace/mcp_server.py#L1245) |
 | `reject_lesson` | `slug, reason` | Archive a candidate that should not become a lesson. `reason` is [source](../commontrace/mcp_server.py#L1365) |
 

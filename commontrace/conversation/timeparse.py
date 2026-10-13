@@ -48,7 +48,7 @@ def _number(word: str) -> int:
 
 # --- when a message was said ---------------------------------------------------
 
-_ISO = re.compile(r"^\s*(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?)?"
+_ISO = re.compile(r"^\s*(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?(?:\.(\d+))?)?"
                   r"\s*(Z|[+-]\d{2}:?\d{2})?\s*$")
 _SLASHED = re.compile(r"^\s*(\d{4})/(\d{1,2})/(\d{1,2})(?:\s*\(\w+\))?(?:\s+(\d{1,2}):(\d{2}))?\s*$")
 _SPOKEN = re.compile(
@@ -68,9 +68,14 @@ def parse_moment(text: str | None) -> dt.datetime | None:
     text = str(text)
     m = _ISO.match(text)
     if m:
-        y, mo, d, hh, mm, ss, tz = m.groups()
+        y, mo, d, hh, mm, ss, fraction, tz = m.groups()
         try:
-            moment = dt.datetime(int(y), int(mo), int(d), int(hh or 0), int(mm or 0), int(ss or 0))
+            if tz and tz != "Z":
+                offset = tz[1:].replace(":", "")
+                if int(offset[:2]) > 23 or int(offset[2:]) > 59:
+                    return None
+            moment = dt.datetime(int(y), int(mo), int(d), int(hh or 0), int(mm or 0), int(ss or 0),
+                                 int((fraction or "").ljust(6, "0")[:6]))
         except ValueError:
             return None
         # the speaker's wall clock is what "this morning" and "yesterday" refer to, so an

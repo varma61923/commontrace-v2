@@ -393,6 +393,7 @@ class Gateway:
         self._memo_work: weakref.WeakValueDictionary[str, threading.Lock] = weakref.WeakValueDictionary()
         self._event_tail_lock = threading.Lock()
         self._event_tail = None
+        self._conversation_pool = None  # optional local adapter; requests cannot set it
         self.routes: dict[tuple[str, str], tuple[Callable, dict]] = {}
         self._register()
 
@@ -499,7 +500,7 @@ class Gateway:
             "now": "optional date the question is asked",
             "sessions": "optional list of session ids", "speakers": "optional list of speakers",
             "since": "optional date", "until": "optional date",
-            "context_strategy": "optional legacy or coverage-v1 context packing (default legacy)",
+            "context_strategy": "optional legacy, coverage-v1 or coverage-v2 context packing (default legacy)",
             "adaptive_budget": "optional boolean: treat budget as a floor sized by the question's shape "
                                "(summaries, orderings, counts, lists); explain.budget reports the decision",
         }, summary="The turns that answer a question, as a dated context within a token budget.")
@@ -1421,7 +1422,8 @@ class Gateway:
             raise _bad(str(exc)) from None
 
     def _conversation_recall(self, req: dict, _query) -> dict:
-        from commontrace.conversation import ConversationError, Options, Store, recall
+        from commontrace.conversation import ConversationError, Options, recall
+        from commontrace.conversation.pool import READ_POOL, PoolBusy
 
         budget = req.get("budget", 1500)
         adaptive = req.get("adaptive_budget", False)
@@ -1437,17 +1439,26 @@ class Gateway:
                 raise _bad(f"{key} must be a list of strings")
             lists[key] = tuple(value)
         strategy = req.get("context_strategy", "legacy")
-        if not isinstance(strategy, str) or strategy not in ("legacy", "coverage-v1"):
-            raise _bad("context_strategy must be legacy or coverage-v1")
+        if not isinstance(strategy, str) or strategy not in ("legacy", "coverage-v1", "coverage-v2"):
+            raise _bad("context_strategy must be legacy, coverage-v1 or coverage-v2")
         opts = Options(budget=budget, since=req.get("since") or None, until=req.get("until") or None,
                        context_strategy=strategy, adaptive_budget=adaptive,
                        max_budget=max(budget, 12_000), **lists)
         try:
             space = self._scoped_space(_ident(req.get("space"), "space"))
-            with Store(self.root, space, create=False) as store:
+            pool = self._conversation_pool or READ_POOL
+            with pool.lease(self.root, space, query=question) as store:
                 return recall(store, question, now=req.get("now") or None, options=opts).as_dict()
+        except PoolBusy as exc:
+            raise ApiError(503, "conversation_busy", str(exc)) from None
         except ConversationError as exc:
             raise ApiError(404 if "no conversations" in str(exc) else 400, "conversation", str(exc)) from None
+
+    def close(self) -> None:
+        """Release service read handles; active leases finish before retirement."""
+        from commontrace.conversation.pool import READ_POOL
+
+        (self._conversation_pool or READ_POOL).discard_root(self.root)
 
     @staticmethod
     def _conversation_error(exc: Exception) -> ApiError:

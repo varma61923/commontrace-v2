@@ -27,12 +27,12 @@ from pathlib import Path
 from typing import Any, Literal
 
 from benchmarks.bootstrap import percentile
-from benchmarks.conversation_bench import locomo_cases, longmemeval_cases
+from benchmarks.conversation_bench import beam_cases, locomo_cases, longmemeval_cases
 from commontrace.conversation import Options, Store, recall
 from commontrace.conversation.search import forget_store, tokens
 
-Strategy = Literal["legacy", "coverage-v1"]
-STRATEGIES: tuple[Strategy, ...] = ("legacy", "coverage-v1")
+Strategy = Literal["legacy", "coverage-v1", "coverage-v2"]
+STRATEGIES: tuple[Strategy, ...] = ("legacy", "coverage-v1", "coverage-v2")
 
 
 @dataclass(frozen=True)
@@ -100,9 +100,10 @@ def load_cases(dataset: str, data: str, *, limit: int = 0, seed: int = 0) -> lis
     as missing sources; ambiguous or malformed references are not guessed.
     LongMemEval uses all questions, including abstention (no gold evidence).
     """
-    if dataset not in ("locomo", "longmemeval") or limit < 0:
-        raise ValueError("expected locomo or longmemeval and a nonnegative limit")
-    normalized = locomo_cases(data) if dataset == "locomo" else longmemeval_cases(data, 0, seed)
+    if dataset not in ("locomo", "longmemeval", "beam") or limit < 0:
+        raise ValueError("expected locomo, longmemeval or beam and a nonnegative limit")
+    normalized = locomo_cases(data) if dataset == "locomo" else \
+        beam_cases(data) if dataset == "beam" else longmemeval_cases(data, 0, seed)
     raw_evidence: dict[str, frozenset[str]] = {}
     if dataset == "locomo":
         for conversation in json.loads(Path(data).read_text(encoding="utf-8")):
@@ -156,7 +157,7 @@ def source_retention(store: Store, selected: Sequence[int], context: str,
 
 
 def clustered_delta(rows: Sequence[Measurement], metric: str, *, seed: int = 0,
-                    resamples: int = 2000) -> dict[str, float | int | None]:
+                    resamples: int = 2000, candidate: Strategy = "coverage-v1") -> dict[str, float | int | None]:
     """Paired mean difference, resampling whole conversations rather than turns.
 
     Question-weighted means are recomputed in every sampled cluster draw.
@@ -166,6 +167,8 @@ def clustered_delta(rows: Sequence[Measurement], metric: str, *, seed: int = 0,
         raise ValueError("unsupported comparison metric")
     if resamples < 1:
         raise ValueError("resamples must be positive")
+    if candidate not in ("coverage-v1", "coverage-v2"):
+        raise ValueError("candidate must be coverage-v1 or coverage-v2")
     if len({row.budget for row in rows}) > 1:
         raise ValueError("comparison requires the same budget for both strategies")
     paired: dict[tuple[str, str], dict[Strategy, Measurement]] = defaultdict(dict)
@@ -176,13 +179,13 @@ def clustered_delta(rows: Sequence[Measurement], metric: str, *, seed: int = 0,
         paired[key][row.strategy] = row
     clusters: dict[str, list[float]] = defaultdict(list)
     for (case, _question), pair in paired.items():
-        if set(pair) != set(STRATEGIES):
+        if set(pair) != {"legacy", candidate}:
             raise ValueError("comparison requires both strategies for every question")
-        if pair["legacy"].category != pair["coverage-v1"].category:
+        if pair["legacy"].category != pair[candidate].category:
             raise ValueError("paired question categories must match")
-        baseline, candidate = getattr(pair["legacy"], metric), getattr(pair["coverage-v1"], metric)
-        if baseline is not None and candidate is not None:
-            clusters[case].append(float(candidate) - float(baseline))
+        baseline, measured = getattr(pair["legacy"], metric), getattr(pair[candidate], metric)
+        if baseline is not None and measured is not None:
+            clusters[case].append(float(measured) - float(baseline))
     differences = [value for cluster in clusters.values() for value in cluster]
     delta = statistics.mean(differences) if differences else None
     output: dict[str, float | int | None] = {
@@ -231,10 +234,13 @@ def implementation_digest() -> str:
 
 
 def evaluate(dataset: str, data: str, *, budgets: Sequence[int] = (1500, 7000),
-             limit: int = 0, seed: int = 0) -> dict[str, object]:
+             limit: int = 0, seed: int = 0, candidate: Strategy = "coverage-v1") -> dict[str, object]:
     if not budgets or len(set(budgets)) != len(budgets) or any(
             isinstance(b, bool) or not isinstance(b, int) or not 1 <= b <= 100_000 for b in budgets):
         raise ValueError("budgets must be unique integers between 1 and 100000")
+    if candidate not in ("coverage-v1", "coverage-v2"):
+        raise ValueError("candidate must be coverage-v1 or coverage-v2")
+    strategies = ("legacy", candidate)
     before = hashlib.sha256(Path(data).read_bytes()).hexdigest()
     implementation = implementation_digest()
     cases = load_cases(dataset, data, limit=limit, seed=seed)
@@ -255,7 +261,7 @@ def evaluate(dataset: str, data: str, *, budgets: Sequence[int] = (1500, 7000),
                 history_tokens.append(sum(tokens(m["text"]) for _s, _d, ms in case.sessions for m in ms))
                 for q_index, question in enumerate(case.questions):
                     for budget in budgets:
-                        order = STRATEGIES if q_index % 2 == 0 else tuple(reversed(STRATEGIES))
+                        order = strategies if q_index % 2 == 0 else tuple(reversed(strategies))
                         for strategy in order:
                             options = Options(budget=budget, embedder=None, rerank=None,
                                               neighbours_before=1, neighbours_after=1, context_strategy=strategy)
@@ -273,13 +279,13 @@ def evaluate(dataset: str, data: str, *, budgets: Sequence[int] = (1500, 7000),
     summaries: dict[str, object] = {}
     for budget in budgets:
         at_budget = [r for r in rows if r.budget == budget]
-        arms = {strategy: summarize([r for r in at_budget if r.strategy == strategy]) for strategy in STRATEGIES}
+        arms = {strategy: summarize([r for r in at_budget if r.strategy == strategy]) for strategy in strategies}
         categories = sorted({r.category for r in at_budget})
         summaries[str(budget)] = {"strategies": arms,
                                  "by_category": {category: {strategy: summarize([
                                      r for r in at_budget if r.category == category and r.strategy == strategy])
-                                     for strategy in STRATEGIES} for category in categories},
-                                 "paired_cluster_bootstrap": {metric: clustered_delta(at_budget, metric, seed=seed)
+                                     for strategy in strategies} for category in categories},
+                                 "paired_cluster_bootstrap": {metric: clustered_delta(at_budget, metric, seed=seed, candidate=candidate)
                                                               for metric in ("full_source_text_recall",
                                                                              "estimated_tokens", "latency_ms")}}
     selection = [(c.identity, q.identity) for c in cases for q in c.questions]
@@ -297,21 +303,22 @@ def evaluate(dataset: str, data: str, *, budgets: Sequence[int] = (1500, 7000),
                            "token_accounting": "ceil(characters/4), not provider tokenization",
                            "final_response_cache": "disabled", "ingestion": "production redaction enabled",
                            "gold_labels": "evaluation only", "timing": "recall only; excludes ingestion/evaluation",
-                           "comparison": "CommonTrace legacy vs coverage-v1; not a competitor accuracy benchmark"},
+                           "comparison": f"CommonTrace legacy vs {candidate}; not a competitor accuracy benchmark"},
             "budgets": summaries}
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else None)
-    parser.add_argument("--dataset", choices=("locomo", "longmemeval"), required=True)
+    parser.add_argument("--dataset", choices=("locomo", "longmemeval", "beam"), required=True)
     parser.add_argument("--data", required=True)
+    parser.add_argument("--candidate", choices=("coverage-v1", "coverage-v2"), default="coverage-v1")
     parser.add_argument("--budgets", default="1500,7000")
     parser.add_argument("--limit", type=int, default=0, help="exact seeded question sample; zero evaluates all")
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args(argv)
     try:
         budgets = [int(value) for value in args.budgets.split(",")]
-        result = evaluate(args.dataset, args.data, budgets=budgets, limit=args.limit, seed=args.seed)
+        result = evaluate(args.dataset, args.data, budgets=budgets, limit=args.limit, seed=args.seed, candidate=args.candidate)
     except (ValueError, OSError) as exc:
         parser.error(str(exc))
     print(json.dumps(result, ensure_ascii=False, sort_keys=True, allow_nan=False))

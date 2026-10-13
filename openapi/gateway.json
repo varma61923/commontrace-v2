@@ -3790,7 +3790,8 @@
                     "default": "legacy",
                     "enum": [
                       "legacy",
-                      "coverage-v1"
+                      "coverage-v1",
+                      "coverage-v2"
                     ],
                     "type": "string"
                   },

@@ -336,7 +336,7 @@ OPERATIONS: dict[tuple[str, str], Operation] = {
             "budget": integer("context size in tokens", minimum=50, maximum=32000, default=1500),
             "now": nullable(string("date the question is asked")), "sessions": array(string()),
             "speakers": array(string()), "since": nullable(string()), "until": nullable(string()),
-            "context_strategy": string(enum=["legacy", "coverage-v1"], default="legacy"),
+            "context_strategy": string(enum=["legacy", "coverage-v1", "coverage-v2"], default="legacy"),
             "adaptive_budget": boolean("treat budget as a floor sized by the question's shape")},
             ("space", "question")),
         obj({"question": string(), "context": string(), "tokens": integer(), "turns": array(integer()),

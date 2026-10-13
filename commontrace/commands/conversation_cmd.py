@@ -51,7 +51,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     r.add_argument("--rerank", choices=("auto", "none", "cross-encoder", "cross-encoder-fast"), default="auto",
                    help="second-stage reranker (auto: the accurate one when the attention extra is installed)")
     r.add_argument("--lexical", action="store_true", help="keyword search only, no embedding model")
-    r.add_argument("--context-strategy", choices=("legacy", "coverage-v1"), default="legacy",
+    r.add_argument("--context-strategy", choices=("legacy", "coverage-v1", "coverage-v2"), default="legacy",
                    help="context packing: preserve ranking or diversify delivered query facets")
     _filters(r)
     r.add_argument("--json", action="store_true")
@@ -63,10 +63,12 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     q.add_argument("question")
     q.add_argument("--rounds", type=int, default=1,
                    help="up to 4: the model may ask for follow-up searches before answering")
+    q.add_argument("--grounded", action="store_true",
+                   help="require bounded JSON answers with citations to delivered evidence; invalid replies abstain")
     q.add_argument("--budget", type=_budget_arg, default=None, help="tokens, or 'auto' (see recall)")
     q.add_argument("--max-budget", type=int, default=None)
     q.add_argument("--now", default=None)
-    q.add_argument("--context-strategy", choices=("legacy", "coverage-v1"), default="legacy")
+    q.add_argument("--context-strategy", choices=("legacy", "coverage-v1", "coverage-v2"), default="legacy")
     _filters(q)
     q.add_argument("--json", action="store_true")
     q.add_argument("--dest", default=None)
@@ -289,7 +291,8 @@ def run_answer(args) -> int:
     try:
         opts = _options(args)
         with _store(args, create=False) as store:
-            out = answer(store, args.question, now=args.now, options=opts, rounds=args.rounds)
+            out = answer(store, args.question, now=args.now, options=opts, rounds=args.rounds,
+                         grounded=getattr(args, "grounded", False))
     except (ConversationError, ValueError, llm.LLMUnavailable) as exc:
         print(f"[commontrace] {exc}", file=sys.stderr)
         return 2

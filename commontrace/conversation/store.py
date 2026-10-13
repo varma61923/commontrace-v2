@@ -158,6 +158,11 @@ def connect(path: str, setup: str = "", *, read_only: bool = False) -> sqlite3.C
         uri = "file:" + urllib.parse.quote(os.path.abspath(path)) + "?mode=ro"
         db = sqlite3.connect(uri, uri=True, timeout=BUSY_SECONDS, check_same_thread=False, isolation_level=None)
         db.execute("PRAGMA query_only=ON")
+        # Connection-local scratch/page-cache limits apply to readers too.
+        # Large FTS sorts must not regress to file-backed scratch work merely
+        # because the service correctly opened its source read-only.
+        db.execute("PRAGMA temp_store=MEMORY")
+        db.execute("PRAGMA cache_size=-8192")
         return db
     db = sqlite3.connect(path, timeout=BUSY_SECONDS, check_same_thread=False, isolation_level=None)
     deadline = time.monotonic() + BUSY_SECONDS
@@ -232,7 +237,7 @@ class UnitChange:
 
 
 def _iso(moment: dt.datetime | None) -> str | None:
-    return moment.isoformat(timespec="minutes") if moment else None
+    return moment.isoformat(timespec="auto" if moment.second or moment.microsecond else "minutes") if moment else None
 
 
 def _moment(value) -> dt.datetime | None:
@@ -343,6 +348,7 @@ class Store:
         self._turn_cache: OrderedDict[int, Turn] = OrderedDict()
         self._turn_cache_bytes = 0
         self.cache_identity = object()
+        self._snapshot_stamp: tuple[int, int] | None = None
         self._read_stamp = None
         self._embedders: dict = {}
         if read_only:
@@ -350,7 +356,8 @@ class Store:
             self.db = connect(self.path, read_only=True)
             self.db.row_factory = sqlite3.Row
             self.db.execute("PRAGMA foreign_keys=ON")
-            self._inspect_schema()
+            with self.read_snapshot():
+                self._inspect_schema()
             return
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
         fts = ("CREATE VIRTUAL TABLE IF NOT EXISTS units_fts USING fts5(body, tokenize='porter unicode61');"
@@ -364,6 +371,7 @@ class Store:
         self._inspect_schema()
 
     def _inspect_schema(self) -> None:
+        self._schema_version = self.db.execute("PRAGMA schema_version").fetchone()[0]
         self._fact_columns = {r[1] for r in self.db.execute("PRAGMA table_info(facts)")}
         self._has_sources = bool(self.db.execute(
             "SELECT 1 FROM sqlite_master WHERE name='fact_sources'").fetchone())
@@ -480,11 +488,15 @@ class Store:
 
     def read_stamp(self) -> tuple[int, int]:
         """Detect local writes and commits by other connections, including deletions."""
-        stamp = (self.db.total_changes, self.db.execute("PRAGMA data_version").fetchone()[0])
+        version = self._snapshot_stamp[1] if self._snapshot_stamp is not None and self.db.in_transaction \
+            else self.db.execute("PRAGMA data_version").fetchone()[0]
+        stamp = (self.db.total_changes, version)
         if stamp != self._read_stamp:
             self._turn_cache.clear()
             self._turn_cache_bytes = 0
             self._read_stamp = stamp
+        if self._snapshot_stamp is not None:
+            self._snapshot_stamp = stamp
         return stamp
 
     def unit_stamp(self) -> tuple:
@@ -521,12 +533,18 @@ class Store:
                 return
             self.db.execute("BEGIN")
             try:
+                # PRAGMA data_version binds the transaction to its read view.
+                # Reuse that version within this snapshot; local writes still
+                # invalidate turn caches through total_changes.
+                self._snapshot_stamp = self.read_stamp()
                 yield
             except BaseException:
                 self.db.execute("ROLLBACK")
                 raise
             else:
                 self.db.execute("COMMIT")
+            finally:
+                self._snapshot_stamp = None
 
     def close(self) -> None:
         from commontrace.conversation import embed, search
@@ -1122,6 +1140,19 @@ class Store:
         ids: set[int] = set()
         condition, params = self._fact_conditions(as_of=as_of, allowed=allowed)
         suffix = " AND " + condition
+        if instructions and match:
+            # Older relevant directives must not disappear behind a recent-rule
+            # cap. Bounded prefix matching also finds ordinary inflections such
+            # as implement/implementation and HTML/HTML5 without loading all
+            # standing rules. The same scope/time conditions remain mandatory.
+            terms = [term for term in dict.fromkeys(re.findall(r"[A-Za-z0-9]+", query.lower()))
+                     if term not in profile.STOPWORDS][:64]
+            instruction_match = " OR ".join(f'"{term[:5]}"*' if len(term) >= 3 else f'"{term}"'
+                                             for term in terms)
+            ids.update(r[0] for r in self.db.execute(
+                "SELECT f.id FROM facts_fts JOIN facts f ON f.id=facts_fts.rowid JOIN turns t ON t.id=f.turn "  # nosec B608
+                "WHERE facts_fts MATCH ? AND f.kind='instruction'" + suffix + " ORDER BY bm25(facts_fts) LIMIT ?",
+                [instruction_match, *params, limit]))
         if profile_facts and match:
             ids.update(r[0] for r in self.db.execute(
                 "SELECT f.id FROM facts_fts JOIN facts f ON f.id=facts_fts.rowid JOIN turns t ON t.id=f.turn "  # nosec B608 - fixed conditions

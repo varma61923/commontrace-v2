@@ -1942,12 +1942,13 @@ def build_server(root: str, *, allow_approval: bool = True):
         and `until` narrow what may be recalled. Turns the injection screen flags are
         withheld and listed under explain.withheld.
         `context_strategy=coverage-v1` prioritizes distinct query facets within
-        the same evidence budget; the default preserves existing ranking.
+        the same evidence budget; coverage-v2 also diversifies relevant sessions
+        and chronological span for history queries. The default preserves existing ranking.
         `adaptive_budget=true` treats `budget` as a floor and sizes it by the
         question's shape (summaries, orderings, counts and lists get up to 3x,
         capped at 12000); explain.budget reports what was used and why.
         """
-        from commontrace.conversation import ConversationError, Options, Store, recall
+        from commontrace.conversation import ConversationError, Options, recall
 
         try:
             budget = max(50, min(int(budget), 32_000))
@@ -1959,7 +1960,9 @@ def build_server(root: str, *, allow_approval: bool = True):
                        adaptive_budget=bool(adaptive_budget), max_budget=max(budget, 12_000))
 
         def _run():
-            with Store(root, space, create=False) as store:
+            from commontrace.conversation.pool import READ_POOL
+
+            with READ_POOL.lease(root, space, query=question) as store:
                 return recall(store, question, now=now or None, options=opts).as_dict()
 
         try:

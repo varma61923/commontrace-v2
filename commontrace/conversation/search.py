@@ -11,6 +11,7 @@ import datetime as dt
 import heapq
 import json
 import math
+import os
 import re
 import threading
 import unicodedata
@@ -96,6 +97,8 @@ class _EmittedText:
 
     body: str
     speaker: str = ""
+    turn: int | None = None
+    kind: str = "turn"
 
 
 @dataclass(frozen=True)
@@ -119,8 +122,8 @@ def tokens(text: str) -> int:
 
 
 def _context_strategy(value: object) -> str:
-    if not isinstance(value, str) or value not in ("legacy", "coverage-v1"):
-        raise ConversationError("context_strategy must be legacy or coverage-v1")
+    if not isinstance(value, str) or value not in ("legacy", "coverage-v1", "coverage-v2"):
+        raise ConversationError("context_strategy must be legacy, coverage-v1 or coverage-v2")
     return value
 
 
@@ -134,8 +137,11 @@ _BROAD = re.compile(
 
 
 _ABOUT_ASSISTANT = re.compile(r"\b(?:you (?:said|told|suggested|recommended|mentioned|gave|listed|provided|wrote|"
-                              r"explained|shared|described|came up with)|your (?:suggestion|recommendation|answer|"
-                              r"advice|list)|our (?:previous |last |earlier )?(?:chat|conversation))\b", re.I)
+                              r"explained|shared|described|came up with)|your (?:suggestions?|recommendations?|"
+                              r"answers?|"
+                              r"advice|lists?)|(?:did|have) you (?:suggest|recommend|explain|provide|write)|"
+                              r"(?:the )?assistant (?:said|suggested|recommended|explained)|"
+                              r"our (?:previous |last |earlier )?(?:chat|conversation))\b", re.I)
 _SUMMARY = re.compile(r"\b(?:summar(?:y|ise|ize|ies)|overview|recap)\b", re.I)
 
 
@@ -161,6 +167,8 @@ _PREFERENCE = re.compile(
 
 _RELATIONAL = re.compile(r"\b(?:whose|(?:my|the) (?:person|friend|colleague|company|project|team) (?:who|that)|"
                          r"(?:friend|colleague|manager|partner|owner|author|founder)(?:'s| of)|"
+                         r"(?:company|organization|university|school|book|software|project) (?:that|which)|"
+                         r"(?:founded|created|built|owned|managed|acquired|written|authored|led|produced) (?:by|of)|"
                          r"(?:connected|related|associated) (?:to|with))\b", re.I)
 
 
@@ -616,9 +624,26 @@ _RECALL_CACHE: OrderedDict = OrderedDict()
 _RECALL_LOCK = threading.Lock()
 
 
+def _reset_after_fork() -> None:
+    global _RECALL_CACHE, _RECALL_LOCK
+    _RECALL_CACHE = OrderedDict()
+    _RECALL_LOCK = threading.Lock()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_after_fork)
+
+
+@dataclass(frozen=True, slots=True)
+class _CachedRecall:
+    result: Recall
+    size: int
+
+
 def _recall_size(result: Recall) -> int:
     # Conservative bound including the copied metadata and candidate lists.
     return len(result.context.encode("utf-8")) + len(result.question.encode("utf-8")) \
+        + len(json.dumps(result.explain, ensure_ascii=False).encode("utf-8")) \
         + 128 * (len(result.ranked) + len(result.turns)) + 4096
 
 
@@ -656,6 +681,11 @@ def _recall_key(store: Store, question: str, now, opts: Options,
     relative deltas against that moment.
     """
     try:
+        from commontrace.conversation import embed
+
+        resolved_model = embed.configured() if opts.embedder == "auto" else opts.embedder
+        model_binding = (resolved_model, bool(resolved_model and resolved_model != "none"
+                                              and embed.available_for(resolved_model)))
         stamp = store.read_stamp()
         # With an implicit clock an expiry can pass without a write. Do not
         # cache that view; explicit moments are stable and safe to cache.
@@ -671,7 +701,7 @@ def _recall_key(store: Store, question: str, now, opts: Options,
         opts.neighbour_hits, opts.neighbour_minutes, opts.bridge_turns, opts.excerpt_tokens,
         opts.window_boost, opts.entity_boost, opts.lexical_weight, opts.rerank, opts.recency_pool,
         opts.rerank_depth, opts.rerank_blend, opts.profile_facts, opts.instructions,
-        opts.broad, opts.recency_boost, opts.primary_hits, opts.embedder,
+        opts.broad, opts.recency_boost, opts.primary_hits, opts.embedder, model_binding,
         opts.summaries, opts.sessions, opts.speakers, opts.since, opts.until, opts.graph_hops,
         opts.context_strategy, opts.second_pass, tuple(extra_queries), stamp,
     )
@@ -750,22 +780,26 @@ def recall(store: Store, question: str, *, now=None, options: Options | None = N
                 hit = _RECALL_CACHE.get(key)
                 if hit is not None:
                     _RECALL_CACHE.move_to_end(key)
-                    handle.set(**_recall_telemetry(hit), cached=True)
-                    return copy.deepcopy(hit)
+                    handle.set(**_recall_telemetry(hit.result), cached=True)
+                    return copy.deepcopy(hit.result)
         result = _recall(store, question, now=now, options=options, extra_queries=extra_queries,
                          dense_candidates=dense_candidates)
         handle.set(**_recall_telemetry(result))
-        if key is not None and _recall_size(result) <= _RECALL_CACHE_BYTES:
+        cacheable = (key is not None and not result.explain.get("dense_fallback")
+                     and not result.explain.get("rerank_fallback")
+                     and not result.explain.get("rerank_stage", {}).get("error"))
+        cache_size = _recall_size(result) if cacheable else 0
+        if cacheable and cache_size <= _RECALL_CACHE_BYTES:
             with _RECALL_LOCK:
                 # Remove older revisions of this store before retaining another
                 # copy of potentially sensitive evidence.
                 for old in list(_RECALL_CACHE):
                     if old[0] is store.cache_identity and old[-1] != key[-1]:
                         del _RECALL_CACHE[old]
-                _RECALL_CACHE[key] = copy.deepcopy(result)
+                _RECALL_CACHE[key] = _CachedRecall(copy.deepcopy(result), cache_size)
                 _RECALL_CACHE.move_to_end(key)
                 while len(_RECALL_CACHE) > _RECALL_CACHE_MAX or sum(
-                        _recall_size(r) for r in _RECALL_CACHE.values()) > _RECALL_CACHE_BYTES:
+                        entry.size for entry in _RECALL_CACHE.values()) > _RECALL_CACHE_BYTES:
                     _RECALL_CACHE.popitem(last=False)
         return result
 
@@ -974,6 +1008,13 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
                           evidence_paths=explain.get("graph_paths", ()), emitted=emitted, selection=selection)
         found = assess(question, [part.body for part in emitted if part.body],
                        labels=[part.speaker for part in emitted if part.body and part.speaker])
+        if opts.context_strategy == "coverage-v2":
+            sources = store.turns(part.turn for part in emitted if part.turn is not None and part.body)
+            selection["evidence"] = [
+                {"id": f"T{part.turn}", "turn": part.turn, "kind": part.kind, "speaker": part.speaker,
+                 "session": sources[part.turn].session, "role": sources[part.turn].role,
+                 "at": sources[part.turn].at.isoformat() if sources[part.turn].at else None, "text": part.body}
+                for part in emitted if part.body and part.turn in sources]
         return packed, selection, found
 
     (context, used, n_tokens), selection, coverage = pack(ranked, withheld)
@@ -1134,6 +1175,9 @@ def _rerank_provider(store: Store, question: str, ranked: list[int], name: str, 
 _GLOBAL_RULE = re.compile(r"\b(?:format\w*|style|length|short|shorter|concise|brief|bullet\w*|list|language|units?|"
                           r"metric|imperial|code|snippets?|syntax|tone|formal|casual|words?|examples?|step|steps|"
                           r"explain\w*|answers?|responses?|repl(?:y|ies)|summar\w*|cite|sources?|emoji\w*)\b", re.I)
+_RULE_CONTEXT = re.compile(
+    r"\b(?:when(?:ever)? I (?:ask|request|need|discuss)|for questions?)\s+(?:about\s+)?(.+)", re.I)
+_RULE_FRAME = _stems("please show give tell explain include provide respond answer ask example common help")
 
 
 def _instruction_lines(store: Store, limit: int, question: str = "", *,
@@ -1149,7 +1193,7 @@ def _instruction_lines(store: Store, limit: int, question: str = "", *,
         store.db.execute("SELECT COUNT(DISTINCT speaker) FROM turns").fetchone()[0] <= 1
     if not addressed:
         return []
-    asked = _stems(question)
+    asked = _stems(question) - _RULE_FRAME
     picked, seen = [], set()
     for f in reversed(facts if facts is not None else store.facts(["instruction"])):
         if f["kind"] != "instruction":
@@ -1159,6 +1203,9 @@ def _instruction_lines(store: Store, limit: int, question: str = "", *,
             continue
         seen.add(key)
         overlap = len(asked & _stems(f["statement"])) + (1 if _GLOBAL_RULE.search(f["statement"]) else 0)
+        condition = _RULE_CONTEXT.search(f["statement"])
+        if condition:
+            overlap += 4 * len(asked & _stems(condition.group(1)))
         picked.append((overlap, f))
     picked.sort(key=lambda x: -x[0])  # most relevant first; newest first among equals
     out = []
@@ -1167,7 +1214,7 @@ def _instruction_lines(store: Store, limit: int, question: str = "", *,
         item = (f"- {day}{f['statement']}", f["turn"])
         out.append(item)
         if emissions is not None:
-            emissions[item] = _EmittedText(f["statement"])
+            emissions[item] = _EmittedText(f["statement"], turn=f["turn"], kind="instruction")
     return out
 
 
@@ -1207,7 +1254,7 @@ def _profile_lines(store: Store, question: str, limit: int, *,
         item = (f"- {day}{owner}: {f['statement']}", f["turn"])
         out.append(item)
         if emissions is not None:
-            emissions[item] = _EmittedText(f["statement"], owner)
+            emissions[item] = _EmittedText(f["statement"], owner, f["turn"], "profile")
         if len(out) >= limit:
             break
     return out
@@ -1238,9 +1285,13 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
     """Fill the budget best-first, each hit with its neighbours, then render by time.
     A turn the injection screen flags is never shown; its id goes to `withheld`."""
     strategy = _context_strategy(opts.context_strategy)
+    from commontrace.conversation.context_selection import history_question
+
+    history_mode = strategy == "coverage-v2" and history_question(question)
     if selection is not None:
         selection.clear()
         selection["strategy"] = strategy
+        selection["mode"] = "history" if history_mode else "detail"
     withheld = [] if withheld is None else withheld
     if emitted is not None:
         emitted.clear()
@@ -1299,6 +1350,8 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
         return cost
 
     broad = is_broad(question) if opts.broad is None else opts.broad
+    if history_mode and opts.broad is None:
+        broad = True
     cap = opts.excerpt_tokens or (max(60, min(120, budget // 30)) if broad else max(200, budget // 5))
     summary = broad and bool(_SUMMARY.search(question or ""))
     if summary and not opts.excerpt_tokens:
@@ -1385,8 +1438,9 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
             sess = t.session if t else str(tid)
             session_to_tids[sess].append(tid)
         for sess in session_to_tids:
+            preferred_role = "assistant" if _ABOUT_ASSISTANT.search(question) and not about_user_only else "user"
             session_to_tids[sess].sort(
-                key=lambda tid: (0 if all_head.get(tid) and all_head[tid].role in ("user", "") else 1)
+                key=lambda tid: (0 if all_head.get(tid) and all_head[tid].role in (preferred_role, "") else 1)
             )
         diversified = []
         max_depth = max((len(tids) for tids in session_to_tids.values()), default=0)
@@ -1401,13 +1455,14 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
         stream += [t for t in raised if t not in listed]
 
     priority_quota = 0
-    if strategy == "coverage-v1":
+    if strategy == "coverage-v1" or history_mode:
         from commontrace.conversation.context_selection import (
             MAX_CANDIDATES,
             MAX_PASSAGE_CHARS,
             MAX_TOKEN_COST,
             Candidate,
             prioritize,
+            prioritize_history,
         )
 
         candidates: list[Candidate] = []
@@ -1430,10 +1485,11 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
             if sum(map(len, passages)) > MAX_PASSAGE_CHARS or cost > MAX_TOKEN_COST:
                 skipped_oversized += 1
                 continue
-            candidates.append(Candidate(tid, passages, max(1, cost)))
+            candidates.append(Candidate(tid, passages, max(1, cost), evidence[tid].session, evidence[tid].at))
         try:
             anchor_count = opts.primary_hits if opts.primary_hits is not None else 3
-            plan = prioritize(question, candidates, anchor_count=min(MAX_CANDIDATES, max(0, anchor_count)))
+            selector = prioritize_history if strategy == "coverage-v2" else prioritize
+            plan = selector(question, candidates, anchor_count=min(MAX_CANDIDATES, max(0, anchor_count)))
         except ValueError as exc:
             raise ConversationError(str(exc)) from exc
         planned = set(plan.order)
@@ -1565,7 +1621,7 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
                 lines.append("…")
             lines.append(line_of(displayed_turn))
             delivered.append(_EmittedText(line_of(displayed_turn).removeprefix(displayed_turn.speaker + ": "),
-                                          displayed_turn.speaker))
+                                          displayed_turn.speaker, displayed_turn.id))
             previous = displayed_turn.idx
         blocks.append("\n".join(lines))
     context = profile_block + "\n\n".join(blocks)
@@ -1586,7 +1642,7 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
             body = snippet.removeprefix(prefix) if displayed_speaker else snippet
             if displayed_speaker and prefix.startswith(snippet):
                 body, displayed_speaker = "", ""
-            delivered = [_EmittedText(body, displayed_speaker)]
+            delivered = [_EmittedText(body, displayed_speaker, ranked[0])]
     if emitted is not None:
         emitted.extend(delivered)
     return context, list(chosen) + [t for t in dict.fromkeys(pinned) if t not in chosen], tokens(context)

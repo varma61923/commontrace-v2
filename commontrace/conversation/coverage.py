@@ -75,7 +75,11 @@ def assess(question: str, evidence: Sequence[str], *, labels: Iterable[str] = ()
     subjects = asked - _ATTRIBUTES - entities
     if not subjects:
         subjects = asked - _QUALIFIERS - entities
-    words = set().union(*(_terms(text) for text in evidence)) if evidence else set()
+    # Tokenize each delivered passage once, rather than once per query term.
+    # Keep the passage-level maximum: evidence from different passages must not
+    # silently turn this lexical heuristic into a claim of complete entailment.
+    passage_words = [_terms(text) for text in evidence]
+    words = set().union(*passage_words) if passage_words else set()
     missing = {word for word in subjects if not _covered(word, words)}
     if not asked or not evidence:
         reason = "no recalled evidence covers the question"
@@ -84,7 +88,7 @@ def assess(question: str, evidence: Sequence[str], *, labels: Iterable[str] = ()
         reason = "recalled entities do not establish the requested subject or identifier"
         return EvidenceCoverage(0.0, True, reason, 0, len(asked), tuple(sorted(subjects)), tuple(sorted(missing)))
     label_words = {word for label in labels for word in _terms(label)}
-    matched = max(sum(_covered(word, _terms(text) | label_words) for word in asked) for text in evidence)
+    matched = max(sum(_covered(word, body | label_words) for word in asked) for body in passage_words)
     value = round(matched / len(asked), 3)
     return EvidenceCoverage(value, value == 0.0,
                             "lexical evidence covers part of the question; answer correctness is unverified",

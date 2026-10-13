@@ -15,6 +15,8 @@ calibrated probability. The selector neither reads sources nor authorizes them.
 """
 from __future__ import annotations
 
+import datetime as dt
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -42,8 +44,14 @@ class Candidate:
     turn: int
     passages: tuple[str, ...]
     token_cost: int
+    session: str = ""
+    at: dt.datetime | None = None
 
     def __post_init__(self) -> None:
+        if not isinstance(self.session, str) or len(self.session) > 4096:
+            raise ValueError("candidate session must be a bounded string")
+        if self.at is not None and (not isinstance(self.at, dt.datetime) or self.at.tzinfo is not None):
+            raise ValueError("candidate time must be a naive canonical datetime")
         if isinstance(self.turn, bool) or not isinstance(self.turn, int) or self.turn < 1:
             raise ValueError("candidate turn must be a positive integer")
         if not isinstance(self.passages, tuple) or not 1 <= len(self.passages) <= MAX_PASSAGES \
@@ -65,12 +73,15 @@ class SelectionPlan:
     missing_facets: tuple[str, ...]
     omitted_facets: int
     quoted_tokens: int
+    strategy: str = "coverage-v1"
+    mode: str = "detail"
+    sessions: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, object]:
-        return {"strategy": "coverage-v1", "order": list(self.order), "priority": list(self.priority),
+        return {"strategy": self.strategy, "order": list(self.order), "priority": list(self.priority),
                 "facets": list(self.facets), "covered_facets": list(self.covered_facets),
                 "missing_facets": list(self.missing_facets), "omitted_facets": self.omitted_facets,
-                "quoted_tokens": self.quoted_tokens,
+                "quoted_tokens": self.quoted_tokens, "mode": self.mode, "sessions": list(self.sessions),
                 "meaning": "candidate excerpt lexical diversity; final emitted coverage is assessed separately"}
 
 
@@ -138,3 +149,66 @@ def prioritize(question: str, candidates: Sequence[Candidate], *, anchor_count: 
     return SelectionPlan(priority + tuple(candidates[index].turn for index in remaining), priority, facets,
                          tuple(sorted(covered)), tuple(word for word in facets if word not in covered), omitted,
                          sum(candidates[index].token_cost for index in chosen))
+
+
+_HISTORY = re.compile(
+    r"\b(?:summar\w*|recap|overview|timeline|chronolog\w*|sequence|order|over time|"
+    r"across .*?(?:sessions?|conversations?|chats?)|all (?:the )?(?:events?|changes?|times?|steps?)|"
+    r"how .*?chang\w*|before and after|used to|earlier .*?(?:now|later)|"
+    r"contradict\w*|conflict\w*|compare|comparison)\b", re.I)
+
+
+def history_question(question: str) -> bool:
+    """Query-shape hint only; no benchmark labels or assumed answers."""
+    return bool(_HISTORY.search(question[:MAX_QUESTION_CHARS]))
+
+
+def prioritize_history(question: str, candidates: Sequence[Candidate], *, anchor_count: int = 1) -> SelectionPlan:
+    """Retain relevant session/time diversity after lexical facets are satisfied.
+
+    Narrow queries use the existing facet strategy. History queries reserve one
+    ranked anchor, then reward novel facets, sessions and chronological span.
+    A history reward requires a lexical match in the rendered source body;
+    unrelated sessions never earn diversity solely from their metadata.
+    This is candidate ordering only: normal atomic evidence and budget admission
+    remain authoritative. No facts are inferred, merged or superseded here.
+    """
+    base = prioritize(question, candidates, anchor_count=anchor_count)
+    if not history_question(question) or not candidates or not base.facets:
+        from dataclasses import replace
+
+        return replace(base, strategy="coverage-v2")
+    support = [_supported(base.facets, row.passages) for row in candidates]
+    chosen = list(range(min(1, anchor_count, len(candidates))))
+    remaining = list(range(len(chosen), len(candidates)))
+    covered = {facet for index in chosen for facet in support[index]}
+    sessions = {candidates[index].session for index in chosen if candidates[index].session}
+    dates = [moment for index in chosen if (moment := candidates[index].at) is not None]
+    while remaining:
+        lo, hi = (min(dates), max(dates)) if dates else (None, None)
+        best: int | None = None
+        best_gain = 0
+        for index in remaining:
+            row = candidates[index]
+            if not support[index]:
+                continue
+            gain = 4 * len(support[index] - covered)
+            gain += 2 * bool(row.session and row.session not in sessions)
+            gain += bool(row.at is not None and (lo is None or hi is None or row.at < lo or row.at > hi))
+            if gain and (best is None or gain * candidates[best].token_cost > best_gain * row.token_cost):
+                best, best_gain = index, gain
+        if best is None:
+            break
+        chosen.append(best)
+        row = candidates[best]
+        covered.update(support[best])
+        if row.session:
+            sessions.add(row.session)
+        if row.at is not None:
+            dates.append(row.at)
+        remaining.remove(best)
+    priority = tuple(candidates[index].turn for index in chosen)
+    return SelectionPlan(priority + tuple(candidates[index].turn for index in remaining), priority, base.facets,
+                         tuple(sorted(covered)), tuple(word for word in base.facets if word not in covered),
+                         base.omitted_facets, sum(candidates[index].token_cost for index in chosen),
+                         "coverage-v2", "history", tuple(sorted(sessions)))

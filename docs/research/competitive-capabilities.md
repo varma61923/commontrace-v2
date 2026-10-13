@@ -118,6 +118,13 @@ answer-accuracy benchmark or universal performance comparison is claimed.
 
 ## Bounded remaining work
 
+The production follow-up adds bounded read-only connection reuse, snapshot/cache
+hardening, cited answers, retained directive relevance and chronological evidence
+selection. [Measured behavior and task limits](../production-retrieval.md) report
+both repeated and varied HTTP requests. These are original implementations informed
+by the competitors' connection reuse, batched retrieval and evidence-preserving
+temporal designs; they do not copy competitor source or establish universal parity.
+
 1. **Make comparisons executable before declaring a winner.** Pin candidate
    revisions, use identical source datasets, gold labels, context budgets and
    provider settings, and record answer correctness, abstention, p50/p95 latency
