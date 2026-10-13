@@ -520,35 +520,35 @@ class TestLessonSlugNormalizationAndIndexing:
 
 
 class TestCorruptedIndexDiagnostics:
-    def test_query_handles_empty_zero_byte_index(self, tmp_path, monkeypatch, capsys, attention_modules):
+    def test_query_handles_empty_zero_byte_index(self, tmp_path, monkeypatch, capfd, attention_modules):
         _, query = attention_modules
         idx = tmp_path / "index.npz"
         idx.write_bytes(b"")
         monkeypatch.setattr(query, "INDEX_PATH", str(idx))
 
-        capsys.readouterr()
+        capfd.readouterr()
         with patch("sys.argv", ["query.py", "test query"]):
             rc = query.main()
         assert rc == 1
-        err = capsys.readouterr().err
+        err = capfd.readouterr().err
         assert "is corrupted" in err
         assert "rebuild the index" in err
 
-    def test_query_handles_corrupted_garbage_index(self, tmp_path, monkeypatch, capsys, attention_modules):
+    def test_query_handles_corrupted_garbage_index(self, tmp_path, monkeypatch, capfd, attention_modules):
         _, query = attention_modules
         idx = tmp_path / "index.npz"
         idx.write_bytes(b"THIS IS NOT A VALID NPZ OR ZIP FILE AT ALL 1234567890")
         monkeypatch.setattr(query, "INDEX_PATH", str(idx))
 
-        capsys.readouterr()
+        capfd.readouterr()
         with patch("sys.argv", ["query.py", "test query"]):
             rc = query.main()
         assert rc == 1
-        err = capsys.readouterr().err
+        err = capfd.readouterr().err
         assert "is corrupted" in err
         assert "rebuild the index" in err
 
-    def test_query_handles_truncated_zip_index(self, tmp_path, monkeypatch, capsys, attention_modules):
+    def test_query_handles_truncated_zip_index(self, tmp_path, monkeypatch, capfd, attention_modules):
         _, query = attention_modules
         idx = tmp_path / "index.npz"
         np.savez(str(idx), slugs=np.array(["test"]), embeddings=np.zeros((1, 4)))
@@ -556,9 +556,9 @@ class TestCorruptedIndexDiagnostics:
         idx.write_bytes(raw[: len(raw) // 2])
         monkeypatch.setattr(query, "INDEX_PATH", str(idx))
 
-        capsys.readouterr()
+        capfd.readouterr()
         with patch("sys.argv", ["query.py", "test query"]):
             rc = query.main()
         assert rc == 1
-        err = capsys.readouterr().err
+        err = capfd.readouterr().err
         assert "is corrupted" in err

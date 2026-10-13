@@ -308,8 +308,9 @@ def load_index(index_path):
             fast_importances = load_importances_from_index(data)
     except (zipfile.BadZipFile, OSError, ValueError, EOFError, KeyError) as exc:
         return Ranked(1, stderr=[
-            f"[ERR] Index file at {index_path} is corrupted ({exc}). "
-            "Please rebuild the index: python memory/attention/build_index.py --force",
+            f"[ERR] Index file at {index_path} is corrupted. "
+            "Please rebuild the index: python memory/attention/build_index.py --force. "
+            f"Details: {exc}",
         ])
     return (model_name, embeddings, slugs, agent_types, n_lessons, fast_importances)
 
