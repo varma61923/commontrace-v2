@@ -83,6 +83,19 @@ def test_import_is_safe_without_optional_agent_framework(monkeypatch):
 def test_context_provider_uses_scoped_one_call_lifecycle_and_isolates_users(
     monkeypatch, request, tmp_path
 ):
+    from commontrace.hook_kit import HookKit
+
+    original_handle = HookKit.handle
+
+    def lifecycle_handle(kit, event, payload, **kwargs):
+        # This verifies scoped delivery, not the native 50 ms response deadline.
+        # Shared runners can exhaust that deadline during cold SQLite setup.
+        # Deadline fail-open behavior has separate HookKit/bridge contracts.
+        kwargs.setdefault("deadline_ms", 10_000)
+        return original_handle(kit, event, payload, **kwargs)
+
+    monkeypatch.setattr(HookKit, "handle", lifecycle_handle)
+
     async def _test():
         module = _install_fake_agent_framework(monkeypatch, request)
         memory = MemoryClient(str(tmp_path), agent_id="af-agent", context={"tenant": "acme"})
