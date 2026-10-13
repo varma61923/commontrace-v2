@@ -298,13 +298,14 @@ def test_invalid_input_fails_closed_without_creating_capture(tmp_path, payload):
         assert db.execute("SELECT COUNT(*) FROM captures").fetchone()[0] == 0
 
 
-def test_unrelated_directory_and_pythonpath_cannot_supply_transport_imports(tmp_path):
+def test_unrelated_directory_and_pythonpath_cannot_supply_transport_imports(tmp_path, tmp_path_factory):
     unrelated = tmp_path / "unrelated directory"
     unrelated.mkdir()
     for name in ("json.py", "socket.py", "argparse.py", "sitecustomize.py"):
         (unrelated / name).write_text('raise RuntimeError("foreign import")\n')
-    root = tmp_path / "store with spaces"
-    root.mkdir()
+    # Keep the Unix socket path below AF_UNIX's platform limit while retaining
+    # spaces in the store path. The test's long name makes tmp_path too deep.
+    root = tmp_path_factory.mktemp("store with spaces")
 
     def handler(client):
         frame(client)

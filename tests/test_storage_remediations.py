@@ -565,7 +565,7 @@ class TestEmptyActiveLessonStoreBuildsAnEmptyIndex:
             str(index_file),
             slugs=np.array([], dtype=str),
             embeddings=np.zeros((0, 768), dtype=np.float32),
-            model_name=np.array(query._TRUSTED_MODEL_NAME),
+            model_name=np.array(query.DEFAULT_MODEL_NAME),
             encoded_field=np.array("x"),
             timestamp=np.array("2026-01-01T00:00:00+00:00"),
             n_lessons=np.array(0),
@@ -620,7 +620,7 @@ class TestCorruptedIndexHandling:
     )
     @pytest.mark.skipif(not HAS_NUMPY, reason="numpy not installed")
     def test_query_main_exits_cleanly_on_corrupted_index(
-        self, tmp_path, monkeypatch, capsys, corrupted_content
+        self, tmp_path, monkeypatch, capfd, corrupted_content
     ):
         _ensure_mock_st(monkeypatch)
         sys.path.insert(
@@ -639,14 +639,14 @@ class TestCorruptedIndexHandling:
         rc = query.main()
         assert rc == 1
 
-        captured = capsys.readouterr()
+        captured = capfd.readouterr()
         assert "[ERR] Index file at" in captured.err
         assert "is corrupted" in captured.err
         assert "build_index.py --force" in captured.err
 
     @pytest.mark.skipif(not HAS_NUMPY, reason="numpy not installed")
     def test_query_main_handles_missing_keys_in_npz_archive(
-        self, tmp_path, monkeypatch, capsys
+        self, tmp_path, monkeypatch, capfd
     ):
         _ensure_mock_st(monkeypatch)
         sys.path.insert(
@@ -666,7 +666,7 @@ class TestCorruptedIndexHandling:
         rc = query.main()
         assert rc == 1
 
-        captured = capsys.readouterr()
+        captured = capfd.readouterr()
         assert "[ERR] Index file at" in captured.err
         assert "is corrupted" in captured.err
         assert "build_index.py --force" in captured.err
