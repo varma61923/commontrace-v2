@@ -17,3 +17,14 @@ def test_the_benchmark_detects_a_leak_when_scoping_is_broken(monkeypatch):
     monkeypatch.setattr(memory_control, "matches", lambda labels, context, governed=True: True)
     report = govbench.run()
     assert report["before_forgetting"]["leaks"] > 0
+
+
+def test_governance_utility_is_independent_of_random_holdout(monkeypatch):
+    from commontrace import experiment
+
+    # Every nonzero holdout rate would withhold all candidates on this draw.
+    monkeypatch.setattr(experiment, "_uniform_from", lambda *args: 0.0)
+    report = govbench.run()
+    assert report["before_forgetting"]["utility"] == 1.0
+    assert report["after_forgetting"]["utility"] == 1.0
+    assert report["after_forgetting"]["forgotten_delivered"] == 0

@@ -90,7 +90,9 @@ def run() -> dict:
 
     root = tempfile.mkdtemp(prefix="govbench-")
     try:
-        holdout_io.configure(root, rate=0.0001, salt="govbench")
+        # Governance utility requires complete entitled recall. Even a tiny
+        # randomized holdout can omit a fixture and make this benchmark flaky.
+        holdout_io.configure(root, rate=0.0, salt="govbench")
         owner = "o" * 40
         gw = gateway_mod.Gateway(root, token=owner)
         operator = _Client(gw, owner)
