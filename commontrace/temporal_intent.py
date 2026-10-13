@@ -18,7 +18,9 @@ _RELATIVE = (("yesterday", -1), ("last week", -7), ("tomorrow", 1), ("next week"
 def resolve(query: str, *, now: datetime | None = None) -> dict:
     reference = parse_moment(now or datetime.now(timezone.utc))
     text = query.casefold()
-    explicit = {parse_moment(match.group(1).upper()) for match in _EXPLICIT.finditer(text)}
+    # Python 3.10 needs a colon in UTC offsets; 3.11+ also accepts +HHMM.
+    explicit = {parse_moment(re.sub(r"([+-]\d{2})(\d{2})$", r"\1:\2", match.group(1).upper()))
+                for match in _EXPLICIT.finditer(text)}
     if len(explicit) > 1:
         return {"mode": "unspecified", "as_of": None}
     if explicit:
