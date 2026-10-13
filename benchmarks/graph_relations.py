@@ -40,8 +40,8 @@ def measure(*, edges: int = 20_000, trials: int = 5) -> dict:
         raise ValueError("trials must be an integer in 1..100")
     with tempfile.TemporaryDirectory(prefix="commontrace-typed-graph-") as root:
         nodes = {identity: graph.GraphNode(identity, "concept", identity, {}, BASE, BASE)
-                 for identity in ("hub", "peer")}
-        records = [graph.GraphEdge("hub", "peer", "resolves" if i < 5 else "uses", 1,
+                 for identity in ("hub", *(f"peer-{i}" for i in range(edges)))}
+        records = [graph.GraphEdge("hub", f"peer-{i}", "resolves" if i < 5 else "uses", 1,
                                   BASE, "2024-06-01T00:00:00Z" if i == 0 else None,
                                   None, created_at=BASE) for i in range(edges)]
         graph.save_nodes(root, nodes)
@@ -68,6 +68,8 @@ def measure(*, edges: int = 20_000, trials: int = 5) -> dict:
                     raise AssertionError("warm lookup differs from the exact scan oracle")
         scan_ms, indexed_ms = statistics.median(scan_times), statistics.median(indexed_times)
         return {"workload": "warm-high-degree-rare-relation", "edges": edges, "trials": trials,
+                "distinct_neighbors": edges,
+                "unique_edge_keys": len({(edge.source, edge.target, edge.relation) for edge in records}),
                 "matching_edges": len(expected), "equivalent": True, "oracle_cold_ms": oracle_cold_ms,
                 "typed_index_build_ms": typed_index_ms, "scan_median_ms": scan_ms,
                 "indexed_median_ms": indexed_ms, "speedup": scan_ms / max(indexed_ms, 1e-9),

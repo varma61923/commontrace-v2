@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   repeatable relation filters; `graph path` returns bounded unweighted shortest
   paths with original edge evidence and reverse-hop direction. Exhausted work
   budgets return an explicit inconclusive status. Lazy typed adjacency preserves
-  exact results and measured 349.4× warm speedup on the paired 20K-edge
+  exact results and measured 388.7× warm speedup on the paired 20K-edge
   rare-relation fixture; the new CI gate checks this workload independently.
 - **Pinned temporal retrieval and defensive conflict decisions.** Complete ISO
   timestamp hints preserve offsets and precision; conflicting hints remain

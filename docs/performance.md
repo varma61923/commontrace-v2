@@ -12,15 +12,17 @@ python -m benchmarks.graph_relations --edges 20000 --trials 5 --check
 ```
 
 This paired fixture compares warm local neighbor lookup with the previous exact
-incident-edge scan on a high-degree node. Of 20,000 edges, five have the requested
-relation; one has expired at the query instant. Both algorithms return the same
+incident-edge scan on a high-degree node with 20,000 distinct neighbors and
+unique source/target/relation keys, as normal canonical writes require. Of 20,000
+edges, five have the requested relation; one has a closed validity window at
+the query instant. Both algorithms return the same
 four rows, in journal order. Trials alternate execution order and compare every
 result to the scan oracle. CI requires equality and at least 10× warm speedup on
 this fixture.
 
-On this workspace, five trials measured median scan latency of 18.244 ms and
-indexed lookup of 0.0522 ms: **349.4×**. Initial canonical loading plus the scan
-took 124.123 ms; building the typed index on the loaded generation took 5.421 ms.
+On this workspace, five trials measured median scan latency of 18.173 ms and
+indexed lookup of 0.0467 ms: **388.7×**. Initial canonical loading plus the scan
+took 227.556 ms; building the typed index on the loaded generation took 33.079 ms.
 These timings are machine-specific. The lazy relation index costs O(edges) time
 and additional O(edges) memory on first use and is invalidated with the source
 generation. Unfiltered queries retain the existing incident lists. The gain
