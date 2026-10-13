@@ -53,7 +53,11 @@ def test_always_rules_survive_large_candidate_store(tmp_path):
             scope={"agent": "agent"},
         )
     )
-    result = kit.handle("UserPromptSubmit", {"session_id": "s", "prompt": "new unrelated question"})
+    # This checks candidate-store selection, not the production 50 ms deadline.
+    # Coverage instrumentation and shared CI runners can exceed that deadline.
+    result = kit.handle(
+        "UserPromptSubmit", {"session_id": "s", "prompt": "new unrelated question"}, deadline_ms=10_000
+    )
     assert "zz-owner-rule" in result["injected"]
 
 
