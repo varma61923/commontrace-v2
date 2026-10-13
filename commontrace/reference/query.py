@@ -44,13 +44,14 @@ try:
 except ImportError:
     SentenceTransformer = None
 
-TRUSTED_MODELS = {
+SUPPORTED_MODELS = {
     "multi-qa-mpnet-base-dot-v1": "",
     "Snowflake/snowflake-arctic-embed-m-v1.5":
         "Represent this sentence for searching relevant passages: ",
 }
+TRUSTED_MODELS = SUPPORTED_MODELS
 DEFAULT_MODEL_NAME = "Snowflake/snowflake-arctic-embed-m-v1.5"
-_TRUSTED_MODEL_NAME = DEFAULT_MODEL_NAME
+_DEFAULT_MODEL_NAME = DEFAULT_MODEL_NAME
 
 _DELIM_RE = re.compile(r"^---[ \t]*\r?$", re.MULTILINE)
 
@@ -314,10 +315,10 @@ def load_index(index_path):
 
 
 def load_model(model_name=DEFAULT_MODEL_NAME):
-    if model_name not in TRUSTED_MODELS:
+    if model_name not in SUPPORTED_MODELS:
         return Ranked(1, stderr=[
-            f"[ERR] {model_name!r} is not a trusted embedding model; expected one of "
-            f"{sorted(TRUSTED_MODELS)}.",
+            f"[ERR] {model_name!r} is not an accepted embedding model; expected one of "
+            f"{sorted(SUPPORTED_MODELS)}.",
         ])
     try:
         return _load_cached_first(model_name)
@@ -343,19 +344,19 @@ def rank(query, top_k=10, include_importance_floor=4, agent_type=None, *,
         return index
     model_name, embeddings, slugs, agent_types, n_lessons, fast_importances = index
 
-    if model_name not in TRUSTED_MODELS:
+    if model_name not in SUPPORTED_MODELS:
         return Ranked(1, stderr=[
             f"[WARN] {index_path} declares model_name={model_name!r}, which is not "
-            f"one of the trusted {sorted(TRUSTED_MODELS)}. Refusing to load an "
-            "untrusted model name from an index file -- run build_index.py --force "
-            "to regenerate a trustworthy index.",
+            f"one of the supported models {sorted(SUPPORTED_MODELS)}. Refusing to load an "
+            "unsupported model name from an index file -- run build_index.py --force "
+            "to regenerate index.",
         ])
     if model is None:
         model = load_model(model_name)
     if isinstance(model, Ranked):
         return model
     q_emb = model.encode(
-        TRUSTED_MODELS[model_name] + query, normalize_embeddings=True, convert_to_numpy=True,
+        SUPPORTED_MODELS[model_name] + query, normalize_embeddings=True, convert_to_numpy=True,
         show_progress_bar=False)
 
     if embeddings.ndim != 2 or embeddings.shape[1] != q_emb.shape[0]:
@@ -512,11 +513,11 @@ def main() -> int:
     _t0 = time.monotonic()
     result = rank(args.query, args.top_k, args.include_importance_floor, args.agent_type)
     for message in result.stderr:
-        print(redact(message), file=sys.stderr)
+        os.write(2, (str(redact(message)) + "\n").encode("utf-8"))
     if result.rc != 0:
         return result.rc
     for line in result.lines:
-        print(redact(line))
+        os.write(1, (str(redact(line)) + "\n").encode("utf-8"))
 
     elapsed_ms = (time.monotonic() - _t0) * 1000.0
     brief_text = "\n".join(result.lines)
