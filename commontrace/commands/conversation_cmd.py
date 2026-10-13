@@ -259,7 +259,7 @@ def run_index(args) -> int:
         tag = args.model or embed.configured()
         if not tag or not embed.available_for(tag):
             raise ConversationError(
-                "semantic indexing requires an enabled embedding provider and its optional dependency"
+                "semantic indexing requires an enabled embedder/embedding provider and its optional dependency"
             )
         with _store(args, create=False) as store:
             encoder = embed.Embedder(store.root, tag)

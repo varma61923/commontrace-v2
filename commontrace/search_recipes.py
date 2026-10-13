@@ -186,7 +186,7 @@ def search(root: str, query: str, *, recipe: str = "balanced", scope: str = "", 
             raise ValueError("dense cosine scores must be finite in [-1, 1]")
         dense = max(0.0, dense)
         entity = max(entity_memories.get(fact.id, 0), entity_memories.get(f"memory:{fact.id}", 0))
-        if not lexical and not dense and not entity:
+        if not lexical and dense < 0.6 and not entity:
             continue
         age = max(0.0, (reference - lesson_cache.parse_moment(fact.valid_from)).total_seconds() / 86400)
         from commontrace.decay import perishability

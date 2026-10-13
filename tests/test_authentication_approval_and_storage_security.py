@@ -344,7 +344,7 @@ class TestTypeScriptSdkHardening:
         console.log("TS_SDK_HARDENING_OK");
         """
         proc = subprocess.run(
-            ["node", "-e", node_script],
+            ["node", "--input-type=module", "-e", node_script],
             cwd=str(REPO_ROOT),
             capture_output=True,
             text=True,

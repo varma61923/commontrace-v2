@@ -138,12 +138,14 @@ def test_equals_options_and_legacy_python_flag_preserve_delivery(tmp_path):
     assert json.loads(result.stdout) == {
         "hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": "delivered"}
     }
+    req_payload = observed["request"].pop("payload", {})
+    assert req_payload.get("session_id") == "s" and req_payload.get("prompt") == "code"
+    assert len(req_payload.get("event_id", "")) == 32
     assert observed["request"] == {
         "agent": "agent",
         "scope": {"agent": "agent"},
         "event": "UserPromptSubmit",
         "format": "claude",
-        "payload": {"session_id": "s", "prompt": "code"},
     }
     assert observed["receipt"] == {"operation": "ack", "delivery_token": "receipt"}
     assert not result.stderr
@@ -188,9 +190,11 @@ def test_all_formats_preserve_protocol_and_receipt(tmp_path, agent):
     assert (result.stdout.rstrip("\n") if isinstance(expected, str) else json.loads(result.stdout)) == expected
     assert not result.stderr
     assert "opaque-receipt" not in result.stdout
+    req_payload = observed["request"].pop("payload", {})
+    assert req_payload.get("session_id") == "s" and req_payload.get("prompt") == "code"
+    assert len(req_payload.get("event_id", "")) == 32
     assert observed["request"] == {"agent": "agent", "scope": {"agent": "agent"},
-                                   "event": "UserPromptSubmit", "format": agent,
-                                   "payload": {"session_id": "s", "prompt": "code"}}
+                                   "event": "UserPromptSubmit", "format": agent}
     # Windsurf stdout is capture-only UI output, so it cannot attest context delivery.
     assert (json.loads(observed["receipt"]) if observed["receipt"] else None) == (
         None if agent == "windsurf" else {"operation": "ack", "delivery_token": "opaque-receipt"}

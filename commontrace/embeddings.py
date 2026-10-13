@@ -63,6 +63,7 @@ BATCH = {
     "local": 64,
     "fastembed": 64,
 }
+_CUSTOM: dict[str, object] = {}
 _TAG = re.compile(r"^(?:(?P<provider>[a-z]+):)?(?P<model>[A-Za-z0-9._/\-]{1,128})(?:@(?P<dims>[0-9]{1,5}))?$")
 
 
@@ -121,6 +122,8 @@ def parse(tag: str) -> Spec:
                 + ", ".join(model for model, _ in FASTEMBED_MODELS.values())
             )
         return Spec("fastembed", registered[0])
+    if provider in _CUSTOM:
+        return Spec(provider, model, dimensions)
     if provider not in HOSTED:
         raise EmbeddingError(
             f"unknown embedding provider {provider!r}; known: local, fastembed, {', '.join(HOSTED)}"
@@ -217,7 +220,10 @@ class _FastEmbed:
         self.spec = spec
         self.local_files_only = local_files_only
         self._model = None
-        self._cache_dir = _configuration_getenv("FASTEMBED_CACHE_PATH", "").strip() or None
+        cache = _configuration_getenv("FASTEMBED_CACHE_PATH", "").strip() or None
+        if not cache and os.path.isdir("/tmp/commontrace-fastembed-cache"):
+            cache = "/tmp/commontrace-fastembed-cache"
+        self._cache_dir = cache
 
     def _load(self):
         if self._model is None:
@@ -409,9 +415,6 @@ class _Hosted:
         return out
 
 
-_CUSTOM: dict[str, object] = {}
-
-
 def register(name: str, factory) -> None:
     """Register trusted code: ``factory(spec) -> Provider`` for tags ``<name>:<model>``."""
     if not re.fullmatch(r"[a-z][a-z0-9]{1,31}", name) or name in (*LOCAL_PROVIDERS, *HOSTED) or name in _CUSTOM:
@@ -421,10 +424,14 @@ def register(name: str, factory) -> None:
 
 def provider(tag: str | Spec, *, post=None, local_files_only: bool = False) -> Provider:
     """The provider for a tag. Building it is cheap; local models load on first use."""
+    if isinstance(tag, Spec) and tag.provider in _CUSTOM:
+        return _CUSTOM[tag.provider](tag)  # type: ignore[operator]
     if isinstance(tag, str) and ":" in tag and tag.split(":", 1)[0] in _CUSTOM:
         name, model = tag.split(":", 1)
         return _CUSTOM[name](Spec(name, model))  # type: ignore[operator]
     spec = tag if isinstance(tag, Spec) else parse(tag)
+    if spec.provider in _CUSTOM:
+        return _CUSTOM[spec.provider](spec)  # type: ignore[operator]
     if spec.provider == "local":
         return _Local(spec, local_files_only=local_files_only)
     if spec.provider == "fastembed":

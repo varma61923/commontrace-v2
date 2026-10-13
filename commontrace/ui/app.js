@@ -1262,6 +1262,7 @@
       return generation === refreshGeneration && token === requestedToken && location.hash === requestedHash;
     }
     if (stateToken !== token) clearCredentialState();
+    // CodeQL false positive (Alert #1): client-side UI gate; gateway enforces 401 on every route.
     if (!token) { main.textContent = ""; main.appendChild(viewAuth()); setConn("bad", "Not connected"); return Promise.resolve(); }
     var route = currentRoute().id;
     var wants = ["status"];

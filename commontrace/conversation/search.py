@@ -946,10 +946,15 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
     if rerank == "auto":
         rerank = "cross-encoder" if embedder is not None else None
     if rerank and ranked:
-        ranked = _rerank(
-            store, question, ranked, rerank, opts.rerank_depth, explain, opts.rerank_blend,
-            local_files_only=auto_rerank,
-        )
+        try:
+            ranked = _rerank(
+                store, question, ranked, rerank, opts.rerank_depth, explain, opts.rerank_blend,
+                local_files_only=auto_rerank,
+            )
+        except TypeError:
+            ranked = _rerank(
+                store, question, ranked, rerank, opts.rerank_depth, explain, opts.rerank_blend,
+            )
         explain["rerank"] = rerank
     withheld: list[int] = []
     # Relative deltas are shown only when the caller supplies a reference
