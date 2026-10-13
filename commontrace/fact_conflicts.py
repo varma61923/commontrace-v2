@@ -127,23 +127,28 @@ def record(root: str, conflicts: list[Conflict]) -> None:
 
 def pending(root: str) -> list[Conflict]:
     """Recorded contradictions whose older fact is still active (newest first)."""
-    from commontrace import hierarchical
+    from commontrace import _jsonl, hierarchical
 
     path = _queue_path(root)
     if not os.path.isfile(path):
         return []
     facts = hierarchical.load_facts(root)
     seen, out = set(), []
-    with open(path, encoding="utf-8") as fh:
-        rows = [json.loads(line) for line in fh if line.strip()]
+    rows = _jsonl.read_rows(path)
     for row in reversed(rows):
-        key = (row["older"], row["newer"])
+        try:
+            conflict = Conflict(**row)
+        except TypeError:
+            continue
+        if not isinstance(conflict.older, str) or not isinstance(conflict.newer, str):
+            continue
+        key = (conflict.older, conflict.newer)
         if key in seen:
             continue
         seen.add(key)
-        older, newer = facts.get(row["older"]), facts.get(row["newer"])
+        older, newer = facts.get(conflict.older), facts.get(conflict.newer)
         if older is not None and newer is not None and older.status == "active" and newer.status == "active":
-            out.append(Conflict(**row))
+            out.append(conflict)
     return out
 
 
@@ -165,14 +170,15 @@ def judge_joint(newer: str, candidates: list, complete=None) -> dict[str, set[st
                 + __import__("json").dumps({"new": newer, "existing": offered})
             )
         payload = llm._extract_json_object(text)
-        result = {
-            key: {
-                identity
-                for identity in payload.get(key, payload.get("replaces", []) if key == "contradictions" else [])
-                if isinstance(identity, str) and identity in offered
-            }
-            for key in empty
-        }
+        result = {}
+        for key in empty:
+            identities = payload.get(key, payload.get("replaces", []) if key == "contradictions" else [])
+            # Strings and object keys are iterable too. Neither is a validated
+            # decision, and malformed output must never close a fact's window.
+            if (not isinstance(identities, list) or len(identities) > 15
+                    or any(not isinstance(identity, str) for identity in identities)):
+                return empty
+            result[key] = {identity for identity in identities if identity in offered}
         if result["duplicates"] & result["contradictions"]:
             return empty
         return result

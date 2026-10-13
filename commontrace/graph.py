@@ -515,6 +515,15 @@ class _GraphFullIndex:
         return result
 
     @cached_property
+    def by_entity_relation(self) -> dict[tuple[str, str], list[int]]:
+        result: dict[tuple[str, str], list[int]] = {}
+        for position, edge in enumerate(self.edges):
+            result.setdefault((edge.source, edge.relation), []).append(position)
+            if edge.target != edge.source:
+                result.setdefault((edge.target, edge.relation), []).append(position)
+        return result
+
+    @cached_property
     def order_by_valid(self) -> list[int]:
         return sorted(range(len(self.edges)), key=lambda position: self.begins[position] or _MIN_MOMENT)
 
@@ -685,6 +694,26 @@ def _full_index(root: str) -> _GraphFullIndex:
     return index
 
 
+def _incident_positions(index: _GraphFullIndex, node_id: str, relations: set[str] | None) -> list[int]:
+    if relations is None:
+        return index.by_entity.get(node_id, [])
+    if not relations:
+        return []
+    if len(relations) == 1:
+        return index.by_entity_relation.get((node_id, next(iter(relations))), [])
+    return sorted(position for relation in relations
+                  for position in index.by_entity_relation.get((node_id, relation), []))
+
+
+def _relation_filter(relations: list[str] | None) -> set[str] | None:
+    if relations is None:
+        return None
+    if (not isinstance(relations, (list, tuple)) or len(relations) > 64
+            or any(not isinstance(value, str) or not 1 <= len(value) <= 128 for value in relations)):
+        raise ValueError("relations must contain at most 64 bounded relation names")
+    return set(relations)
+
+
 def get_neighbors(
     root: str,
     node_id: str,
@@ -692,16 +721,23 @@ def get_neighbors(
     relation: str | None = None,
     as_of: str | None = None,
     known_at: str | None = None,
+    *,
+    relations: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Nodes one edge away from *node_id*, with the connecting relation."""
     clean_id = _clean_id(node_id)
+    if direction not in ("in", "out", "both"):
+        raise ValueError("direction must be in, out or both")
+    selected = _relation_filter(relations)
+    if relation is not None:
+        selected = {relation} if selected is None else selected & {relation}
     index = _full_index(root)
     nodes = index.nodes
     moment = lesson_cache.parse_moment(as_of) if as_of else None
     known = lesson_cache.parse_moment(known_at) if known_at else None
     current_at = datetime.now(timezone.utc) if moment is None and known is None else None
     results: list[dict[str, Any]] = []
-    for position in index.by_entity.get(clean_id, []):
+    for position in _incident_positions(index, clean_id, selected):
         edge = index.edges[position]
         if not _is_active_edge(edge, moment, known, current_at=current_at):
             continue
@@ -758,8 +794,14 @@ def multi_hop_subgraph(
     as_of: str | None = None,
     max_edges: int | None = None,
     known_at: str | None = None,
+    *,
+    relations: list[str] | None = None,
+    direction: str = "both",
 ) -> dict[str, Any]:
     """Breadth-first subgraph within *max_hops* of the start nodes."""
+    if direction not in ("in", "out", "both"):
+        raise ValueError("direction must be in, out or both")
+    selected = _relation_filter(relations)
     index = _full_index(root)
     nodes = index.nodes
     moment = lesson_cache.parse_moment(as_of) if as_of else None
@@ -781,8 +823,10 @@ def multi_hop_subgraph(
         current, hop = queue.popleft()
         if hop >= hops_limit:
             continue
-        for position in index.by_entity.get(current, []):
+        for position in _incident_positions(index, current, selected):
             edge = index.edges[position]
+            if direction == "out" and edge.source != current or direction == "in" and edge.target != current:
+                continue
             if not _is_active_edge(edge, moment, known, current_at=current_at):
                 continue
             if cap is not None and len(collected) >= cap:
@@ -799,6 +843,88 @@ def multi_hop_subgraph(
         "edges": [e.to_dict() for e in collected],
         "hop_distances": visited,
     }
+
+
+def shortest_path(
+    root: str, source: str, target: str, *, max_hops: int = MAX_HOPS,
+    relations: list[str] | None = None, direction: str = "both",
+    as_of: str | None = None, known_at: str | None = None,
+    max_nodes: int = 2000, max_examined_edges: int = 20_000,
+) -> dict[str, Any]:
+    """Shortest eligible unweighted path with original edge evidence and hard work bounds.
+
+    Ties follow canonical journal order. A budget-exhausted search is explicitly
+    inconclusive. Forgotten or missing nodes cannot bridge a path, including in
+    historical views. This trusted-local API does not provide scope authorization.
+    """
+    for name, value, lower, upper in (("max_hops", max_hops, 0, MAX_HOPS),
+                                      ("max_nodes", max_nodes, 1, 100_000),
+                                      ("max_examined_edges", max_examined_edges, 1, 1_000_000)):
+        if isinstance(value, bool) or not isinstance(value, int) or not lower <= value <= upper:
+            raise ValueError(f"{name} must be an integer in {lower}..{upper}")
+    if direction not in ("in", "out", "both"):
+        raise ValueError("direction must be in, out or both")
+    selected = _relation_filter(relations)
+    moment = lesson_cache.parse_moment(as_of) if as_of else None
+    known = lesson_cache.parse_moment(known_at) if known_at else None
+    current_at = datetime.now(timezone.utc) if moment is None and known is None else None
+    index = _full_index(root)
+    source, target = _clean_id(source), _clean_id(target)
+    result: dict[str, Any] = {"status": "not-found", "nodes": [], "edges": [], "steps": [],
+                              "hops": None, "visited_nodes": 0, "examined_edges": 0,
+                              "as_of": as_of, "known_at": known_at, "max_hops": max_hops}
+    if any(identity not in index.nodes or index.nodes[identity].is_forgotten for identity in (source, target)):
+        result["reason"] = "missing-or-forgotten-endpoint"
+        return result
+    parents: dict[str, tuple[str, int] | None] = {source: None}
+    queue = deque([(source, 0)])
+    found = source == target
+    exhausted = ""
+    while queue and not found and not exhausted:
+        current, depth = queue.popleft()
+        if depth >= max_hops:
+            continue
+        for position in _incident_positions(index, current, selected):
+            if result["examined_edges"] >= max_examined_edges:
+                exhausted = "edge-budget"
+                break
+            result["examined_edges"] += 1
+            edge = index.edges[position]
+            if direction == "out" and edge.source != current or direction == "in" and edge.target != current:
+                continue
+            neighbor = edge.target if edge.source == current else edge.source
+            node = index.nodes.get(neighbor)
+            if neighbor in parents or node is None or node.is_forgotten:
+                continue
+            if not _is_active_edge(edge, moment, known, current_at=current_at):
+                continue
+            if len(parents) >= max_nodes:
+                exhausted = "node-budget"
+                break
+            parents[neighbor] = (current, position)
+            if neighbor == target:
+                found = True
+                break
+            queue.append((neighbor, depth + 1))
+    result["visited_nodes"] = len(parents)
+    if exhausted:
+        result.update(status="budget-exhausted", reason=exhausted)
+    elif found:
+        identities, positions = [target], []
+        while parents[identities[-1]] is not None:
+            previous, position = parents[identities[-1]]
+            positions.append(position)
+            identities.append(previous)
+        identities.reverse()
+        positions.reverse()
+        result.update(status="found", hops=len(positions), nodes=[index.nodes[nid].to_dict() for nid in identities],
+                      edges=[index.edges[position].to_dict() for position in positions],
+                      steps=[{"from": identities[i], "to": identities[i + 1],
+                              "direction": "out" if index.edges[position].source == identities[i] else "in"}
+                             for i, position in enumerate(positions)])
+    else:
+        result["reason"] = "no-path-within-hop-limit"
+    return result
 
 
 _WORD_RE = re.compile(r"[a-z0-9]+(?:[_.\-][a-z0-9]+)*")

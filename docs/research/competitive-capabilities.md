@@ -30,11 +30,11 @@ baseline; the final resulting commit must be used when reproducing the changes.
 | Cognee | `0ec7a9fa61c9ff04bf7e02e0d57af363a993a5e1` | Runtime and tests |
 | Graphiti | `2f0fb35b749f1ff17377892e099882176e453393` | Graph library, server, MCP, tests |
 | Hindsight | `f843f173bb41f001e322cc83c917371639e47fbf` | API runtime, extensions, clients, tests |
-| Letta | `5bcdd177d70fa2b31a754cfcd801e77b2e1ab16a` | Migration README; active runtime is elsewhere |
+| Letta Code | `2943efe47e8c49e8ef2b78df100ba8e262c2415a` | Active harness source and tests |
 | Mem0 | `d26ba5e4518cef7fff3c66d4f715b21adf9feabe` | OSS runtime, SDKs, integrations; hosted platform docs also included |
 | Supermemory | `87af03a55f6a211683a54e083f1708e1619aa06d` | MCP, integrations, visualization, hosted API docs; reviewed paths do not establish hosted engine internals |
 | Zep | `cfa2ab2bbc3c7085d636479b719bcf64608162cc` | Current examples, ingestion and integrations; legacy server is deprecated |
-| CommonTrace baseline | `a54c42dd25488832aee225a9ced865e7ef967e4f` | Runtime, protocol, SDKs, tests, plus this iteration's working changes |
+| CommonTrace baseline | `0d5c5fd0dac479dfe6a8ba938a213b761fb5b540` | Runtime, protocol, SDKs, tests, plus this iteration's working changes |
 
 ## Competitor evidence
 
@@ -44,7 +44,7 @@ baseline; the final resulting commit must be used when reproducing the changes.
 | Cognee | [Temporal event/interval models](../../../cognee/cognee/tasks/temporal_graph/models.py), [entity consolidation pipeline](../../../cognee/cognee/memify_pipelines/consolidate_entities.py), [image loader](../../../cognee/cognee/infrastructure/loaders/core/image_loader.py), [tenant access tests](../../../cognee/cognee/tests/api/test_multi_tenant_access_control_e2e.py), [provider connectors](../../../cognee/cognee/tasks/ingestion/connectors/), [evaluation framework](../../../cognee/cognee/eval_framework/README.md) | **Present:** temporal data models; authorized-dataset consolidation with dry-run and graph mutation; vision extraction with optional OCR, metadata and perceptual deduplication. **Present as source/test surfaces:** tenant controls, ingestion connectors and evaluations. **Not verified:** their full deployment configuration, connector synchronization guarantees or measured answer quality. |
 | Graphiti | [EntityEdge temporal fields](../../../graphiti/graphiti_core/edges.py), [temporal normalization](../../../graphiti/graphiti_core/utils/maintenance/temporal_edge_utils.py), [group-aware ingestion/search](../../../graphiti/graphiti_core/graphiti.py), [episode types](../../../graphiti/graphiti_core/nodes.py), [MCP server](../../../graphiti/mcp_server/README.md), [OpenTelemetry example](../../../graphiti/examples/opentelemetry/README.md), [evaluation entry point](../../../graphiti/tests/evals/eval_cli.py) | **Present:** graph partitions, validity/invalidation/expiry fields, temporal normalization, hybrid search/reranking orchestration. **Partial:** reviewed episode types are message, text, JSON and fact triples; native media ingestion was not established here. **Not verified:** group identifiers as a complete authentication boundary, connector coverage or equivalent reflection behavior. |
 | Hindsight | [Temporal extraction](../../../hindsight/hindsight-api-slim/hindsight_api/engine/search/temporal_extraction.py), [reflect agent](../../../hindsight/hindsight-api-slim/hindsight_api/engine/reflect/agent.py), [consolidator](../../../hindsight/hindsight-api-slim/hindsight_api/engine/consolidation/consolidator.py), [static-key tenant extension](../../../hindsight/hindsight-extensions/static-keys-tenant/hindsight_ext_static_keys_tenant/extension.py), [multimodal extraction tests](../../../hindsight/hindsight-api-slim/tests/test_multimodal_extraction_llm.py), [language clients](../../../hindsight/hindsight-clients/), [metrics](../../../hindsight/hindsight-api-slim/hindsight_api/metrics.py) | **Present:** temporal query extraction and a bank-specific agentic reflection implementation with tool budgets and structured output; consolidation, tenant-extension and metrics source. **Present as test surfaces:** multimodal extraction and scoped access. **Not verified:** configured tenant policy, provider/model behavior, connector breadth or comparative retrieval quality. |
-| Letta | [Checkout README and source migration notice](../../../letta/README.md) | **Documented:** stateful agents, App Server, channels and Agent SDK. **Not verified:** all seven capability categories in the current runtime, because this checkout redirects to `letta-ai/letta-code`. Historical caches or an archive branch are not evidence for the active product. This checkout cannot support a feature-complete comparison. |
+| Letta Code | [Active harness](../../../letta-code/README.md), [shared memory management](../../../letta-code/src/cli/subcommands/shared-memory.ts), [memory confinement](../../../letta-code/src/memory-confinement.ts), [stateless MemFS policy](../../../letta-code/src/headless-memfs-policy.ts) | **Present:** API-backed shared Git memory management, local repository synchronization, stateless subagent memory policy and a fail-closed sandbox launcher. **Documented:** self-editing memory, skills and scheduled dreaming. **Not verified:** hosted enforcement, model quality, complete reflection behavior or performance. The active runtime was cloned and mapped in this follow-up; the prior migration-only checkout limitation no longer applies. |
 | Mem0 | [OSS memory implementation](../../../mem0/mem0/memory/main.py), [session-scope tests](../../../mem0/tests/memory/test_session_scope.py), [temporal parameter rejection tests](../../../mem0/tests/memory/test_temporal_feature_notice.py), [OSS multimodal guide](../../../mem0/docs/open-source/features/multimodal-support.mdx), [TypeScript OSS package](../../../mem0/mem0-ts/src/oss/README.md), [integration packages](../../../mem0/integrations/), [telemetry](../../../mem0/mem0/memory/telemetry.py) | **Present:** user/agent/run scope filters, memory update operations and vision-message handling in OSS. **Partial:** OSS temporal support must not be inferred from hosted docs: inspected tests explicitly require rejection of `timestamp` and `reference_date` arguments. **Present as source surfaces:** SDKs, agent integrations and telemetry. **Not verified:** hosted temporal behavior, equivalent consolidation/reflection, production authorization or comparative quality. |
 | Supermemory | [Namespace-scoping MCP tests](../../../supermemory/apps/mcp/e2e/space-scope.test.ts), [MCP tools](../../../supermemory/apps/mcp/src/server/tools/), [hosted connectors API](../../../supermemory/apps/docs/v5/api-reference/connectors.mdx), [memory/history/deletion API](../../../supermemory/apps/docs/v5/api-reference/content-management.mdx), [SDK guide](../../../supermemory/skills/supermemory/references/sdk-guide.md), [memory graph package](../../../supermemory/packages/memory-graph/README.md) | **Present:** MCP/tool and graph visualization code; namespace isolation has test coverage in the checkout. **Documented:** hosted connector OAuth, sync lifecycle, namespaces, memory history and semantic forgetting. **Not verified:** hosted extraction, consolidation, temporal semantics, multimodal implementation, infrastructure observability or service performance. A connector guide does not prove operational connector parity. |
 | Zep | [Repository scope notice](../../../zep/README.md), [ingestion pipeline contracts](../../../zep/ingestion/README.md), [framework integrations](../../../zep/integrations/README.md), [evaluation harness](../../../zep/zep-eval-harness/README.md) | **Present as source surfaces:** bulk ingestion, framework adapters and evaluation tooling. **Documented:** timestamps, graph ownership, ontology setup, chunking, batch fallback and resumable ingestion contracts. **Not verified:** current hosted memory engine, auth enforcement, reflection and multimodal internals. The repository explicitly excludes the current product/service; deprecated `legacy/` behavior is not current Zep behavior. Graphiti is reviewed independently above. |
@@ -61,7 +61,7 @@ baseline; the final resulting commit must be used when reproducing the changes.
 | Integrations and SDKs | [Python client](../../commontrace/client.py), [SDK inventory and contracts](../../sdk/README.md), [framework adapters](../../commontrace/integrations/), [framework SDK tests](../../tests/test_new_framework_sdks.py), [optional live contracts](../../tests/test_optional_sdk_live_contracts.py) | **Present:** Python, TypeScript, Go, Rust and JVM client source plus selected agent-framework adapters. **Not verified:** every published package/version, every optional framework's live behavior, or behavioral equivalence across languages. Importability and mocked contracts are narrower than release compatibility. |
 | Evaluation and observability | [Telemetry and Prometheus/OTel surfaces](../../commontrace/telemetry.py), [evaluation tooling](../../benchmarks/), [performance evidence](../performance.md), [operations guidance](../operations.md), [storage workload](../../benchmarks/next_generation_storage.py) | **Present:** redacted request context, spans, metrics and workload/evaluation tooling. **Partial:** existing measurements have explicit dataset, budget and implementation boundaries. They do not establish a universal 10× gain, competitor quality superiority, hosted availability or lower model cost. |
 
-## Changes in this iteration
+## Prior hardening in this branch
 
 These changes improve concrete contracts; they do not close every gap above.
 The [operations guide](../operations.md) and [performance evidence](../performance.md)
@@ -83,6 +83,34 @@ provide the existing deployment and measurement context.
   [LLM requests](../../commontrace/llm.py), [vision requests](../../commontrace/vision.py)
   and [resilience tests](../../tests/test_circuit_breaker.py) tighten transient
   failure handling and provider circuit identity. See [runtime upgrade context](../runtime-upgrade.md).
+
+## Graphify follow-up and implemented gaps
+
+Graphify 0.9.88 (`a9860f70dc3cc2e9c2d8cb923484cfa0592b9067`)
+was installed from the requested repository. Local AST-only maps were built for
+CommonTrace and all eight competitor checkouts; no model provider was used.
+Maps live outside the product checkout and are not product runtime dependencies.
+The CommonTrace map contained 6,848 nodes and 16,767 edges before these edits.
+
+The follow-up implements three source-grounded improvements:
+
+- **Graph exploration:** repeatable local relation filters and an unweighted
+  shortest temporal path with canonical edge evidence, direction, valid/record
+  times and explicit work bounds. The lazy typed adjacency index is measured in
+  [the paired graph benchmark](../performance.md#typed-graph-lookup-2026-10-13).
+- **Consistent temporal evidence:** preserve full ISO instants and pin original
+  query time across decomposition, graph/category filtering and model follow-up
+  queries. Conflicting hints do not silently choose a snapshot.
+- **Conflict decision safety:** reject malformed or unbounded model ID lists
+  before a contradiction can alter temporal truth; tolerate interrupted queue
+  rows while retaining valid pending conflicts.
+
+Behavior is covered by [path contracts](../../tests/test_graph_paths.py),
+[temporal planning contracts](../../tests/test_temporal_planning.py) and
+[conflict decision safety](../../tests/test_conflict_decision_safety.py).
+The baseline passed 6,829 local tests with 239 optional-dependency/service skips.
+Remote CI validation is required on the final pushed revision. No competitor
+answer-accuracy benchmark or universal performance comparison is claimed.
 
 ## Bounded remaining work
 
@@ -107,7 +135,7 @@ provide the existing deployment and measurement context.
    accepted consolidations and original facts on contradiction retention, source
    attribution and recall. Scheduled destructive/archival merging should require
    measured benefit and a reproducible recovery path.
-6. **Complete unavailable-source reviews separately.** Obtain the active Letta
-   runtime and approved hosted evaluation access for Zep/Supermemory/Mem0 platform
+6. **Complete unavailable-service reviews separately.** Obtain approved hosted
+   evaluation access for Zep/Supermemory/Mem0 platform
    before asserting their internals or complete capability coverage. The current
    local checkouts support only the narrower conclusions recorded above.

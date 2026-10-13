@@ -45,9 +45,23 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
                      help="local: the canonical files; mirror: the Neo4j/FalkorDB mirror named by "
                           "COMMONTRACE_GRAPH_BACKEND (publish it first with `graph mirror`).")
     p_q.add_argument("--relation", action="append", default=[],
-                     help="Only follow this relation (repeatable; mirror backend).")
+                     help="Only follow this relation (repeatable; local or mirror backend).")
     p_q.add_argument("--dest", default=None)
     p_q.set_defaults(func=run_query)
+
+    p_path = sub.add_parser("path", help="Explain a bounded shortest temporal path in the local graph.")
+    p_path.add_argument("source", help="Source node ID.")
+    p_path.add_argument("target", help="Target node ID.")
+    p_path.add_argument("--hops", type=int, default=graph.MAX_HOPS, choices=range(graph.MAX_HOPS + 1))
+    p_path.add_argument("--relation", action="append", default=[])
+    p_path.add_argument("--direction", choices=("in", "out", "both"), default="both")
+    p_path.add_argument("--as-of", default=None, help="Valid-time snapshot (ISO 8601).")
+    p_path.add_argument("--known-at", default=None, help="Record-time snapshot (ISO 8601).")
+    p_path.add_argument("--max-nodes", type=int, default=2000)
+    p_path.add_argument("--max-examined-edges", type=int, default=20_000)
+    p_path.add_argument("--json", action="store_true")
+    p_path.add_argument("--dest", default=None)
+    p_path.set_defaults(func=run_path)
 
     p_mir = sub.add_parser("mirror", help="Publish the graph to the Neo4j/FalkorDB mirror (COMMONTRACE_GRAPH_BACKEND).")
     p_mir.add_argument("--backend", default=None, choices=("neo4j", "falkordb"),
@@ -293,12 +307,11 @@ def run_query(args: argparse.Namespace) -> int:
 
         if getattr(args, "backend", "local") == "mirror":
             _query_mirror(args, start_ids)
-        elif getattr(args, "relation", None):
-            raise ValueError("--relation filters the mirror backend; add --backend mirror")
         elif args.hops == 1:
             for sid in start_ids:
                 neighbors = graph.get_neighbors(root, sid, as_of=args.as_of or None,
-                                                known_at=args.known_at or None)
+                                                known_at=args.known_at or None,
+                                                relations=getattr(args, "relation", None) or None)
                 print(f"# Neighbors of '{sid}':")
                 if not neighbors:
                     print("  (no connected edges)")
@@ -307,7 +320,8 @@ def run_query(args: argparse.Namespace) -> int:
                     print(f"  ({sid}) {arrow} ({n['neighbor_id']} / {n['neighbor_name']})")
         else:
             sub = graph.multi_hop_subgraph(root, start_ids, max_hops=args.hops, as_of=args.as_of or None,
-                                           known_at=args.known_at or None)
+                                           known_at=args.known_at or None,
+                                           relations=getattr(args, "relation", None) or None)
             print(f"# Subgraph: {len(sub['nodes'])} nodes, {len(sub['edges'])} edges")
             print("\n## Nodes:")
             for n in sub["nodes"]:
@@ -321,6 +335,29 @@ def run_query(args: argparse.Namespace) -> int:
         return 1
 
     return 0
+
+
+def run_path(args: argparse.Namespace) -> int:
+    root = paths.resolve_root(args.dest)
+    try:
+        result = graph.shortest_path(root, args.source, args.target, max_hops=args.hops,
+                                     relations=args.relation or None, direction=args.direction,
+                                     as_of=args.as_of, known_at=args.known_at, max_nodes=args.max_nodes,
+                                     max_examined_edges=args.max_examined_edges)
+    except (ValueError, OSError) as exc:
+        print(f"[commontrace] {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(result, indent=2))
+    elif result["status"] == "found":
+        print(f"# Shortest path: {result['hops']} hop(s)")
+        print(result["nodes"][0]["id"])
+        for step, edge in zip(result["steps"], result["edges"]):
+            arrow = f"--[{edge['relation']}]-->" if step["direction"] == "out" else f"<--[{edge['relation']}]--"
+            print(f"  {arrow} {step['to']}")
+    else:
+        print(f"{result['status']}: {result['reason']}")
+    return 2 if result["status"] == "budget-exhausted" else 0
 
 
 def run_render(args: argparse.Namespace) -> int:

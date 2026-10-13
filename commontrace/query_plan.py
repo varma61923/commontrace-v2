@@ -40,6 +40,12 @@ def retrieve(root: str, query: str, *, complete=None, **options) -> list[dict]:
     if isinstance(limit, bool) or not isinstance(limit, int) or not 0 <= limit <= 1000:
         raise ValueError("limit must be an integer in 0..1000")
     strategy = plan(query, complete)
+    from commontrace.temporal_intent import resolve
+
+    if options.get("as_of") is None and options.get("infer_temporal", True):
+        options["as_of"] = resolve(query)["as_of"]
+    # Resolve once, before splitting: all arms and graph expansion share time.
+    options["infer_temporal"] = False
     backend = options.pop("backend", None) or LocalGraph(root)
     seeds = strategy["entity_ids"] or graph.extract_entities_from_text(root, query)
     entities = set(seeds)

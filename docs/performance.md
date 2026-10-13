@@ -5,6 +5,28 @@ They establish specific workload improvements, not universal 30 ms latency or
 superiority over competitor answer quality. No inference service is used by
 the measured request profiles.
 
+## Typed graph lookup (2026-10-13)
+
+```bash
+python -m benchmarks.graph_relations --edges 20000 --trials 5 --check
+```
+
+This paired fixture compares warm local neighbor lookup with the previous exact
+incident-edge scan on a high-degree node. Of 20,000 edges, five have the requested
+relation; one has expired at the query instant. Both algorithms return the same
+four rows, in journal order. Trials alternate execution order and compare every
+result to the scan oracle. CI requires equality and at least 10× warm speedup on
+this fixture.
+
+On this workspace, five trials measured median scan latency of 18.244 ms and
+indexed lookup of 0.0522 ms: **349.4×**. Initial canonical loading plus the scan
+took 124.123 ms; building the typed index on the loaded generation took 5.421 ms.
+These timings are machine-specific. The lazy relation index costs O(edges) time
+and additional O(edges) memory on first use and is invalidated with the source
+generation. Unfiltered queries retain the existing incident lists. The gain
+depends on relation selectivity and degree; it does not establish 10× overall
+agent performance, answer accuracy, cold-start improvement or competitor superiority.
+
 ## Source-bound conversation measurement (2026-10-08)
 
 Acceptance criteria: run public recall independently at each budget; retain

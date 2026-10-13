@@ -112,7 +112,7 @@ def search(root: str, query: str, *, recipe: str = "balanced", scope: str = "", 
            utility: dict[str, float] | None = None, context: list[str] | None = None,
            action_class: str = "", embedder=None, reranker: str | None = None,
            rerank_depth: int | None = None, rerank_blend: float | None = None,
-           explain: dict | None = None, vector_search=None) -> list[dict[str, Any]]:
+           explain: dict | None = None, vector_search=None, infer_temporal: bool = True) -> list[dict[str, Any]]:
     """Rank governed facts by a recipe's blend of dense, lexical, entity, temporal and utility signals.
 
     ``reranker`` (a `providers.reranker` name, or "none") reranks the top
@@ -130,7 +130,9 @@ def search(root: str, query: str, *, recipe: str = "balanced", scope: str = "", 
         raise ValueError("limit must be an integer in 0..1000")
     from commontrace.temporal_intent import resolve
 
-    intent = resolve(query)
+    if not isinstance(infer_temporal, bool):
+        raise ValueError("infer_temporal must be a boolean")
+    intent = resolve(query) if infer_temporal and as_of is None else {"mode": "unspecified", "as_of": None}
     if as_of is None and intent["as_of"]:
         as_of = intent["as_of"]
     if recipe == "balanced" and intent["mode"] == "current":
@@ -554,8 +556,10 @@ def multi_round(root: str, query: str, *, complete, context=None, limit=10, max_
 
     if context is None:
         context = [options["scope"]] if options.get("scope") else []
-    if options.get("as_of") is None:
+    if options.get("as_of") is None and options.get("infer_temporal", True):
         options["as_of"] = resolve(query)["as_of"]
+    # Follow-up model text cannot select a different valid-time snapshot.
+    options["infer_temporal"] = False
     blocks, traces, core, by_id = [], [], [], {}
     pending, seen = [query], set()
 

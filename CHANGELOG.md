@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Evidence-preserving temporal graph paths.** Local graph queries accept
+  repeatable relation filters; `graph path` returns bounded unweighted shortest
+  paths with original edge evidence and reverse-hop direction. Exhausted work
+  budgets return an explicit inconclusive status. Lazy typed adjacency preserves
+  exact results and measured 349.4× warm speedup on the paired 20K-edge
+  rare-relation fixture; the new CI gate checks this workload independently.
+- **Pinned temporal retrieval and defensive conflict decisions.** Complete ISO
+  timestamp hints preserve offsets and precision; conflicting hints remain
+  unspecified. Planned and multi-round searches pin the original query's
+  snapshot across graph, category and follow-up arms. Malformed model conflict
+  decisions fail closed, and interrupted conflict journal rows no longer
+  prevent review of valid pending entries.
+
 - **Topic-scoped hook retrieval and timeout recall.** Semantic lesson candidates
   now need informative lexical overlap before injection, and explicit timeout
   wording on `PostToolUseFailure` adds timeout aliases to sparse ranking. The

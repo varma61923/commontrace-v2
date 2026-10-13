@@ -82,6 +82,35 @@ an existing local embedding model directory to enable dense ranking; absent
 that optional dependency, retrieval uses the available signals. GLiNER accepts
 local weights or an injected adapter and links only literal admitted text.
 
+### Explain temporal graph paths
+
+Local graph queries now accept the same repeatable relation filter as mirror
+queries. Shortest paths retain canonical edge properties, validity and record
+times, and identify when a hop follows an edge in reverse:
+
+```bash
+commontrace graph query service:api --relation depends_on --hops 2 --dest STORE
+commontrace graph path service:api service:db --direction out --relation depends_on --json --dest STORE
+commontrace graph path service:api service:db --as-of 2025-01-01 --known-at 2025-02-01 --dest STORE
+```
+
+`graph.shortest_path` and `graph path` find an unweighted shortest path, up to
+four hops. Equal-length paths follow journal order. The default traversal caps
+are 2,000 visited nodes and 20,000 examined edges; CLI overrides are bounded too.
+An exhausted budget returns `budget-exhausted` (CLI exit 2), so a limited search
+does not assert that no path exists. Missing and forgotten nodes cannot bridge
+paths, including historical paths. The original graph is never changed.
+These are trusted-local exploration APIs; they do not add graph scope
+authorization to shared gateway requests. Cold loading and index construction
+are proportional to graph size; the work caps bound traversal after loading.
+
+Temporal search recognizes complete ISO timestamps, including UTC offsets, and
+preserves their instant rather than truncating to midnight. Distinct date hints
+or conflicting relative hints remain unspecified. Planned and multi-round
+retrieval resolve the original query once and pin that snapshot across graph,
+category and follow-up searches. An explicit caller `as_of` takes precedence;
+`search(..., infer_temporal=False)` disables query date inference.
+
 `profile` returns static and dynamic facts together. `reflect` packs curated →
 consolidated → raw evidence and mandatory directives using a conservative
 UTF-8-byte/4 token estimate. No guaranteed 50 ms latency or model-specific token
