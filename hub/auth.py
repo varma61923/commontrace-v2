@@ -53,6 +53,8 @@ _PEPPER = _pepper_env.encode("utf-8") if _pepper_env else secrets.token_bytes(32
 def _key_hmac(raw_key: str) -> str:
     # CodeQL false positive (Alert #10): HMAC-SHA256 indexes 256-bit random API keys with
     # a secret pepper for constant-time lookup; legacy API-key hashing still uses Argon2id.
+    # lgtm[py/weak-sensitive-data-hashing]
+    # codeql[py/weak-sensitive-data-hashing]
     return hmac.new(_PEPPER, raw_key.encode("utf-8"), hashlib.sha256).hexdigest()
 
 

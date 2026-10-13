@@ -9,8 +9,8 @@ import os
 from benchmarks.signed_results import verify
 
 
-def render(envelope: dict, trusted_key: str) -> str:
-    report = verify(envelope, trusted_key=trusted_key)
+def render(envelope: dict, public_key: str) -> str:
+    report = verify(envelope, trusted_key=public_key)
     rows = []
     for gate in report["gates"]:
         values = [gate["name"], gate["status"], gate.get("measurement", ""), gate.get("scope", "")]
@@ -37,17 +37,18 @@ Private transcripts and signing keys are excluded.</p></main></html>"""
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--report", required=True)
-    parser.add_argument("--trusted-key", required=True)
+    parser.add_argument("--public-key", "--trusted-key", dest="public_key", required=True,
+                        help="Ed25519 public key (verification key) to verify and export")
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
     with open(args.report, encoding="utf-8") as stream:
         envelope = json.load(stream)
-    page = render(envelope, args.trusted_key)
+    page = render(envelope, args.public_key)
     os.makedirs(args.out, exist_ok=True)
     for name, content in [
         ("index.html", page),
         ("run.json", json.dumps(envelope, indent=2) + "\n"),
-        ("public-key.txt", args.trusted_key + "\n"),
+        ("public-key.txt", args.public_key + "\n"),
     ]:
         with open(os.path.join(args.out, name), "w", encoding="utf-8") as stream:
             stream.write(content)

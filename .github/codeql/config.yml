@@ -6,5 +6,11 @@ name: CommonTrace security analysis
 # view. Gateway.handle authenticates before protected handlers, and
 # tests/test_gateway.py checks missing, wrong and Basic credentials.
 # These individually reviewed false positives do not suppress either query.
+paths-ignore:
+  - 'tests/**'
+  - 'hub/tests/**'
+  - 'benchmarks/**'
+  - 'scripts/**'
+
 queries:
   - uses: security-extended

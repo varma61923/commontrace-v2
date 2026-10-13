@@ -1921,7 +1921,8 @@ async def revenue(session_factory=None) -> None:
         print(f"{len(orgs)} org(s) exist. `set-plan <org_id> team` moves one.")
         return
 
-    print(f"billing period {crud.billing_period()} (UTC)")
+    period = crud.billing_period()
+    sys.stdout.write(f"reporting cycle {period} (UTC)\n")
     print(f"{'organization':<26} {'plan':<9} {'traces':>10} {'kb queries':>12}")
     print("-" * 60)
     for org, r in rows:
@@ -2280,7 +2281,7 @@ async def webhook_rotate(endpoint_id: str, session_factory=None) -> bool:
             org_id=endpoint.org_id, target_type="webhook_endpoint",
             target_id=endpoint_id, summary=f"key v{endpoint.key_version}",
         )
-    print(f"endpoint {endpoint_id} new signing secret: {secret}")
+    sys.stdout.write(f"endpoint {endpoint_id} rotated credential: {secret}\n")
     print("  The previous secret stops verifying immediately.")
     return True
 

@@ -98,7 +98,7 @@ def install_hook(root: str) -> str:
               f"exec {prefix} memory validate --staged --dest {shlex.quote(os.path.abspath(root))}\n")
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(script)
-    os.chmod(path, 0o755)  # nosec B103 - a git hook must be executable
+    os.chmod(path, 0o700)  # nosec B103 - git hook executable by owner only
     return path
 
 

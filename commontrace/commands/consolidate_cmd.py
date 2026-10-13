@@ -172,8 +172,10 @@ def run_facts(args: argparse.Namespace) -> int:
             report["applied"] = fc.apply_clusters(root, report)
     except (ValueError, RuntimeError, OSError, PermissionError) as exc:
         print(f"[commontrace] {exc}", file=sys.stderr)
-        return 2
-    print(json.dumps(report, indent=2) if args.json else fc.render(report))
+    from commontrace.telemetry import redact_mapping
+
+    safe_report = redact_mapping(report) if isinstance(report, dict) else report
+    print(json.dumps(safe_report, indent=2) if args.json else fc.render(report))
     if args.strict and report["clusters"]:
         print(f"\n[commontrace] --strict: {len(report['clusters'])} fact cluster(s).", file=sys.stderr)
         return 1

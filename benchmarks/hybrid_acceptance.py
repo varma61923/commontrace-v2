@@ -463,7 +463,10 @@ def main(argv: list[str] | None = None) -> int:
                      run_restart=not args.skip_restart, work_dir=args.work_dir,
                      seed_mode=args.seed_mode)
     report["command"] = " ".join(sys.argv if argv is None else [sys.argv[0], *argv])
-    encoded = json.dumps(report, indent=2, sort_keys=True) + "\n"
+    from commontrace.telemetry import redact_mapping
+
+    safe_report = redact_mapping(report) if isinstance(report, dict) else report
+    encoded = json.dumps(safe_report, indent=2, sort_keys=True) + "\n"
     if args.output:
         os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
         with open(args.output, "w", encoding="utf-8") as stream:

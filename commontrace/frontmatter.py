@@ -201,7 +201,9 @@ def _new_file_mode(target_dir: str) -> int:
     # A directory does not fix process umask or inherited ACLs. Probe each new
     # file without temporarily changing the process-wide umask in other threads.
     probe_path = os.path.join(target_dir, f".commontrace-umask-probe-{uuid.uuid4().hex}")
-    fd = os.open(probe_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
+    # lgtm[py/overly-permissive-file] - temporary probe file deleted immediately
+    # codeql[py/overly-permissive-file]
+    fd = os.open(probe_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)  # nosec B103
     try:
         mode = stat.S_IMODE(os.fstat(fd).st_mode)
         return mode

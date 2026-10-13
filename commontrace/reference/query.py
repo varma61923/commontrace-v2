@@ -507,14 +507,16 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    from commontrace.telemetry import redact
+
     _t0 = time.monotonic()
     result = rank(args.query, args.top_k, args.include_importance_floor, args.agent_type)
     for message in result.stderr:
-        print(message, file=sys.stderr)
+        print(redact(message), file=sys.stderr)
     if result.rc != 0:
         return result.rc
     for line in result.lines:
-        print(line)
+        print(redact(line))
 
     elapsed_ms = (time.monotonic() - _t0) * 1000.0
     brief_text = "\n".join(result.lines)

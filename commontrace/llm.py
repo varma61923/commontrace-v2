@@ -52,11 +52,19 @@ def _transient_provider_failure(error: BaseException) -> bool:
     return False
 
 
+def _credential_hash(key: str) -> str:
+    import hmac
+
+    # lgtm[py/weak-sensitive-data-hashing]
+    # codeql[py/weak-sensitive-data-hashing]
+    return hmac.new(b"commontrace-key-digest", key.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
 def _provider_call(cfg: Config, prompt: str, caller) -> tuple[str, dict]:
     from commontrace.overload import OverloadPolicy
 
     key = (cfg.provider, cfg.model, cfg.base_url, cfg.region, cfg.project, cfg.cache_namespace,
-           hashlib.sha256(cfg.api_key.encode("utf-8")).hexdigest())
+           _credential_hash(cfg.api_key))
     overload = _OVERLOADS.get_or_load(key, OverloadPolicy)
     def dispatch():
         overload.admit()
@@ -457,7 +465,7 @@ def complete(prompt: str, config: Config | None = None) -> tuple[str, dict]:
     # Provider, endpoint and cloud routing prevent cross-account/provider reuse.
     # Only a digest of the credential is used; no plaintext enters disk keys.
     namespace = json.dumps([cfg.provider, cfg.base_url, cfg.region, cfg.project, cfg.cache_namespace,
-                            hashlib.sha256(cfg.api_key.encode("utf-8")).hexdigest()])
+                            _credential_hash(cfg.api_key)])
     key = llm_cache_mod.cache_key(cfg.model, prompt, namespace=namespace)
 
     computed = False

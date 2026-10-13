@@ -55,7 +55,7 @@ def test_plaintext_legacy_token_and_permission_repair(tmp_path):
     value = "legacy" * 8
     with open(path, "w") as fh:
         fh.write(value + "\n")
-    os.chmod(path, 0o644)
+    os.chmod(path, 0o644)  # lgtm[py/overly-permissive-file] - deliberately testing permission repair
     assert tokens.load_or_create_token(root) == tokens.FileTokenProvider(root)() == value
     assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
 

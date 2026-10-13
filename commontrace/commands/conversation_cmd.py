@@ -270,11 +270,14 @@ def run_index(args) -> int:
     finally:
         if encoder is not None:
             encoder.close()
+    from commontrace.telemetry import redact_mapping
+
+    safe_result = redact_mapping(result) if isinstance(result, dict) else result
     if args.json:
-        print(json.dumps(result))
+        print(json.dumps(safe_result))
     else:
-        print(f"[commontrace] {result['units']} passage(s) prepared with {result['model']} "
-              f"in {result['elapsed_seconds']:.3f}s.")
+        print(f"[commontrace] {safe_result.get('units', 0)} passage(s) prepared with {safe_result.get('model', '')} "
+              f"in {safe_result.get('elapsed_seconds', 0.0):.3f}s.")
     return 0
 
 
