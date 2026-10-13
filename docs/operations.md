@@ -266,3 +266,36 @@ commontrace conversation recall user "北辰缓存容量" --lexical --budget 150
 python -m pytest tests/test_conversation_unicode_index.py \
   tests/test_conversation_multilingual_excerpts.py -q
 ```
+## Connector checkpoint and provider resilience upgrades
+
+Local-directory and seed-web connectors acknowledge a source only after its fact
+writes, retirement and provenance complete. Failed reads, writes or deletions
+remain pending and can be retried with the returned cursor or persisted state.
+Local-file stamps include nanosecond timestamps, inode and device identity;
+a source that changes during reading is retried rather than acknowledged.
+
+Checkpoints are separated by exact owner scope and bound to the connector source.
+Source retirement is limited to facts with the connector's exact scope set,
+including historical records with shared source identifiers. Global source IDs
+remain compatible. On the first scoped sync after upgrading, current documents
+are reingested and removed filenames from the former shared checkpoint are
+reconciled only within that scope. This can perform one additional import.
+Legacy explicit cursors without owner binding are accepted for global sync only;
+for a scoped upgrade, omit the old token to use persisted migration state.
+Cursors are resumability hints, not authorization credentials.
+
+Document pipelines keep independent ledgers for each fact scope and conversation
+space. Global fact ingestion retains the original ledger filename. A destination
+whose old ledger was shared performs one fresh import to establish its checkpoint.
+
+Crawler redirects enforce offline mode before DNS, reject cross-origin private
+destinations and remove cross-origin credential headers. Responses over the byte
+limit fail rather than being silently truncated; oversized robots rules fail
+closed. Explicit local/intranet seeds remain supported. Apply deployment egress
+controls when initial URLs or DNS can be controlled by untrusted users.
+
+Image and text completions share account/model/endpoint circuit breakers and
+overload cooldowns. The existing circuit-breaker configuration and recovery
+interval apply to both. Image responses remain uncached, and valid text cache
+hits remain available during provider outages. Image caption reads allocate at
+most the configured image byte limit plus one byte before falling back to metadata.

@@ -113,7 +113,7 @@ def test_failed_conversation_document_is_not_sealed(tmp_path, monkeypatch):
     monkeypatch.setattr(Store, "add", fail_one)
     pipeline = pl.create_document_pipeline(str(source), str(root), space="test", contextualize="none")
     assert pipeline.run().errors
-    ledger = pl.Ledger(str(root))
+    ledger = pipeline.loader.ledger
     assert sorted(row["status"] for row in ledger.rows.values()) == ["error", "ingested"]
     monkeypatch.setattr(Store, "add", original)
     retry = pl.create_document_pipeline(str(source), str(root), space="test", contextualize="none")

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import sys
@@ -482,10 +483,12 @@ class Ledger:
     manifest atomically (tmp file + rename under a lock), so a crash can never leave
     a half-written manifest behind."""
 
-    def __init__(self, root: str):
+    def __init__(self, root: str, *, namespace: str = ""):
         from commontrace import paths
 
-        self.path = os.path.join(paths.memory_dir(root), "ingest_ledger.jsonl")
+        filename = ("ingest_ledger-" + hashlib.sha256(namespace.encode("utf-8")).hexdigest() + ".jsonl"
+                    if namespace else "ingest_ledger.jsonl")
+        self.path = os.path.join(paths.memory_dir(root), filename)
         self.rows: dict[str, dict] = {}
         self.pending: dict[str, dict] = {}
         from commontrace import _jsonl
@@ -976,7 +979,11 @@ def create_document_pipeline(
     Re-running skips files that have not changed since they were ingested."""
     if contextualize not in ("none", "heuristic", "model"):
         raise ValueError("contextualize must be none, heuristic or model")
-    ledger = None if force else Ledger(dest_root)
+    # The same source can feed several owner scopes or conversation spaces.
+    # Preserve the legacy global fact ledger while isolating every other sink.
+    namespace = json.dumps(["conversation", space], separators=(",", ":")) if space else \
+        json.dumps(["facts", scope], separators=(",", ":")) if scope else ""
+    ledger = None if force else Ledger(dest_root, namespace=namespace)
     loader = DirectoryLoader(source, max_files=max_files, ledger=ledger)
     transforms: list[Transform] = [
         TextChunker(max_chars=chunk_size, overlap=overlap),

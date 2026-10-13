@@ -1279,15 +1279,22 @@ def delete_fact(root: str, fact_id: str) -> bool:
     return True
 
 
-def retire_source(root: str, source_id: str, keep: set[str]) -> int:
-    """End the facts that only *source_id* supports and that it no longer states."""
+def retire_source(root: str, source_id: str, keep: set[str], *, scopes: list[str] | None = None) -> int:
+    """End facts no longer stated by a source, optionally within its exact scope.
+
+    Connectors must pass their owner scopes: historical source identifiers can
+    be shared by several independent owner-scoped syncs.
+    """
     if not source_id:
         return 0
     ended = 0
     ended_ids: list[str] = []
+    required_scopes = _clean_scopes(scopes) if scopes is not None else None
     with mutate_facts(root) as facts:
         now_iso = _now()
         for fact in facts.values():
+            if required_scopes is not None and sorted(set(fact.scopes)) != required_scopes:
+                continue
             if fact.id in keep or fact.status != "active" or source_id not in fact.source_traces:
                 continue
             fact.source_traces = [s for s in fact.source_traces if s != source_id]

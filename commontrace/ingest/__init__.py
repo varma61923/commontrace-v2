@@ -167,13 +167,17 @@ _SKIP_DIRS = frozenset({
 
 
 def _walk_files(source: str, extensions: tuple[str, ...] | None, max_files: int | None,
-                *, stats: dict[str, int] | None = None) -> Iterator[str]:
+                *, stats: dict[str, int] | None = None, strict: bool = False) -> Iterator[str]:
     if os.path.isfile(source):
         if extensions is None or source.lower().endswith(extensions):
             yield source
         return
     count = 0
-    for dirpath, dirnames, filenames in os.walk(source):
+    def scan_error(error: OSError) -> None:
+        if strict:
+            raise error
+
+    for dirpath, dirnames, filenames in os.walk(source, onerror=scan_error):
         dirnames[:] = sorted(
             d for d in dirnames
             if d not in _SKIP_DIRS and not d.endswith(".egg-info")
