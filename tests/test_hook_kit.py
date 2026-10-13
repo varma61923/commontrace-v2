@@ -77,12 +77,22 @@ def test_agreement_once_failure_and_inheritance(tmp_path):
     )
     journal.put(record)
     kit = HookKit(root, "a", embedder=Embedder())
-    assert not kit.handle("PreToolUse", {"session_id": "r", "tool_name": "pytest"})["context"]
-    reply = kit.handle("PostToolUseFailure", {"session_id": "r", "error": "AssertionError pytest"})
+    assert not kit.handle("PreToolUse", {"session_id": "r", "tool_name": "pytest"}, deadline_ms=1000)["context"]
+    reply = kit.handle("PostToolUseFailure", {"session_id": "r", "error": "AssertionError pytest"}, deadline_ms=1000)
     assert "run pytest" in reply["context"]
-    assert kit.handle("PostToolUseFailure", {"session_id": "r", "error": "AssertionError pytest"})["context"] == ""
+    assert (
+        kit.handle("PostToolUseFailure", {"session_id": "r", "error": "AssertionError pytest"}, deadline_ms=1000)[
+            "context"
+        ]
+        == ""
+    )
     kit.handle("SubagentStart", {"session_id": "child", "parent_session_id": "r"})
-    assert kit.handle("PostToolUseFailure", {"session_id": "child", "error": "AssertionError pytest"})["context"] == ""
+    assert (
+        kit.handle("PostToolUseFailure", {"session_id": "child", "error": "AssertionError pytest"}, deadline_ms=1000)[
+            "context"
+        ]
+        == ""
+    )
 
 
 def test_poison_quarantine_timeout_and_budget(tmp_path):
@@ -106,9 +116,7 @@ def test_all_agent_adapters_share_event_core(tmp_path, agent):
     kit = HookKit(str(tmp_path), "a")
     manifest = kit.manifest(agent)
     assert set(manifest["events"]) == set(EVENTS)
-    assert all(
-        "hook_bridge.py" in command for command in manifest["events"].values()
-    )
+    assert all("hook_bridge.py" in command for command in manifest["events"].values())
 
 
 def test_render_replaces_trailing_block_and_escapes():
