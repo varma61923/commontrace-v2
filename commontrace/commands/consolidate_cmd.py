@@ -172,6 +172,7 @@ def run_facts(args: argparse.Namespace) -> int:
             report["applied"] = fc.apply_clusters(root, report)
     except (ValueError, RuntimeError, OSError, PermissionError) as exc:
         print(f"[commontrace] {exc}", file=sys.stderr)
+        return 2
     from commontrace.telemetry import redact_mapping
 
     safe_report = redact_mapping(report) if isinstance(report, dict) else report
