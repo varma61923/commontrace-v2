@@ -240,7 +240,7 @@ def evaluate(dataset: str, data: str, *, budgets: Sequence[int] = (1500, 7000),
         raise ValueError("budgets must be unique integers between 1 and 100000")
     if candidate not in ("coverage-v1", "coverage-v2"):
         raise ValueError("candidate must be coverage-v1 or coverage-v2")
-    strategies = ("legacy", candidate)
+    strategies: tuple[Strategy, Strategy] = ("legacy", candidate)
     before = hashlib.sha256(Path(data).read_bytes()).hexdigest()
     implementation = implementation_digest()
     cases = load_cases(dataset, data, limit=limit, seed=seed)
