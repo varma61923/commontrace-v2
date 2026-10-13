@@ -4,10 +4,21 @@ import asyncio
 import base64
 import io
 import json
+import urllib.error
 
 import pytest
 
 from commontrace import llm, mcp_tools, vision
+from commontrace.circuit_breaker import CircuitBreaker
+
+
+@pytest.fixture(autouse=True)
+def isolated_provider_state():
+    llm._CIRCUITS.clear()
+    llm._OVERLOADS.clear()
+    yield
+    llm._CIRCUITS.clear()
+    llm._OVERLOADS.clear()
 
 
 def _payload(result) -> dict:
@@ -47,6 +58,11 @@ class TestVisionDisabledByDefault:
         assert isinstance(vision.describe_image(str(path)), str)
         monkeypatch.setenv("COMMONTRACE_VISION_ENABLED", "1")
         monkeypatch.setenv("COMMONTRACE_LLM_API_KEY", "k")
+
+        def unavailable(*_args):
+            raise TimeoutError("mock provider unavailable")
+
+        monkeypatch.setattr(llm, "_post_json", unavailable)
         out = vision.describe_image(str(path), enabled=True)
         assert isinstance(out, str)
 
@@ -151,6 +167,152 @@ class TestImagePayloadShapes:
         text, _ = llm.complete_with_image(
             llm.Config(provider="ollama", model="m", api_key=""), "p", b"b", "image/png")
         assert text == "ok" and seen["url"].startswith("http://localhost:11434/v1/")
+
+
+class TestVisionProviderRecovery:
+    def test_provider_retry_after_from_vision_applies_to_text(self, monkeypatch):
+        from commontrace.overload import Overloaded, OverloadPolicy
+
+        policy = OverloadPolicy(clock=lambda: 100.0)
+        monkeypatch.setattr(llm._OVERLOADS, "get_or_load", lambda _key, _loader: policy)
+        monkeypatch.setenv("COMMONTRACE_LLM_CIRCUIT_BREAKER", "1")
+        monkeypatch.setenv("COMMONTRACE_LLM_CACHE", "0")
+        calls = []
+
+        def limited(*args):
+            calls.append(args)
+            raise urllib.error.HTTPError("https://example", 429, "limited", {"Retry-After": "20"}, None)
+
+        monkeypatch.setattr(llm, "_post_json", limited)
+        config = _vision_config()
+        with pytest.raises(urllib.error.HTTPError):
+            llm.complete_with_image(config, "p", b"b", "image/png")
+        with pytest.raises(Overloaded) as error:
+            llm.complete("p", config)
+        assert error.value.retry_after == 20
+        assert len(calls) == 1
+
+    def test_cached_text_survives_vision_outage_without_caching_images(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("COMMONTRACE_LLM_CACHE", "1")
+        monkeypatch.setenv("COMMONTRACE_LLM_CACHE_PATH", str(tmp_path / "llm.db"))
+        monkeypatch.setenv("COMMONTRACE_LLM_CIRCUIT_BREAKER", "1")
+        config = _vision_config()
+        monkeypatch.setattr(llm, "_call_anthropic", lambda *_args: ("cached text", {}))
+        assert llm.complete("same prompt", config)[0] == "cached text"
+
+        def unavailable(*_args):
+            raise TimeoutError("offline")
+
+        monkeypatch.setattr(llm, "_post_json", unavailable)
+        for _ in range(5):
+            with pytest.raises(TimeoutError):
+                llm.complete_with_image(config, "same prompt", b"b", "image/png")
+        text, usage = llm.complete("same prompt", config)
+        assert text == "cached text" and usage["_commontrace_cache_hit"] is True
+        with pytest.raises(llm.LLMUnavailable, match="retry in"):
+            llm.complete_with_image(config, "same prompt", b"b", "image/png")
+
+    def test_vision_outage_protects_text_and_isolates_provider_context(self, monkeypatch):
+        monkeypatch.setenv("COMMONTRACE_LLM_CIRCUIT_BREAKER", "1")
+        monkeypatch.setenv("COMMONTRACE_LLM_CACHE", "0")
+        calls = []
+
+        def unavailable(*args):
+            calls.append(args)
+            raise urllib.error.URLError("offline")
+
+        monkeypatch.setattr(llm, "_post_json", unavailable)
+        config = _vision_config()
+        for _ in range(5):
+            with pytest.raises(urllib.error.URLError):
+                llm.complete_with_image(config, "p", b"b", "image/png")
+        with pytest.raises(llm.LLMUnavailable, match="retry in"):
+            llm.complete_with_image(config, "p", b"b", "image/png")
+        with pytest.raises(llm.LLMUnavailable, match="retry in"):
+            llm.complete("p", config)
+        assert len(calls) == 5
+        for other in (_vision_config(api_key="other"), _vision_config(cache_namespace="other"),
+                      _vision_config(base_url="https://other"), _vision_config(model="other")):
+            with pytest.raises(urllib.error.URLError):
+                llm.complete_with_image(other, "p", b"b", "image/png")
+        assert len(calls) == 9
+        monkeypatch.setenv("COMMONTRACE_LLM_CIRCUIT_BREAKER", "0")
+        with pytest.raises(urllib.error.URLError):
+            llm.complete_with_image(config, "p", b"b", "image/png")
+        assert len(calls) == 10
+
+    def test_recovery_and_permanent_errors(self, monkeypatch):
+        clock = [100.0]
+        breaker = CircuitBreaker(threshold=1, recovery_seconds=10, clock=lambda: clock[0])
+        monkeypatch.setattr(llm._CIRCUITS, "get_or_load", lambda _key, _loader: breaker)
+        monkeypatch.setenv("COMMONTRACE_LLM_CIRCUIT_BREAKER", "1")
+
+        def unavailable(*_args):
+            raise TimeoutError("offline")
+
+        monkeypatch.setattr(llm, "_post_json", unavailable)
+        config = _vision_config()
+        with pytest.raises(TimeoutError):
+            llm.complete_with_image(config, "p", b"b", "image/png")
+        with pytest.raises(llm.LLMUnavailable, match="retry in"):
+            llm.complete_with_image(config, "p", b"b", "image/png")
+        clock[0] += 10
+        monkeypatch.setattr(llm, "_post_json", lambda *_args: {"content": [{"text": "healthy"}]})
+        assert llm.complete_with_image(config, "p", b"b", "image/png")[0] == "healthy"
+
+        def unauthorized(*_args):
+            raise urllib.error.HTTPError("https://example", 401, "unauthorized", {}, None)
+
+        monkeypatch.setattr(llm, "_post_json", unauthorized)
+        for _ in range(6):
+            with pytest.raises(urllib.error.HTTPError):
+                llm.complete_with_image(config, "p", b"b", "image/png")
+
+    def test_outage_and_open_circuit_fall_back_to_metadata(self, tmp_path, monkeypatch):
+        path = tmp_path / "photo.png"
+        path.write_bytes(b"\x89PNG\r\n\x1a\n")
+        monkeypatch.setenv("COMMONTRACE_LLM_CIRCUIT_BREAKER", "1")
+        calls = []
+
+        def unavailable(*args):
+            calls.append(args)
+            raise TimeoutError("offline")
+
+        monkeypatch.setattr(llm, "_post_json", unavailable)
+        for _ in range(7):
+            assert vision.describe_image(str(path), config=_vision_config(), enabled=True) == (
+                "image photo.png (image/png, 8 bytes)")
+        assert len(calls) == 5
+
+    def test_oversized_images_use_bounded_reads(self, tmp_path, monkeypatch):
+        path = tmp_path / "large.png"
+        with path.open("wb") as stream:
+            stream.write(b"\x89PNG\r\n\x1a\n")
+            stream.truncate(vision.MAX_IMAGE_BYTES * 4)
+        reads = []
+        original_open = open
+
+        class GuardedFile:
+            def __enter__(self):
+                self.stream = original_open(path, "rb")
+                return self
+
+            def __exit__(self, *_args):
+                self.stream.close()
+
+            def fileno(self):
+                return self.stream.fileno()
+
+            def read(self, count=-1):
+                reads.append(count)
+                assert 0 <= count <= vision.MAX_IMAGE_BYTES + 1
+                return self.stream.read(count)
+
+        monkeypatch.setattr(vision, "open", lambda *_args: GuardedFile(), raising=False)
+        monkeypatch.setattr(llm, "complete_with_image", lambda *_args: pytest.fail("oversized image sent"))
+        assert vision.describe_image(str(path), config=_vision_config(), enabled=True) == (
+            f"image large.png (image/png, {vision.MAX_IMAGE_BYTES * 4} bytes)")
+        assert reads == [vision.MAX_IMAGE_BYTES + 1]
 
 
 class TestGraphVizMcpTool:

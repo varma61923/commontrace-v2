@@ -62,8 +62,10 @@ def _provider_call(cfg: Config, prompt: str, caller) -> tuple[str, dict]:
     key = (cfg.provider, cfg.model, cfg.base_url, cfg.region, cfg.project, cfg.cache_namespace,
            _credential_hash(cfg.api_key))
     overload = _OVERLOADS.get_or_load(key, OverloadPolicy)
+    # A local admission refusal says nothing about provider health and must
+    # neither reset a circuit nor consume its single recovery probe.
+    overload.admit()
     def dispatch():
-        overload.admit()
         try:
             value = caller(cfg, prompt)
         except Exception as exc:
@@ -298,7 +300,17 @@ def _call_openai_compatible(config: Config, prompt: str) -> tuple[str, dict]:
 def complete_with_image(
     config: Config, prompt: str, image_bytes: bytes, mime: str,
 ) -> tuple[str, dict]:
-    """Ask the model about an image, returning (text, usage)."""
+    """Ask about an image with the same account-scoped admission as text.
+
+    Vision and text share provider cooldowns and circuit recovery. Image
+    completions are not retained in the text completion cache.
+    """
+    return _provider_call(config, prompt, lambda cfg, text: _call_with_image(cfg, text, image_bytes, mime))
+
+
+def _call_with_image(
+    config: Config, prompt: str, image_bytes: bytes, mime: str,
+) -> tuple[str, dict]:
     import base64
 
     provider = "openai-compatible" if config.provider == "ollama" else config.provider

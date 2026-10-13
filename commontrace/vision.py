@@ -62,18 +62,21 @@ def describe_image(
     """Describe the image at `path`, or return metadata when vision is off."""
     try:
         with open(path, "rb") as fh:
-            blob = fh.read()
+            size = os.fstat(fh.fileno()).st_size
+            # Bound allocation even for oversized images or files that grow
+            # after the size check. One extra byte detects that growth.
+            blob = fh.read(MAX_IMAGE_BYTES + 1)
     except (OSError, ValueError):
         return None
     except Exception:  # noqa: BLE001 - never raise from a caption helper
         return None
 
     mime = _mime_for(path, blob)
-    metadata = _metadata(mime, len(blob), path)
+    metadata = _metadata(mime, max(size, len(blob)), path)
 
     if not _enabled(enabled):
         return metadata
-    if len(blob) > MAX_IMAGE_BYTES:
+    if max(size, len(blob)) > MAX_IMAGE_BYTES:
         return metadata
     try:
         cfg = config or _llm_mod.load_config()

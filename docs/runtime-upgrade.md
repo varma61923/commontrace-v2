@@ -93,7 +93,12 @@ probe is admitted after cooldown. Generation fencing prevents older requests
 from closing a newly opened circuit. Permanent failures do not trip the breaker;
 existing successful cache hits remain usable. Breaker retention is bounded to
 128 provider contexts for one hour. Set `COMMONTRACE_LLM_CIRCUIT_BREAKER=0` to
-disable it. This breaker is process-local and does not wrap vision completions.
+disable it. This breaker is process-local. Image completions now share the same
+account/model/endpoint circuit and overload admission as text, including recovery
+probes and Retry-After cooldowns. Image responses do not use the text cache;
+existing text cache hits remain available during an outage. Local cooldown
+refusals do not count as evidence of provider health. A failing custom transient
+classifier releases the recovery probe without declaring the provider healthy.
 
 ### Gateway credential lifecycle
 
@@ -174,7 +179,7 @@ the adapter is not a substitute for an authenticated multi-tenant service.
 | Closing cache / safe resource lifecycle | Explicit SQLite closure and weak corpus ownership implemented; no open-resource LRU added. |
 | Gateway token expiry, rotation, revocation | Implemented for file-backed gateways, with live reload and CLI controls. |
 | Secret-manager integration | AWS and injectable providers implemented; HMAC pepper migration and automatic reload of held service config remain open. |
-| Circuit breaker | Implemented for text completions; multi-process and vision breakers remain open. |
+| Circuit breaker | Implemented for text and vision completions; multi-process coordination remains open. |
 | Identity key protection | Configured Mem0 search scope pinned; existing Hub authentication/RLS remains authoritative. |
 | Interface adapters / dependency injection | Structural memory/secret contracts and gateway token-provider injection implemented; a wholesale storage rewrite or service-container framework is not added. |
 | Phased batches, hybrid scoring, cached indexes | Already present in substantial form. This change improves fan-out admission and preserves scoring quality instead of substituting arbitrary weights. |

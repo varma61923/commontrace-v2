@@ -83,6 +83,7 @@ def test_only_one_half_open_probe_is_admitted_and_cancellation_releases_it():
 
 def test_complete_uses_scoped_circuits_and_does_not_count_permanent_errors(monkeypatch):
     llm._CIRCUITS.clear()
+
     monkeypatch.delenv("COMMONTRACE_LLM_CACHE", raising=False)
     monkeypatch.delenv("COMMONTRACE_LLM_CIRCUIT_BREAKER", raising=False)
     calls = []
@@ -105,3 +106,52 @@ def test_complete_uses_scoped_circuits_and_does_not_count_permanent_errors(monke
     with pytest.raises(urllib.error.URLError):
         llm.complete("q", one)
     llm._CIRCUITS.clear()
+
+
+def test_classifier_failure_releases_half_open_probe():
+    clock = [100.0]
+    breaker = CircuitBreaker(threshold=1, recovery_seconds=10, clock=lambda: clock[0])
+
+    def unavailable():
+        raise TimeoutError("provider unavailable")
+
+    with pytest.raises(TimeoutError):
+        breaker.call(unavailable, transient=lambda _error: True)
+    clock[0] += 10
+
+    def broken_classifier(_error):
+        raise ValueError("classifier failed")
+
+    with pytest.raises(ValueError, match="classifier failed"):
+        breaker.call(unavailable, transient=broken_classifier)
+    # Classification did not establish health: there is still a single probe.
+    assert breaker.call(lambda: "recovered", transient=lambda _error: True) == "recovered"
+
+
+def test_local_cooldown_does_not_close_half_open_circuit(monkeypatch):
+    from commontrace.overload import Overloaded
+
+    clock = [100.0]
+    breaker = CircuitBreaker(threshold=1, recovery_seconds=10, clock=lambda: clock[0])
+
+    def unavailable():
+        raise TimeoutError("unavailable")
+
+    with pytest.raises(TimeoutError):
+        breaker.call(unavailable, transient=lambda _error: True)
+    clock[0] += 10
+    monkeypatch.setattr(llm._CIRCUITS, "get_or_load", lambda _key, _loader: breaker)
+    monkeypatch.delenv("COMMONTRACE_LLM_CIRCUIT_BREAKER", raising=False)
+
+    class Cooldown:
+        def admit(self):
+            raise Overloaded(10)
+
+    monkeypatch.setattr(llm._OVERLOADS, "get_or_load", lambda _key, _loader: Cooldown())
+    with pytest.raises(Overloaded):
+        llm._provider_call(llm.Config("anthropic", "m", "k"), "q", lambda *_args: pytest.fail("no call"))
+    # A subsequent failed recovery must reopen immediately, not after five calls.
+    with pytest.raises(TimeoutError):
+        breaker.call(unavailable, transient=lambda _error: True)
+    with pytest.raises(CircuitOpenError):
+        breaker.call(lambda: "unexpectedly healthy", transient=lambda _error: True)
