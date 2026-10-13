@@ -79,7 +79,7 @@ def test_covariate_file_validation(tmp_path):
 def test_cli_by_agent_type_end_to_end(tmp_path, capsys):
     root = str(tmp_path)
     assert main(["init", "--dest", root]) == 0
-    config = holdout_io.configure(root, rate=0.5)
+    config = holdout_io.configure(root, rate=0.5, salt="heterogeneity-cli-fixture")
     rng = random.Random(11)
     for agent_type, base, effect in (("support", 0.4, 0.4), ("sales", 0.6, -0.4)):
         for i in range(160):
