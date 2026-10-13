@@ -108,7 +108,11 @@ def assert_admitted(corpus: Corpus, payload: dict[str, Any], scorer: str) -> Non
     # BM25 reports stemmed index terms; the legacy overlap profile preserves
     # literal terms. These fixed expectations do not call the scorer itself.
     expected_terms = ["aster", "gatewai", "timeout"] if scorer == "bm25-v1" else ["aster", "gateway", "timeout"]
-    assert target["provenance"]["search"] == {"scorer": scorer, "matched_terms": expected_terms}
+    search_prov = target["provenance"]["search"]
+    assert search_prov.get("scorer") == scorer
+    assert search_prov.get("matched_terms") == expected_terms
+    if "dense_cosine" in search_prov:
+        assert isinstance(search_prov["dense_cosine"], (int, float))
     assert any(node["quote"] == corpus.source.statement for node in target["provenance"]["evidence_context"]["nodes"])
 
 

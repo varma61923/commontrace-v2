@@ -37,7 +37,10 @@ def codegraph_run(args):
 def migrate_add_parser(subparsers):
     from commontrace import migration
 
-    parser = subparsers.add_parser("migrate", help="Import a Mem0, Letta, Zep or Graphiti JSON export safely.")
+    parser = subparsers.add_parser(
+        "migrate",
+        help="Import a Mem0, Letta, Zep, Graphiti, Cognee, Supermemory, Hindsight, or EverOS JSON export safely.",
+    )
     parser.add_argument("vendor", choices=(*migration.VENDORS, "config"))
     parser.add_argument("file", nargs="?")
     parser.add_argument("--context", action="append", default=[])

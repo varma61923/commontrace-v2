@@ -255,3 +255,138 @@ def test_apply_store_skips_bad_records(store):
     ])
     assert counts == {"lesson": 0, "fact": 1, "graph_node": 0, "graph_edge": 0,
                       "block": 0, "trace": 0, "skipped": 3}
+
+
+class TestCogneeAdapter:
+    COGNEE = {
+        "nodes": [
+            {"id": "n1", "name": "Auth Service", "description": "Handles OAuth and JWT tokens.", "type": "service"},
+            {"id": "n2", "name": "Postgres", "description": "Primary relational database.", "type": "database"},
+        ],
+        "edges": [
+            {"source": "n1", "target": "n2", "relation": "stores_tokens_in", "id": "e1"},
+        ],
+        "chunks": [
+            {"id": "c1", "text": "Token refresh timeout is 30 seconds."},
+        ],
+    }
+
+    def test_cognee_dump_becomes_graph_and_fact_records(self):
+        records = interop.import_cognee_dump(self.COGNEE)
+        assert len(records) == 6  # 2 nodes + 2 facts (from descriptions) + 1 edge + 1 chunk fact
+        kinds = [r["kind"] for r in records]
+        assert kinds.count("graph_node") == 2
+        assert kinds.count("graph_edge") == 1
+        assert kinds.count("fact") == 3
+
+    def test_cognee_records_apply_to_store(self, store):
+        from commontrace import hierarchical
+
+        main(["init", "--agent-type", "code", "--dest", str(store)])
+        counts = interop.apply_store(str(store), interop.import_cognee_dump(self.COGNEE))
+        assert counts["graph_node"] == 2
+        assert counts["graph_edge"] == 1
+        assert counts["fact"] == 3
+        facts = [f.statement for f in hierarchical.load_facts(str(store)).values()]
+        assert "Token refresh timeout is 30 seconds." in facts
+
+
+class TestSupermemoryAdapter:
+    SUPERMEMORY = {
+        "documents": [
+            {"id": "d1", "title": "Architecture Guide", "content": "Microservices communicate via gRPC.",
+             "summary": "System uses gRPC for IPC."},
+        ],
+        "chunks": [
+            {"id": "c1", "content": "Connection pool size is 20."},
+        ],
+        "memories": [
+            {"id": "m1", "content": "Deployments happen on Tuesdays."},
+        ],
+    }
+
+    def test_supermemory_dump_becomes_block_and_fact_records(self):
+        records = interop.import_supermemory_dump(self.SUPERMEMORY)
+        assert len(records) == 4  # 1 block + 1 summary fact + 1 chunk fact + 1 memory fact
+        kinds = [r["kind"] for r in records]
+        assert kinds.count("block") == 1
+        assert kinds.count("fact") == 3
+
+    def test_supermemory_records_apply_to_store(self, store):
+        from commontrace import memory_blocks
+
+        main(["init", "--agent-type", "code", "--dest", str(store)])
+        counts = interop.apply_store(str(store), interop.import_supermemory_dump(self.SUPERMEMORY))
+        assert counts["block"] == 1
+        assert counts["fact"] == 3
+        assert memory_blocks.get_block(str(store), "architecture-guide").content == "Microservices communicate via gRPC."
+
+
+class TestHindsightAdapter:
+    HINDSIGHT = {
+        "facts": [
+            {"id": "f1", "text": "Staging uses Redis 7.2.", "valid_at": "2026-01-01T00:00:00Z"},
+        ],
+        "mental_models": [
+            {"id": "mm1", "name": "Caching Strategy", "content": "Cache invalidate on tenant update."},
+        ],
+        "observations": [
+            {"id": "o1", "text": "Latency spikes at 09:00 UTC."},
+        ],
+        "directives": [
+            {"id": "dir1", "text": "Never commit unencrypted secrets."},
+        ],
+    }
+
+    def test_hindsight_dump_becomes_facts_and_blocks(self):
+        records = interop.import_hindsight_dump(self.HINDSIGHT)
+        assert len(records) == 5  # 1 fact + 1 model block + 1 model fact + 1 obs fact + 1 directive fact
+        kinds = [r["kind"] for r in records]
+        assert kinds.count("fact") == 4
+        assert kinds.count("block") == 1
+
+    def test_hindsight_records_apply_to_store(self, store):
+        from commontrace import hierarchical
+
+        main(["init", "--agent-type", "code", "--dest", str(store)])
+        counts = interop.apply_store(str(store), interop.import_hindsight_dump(self.HINDSIGHT))
+        assert counts["fact"] == 4
+        assert counts["block"] == 1
+        facts = [f.statement for f in hierarchical.load_facts(str(store)).values()]
+        assert "Never commit unencrypted secrets." in facts
+
+
+class TestEverosAdapter:
+    EVEROS = {
+        "atomic_facts": [
+            {"id": "af1", "fact": "Postgres port is 5432.", "valid_from": "2026-01-01T00:00:00Z"},
+        ],
+        "agent_skills": [
+            {"id": "sk1", "name": "Database Migration", "skill": "Run migrations in dry-run mode first.",
+             "trigger": "before applying migrations", "source_case_ids": ["c1", "c2"]},
+        ],
+        "agent_cases": [
+            {"id": "ac1", "task_intent": "fixing timeout", "insight": "Increase socket timeout to 60s."},
+        ],
+        "memcells": [
+            {"id": "cell1", "session_id": "session-42", "content": "User asked to refactor auth controller."},
+        ],
+    }
+
+    def test_everos_dump_becomes_lessons_facts_and_blocks(self):
+        records = interop.import_everos_dump(self.EVEROS)
+        assert len(records) == 4  # 1 fact + 1 lesson + 1 case fact + 1 block
+        kinds = [r["kind"] for r in records]
+        assert "fact" in kinds
+        assert "lesson" in kinds
+        assert "block" in kinds
+
+    def test_everos_records_apply_to_store(self, store):
+        main(["init", "--agent-type", "code", "--dest", str(store)])
+        counts = interop.apply_store(str(store), interop.import_everos_dump(self.EVEROS))
+        assert counts["fact"] == 2
+        assert counts["lesson"] == 1
+        assert counts["block"] == 1
+        lesson_path = os.path.join(str(store), "memory", "lessons", "lesson_sk1.md")
+        assert os.path.isfile(lesson_path)
+

@@ -239,6 +239,11 @@ def test_backend_factory_physically_isolates_owner_datasets(tmp_path):
     ("graphiti", {"nodes": [{"uuid": "node-a", "name": "Office"}, {"uuid": "node-b", "name": "Tokyo"}],
                   "edges": [{"uuid": "edge-a", "source_node_uuid": "node-a", "target_node_uuid": "node-b",
                              "fact": "Office is Tokyo", "valid_at": "2025-01-01T00:00:00Z"}]}),
+    ("cognee", {"nodes": [{"id": "n1", "name": "Office", "description": "Office is Tokyo"}],
+                "edges": [{"source": "n1", "target": "n2", "relation": "located_in"}]}),
+    ("supermemory", {"memories": [{"id": "sm1", "content": "Office is Tokyo"}]}),
+    ("hindsight", {"facts": [{"id": "hf1", "text": "Office is Tokyo", "valid_at": "2025-01-01T00:00:00Z"}]}),
+    ("everos", {"atomic_facts": [{"id": "ef1", "fact": "Office is Tokyo", "valid_from": "2025-01-01T00:00:00Z"}]}),
 ])
 def test_all_vendor_migrations_are_reviewable_scoped_and_replayable(tmp_path, vendor, document):
     root = str(tmp_path)
