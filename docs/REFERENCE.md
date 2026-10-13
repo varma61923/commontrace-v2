@@ -764,8 +764,7 @@ agent = create_react_agent(
 The hook uses `configurable.thread_id` for causal occasion tracking and fails
 open when recall is unavailable. This adapter targets LangGraph's explicit
 `pre_model_hook` contract; `create_react_agent` is deprecated in favor of
-`langchain.agents.create_agent` middleware. See
-[`next-generation-langgraph-pre-model-hook.md`](strategy/next-generation-langgraph-pre-model-hook.md).
+`langchain.agents.create_agent` middleware.
 Hub: `HUB_OTLP_INGEST_ENABLED=true` accepts OTLP/JSON spans at `POST /v1/traces`.
 
 Hub outcome connectors (Zendesk, GitHub): a system of record's signed webhooks record how occasions
@@ -1017,12 +1016,10 @@ crew = Crew(
 
 Reference `{commontrace_memory}` in a task prompt to use retrieved context. The
 after callback returns CrewAI's output unchanged and records kickoff completion;
-completion does not claim application-level success. See
-[`next-generation-crewai-kickoff-memory.md`](strategy/next-generation-crewai-kickoff-memory.md)
-for scope and fail-open behavior. A provider-free runtime test passed both
-`kickoff()` and `akickoff()` on CrewAI 1.15.27; it also confirmed that the
-synchronous callbacks block native `akickoff()`'s event loop. See the
-[`runtime validation note`](strategy/next-generation-crewai-runtime-validation.md).
+completion does not claim application-level success. Scope and fail-open behavior
+are preserved. A provider-free runtime test passed both `kickoff()` and `akickoff()`
+on CrewAI 1.15.27; it also confirmed that the synchronous callbacks block native
+`akickoff()`'s event loop.
 
 For Google ADK, pair a scoped before-model callback with a completion callback
 on `LlmAgent`:
@@ -1042,8 +1039,7 @@ agent = LlmAgent(
 The first callback captures the user turn and injects retrieved context into
 the model request. The second records current-invocation assistant text while
 returning `None` so ADK preserves its result. A provider-free runtime smoke
-passed with ADK's `InMemoryRunner` and `MockModel`; see the
-[`Google ADK evidence note`](strategy/next-generation-google-adk-runtime.md).
+passed with ADK's `InMemoryRunner` and `MockModel`.
 
 The optional Microsoft Agent Framework provider uses its current async context
 provider lifecycle. Install `agent-framework-core`, pin a user scope, and add
@@ -1067,8 +1063,7 @@ response = await agent.run("What is the release procedure?", session=session)
 The provider captures the user turn and retrieves in `before_run`, then records
 the assistant response once per turn in `after_run`; both paths fail open on
 memory outages. Missing user or session identity is a configuration error to
-prevent an unscoped request. See
-[`next-generation-microsoft-agent-framework-provider.md`](strategy/next-generation-microsoft-agent-framework-provider.md).
+prevent an unscoped request.
 
 For the OpenAI Agents SDK, `OpenAIAgentsMemory` adds automatic retrieval via
 `RunConfig.call_model_input_filter` and final result capture through
@@ -1109,17 +1104,14 @@ result = await agent.run("What response style do I prefer?", conversation_id="ch
 Both SDKs remain optional dependencies. Provider-free lifecycle smokes
 passed with OpenAI Agents `ScriptedModel` (`openai-agents==0.23.1`) and Pydantic
 AI `TestModel` (`pydantic-ai==2.55.0`). They did not exercise provider transport
-or credentials. See the dedicated [OpenAI](strategy/next-generation-openai-agents-middleware.md)
-and [Pydantic AI](strategy/next-generation-pydantic-ai-capabilities.md)
-evidence notes.
+or credentials.
 
 For TypeScript agents, `@commontrace/hub-client` exports
 `vercelMemoryMiddleware`, `mastraMemoryProcessor`, and
 `mastraMemoryOutputProcessor`. Vercel's wrapper follows its current V4
 middleware contract; Mastra's processors use its tagged `MessageList` API.
 Session IDs should be resolved per request when sharing an adapter across
-threads. See the [SDK setup and examples](../sdk/typescript/README.md) and the
-[adapter evidence note](strategy/next-generation-typescript-framework-middleware.md).
+threads. See the [SDK setup and examples](../sdk/typescript/README.md).
 
 For sustained asynchronous ingestion, use `async with await
 AsyncStore.open(root, space)` from `commontrace.conversation` and pass the store

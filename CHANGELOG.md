@@ -14,20 +14,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   wording on `PostToolUseFailure` adds timeout aliases to sparse ranking. The
   cached 20-repeat maintainer fixture measured 1.00 precision/recall across its
   four event types (380/380 expected injections); its five unique cases per
-  non-prompt event do not establish production quality. See the [injector
-  evidence](docs/strategy/next-generation-f2-injector-event-precision.md) and
-  [failure-recall follow-up](docs/strategy/next-generation-f2-posttool-failure-recall.md).
+  non-prompt event do not establish production quality. See the injector
+  evidence and
+  failure-recall follow-up.
 - **Runnable TypeScript package exports.** The package now points `main`,
   `types`, and exports to the compiler's actual `dist/src` output. A temporary
   local-tarball consumer installed the package and completed add/reflect in
   7.94 seconds; registry publication and installation remain unmeasured. See
-  the [first-recall report](docs/strategy/next-generation-first-recall-smoke.md).
+  the first-recall report.
 - **Portable local Docker entrypoint.** `Dockerfile.local` now copies the
   entrypoint and applies its executable bit in a separate layer, which builds
   with Docker's legacy builder. Offline add/recall passed in 2.077 seconds from
   first container start using a prebuilt local image; this host required a
   temporary isolated build context because its legacy builder ignores the
-  Dockerfile-specific ignore file. See the [Docker measurement and limits](docs/strategy/next-generation-first-recall-smoke.md).
+  Dockerfile-specific ignore file. See the Docker measurement and limits.
 - **Legacy Docker build helper.** `scripts/build_local_image.py` creates an
   allowlisted temporary build context and removes it after the Docker command.
   Its three focused tests pass; a fresh build could not be verified because
@@ -36,62 +36,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   compares the session-prior candidate on the official cleaned 100-question
   artifact. It improved evidence by 0.51pp with a confidence interval crossing
   zero and reduced turn recall@5 by 3.40pp, so no retrieval default changed.
-  See the [candidate no-go](docs/strategy/next-generation-target-c-session-prior-no-go.md).
+  See the candidate no-go.
 - **Coverage-driven second-pass retrieval audit.** On 100 LongMemEval and 200
   held-out LoCoMo questions, the existing optional second pass left every
   ranked list and quality metric unchanged while increasing measured latency.
   It remains disabled; no retrieval code changed. See the
-  [paired no-go report](docs/strategy/next-generation-target-c-multiround-no-go.md).
+  paired no-go report.
 - **Dense candidate-cap safety audit.** A 10K-fact fixture showed that lowering
   the local dense cap from 200 to 50 loses an in-scope result ranked 61st before
   canonical scope admission. The optimization was rejected; see the
-  [reproduction and findings](docs/strategy/next-generation-f3-candidate-cap-no-go.md).
-- **Predeclared sequential mixture horizons.** The anytime analyzer and the allocation benchmark now fix the beta-mixture horizon before observing outcomes; production lesson analysis defaults to a fixed 50%-baseline design, and CodingLessonBench accepts per-task planned horizons. The regenerated 400-run allocation report shows empirical coverage above 95% in all cells, while AIPW coverage remains asymptotic and the +5pp power gate remains open. See the [allocation report](docs/benchmarks/adaptive-allocation.md) and [stratified estimator note](docs/strategy/next-generation-codinglesson-stratified-uplift.md).
+  reproduction and findings.
+- **Predeclared sequential mixture horizons.** The anytime analyzer and the allocation benchmark now fix the beta-mixture horizon before observing outcomes; production lesson analysis defaults to a fixed 50%-baseline design, and CodingLessonBench accepts per-task planned horizons. The regenerated 400-run allocation report shows empirical coverage above 95% in all cells, while AIPW coverage remains asymptotic and the +5pp power gate remains open. See the [allocation report](docs/benchmarks/adaptive-allocation.md) and stratified estimator note.
 - **Task-stratified CodingLessonBench gate.** Multi-task causal estimates now
   weight each task's injected-versus-withheld success-rate difference by a
   target distribution fixed before runner execution. The simultaneous 95%
   interval reuses per-task anytime-valid bounds with Bonferroni correction and
   remains unevaluated for unresolved outcomes or underpowered strata. Fixture
   validation does not establish real SWE uplift. See the
-  [estimator note](docs/strategy/next-generation-codinglesson-stratified-uplift.md).
+  estimator note.
 - **Event-specific injector evidence.** The offline BGE-small fixture measures
   `UserPromptSubmit`, `PreToolUse`, `PostToolUseFailure`, and `PreCompact`
   separately; precision/recall and warm p95 are reported per event. `PreToolUse`
   precision is 0.75 against the 0.80 precision gate, and failure-event recall
   is 0.667. This small maintainer-labeled fixture does not establish production
   precision. See the
-  [event evidence note](docs/strategy/next-generation-f2-injector-event-precision.md).
+  event evidence note.
 - **Graph edge-pair evaluation.** The Graphiti-adapted synthetic fixture now
   scores deterministic duplicate, contradiction-candidate, and endpoint-pair
   decisions. The evaluator resolved five of ten cases with full agreement and
   abstained on the other five; this is fixture coverage, not a production
-  quality estimate. See the [F8 supplement](docs/strategy/next-generation-f8-graph-dedup-fixture.md).
+  quality estimate. See the F8 supplement.
 - **Accepted-request hook recovery.** The native bridge now falls back to its
   detached capture writer when an accepted broker request times out or returns
   malformed data. A shared event ID makes the retry idempotent across a broker
   commit/failure race; four recovery scenarios leave exactly one journal row.
   This adapts Mem0's durable handoff/retry discipline to the existing SQLite
-  journal. See the [recovery note](docs/strategy/next-generation-hook-accepted-request-recovery.md).
+  journal. See the recovery note.
 - **Model-judged context completeness.** The conversation benchmark can report
   Zep-style `COMPLETE` / `PARTIAL` / `INSUFFICIENT` grades for retrieved context
   without generating or grading an answer. Per-category rates, bounded-call
   cost/latency, cache accounting, and evaluator provenance are separate from
   lexical completeness and answer accuracy. The focused benchmark bundle passes
   314 tests with 7 optional skips; no live model score is claimed. See the
-  [adaptation note](docs/strategy/next-generation-context-completeness.md).
+  adaptation note.
 - **Reviewed first project rule.** `commontrace up --project-rule FILE` stages
   the exact UTF-8 source as a hash-bound review candidate; it never invents
   evidence or activates the rule. Existing approval and receipt checks gate the
   first offline native SessionStart injection. The nine-case project fixture
   passes within two minutes, excluding human review and cold-install time. See
-  the [first-rule note](docs/strategy/next-generation-first-reviewed-project-rule.md).
+  the first-rule note.
 - **Project-scoped agent auto-detection.** `commontrace up` now detects known
   agents from mapped PATH executables and project or user config roots, then
   installs repository-local hooks by default. Kimi's host-global config stays
   opt-in; project-export histories remain discoverable by default. Six setup
   tests pass; GUI-only installs without
   known evidence still use `--agent`. See the
-  [detection note](docs/strategy/next-generation-up-agent-detection.md).
+  detection note.
 - **Explicit Claude Code and Codex history onboarding.**
   `commontrace up --import-agent-history` scans only host transcripts whose
   recorded working directory belongs to the project. A 32 MiB aggregate
@@ -99,7 +99,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   partial-coverage ledger bound the scan. Imported claims retain author and
   source provenance, and lesson candidates stay quarantined. Thirty focused
   import/bootstrap tests pass. See the
-  [onboarding note](docs/strategy/next-generation-f4-agent-history-onboarding.md).
+  onboarding note.
 - **Cache-only local retrieval default.** Local/team/server profiles now select
   optional FastEmbed BGE-small when its package and weights are already
   available. Conversation, fact, and graph retrieval keep their lexical paths
@@ -110,19 +110,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   evidence-in-context (+3.37 points; 95% CI +1.99 to +4.54) and 16.6/37.8 ms
   recall p95 latency. The earlier 200-question pilot had a zero-crossing quality
   interval and 67.7 ms candidate p95; no answer judge was run. See the
-  [F3 default note](docs/strategy/next-generation-f3-default-local-retrieval.md).
+  F3 default note.
 - **Scope-bound reflection cursors.** Reflection watermarks now include the
   canonical scope, preventing interleaved work with a reused session ID from
   being skipped across agents. Existing session-only cursor rows migrate to
   the scope at their sealed capture; ambiguous scopes replay safely. The
   learner and journal suite passes 59 tests. See the
-  [cursor audit](docs/strategy/next-generation-f4-reflection-cursor.md).
+  cursor audit.
 - **Opt-in semantic session segmentation.** `evolve runtime learn` now accepts
   `--semantic-segments` to run the existing bounded task-boundary detector;
   omitting the flag preserves deterministic batching. Segmentation calls use
   their own model route and token-ledger purpose. CLI and accounting tests pass;
   model boundary quality and latency remain unmeasured. See the
-  [EverOS adaptation note](docs/strategy/next-generation-f4-semantic-segmentation.md).
+  EverOS adaptation note.
 - **Optional FastEmbed CPU provider.** The opt-in `commontrace[fastembed]`
   extra enables BGE small/base through the common embedding interface. Hub
   loading is cache-only and projection identity binds the model, package
@@ -130,12 +130,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cache-only, and real local query/document embedding checks pass. The paired
   LoCoMo retrieval result is recorded with the cache-only default; Hub model
   cache provisioning remains unmeasured. See the
-  [FastEmbed note](docs/strategy/next-generation-f3-optional-fastembed.md).
+  FastEmbed note.
 - **Verified-unused MCP runner removal.** Removed one private synchronous CLI
   reconstruction path and its unused `argparse` import after a repository-wide
   reference audit. Existing asynchronous tool execution and public commands
   remain covered by 95 tests; source size fell by 26 lines with no module-count
-  change. See the [F7 evidence](docs/strategy/next-generation-f7-remove-unused-mcp-cli-runner.md).
+  change. See the F7 evidence.
 - **Hosted record hybrid projection.** Hub writes now append tenant-ordered
   snapshots in the canonical PostgreSQL transaction. A bounded worker publishes
   revision-bound pgvector snapshots before advancing its watermark, and the
@@ -148,53 +148,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   suite passes 13 cases with PostgreSQL/pgvector 0.8.2, and isolated server
   image import parity passes 11 checks. These use deterministic vectors;
   production model quality
-  and 1M server latency remain unmeasured. See the [route](docs/strategy/next-generation-hosted-hybrid-route.md),
-  [stream](docs/strategy/next-generation-hosted-vector-stream.md),
-  [worker](docs/strategy/next-generation-hosted-vector-projection.md), and
-  [pgvector evidence](docs/strategy/next-generation-hosted-pgvector-validation.md).
+  and 1M server latency remain unmeasured. See the route,
+  stream,
+  worker, and
+  pgvector evidence.
 - **Kimi active-config hook installation.** `commontrace up --agent kimi` now
   merges the hook region into the active `~/.kimi-code/config.toml` (or
   `$KIMI_CODE_HOME/config.toml`), preserving model/provider settings and other
   hooks. It no longer activates a hook-only file with `--config-file`, which
   would replace the user's normal config. Reinstallation is idempotent; focused
   hook/bootstrap tests pass. See the
-  [Kimi contract note](docs/strategy/next-generation-kimi-hook-contract.md).
+  Kimi contract note.
 - **Hindsight raw-source benchmark profile.** Added `--memory-adapter
   hindsight-raw` using the public retain/recall path with extraction disabled,
   local embeddings, native ranking, and isolated embedded storage. The contract
   tests pass, but no native vendor score was measured because the local API and
   embedding dependencies are absent. See the
-  [adapter limits](docs/strategy/next-generation-hindsight-adapter.md).
+  adapter limits.
 - **Competitor adapter feasibility audits.** Source checks found no fair,
   reproducible local raw-source profile for Cognee, Supermemory, or Letta with
   the supplied checkouts and launch contracts; no shim or unverified score was
-  added. The notes record what would make each lane reopenable: [Cognee](docs/strategy/next-generation-cognee-adapter.md),
-  [Supermemory](docs/strategy/next-generation-supermemory-adapter-no-go.md),
-  and [Letta](docs/strategy/next-generation-letta-adapter-blocker.md).
+  added. The notes record what would make each lane reopenable: Cognee,
+  Supermemory,
+  and Letta.
 - **Graphiti-inspired entity candidate indexing.** The tiered resolver now
   indexes exact aliases and uses lossless four-wide MinHash bands above its
   existing 0.75 threshold, falling back to exhaustive comparison at lower
   thresholds. A synthetic 700-entity diagnostic returned the identical pair
   set and reduced candidate-filter median from 1,641.34 ms to 56.02 ms; real
-  corpus quality is unmeasured. See the [F5 adaptation note](docs/strategy/next-generation-graphiti-f5-dedup-adaptation.md)
-  and [measurement](docs/strategy/measurements/f5-graphiti-lsh-candidate-2026-10-12.json).
+  corpus quality is unmeasured. See the F5 adaptation note
+  and measurement.
 - **Intent-relevant lesson priors.** The session learner now selects its
   bounded prior lessons using the captured task intent, so a relevant older
   lesson is not displaced by unrelated records sorted earlier by ID. Thirty-three
   focused session-learning tests pass; model-backed proposal quality and SWE
-  uplift are unmeasured. See the [EverOS adaptation note](docs/strategy/next-generation-everos-prior-relevance.md).
+  uplift are unmeasured. See the EverOS adaptation note.
 - **Shared CLI remediation hints.** Generic CLI errors now use the existing
   deterministic operator guidance from the central exception module, while
   `commontrace.remediation.hint` remains a compatibility re-export. The
   focused CLI/offline/report tests pass; Graphify's same-worktree audit moves
   from 287 to 286 reachability candidates without changing the 300-module
-  count. See the [working-tree Graphify report](docs/strategy/next-generation-graphify-current.md).
+  count. See the working-tree Graphify report.
 - **Batched hybrid candidate hydration.** Indexed search now loads its bounded
   sparse/dense ID union in chunked SQL queries after ANN lookup, inside the
   canonical read snapshot, before applying the existing eligibility checks.
   A controlled 10K ABBA diagnostic returned identical results and reduced
   median hydration latency by 7.4%; the 1M Lance hybrid gate still misses. See
-  the [F3 query optimization note](docs/strategy/next-generation-f3-query-optimization.md).
+  the F3 query optimization note.
 - **Local dense retrieval fallback.** When the optional dense projection or
   embedding stage fails, retrieval retains lexical results and records only the
   exception class in the diagnostic; caller-supplied vector search errors still
@@ -202,19 +202,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   This also applies to local cross-encoder rerankers: an uncached offline model
   preserves first-stage results, while cached models still score normally.
   Focused fallback, indexed-search, and fact-dedup tests pass; retrieval quality
-  and latency are unmeasured. See the [F3 fallback note](docs/strategy/next-generation-f3-local-dense-fallback.md).
+  and latency are unmeasured. See the F3 fallback note.
 - **Grounded retraction coverage.** Added regressions proving that local
   source-bound observations and wiki pages leave current retrieval when their
   backing fact is withdrawn, while journal history and explicit page audit stay
   available. This locks in existing behavior; see the
-  [Hindsight comparison](docs/strategy/next-generation-hindsight-retraction-grounding.md).
+  Hindsight comparison.
 - **Hosted record expiration.** Added bounded tenant-scoped `record-reap-due`
   cleanup to the Hub, with version-checked hard erasure and the existing
   derived-record/vector cascade. It requires an admin key, and the Python and
   TypeScript clients expose the operation. Fifty record/REST tests pass against
   disposable PostgreSQL 16.15 with a non-superuser owner; external vector
   behavior remains mocked. See the
-  [expiration note](docs/strategy/next-generation-hosted-expiration.md).
+  expiration note.
 - **Profile-guided result ordering.** Local and hosted turns now use only
   scoped, source-bound, user-authored dynamic preferences to rerank the search
   results already returned. The boost is capped, preserves base scores and
@@ -224,20 +224,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   preference weight before adding fresh evidence: an idle weight of 10 after
   180 days becomes 3.5 under a 90-day half-life. Twenty-one focused local and
   hosted profile/preference tests pass, including the PostgreSQL capture path.
-  See the [ranking note](docs/strategy/next-generation-profile-preference-ranking.md)
-  and [decay note](docs/strategy/next-generation-profile-reobservation-decay.md).
+  See the ranking note
+  and decay note.
 - **Offline first-recall smoke.** Added `scripts/first_recall_smoke.py` and a
   README link for a disposable `init`/`fact add`/`recall` check that returns
   the stored fact without a model key or running service. A clean Python 3.12
   venv with cached dependencies completed the full local path in 12.59 seconds;
   public registry and cold-cache installs remain unmeasured. See the
-  [smoke report](docs/strategy/next-generation-first-recall-smoke.md).
+  smoke report.
 - **Single-snapshot fact writes.** New facts reuse one detached serialized
   payload for revision hashing and SQLite staging, preserving legacy index
   subclass hooks and matching event, row and FTS content. Focused storage tests
   pass. The 1M synthetic candidate measured 1.797 ms single-write p95 and
   2,071 facts/s in one 1,000-fact batch; the narrow margin and lack of a matched
-  1M baseline are documented in the [measurement note](docs/strategy/next-generation-f1-snapshot-reuse.md).
+  1M baseline are documented in the measurement note.
 - **Profile-scoped secret references.** `profiles.<name>.secrets` now merges over
   top-level secret references, while explicit environment values retain
   precedence. The generated configuration reference includes a per-profile
@@ -249,7 +249,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   historical cost, and return an unknown total when provider pricing is absent.
   The session-ledger CLI renders unpriced calls safely. Eleven focused runtime
   and ledger tests pass; provider invoice reconciliation remains outside scope.
-  See the [F9 accounting note](docs/strategy/next-generation-f9-token-accounting.md).
+  See the F9 accounting note.
 - **TypeScript framework middleware.** The TypeScript SDK now exports Vercel AI
   SDK V4 middleware and Mastra `MessageList` input/output processors, with
   request-scoped sessions and principals, once-per-user-turn retrieval,
@@ -258,20 +258,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   smokes passed with current Vercel AI SDK and Mastra APIs, including a full
   Mastra Agent run using a mock model. Host hook latency
   remains unmeasured. See the
-  [adapter evidence note](docs/strategy/next-generation-typescript-framework-middleware.md).
+  adapter evidence note.
 - **OpenAI Agents run middleware.** `OpenAIAgentsMemory` uses the SDK's model
   input filter for one scoped lookup per `Runner.run`, reuses that context
   through tool loops, and captures final output with `RunHooks.on_agent_end`.
   A credential-free `Runner.run()` smoke passed with `openai-agents==0.23.1`
   and official `ScriptedModel`; it also fixed `memory_tool()`'s postponed local
   annotation. The base suite passes 13 tests with 8 optional skips. See the
-  [adapter note](docs/strategy/next-generation-openai-agents-middleware.md).
+  adapter note.
 - **Pydantic AI run capabilities.** `memory_capabilities()` uses the current
   `ProcessHistory` and `Hooks(after_run)` APIs to inject a replaceable system
   context once per run and capture the completed result. A credential-free
   `Agent.run()` smoke passed with `pydantic-ai==2.55.0` and official `TestModel`;
   the base suite passes 13 tests with 8 optional skips. See the
-  [capability note](docs/strategy/next-generation-pydantic-ai-capabilities.md).
+  capability note.
 - **Framework memory adapters.** Added a LangGraph prebuilt `pre_model_hook`
   that injects retrieved context through `llm_input_messages`, retaining the
   conversation's `messages` while using scoped human-turn IDs for causal
@@ -284,8 +284,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   capturing synthetic nudges. Provider-free actual SDK suites pass 21 tests
   for LangGraph 1.2.1 and 10 for Agent Framework 1.21.0. CI runs pinned native
   lifecycle jobs for these SDKs, OpenAI Agents and Pydantic AI. Provider transport
-  remains unverified. See the [LangGraph](docs/strategy/next-generation-langgraph-pre-model-hook.md)
-  and [Microsoft](docs/strategy/next-generation-microsoft-agent-framework-provider.md) notes.
+  remains unverified. See the LangGraph
+  and Microsoft notes.
 - **Optional protocol governance and learning contracts.** Added protocol
   sections and independent vectors for expiration/erasure, injection policy,
   and learning quarantine/retries. Legacy causal conformance is unchanged;
@@ -295,7 +295,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   five rejected operations in their generic clients. Scope pinning and bounded
   responses remain in the shared request path. Loopback transport tests pass
   for all three SDK builds, including Kotlin calls and Go's race detector.
-  See the [SDK parity note](docs/strategy/next-generation-sdk-record-parity.md).
+  See the SDK parity note.
 - **Tool attribution in additive extraction.** Tool-originated claims now stay
   labeled as tool output in both model and local extraction paths, preserving
   the source trace instead of treating tool text as an unqualified world fact.
@@ -304,7 +304,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now resolves relative dates only against `observed_at`, keeps vague dates
   approximate, and requires transition memories to preserve both old and new
   states. Six focused tests pass; see the
-  [mem0-guided extraction note](docs/strategy/next-generation-f5-extraction-rules.md).
+  mem0-guided extraction note.
 - **Google ADK callbacks.** `commontrace.integrations.google_adk` provides
   lazy-import-safe `before_model_callback` and `after_agent_callback` factories
   for scoped request retrieval and completed assistant capture. Component tests
@@ -319,8 +319,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `crewai==1.15.27`, live `kickoff_async()` keeps the event loop responsive
   through both callbacks; native `akickoff()` blocks because it calls
   synchronous callbacks directly. See the
-  [runtime note](docs/strategy/next-generation-crewai-runtime-validation.md)
-  and [async callback evidence](docs/strategy/next-generation-crewai-async-callbacks.md).
+  runtime note
+  and async callback evidence.
 - **Hybrid search acceptance harness.** The reproducible harness measures the
   indexed fact-search API through FTS, dense candidates, canonical admission,
   RRF and recipe ordering, and checks restart vector-cache behavior. A
@@ -330,13 +330,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Fresh-process restart passed on that fixture with zero document re-embedding
   and projection replay. The earlier 64-fact smoke measured 14.16 ms p95 over
   two samples. Neither run establishes real-model or server latency; see the
-  exact reports and checksums in `docs/strategy/measurements/`.
+  exact reports and checksums in the archived strategy records.
 - **Batched Hub dense-candidate hydration.** Postgres record search now reloads
   ANN hit IDs with scope, lifecycle and kind filters in bounded 500-ID queries
   instead of one row fetch per hit. The fake-session query-shape contract passes;
   live Postgres tests and server latency were unavailable, and this Hub record
   path still has no canonical `AtomicFact` watermark. See the
-  [hybrid acceptance note](docs/strategy/next-generation-hybrid-acceptance.md).
+  hybrid acceptance note.
 - **Native hook bridge startup.** The successful warm-socket path now parses
   its fixed CLI options without importing `argparse`, preserving delivery,
   receipt acknowledgements and fail-safe formatting. Three frozen transport
@@ -347,7 +347,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `PostToolUse` event and maps explicit nonzero/error responses to the shared
   `PostToolUseFailure` injector. Successful and unstructured outcomes are not
   guessed to be failures. The focused native hook/bootstrap/bridge/service set
-  passes 80 tests; see the [Codex hook note](docs/strategy/next-generation-codex-post-tool-failure.md).
+  passes 80 tests; see the Codex hook note.
 - **Bounded dense candidates for aggregate recall.** Current-time recalls use
   the completed Lance projection and exact-score only post-watermark writes;
   historical queries retain exact scoring so superseded facts remain visible
@@ -376,7 +376,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cached reads using its own fixed score scale; second-pass scores are included,
   and the caller-supplied space label is removed. No query text, memory text,
   or IDs are exported, and no calibrated `recall_hit` is inferred. See the
-  [direct conversation telemetry note](docs/strategy/next-generation-conversation-retrieval-telemetry.md).
+  direct conversation telemetry note.
 - **CodingLessonBench causal retirement reporting.** Labeled harmful lessons
   use isolated shadow records, salted randomized assignments and the production
   reconciliation path. The report emits N only after a SOUND journal retirement,
@@ -417,7 +417,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in-file symbol. It verifies the cited path and remaining quoted symbol before
   seeding a quarantined lesson candidate. History-import and session-learning
   checks pass 36 tests, with three skill-integration tests also passing; this
-  does not establish lesson quality or SWE uplift. See the [citation note](docs/strategy/next-generation-f4-history-citations.md).
+  does not establish lesson quality or SWE uplift. See the citation note.
 - SQLite fact ID changes in `mutate_facts()` now keep the old removal event
   under the old ID and the inserted fact under its new ID. The old tombstone
   uses the pre-mutation record, so event versions stay unique and index replay
@@ -427,7 +427,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with one unrelated static test guard failure. Adding the required
   `pytest.importorskip("hub.config")` guards makes the config file and that
   static regression pass (31 tests); the full suite was not repeated after this
-  test-only fix. See [fact identity mutation evidence](docs/strategy/next-generation-fact-identity-mutation.md).
+  test-only fix. See fact identity mutation evidence.
 
 - SQLite writes keep FTS ranking current during admission while batching
   lexical projections and validated events. Transaction-local immutable lexical
@@ -537,7 +537,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   audits and an Ed25519-signed public aggregate leaderboard. Model-graded quality,
   SWE uplift and 1M hybrid latency remain unverified; full hosted API parity is
   incomplete. The primary configuration surface is reduced to 25 variables;
-  see `docs/strategy/next-generation-evidence.md` for the retained compatibility inventory.
+  see the archived strategy records for the retained compatibility inventory.
 - **Terminal fact lineage.** Same-instant contradiction resolutions retain their
   empty terminal validity interval on reload; such historical records remain
   ineligible at every valid-time instant.
@@ -577,7 +577,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **CI path filtering.** Documentation-only changes skip the expensive build jobs; core test, coverage and security gates always run.
 - **Lesson marketplace.** `commontrace market identity|trust|attest|certify|publish|verify|install|list`: fleets sign the randomized holdout lift they measured for the exact lesson text, a referee pools two or more independent organizations into a signed replicated-lift certificate, and a publisher signs a listing with licence terms and an optional price. Buyers verify every Ed25519 signature against keys they chose to trust; install requires accepting the licence and lands at `status=review`. The gateway serves a verified catalog (`/v1/market/*`); the Hub stores verified listings (`/api/v1/market/*`, `HUB_MARKET_REFEREES_FILE`). Payment collection is not implemented.
 - **In-process local model.** `COMMONTRACE_LLM_PROVIDER=local` runs a Hugging Face instruction model with `transformers` (greedy; cache-only under `--offline`) for drafting, reflection and benchmark answering without credentials or a model server. The benchmark harness gains `--judge exact` (gold containment or token F1 >= 0.5), which is not comparable to LLM-judge accuracy.
-- **Agentic benchmark datasets.** `conversation_bench --dataset ama` (AMA-Bench trajectories with derived step evidence) and `--dataset mab` (MemoryAgentBench contexts, answer-in-context over every accepted answer; EventQA left unscored). Results are in `docs/strategy/implementation-status.md`.
+- **Agentic benchmark datasets.** `conversation_bench --dataset ama` (AMA-Bench trajectories with derived step evidence) and `--dataset mab` (MemoryAgentBench contexts, answer-in-context over every accepted answer; EventQA left unscored). Results are in the archived strategy records.
 
 - **Standard OpenAPI and generated SDKs.** Typed memory requests, responses and bearer authentication, schema-enforced gateway admission, a pinned Swagger UI, and checksum-pinned upstream OpenAPI Generator tooling for TypeScript, Go, Rust, Java and Kotlin. CI compiles each generated client; generated output remains a build artifact.
 - **Learning assurance runtime.** Signed joint-policy assignment/outcome logs, preregistered fixed-horizon IPS/SNIPS/DR release gates, recorded recall and usage receipts, failure attribution, bounded action-ablation voting and signed replay incident reports. Adjacent compression levels require an independent review and a randomized comparison against both the parent and raw evidence. Store-level Ed25519 receipts, recursive forgetting certificates, protected aggregate releases and authenticated replicated-lift pooling retain explicit limits.
