@@ -121,6 +121,7 @@ commontrace/ingest/*
 !commontrace/ingest/catalog.py
 !commontrace/ingest/embedding.py
 !commontrace/ingest/multimodal.py
+!commontrace/ingest/office.py
 !commontrace/ingest/pipeline.py
 !commontrace/injection_guard.py
 !commontrace/interactions.py
