@@ -33,7 +33,7 @@ attention = [
 ]
 fastembed = [
     "fastembed==0.8.0",
-    "huggingface-hub==0.36.2",
+    "huggingface-hub>=0.36.2,<2.0",
     "onnxruntime==1.23.2; python_version < '3.14'",
     "onnxruntime==1.30.0; python_version >= '3.14'",
 ]
