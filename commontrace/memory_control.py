@@ -49,9 +49,13 @@ def matches(labels: list[str], context: list[str], *, governed: bool = True) -> 
     """Every declared orthogonal dimension must match; plain legacy scopes are OR."""
     if governed and REQUIRED_PRINCIPAL_SCOPE.get() and REQUIRED_PRINCIPAL_SCOPE.get() not in labels:
         return False
-    orthogonal = [s for s in labels if s.split(":", 1)[0] in DIMENSIONS and ":" in s]
-    legacy = [s for s in labels if s not in orthogonal]
-    return set(orthogonal) <= set(context) and (not legacy or bool(set(legacy) & set(context)))
+    orthogonal: set[str] = set()
+    legacy: set[str] = set()
+    for label in labels:
+        dimension, separator, _value = label.partition(":")
+        (orthogonal if separator and dimension in DIMENSIONS else legacy).add(label)
+    available = set(context)
+    return orthogonal <= available and (not legacy or not legacy.isdisjoint(available))
 
 
 def _directory(root: str, kind: str) -> str:

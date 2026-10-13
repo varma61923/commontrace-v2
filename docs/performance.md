@@ -454,3 +454,32 @@ COMMONTRACE_QUERY_CACHE=0 python -m benchmarks.runtime_comparison \
   --baseline-checkout ../commontrace-baseline --trials 5 --runs 300 \
   --output /tmp/retrieval-disabled-comparison.json
 ```
+## Scope admission scaling (2026-10-13)
+
+The paired `benchmarks.scope_admission` workload freezes the scope matcher from
+revision `a54c42dd25488832aee225a9ced865e7ef967e4f` as its baseline. It alternates
+baseline/candidate execution, discards one warm-up pair and reports five measured
+pairs. Each trial performs 500 admissions, including accepted, missing-dimension,
+legacy-label and ungoverned cases. Every measured decision matched its baseline.
+The principal ContextVar is read on every admission; authorization is not cached.
+
+| Orthogonal labels | Baseline median (ms) | Candidate median (ms) | Speedup |
+| ---: | ---: | ---: | ---: |
+| 1 | 0.539 | 0.387 | 1.39× |
+| 10 | 2.369 | 1.536 | 1.54× |
+| 100 | 55.135 | 13.459 | 4.10× |
+| 1,000 | 3,781.382 | 136.901 | 27.62× |
+
+Measured with Python 3.12.3 on the development host; paired samples and decision
+hashes are retained in [the measurement artifact](benchmarks/scope-admission-2026-10-13.jsonl):
+
+```bash
+python -m benchmarks.scope_admission --labels 1 10 100 1000 --trials 5 --repetitions 100
+```
+
+The improvement replaces quadratic list membership during label classification
+with one pass over labels and set membership. Dense scope contexts demonstrate
+the scaling improvement; ordinary small contexts improve much less. These are
+scope admission timings, excluding storage, ranking, network and model inference.
+They establish neither a universal 10× product improvement nor competitor
+latency/answer-quality superiority. Machine-specific ratios are descriptive.
