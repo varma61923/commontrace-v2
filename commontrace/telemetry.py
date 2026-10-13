@@ -55,6 +55,13 @@ def redact(value: Any) -> Any:
     return text if len(text) <= _MAX_ATTR else text[:_MAX_ATTR] + "..."
 
 
+def redact_mapping(fields: dict[str, Any]) -> dict[str, Any]:
+    """Scrub sensitive credentials in mapping keys and nested values."""
+    if not isinstance(fields, dict):
+        return fields
+    return _safe_fields(fields)
+
+
 def _safe_fields(fields: dict[str, Any]) -> dict[str, Any]:
     """Bound structured exports and scrub credentials in keys and nested values.
 
