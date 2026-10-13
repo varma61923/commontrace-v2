@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Bounded offline XLSX and PPTX ingestion.** Stored spreadsheet values and
+  slide text/speaker notes retain source-part attribution without evaluating
+  formulas or fetching links. Archive, XML and extracted-text budgets bound
+  processing. Document parse failures remain retryable and visibly fail the
+  ingestion result; extraction provenance is validated and redacted before
+  fact mutation. See [format contracts](docs/office-ingestion.md).
 - **Evidence-preserving temporal graph paths.** Local graph queries accept
   repeatable relation filters; `graph path` returns bounded unweighted shortest
   paths with original edge evidence and reverse-hop direction. Exhausted work

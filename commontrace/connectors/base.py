@@ -127,8 +127,22 @@ def record_chunks(
     Rejected content remains rejected. Storage and audit failures return False
     so connectors retain the source's previous checkpoint and retry it.
     """
-    from commontrace import hierarchical, provenance
+    from commontrace import hierarchical, memory_guard, provenance
 
+    details = []
+    try:
+        for chunk in chunks:
+            detail = {"connector": connector, "breadcrumb": chunk.breadcrumb, "chunk_type": chunk.chunk_type}
+            if chunk.provenance:
+                detail["extraction"] = chunk.provenance
+            if chunk.modality:
+                detail["modality"] = chunk.modality
+            clean, _ = memory_guard.sanitize_metadata(detail, pii=memory_guard.privacy_redaction_enabled())
+            json.dumps(clean, allow_nan=False)
+            details.append(clean)
+    except (ValueError, TypeError) as exc:
+        result.errors.append(f"provenance metadata error: {exc}")
+        return False
     items: list[dict[str, Any]] = []
     for chunk in chunks:
         statement = _screened_statement(f"{chunk.breadcrumb}: {chunk.content[:200]}", result)
@@ -146,12 +160,12 @@ def record_chunks(
         result.errors.append(f"fact error: {exc}")
         return False
     complete = True
-    for chunk in chunks:
+    for chunk, detail in zip(chunks, details):
         try:
             provenance.append_provenance(
                 root, target_kind="chunk", target_id=chunk.chunk_id, source_path=chunk.source_path,
                 run_id=run_id,
-                detail={"connector": connector, "breadcrumb": chunk.breadcrumb, "chunk_type": chunk.chunk_type},
+                detail=detail,
             )
         except OSError as exc:
             result.errors.append(f"provenance error: {exc}")

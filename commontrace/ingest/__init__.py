@@ -952,6 +952,7 @@ def preview_ingest(
             result.chunks_extracted = len(report.chunks)
             result.facts_written = len(report.chunks)
             result.errors.extend(w for w in report.warnings if "Preview limited" not in w)
+            result.errors.extend(report.errors)
         else:
             result.errors.append(f"unknown source_type: {source_type!r}")
     except (OSError, ValueError) as exc:
@@ -967,7 +968,7 @@ def ingest_multimodal_document(
     *,
     force: bool = False,
 ) -> IngestionResult:
-    """PDF, DOCX, HTML, image, audio and subtitle files into reference facts.
+    """PDF, Office, HTML, image, audio and subtitle files into reference facts.
 
     Resumable: files unchanged since the last ingest are skipped via the ledger;
     oversized files, unsupported formats and max_files truncation are counted,

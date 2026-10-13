@@ -96,6 +96,7 @@ def _run_docs(args: argparse.Namespace, root: str) -> int:
     if args.preview:
         report = pipeline.preview(limit=None)
         payload = {"preview": True, **report.would_write, "warnings": report.warnings,
+                   "errors": report.errors,
                    "sample": [{"source": c.source_path, "chunk": c.chunk_id, "text": c.content[:160]}
                               for c in report.chunks[:5]]}
     else:

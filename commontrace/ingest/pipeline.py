@@ -17,9 +17,10 @@ from commontrace.ingest import Chunk, IngestionResult
 LAZY_HASH_BYTES = 256 * 1024 * 1024
 SAMPLE_BYTES = 1024 * 1024
 DOC_SUFFIXES = (".md", ".markdown", ".txt", ".rst", ".adoc", ".org", ".text", ".csv", ".json", ".yaml", ".yml",
-                ".toml", ".ini", ".log", ".html", ".htm", ".pdf", ".docx", ".ipynb", ".parquet")
-PARSED_BINARY_SUFFIXES = (".pdf", ".docx")
-UNSUPPORTED_SUFFIXES = (".ipynb", ".parquet")
+                ".toml", ".ini", ".log", ".html", ".htm", ".pdf", ".docx", ".xlsx", ".pptx",
+                ".ipynb", ".parquet", ".xls", ".ppt", ".doc", ".xlsm", ".pptm", ".docm")
+PARSED_BINARY_SUFFIXES = (".pdf", ".docx", ".xlsx", ".pptx")
+UNSUPPORTED_SUFFIXES = (".ipynb", ".parquet", ".xls", ".ppt", ".doc", ".xlsm", ".pptm", ".docm")
 
 
 class Loader(ABC):
@@ -246,6 +247,7 @@ class PreviewReport:
     chunks: list[Chunk]
     warnings: list[str] = field(default_factory=list)
     would_write: dict[str, int] = field(default_factory=dict)
+    errors: list[str] = field(default_factory=list)
 
 
 class Pipeline:
@@ -298,7 +300,8 @@ class Pipeline:
         }
         would_write.update(self._stats())
 
-        return PreviewReport(chunks=chunks, warnings=warnings, would_write=would_write)
+        return PreviewReport(chunks=chunks, warnings=warnings, would_write=would_write,
+                             errors=list(getattr(self.loader, "errors", None) or []))
 
     def _stats(self) -> dict[str, int]:
         out: dict[str, int] = {}
@@ -365,6 +368,9 @@ class Pipeline:
 
             self.last_warnings = self._collect_warnings()
             result.errors.extend(self.last_warnings)
+            result.errors.extend(getattr(self.loader, "errors", None) or [])
+            getattr(self.submitter, "failed_sources", set()).update(
+                getattr(self.loader, "failed_sources", None) or [])
             stats = getattr(self.loader, "stats", None) or {}
             result.skipped_unchanged += int(stats.get("unchanged", 0) or 0)
             result.skipped_large += int(stats.get("skipped_large", 0) or 0)
@@ -597,7 +603,7 @@ class Ledger:
 class DirectoryLoader(Loader):
     """Every document under a path (or the one file it names); with a ledger, only
     the files that changed since they were last ingested. Text suffixes are read
-    directly, pdf/docx go through the stdlib multimodal extractors, and suffixes
+    directly, PDF/Office go through the stdlib multimodal extractors, and suffixes
     with no parser (ipynb/parquet) are counted as unsupported instead of silently
     dropped. Oversized files and max_files truncation are counted, never silent."""
 
@@ -607,11 +613,23 @@ class DirectoryLoader(Loader):
     ledger: Ledger | None = None
     stats: dict = field(default_factory=lambda: {"files": 0, "unchanged": 0, "unreadable": 0, "skipped_large": 0,
                                                  "unsupported": 0, "truncated": 0})
+    errors: list[str] = field(default_factory=list, init=False)
+    failed_sources: set[str] = field(default_factory=set, init=False)
+
+    def _failed(self, path: str, stage: str, error: Exception) -> None:
+        from commontrace.ingest import _redact_secrets
+
+        self.stats["unreadable"] += 1
+        self.failed_sources.add(os.path.abspath(path))
+        self.errors.append(_redact_secrets(f"{path}: document {stage} failed ({type(error).__name__}): "
+                                          + str(error)[:200]))
 
     def load(self) -> Iterable[Chunk]:
         from commontrace.ingest import MAX_TEXT_FILE_BYTES, _read_text, _redact_secrets, _walk_files
         from commontrace.ingest import multimodal as mm
 
+        self.errors.clear()
+        self.failed_sources.clear()
         walk_stats: dict[str, int] = {}
         files = [self.path] if os.path.isfile(self.path) else \
             list(_walk_files(self.path, self.suffixes, self.max_files, stats=walk_stats))
@@ -628,8 +646,8 @@ class DirectoryLoader(Loader):
                 continue
             try:
                 too_big = os.path.getsize(path) > MAX_TEXT_FILE_BYTES
-            except OSError:
-                self.stats["unreadable"] += 1
+            except OSError as exc:
+                self._failed(path, "stat", exc)
                 continue
             if too_big:
                 self.stats["skipped_large"] += 1
@@ -641,8 +659,8 @@ class DirectoryLoader(Loader):
                     self.stats["unchanged"] += 1
                     continue
                 content = _read_text(path)
-            except (OSError, ValueError):
-                self.stats["unreadable"] += 1
+            except (OSError, ValueError) as exc:
+                self._failed(path, "read", exc)
                 if self.ledger is not None:
                     self.ledger.note(path, "error", detail={"stage": "read"})
                 continue
@@ -655,11 +673,11 @@ class DirectoryLoader(Loader):
                         breadcrumb=rel, chunk_type="document")
 
     def _load_binary(self, path: str, ext: str, mm) -> Iterable[Chunk]:
-        """Yield chunks for a pdf/docx file via the stdlib multimodal extractors."""
+        """Yield chunks for a PDF/Office file via the stdlib multimodal extractors."""
         try:
             size = os.path.getsize(path)
-        except OSError:
-            self.stats["unreadable"] += 1
+        except OSError as exc:
+            self._failed(path, "stat", exc)
             return
         if size > mm.MAX_FILE_BYTES:
             self.stats["skipped_large"] += 1
@@ -670,8 +688,8 @@ class DirectoryLoader(Loader):
             if self.ledger is not None and not self.ledger.changed(path, max_bytes=mm.MAX_FILE_BYTES):
                 self.stats["unchanged"] += 1
                 return
-        except (OSError, ValueError):
-            self.stats["unreadable"] += 1
+        except (OSError, ValueError) as exc:
+            self._failed(path, "fingerprint", exc)
             self.ledger.note(path, "error", detail={"stage": "fingerprint"})
             return
         fn = mm.INGEST_FNS.get(ext)
@@ -682,8 +700,8 @@ class DirectoryLoader(Loader):
             return
         try:
             chunks = fn(path)
-        except Exception:  # noqa: BLE001 - one bad binary must not stop the directory walk
-            self.stats["unreadable"] += 1
+        except Exception as exc:  # noqa: BLE001 - one bad binary must not stop the directory walk
+            self._failed(path, "parse", exc)
             if self.ledger is not None:
                 self.ledger.note(path, "error", detail={"stage": "parse"})
             return
