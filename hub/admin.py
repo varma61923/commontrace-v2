@@ -302,7 +302,7 @@ def content_security_policy(*scripts: str) -> str:
 
     hashes = []
     for script in scripts:
-        for body in re.findall(r"(?is)<script[^>]*>(.*?)</script>", script):
+        for body in re.findall(r"(?is)<script[^>]*>(.*?)</script[^>]*>", script):
             digest = base64.b64encode(hashlib.sha256(body.encode()).digest()).decode()
             hashes.append(f"'sha256-{digest}'")
     return (

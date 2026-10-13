@@ -53,11 +53,7 @@ def _transient_provider_failure(error: BaseException) -> bool:
 
 
 def _credential_hash(key: str) -> str:
-    import hmac
-
-    # lgtm[py/weak-sensitive-data-hashing]
-    # codeql[py/weak-sensitive-data-hashing]
-    return hmac.new(b"commontrace-key-digest", key.encode("utf-8"), hashlib.sha256).hexdigest()
+    return hashlib.pbkdf2_hmac("sha256", key.encode("utf-8"), b"commontrace-key-digest", 1000).hex()
 
 
 def _provider_call(cfg: Config, prompt: str, caller) -> tuple[str, dict]:

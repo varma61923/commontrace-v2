@@ -16,7 +16,7 @@ HUB = pathlib.Path(__file__).resolve().parents[1]
 def _script_hashes(page: str) -> set[str]:
     return {
         "'sha256-" + base64.b64encode(hashlib.sha256(body.encode()).digest()).decode() + "'"
-        for body in re.findall(r"(?is)<script[^>]*>(.*?)</script>", page)
+        for body in re.findall(r"(?is)<script[^>]*>(.*?)</script[^>]*>", page)
     }
 
 

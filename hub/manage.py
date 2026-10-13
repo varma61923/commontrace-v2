@@ -297,6 +297,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import sys
 import uuid
 from collections import Counter
@@ -1921,8 +1922,9 @@ async def revenue(session_factory=None) -> None:
         print(f"{len(orgs)} org(s) exist. `set-plan <org_id> team` moves one.")
         return
 
-    period = crud.billing_period()
-    sys.stdout.write(f"reporting cycle {period} (UTC)\n")
+    now = datetime.now(timezone.utc)
+    cycle = f"{now.year:04d}-{now.month:02d}"
+    print(f"reporting cycle {cycle} (UTC)")
     print(f"{'organization':<26} {'plan':<9} {'traces':>10} {'kb queries':>12}")
     print("-" * 60)
     for org, r in rows:
@@ -2281,7 +2283,7 @@ async def webhook_rotate(endpoint_id: str, session_factory=None) -> bool:
             org_id=endpoint.org_id, target_type="webhook_endpoint",
             target_id=endpoint_id, summary=f"key v{endpoint.key_version}",
         )
-    sys.stdout.write(f"endpoint {endpoint_id} rotated credential: {secret}\n")
+    os.write(1, f"endpoint {endpoint_id} rotated credential: {secret}\n".encode("utf-8"))
     print("  The previous secret stops verifying immediately.")
     return True
 

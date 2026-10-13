@@ -175,9 +175,9 @@ def run_facts(args: argparse.Namespace) -> int:
     from commontrace.telemetry import redact_mapping
 
     safe_report = redact_mapping(report) if isinstance(report, dict) else report
-    print(json.dumps(safe_report, indent=2) if args.json else fc.render(report))
-    if args.strict and report["clusters"]:
-        print(f"\n[commontrace] --strict: {len(report['clusters'])} fact cluster(s).", file=sys.stderr)
+    print(json.dumps(safe_report, indent=2) if args.json else fc.render(safe_report))
+    if args.strict and safe_report.get("clusters"):
+        print(f"\n[commontrace] --strict: {len(safe_report['clusters'])} fact cluster(s).", file=sys.stderr)
         return 1
     return 0
 

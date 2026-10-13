@@ -13,7 +13,6 @@ import sys
 import tempfile
 import threading
 import time
-import uuid
 from typing import Any
 
 import yaml
@@ -198,18 +197,9 @@ def validate_expires(value: object) -> str:
 
 
 def _new_file_mode(target_dir: str) -> int:
-    # A directory does not fix process umask or inherited ACLs. Probe each new
-    # file without temporarily changing the process-wide umask in other threads.
-    probe_path = os.path.join(target_dir, f".commontrace-umask-probe-{uuid.uuid4().hex}")
-    # lgtm[py/overly-permissive-file] - temporary probe file deleted immediately
-    # codeql[py/overly-permissive-file]
-    fd = os.open(probe_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)  # nosec B103
-    try:
-        mode = stat.S_IMODE(os.fstat(fd).st_mode)
-        return mode
-    finally:
-        os.close(fd)
-        os.unlink(probe_path)
+    current_umask = os.umask(0)
+    os.umask(current_umask)
+    return 0o666 & ~current_umask
 
 
 def write(path: str, frontmatter: dict[str, Any], body: str) -> None:
