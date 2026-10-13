@@ -462,12 +462,15 @@ class TestSchemaSafety:
         from hub.alembic.versions.e9b4c07d15a8_webhook_event_export import (
             _NEW_TABLES as _WEBHOOK_TABLES,
         )
+        from hub.alembic.versions.f8a0b3c4d5e6_memory_vector_stream import (
+            _TABLES as _VECTOR_STREAM_TABLES,
+        )
         from hub.models import Base
 
         protected = {
             *_SCOPED_TABLES, *_RETENTION_TABLES, *_WEBHOOK_TABLES,
             *_USER_TABLES, *_COLLAB_TABLES, *_ALERT_TABLES, *_SCIM_GROUP_TABLES, *_CONNECTOR_TABLES,
-            *_MARKET_TABLES, *_MEMORY_TABLES, "traces",
+            *_MARKET_TABLES, *_MEMORY_TABLES, *_VECTOR_STREAM_TABLES, "traces",
         }
         exempt = {
             "api_keys",

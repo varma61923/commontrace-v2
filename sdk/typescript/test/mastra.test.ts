@@ -106,9 +106,12 @@ test("Mastra output processor fails open when completion capture is unavailable"
 
 test("Mastra output capture is detached from result delivery", async () => {
   let requested = false;
+  let finish = () => {};
   const memory = new MemoryClient({url: "http://127.0.0.1:8765", fetch: async () => {
     requested = true;
-    return new Promise<Response>(() => {});
+    return new Promise<Response>((resolve) => {
+      finish = () => resolve(new Response(JSON.stringify({ok: true})));
+    });
   }});
   const processor = mastraMemoryOutputProcessor(memory, "thread-1");
   const messages = [{role: "assistant", content: {parts: [{type: "text", text: "answer"}]}}];
@@ -117,4 +120,5 @@ test("Mastra output capture is detached from result delivery", async () => {
 
   assert.equal(result, messages);
   assert.equal(requested, true);
+  finish();
 });

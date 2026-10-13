@@ -68,7 +68,7 @@ def test_advanced_settings_and_secret_references_share_the_yaml(tmp_path, monkey
 def test_profile_scoped_secret_references_preserve_environment_compatibility(tmp_path, monkeypatch):
     import json
 
-    import jsonschema
+    jsonschema = pytest.importorskip("jsonschema")
     import yaml
 
     from commontrace.configuration import SETTING_PATHS, apply, getenv, load, migrate_environment
@@ -279,6 +279,7 @@ def test_hub_kms_resolves_routing_and_rotating_secret_from_yaml(tmp_path, monkey
     from commontrace.configuration import SETTING_PATHS
 
     pytest.importorskip("hub.config")
+    pytest.importorskip("cryptography")
     from hub import kms
     from hub.config import HubConfig
 

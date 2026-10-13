@@ -30,6 +30,7 @@ from __future__ import annotations
 import math
 import os
 import re
+import tempfile
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -221,8 +222,9 @@ class _FastEmbed:
         self.local_files_only = local_files_only
         self._model = None
         cache = _configuration_getenv("FASTEMBED_CACHE_PATH", "").strip() or None
-        if not cache and os.path.isdir("/tmp/commontrace-fastembed-cache"):
-            cache = "/tmp/commontrace-fastembed-cache"
+        fallback_cache = os.path.join(tempfile.gettempdir(), "commontrace-fastembed-cache")
+        if not cache and os.path.isdir(fallback_cache):
+            cache = fallback_cache
         self._cache_dir = cache
 
     def _load(self):

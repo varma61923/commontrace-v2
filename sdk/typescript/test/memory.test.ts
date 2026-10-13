@@ -35,11 +35,15 @@ test("one-call turns enforce a caller deadline without sending it to the gateway
     payload = JSON.parse(String(init?.body)) as Record<string, unknown>;
     signal = init?.signal as AbortSignal;
     return new Promise<Response>((_resolve, reject) => {
-      signal?.addEventListener("abort", () => reject(signal?.reason), {once: true});
+      const keepAlive = setTimeout(() => {}, 500);
+      signal?.addEventListener("abort", () => {
+        clearTimeout(keepAlive);
+        reject(signal?.reason ?? new Error("aborted"));
+      }, {once: true});
     });
   }});
 
-  await assert.rejects(() => memory.turn("thread", "question", {text: "question", timeoutMs: 5}));
+  await assert.rejects(() => memory.turn("thread", "question", {text: "question", timeoutMs: 20}));
   assert.equal(signal?.aborted, true);
   assert.equal("timeoutMs" in payload, false);
 });

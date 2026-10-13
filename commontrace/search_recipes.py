@@ -365,7 +365,7 @@ def _load_candidate_facts(canonical, identities):
         group = missing[offset:offset + 500]
         placeholders = ",".join("?" for _ in group)
         rows = canonical.connection.execute(
-            f"SELECT id, payload FROM facts WHERE id IN ({placeholders})", group
+            f"SELECT id, payload FROM facts WHERE id IN ({placeholders})", group  # nosec B608
         )
         for identity, payload in rows:
             candidates[identity] = _coerce_fact(json.loads(payload))
