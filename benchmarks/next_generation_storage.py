@@ -1,7 +1,7 @@
 """Reproducible P0 workload; reports actual API timings, never answer accuracy.
 
 python -m benchmarks.next_generation_storage --sizes 1000,10000,30000,1000000 \
-    --trials 20 --output docs/strategy/measurements/p0-storage.json
+    --trials 20 --output benchmark-results/p0-storage.json
 """
 from __future__ import annotations
 

@@ -88,7 +88,7 @@ turn = memory.turn("session-1", "How should I validate this patch?", text="I pre
 ```
 
 Native framework callbacks are provided by `commontrace.framework_middleware.Middleware`;
-see the [runtime and evaluation guide](docs/strategy/next-generation-evidence.md).
+see the [memory evolution guide](docs/MEMORY_EVOLUTION.md).
 
 Call `completion` with `messages` and an `occasion_id`. Recall happens before
 completion; the response is captured as experience. Report an independently
@@ -143,8 +143,8 @@ Benchmark manifests bind source, data, configuration and seeds. Published retrie
 metrics are evidence measurements; model-backed competitor accuracy and research
 performance targets remain unverified. See the [scoreboard and reproduction
 commands](docs/REFERENCE.md#measurement-scoreboard-2026-10-08), the dense,
-reranked and adaptive-budget measurements in the [implementation
-status](docs/strategy/implementation-status.md#measured-results), and
+reranked and adaptive-budget measurements in the [reference
+documentation](docs/REFERENCE.md), and
 [CausalMemBench](docs/benchmarks/causalmembench.md), which scores whether a memory
 system stops delivering harmful memories without discarding helpful ones,
 [PoisonBench](docs/benchmarks/poisonbench.md) and [GovBench](docs/benchmarks/govbench.md)
