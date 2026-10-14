@@ -158,6 +158,9 @@ jobs:
       - name: Typed graph lookup preserves exact results and improves rare-relation queries
         run: python -m benchmarks.graph_relations --edges 20000 --trials 3 --check
 
+      - name: Long-session summary preserves exact evidence and improves maintenance latency
+        run: python -m benchmarks.session_summary --turns 1000 --trials 3 --check
+
       - name: Install focused coverage tooling
         run: python -m pip install "pytest>=9.0.3,<10.0" "pytest-cov>=7.0,<8.0"
 

@@ -5,6 +5,7 @@ import re
 import pytest
 
 from commontrace.conversation import Store
+from commontrace.conversation import summary as summary_module
 from commontrace.conversation.store import ConversationError
 from commontrace.conversation.summary import (
     MAX_TRANSCRIPT_CHARS,
@@ -28,6 +29,30 @@ def test_extractive_selection_preserves_recent_temporal_and_distinct_facts():
     selected = _select_candidates(rows, 3)
     assert rows[2] in selected  # later temporal update remains visible
     assert rows[3] in selected  # a distinct fact gets coverage beside repeated topic sentences
+
+
+@pytest.mark.parametrize("sentences", [1, 3, 20])
+def test_rolling_top_k_preserves_the_full_ranking_prefix(tmp_path, monkeypatch, sentences):
+    with Store(str(tmp_path), "selection") as store:
+        store.add("s", [{"text": f"Operational entry {i}: service {i % 7} deployed build {i % 13} in region {i % 4}."}
+                        for i in range(120)], session_at="2026-10-01")
+        turns = store.session_turns("s")
+        select = summary_module._select_candidates
+        legacy_state = {}
+        with monkeypatch.context() as patch:
+            patch.setattr(summary_module, "_select_candidates", lambda rows, _count: select(rows, len(rows)))
+            expected = summary_module._fold_extractive(legacy_state, turns, sentences, 4000)
+        observed = []
+
+        def bounded(rows, count):
+            observed.append(count)
+            return select(rows, count)
+
+        monkeypatch.setattr(summary_module, "_select_candidates", bounded)
+        state = {}
+        assert summary_module._fold_extractive(state, iter(turns), sentences, 4000) == expected
+        assert state == legacy_state
+        assert observed == [max(summary_module.ROLLING_POOL, sentences)]
 
 
 def test_unchanged_summary_never_hydrates_source_messages(tmp_path, monkeypatch):

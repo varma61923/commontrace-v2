@@ -308,7 +308,7 @@ def _fold_extractive(state: dict, turns: Iterable[Turn], sentences: int, limit: 
     if len(freq) > ROLLING_VOCAB:
         state["freq"] = freq = dict(sorted(freq.items(), key=lambda kv: (-kv[1], kv[0]))[:ROLLING_VOCAB])
     ranked = _select_candidates(
-        [{**entry, "weight": _weight(entry, freq)} for entry in pool], len(pool),
+        [{**entry, "weight": _weight(entry, freq)} for entry in pool], max(ROLLING_POOL, sentences),
     )
     # Keep a bounded summary working set ordered by current salience and
     # coverage so a repeated topic cannot crowd every distinct fact out.
