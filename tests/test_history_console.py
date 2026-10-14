@@ -96,7 +96,7 @@ def test_operator_history_refuses_container_scope(tmp_path):
 
 
 def test_history_openapi_response_contracts(tmp_path):
-    import jsonschema
+    jsonschema = pytest.importorskip("jsonschema")
     from referencing import Registry, Resource
 
     app = gateway.Gateway(str(tmp_path), token=TOKEN)

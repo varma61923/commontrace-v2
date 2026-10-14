@@ -150,7 +150,7 @@ def test_custom_embedding_is_available_without_sentence_transformers(monkeypatch
 
 
 def test_legacy_wrong_dimension_vectors_are_recomputed(tmp_path, monkeypatch):
-    import numpy as np
+    np = pytest.importorskip("numpy")
 
     from commontrace.conversation import embed
 
@@ -215,6 +215,7 @@ def test_registered_backend_cannot_silently_override_authenticated_scope(tmp_pat
 
 
 def test_insert_prepares_only_redacted_content_and_reuses_vectors(tmp_path, monkeypatch):
+    pytest.importorskip("numpy")
     from commontrace.conversation.store import Store
 
     calls = []
@@ -241,6 +242,7 @@ def test_insert_prepares_only_redacted_content_and_reuses_vectors(tmp_path, monk
 
 
 def test_insert_cache_failure_preserves_source_and_hides_provider_secrets(tmp_path, monkeypatch):
+    pytest.importorskip("numpy")
     from commontrace.conversation.store import Store
 
     class Broken:
@@ -260,6 +262,7 @@ def test_insert_cache_failure_preserves_source_and_hides_provider_secrets(tmp_pa
 
 
 def test_gateway_insertion_cache_flags_are_typed_and_wired(tmp_path, monkeypatch):
+    pytest.importorskip("numpy")
     import json
 
     from commontrace import gateway
@@ -278,7 +281,7 @@ def test_gateway_insertion_cache_flags_are_typed_and_wired(tmp_path, monkeypatch
                "cache_vectors": True, "embedder": "fixture2:dense@32"}
     response = app.handle("POST", "/v1/conversation/add", headers, json.dumps(request).encode())
     assert response.status == 200 and json.loads(response.body)["embedding_cache"]["ready"]
-    import jsonschema
+    jsonschema = pytest.importorskip("jsonschema")
 
     from tests.test_gateway_openapi_contract import _json_schema
 

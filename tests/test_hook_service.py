@@ -161,16 +161,23 @@ def test_native_bridge_recovers_capture_after_accepted_broker_failure(tmp_path, 
     run = hashlib.sha256(json.dumps([kit.scope, "accepted"], sort_keys=True).encode()).hexdigest()
     endpoint = tmp_path / "memory" / "hooks.sock"
     endpoint.parent.mkdir(parents=True, exist_ok=True)
+    received = threading.Event()
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
         server.bind(str(endpoint))
         server.listen(1)
+        server.settimeout(5)
 
         def peer():
             with server.accept()[0] as client:
+                client.settimeout(5)
                 frame = b""
                 while b"\n" not in frame:
-                    frame += client.recv(4096)
+                    chunk = client.recv(4096)
+                    if not chunk:
+                        return
+                    frame += chunk
                 request = json.loads(frame.split(b"\n", 1)[0])
+                received.set()
                 if capture_before_failure:
                     journal.capture(
                         run,
@@ -182,7 +189,7 @@ def test_native_bridge_recovers_capture_after_accepted_broker_failure(tmp_path, 
                 if failure_mode == "malformed":
                     client.sendall(b"not-json\n")
                 else:
-                    # The bridge's response deadline is 25 ms. Keep this
+                    # Keep this
                     # accepted request open until the client times out.
                     while client.recv(4096):
                         pass
@@ -190,8 +197,21 @@ def test_native_bridge_recovers_capture_after_accepted_broker_failure(tmp_path, 
         worker = threading.Thread(target=peer)
         worker.start()
         command = shlex.split(kit.manifest("claude")["events"]["UserPromptSubmit"])
+        # Recovery after acceptance is a protocol contract. Separate latency
+        # tests use the production deadlines; allow scheduling headroom here.
+        script = """
+import importlib.util
+import sys
+spec = importlib.util.spec_from_file_location("bridge", sys.argv[1])
+bridge = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(bridge)
+bridge.RESPONSE_SECONDS = 2.0
+bridge.RECEIPT_SECONDS = 0.5
+raise SystemExit(bridge.main(sys.argv[2:]))
+"""
+        functional = command[:3] + ["-c", script, *command[3:]]
         result = subprocess.run(
-            command + ["--format", "claude"],
+            functional + ["--format", "claude"],
             input='{"session_id":"accepted","prompt":"code"}',
             text=True,
             capture_output=True,
@@ -201,6 +221,7 @@ def test_native_bridge_recovers_capture_after_accepted_broker_failure(tmp_path, 
         assert json.loads(result.stdout)["context"] == ""
         worker.join(timeout=5)
         assert not worker.is_alive()
+        assert received.is_set()
 
     for _ in range(100):
         captures = journal.buffer(run, scope=kit.scope)

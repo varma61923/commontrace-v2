@@ -314,3 +314,15 @@ def test_future_assertions_remain_known_now_without_superseding_current_job(tmp_
         assert "January 2027" in plan["statement"] and plan["at"].startswith("2026-10-15")
         assert plan["slot"] == "plan:job"
         assert next(row for row in values if row["statement"].startswith("Will"))["slot"] == "job"
+
+
+def test_explicit_vector_preparation_requires_capability_before_writing_source(tmp_path, monkeypatch):
+    from commontrace.conversation import ConversationError, embed
+
+    monkeypatch.setattr(embed, "available_for", lambda tag: False)
+    with Store(str(tmp_path), "project") as store:
+        with pytest.raises(ConversationError, match="available configured embedding provider"):
+            store.add("session", [{"speaker": "user", "text": "Keep this message atomic"}],
+                      cache_vectors=True, embedder="minilm")
+        assert store.db.execute("SELECT count(*) FROM turns").fetchone()[0] == 0
+        assert store.db.execute("SELECT count(*) FROM sessions").fetchone()[0] == 0
