@@ -172,8 +172,7 @@ def main() -> int:
     spec = {"memory": ROOT / "sdk" / "openapi.json", "gateway": ROOT / "openapi" / "gateway.json",
             "hub": ROOT / "hub" / "openapi.json"}[args.api]
     command = ["java", "-jar", str(jar)]
-    # The full gateway contract is validated with the same pinned tool; clients are
-    # generated from the memory subset only.
+    # Validate every published contract before generating the selected API surface.
     for document in (ROOT / "sdk" / "openapi.json", ROOT / "openapi" / "gateway.json",
                      ROOT / "hub" / "openapi.json"):
         subprocess.run([*command, "validate", "-i", str(document)], check=True)

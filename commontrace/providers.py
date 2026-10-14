@@ -146,6 +146,19 @@ _MODEL_RERANKERS = frozenset({"cohere", "voyage", "jina", "llm"})
 _RERANK_MODEL = re.compile(r"[A-Za-z0-9._/\-]{1,128}")
 
 
+def validate_reranker(name: str) -> tuple[str, str]:
+    """Validate a registered tag without constructing models or resolving secrets."""
+    register_builtin_rerankers()
+    if not isinstance(name, str):
+        raise ConfigurationError("a reranker is chosen by name")
+    base, sep, model = name.partition(":")
+    if base not in RERANKERS.names():
+        raise CapabilityError("unknown registered reranker")
+    if sep and (base not in _MODEL_RERANKERS or not _RERANK_MODEL.fullmatch(model)):
+        raise ConfigurationError("only cohere, voyage, jina and llm take a valid :model suffix")
+    return base, model
+
+
 def reranker(name: str):
     """Resolve a reranker by name or ``provider:model`` tag; built-ins register on first use.
 
@@ -153,13 +166,8 @@ def reranker(name: str):
     cross-encoders, ``cohere``, ``voyage``, ``jina``, ``llm``) also expose
     ``rerank(query, documents, top_n)`` for facts, recall and conversations.
     """
-    register_builtin_rerankers()
-    if not isinstance(name, str):
-        raise ConfigurationError("a reranker is chosen by name")
-    base, _sep, model = name.partition(":")
-    if _sep:
-        if base not in _MODEL_RERANKERS or not _RERANK_MODEL.fullmatch(model):
-            raise ConfigurationError("only cohere, voyage, jina and llm take a :model suffix")
+    base, model = validate_reranker(name)
+    if model:
         return RERANKERS.create(base, model)
     return RERANKERS.create(name)
 

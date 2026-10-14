@@ -1114,6 +1114,21 @@ def _rerank(store: Store, question: str, ranked: list[int], mode: str, depth: in
             explain: dict | None = None, blend: float = 0.0, *, local_files_only: bool = False) -> list[int]:
     from commontrace import rerank_arm
 
+    if mode == "mmr":
+        from commontrace import providers
+        from commontrace.retrieval import RankedLesson
+
+        head = ranked[:max(1, min(depth, 200))]
+        turns = store.turns(head)
+        candidates = [RankedLesson("", str(t), _excerpt(turns[t], question, 300),
+                                  1.0 / (RRF_K + 1 + n), []) for n, t in enumerate(head) if t in turns]
+        diverse = providers.mmr_reranker()(question, candidates)
+        order = [int(row.slug) for row in diverse]
+        selected = set(order)
+        if explain is not None:
+            explain["rerank_stage"] = {"reranker": "mmr", "depth": depth, "items": len(order),
+                                       "moved": sum(a != b for a, b in zip(head, order))}
+        return order + [t for t in ranked if t not in selected]
     if mode not in rerank_arm.MODELS:
         return _rerank_provider(store, question, ranked, mode, depth, explain, blend)
     unavailable = (

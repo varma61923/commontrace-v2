@@ -4100,8 +4100,35 @@
                     ],
                     "type": "string"
                   },
+                  "embedder": {
+                    "default": "auto",
+                    "description": "auto uses the configured provider; none/null disables dense retrieval",
+                    "maxLength": 512,
+                    "nullable": true,
+                    "type": "string"
+                  },
+                  "entity_boost": {
+                    "default": 0.1,
+                    "maximum": 1,
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  "graph_hops": {
+                    "description": "null adapts to relational clauses; zero disables graph expansion",
+                    "maximum": 2,
+                    "minimum": 0,
+                    "nullable": true,
+                    "type": "integer"
+                  },
+                  "lexical_weight": {
+                    "default": 0.5,
+                    "maximum": 1,
+                    "minimum": 0,
+                    "type": "number"
+                  },
                   "now": {
                     "description": "date the question is asked",
+                    "maxLength": 128,
                     "nullable": true,
                     "type": "string"
                   },
@@ -4110,13 +4137,40 @@
                     "minLength": 1,
                     "type": "string"
                   },
+                  "rerank": {
+                    "default": "auto",
+                    "description": "auto, none/null, mmr, or a registered text reranker tag",
+                    "maxLength": 512,
+                    "nullable": true,
+                    "type": "string"
+                  },
+                  "rerank_blend": {
+                    "default": 1,
+                    "description": "cross-encoder weight beside the fused rank; zero replaces that rank",
+                    "maximum": 1,
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  "rerank_depth": {
+                    "default": 50,
+                    "description": "bounded reranking candidate head",
+                    "maximum": 200,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "second_pass": {
+                    "description": "retrieve uncovered query facets when context budget remains",
+                    "type": "boolean"
+                  },
                   "sessions": {
                     "items": {
                       "type": "string"
                     },
+                    "nullable": true,
                     "type": "array"
                   },
                   "since": {
+                    "maxLength": 128,
                     "nullable": true,
                     "type": "string"
                   },
@@ -4130,9 +4184,15 @@
                     "items": {
                       "type": "string"
                     },
+                    "nullable": true,
                     "type": "array"
                   },
+                  "summaries": {
+                    "description": "include source-bound session summaries; default true",
+                    "type": "boolean"
+                  },
                   "until": {
+                    "maxLength": 128,
                     "nullable": true,
                     "type": "string"
                   }
@@ -4174,9 +4234,14 @@
                       "type": "array"
                     },
                     "window": {
-                      "additionalProperties": true,
+                      "description": "start date, end date, and parsed window label",
+                      "items": {
+                        "type": "string"
+                      },
+                      "maxItems": 3,
+                      "minItems": 3,
                       "nullable": true,
-                      "type": "object"
+                      "type": "array"
                     }
                   },
                   "required": [

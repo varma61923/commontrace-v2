@@ -14,9 +14,11 @@ from commontrace.gateway import Gateway, make_http_server
 
 SMOKE = r'''
 const assert = require('node:assert/strict');
-const {MemoryApi, Configuration, ResponseError} = require(process.env.COMMONTRACE_GENERATED_SDK);
-const api = new MemoryApi(new Configuration({basePath: process.env.COMMONTRACE_SMOKE_URL,
-    accessToken: process.env.COMMONTRACE_SMOKE_TOKEN}));
+const {MemoryApi, ConversationsApi, HistoryApi, Configuration, ResponseError} =
+    require(process.env.COMMONTRACE_GENERATED_SDK);
+const configuration = new Configuration({basePath: process.env.COMMONTRACE_SMOKE_URL,
+    accessToken: process.env.COMMONTRACE_SMOKE_TOKEN});
+const api = new MemoryApi(configuration);
 (async () => {
     const added = await api.memoryAdd({addRequest: {text: 'Office is Tokyo', context: ['user:smoke']}});
     assert.equal(added.facts.length, 1);
@@ -47,6 +49,39 @@ const api = new MemoryApi(new Configuration({basePath: process.env.COMMONTRACE_S
     await assert.rejects(api.memoryCheckAction({checkActionRequest: {tool: 'deploy', context: ['user:smoke']}}),
         error => error instanceof ResponseError && error.response.status === 403);
     console.log('Generated TypeScript SDK: eight operations and directive rejection passed');
+    if (ConversationsApi) {
+        const conversations = new ConversationsApi(configuration);
+        const saved = await conversations.conversationAdd({conversationAddRequest: {
+            space: 'sdk-conversation', session: 'work', sessionAt: '2025-01-10',
+            messages: [{speaker: 'user', text: 'The Orion project uses PostgreSQL for its invoices.'},
+                       {speaker: 'user', text: 'PostgreSQL invoices are backed up in Oslo.'}]}});
+        assert.equal(saved.added, 2);
+        const recalled = await conversations.conversationRecall({conversationRecallRequest: {
+            space: 'sdk-conversation', question: 'Where are Orion project invoices backed up?',
+            embedder: 'none', rerank: 'mmr', graphHops: 2, secondPass: true,
+            entityBoost: 0.1, lexicalWeight: 0.5, summaries: false, budget: 1000}});
+        assert.ok(recalled.context.includes('Oslo'));
+        assert.ok(recalled.context.includes('Orion'));
+        assert.ok(recalled.tokens <= 1000);
+        assert.equal(recalled.explain.rerank_stage.reranker, 'mmr');
+        const dated = await conversations.conversationRecall({conversationRecallRequest: {
+            space: 'sdk-conversation', question: 'What happened in January 2025?',
+            now: '2025-02-01', embedder: 'none', rerank: null, graphHops: 0, budget: 1000}});
+        assert.equal(dated.window.length, 3);
+        const summary = await conversations.conversationSummarize({conversationSummarizeRequest: {
+            space: 'sdk-conversation', session: 'work', mode: 'extractive'}});
+        assert.equal(summary.turns, 2);
+        assert.ok(summary.text.includes('Orion'));
+        const sessions = await conversations.conversationSessions({space: 'sdk-conversation'});
+        assert.equal(sessions.sessions.length, 1);
+        const history = new HistoryApi(configuration);
+        assert.ok(Array.isArray((await history.traceHistory()).traces));
+        assert.ok(Array.isArray((await history.benchmarkHistory()).reports));
+        await assert.rejects(conversations.conversationRecall({conversationRecallRequest: {
+            space: 'sdk-conversation', question: 'Orion', graphHops: 3}}),
+            error => error instanceof ResponseError && error.response.status === 400);
+        console.log('Generated gateway SDK: conversation, temporal, summary and history workflows passed');
+    }
 })().catch(error => { console.error(error.name, error.response?.status); process.exitCode = 1; });
 '''
 

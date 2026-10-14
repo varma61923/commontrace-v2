@@ -2,8 +2,8 @@
 
 This release closes the actionable gaps in the supplied competitive report.
 The [54-item acceptance matrix](research/next-generation-acceptance.md) distinguishes
-existing capabilities, new implementation, and the account configuration needed
-for package publication. The report's percentage estimates are not measured
+existing capabilities, new implementation, and package publication explicitly
+deferred by the owner. The report's percentage estimates are not measured
 results. CommonTrace keeps its existing public interfaces and lean local runtime.
 
 ## Retrieval and conversation capture
@@ -13,6 +13,39 @@ lexical retrieval when optional dependencies or cached weights are missing.
 Installing an embedding extra does not silently download model weights. Semantic
 vectors are persisted by content hash, fused with lexical evidence through RRF,
 and scoped before graph traversal, reranking and context allocation.
+
+The HTTP `/v1/conversation/recall` contract exposes `embedder`, `rerank`,
+`rerank_depth`, `rerank_blend`, `graph_hops`, `entity_boost`, `lexical_weight`,
+`second_pass` and `summaries`, alongside the existing date, session and speaker
+filters. Generated SDKs receive typed versions of these fields from OpenAPI.
+Omitted fields retain their defaults. `null` or `none` disables embeddings or
+reranking; `graph_hops: 0` disables expansion, while `null` chooses depth from
+the question. Explicit graph depth is bounded to two and reranking to 200
+candidates. Invalid tags, booleans in numeric fields and nonfinite weights are
+rejected before opening a store. A known unavailable provider degrades through
+the existing retrieval path and reports its fallback in `explain`.
+
+`rerank: "mmr"` applies local diversity ranking to conversation candidates,
+preserves every candidate and leaves the unexamined tail in its original order.
+It reuses the lesson MMR implementation without loading a model or calling a
+hosted service. Temporal `window` values are three-element arrays containing
+the start date, end date and parsed label, or `null` when no window applies.
+
+The paired public-data context evaluator can now exercise the same semantic
+and reranking paths as production recall:
+
+```bash
+python -m benchmarks.conversation_retrieval --dataset locomo --data ./locomo.json \
+  --embedder auto --reranker mmr --budgets 1500,7000
+```
+
+Both comparison arms use the same provider settings. Output records requested
+providers, effective embedding tags and dense/reranking failure counts; gold
+answers and evidence annotations remain excluded from ingestion and retrieval.
+The paired evaluator keeps lexical-only defaults for reproducible context
+selection comparisons. `conversation_bench` retains automatic semantic defaults
+and also accepts registered reranker tags, including hosted `provider:model`
+choices. Hosted model choices can incur provider costs when explicitly selected.
 
 To explicitly prepare vectors while adding messages:
 
@@ -169,8 +202,10 @@ new SDK implementation is handwritten. Parameter interface prefixes and named
 measurement models prevent generator collisions across the full gateway API.
 
 The release workflow builds, audits, live-smoke-tests and packs `@commontrace/sdk`
-with the project version, then publishes through npm trusted publishing with
-provenance. The packed tarball can be installed locally before publication.
+with the project version. Its publish job supports npm trusted publishing with
+provenance, but public publication is explicitly deferred by the owner. No release
+tag or publishing workflow is triggered as part of this feature implementation.
+The packed tarball can be installed locally before publication.
 Public npm availability requires ownership of the package scope and registration
 of this repository's `release.yml` as its trusted publisher. Configured account
 ownership and a successful registry publication are external acceptance criteria;

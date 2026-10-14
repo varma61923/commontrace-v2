@@ -1445,21 +1445,69 @@ class Gateway:
         question = _text(req.get("question"), "question", limit=4000)
         lists = {}
         for key in ("sessions", "speakers"):
-            value = req.get(key) or []
+            value = req.get(key)
+            value = [] if value is None else value
             if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
                 raise _bad(f"{key} must be a list of strings")
             lists[key] = tuple(value)
+        dates = {}
+        for key in ("since", "until", "now"):
+            value = req.get(key)
+            if value is not None and not isinstance(value, str):
+                raise _bad(f"{key} must be a date string or null")
+            if value is not None and len(value) > 128:
+                raise _bad(f"{key} date is too long")
+            dates[key] = value or None
         strategy = req.get("context_strategy", "legacy")
         if not isinstance(strategy, str) or strategy not in ("legacy", "coverage-v1", "coverage-v2"):
             raise _bad("context_strategy must be legacy, coverage-v1 or coverage-v2")
-        opts = Options(budget=budget, since=req.get("since") or None, until=req.get("until") or None,
+        advanced = {}
+        for key in ("second_pass", "summaries"):
+            if key in req:
+                if not isinstance(req[key], bool):
+                    raise _bad(f"{key} must be true or false")
+                advanced[key] = req[key]
+        for key, lo, hi in (("graph_hops", 0, 2), ("rerank_depth", 1, 200)):
+            if key in req:
+                value = req[key]
+                if key == "graph_hops" and value is None:
+                    advanced[key] = None
+                elif isinstance(value, int) and not isinstance(value, bool) and lo <= value <= hi:
+                    advanced[key] = value
+                else:
+                    raise _bad(f"{key} must be an integer from {lo} to {hi}")
+        for key in ("rerank_blend", "entity_boost", "lexical_weight"):
+            if key in req:
+                value = req[key]
+                if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 1:
+                    raise _bad(f"{key} must be a finite number from 0 to 1")
+                advanced[key] = float(value)
+        for key in ("embedder", "rerank"):
+            if key in req:
+                value = req[key]
+                if value is not None:
+                    value = _text(value, key, limit=512)
+                    if value not in ("auto", "none"):
+                        try:
+                            if key == "embedder":
+                                from commontrace.conversation.embed import canonical
+
+                                value = canonical(value)
+                            else:
+                                from commontrace.providers import validate_reranker
+
+                                validate_reranker(value)
+                        except (ConversationError, CommonTraceError) as exc:
+                            raise _bad(str(exc)) from None
+                advanced[key] = value
+        opts = Options(budget=budget, since=dates["since"], until=dates["until"],
                        context_strategy=strategy, adaptive_budget=adaptive,
-                       max_budget=max(budget, 12_000), **lists)
+                       max_budget=max(budget, 12_000), **lists, **advanced)
         try:
             space = self._scoped_space(_ident(req.get("space"), "space"))
             pool = self._conversation_pool or READ_POOL
             with pool.lease(self.root, space, query=question) as store:
-                return recall(store, question, now=req.get("now") or None, options=opts).as_dict()
+                return recall(store, question, now=dates["now"], options=opts).as_dict()
         except PoolBusy as exc:
             raise ApiError(503, "conversation_busy", str(exc)) from None
         except ConversationError as exc:
