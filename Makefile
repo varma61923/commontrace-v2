@@ -27,5 +27,5 @@ benchmark:
 serve:
 	$(PYTHON) scripts/dev.py serve
 deploy-validate:
-	helm lint deploy/helm/commontrace-hub --set image.tag=local --set existingSecret=hub-secrets
-	helm template local deploy/helm/commontrace-hub --set image.tag=local --set existingSecret=hub-secrets > /dev/null
+	helm lint deploy/helm/commontrace-hub --set image.repository=commontrace-hub --set image.tag=local --set existingSecret=hub-secrets
+	helm template local deploy/helm/commontrace-hub --set image.repository=commontrace-hub --set image.tag=local --set existingSecret=hub-secrets > /dev/null
