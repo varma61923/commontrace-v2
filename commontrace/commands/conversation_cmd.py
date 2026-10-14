@@ -26,13 +26,16 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     a.add_argument("--file", default="-", help="messages as JSON or JSONL, - for stdin (default)")
     a.add_argument("--text", default=None, help="add one message with this text instead of reading --file")
     a.add_argument("--speaker", default="user", help="speaker of --text (default user)")
+    a.add_argument("--cache-vectors", action="store_true",
+                   help="Prepare semantic vectors after committing messages; may invoke the selected provider.")
+    a.add_argument("--embedder", default=None, help="Embedding provider tag for --cache-vectors (default configured).")
     a.add_argument("--dest", default=None)
     a.set_defaults(func=run_add)
 
     ix = sub.add_parser("index", help="Prepare local semantic vectors before serving questions.")
     ix.add_argument("space", help=SPACE_HELP)
-    ix.add_argument("--model", choices=("arctic-m", "minilm"), default=None,
-                    help="local embedding model (default: COMMONTRACE_CONVERSATION_EMBEDDER)")
+    ix.add_argument("--model", default=None,
+                    help="Local or registered embedding provider tag (default: COMMONTRACE_CONVERSATION_EMBEDDER).")
     ix.add_argument("--session", action="append", default=[], help="only these sessions (repeatable)")
     ix.add_argument("--json", action="store_true")
     ix.add_argument("--dest", default=None)
@@ -223,13 +226,21 @@ def run_add(args) -> int:
         messages = [{"speaker": args.speaker, "text": args.text}] if args.text is not None \
             else _read_messages(args.file)
         with _store(args) as store:
-            result = store.add(args.session, messages, session_at=args.at)
+            result = store.add(args.session, messages, session_at=args.at,
+                               cache_vectors=args.cache_vectors, embedder=args.embedder)
     except (ConversationError, ValueError, OSError) as exc:
         print(f"[commontrace] {exc}", file=sys.stderr)
         return 2
     note = f", {result['secrets_redacted']} secret(s) redacted" if result["secrets_redacted"] else ""
     print(f"[commontrace] {result['added']} message(s) added to {args.space}/{args.session}"
           f" ({result['skipped']} already stored or empty{note}).")
+    cache = result.get("embedding_cache")
+    if cache:
+        if cache["ready"]:
+            print(f"[commontrace] semantic cache ready: {cache['units']} unit(s), {cache['model']}.")
+        else:
+            print(f"[commontrace] source saved; semantic cache unavailable ({cache['error_type']}). "
+                  "Retry with conversation index.", file=sys.stderr)
     return 0
 
 

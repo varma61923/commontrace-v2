@@ -1414,10 +1414,17 @@ class Gateway:
         messages = req.get("messages")
         try:
             validate_messages(messages)
+            cache_vectors = req.get("cache_vectors", False)
+            if not isinstance(cache_vectors, bool):
+                raise _bad("cache_vectors must be true or false")
+            embedder = req.get("embedder")
+            if embedder is not None:
+                embedder = _text(embedder, "embedder", limit=512)
             space = self._scoped_space(_ident(req.get("space"), "space"))
             with Store(self.root, space) as store:
                 return store.add(_ident(req.get("session"), "session"), messages,
-                                 session_at=req.get("session_at") or None)
+                                 session_at=req.get("session_at") or None,
+                                 cache_vectors=cache_vectors, embedder=embedder)
         except ConversationError as exc:
             raise _bad(str(exc)) from None
 

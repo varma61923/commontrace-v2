@@ -132,8 +132,11 @@ def _encode(model, texts: list[str], *, query: bool) -> list[tuple[float, ...]]:
     if len(raw) != len(texts):
         raise ValueError("embedding adapter changed the source count")
     out = []
+    dimension = getattr(getattr(getattr(model, "provider", None), "spec", None), "dimensions", None)
     for values in raw:
         vector = tuple(float(v) for v in values)
+        if dimension and len(vector) != dimension:
+            raise ValueError("embedding adapter returned the wrong configured dimension")
         if not vector or not all(math.isfinite(v) for v in vector):
             raise ValueError("embedding adapter returned invalid vectors")
         out.append(vector)
@@ -145,11 +148,12 @@ def vectors(facts, *, model=None, model_path: str | None = None, root: str | Non
     model, model_key = _resolve(model, model_path)
     if model is None:
         return None, {}
+    dimension = getattr(getattr(getattr(model, "provider", None), "spec", None), "dimensions", None)
     keys = {f.id: (model_key, hashlib.sha256(f.statement.encode()).hexdigest()) for f in facts}
     found: dict = {}
     with _LOCK:
         for fid, key in keys.items():
-            if key in _VECTORS:
+            if key in _VECTORS and (not dimension or len(_VECTORS[key]) == dimension):
                 _VECTORS.move_to_end(key)
                 found[key] = _VECTORS[key]
     missing = {key: f.statement for f in facts if (key := keys[f.id]) not in found}
@@ -162,7 +166,8 @@ def vectors(facts, *, model=None, model_path: str | None = None, root: str | Non
                     chunk = hashes[start:start + 500]
                     marks = ",".join("?" * len(chunk))
                     for digest, blob in db.execute(f"SELECT hash, v FROM vec WHERE hash IN ({marks})", chunk):  # nosec B608
-                        found[(model_key, digest)] = tuple(array.array("f", blob))
+                        if not dimension or len(blob) == dimension * array.array("f").itemsize:
+                            found[(model_key, digest)] = tuple(array.array("f", blob))
             todo = {k: t for k, t in missing.items() if k not in found}
             if todo:
                 with _LOCK:

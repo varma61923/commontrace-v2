@@ -327,9 +327,14 @@ OPERATIONS: dict[tuple[str, str], Operation] = {
     ("POST", "/v1/conversation/add"): Operation(
         "conversation_add", "Conversations", obj({
             "space": IDENT, "session": IDENT, "messages": array(ref("Message"), maxItems=1000),
-            "session_at": nullable(string("date the session took place"))}, ("space", "session", "messages")),
+            "session_at": nullable(string("date the session took place")),
+            "cache_vectors": boolean("explicitly prepare vectors after committing redacted source; default false"),
+            "embedder": string("provider tag; default configured model", maxLength=512)},
+            ("space", "session", "messages")),
         obj({"space": string(), "session": string(), "added": integer(), "skipped": integer(),
-             "secrets_redacted": integer()}, ("added", "skipped")), errors=(400,)),
+             "secrets_redacted": integer(), "embedding_cache": obj({"ready": boolean(), "model": string(),
+                "units": integer(), "revision": array(integer()), "elapsed_seconds": number(),
+                "error_type": string()}, ("ready",))}, ("added", "skipped")), errors=(400,)),
     ("POST", "/v1/conversation/recall"): Operation(
         "conversation_recall", "Conversations", obj({
             "space": IDENT, "question": string(minLength=1, maxLength=4000),

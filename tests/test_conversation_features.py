@@ -283,3 +283,34 @@ class TestEntitiesAndPromotion:
         assert timeline[1]["turns"] == 2
         assert timeline[0]["first_turn"] == 1
         assert timeline[1]["last_turn"] == 5
+
+
+def test_future_assertions_remain_known_now_without_superseding_current_job(tmp_path):
+    import json
+
+    from commontrace.conversation.extract import extract
+    from commontrace.conversation.store import Store
+
+    with Store(str(tmp_path), "project") as store:
+        store.add("session", [{"speaker": "user", "text": "Ana works at Acme.", "at": "2026-10-14"},
+                              {"speaker": "user", "text": "Ana plans to join Globex in January 2027.", "at": "2026-10-15"},
+                              {"speaker": "user", "text": "Will works at Acme.", "at": "2026-10-15"}])
+        ids = [row[0] for row in store.db.execute("SELECT id FROM turns ORDER BY idx")]
+
+        def complete(prompt):
+            assert "future occurrence date" in prompt
+            return json.dumps({"memories": [
+                {"text": "Ana works at Acme", "kind": "fact", "owner": "Ana", "slot": "job", "source_turn_ids": [ids[0]]},
+                {"text": "Ana plans to join Globex in January 2027", "kind": "fact", "owner": "Ana", "slot": "PLAN:JOB",
+                 "at": "2027-01-01", "source_turn_ids": [ids[1]]},
+                {"text": "Will works at Acme", "kind": "fact", "owner": "Will", "slot": "job",
+                 "source_turn_ids": [ids[2]]},
+            ]}), {}
+
+        extract(store, complete=complete)
+        values = store.db.execute("SELECT statement, at, slot, superseded_by FROM facts ORDER BY id").fetchall()
+        assert len(values) == 3 and all(row["superseded_by"] is None for row in values)
+        plan = next(row for row in values if "Globex" in row["statement"])
+        assert "January 2027" in plan["statement"] and plan["at"].startswith("2026-10-15")
+        assert plan["slot"] == "plan:job"
+        assert next(row for row in values if row["statement"].startswith("Will"))["slot"] == "job"

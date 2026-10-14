@@ -62,7 +62,7 @@ def available_for(tag: str) -> bool:
         spec = embeddings.parse(tag)
     except embeddings.EmbeddingError:
         return False
-    if spec.hosted:
+    if spec.hosted or spec.provider in embeddings.known()["custom"]:
         return importlib.util.find_spec("numpy") is not None
     if spec.provider == "fastembed":
         return (importlib.util.find_spec("numpy") is not None
@@ -129,14 +129,11 @@ class Embedder:
         self.np, self.tag, self.read_only = np, tag, read_only
         self._provider = None
         if tag not in MODELS:
-            from commontrace import embeddings
+            from commontrace.providers import EmbedderFactory
 
             # The shipped local default is cache-only. A first-run cache miss
             # should leave the lexical arm usable without a surprise download.
-            if tag == embeddings.DEFAULT_LOCAL_TAG:
-                self._provider = embeddings.provider(tag, local_files_only=True)
-            else:
-                self._provider = embeddings.provider(tag)
+            self._provider = EmbedderFactory.create(tag)
         directory = _store.conversations_dir(root)
         safe = tag if tag in MODELS else re.sub(r"[^A-Za-z0-9._-]+", "_", tag)
         path = os.path.join(directory, f"embeddings-{safe}.db")
@@ -165,7 +162,13 @@ class Embedder:
             def compute(items):
                 if not items:
                     return self.np.zeros((0, 0), dtype=self.np.float32)
-                return self.np.asarray(provider.embed(list(items), query=query), dtype=self.np.float32)
+                values = self.np.asarray(provider.embed(list(items), query=query), dtype=self.np.float32)
+                dimension = provider.spec.dimensions
+                if values.ndim != 2 or len(values) != len(items) or (dimension and values.shape[1] != dimension):
+                    from commontrace.embeddings import EmbeddingError
+
+                    raise EmbeddingError("provider returned the wrong source count or configured dimension")
+                return values
         else:
             prefix = MODELS[self.tag][1] if query else ""
             model = _model(self.tag)
@@ -229,6 +232,11 @@ class Embedder:
             if hashes:
                 found.update(self.db.execute(
                     "SELECT hash, v FROM vec WHERE hash IN (SELECT value FROM json_each(?))", (json.dumps(hashes),)))
+            dimension = self._provider.spec.dimensions if self._provider is not None else None
+            if dimension:
+                # Older custom-provider tags ignored @dimensions. Rebuild only
+                # mismatched derived rows rather than accepting stale vectors.
+                found = {key: blob for key, blob in found.items() if len(blob) == dimension * 2}
             todo = {h: t for h, t in items if h not in found}
             if todo:
                 keys = list(todo)

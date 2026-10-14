@@ -31,6 +31,7 @@ import math
 import os
 import re
 import tempfile
+import threading
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -65,7 +66,9 @@ BATCH = {
     "fastembed": 64,
 }
 _CUSTOM: dict[str, object] = {}
-_TAG = re.compile(r"^(?:(?P<provider>[a-z]+):)?(?P<model>[A-Za-z0-9._/\-]{1,128})(?:@(?P<dims>[0-9]{1,5}))?$")
+_CUSTOM_LOCK = threading.RLock()
+_TAG = re.compile(r"^(?:(?P<provider>[a-z][a-z0-9]{1,31}):)?(?P<model>[A-Za-z0-9._/\-]{1,128})"
+                  r"(?:@(?P<dims>[0-9]{1,5}))?$")
 
 
 class EmbeddingError(RuntimeError):
@@ -419,21 +422,22 @@ class _Hosted:
 
 def register(name: str, factory) -> None:
     """Register trusted code: ``factory(spec) -> Provider`` for tags ``<name>:<model>``."""
-    if not re.fullmatch(r"[a-z][a-z0-9]{1,31}", name) or name in (*LOCAL_PROVIDERS, *HOSTED) or name in _CUSTOM:
+    if (not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9]{1,31}", name)
+            or name in (*LOCAL_PROVIDERS, *HOSTED) or not callable(factory)):
         raise EmbeddingError("provider names are lowercase, new and not built in")
-    _CUSTOM[name] = factory
+    with _CUSTOM_LOCK:
+        if name in _CUSTOM:
+            raise EmbeddingError("provider already registered")
+        _CUSTOM[name] = factory
 
 
 def provider(tag: str | Spec, *, post=None, local_files_only: bool = False) -> Provider:
     """The provider for a tag. Building it is cheap; local models load on first use."""
-    if isinstance(tag, Spec) and tag.provider in _CUSTOM:
-        return _CUSTOM[tag.provider](tag)  # type: ignore[operator]
-    if isinstance(tag, str) and ":" in tag and tag.split(":", 1)[0] in _CUSTOM:
-        name, model = tag.split(":", 1)
-        return _CUSTOM[name](Spec(name, model))  # type: ignore[operator]
     spec = tag if isinstance(tag, Spec) else parse(tag)
-    if spec.provider in _CUSTOM:
-        return _CUSTOM[spec.provider](spec)  # type: ignore[operator]
+    with _CUSTOM_LOCK:
+        custom = _CUSTOM.get(spec.provider)
+    if custom is not None:
+        return custom(spec)  # type: ignore[operator]
     if spec.provider == "local":
         return _Local(spec, local_files_only=local_files_only)
     if spec.provider == "fastembed":
@@ -443,9 +447,11 @@ def provider(tag: str | Spec, *, post=None, local_files_only: bool = False) -> P
 
 def known() -> dict[str, list[str]]:
     """What can be selected, for help text and the capability matrix."""
+    with _CUSTOM_LOCK:
+        custom = sorted(_CUSTOM)
     return {
         "local": sorted(LOCAL_MODELS),
         "local_providers": ["fastembed:<supported-model>"],
         "hosted": [f"{p}:{DEFAULT_MODELS.get(p, '<model>')}" for p in HOSTED],
-        "custom": sorted(_CUSTOM),
+        "custom": custom,
     }

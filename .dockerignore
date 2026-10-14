@@ -152,6 +152,8 @@ commontrace/ingest/*
 !commontrace/profile_activity.py
 !commontrace/provenance.py
 !commontrace/providers.py
+!commontrace/provider_config.py
+!commontrace/ui_commands.py
 !commontrace/query_plan.py
 !commontrace/recall.py
 !commontrace/recency.py

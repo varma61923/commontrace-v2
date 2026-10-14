@@ -16,6 +16,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+providers = ["pydantic>=2.12,<3.0"]
 code = ["tree-sitter>=0.25,<0.27", "tree-sitter-typescript>=0.23,<0.24"]
 ontology = [
     "jsonschema>=4.23,<5.0",

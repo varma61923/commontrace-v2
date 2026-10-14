@@ -569,8 +569,23 @@ class Store:
     # --- writing -----------------------------------------------------------------
 
     def add(self, session: str, messages: Iterable[Mapping], *, session_at=None,
-            user_speakers: Iterable[str] = (), extract_profile: bool = True) -> dict:
-        """Append messages to a session. Re-adding a message already stored is a no-op."""
+            user_speakers: Iterable[str] = (), extract_profile: bool = True,
+            cache_vectors: bool = False, embedder: str | None = None) -> dict:
+        """Append messages; optionally prepare vectors after committing redacted evidence.
+
+        Precomputation is explicit so capture does not silently run inference or
+        spend on a configured hosted provider. Cache failures never roll back
+        committed source messages; the result reports degraded cache readiness.
+        """
+        if not isinstance(cache_vectors, bool):
+            raise ConversationError("cache_vectors must be boolean")
+        tag = None
+        if cache_vectors:
+            from commontrace.conversation import embed
+
+            tag = embed.configured() if embedder in (None, "auto") else embed.canonical(embedder)
+            if not tag or not embed.available_for(tag):
+                raise ConversationError("vector preparation requires an available configured embedding provider")
         if not SESSION_RE.match(session or ""):
             raise ConversationError("session id must be 1-200 printable characters")
         _validate_session_metadata(session)
@@ -651,8 +666,21 @@ class Store:
                 added += 1
             if added:
                 self.db.execute("DELETE FROM summaries WHERE session=?", (session,))
-        return {"space": self.space, "session": session, "added": added, "skipped": skipped,
-                "secrets_redacted": redacted}
+        result = {"space": self.space, "session": session, "added": added, "skipped": skipped,
+                  "secrets_redacted": redacted}
+        if cache_vectors:
+            encoder = None
+            try:
+                encoder = embed.Embedder(self.root, tag)
+                prepared = embed.prepare(self, encoder, sessions=(session,))
+                result["embedding_cache"] = {"ready": True, **prepared,
+                                             "revision": [int(value) for value in prepared["revision"]]}
+            except Exception as exc:  # noqa: BLE001 - durable source evidence remains available for sparse recall
+                result["embedding_cache"] = {"ready": False, "error_type": type(exc).__name__}
+            finally:
+                if encoder is not None:
+                    encoder.close()
+        return result
 
     def delete_session(self, session: str) -> int:
         with self._lock, write_txn(self.db):

@@ -41,7 +41,7 @@ def embedder(spec=None):
         return None
     from commontrace import embeddings
 
-    spec = embeddings.parse(tag) if not (":" in tag and tag.partition(":")[0] in embeddings._CUSTOM) else None
+    spec = embeddings.parse(tag)
     local_files_only = spec is not None and spec.tag == embeddings.DEFAULT_LOCAL_TAG
     if spec is not None and spec.provider == "local":
         return _LOCAL_PROVIDERS.get_or_load(

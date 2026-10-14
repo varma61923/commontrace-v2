@@ -104,18 +104,21 @@ class Config:
 def load_config() -> Config:
     """Provider settings from the environment."""
     provider = _configuration_getenv("COMMONTRACE_LLM_PROVIDER", DEFAULT_PROVIDER).strip().lower()
-    from commontrace.providers import LLM_CREDENTIALS, LLMS
+    from commontrace.providers import LLM_CREDENTIALS, LLMFactory
 
-    if provider not in (*_SUPPORTED_PROVIDERS, *LLMS.names()):
+    if provider not in LLMFactory.names():
         raise LLMUnavailable(
             f"COMMONTRACE_LLM_PROVIDER={provider!r} is not supported "
             f"(use one of: {', '.join(_SUPPORTED_PROVIDERS)})."
         )
     ollama_alias = provider == "ollama"
-    if ollama_alias:
+    openai_alias = provider == "openai"
+    if ollama_alias or openai_alias:
         provider = "openai-compatible"
     try:
         api_key = env_secret("COMMONTRACE_LLM_API_KEY").strip()
+        if openai_alias and not api_key:
+            api_key = env_secret("OPENAI_API_KEY").strip()
     except RuntimeError:
         raise LLMUnavailable("configured LLM API secret could not be resolved") from None
     if provider == "local":
@@ -128,7 +131,9 @@ def load_config() -> Config:
         raise LLMUnavailable(
             "COMMONTRACE_LLM_API_KEY is not set -- no LLM-assisted draft is possible."
         )
-    model = _configuration_getenv("COMMONTRACE_LLM_MODEL", "").strip() or DEFAULT_MODEL
+    model = _configuration_getenv("COMMONTRACE_LLM_MODEL", "").strip() or (
+        "gpt-4.1-mini" if openai_alias else DEFAULT_MODEL
+    )
     cache_namespace = _configuration_getenv("COMMONTRACE_LLM_CACHE_NAMESPACE", "").strip() or None
     if provider in _CLOUD_PROVIDERS:
         model = _configuration_getenv("COMMONTRACE_LLM_MODEL", "").strip()
@@ -147,6 +152,8 @@ def load_config() -> Config:
     if provider == "openai-compatible" and not base_url:
         if ollama_alias:
             base_url = _OLLAMA_DEFAULT_BASE_URL
+        elif openai_alias:
+            base_url = "https://api.openai.com/v1"
         else:
             raise LLMUnavailable(
                 "COMMONTRACE_LLM_PROVIDER=openai-compatible requires COMMONTRACE_LLM_BASE_URL "
@@ -460,9 +467,9 @@ def complete(prompt: str, config: Config | None = None) -> tuple[str, dict]:
         return runtime.complete(prompt, purpose=PURPOSE.get(), config=config)
     cfg = config or load_config()
     cache = llm_cache_mod.LLMCache() if llm_cache_mod.enabled() else None
-    from commontrace.providers import llm_caller
+    from commontrace.providers import LLMFactory
 
-    caller = llm_caller(cfg.provider, {"anthropic": _call_anthropic, "openai-compatible": _call_openai_compatible,
+    caller = LLMFactory.caller(cfg, {"anthropic": _call_anthropic, "openai-compatible": _call_openai_compatible,
               "ollama": _call_openai_compatible,
               "bedrock": _call_bedrock, "vertex": _call_vertex, "local": _call_local,
               "gemini": _call_gemini})

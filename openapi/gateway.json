@@ -3622,6 +3622,15 @@
               "schema": {
                 "additionalProperties": true,
                 "properties": {
+                  "cache_vectors": {
+                    "description": "explicitly prepare vectors after committing redacted source; default false",
+                    "type": "boolean"
+                  },
+                  "embedder": {
+                    "description": "provider tag; default configured model",
+                    "maxLength": 512,
+                    "type": "string"
+                  },
                   "messages": {
                     "items": {
                       "$ref": "#/components/schemas/Message"
@@ -3667,6 +3676,36 @@
                   "properties": {
                     "added": {
                       "type": "integer"
+                    },
+                    "embedding_cache": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "elapsed_seconds": {
+                          "type": "number"
+                        },
+                        "error_type": {
+                          "type": "string"
+                        },
+                        "model": {
+                          "type": "string"
+                        },
+                        "ready": {
+                          "type": "boolean"
+                        },
+                        "revision": {
+                          "items": {
+                            "type": "integer"
+                          },
+                          "type": "array"
+                        },
+                        "units": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "ready"
+                      ],
+                      "type": "object"
                     },
                     "secrets_redacted": {
                       "type": "integer"
