@@ -229,9 +229,11 @@ def test_deadline_covers_slow_frame_and_does_not_ack(tmp_path):
 
     def handler(client):
         frame(client)
-        client.sendall(b'{"context":"')
-        time.sleep(0.08)
         try:
+            # A loaded peer may be scheduled after the client's bounded deadline.
+            # Closure before the first partial write is the same fail-open contract.
+            client.sendall(b'{"context":"')
+            time.sleep(0.08)
             client.sendall(b'late","delivery_token":"receipt"}\n')
             observed.append(frame(client))
         except (BrokenPipeError, ConnectionResetError):
@@ -246,25 +248,44 @@ def test_deadline_covers_slow_frame_and_does_not_ack(tmp_path):
 
 def test_successful_stdout_precedes_ack_and_stalled_receipt_is_bounded(tmp_path):
     read_output = threading.Event()
+    release_peer = threading.Event()
     observed = []
+    native = command(tmp_path)
+    # Test transport ordering with scheduling headroom, independently of the
+    # production 25/20 ms deadlines exercised by deadline tests and latency CI.
+    script = """
+import importlib.util
+import sys
+spec = importlib.util.spec_from_file_location("bridge", sys.argv[1])
+bridge = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(bridge)
+bridge.RESPONSE_SECONDS = 2.0
+bridge.RECEIPT_SECONDS = 0.5
+raise SystemExit(bridge.main(sys.argv[2:]))
+"""
+    functional = native[:3] + ["-c", script, *native[3:]]
 
     def handler(client):
         frame(client)
         client.sendall(b'{"context":"delivered","delivery_token":"receipt"}\n')
         observed.append(json.loads(frame(client)))
-        assert read_output.wait(2)
-        # Keep the peer's response side open. The process must still exit.
-        time.sleep(0.2)
+        assert read_output.wait(5)
+        # Keep the peer open until the client has exited: successful teardown
+        # cannot be explained by a timed sleep closing the remote socket.
+        assert release_peer.wait(5)
 
     with peer(tmp_path, handler):
-        with subprocess.Popen(command(tmp_path), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        with subprocess.Popen(functional, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                               stderr=subprocess.PIPE, text=True) as process:
-            process.stdin.write('{"session_id":"s"}')
-            process.stdin.close()
-            assert json.loads(process.stdout.readline())["context"] == "delivered"
-            read_output.set()
-            assert process.wait(timeout=0.15) == 0
-            assert process.stderr.read() == ""
+            try:
+                process.stdin.write('{"session_id":"s"}')
+                process.stdin.close()
+                assert json.loads(process.stdout.readline())["context"] == "delivered"
+                read_output.set()
+                assert process.wait(timeout=5) == 0
+                assert process.stderr.read() == ""
+            finally:
+                release_peer.set()
     assert observed == [{"operation": "ack", "delivery_token": "receipt"}]
 
 

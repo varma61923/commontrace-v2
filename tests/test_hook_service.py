@@ -78,6 +78,16 @@ def test_native_transport_capture_receipt_and_crash_recovery(tmp_path):
             text=True, capture_output=True, timeout=5, check=True,
         )
         assert json.loads(ui_only.stdout) == {}
+        ui_run = hashlib.sha256(json.dumps([{"agent": "agent"}, "capture-only"], sort_keys=True).encode()).hexdigest()
+        until = time.monotonic() + 5
+        while True:
+            with journal.connect() as db:
+                captured = db.execute("SELECT 1 FROM captures WHERE session=? LIMIT 1", (ui_run,)).fetchone()
+            if captured:
+                break
+            if time.monotonic() >= until:
+                pytest.fail("capture-only event was not persisted by the broker or detached fallback")
+            time.sleep(0.01)
         with journal.connect() as db:
             assert db.execute("SELECT COUNT(*) FROM injected").fetchone()[0] == before_exposures
             assert db.execute("SELECT COUNT(*) FROM captures").fetchone()[0] > before_fallback
