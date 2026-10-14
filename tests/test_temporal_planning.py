@@ -66,6 +66,7 @@ def test_plan_graph_category_and_subqueries_share_original_snapshot(tmp_path, mo
     def search(root, part, **options):
         seen.append(("search", options["as_of"]))
         assert options["infer_temporal"] is False
+        assert options["graph_hops"] == 1 and options["entity_ids"] == ["office"]
         return []
 
     monkeypatch.setattr(hierarchical, "list_facts", list_facts)
@@ -75,7 +76,7 @@ def test_plan_graph_category_and_subqueries_share_original_snapshot(tmp_path, mo
     query_plan.retrieve(str(tmp_path), "office as of 2025-01-01", backend=Backend(),
                         complete=lambda prompt: json.dumps(planned))
     assert {moment for _, moment in seen} == {"2025-01-01T00:00:00+00:00"}
-    assert [kind for kind, _ in seen] == ["graph", "category", "search", "search"]
+    assert [kind for kind, _ in seen] == ["category", "search", "search"]
 
 
 def test_explicit_caller_snapshot_wins_over_query_and_model_dates(tmp_path, monkeypatch):

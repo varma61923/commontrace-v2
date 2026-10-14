@@ -103,3 +103,50 @@ Regression coverage includes [pool lifecycle and boundaries](../tests/test_conve
 [snapshot/cache races](../tests/test_conversation_snapshot_cache.py),
 [task evidence and cited answers](../tests/test_conversation_task_evidence.py),
 and [coverage oracle equivalence](../tests/test_evidence_coverage_benchmark.py).
+
+## Default hybrid fact retrieval
+
+All configuration profiles select the cached local FastEmbed BGE-small model by default.
+Install `commontrace[fastembed]` and provision its model cache to activate semantic retrieval;
+missing packages or weights retain lexical recall, and automatic model loading never downloads
+weights during a request. Set `embedding: none` in a profile for an explicit lexical-only deployment.
+
+Provision the local models once during deployment setup:
+
+```bash
+python -m pip install 'commontrace[fastembed,attention]'
+python -c "from fastembed import TextEmbedding; TextEmbedding(model_name='BAAI/bge-small-en-v1.5')"
+python -c "from commontrace import rerank_arm; error = rerank_arm.ready('cross-encoder-fast'); raise SystemExit(error or 0)"
+```
+
+Run setup as the same service account and with the same cache configuration as the server.
+
+The default `balanced` recipe combines independent BM25 and semantic rankings with RRF
+(`k=60`) on both JSONL and SQLite stores. Query entities seed bounded breadth-first traversal:
+two hops by default, at most eight seeds and 2,000 visited nodes per seed. Every discovered
+fact and every memory used as a bridge must pass current scope, forgetting, TTL, authority
+and evidence checks. A seed alone does not fabricate an extra graph relevance signal.
+Traversal preserves feedback weights by multiplying edge reliability along each path.
+Entities extracted during ingestion provide a capped relative boost to admitted candidates;
+they cannot bypass scope or turn an otherwise absent candidate into evidence.
+`legacy-balanced` retains the weighted score mode for callers migrating from JSONL rankings.
+
+Search accepts independent `as_of` (valid time) and `known_at` (record time) snapshots.
+Both are pinned across lexical, semantic, graph, category and planned retrieval stages;
+current erasure and authorization rules continue to apply to historical queries.
+
+```bash
+commontrace evolve search 'Alice office' --dest ./store --graph-hops 2 \
+  --as-of 2025-01-15 --known-at 2025-03-15 --reranker mmr
+```
+
+The same fields are in `/v1/memory/search`, its generated OpenAPI SDK contract,
+and the MCP `memory_search` tool. MCP retrieval runs in bounded store workers;
+the older `query_facts` and `archival_memory_search` tools retain their sparse
+ranking contracts for existing clients.
+`graph_hops: 0` disables graph expansion. `reranker: mmr` selects diverse evidence;
+`cross-encoder-fast`, `cross-encoder`, `bge-reranker-v2-m3`, and `mxbai-rerank` select
+local second-stage models. Automatic selection honors the profile and only loads cached
+weights; explicit model selection follows the existing model-provisioning policy.
+MMR normalizes relevance before comparing it with redundancy so RRF's small score scale
+does not overwhelm the relevance/diversity tradeoff.

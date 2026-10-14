@@ -11,7 +11,7 @@ import re
 import unicodedata
 from collections import Counter, deque
 from collections.abc import Callable, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
@@ -31,10 +31,12 @@ class SearchRecipe:
     reranker: str = "score"
     mmr_lambda: float = 0.7
     half_life_days: float = 90.0
+    fusion: str = "rrf"
 
 
 RECIPES = {
-    "balanced": SearchRecipe("balanced"),
+    "balanced": SearchRecipe("balanced", fusion="rrf"),
+    "legacy-balanced": SearchRecipe("legacy-balanced", fusion="weighted"),
     "diverse": SearchRecipe("diverse", reranker="mmr"),
     "nearby": SearchRecipe("nearby", reranker="node-distance"),
     "corroborated": SearchRecipe("corroborated", reranker="episode-mentions"),
@@ -44,15 +46,17 @@ RECIPES = {
 
 
 class GraphBackend(Protocol):
-    def neighbors(self, node_id: str, *, as_of: str | None = None) -> list[dict]: ...
+    def neighbors(self, node_id: str, *, as_of: str | None = None,
+                  known_at: str | None = None) -> list[dict]: ...
 
 
 class LocalGraph:
     def __init__(self, root: str):
         self.root = root
 
-    def neighbors(self, node_id: str, *, as_of: str | None = None) -> list[dict]:
-        return graph.get_neighbors(self.root, node_id, as_of=as_of)
+    def neighbors(self, node_id: str, *, as_of: str | None = None,
+                  known_at: str | None = None) -> list[dict]:
+        return graph.get_neighbors(self.root, node_id, as_of=as_of, known_at=known_at)
 
 
 def terms(text: str) -> list[str]:
@@ -86,40 +90,86 @@ def _bm25(query: list[str], documents: list[list[str]]) -> list[float]:
 
 
 def _distances(backend: GraphBackend, center: str, as_of: str | None, *, depth: int = 4,
-               eligible: Callable[[str], bool] | None = None) -> dict[str, int]:
+               eligible: Callable[[str], bool] | None = None, known_at: str | None = None,
+               strengths: dict[str, float] | None = None) -> dict[str, int]:
     if eligible is not None and not eligible(center):
         return {}
     distances = {center: 0}
+    weights = strengths if strengths is not None else {}
+    weights[center] = 1.0
     queue = deque([center])
     while queue and len(distances) < 2000:
         current = queue.popleft()
         if distances[current] >= depth:
             continue
-        for row in backend.neighbors(current, as_of=as_of):
+        temporal = {"as_of": as_of}
+        if known_at is not None:
+            temporal["known_at"] = known_at
+        for row in backend.neighbors(current, **temporal):
             if len(distances) >= 2000:
                 break
             nid = row["neighbor_id"]
+            weight = float(row.get("weight", 1.0))
+            if not math.isfinite(weight):
+                raise ValueError("graph weights must be finite")
+            strength = weights[current] * max(0.0, min(1.0, weight))
             if nid not in distances and (eligible is None or eligible(nid)):
                 distances[nid] = distances[current] + 1
+                weights[nid] = strength
                 queue.append(nid)
+            elif distances.get(nid) == distances[current] + 1:
+                weights[nid] = max(weights[nid], strength)
     return distances
+
+
+def _rrf_scores(rankings):
+    scores, signals = {}, {}
+    for channel, order in rankings:
+        for rank, identity in enumerate(dict.fromkeys(order), 1):
+            contribution = 1 / (60 + rank)
+            scores[identity] = scores.get(identity, 0) + contribution
+            signals.setdefault(identity, {})[channel] = contribution
+    return scores, signals
+
+
+def _entity_boost(root, query, rows, cfg, explain):
+    """Boost admitted candidates using the entity index maintained at ingestion."""
+    if cfg.fusion != "rrf" or not rows:
+        return
+    from commontrace.entity_store import entity_boost_for
+
+    try:
+        boosts = entity_boost_for(root, query, [row["id"] for row in rows])
+    except (OSError, ValueError, TypeError) as exc:
+        if explain is not None:
+            explain["entity_fallback"] = type(exc).__name__
+        return
+    for row in rows:
+        boost = boosts.get(row["id"], 0.0)
+        if boost:
+            row["signals"]["entity_boost"] = boost
+            row["score"] *= 1 + cfg.entity * boost
+    rows.sort(key=lambda row: (-row["score"], row["id"]))
+    if explain is not None:
+        explain["entity_candidates"] = len(boosts)
 
 
 @configured
 def search(root: str, query: str, *, recipe: str = "balanced", scope: str = "", limit: int = 10,
            as_of: str | None = None, dense_scores: dict[str, float] | None = None,
-           entity_ids: Sequence[str] = (), center: str = "", backend: GraphBackend | None = None,
+           entity_ids: Sequence[str] | None = None, center: str = "", backend: GraphBackend | None = None,
            utility: dict[str, float] | None = None, context: list[str] | None = None,
            action_class: str = "", embedder=None, reranker: str | None = None,
            rerank_depth: int | None = None, rerank_blend: float | None = None,
-           explain: dict | None = None, vector_search=None, infer_temporal: bool = True) -> list[dict[str, Any]]:
+           explain: dict | None = None, vector_search=None, infer_temporal: bool = True,
+           known_at: str | None = None, graph_hops: int = 2) -> list[dict[str, Any]]:
     """Rank governed facts by a recipe's blend of dense, lexical, entity, temporal and utility signals.
 
     ``reranker`` (a `providers.reranker` name, or "none") reranks the top
     ``rerank_depth`` scored facts with a cross-encoder, hosted or LLM reranker
     before the recipe's own ordering; unset, it comes from the ``"rerank"``
-    section of `memory/budgets.json` (see `commontrace.recall`), and without
-    one nothing changes. Reranked rows carry ``rerank_score``; recipes that
+    section of `memory/budgets.json` (see `commontrace.recall`), or the profile's
+    cached local model. Reranked rows carry ``rerank_score``; recipes that
     order by graph distance or corroboration use the reranked order to break
     ties, and ``diverse`` trades redundancy against the original scores. A
     caller-supplied ``explain`` dict receives ``{"rerank": report}``.
@@ -128,6 +178,9 @@ def search(root: str, query: str, *, recipe: str = "balanced", scope: str = "", 
         raise ValueError(f"unknown search recipe: {recipe}")
     if not isinstance(limit, int) or isinstance(limit, bool) or not 0 <= limit <= 1000:
         raise ValueError("limit must be an integer in 0..1000")
+    if type(graph_hops) is not int or not 0 <= graph_hops <= 4:
+        raise ValueError("graph_hops must be an integer in 0..4")
+    known = lesson_cache.parse_moment(known_at) if known_at else None
     from commontrace.temporal_intent import resolve
 
     if not isinstance(infer_temporal, bool):
@@ -138,20 +191,25 @@ def search(root: str, query: str, *, recipe: str = "balanced", scope: str = "", 
     if recipe == "balanced" and intent["mode"] == "current":
         recipe = "recent"
     cfg = RECIPES[recipe]
+    automatic_rerank = (reranker is None and embedder not in ("none", "off")
+                        and dense_scores is None and vector_search is None)
+    if reranker == "mmr":
+        cfg = replace(cfg, reranker="mmr")
+        reranker = "none"
     if recipe == "decision" and utility is None:
         from commontrace.causal_policy import utility_priors
 
         utility = utility_priors(root)
     reference = lesson_cache.parse_moment(as_of) if as_of else datetime.now(timezone.utc)
     from commontrace import fact_store
-    if fact_store.enabled(root):
+    if fact_store.enabled(root) and recipe != "legacy-balanced":
         return indexed_search(root, query, context=context if context is not None else ([scope] if scope else []),
             limit=limit, as_of=as_of, embedder=embedder, dense_scores=dense_scores, vector_search=vector_search,
             backend=backend, entity_ids=entity_ids, reranker=reranker, rerank_depth=rerank_depth,
             rerank_blend=rerank_blend, explain=explain, action_class=action_class,
-            cfg=cfg, center=center, utility=utility)
-    facts = hierarchical.list_facts(root, scope=scope, as_of=reference.isoformat())
-    if as_of is None:
+            cfg=cfg, center=center, utility=utility, known_at=known_at, graph_hops=graph_hops)
+    facts = hierarchical.list_facts(root, scope=scope, as_of=reference.isoformat(), known_at=known_at)
+    if as_of is None and known is None:
         facts = [f for f in facts if f.status == "active"]
     if context is not None:
         from commontrace.memory_control import matches
@@ -172,22 +230,46 @@ def search(root: str, query: str, *, recipe: str = "balanced", scope: str = "", 
     documents = [terms(f.statement) for f in facts]
     sparse = _bm25(terms(query), documents)
     backend = backend or LocalGraph(root)
-    nearby = _distances(backend, center, as_of) if center else {}
-    entity_memories = {}
-    for entity in entity_ids:
-        for row in backend.neighbors(entity, as_of=as_of):
-            weight = float(row.get("weight", 1))
-            if not math.isfinite(weight):
-                raise ValueError("graph weights must be finite")
-            node = row["neighbor_id"]
-            entity_memories[node] = max(entity_memories.get(node, 0), max(0, min(1, weight)))
+    canonical = hierarchical.load_facts(root)
+    eligible_ids = {fact.id for fact in facts}
+    if dense_scores is not None:
+        dense_scores = {identity: float(value) for identity, value in dense_scores.items() if identity in eligible_ids}
+        if any(not math.isfinite(value) or not -1 <= value <= 1 for value in dense_scores.values()):
+            raise ValueError("dense cosine scores must be finite in [-1, 1]")
+    lexical_scores = {fact.id: score for fact, score in zip(facts, sparse)}
+    sparse_order = sorted((identity for identity in lexical_scores if lexical_scores[identity] > 0),
+                          key=lambda identity: (-lexical_scores[identity], identity))
+    dense_order = sorted((identity for identity in dense_scores or {} if dense_scores[identity] >= 0.6),
+                         key=lambda identity: (-dense_scores[identity], identity))
+
+    def traversable(node):
+        identity = node.removeprefix("memory:")
+        return (not node.startswith("memory:") and identity not in canonical) or identity in eligible_ids
+
+    entities = (graph.extract_entities_from_text(root, query) if entity_ids is None
+                and recipe != "legacy-balanced" else entity_ids or ())
+    first_pass = _rrf_scores((("bm25", sparse_order), ("dense", dense_order)))[0]
+    seeds = list(dict.fromkeys([*([center] if center else []), *entities,
+                               *("memory:" + identity for identity in sorted(
+                                   first_pass, key=lambda identity: (-first_pass[identity], identity)))]))[:8] \
+        if graph_hops else []
+    nearby, strengths = {}, {}
+    for seed in seeds:
+        path_strengths = {}
+        for node, distance in _distances(backend, seed, as_of, depth=graph_hops,
+                                        eligible=traversable, known_at=known_at,
+                                        strengths=path_strengths).items():
+            identity = node.removeprefix("memory:")
+            if identity in eligible_ids and (distance > 0 or seed == center or seed in entities):
+                nearby[identity] = min(nearby.get(identity, 999), distance)
+                strengths[identity] = max(strengths.get(identity, 0.0), path_strengths[node])
     rows = []
     for fact, lexical in zip(facts, sparse):
         dense = float((dense_scores or {}).get(fact.id, 0))
         if not math.isfinite(dense) or not -1 <= dense <= 1:
             raise ValueError("dense cosine scores must be finite in [-1, 1]")
         dense = max(0.0, dense)
-        entity = max(entity_memories.get(fact.id, 0), entity_memories.get(f"memory:{fact.id}", 0))
+        entity = strengths.get(fact.id, 0.0)
         if not lexical and dense < 0.6 and not entity:
             continue
         age = max(0.0, (reference - lesson_cache.parse_moment(fact.valid_from)).total_seconds() / 86400)
@@ -208,8 +290,27 @@ def search(root: str, query: str, *, recipe: str = "balanced", scope: str = "", 
                      "recorded_at": fact.created_at, "stability": fact.stability,
                      "distance": nearby.get(fact.id, nearby.get(f"memory:{fact.id}", 999))})
     rows.sort(key=lambda r: (-r["score"], r["id"]))
-    rows = _model_rerank(root, query, rows, reranker, rerank_depth, rerank_blend, explain)
-    return _recipe_order(rows, cfg, limit, center)
+    if cfg.fusion == "rrf":
+        scores, _ = _rrf_scores((
+            ("bm25", sparse_order),
+            ("dense", dense_order),
+            ("graph", sorted(nearby, key=lambda identity: (-strengths[identity], nearby[identity], identity))),
+        ))
+        for row in rows:
+            row["score"] = scores[row["id"]] * (1 + cfg.temporal * row["signals"]["temporal"]
+                                                 + cfg.utility * row["signals"]["utility"])
+        rows.sort(key=lambda r: (-r["score"], r["id"]))
+    if explain is not None:
+        explain.update(fusion=cfg.fusion, k=60 if cfg.fusion == "rrf" else None,
+                       graph_seeds=seeds, graph_candidates=len(nearby), as_of=as_of, known_at=known_at)
+    revisions = {fact.id: fact.revision for fact in facts}
+    _entity_boost(root, query, rows, cfg, explain)
+    rows = _model_rerank(root, query, rows, reranker, rerank_depth, rerank_blend, explain,
+                        automatic=automatic_rerank)
+    return _current_results(root, _recipe_order(rows, cfg, limit, center),
+                            revisions,
+                            context=context if context is not None else ([scope] if scope else []),
+                            as_of=as_of, known_at=known_at, action_class=action_class)
 
 
 def _recipe_order(rows, cfg, limit, center):
@@ -224,12 +325,13 @@ def _recipe_order(rows, cfg, limit, center):
     elif cfg.reranker == "mmr":
         selected = []
         pool = rows[:max(limit * 10, 100)]
+        relevance_scale = max((row["score"] for row in pool), default=1) or 1
         while pool and len(selected) < limit:
             def mmr(row):
                 a = set(terms(row["text"]))
                 redundancy = max((len(a & b) / max(1, len(a | b))
                                   for b in (set(terms(s["text"])) for s in selected)), default=0)
-                return cfg.mmr_lambda * row["score"] - (1 - cfg.mmr_lambda) * redundancy
+                return cfg.mmr_lambda * row["score"] / relevance_scale - (1 - cfg.mmr_lambda) * redundancy
             chosen = max(pool, key=mmr)
             selected.append(chosen)
             pool.remove(chosen)
@@ -238,7 +340,7 @@ def _recipe_order(rows, cfg, limit, center):
 
 
 def _model_rerank(root: str, query: str, rows: list[dict], name: str | None, depth: int | None,
-                  blend: float | None, explain: dict | None) -> list[dict]:
+                  blend: float | None, explain: dict | None, *, automatic: bool = False) -> list[dict]:
     from commontrace import recall, reranking
 
     if name is None or depth is None or blend is None:
@@ -247,6 +349,21 @@ def _model_rerank(root: str, query: str, rows: list[dict], name: str | None, dep
         depth = settings["depth"] if depth is None else depth
         blend = settings["blend"] if blend is None else blend
     reranking.check_options(depth, blend)
+    if not rows:
+        return rows
+    if automatic and name is None:
+        from commontrace import configuration
+
+        name = configuration.load(root)["options"].get("reranker", "cross-encoder-fast")
+    if automatic:
+        from commontrace import rerank_arm
+
+        if name in rerank_arm.MODELS:
+            unavailable = rerank_arm.ready(name, local_files_only=True)
+            if unavailable:
+                if explain is not None:
+                    explain["rerank"] = {"reranker": name, "items": 0, "latency_ms": 0.0, "error": unavailable}
+                return rows
     ranker, unavailable = reranking.load(name)
     if ranker is None:
         if unavailable and explain is not None:
@@ -295,17 +412,10 @@ def decomposition(root: str, query: str, **options) -> list[dict]:
 
 
 def graph_completion(root: str, query: str, **options) -> list[dict]:
-    """Expand entity seeds using bounded graph walks; emits evidence, no hidden CoT."""
-    backend = options.get("backend") or LocalGraph(root)
+    """Seed bounded, canonically admitted BFS; never expand through denied facts."""
     seeds = options.pop("entity_ids", None)
     seeds = seeds if seeds is not None else graph.extract_entities_from_text(root, query)
-    # Include intermediate entities, not arbitrary unfiltered graph content.
-    # search applies canonical proof, validity and scope admission to every hit.
-    entities = set(seeds)
-    for seed in seeds[:32]:
-        entities.update(node for node, distance in _distances(backend, seed, options.get("as_of"), depth=1).items()
-                        if distance == 1)
-    return search(root, query, entity_ids=sorted(entities)[:2000], **options)
+    return search(root, query, entity_ids=seeds, **options)
 
 
 def nl_query(root: str, query: str, **options) -> list[dict]:
@@ -319,7 +429,7 @@ def nl_query(root: str, query: str, **options) -> list[dict]:
     rows = search(root, text, limit=1000 if category else limit, **options)
     if category:
         eligible = {f.id for f in hierarchical.list_facts(root, category=category,
-                    scope=options.get("scope", ""), as_of=options.get("as_of"))}
+                    scope=options.get("scope", ""), as_of=options.get("as_of"), known_at=options.get("known_at"))}
         rows = [r for r in rows if r["id"] in eligible][:limit]
     return rows
 
@@ -335,11 +445,12 @@ def recipe_manifest() -> dict:
     return {name: asdict(recipe) for name, recipe in RECIPES.items()}
 
 
-def _eligible_fact(root, fact, moment, as_of, context, action_class, resolver):
+def _eligible_fact(root, fact, moment, as_of, context, action_class, resolver, known=None):
     from commontrace import memory_authority, memory_control
 
     return (fact is not None and hierarchical._valid_at(fact, moment)
-            and (as_of or fact.status == "active") and not fact.forgotten
+            and (as_of or known is not None or fact.status == "active") and not fact.forgotten
+            and (known is None or hierarchical._known_at(fact, known))
             and not hierarchical._is_expired(fact, moment)
             and memory_control.matches(fact.scopes, context or [])
             and memory_authority.permits(root, fact, action_class=action_class)
@@ -374,6 +485,28 @@ def _load_candidate_facts(canonical, identities):
     return candidates
 
 
+def _current_results(root, rows, revisions, *, context, as_of, known_at, action_class):
+    """A model or graph call cannot deliver a concurrently withdrawn revision."""
+    from contextlib import nullcontext
+
+    from commontrace import fact_store
+    from commontrace.fact_evidence import EvidenceResolver
+
+    if not rows:
+        return rows
+    indexed = fact_store.enabled(root)
+    manager = fact_store.transaction(root) if indexed else nullcontext(hierarchical.load_facts(root))
+    moment = lesson_cache.parse_moment(as_of or hierarchical._now())
+    known = lesson_cache.parse_moment(known_at) if known_at else None
+    with manager as canonical:
+        candidates = _load_candidate_facts(canonical, (row["id"] for row in rows)) if indexed else canonical
+        resolver = EvidenceResolver(root, canonical, as_of=as_of)
+        return [row for row in rows if _eligible_fact(
+            root, candidates.get(row["id"]), moment, as_of, context, action_class, resolver, known
+        ) and candidates[row["id"]].revision == revisions[row["id"]]
+                and candidates[row["id"]].statement == row["text"]]
+
+
 def indexed_search(
     root: str,
     query: str,
@@ -385,7 +518,7 @@ def indexed_search(
     dense_scores=None,
     vector_search=None,
     backend=None,
-    entity_ids=(),
+    entity_ids=None,
     reranker=None,
     rerank_depth=None,
     rerank_blend=None,
@@ -394,6 +527,8 @@ def indexed_search(
     cfg=None,
     center="",
     utility=None,
+    known_at=None,
+    graph_hops=2,
 ):
     """Indexed candidate union and RRF, with canonical admission on every channel.
 
@@ -404,7 +539,12 @@ def indexed_search(
     from commontrace import fact_embeddings, fact_store, memory_authority
     from commontrace.embeddings import DEFAULT_LOCAL_TAG
 
-    lexical = fact_store.fts_candidates(root, query, context=context, limit=max(200, limit * 5), as_of=as_of)
+    cfg = cfg or RECIPES["balanced"]
+    known = lesson_cache.parse_moment(known_at) if known_at else None
+    automatic_rerank = (reranker is None and embedder not in ("none", "off")
+                        and vector_search is None and dense_scores is None)
+    lexical = fact_store.fts_candidates(root, query, context=context, limit=max(200, limit * 5),
+                                        as_of=as_of, known_at=known_at)
     facts = {fact.id: fact for fact, _ in lexical
              if memory_authority.permits(root, fact, action_class=action_class)}
     sparse_order = list(facts)
@@ -444,7 +584,7 @@ def indexed_search(
                          key=lambda identity: (-dense[identity], identity))
     backend = backend or LocalGraph(root)
     moment = lesson_cache.parse_moment(as_of or hierarchical._now())
-    nearby = {}
+    nearby, strengths = {}, {}
     from commontrace.fact_evidence import EvidenceResolver
 
     with fact_store.transaction(root) as canonical:
@@ -452,6 +592,7 @@ def indexed_search(
         # Model/ANN lookup may have outlived the original FTS snapshot.
         facts = {}
         rejected = set()
+        nonmemory_nodes = set()
         candidate_facts = _load_candidate_facts(canonical, (*sparse_order, *dense_order))
 
         def admit(identity):
@@ -460,7 +601,7 @@ def indexed_search(
             if identity in rejected:
                 return None
             fact = candidate_facts[identity] if identity in candidate_facts else canonical.get(identity)
-            if _eligible_fact(root, fact, moment, as_of, context, action_class, resolver):
+            if _eligible_fact(root, fact, moment, as_of, context, action_class, resolver, known):
                 facts[identity] = fact
                 return fact
             rejected.add(identity)
@@ -468,37 +609,42 @@ def indexed_search(
 
         sparse_order = [identity for identity in sparse_order if admit(identity) is not None]
         dense_order = [identity for identity in dense_order if admit(identity) is not None]
-        first_pass = {}
-        for order in (sparse_order, dense_order):
-            for rank, identity in enumerate(order, 1):
-                first_pass[identity] = first_pass.get(identity, 0) + 1 / (60 + rank)
+        first_pass = _rrf_scores((("bm25", sparse_order), ("dense", dense_order)))[0]
         ranked = sorted(first_pass, key=lambda identity: (-first_pass[identity], identity))
         # Graphiti seeds BFS from every first-pass method, including semantic hits.
-        seeds = list(dict.fromkeys([*([center] if center else []), *entity_ids,
-                                    *("memory:" + identity for identity in ranked)]))[:8]
+        entities = graph.extract_entities_from_text(root, query) if entity_ids is None else entity_ids
+        seeds = list(dict.fromkeys([*([center] if center else []), *entities,
+                                    *("memory:" + identity for identity in ranked)]))[:8] if graph_hops else []
         report["graph_seeds"] = []
 
         def traversable(node):
             # A denied/expired memory cannot act as a bridge to other evidence.
-            return not node.startswith("memory:") or admit(node.removeprefix("memory:")) is not None
+            identity = node.removeprefix("memory:")
+            if node.startswith("memory:"):
+                return admit(identity) is not None
+            if identity in nonmemory_nodes:
+                return True
+            if canonical.get(identity) is None:
+                nonmemory_nodes.add(identity)
+                rejected.add(identity)
+                return True
+            return admit(identity) is not None
 
         for seed in seeds:
-            distances = _distances(backend, seed, as_of, depth=2, eligible=traversable)
+            path_strengths = {}
+            distances = _distances(backend, seed, as_of, depth=graph_hops, eligible=traversable,
+                                   known_at=known_at, strengths=path_strengths)
             if not distances:
                 continue
             report["graph_seeds"].append(seed)
-            for identity, distance in distances.items():
-                identity = identity.removeprefix("memory:")
-                if admit(identity) is not None:
+            for node, distance in distances.items():
+                identity = node.removeprefix("memory:")
+                if admit(identity) is not None and (distance > 0 or seed == center or seed in entities):
                     nearby[identity] = min(nearby.get(identity, 999), distance)
-    entity_order = sorted(nearby, key=lambda identity: (nearby[identity], identity))
+                    strengths[identity] = max(strengths.get(identity, 0.0), path_strengths[node])
+    entity_order = sorted(nearby, key=lambda identity: (-strengths[identity], nearby[identity], identity))
     report["graph_candidates"] = len(entity_order)
-    scores, signals = {}, {}
-    for channel, order in (("bm25", sparse_order), ("dense", dense_order), ("graph", entity_order)):
-        for rank, identity in enumerate(order, 1):
-            score = 1 / (60 + rank)
-            scores[identity] = scores.get(identity, 0) + score
-            signals.setdefault(identity, {})[channel] = score
+    scores, signals = _rrf_scores((("bm25", sparse_order), ("dense", dense_order), ("graph", entity_order)))
     from commontrace.decay import perishability
 
     reference = lesson_cache.parse_moment(as_of or hierarchical._now())
@@ -514,6 +660,8 @@ def indexed_search(
             raise ValueError("causal utility must be finite in [-1,1]")
         scores[identity] *= max(0.1, 1 + cfg.temporal * decay + cfg.utility * prior)
         signals[identity].update(temporal=decay, utility=prior)
+        if identity in strengths:
+            signals[identity]["entity"] = strengths[identity]
     rows = [
         {
             "id": identity,
@@ -529,14 +677,15 @@ def indexed_search(
         for identity in sorted(scores, key=lambda identity: (-scores[identity], identity))
         if memory_authority.permits(root, facts[identity], action_class=action_class)
     ]
-    if reranker is None and embedder not in ("none", "off") and vector_search is None and dense_scores is None:
-        from commontrace import configuration
-
-        reranker = configuration.load(root)["options"].get("reranker", "cross-encoder-fast")
     if explain is not None:
-        explain.update(report)
-    rows = _model_rerank(root, query, rows, reranker, rerank_depth, rerank_blend, explain)
-    return _recipe_order(rows, cfg, limit, center)
+        explain.update(report, as_of=as_of, known_at=known_at)
+    revisions = {identity: fact.revision for identity, fact in facts.items()}
+    _entity_boost(root, query, rows, cfg, explain)
+    rows = _model_rerank(root, query, rows, reranker, rerank_depth, rerank_blend, explain,
+                        automatic=automatic_rerank)
+    return _current_results(root, _recipe_order(rows, cfg, limit, center),
+                            revisions,
+                            context=context, as_of=as_of, known_at=known_at, action_class=action_class)
 
 
 def multi_round(root: str, query: str, *, complete, context=None, limit=10, max_rounds=3, **options):
@@ -560,6 +709,7 @@ def multi_round(root: str, query: str, *, complete, context=None, limit=10, max_
         options["as_of"] = resolve(query)["as_of"]
     # Follow-up model text cannot select a different valid-time snapshot.
     options["infer_temporal"] = False
+    known = lesson_cache.parse_moment(options["known_at"]) if options.get("known_at") else None
     blocks, traces, core, by_id = [], [], [], {}
     pending, seen = [query], set()
 
@@ -618,7 +768,7 @@ def multi_round(root: str, query: str, *, complete, context=None, limit=10, max_
             for identity in list(by_id):
                 fact = canonical.get(identity)
                 if (not _eligible_fact(root, fact, moment, options.get("as_of"), context,
-                                       options.get("action_class", ""), resolver)
+                                       options.get("action_class", ""), resolver, known)
                         or fact.statement != by_id[identity]["text"]):
                     del by_id[identity]
         core = [identity for identity in core if identity in by_id]

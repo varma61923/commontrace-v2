@@ -58,7 +58,9 @@ def _resolve(model, model_path):
             return _tag_model(model)
         return model, model
     tag = _configuration_getenv("COMMONTRACE_FACT_EMBEDDER", "").strip()
-    if tag and tag.lower() not in ("none", "off"):
+    if tag:
+        if tag.lower() in ("none", "off"):
+            return None, None
         return _tag_model(tag)
     selected = model_path or _configuration_getenv("COMMONTRACE_FACT_EMBEDDER_PATH")
     if not selected:

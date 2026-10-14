@@ -33,7 +33,8 @@ def test_dense_only_hit_seeds_graph_support_without_whole_bank_scan(tmp_path, mo
         vector_search=lambda query, limit: [(anchor.id, .9)], backend=backend, explain=report)
     assert {row["id"] for row in rows} == {anchor.id, support.id}
     assert "memory:" + anchor.id in report["graph_seeds"]
-    assert report["graph_candidates"] == 2
+    assert report["graph_candidates"] == 1
+    assert "graph" not in next(row for row in rows if row["id"] == anchor.id)["signals"]
     found = next(row for row in rows if row["id"] == support.id)
     assert found["distance"] == 1 and found["signals"]["graph"] > 0
 

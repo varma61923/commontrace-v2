@@ -292,23 +292,28 @@ def entity_boost_for(
     allowed = set(candidate_ids)
     if not allowed:
         return {}
+    # Scope admission precedes this call. Prepare only entities linked to its
+    # candidate union, once rather than tokenizing the whole index per query entity.
+    entries = []
+    for name, entry in entities.items():
+        identities = [identity for identity in entry.get("memory_ids", []) if identity in allowed]
+        if identities:
+            count_weight = 1.0 / (1.0 + math.log1p(max(int(entry.get("count", 1)), 1)))
+            entries.append((name, _tokens(name), identities, count_weight))
     boosts: dict = {}
     for _, value in extract_entities(query):
         q_norm = normalize_entity(value)
         q_toks = _tokens(q_norm)
         if not q_toks:
             continue
-        for name, entry in entities.items():
+        for name, e_toks, identities, count_weight in entries:
             if name == q_norm:
                 similarity = 1.0
             else:
-                e_toks = _tokens(name)
                 if not e_toks or q_toks.isdisjoint(e_toks):
                     continue
                 similarity = len(q_toks & e_toks) / len(q_toks | e_toks)
-            count_weight = 1.0 / (1.0 + math.log1p(max(int(entry.get("count", 1)), 1)))
             contribution = similarity * weight * count_weight
-            for memory_id in entry.get("memory_ids", []):
-                if memory_id in allowed:
-                    boosts[memory_id] = min(cap, boosts.get(memory_id, 0.0) + contribution)
+            for memory_id in identities:
+                boosts[memory_id] = min(cap, boosts.get(memory_id, 0.0) + contribution)
     return {mid: round(boost, 4) for mid, boost in boosts.items() if boost > 0}

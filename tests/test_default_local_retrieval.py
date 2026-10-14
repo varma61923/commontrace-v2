@@ -71,6 +71,16 @@ def test_fact_default_provider_is_local_cache_only(monkeypatch):
     assert adapter.provider.local_files_only is True
 
 
+def test_fact_embedding_disable_setting_does_not_load_the_default(monkeypatch):
+    def unexpected_model(_tag):
+        raise AssertionError("an explicitly disabled embedder must not load a model")
+
+    monkeypatch.setattr(fact_embeddings, "_tag_model", unexpected_model)
+    for setting in ("none", "off", "NONE"):
+        monkeypatch.setattr(fact_embeddings, "_configuration_getenv", lambda *_args: setting)
+        assert fact_embeddings._resolve(None, None) == (None, None)
+
+
 def test_graph_default_provider_is_cache_only_but_other_tags_keep_explicit_behavior(monkeypatch):
     calls = []
     providers = [object(), object()]
@@ -124,4 +134,5 @@ def test_auto_rerank_uses_only_a_cached_cross_encoder(tmp_path, monkeypatch):
 
     assert "Kestrel" in result.context
     assert result.explain["rerank_fallback"]
+    assert result.explain["rerank"] == "cross-encoder-fast"
     assert calls == [True]

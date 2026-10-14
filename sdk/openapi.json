@@ -740,6 +740,15 @@
             "maxItems": 100,
             "type": "array"
           },
+          "graph_hops": {
+            "maximum": 4,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "known_at": {
+            "nullable": true,
+            "type": "string"
+          },
           "limit": {
             "maximum": 1000,
             "minimum": 0,
@@ -751,6 +760,19 @@
           },
           "recipe": {
             "maxLength": 20000,
+            "type": "string"
+          },
+          "reranker": {
+            "enum": [
+              null,
+              "none",
+              "mmr",
+              "cross-encoder",
+              "cross-encoder-fast",
+              "bge-reranker-v2-m3",
+              "mxbai-rerank"
+            ],
+            "nullable": true,
             "type": "string"
           },
           "retriever": {

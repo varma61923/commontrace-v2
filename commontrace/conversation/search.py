@@ -920,13 +920,11 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
             pass
         if named:
             top = max(scores.values())
-            boosted = 0
             for name, turns in store.entity_turns(named, max_matches=pool).items():
                 weight = 1.0 / (1.0 + 0.001 * (len(turns) - 1) ** 2) if turns else 0.0
                 for turn in turns:
                     if allowed is None or turn in allowed:
                         scores[turn] = scores.get(turn, 0.0) + opts.entity_boost * top * weight
-                        boosted += 1
             explain["entities"] = sorted(named)
     if window is not None:
         inside = store.in_window(window[0], window[1])
@@ -990,7 +988,10 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
     rerank = opts.rerank
     auto_rerank = rerank == "auto"
     if rerank == "auto":
-        rerank = "cross-encoder" if embedder is not None else None
+        from commontrace import configuration
+
+        rerank = configuration.load(store.root)["options"].get("reranker", "cross-encoder-fast") \
+            if embedder is not None else None
     if rerank and ranked:
         try:
             ranked = _rerank(

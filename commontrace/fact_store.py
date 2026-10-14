@@ -877,7 +877,8 @@ def read_view(root: str) -> ReadView:
     return ReadView(root)
 
 
-def fts_candidates(root: str, query: str, *, context: list[str] | None = None, limit=200, as_of=None):
+def fts_candidates(root: str, query: str, *, context: list[str] | None = None, limit=200,
+                   as_of=None, known_at=None):
     """Bounded FTS5 BM25 candidates, fresh temporal/proof/scope admission.
 
     This channel uses SQLite's index statistics; the historical ``bm25-v1`` API
@@ -894,6 +895,7 @@ def fts_candidates(root: str, query: str, *, context: list[str] | None = None, l
         return []
     expression = " OR ".join('"' + token.replace('"', '""') + '"' for token in tokens)
     moment = lesson_cache.parse_moment(as_of or h._now())
+    known = lesson_cache.parse_moment(known_at) if known_at else None
     with transaction(root) as facts:
         rows = facts.connection.execute(
             "SELECT f.id,bm25(fact_fts) FROM fact_fts "
@@ -907,7 +909,8 @@ def fts_candidates(root: str, query: str, *, context: list[str] | None = None, l
             fact = facts[identity]
             if (
                 fact.status != "active"
-                and not as_of
+                and not as_of and known is None
+                or known is not None and not h._known_at(fact, known)
                 or not h._valid_at(fact, moment)
                 or h._is_expired(fact, moment)
                 or not memory_control.matches(fact.scopes, context or [])

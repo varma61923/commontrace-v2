@@ -977,6 +977,9 @@ class Gateway:
                         limit=body.get("limit", 10),
                         center=body.get("center", ""),
                         as_of=body.get("as_of"),
+                        known_at=body.get("known_at"),
+                        graph_hops=body.get("graph_hops", 2),
+                        reranker=body.get("reranker"),
                         action_class=body.get("action_class", ""),
                     )
                 }

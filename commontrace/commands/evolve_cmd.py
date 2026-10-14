@@ -54,10 +54,14 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
             q.add_argument("--recipe", default="balanced")
             q.add_argument("--retriever", default="hybrid", choices=REGISTRY.names())
             q.add_argument("--center", default="")
+            q.add_argument("--as-of", help="ISO valid-time snapshot.")
+            q.add_argument("--known-at", help="ISO snapshot of when the store learned the evidence.")
+            q.add_argument("--graph-hops", type=int, choices=range(5), default=2,
+                           help="bounded BFS depth; 0 disables graph expansion (default: 2)")
             q.add_argument("--reranker", default=None,
                            help="second-stage reranker for the top facts: cross-encoder, bge-reranker-v2-m3, "
-                                "mxbai-rerank, cohere[:model], voyage[:model], jina[:model], llm[:model] or none "
-                                "(default: memory/budgets.json, else none)")
+                                "mxbai-rerank, mmr, cohere[:model], voyage[:model], jina[:model], llm[:model] or none "
+                                "(default: memory/budgets.json, then the profile's cached reranker)")
         if name in ("question", "reflect"):
             q.add_argument("--budget", type=int, default=600)
         if name == "reflect":
@@ -117,7 +121,8 @@ def run(args) -> int:
         elif op == "search":
             extra = {"reranker": args.reranker} if args.reranker is not None else {}
             result = REGISTRY.retrieve(args.retriever, root, args.text, recipe=args.recipe,
-                                       context=context, center=args.center, **extra)
+                                       context=context, center=args.center, as_of=args.as_of,
+                                       known_at=args.known_at, graph_hops=args.graph_hops, **extra)
         elif op == "reflect":
             result = memory_control.reflect(root, args.text, context=context, budget=args.budget,
                                              exploration_slots=args.exploration_slots,

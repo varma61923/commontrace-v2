@@ -112,17 +112,26 @@ class MemoryClient:
     @configured
     def search(self, query: str, *, recipe: str = "balanced", retriever: str = "hybrid",
                limit: int = 10, center: str = "", as_of: str | None = None, action_class: str = "",
+               known_at: str | None = None, graph_hops: int = 2, reranker: str | None = None,
                **local_options) -> list[dict]:
         if self.url:
             if local_options:
                 raise ValueError("injected adapters are local-only")
-            return self._request("search", {"query": query, "recipe": recipe, "retriever": retriever,
+            body = {"query": query, "recipe": recipe, "retriever": retriever,
                 "limit": limit, "center": center, "as_of": as_of, "context": self.context,
-                "action_class": action_class})["results"]
+                "action_class": action_class}
+            if known_at is not None:
+                body["known_at"] = known_at
+            if graph_hops != 2:
+                body["graph_hops"] = graph_hops
+            if reranker is not None:
+                body["reranker"] = reranker
+            return self._request("search", body)["results"]
         from commontrace.search_recipes import REGISTRY
 
         return REGISTRY.retrieve(retriever, self.root, query, recipe=recipe, limit=limit, center=center,
-                                 as_of=as_of, context=self.context, action_class=action_class, **local_options)
+                                 as_of=as_of, context=self.context, action_class=action_class,
+                                 known_at=known_at, graph_hops=graph_hops, reranker=reranker, **local_options)
 
     @configured
     def batch(self, items: list[dict]) -> dict:

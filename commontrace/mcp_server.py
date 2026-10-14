@@ -1737,6 +1737,42 @@ def build_server(root: str, *, allow_approval: bool = True):
         return _ok(**out)
 
     @mcp.tool()
+    async def memory_search(query: str, context: list[str] | None = None, limit: int = 10,
+                            recipe: str = "balanced", retriever: str = "hybrid", center: str = "",
+                            as_of: str | None = None, known_at: str | None = None,
+                            graph_hops: int = 2, reranker: str | None = None,
+                            action_class: str = "", ctx: Any = None) -> dict:
+        """Search governed facts with semantic/BM25 RRF, entities and bounded graph traversal.
+
+        Uses the same request contract as `/v1/memory/search`. Semantic search
+        and automatic cross-encoder reranking use cached local models, falling
+        back to lexical retrieval when unavailable. `as_of` selects valid time;
+        `known_at` independently selects record time. `reranker="mmr"` diversifies
+        evidence; `graph_hops=0` disables expansion. Current scope, erasure,
+        authority and proof checks apply to every candidate and memory bridge.
+        The older query_facts and archival_memory_search tools retain sparse
+        ranking compatibility.
+        """
+        from commontrace.api_schema import validate_request
+        from commontrace.search_recipes import REGISTRY
+
+        body = {"query": query, "context": context or [], "limit": limit,
+                "recipe": recipe, "retriever": retriever, "center": center,
+                "as_of": as_of, "known_at": known_at, "graph_hops": graph_hops,
+                "reranker": reranker, "action_class": action_class}
+        try:
+            validate_request("search", body)
+            await _progress(ctx, 0, "Retrieving governed fact evidence")
+            results = await STORE_WORKERS.run(
+                lambda: REGISTRY.retrieve(retriever, root, query,
+                    **{name: value for name, value in body.items() if name not in ("query", "retriever")})
+            )
+        except (ValueError, OSError, RuntimeError) as exc:
+            return _err(f"could not search memory: {type(exc).__name__}: {exc}")
+        await _progress(ctx, 1, "Fact retrieval complete")
+        return _ok(results=results, count=len(results))
+
+    @mcp.tool()
     def query_facts(
         query: str,
         scope: str = "",

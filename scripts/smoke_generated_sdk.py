@@ -27,6 +27,12 @@ const api = new MemoryApi(configuration);
     assert.equal(batch.facts.length, 1);
     const search = await api.memorySearch({searchRequest: {query: 'office', context: ['user:smoke']}});
     assert.equal(search.results.length, 2);
+    const snapshot = new Date().toISOString();
+    const temporal = await api.memorySearch({searchRequest: {query: 'office',
+        context: ['user:smoke'], asOf: snapshot, knownAt: snapshot, graphHops: 0, reranker: 'mmr'}});
+    assert.equal(temporal.results.length, 2);
+    await assert.rejects(api.memorySearch({searchRequest: {query: 'office', graphHops: 5}}),
+        error => error instanceof ResponseError && error.response.status === 400);
     assert.equal((await api.memoryCheckAction({
         checkActionRequest: {tool: 'read', context: ['user:smoke']}})).allowed, true);
     const profile = await api.memoryProfile({
