@@ -1,0 +1,95 @@
+{
+  "baseline_commit": "3a41e8f",
+  "executor": "shared development executor; not customer traffic",
+  "notes": [
+    "The 1000-turn report was repeated during concurrent validation; timings vary with executor load.",
+    "Only the 1000-turn report embedded its source hash at capture time; the common implementation hash is recorded above.",
+    "Reference restores full ordering; optimized selects retained/output prefix. Both execute production SQLite rolling-summary rebuilds."
+  ],
+  "reports": [
+    {
+      "equivalent": true,
+      "fingerprints": {
+        "optimized": "3a87f7e71e45a4b2acd120f9354a59de9be7ae78e8e02461a1774d722064f01b",
+        "reference": "3a87f7e71e45a4b2acd120f9354a59de9be7ae78e8e02461a1774d722064f01b"
+      },
+      "optimized_median_ms": 6.723983000483713,
+      "reference_median_ms": 24.943761000031373,
+      "samples_ms": {
+        "optimized": [
+          5.749865998950554,
+          6.723983000483713,
+          9.462308000365738
+        ],
+        "reference": [
+          24.943761000031373,
+          24.137890999554656,
+          29.825368999809143
+        ]
+      },
+      "scope": "SQLite extractive rolling summary; excludes model inference, remote I/O and competitor systems",
+      "source_sentences": 200,
+      "source_turns": 100,
+      "speedup": 3.709670443580383,
+      "trials": 3,
+      "workload": "chronological-operational-session-summary"
+    },
+    {
+      "equivalent": true,
+      "fingerprints": {
+        "optimized": "e253d670dd4eea55902713eed86b9b8da8dda661e12013a38f1c09b5a32b4255",
+        "reference": "e253d670dd4eea55902713eed86b9b8da8dda661e12013a38f1c09b5a32b4255"
+      },
+      "optimized_median_ms": 99.3334410013631,
+      "reference_median_ms": 3065.231626998866,
+      "samples_ms": {
+        "optimized": [
+          99.3334410013631,
+          143.42205399952945,
+          73.1945839997934
+        ],
+        "reference": [
+          3742.0083910001267,
+          3065.231626998866,
+          2456.3828040008957
+        ]
+      },
+      "scope": "SQLite extractive rolling summary; excludes model inference, remote I/O and competitor systems",
+      "source_sentences": 2000,
+      "source_turns": 1000,
+      "speedup": 30.858003066226242,
+      "summary_source_sha256": "37555db7e78308bae205f098676018a544276dc6d9d13c0a2ee44714b0359087",
+      "trials": 3,
+      "workload": "chronological-operational-session-summary"
+    },
+    {
+      "equivalent": true,
+      "fingerprints": {
+        "optimized": "7b4946422faac072d30322c0f94d9d347e04f31d44d490eb6d3f690efb443ed6",
+        "reference": "7b4946422faac072d30322c0f94d9d347e04f31d44d490eb6d3f690efb443ed6"
+      },
+      "optimized_median_ms": 104.52992200043809,
+      "reference_median_ms": 7545.7142510003905,
+      "samples_ms": {
+        "optimized": [
+          104.52992200043809,
+          103.84235600031388,
+          109.0643209990958
+        ],
+        "reference": [
+          7436.851630000092,
+          7545.7142510003905,
+          7709.154116000718
+        ]
+      },
+      "scope": "SQLite extractive rolling summary; excludes model inference, remote I/O and competitor systems",
+      "source_sentences": 4000,
+      "source_turns": 2000,
+      "speedup": 72.18712218085044,
+      "trials": 3,
+      "workload": "chronological-operational-session-summary"
+    }
+  ],
+  "review_date": "2026-10-14",
+  "summary_source_sha256": "37555db7e78308bae205f098676018a544276dc6d9d13c0a2ee44714b0359087"
+}

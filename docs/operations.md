@@ -6,7 +6,9 @@ Use the tested deployment assets in [deploy/README.md](../deploy/README.md) and
 [hub/DEPLOYMENT.md](../hub/DEPLOYMENT.md); those cover local/staging/production
 setup, migrations, TLS, replicas, connection budgets and restoration drills.
 CI validates assets and never applies infrastructure. Keep development on
-loopback. The local HTTP gateway defaults to at most 128 active connections;
+loopback. The [enterprise maintenance guide](enterprise-readiness.md) documents
+required database-security verification, renewable job leases and recovery.
+The local HTTP gateway defaults to at most 128 active connections;
 `make_http_server(..., max_connections=...)` configures the positive limit. Idle
 connections retain a slot until timeout; excess connections close without starting
 a waiting worker. Deploy a reverse proxy with appropriate client retry/admission

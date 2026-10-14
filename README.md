@@ -112,6 +112,9 @@ The multi-tenant [Hub](hub/README.md) adds organization isolation and governance
 
 See the [marketplace and distribution guide](docs/distribution.md) for MCP clients, VS Code/Open VSX, JetBrains, GitHub Actions, PyPI and generated OpenAPI clients.
 
+The [enterprise deployment and maintenance guide](docs/enterprise-readiness.md) covers verified database security,
+renewable background-worker claims, crash recovery and measured long-session summary performance.
+
 ```bash
 python scripts/export_openapi.py --check
 python scripts/generate_sdks.py --languages typescript go rust java kotlin
