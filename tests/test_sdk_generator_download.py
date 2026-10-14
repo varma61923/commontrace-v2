@@ -13,6 +13,8 @@ def test_temporary_maven_failure_recovers_without_changing_checksum(tmp_path, mo
     content = b"pinned generator fixture"
     monkeypatch.setattr(generate_sdks, "SHA256", hashlib.sha256(content).hexdigest())
     attempts = []
+    delays = []
+    monkeypatch.setattr(generate_sdks.time, "sleep", delays.append)
 
     def response(url, **_):
         attempts.append(url)
@@ -23,7 +25,7 @@ def test_temporary_maven_failure_recovers_without_changing_checksum(tmp_path, mo
     monkeypatch.setattr(generate_sdks.urllib.request, "urlopen", response)
     path = tmp_path / "generator.jar"
     assert generate_sdks.checked_jar(path).read_bytes() == content
-    assert len(attempts) == 2
+    assert len(attempts) == 2 and delays == [1]
     assert not path.with_suffix(".download").exists()
 
 

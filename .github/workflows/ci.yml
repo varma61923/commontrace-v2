@@ -873,6 +873,11 @@ jobs:
         with:
           go-version: '1.27.x'
           cache: false
+      - name: Cache checksum-verified OpenAPI Generator
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: build/openapi-generator-cli-7.26.0.jar
+          key: openapi-generator-7.26.0-1760050094997b9cc790cc1350be095f15da8c08a996b184d3eadc4ccda5e35e
       - run: python -m pip install -e .
       - name: Check and validate the standard contract, then generate with pinned upstream tooling
         run: |

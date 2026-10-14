@@ -14,6 +14,7 @@ import os
 import re
 import subprocess
 import tempfile
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -43,7 +44,7 @@ def checked_jar(path: Path) -> Path:
             "https://repo.maven.apache.org" + artifact,
             "https://repo1.maven.org" + artifact,
             "https://repo.maven.apache.org" + artifact,
-        ]
+        ] * 2
         # Fetch into a disposable name; interrupted downloads never become the cache.
         temporary = path.with_suffix(".download")
         try:
@@ -64,6 +65,9 @@ def checked_jar(path: Path) -> Path:
                 except (urllib.error.URLError, TimeoutError, ConnectionError, http.client.IncompleteRead):
                     if attempt == len(urls) - 1:
                         raise
+                # Immutable artifacts can briefly 404 on a mirror or CDN.
+                # Retry with a delay; the pinned digest remains authoritative.
+                time.sleep(min(16, 2 ** attempt))
             if digest.hexdigest() != SHA256:
                 raise ValueError("OpenAPI Generator checksum mismatch")
             os.replace(temporary, path)
