@@ -854,6 +854,17 @@ base64url segments reads as a JWT, anything else is tried as an API key.
   entirely — every token-shaped credential is then refused before it
   reaches the database, and the Hub behaves exactly as it did before this
   existed.
+- Remote MCP hosts that support OAuth discovery, including ChatGPT custom
+  MCP apps, can use the same customer-managed IdP login. When SSO is configured,
+  the Hub serves RFC 9728 protected-resource metadata and points 401 challenges
+  at it. Set `HUB_OIDC_AUDIENCE` to the public MCP resource URI (for example
+  `https://memory.example.com/mcp`); pre-link each allowed user and assign a
+  least-privilege role. OAuth authorization and token issuance stay with the
+  configured IdP; CommonTrace verifies issuer, audience, signature, expiry,
+  linked subject, and current user status on each request.
+- The REST API accepts the same linked OIDC JWT in `Authorization: Bearer` as
+  an alternative to `X-API-Key`. REST permissions come from the user's explicit
+  Hub role; an unlinked, disabled, wrong-audience, or invalid token is refused.
 - CLI: `hub.manage create-user | list-users | set-user-role | disable-user
   | enable-user | link-sso | unlink-sso` — see `hub/manage.py`'s module
   docstring for full usage.

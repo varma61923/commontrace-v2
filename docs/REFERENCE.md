@@ -3016,8 +3016,11 @@ Security regressions and measurement limits are documented in
 
 **What this does *not* have** is as important as the table above, and is
 written down rather than left to be discovered: no legal entity, no SOC 2,
-no penetration test, no SAML or browser-based login (OIDC, SCIM and human
-user accounts do exist), no residency commitment and no support SLA.
+no penetration test, no SAML or CommonTrace-hosted authorization server. OIDC
+sign-in is delegated to a customer-managed identity provider; the Hub verifies
+linked user tokens and OAuth-capable MCP clients can discover its protected
+resource metadata. The browser console still uses an API key session. There is
+no residency commitment or support SLA.
 
 Before putting a client's data on it, work through the security checklist in
 `hub/DEPLOYMENT.md` §10 and the deliberately-documented limitations in §11.

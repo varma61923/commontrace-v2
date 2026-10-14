@@ -16,6 +16,24 @@ Lesson approval tools stay disabled unless `--approval` is supplied. Merge the
 fragment into an existing client configuration instead of replacing unrelated
 entries. Credentials are never generated or inserted into MCP config.
 
+## ChatGPT, Gemini, and hosted MCP apps
+
+For browser-connected products, deploy the Hub behind HTTPS and use its remote
+Streamable HTTP endpoint. Configure a customer-managed OIDC issuer, set
+`HUB_OIDC_AUDIENCE` to the public MCP resource URI (for example
+`https://memory.example.com/mcp`), and set either `HUB_OIDC_JWKS` or
+`HUB_OIDC_JWKS_URI`. CommonTrace publishes RFC 9728 resource metadata and a
+`WWW-Authenticate` challenge for OAuth-capable MCP clients. Users must already
+be provisioned and explicitly linked with `hub.manage link-sso`; their assigned
+Hub role controls access. The customer's identity provider performs the browser
+login, authorization-code/PKCE exchange, and token issuance.
+
+See the [ChatGPT app setup](../distribution/chatgpt/README.md) and
+[Gemini MCP setup](../distribution/gemini/README.md). These documents provide
+reviewable connection instructions for existing developer/app directories;
+they do not claim a published store listing. Marketplace submission and public
+visibility remain controlled by each platform's publisher account.
+
 The [Smithery manifest](../smithery.yaml) exposes the same local stdio server.
 It requires an absolute persistent `storeRoot` and keeps lesson approval disabled
 by default. The existing [MCP registry package](../distribution/mcp-registry/server.json)

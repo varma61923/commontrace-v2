@@ -77,6 +77,22 @@ def add_rest_routes(
     auth_limiter = make_named_limiter(
         config, config.auth_attempts_per_minute, config.auth_attempts_burst, "rest_auth"
     )
+    identity_provider = config.identity_provider()
+    jwks_cache = None
+    if identity_provider is not None and identity_provider.jwks_uri:
+        from hub.sso import JWKSCache
+
+        def fetch_jwks(uri: str) -> dict:
+            import httpx
+
+            response = httpx.get(uri, timeout=5.0, follow_redirects=False)
+            response.raise_for_status()
+            document = response.json()
+            if not isinstance(document, dict):
+                raise ValueError("OIDC JWKS response must be a JSON object")
+            return document
+
+        jwks_cache = JWKSCache(fetch_jwks)
     signup_limiter = make_named_limiter(config, 1, 2, "signup")
 
     async def _authenticate(request: Request):
@@ -90,8 +106,25 @@ def add_rest_routes(
                 headers={"Retry-After": str(max(1, math.ceil(retry_after)))},
             )
         raw_key = request.headers.get("X-API-Key", "")
+        authorization = request.headers.get("authorization", "")
+        if not raw_key and authorization.lower().startswith("bearer "):
+            bearer = authorization[len("bearer "):].strip()
+            from hub.sso import looks_like_jwt
+
+            if identity_provider is not None and looks_like_jwt(bearer):
+                async with session_scope(session_factory) as session:
+                    person = await auth.verify_user_token(
+                        session, bearer, identity_provider, jwks_cache=jwks_cache,
+                    )
+                if person is not None:
+                    from hub import rbac
+
+                    return auth.AuthenticatedKey(
+                        person.org_id, f"user:{person.id}", rbac.scopes_of(person.role),
+                    ), None
+            return None, _json_error(401, "unauthorized", "OIDC bearer token was rejected or is not linked")
         if not raw_key:
-            return None, _json_error(401, "unauthorized", "X-API-Key header is required")
+            return None, _json_error(401, "unauthorized", "X-API-Key or linked OIDC bearer token is required")
         async with session_scope(session_factory) as session:
             authenticated = await auth.verify_api_key(session, raw_key)
         if authenticated is None:
@@ -191,7 +224,7 @@ def add_rest_routes(
                     tags=_tags(payload.get("tags")),
                     agent_type=_text(payload.get("agent_type")) or _DEFAULT_AGENT_TYPE,
                     agent_id=_text(payload.get("agent_id")),
-                    actor=ACTOR_REST_API,
+                    actor=authenticated.key_prefix if authenticated.key_prefix.startswith("user:") else ACTOR_REST_API,
                     idempotency_key=idempotency_key,
                     scopes=_tags(payload.get("scopes")),
                     valid_from=_text(payload.get("valid_from")) or None,

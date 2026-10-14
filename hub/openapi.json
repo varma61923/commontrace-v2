@@ -1938,6 +1938,12 @@
         "name": "Stripe-Signature",
         "type": "apiKey"
       },
+      "userBearer": {
+        "bearerFormat": "JWT",
+        "description": "An access token from the configured OIDC issuer (HUB_OIDC_ISSUER), for a user pre-linked with `hub.manage link-sso`. The user's Hub role determines REST scopes.",
+        "scheme": "bearer",
+        "type": "http"
+      },
       "zendeskSignature": {
         "description": "Zendesk connectors: signature over the timestamp and raw body.",
         "in": "header",
@@ -4404,6 +4410,9 @@
         "security": [
           {
             "apiKey": []
+          },
+          {
+            "userBearer": []
           }
         ],
         "summary": "Browse listed lessons",
@@ -4494,6 +4503,9 @@
         "security": [
           {
             "apiKey": []
+          },
+          {
+            "userBearer": []
           }
         ],
         "summary": "Upload a signed listing",
@@ -4557,6 +4569,9 @@
         "security": [
           {
             "apiKey": []
+          },
+          {
+            "userBearer": []
           }
         ],
         "summary": "Withdraw one of your listings",
@@ -4618,6 +4633,9 @@
         "security": [
           {
             "apiKey": []
+          },
+          {
+            "userBearer": []
           }
         ],
         "summary": "Read one listing",
@@ -4693,6 +4711,9 @@
         "security": [
           {
             "apiKey": []
+          },
+          {
+            "userBearer": []
           }
         ],
         "summary": "Register or update your publisher key",
@@ -4756,6 +4777,9 @@
         "security": [
           {
             "apiKey": []
+          },
+          {
+            "userBearer": []
           }
         ],
         "summary": "Read a publisher card",
@@ -4834,6 +4858,9 @@
         "security": [
           {
             "apiKey": []
+          },
+          {
+            "userBearer": []
           }
         ],
         "summary": "Versioned scoped records: put, search, hard forget or reap due expirations",
@@ -4898,6 +4925,9 @@
         "security": [
           {
             "apiKey": []
+          },
+          {
+            "userBearer": []
           }
         ],
         "summary": "Record a client `install` beacon",
@@ -4933,6 +4963,9 @@
         "security": [
           {
             "apiKey": []
+          },
+          {
+            "userBearer": []
           }
         ],
         "summary": "Record a client `ping` beacon",
@@ -4968,6 +5001,9 @@
         "security": [
           {
             "apiKey": []
+          },
+          {
+            "userBearer": []
           }
         ],
         "summary": "Record a client `triggers` beacon",
@@ -5053,6 +5089,9 @@
         "security": [
           {
             "apiKey": []
+          },
+          {
+            "userBearer": []
           }
         ],
         "summary": "Contribute a trace",
@@ -5118,6 +5157,9 @@
         "security": [
           {
             "apiKey": []
+          },
+          {
+            "userBearer": []
           }
         ],
         "summary": "Search your organization's traces",
@@ -8946,6 +8988,9 @@
         "security": [
           {
             "apiKey": []
+          },
+          {
+            "userBearer": []
           }
         ],
         "summary": "Local SDK record-put, record-search, record-forget and record-reap-due wire parity",
@@ -9038,6 +9083,9 @@
         "security": [
           {
             "apiKey": []
+          },
+          {
+            "userBearer": []
           }
         ],
         "summary": "Ingest OTLP/JSON spans as traces",

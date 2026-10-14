@@ -131,6 +131,14 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
+        if self._identity_provider is not None and request.method == "GET":
+            from hub import sso
+
+            if path in sso.protected_resource_metadata_paths(self._identity_provider):
+                return JSONResponse(
+                    sso.protected_resource_metadata(self._identity_provider),
+                    headers={"Cache-Control": "public, max-age=300"},
+                )
         if not (path == self._protected_path or path.startswith(self._protected_path + "/")):
             return await call_next(request)
 
@@ -141,9 +149,7 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
 
         header = request.headers.get("authorization", "")
         if not header.lower().startswith("bearer "):
-            return JSONResponse(
-                {"error": "missing or malformed Authorization: Bearer <api-key> header"}, status_code=401
-            )
+            return self._unauthorized({"error": "missing or malformed Authorization: Bearer <credential> header"})
         raw_token = header[len("bearer ") :].strip()
 
         from hub.sso import looks_like_jwt
@@ -157,9 +163,7 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
                 )
                 await session.commit()
             if person is None:
-                return JSONResponse(
-                    {"error": "invalid, expired, or unlinked identity token"}, status_code=401
-                )
+                return self._unauthorized({"error": "invalid, expired, or unlinked identity token"})
             self._auth_rate_limiter.refund(client_key)
             if request.method != "DELETE":
                 allowed, retry_after = await self._read_rate_limiter.check(person.org_id)
@@ -187,7 +191,7 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
                 await session.commit()
 
         if authenticated is None:
-            return JSONResponse({"error": "invalid, revoked, or expired API key"}, status_code=401)
+            return self._unauthorized({"error": "invalid, revoked, or expired API key"})
 
         self._auth_rate_limiter.refund(client_key)
 
@@ -205,6 +209,16 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
             auth.current_org_id.reset(org_token)
             auth.current_actor.reset(actor_token)
             auth.current_scopes.reset(scope_token)
+
+    def _unauthorized(self, payload: dict) -> JSONResponse:
+        headers = {"Cache-Control": "no-store"}
+        if self._identity_provider is not None:
+            from hub import sso
+
+            metadata_url = sso.protected_resource_metadata_url(self._identity_provider)
+            if metadata_url:
+                headers["WWW-Authenticate"] = f'Bearer resource_metadata="{metadata_url}"'
+        return JSONResponse(payload, status_code=401, headers=headers)
 
 
 class LoadShedMiddleware:

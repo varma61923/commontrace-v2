@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 import httpx
 import pytest
 from sqlalchemy import select
@@ -7,8 +9,10 @@ from starlette.applications import Starlette
 
 from hub import auth, rest
 from hub.abuse import make_rate_limiter
+from hub.config import HubConfig
 from hub.db import session_scope
 from hub.models import AuditLogEntry, Organization, Trace
+from hub.sso import IdentityProvider
 
 pytestmark = pytest.mark.asyncio
 
@@ -118,6 +122,68 @@ async def _org_with_key(session_factory, name="Acme", scopes=None):
 
 def _key(raw_key: str) -> dict[str, str]:
     return {"X-API-Key": raw_key}
+
+
+async def test_oidc_rest_auth_is_role_scoped_without_an_api_key(monkeypatch):
+    from hub.auth import AuthenticatedUser
+
+    config = HubConfig(
+        database_url="postgresql+asyncpg://user:pass@localhost/commontrace",
+        oidc_issuer="https://login.example.test/",
+        oidc_audience="https://hub.example.test/mcp",
+        oidc_jwks='{"keys": []}',
+    )
+
+    @asynccontextmanager
+    async def unused_session_scope(*_args, **_kwargs):
+        yield object()
+
+    async def verify(_session, _token, provider, *, jwks_cache=None):
+        assert provider.issuer == config.oidc_issuer
+        return AuthenticatedUser(
+            id="user-1", org_id="org-1", role="viewer", email="reader@example.test",
+        )
+
+    monkeypatch.setattr(rest, "session_scope", unused_session_scope)
+    monkeypatch.setattr(auth, "verify_user_token", verify)
+    app = Starlette()
+    rest.add_rest_routes(app, object(), config=config, rate_limiter=make_rate_limiter(config))
+    async with _client(app) as client:
+        response = await client.post(
+            "/api/v1/traces",
+            headers={"Authorization": "Bearer header.payload.signature"},
+            json={"title": "trace", "context_text": "context", "solution_text": "solution"},
+        )
+    assert response.status_code == 403
+    assert "write" in response.json()["detail"]
+
+
+async def test_linked_oidc_bearer_authenticates_rest_with_the_users_role_scopes(
+    session_factory, config, monkeypatch,
+):
+    from hub.auth import AuthenticatedUser
+
+    org_id, _raw_key = await _org_with_key(session_factory, name="OIDC REST")
+    provider = IdentityProvider(
+        issuer="https://login.example.test/", audience="https://hub.example.test/mcp",
+        jwks={"keys": []},
+    )
+    monkeypatch.setattr(config, "identity_provider", lambda: provider)
+
+    async def verify(_session, _token, _provider, *, jwks_cache=None):
+        assert _token == "header.payload.signature"
+        assert _provider is provider
+        return AuthenticatedUser(id="user-1", org_id=org_id, role="viewer", email="reader@example.test")
+
+    monkeypatch.setattr(auth, "verify_user_token", verify)
+    async with _client(_app(session_factory, config)) as client:
+        headers = {"Authorization": "Bearer header.payload.signature"}
+        read = await client.post("/api/v1/traces/search", headers=headers, json={"q": "parser"})
+        write = await client.post("/api/v1/traces", headers=headers, json={
+            "title": "trace", "context_text": "context", "solution_text": "solution",
+        })
+    assert read.status_code == 200
+    assert write.status_code == 403
 
 
 class TestAbsentUnlessEnabled:

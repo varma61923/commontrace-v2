@@ -8,6 +8,7 @@ from starlette.routing import Route
 
 from hub.abuse import RateLimiter
 from hub.server import ApiKeyAuthMiddleware
+from hub.sso import IdentityProvider
 
 pytestmark = pytest.mark.asyncio
 
@@ -60,6 +61,47 @@ class TestProtectedPathMatching:
             x = await c.get("/mcpx")
         assert admin.status_code == 200
         assert x.status_code == 200
+
+
+class TestMarketplaceOAuthDiscovery:
+    def _app(self):
+        app = Starlette(routes=[Route("/mcp", _ok)])
+        provider = IdentityProvider(
+            issuer="https://login.example.test/",
+            audience="https://memory.example.test/mcp",
+            jwks={"keys": []},
+        )
+        app.add_middleware(
+            ApiKeyAuthMiddleware,
+            session_factory=_explode,
+            protected_path="/mcp",
+            auth_rate_limiter=RateLimiter(per_minute=10_000, burst=10_000),
+            read_rate_limiter=RateLimiter(per_minute=10_000, burst=10_000),
+            identity_provider=provider,
+        )
+        return app
+
+    async def test_resource_metadata_and_bearer_challenge_enable_oauth_discovery(self):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=self._app()),
+                                     base_url="https://memory.example.test") as client:
+            metadata = await client.get("/.well-known/oauth-protected-resource/mcp")
+            denied = await client.get("/mcp")
+        assert metadata.status_code == 200
+        assert metadata.json() == {
+            "resource": "https://memory.example.test/mcp",
+            "authorization_servers": ["https://login.example.test/"],
+            "bearer_methods_supported": ["header"],
+        }
+        assert metadata.headers["cache-control"] == "public, max-age=300"
+        assert denied.status_code == 401
+        assert denied.headers["www-authenticate"] == (
+            'Bearer resource_metadata="https://memory.example.test/.well-known/oauth-protected-resource/mcp"'
+        )
+
+    async def test_metadata_is_not_exposed_without_oidc_configuration(self, client):
+        async with client as c:
+            response = await c.get("/.well-known/oauth-protected-resource")
+        assert response.status_code == 404
 
 
 def _build_app_with_tight_auth_limiter():

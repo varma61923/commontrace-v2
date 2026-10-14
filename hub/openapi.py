@@ -178,7 +178,7 @@ def _op(
 # ---------------------------------------------------------------------------
 
 PUBLIC: list = []
-API_KEY = [{"apiKey": []}]
+API_KEY = [{"apiKey": []}, {"userBearer": []}]
 ADMIN = [{"adminBasic": []}]
 CONSOLE = [{"consoleSession": []}]
 SCIM = [{"scimBearer": []}]
@@ -197,6 +197,11 @@ _SECURITY_SCHEMES = {
         "type": "apiKey", "in": "header", "name": "X-API-Key",
         "description": "An org API key (`ct_...`). Each route also requires a scope on that key "
                        "(read, write); a key without it gets 403.",
+    },
+    "userBearer": {
+        "type": "http", "scheme": "bearer", "bearerFormat": "JWT",
+        "description": "An access token from the configured OIDC issuer (HUB_OIDC_ISSUER), for a user "
+                       "pre-linked with `hub.manage link-sso`. The user's Hub role determines REST scopes.",
     },
     "mcpBearer": {
         "type": "http", "scheme": "bearer",
