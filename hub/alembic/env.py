@@ -41,12 +41,16 @@ def _do_run_migrations(connection) -> None:
 
 async def run_migrations_online() -> None:
     connectable: AsyncEngine = make_engine(HubConfig.from_env())
-    async with connectable.connect() as connection:
-        await connection.run_sync(_do_run_migrations)
-    await connectable.dispose()
+    try:
+        async with connectable.connect() as connection:
+            await connection.run_sync(_do_run_migrations)
+    finally:
+        await connectable.dispose()
 
 
 if context.is_offline_mode():
     run_migrations_offline()
+elif config.attributes.get("connection") is not None:
+    _do_run_migrations(config.attributes["connection"])
 else:
     asyncio.run(run_migrations_online())

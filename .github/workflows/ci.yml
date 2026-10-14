@@ -464,7 +464,7 @@ jobs:
             commontrace/async_workers.py commontrace/mcp_transport.py \
             commontrace/commons_integrity.py commontrace/frameworks.py \
             commontrace/conversation/async_store.py commontrace/conversation/validation.py \
-            commontrace/semantic.py commontrace/vector_store.py \
+            commontrace/semantic.py commontrace/vector_store.py commontrace/provider_config.py hub/migrate.py \
             commontrace/distill.py commontrace/distillation_worker.py commontrace/draft_quality.py \
             commontrace/failure_signals.py commontrace/memory_blocks.py \
             commontrace/commands/block_cmd.py commontrace/commands/distill_cmd.py \
@@ -888,11 +888,11 @@ jobs:
             typescript) npm install --no-audit --no-fund && npm run build ;;
             go) go test ./... ;;
             rust) cargo check ;;
-            java) mvn -B -DskipTests package ;;
+            java) mvn -B -DskipTests -Dmaven.jar.skipIfEmpty=true package ;;
             kotlin) bash gradlew --no-daemon compileKotlin ;;
           esac
       - name: Exercise generated TypeScript client against the live gateway
-        if: matrix.language == 'typescript' && matrix.api == 'memory'
+        if: matrix.language == 'typescript' && (matrix.api == 'memory' || matrix.api == 'gateway')
         run: python scripts/smoke_generated_sdk.py "$RUNNER_TEMP/generated/typescript"
       - name: Package generated source for review and distribution
         run: >-
