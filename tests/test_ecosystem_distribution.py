@@ -82,3 +82,21 @@ def test_generator_selects_versioned_openapi_contracts(monkeypatch, tmp_path, ap
     assert generate_sdks.main() == 0
     assert len(commands) == 4
     assert commands[-1][commands[-1].index('-i') + 1] == str(ROOT / document)
+
+
+def test_kotlin_generator_normalization_preserves_canonical_enum_constraints(tmp_path):
+    from scripts.generate_sdks import kotlin_compatible_spec
+
+    source = tmp_path / "source.json"
+    target = tmp_path / "normalized.json"
+    source.write_text(json.dumps({"components": {"schemas": {
+        "blank": {"type": "string", "enum": ["", "first", "forced"]},
+        "status": {"type": "string", "enum": ["ready", "failed"]},
+        "scopes": {"type": "array", "items": {"type": "string", "enum": ["read", "write"]}},
+    }}}))
+    normalized = json.loads(kotlin_compatible_spec(source, target).read_text())
+    schemas = normalized["components"]["schemas"]
+    assert "enum" not in schemas["blank"]
+    assert schemas["status"]["enum"] == ["ready", "failed"]
+    assert "enum" not in schemas["scopes"]["items"]
+    assert json.loads(source.read_text())["components"]["schemas"]["blank"]["enum"][0] == ""

@@ -9,8 +9,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import http.client
+import json
 import os
 import subprocess
+import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -70,6 +72,57 @@ def checked_jar(path: Path) -> Path:
     return path
 
 
+def kotlin_compatible_spec(source: Path, target: Path) -> Path:
+    """Normalize two OpenAPI constructs that currently emit invalid Kotlin.
+
+    OpenAPI Generator's Kotlin templates produce an unnamed enum member for the
+    empty string, and treat arrays of enum values as though the list itself had
+    a `.value` property. For Kotlin only, represent those fields as strings;
+    the canonical contract and the other generated languages keep the exact
+    enum constraints, and the server remains authoritative for validation.
+    """
+    document = json.loads(source.read_text(encoding="utf-8"))
+
+    def normalize(value: object, *, array_item: bool = False) -> None:
+        if isinstance(value, dict):
+            enum = value.get("enum")
+            if isinstance(enum, list) and ("" in enum or array_item):
+                value.pop("enum", None)
+            if value.get("type") == "array" and isinstance(value.get("items"), dict):
+                normalize(value["items"], array_item=True)
+            for key, child in value.items():
+                if key != "items":
+                    normalize(child)
+        elif isinstance(value, list):
+            for child in value:
+                normalize(child)
+
+    normalize(document)
+    target.write_text(json.dumps(document, ensure_ascii=False, separators=(",", ":")) + "\n",
+                      encoding="utf-8")
+    return target
+
+
+def generate(command: list[str], spec: Path, language: str, target: Path) -> None:
+    subprocess.run(
+        [
+            *command,
+            "generate",
+            "-i",
+            str(spec),
+            "-g",
+            GENERATORS[language],
+            "-o",
+            str(target),
+            "--additional-properties",
+            PROPERTIES[language],
+            "--global-property",
+            "apiDocs=false,modelDocs=false,apiTests=false,modelTests=false",
+        ],
+        check=True,
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=ROOT / "sdk" / "generated")
@@ -94,23 +147,12 @@ def main() -> int:
         target = args.output / language
         if target.is_symlink() or (target.exists() and any(target.iterdir())):
             parser.error("generation requires a fresh output directory: " + str(target))
-        subprocess.run(
-            [
-                *command,
-                "generate",
-                "-i",
-                str(spec),
-                "-g",
-                GENERATORS[language],
-                "-o",
-                str(target),
-                "--additional-properties",
-                PROPERTIES[language],
-                "--global-property",
-                "apiDocs=false,modelDocs=false,apiTests=false,modelTests=false",
-            ],
-            check=True,
-        )
+        if language == "kotlin":
+            with tempfile.TemporaryDirectory(prefix="commontrace-kotlin-openapi-") as directory:
+                normalized = kotlin_compatible_spec(spec, Path(directory) / "openapi.json")
+                generate(command, normalized, language, target)
+        else:
+            generate(command, spec, language, target)
     return 0
 
 
