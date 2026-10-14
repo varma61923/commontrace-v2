@@ -176,3 +176,12 @@ of this repository's `release.yml` as its trusted publisher. Configured account
 ownership and a successful registry publication are external acceptance criteria;
 a passing package build does not establish publication. Configure release
 environments as described in [release automation](../.github/workflows/release.yml).
+
+## Installation copy policy
+
+The shell installer excludes nested build outputs, provider caches, IDE caches,
+type-checker caches, generated SDKs, and local Terraform state, plans and variable
+files from both rsync and tar copies. Deployment sources, provider lock files and
+example variable files remain available. Existing destination data is preserved.
+This avoids distributing local infrastructure state or copying development
+artifacts into every installation.
