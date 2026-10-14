@@ -28,6 +28,32 @@ def _words(text: str) -> list[str]:
     return [w for w in re.findall(r"[a-z0-9']+", text.lower()) if w not in profile.STOPWORDS and len(w) > 2]
 
 
+def _select_candidates(candidates: list[dict], count: int) -> list[dict]:
+    """Select salient, non-redundant evidence while retaining temporal coverage."""
+    remaining = list(candidates)
+    selected: list[dict] = []
+    covered: set[str] = set()
+    has_dated = False
+    max_order = max((int(row.get("order", i)) for i, row in enumerate(remaining)), default=0)
+    while remaining and len(selected) < count:
+        def score(row: dict) -> tuple[float, int]:
+            words = set(row["words"])
+            novelty = len(words - covered) / max(1, len(words))
+            value = float(row["weight"]) * (0.55 + 0.45 * novelty)
+            if row.get("dated") and not has_dated:
+                value *= 1.2
+            order = int(row.get("order", 0))
+            value *= 1.0 + 0.15 * order / max(1, max_order)
+            return value, order
+
+        best = max(remaining, key=score)
+        remaining.remove(best)
+        selected.append(best)
+        covered.update(best["words"])
+        has_dated = has_dated or bool(best.get("dated"))
+    return selected
+
+
 def extractive(turns: list[Turn], sentences: int = SENTENCES, limit: int = MAX_CHARS) -> str:
     """The session's most central sentences, in the order they were said."""
     candidates = []
@@ -43,12 +69,12 @@ def extractive(turns: list[Turn], sentences: int = SENTENCES, limit: int = MAX_C
     for i, (turn, sentence, words) in enumerate(candidates):
         weight = sum(math.log(1 + freq[w]) for w in set(words)) / math.sqrt(len(set(words)))
         weight *= 1.3 if turn.dates else 1.0
-        scored.append((weight, i))
-    keep = sorted(i for _w, i in sorted(scored, reverse=True)[:sentences])
+        scored.append({"weight": weight, "order": i, "words": set(words), "dated": bool(turn.dates),
+                       "turn": turn, "sentence": sentence})
+    keep = sorted(_select_candidates(scored, sentences), key=lambda row: row["order"])
     out = []
-    for i in keep:
-        turn, sentence, _words_ = candidates[i]
-        line = f"{turn.speaker}: {sentence}"
+    for row in keep:
+        line = f"{row['turn'].speaker}: {row['sentence']}"
         if sum(len(x) + 1 for x in out) + len(line) > limit:
             break
         out.append(line)
@@ -148,7 +174,7 @@ def summarize(store: Store, sessions: list[str] | None = None, *, method: str = 
 # hands the previous summary and only the new turns to the configured model.
 
 ROLLING_KEY = "rolling-summary:"
-ROLLING_VERSION = 1
+ROLLING_VERSION = 2
 ROLLING_POOL = 12
 ROLLING_VOCAB = 4096
 ROLLING_PAGE = 256
@@ -242,8 +268,11 @@ def _fold_extractive(state: dict, turns: Iterable[Turn], sentences: int, limit: 
     state["order"] = order
     if len(freq) > ROLLING_VOCAB:
         state["freq"] = freq = dict(sorted(freq.items(), key=lambda kv: (-kv[1], kv[0]))[:ROLLING_VOCAB])
-    # The same ranking as extractive(): weight first, the later sentence wins a tie.
-    ranked = sorted(pool, key=lambda e: (-_weight(e, freq), -e["order"]))
+    ranked = _select_candidates(
+        [{**entry, "weight": _weight(entry, freq)} for entry in pool], len(pool),
+    )
+    # Keep a bounded summary working set ordered by current salience and
+    # coverage so a repeated topic cannot crowd every distinct fact out.
     state["pool"] = ranked[:ROLLING_POOL]
     out: list[str] = []
     for entry in sorted(ranked[:sentences], key=lambda e: e["order"]):

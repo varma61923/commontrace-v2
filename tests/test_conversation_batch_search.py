@@ -108,6 +108,14 @@ def test_recall_encodes_multiple_facets_together_and_preserves_each_answer(tmp_p
     e = FacetEncoder()
     e.np = np
     monkeypatch.setattr(search, "_embedder", lambda *_: e)
+    unit_lookups = []
+    original_unit_turns = Store.unit_turns
+
+    def tracked_unit_turns(store, units):
+        unit_lookups.append(tuple(units))
+        return original_unit_turns(store, units)
+
+    monkeypatch.setattr(Store, "unit_turns", tracked_unit_turns)
     with Store(str(tmp_path), "facets") as store:
         store.add("color", [{"text": "Project Zephyr color is sky blue."}])
         store.add("budget", [{"text": "Project Zephyr budget is 120 units."}])
@@ -117,6 +125,7 @@ def test_recall_encodes_multiple_facets_together_and_preserves_each_answer(tmp_p
         result = recall(store, "Summarize Project Zephyr, including color, budget and venue.", options=opts)
         assert len(calls) == 1 and calls[0][1] and len(calls[0][0]) > 1
         assert all(text in result.context for text in ("sky blue", "120 units", "Oslo"))
+        assert len(unit_lookups) == 1  # one unit->turn SQL round trip for every search facet
         calls.clear()
         empty = recall(store, "Where is the venue?", options=Options(sessions=("missing",), rerank=None))
         assert not calls and not empty.turns

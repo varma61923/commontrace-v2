@@ -5,7 +5,26 @@ import pytest
 
 from commontrace.conversation import Store
 from commontrace.conversation.store import ConversationError
-from commontrace.conversation.summary import MAX_TRANSCRIPT_CHARS, MODEL_PAGE, PROMPT, summarize, written
+from commontrace.conversation.summary import (
+    MAX_TRANSCRIPT_CHARS,
+    MODEL_PAGE,
+    PROMPT,
+    _select_candidates,
+    summarize,
+    written,
+)
+
+
+def test_extractive_selection_preserves_recent_temporal_and_distinct_facts():
+    rows = [
+        {"weight": 10, "order": 0, "words": {"atlas", "office", "oslo"}, "dated": True},
+        {"weight": 9, "order": 1, "words": {"atlas", "office", "oslo", "team"}, "dated": True},
+        {"weight": 8, "order": 2, "words": {"atlas", "office", "paris", "changed"}, "dated": True},
+        {"weight": 6, "order": 3, "words": {"team", "weekly", "reviews"}, "dated": False},
+    ]
+    selected = _select_candidates(rows, 3)
+    assert rows[2] in selected  # later temporal update remains visible
+    assert rows[3] in selected  # a distinct fact gets coverage beside repeated topic sentences
 
 
 def test_unchanged_summary_never_hydrates_source_messages(tmp_path, monkeypatch):

@@ -7,8 +7,19 @@ from datetime import datetime, timezone
 import pytest
 
 from commontrace import fact_store, hierarchical, query_plan, search_recipes, temporal_intent
+from commontrace.conversation import Store
 
 NOW = datetime(2026, 10, 13, 12, tzinfo=timezone.utc)
+
+
+def test_open_domain_grounded_date_windows_use_a_persistent_range_index(tmp_path):
+    with Store(str(tmp_path), "temporal-index") as store:
+        store.add("s", [{"text": "The team met last Thursday.", "at": "2026-10-13"}])
+        plan = " ".join(str(row[3]) for row in store.db.execute(
+            "EXPLAIN QUERY PLAN SELECT id FROM turns WHERE lo < ? AND hi >= ?",
+            ("2026-10-14", "2026-10-01"),
+        ))
+        assert "turns_grounded_dates" in plan
 
 
 @pytest.mark.parametrize("query, expected", [

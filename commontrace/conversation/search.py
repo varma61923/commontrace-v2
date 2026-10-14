@@ -878,14 +878,22 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
         return [(dense_rankings.get(query, []), 1.0), (lexical, opts.lexical_weight)]
 
     def turn_scores(queries: list[str]) -> dict[int, float]:
+        # Resolve every lexical/vector unit id in one indexed lookup. A broad
+        # question may expand into a dozen facets; querying `units` once per
+        # facet serialized otherwise-independent reads on the same SQLite
+        # connection and amplified latency for real multi-hop questions.
+        arms = {query: arm_rankings(query) for query in queries}
+        unit_ids = list(dict.fromkeys(unit for query_arms in arms.values()
+                                      for units, _weight in query_arms for unit in units))
+        unit_turn = store.unit_turns(unit_ids)
         by_turn: dict[int, float] = {}
-        for query in queries:
+        for query_arms in arms.values():
             ranked_turns = []
-            for units, weight in arm_rankings(query):
-                unit_turn = store.unit_turns(units)
-                ranked_turns.append((list(dict.fromkeys(
-                    unit_turn[u] for u in units if u in unit_turn and (allowed is None or unit_turn[u] in allowed))),
-                    weight))
+            for units, weight in query_arms:
+                turns = list(dict.fromkeys(
+                    unit_turn[u] for u in units
+                    if u in unit_turn and (allowed is None or unit_turn[u] in allowed)))
+                ranked_turns.append((turns, weight))
             for turn, score in _rrf(ranked_turns).items():
                 by_turn[turn] = max(by_turn.get(turn, 0.0), score)
         return by_turn

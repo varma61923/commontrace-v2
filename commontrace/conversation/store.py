@@ -107,6 +107,7 @@ CREATE TABLE IF NOT EXISTS turns (
     expires TEXT, UNIQUE (session, idx));
 CREATE INDEX IF NOT EXISTS turns_at ON turns (at);
 CREATE INDEX IF NOT EXISTS turns_speaker ON turns (LOWER(speaker));
+CREATE INDEX IF NOT EXISTS turns_grounded_dates ON turns (lo, hi) WHERE lo IS NOT NULL;
 CREATE TABLE IF NOT EXISTS units (
     id INTEGER PRIMARY KEY, turn INTEGER NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
     part INTEGER NOT NULL, body TEXT NOT NULL, hash TEXT NOT NULL);
