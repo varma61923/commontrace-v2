@@ -15,6 +15,22 @@ from commontrace.memory_journal import Journal
 from commontrace.memory_record import MemoryRecord
 
 
+def functional_command(command):
+    # Protocol checks allow shared-runner scheduling headroom. The native
+    # latency tests continue to launch the bridge with production deadlines.
+    script = """
+import importlib.util
+import sys
+spec = importlib.util.spec_from_file_location("bridge", sys.argv[1])
+bridge = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(bridge)
+bridge.RESPONSE_SECONDS = 2.0
+bridge.RECEIPT_SECONDS = 0.5
+raise SystemExit(bridge.main(sys.argv[2:]))
+"""
+    return command[:3] + ["-c", script, *command[3:]]
+
+
 def test_native_transport_capture_receipt_and_crash_recovery(tmp_path):
     if not hasattr(socket, "AF_UNIX"):
         pytest.skip("native Unix transport requires Unix sockets")
@@ -24,42 +40,37 @@ def test_native_transport_capture_receipt_and_crash_recovery(tmp_path):
     journal.put(
         MemoryRecord("critical", "directive", 1, {"text": "Keep credentials private."}, scope={"agent": "agent"})
     )
+    broker_script = """
+import sys
+from functools import partialmethod
+from commontrace.hook_service import HookKit, main
+HookKit.handle = partialmethod(HookKit.handle, deadline_ms=1000)
+raise SystemExit(main(sys.argv[1:]))
+"""
     broker = subprocess.Popen(
-        [sys.executable, "-m", "commontrace.hook_service", "--dest", root],
+        [sys.executable, "-c", broker_script, "--dest", root],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
     try:
-        for _ in range(100):
-            if os.path.exists(tmp_path / "memory" / "hooks.sock"):
-                break
+        ready_by = time.monotonic() + 15
+        while not os.path.exists(tmp_path / "memory" / "hooks.sock"):
             assert broker.poll() is None
+            if time.monotonic() >= ready_by:
+                pytest.fail("native broker did not become ready within the startup budget")
             time.sleep(0.01)
-        command = shlex.split(HookKit(root, "agent").manifest("claude")["events"]["UserPromptSubmit"])
-        # A cold/loaded broker may fail open at the native deadline. That must
-        # preserve capture without claiming an exposure the model never received.
-        for _ in range(10):
-            first = subprocess.run(
-                command + ["--format", "claude"],
-                input=json.dumps({"session_id": "s", "prompt": "code"}),
-                text=True,
-                capture_output=True,
-                # This bounds process startup on shared CI runners. The bridge
-                # independently keeps its 25 ms socket deadline; the measured
-                # fresh-process benchmark still enforces the latency target.
-                timeout=15,
-                check=True,
-            )
-            output = json.loads(first.stdout)
-            if "hookSpecificOutput" in output:
-                assert "critical" in output["hookSpecificOutput"]["additionalContext"]
-                break
-            assert output.get("context", "") == ""
-            with journal.connect() as db:
-                assert db.execute("SELECT COUNT(*) FROM injected WHERE id='critical'").fetchone()[0] == 0
-            time.sleep(0.01)
-        else:
-            pytest.fail("warm broker did not deliver the critical directive")
+        native = shlex.split(HookKit(root, "agent").manifest("claude")["events"]["UserPromptSubmit"])
+        command = functional_command(native)
+        first = subprocess.run(
+            command + ["--format", "claude"],
+            input=json.dumps({"session_id": "s", "prompt": "code"}),
+            text=True,
+            capture_output=True,
+            timeout=15,
+            check=True,
+        )
+        output = json.loads(first.stdout)
+        assert "critical" in output["hookSpecificOutput"]["additionalContext"]
         second = subprocess.run(
             command + ["--format", "claude"],
             input=json.dumps({"session_id": "s", "prompt": "code"}),
@@ -197,21 +208,8 @@ def test_native_bridge_recovers_capture_after_accepted_broker_failure(tmp_path, 
         worker = threading.Thread(target=peer)
         worker.start()
         command = shlex.split(kit.manifest("claude")["events"]["UserPromptSubmit"])
-        # Recovery after acceptance is a protocol contract. Separate latency
-        # tests use the production deadlines; allow scheduling headroom here.
-        script = """
-import importlib.util
-import sys
-spec = importlib.util.spec_from_file_location("bridge", sys.argv[1])
-bridge = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(bridge)
-bridge.RESPONSE_SECONDS = 2.0
-bridge.RECEIPT_SECONDS = 0.5
-raise SystemExit(bridge.main(sys.argv[2:]))
-"""
-        functional = command[:3] + ["-c", script, *command[3:]]
         result = subprocess.run(
-            functional + ["--format", "claude"],
+            functional_command(command) + ["--format", "claude"],
             input='{"session_id":"accepted","prompt":"code"}',
             text=True,
             capture_output=True,
