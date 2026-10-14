@@ -78,10 +78,12 @@ def test_multi_hop_preserves_feedback_weight_and_prefers_stronger_paths(root):
     assert rows[1]["signals"]["entity"] == pytest.approx(.08)
 
 
-def test_mcp_uses_the_governed_hybrid_and_temporal_pipeline(root):
+def test_mcp_uses_the_governed_hybrid_and_temporal_pipeline(root, monkeypatch):
     pytest.importorskip("mcp")
     from commontrace import mcp_server
 
+    monkeypatch.setattr(hierarchical, "_now", lambda: "2025-02-01T00:00:00Z")
+    monkeypatch.setattr(graph, "_now", lambda: "2025-02-01T00:00:00Z")
     answer = add(root, "the registered office is in bristol", scopes=["agent:reader"])
     graph.add_node(root, "person:alice", "person", "Alice")
     graph.add_node(root, "company:meridian", "organization", "Meridian")
@@ -97,7 +99,7 @@ def test_mcp_uses_the_governed_hybrid_and_temporal_pipeline(root):
         structured = getattr(result, "structured_content", None)
         return structured.get("result", structured) if structured else json.loads(result.content[0].text)
 
-    result = call(graph_hops=2, as_of="2027-01-01", known_at="2027-01-01")
+    result = call(graph_hops=2, as_of="2025-03-01", known_at="2025-03-01")
     assert result["ok"] and result["results"][0]["id"] == answer.id
     assert call(graph_hops=1)["results"] == []
     assert call(context=["agent:other"])["results"] == []
