@@ -107,14 +107,18 @@
         "commontrace/conversation/embed.py",
         "commontrace/conversation/store.py",
         "commontrace/commands/conversation_cmd.py",
-        "benchmarks/conversation_retrieval.py"
+        "benchmarks/conversation_retrieval.py",
+        "commontrace/gateway.py",
+        "commontrace/gateway_contract.py"
       ],
       "validation": [
         "tests/test_conversation_preparation.py",
         "tests/test_conversation_batch_search.py",
-        "tests/test_provider_config.py"
+        "tests/test_provider_config.py",
+        "tests/test_conversation_recall_controls.py",
+        "tests/test_conversation_retrieval_evaluation.py"
       ],
-      "notes": "Existing implementation retained and covered by the cited regression suites."
+      "notes": "Validated OpenAPI controls reach production HTTP recall. Conversation MMR uses the existing diversity algorithm; graph depth honors source scope. Paired retrieval evaluation supports explicit semantic and reranking providers and records fallbacks."
     },
     {
       "id": "P2.1",
@@ -243,7 +247,7 @@
         "tests/test_sdk_generator_download.py",
         "scripts/smoke_generated_sdk.py"
       ],
-      "notes": "OpenAPI generates typed server operations; local Python-only convenience functions are not fabricated as HTTP APIs."
+      "notes": "OpenAPI generates typed server operations; local Python-only convenience functions are not fabricated as HTTP APIs. Generated gateway SDK live tests cover conversation capture, graph/temporal recall, summarization, session listing and history APIs; temporal window is correctly typed as a three-element array."
     },
     {
       "id": "P3.3",
@@ -260,7 +264,7 @@
         "tests/test_sdk_generator_download.py",
         "scripts/smoke_generated_sdk.py"
       ],
-      "notes": "Supports the same HTTP contract on a local loopback gateway or HTTPS deployment."
+      "notes": "Supports the same HTTP contract on a local loopback gateway or HTTPS deployment. Generated gateway SDK live tests cover conversation capture, graph/temporal recall, summarization, session listing and history APIs; temporal window is correctly typed as a three-element array."
     },
     {
       "id": "P3.4",
@@ -277,13 +281,13 @@
         "tests/test_sdk_generator_download.py",
         "scripts/smoke_generated_sdk.py"
       ],
-      "notes": "Existing implementation retained and covered by the cited regression suites."
+      "notes": "Existing implementation retained and covered by the cited regression suites. Generated gateway SDK live tests cover conversation capture, graph/temporal recall, summarization, session listing and history APIs; temporal window is correctly typed as a three-element array."
     },
     {
       "id": "P3.5",
       "priority": "Add TypeScript SDK (Developer Experience) - 3 weeks, +25% impact",
       "requirement": "Publish to npm",
-      "status": "package-ready; registry-publication-pending",
+      "status": "deferred-by-owner; package-ready",
       "implementation": [
         "scripts/generate_sdks.py",
         "scripts/smoke_generated_sdk.py",
@@ -294,7 +298,7 @@
         "tests/test_sdk_generator_download.py",
         "scripts/smoke_generated_sdk.py"
       ],
-      "notes": "Generated gateway tarball builds, audits and passes live HTTP tests. Trusted-publisher workflow is wired; npm scope ownership and registry publication remain external account prerequisites."
+      "notes": "Owner explicitly requested: Do not publish it yet. Generated gateway tarball builds, audits and passes live memory, conversation, temporal, summary and history workflows. Trusted-publisher workflow remains ready for a future authorized release."
     },
     {
       "id": "P4.1",
@@ -546,14 +550,17 @@
       "status": "existing-verified",
       "implementation": [
         "commontrace/reranking.py",
-        "commontrace/conversation/search.py"
+        "commontrace/conversation/search.py",
+        "commontrace/gateway.py",
+        "commontrace/gateway_contract.py"
       ],
       "validation": [
         "tests/test_rerank.py",
         "tests/test_reranker_registry.py",
-        "tests/test_conversation_ranking_regressions.py"
+        "tests/test_conversation_ranking_regressions.py",
+        "tests/test_conversation_recall_controls.py"
       ],
-      "notes": "Existing implementation retained and covered by the cited regression suites."
+      "notes": "Validated OpenAPI controls reach production HTTP recall. Conversation MMR uses the existing diversity algorithm; graph depth honors source scope. Paired retrieval evaluation supports explicit semantic and reranking providers and records fallbacks."
     },
     {
       "id": "P7.2",
@@ -578,14 +585,17 @@
       "status": "existing-verified",
       "implementation": [
         "commontrace/reranking.py",
-        "commontrace/conversation/search.py"
+        "commontrace/conversation/search.py",
+        "commontrace/gateway.py",
+        "commontrace/gateway_contract.py"
       ],
       "validation": [
         "tests/test_rerank.py",
         "tests/test_reranker_registry.py",
-        "tests/test_conversation_ranking_regressions.py"
+        "tests/test_conversation_ranking_regressions.py",
+        "tests/test_conversation_recall_controls.py"
       ],
-      "notes": "Existing implementation retained and covered by the cited regression suites."
+      "notes": "Validated OpenAPI controls reach production HTTP recall. Conversation MMR uses the existing diversity algorithm; graph depth honors source scope. Paired retrieval evaluation supports explicit semantic and reranking providers and records fallbacks."
     },
     {
       "id": "P7.4",
@@ -594,14 +604,17 @@
       "status": "existing-verified",
       "implementation": [
         "commontrace/reranking.py",
-        "commontrace/conversation/search.py"
+        "commontrace/conversation/search.py",
+        "commontrace/gateway.py",
+        "commontrace/gateway_contract.py"
       ],
       "validation": [
         "tests/test_rerank.py",
         "tests/test_reranker_registry.py",
-        "tests/test_conversation_ranking_regressions.py"
+        "tests/test_conversation_ranking_regressions.py",
+        "tests/test_conversation_recall_controls.py"
       ],
-      "notes": "Existing implementation retained and covered by the cited regression suites."
+      "notes": "Validated OpenAPI controls reach production HTTP recall. Conversation MMR uses the existing diversity algorithm; graph depth honors source scope. Paired retrieval evaluation supports explicit semantic and reranking providers and records fallbacks."
     },
     {
       "id": "P8.1",
@@ -645,14 +658,17 @@
       "implementation": [
         "commontrace/graph.py",
         "commontrace/conversation/search.py",
-        "commontrace/relation_extraction.py"
+        "commontrace/relation_extraction.py",
+        "commontrace/gateway.py",
+        "commontrace/gateway_contract.py"
       ],
       "validation": [
         "tests/test_knowledge_graph.py",
         "tests/test_relation_extraction.py",
-        "tests/test_graph_snapshot_consistency.py"
+        "tests/test_graph_snapshot_consistency.py",
+        "tests/test_conversation_recall_controls.py"
       ],
-      "notes": "Existing implementation retained and covered by the cited regression suites."
+      "notes": "Validated OpenAPI controls reach production HTTP recall. Conversation MMR uses the existing diversity algorithm; graph depth honors source scope. Paired retrieval evaluation supports explicit semantic and reranking providers and records fallbacks."
     },
     {
       "id": "P8.4",
@@ -662,14 +678,17 @@
       "implementation": [
         "commontrace/graph.py",
         "commontrace/conversation/search.py",
-        "commontrace/relation_extraction.py"
+        "commontrace/relation_extraction.py",
+        "commontrace/gateway.py",
+        "commontrace/gateway_contract.py"
       ],
       "validation": [
         "tests/test_knowledge_graph.py",
         "tests/test_relation_extraction.py",
-        "tests/test_graph_snapshot_consistency.py"
+        "tests/test_graph_snapshot_consistency.py",
+        "tests/test_conversation_recall_controls.py"
       ],
-      "notes": "Existing implementation retained and covered by the cited regression suites."
+      "notes": "Validated OpenAPI controls reach production HTTP recall. Conversation MMR uses the existing diversity algorithm; graph depth honors source scope. Paired retrieval evaluation supports explicit semantic and reranking providers and records fallbacks."
     },
     {
       "id": "P9.1",
@@ -989,5 +1008,5 @@
       "notes": "Existing implementation retained and covered by the cited regression suites."
     }
   ],
-  "validation_status": "Full release checks run before committing; registry publication is not claimed."
+  "validation_status": "Implementation paths are audited and executable checks run before committing; public npm publication is deferred by explicit owner request."
 }
