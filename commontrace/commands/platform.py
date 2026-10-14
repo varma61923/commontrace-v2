@@ -428,6 +428,8 @@ def jobs_add_parser(subparsers: argparse._SubParsersAction) -> None:
     q.add_argument("--limit", type=int, default=20)
     q.add_argument("--kind", action="append", default=[], choices=sorted(jobs.HANDLERS))
     q.add_argument("--watch", action="store_true", help="Keep polling for new jobs.")
+    q.add_argument("--lease-seconds", type=float, default=600,
+                   help="Renewable worker claim duration (default: 600 seconds).")
     q.add_argument("--interval", type=float, default=5.0)
     q.set_defaults(func=jobs_run_run)
 
@@ -541,7 +543,8 @@ def jobs_run_run(args, root) -> int:
             previous[sig] = signal.signal(sig, _stop)
     try:
         while not stopping.is_set():
-            out = jobs.run_pending(root, limit=1 if args.watch else args.limit, kinds=args.kind or None)
+            out = jobs.run_pending(root, limit=1 if args.watch else args.limit, kinds=args.kind or None,
+                                   lease=args.lease_seconds)
             total["done"] += out["done"]
             total["failed"] += out["failed"]
             if not args.watch:
