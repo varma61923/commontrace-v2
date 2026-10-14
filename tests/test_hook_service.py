@@ -229,3 +229,32 @@ def test_native_bridge_recovers_capture_after_accepted_broker_failure(tmp_path, 
     assert len(captures) == 1
     assert captures[0]["event"] == "UserPromptSubmit"
     assert captures[0]["payload"]["event_id"]
+
+
+def test_broker_socket_is_never_created_wider_than_owner_only(tmp_path, monkeypatch):
+    """bind() runs under a restrictive umask, so a permissive process umask cannot expose the endpoint."""
+    import os
+    import socket
+
+    from commontrace import hook_service
+
+    seen = []
+    real_bind = socket.socket.bind
+
+    def recording_bind(self, address):
+        current = os.umask(0o177)
+        os.umask(current)
+        seen.append(current)
+        raise KeyboardInterrupt  # stop serve() right after the bind attempt
+
+    monkeypatch.setattr(socket.socket, "bind", recording_bind)
+    previous = os.umask(0o000)  # the hostile case: a fully permissive process umask
+    try:
+        try:
+            hook_service.serve(str(tmp_path))
+        except KeyboardInterrupt:
+            pass
+    finally:
+        os.umask(previous)
+        monkeypatch.setattr(socket.socket, "bind", real_bind)
+    assert seen == [0o177]

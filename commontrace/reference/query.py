@@ -52,6 +52,7 @@ SUPPORTED_MODELS = {
 TRUSTED_MODELS = SUPPORTED_MODELS
 DEFAULT_MODEL_NAME = "Snowflake/snowflake-arctic-embed-m-v1.5"
 _DEFAULT_MODEL_NAME = DEFAULT_MODEL_NAME
+_TRUSTED_MODEL_NAME = DEFAULT_MODEL_NAME  # same alias build_index.py keeps; the index tests use it
 
 _DELIM_RE = re.compile(r"^---[ \t]*\r?$", re.MULTILINE)
 
@@ -491,6 +492,20 @@ def rank(query, top_k=10, include_importance_floor=4, agent_type=None, *,
     })
 
 
+def _emit(fd, stream, text):
+    """Write to a real process stream by file descriptor, otherwise through the Python stream.
+
+    A direct os.write confirms delivery and avoids a buffered success on a broken pipe, but it
+    bypasses sys.stdout/sys.stderr. The warm worker, and anything else that redirects those
+    streams to capture a run, then lost every result line. Redirected streams are honoured.
+    """
+    original = sys.__stdout__ if fd == 1 else sys.__stderr__
+    if stream is original and original is not None:
+        os.write(fd, text.encode("utf-8"))
+    else:
+        stream.write(text)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("query", help="Incoming task / query string (verbatim)")
@@ -509,16 +524,21 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    from commontrace.telemetry import redact
+    from commontrace.memory_guard import redact_secrets
+
+    def redact(line):
+        # Scrub credentials but never truncate: telemetry.redact() cuts at 256 characters, which
+        # silently clipped long lesson lines and the actionable tail of error messages.
+        return redact_secrets(str(line))[0]
 
     _t0 = time.monotonic()
     result = rank(args.query, args.top_k, args.include_importance_floor, args.agent_type)
     for message in result.stderr:
-        os.write(2, (str(redact(message)) + "\n").encode("utf-8"))
+        _emit(2, sys.stderr, str(redact(message)) + "\n")
     if result.rc != 0:
         return result.rc
     for line in result.lines:
-        os.write(1, (str(redact(line)) + "\n").encode("utf-8"))
+        _emit(1, sys.stdout, str(redact(line)) + "\n")
 
     elapsed_ms = (time.monotonic() - _t0) * 1000.0
     brief_text = "\n".join(result.lines)

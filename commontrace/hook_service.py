@@ -102,7 +102,13 @@ def serve(root: str, *, profile: str | None = None):
                         pass
                     threading.Event().wait(1)
 
-            server.bind(endpoint)
+            # Create the socket owner-only from the start: a chmod after bind() leaves a window in
+            # which a permissive process umask would let another local user connect.
+            previous_umask = os.umask(0o177)
+            try:
+                server.bind(endpoint)
+            finally:
+                os.umask(previous_umask)
             os.chmod(endpoint, 0o600)
             server.listen(32)
             threading.Thread(target=copy_context().run, args=(prepare,), daemon=True).start()
