@@ -30,6 +30,8 @@ hosted gateways. An agent credential binds its principal's scope on the server;
 payload `context` cannot replace it. Operator tokens have store administration
 authority and belong in a trusted service, not an untrusted assistant.
 
+Use `python scripts/generate_sdks.py --api memory` (or `--api gateway` / `--api hub`) to choose one of the three source-generated OpenAPI contracts. See [distribution setup](../docs/distribution.md).
+
 The checked-in `typescript`, `go`, `rust` and `jvm` directories also contain small
 convenience clients with pinned scopes, response limits, redirect refusal and
 HTTPS/loopback URL checks. They are maintained adapters, not generator output.

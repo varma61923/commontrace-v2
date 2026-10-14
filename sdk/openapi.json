@@ -881,8 +881,8 @@
   "info": {
     "description": "Append-only memory, source-linked recall and observed outcomes. Bearer agent keys bind the owner scope; a request cannot replace its principal's context. Retrieved evidence never authorizes an action. Use HTTPS for hosted gateways; localhost is intended for a trusted local operator.",
     "license": {
-      "name": "MIT",
-      "url": "https://opensource.org/license/mit/"
+      "name": "GNU Affero General Public License v3.0 only",
+      "url": "https://www.gnu.org/licenses/agpl-3.0.html"
     },
     "title": "CommonTrace gateway",
     "version": "1"

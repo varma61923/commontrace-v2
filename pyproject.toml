@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,7 +8,7 @@ version = "2.0.0"
 description = "CommonTrace Protocol client — capture agent experience, validate lessons, and inject them into any agent platform (Claude Code, Cursor, Devin, Windsurf, generic MCP)."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "AGPL-3.0-only"
 authors = [{ name = "CommonTrace" }]
 keywords = ["agents", "llm", "mcp", "memory", "protocol", "fleet-learning"]
 dependencies = [

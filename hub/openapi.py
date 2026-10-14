@@ -547,8 +547,7 @@ def _schemas() -> dict:
         }, additional=True, description="Members that are not users of this org are dropped."),
         "ScimPatchOp": _object({
             "schemas": _array(_string()),
-            "Operations": _array(patch_op),
-            "operations": _array(patch_op, "Lower-case alias accepted."),
+            "operations": _array(patch_op, "Canonical form; the uppercase SCIM `Operations` alias is also accepted."),
             "active": {"description": "Users only: a bare `active` with no Operations."},
         }, additional=True),
         "ScimUserList": _object({
@@ -1614,7 +1613,7 @@ def document(app=None) -> dict:
                 "413. When HUB_IP_ALLOWLIST is set, sources outside it get 403 everywhere except /healthz, "
                 "/readyz and /disclosure."
             ),
-            "license": {"name": "MIT", "identifier": "MIT"},
+            "license": {"name": "GNU AGPLv3", "identifier": "AGPL-3.0-only"},
         },
         "tags": [{"name": name, "description": text} for name, text in _TAGS],
         "paths": paths,

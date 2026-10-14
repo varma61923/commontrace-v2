@@ -2,7 +2,7 @@
   "name": "@commontrace/hub-client",
   "version": "0.1.0",
   "description": "TypeScript client for the CommonTrace Hub's MCP tool surface (audit 6.4: the first non-Python SDK).",
-  "license": "MIT",
+  "license": "AGPL-3.0-only",
   "type": "module",
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",

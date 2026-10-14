@@ -21,7 +21,8 @@ from commontrace.gateway import Gateway  # noqa: E402
 def full_document() -> dict:
     with tempfile.TemporaryDirectory() as root:
         result = Gateway(root)._openapi({}, {})
-    result["info"]["license"] = {"name": "MIT", "url": "https://opensource.org/license/mit/"}
+    result["info"]["license"] = {"name": "GNU Affero General Public License v3.0 only",
+                                  "url": "https://www.gnu.org/licenses/agpl-3.0.html"}
     result["servers"] = [{"url": "http://127.0.0.1:8765", "description": "Local gateway; configure HTTPS for hosting"}]
     return result
 
@@ -56,7 +57,8 @@ def document() -> dict:
         "Append-only memory, source-linked recall and observed outcomes. Bearer agent keys bind the owner scope; "
         "a request cannot replace its principal's context. Retrieved evidence never authorizes an action. "
         "Use HTTPS for hosted gateways; localhost is intended for a trusted local operator.")
-    result["info"]["license"] = {"name": "MIT", "url": "https://opensource.org/license/mit/"}
+    result["info"]["license"] = {"name": "GNU Affero General Public License v3.0 only",
+                                  "url": "https://www.gnu.org/licenses/agpl-3.0.html"}
     result["servers"] = [{"url": "http://127.0.0.1:8765", "description": "Local gateway; configure HTTPS for hosting"}]
     return result
 

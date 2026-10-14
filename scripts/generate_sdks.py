@@ -76,13 +76,17 @@ def main() -> int:
     parser.add_argument("--jar", type=Path)
     parser.add_argument("--languages", nargs="+", choices=GENERATORS, default=list(GENERATORS))
     parser.add_argument("--validate-only", action="store_true")
+    parser.add_argument("--api", choices=("memory", "gateway", "hub"), default="memory",
+                        help="Generate the memory subset (default), all gateway routes, or the Hub REST API")
     args = parser.parse_args()
     jar = checked_jar(args.jar or ROOT / "build" / ("openapi-generator-cli-" + VERSION + ".jar"))
-    spec = ROOT / "sdk" / "openapi.json"
+    spec = {"memory": ROOT / "sdk" / "openapi.json", "gateway": ROOT / "openapi" / "gateway.json",
+            "hub": ROOT / "hub" / "openapi.json"}[args.api]
     command = ["java", "-jar", str(jar)]
     # The full gateway contract is validated with the same pinned tool; clients are
     # generated from the memory subset only.
-    for document in (spec, ROOT / "openapi" / "gateway.json"):
+    for document in (ROOT / "sdk" / "openapi.json", ROOT / "openapi" / "gateway.json",
+                     ROOT / "hub" / "openapi.json"):
         subprocess.run([*command, "validate", "-i", str(document)], check=True)
     if args.validate_only:
         return 0

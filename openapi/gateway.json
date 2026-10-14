@@ -1548,8 +1548,8 @@
   "info": {
     "description": "Did the memory change how the occasion went? Language-neutral.",
     "license": {
-      "name": "MIT",
-      "url": "https://opensource.org/license/mit/"
+      "name": "GNU Affero General Public License v3.0 only",
+      "url": "https://www.gnu.org/licenses/agpl-3.0.html"
     },
     "title": "CommonTrace gateway",
     "version": "1"

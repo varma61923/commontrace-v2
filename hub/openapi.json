@@ -1290,42 +1290,11 @@
       "ScimPatchOp": {
         "additionalProperties": true,
         "properties": {
-          "Operations": {
-            "items": {
-              "additionalProperties": true,
-              "properties": {
-                "op": {
-                  "description": "Case-insensitive.",
-                  "enum": [
-                    "add",
-                    "replace",
-                    "remove",
-                    "Add",
-                    "Replace",
-                    "Remove"
-                  ],
-                  "type": "string"
-                },
-                "path": {
-                  "description": "`active` / `displayName` / `members` / `members[value eq \"<id>\"]`, or empty.",
-                  "type": "string"
-                },
-                "value": {
-                  "description": "The new value; any JSON type."
-                }
-              },
-              "required": [
-                "op"
-              ],
-              "type": "object"
-            },
-            "type": "array"
-          },
           "active": {
             "description": "Users only: a bare `active` with no Operations."
           },
           "operations": {
-            "description": "Lower-case alias accepted.",
+            "description": "Canonical form; the uppercase SCIM `Operations` alias is also accepted.",
             "items": {
               "additionalProperties": true,
               "properties": {
@@ -1986,8 +1955,8 @@
   "info": {
     "description": "Generated from the Hub's live route table by hub/openapi.py. Optional surfaces are registered only when their setting is on (see each tag); a disabled surface answers 404. Every route can also answer 503 (load shed) and 504 (timeout); every body-carrying route 413. When HUB_IP_ALLOWLIST is set, sources outside it get 403 everywhere except /healthz, /readyz and /disclosure.",
     "license": {
-      "identifier": "MIT",
-      "name": "MIT"
+      "identifier": "AGPL-3.0-only",
+      "name": "GNU AGPLv3"
     },
     "summary": "Every HTTP route the CommonTrace Hub serves.",
     "title": "CommonTrace Hub",

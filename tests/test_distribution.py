@@ -72,3 +72,14 @@ def test_the_mcp_registry_entry_obeys_the_published_schema_limits():
 def test_the_mcp_server_the_plugin_registers_is_the_real_command():
     cfg = _json(PLUGIN, ".mcp.json")["mcpServers"]["commontrace"]
     assert cfg == {"command": "commontrace", "args": ["serve"]}
+
+
+def test_marketplace_metadata_uses_the_repository_license():
+    with open(os.path.join(os.path.dirname(ROOT), "LICENSE"), encoding="utf-8") as stream:
+        license_text = stream.read(4096)
+    assert "GNU AFFERO GENERAL PUBLIC LICENSE" in license_text
+    plugin = _json(PLUGIN, ".claude-plugin", "plugin.json")
+    vscode = _json(ROOT, "vscode", "package.json")
+    assert plugin["license"] == vscode["license"] == "AGPL-3.0-only"
+    with open(os.path.join(os.path.dirname(ROOT), "pyproject.toml"), encoding="utf-8") as stream:
+        assert 'license = "AGPL-3.0-only"' in stream.read()
