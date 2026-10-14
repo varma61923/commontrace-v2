@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from dataclasses import replace
 
 import httpx
 import pytest
@@ -168,11 +169,16 @@ async def test_linked_oidc_bearer_authenticates_rest_with_the_users_role_scopes(
         issuer="https://login.example.test/", audience="https://hub.example.test/mcp",
         jwks={"keys": []},
     )
-    monkeypatch.setattr(config, "identity_provider", lambda: provider)
+    config = replace(
+        config,
+        oidc_issuer=provider.issuer,
+        oidc_audience=provider.audience,
+        oidc_jwks='{"keys": []}',
+    )
 
     async def verify(_session, _token, _provider, *, jwks_cache=None):
         assert _token == "header.payload.signature"
-        assert _provider is provider
+        assert _provider == provider
         return AuthenticatedUser(id="user-1", org_id=org_id, role="viewer", email="reader@example.test")
 
     monkeypatch.setattr(auth, "verify_user_token", verify)
