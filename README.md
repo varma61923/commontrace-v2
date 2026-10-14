@@ -110,6 +110,8 @@ The multi-tenant [Hub](hub/README.md) adds organization isolation and governance
 
 ## Standard API and generated SDKs
 
+See the [marketplace and distribution guide](docs/distribution.md) for MCP clients, VS Code/Open VSX, JetBrains, GitHub Actions, PyPI and generated OpenAPI clients.
+
 ```bash
 python scripts/export_openapi.py --check
 python scripts/generate_sdks.py --languages typescript go rust java kotlin
@@ -153,4 +155,4 @@ agent-memory results are in the implementation status.
 
 The protocol is Capture → Structure → Extract → Validate → Store → Inject → Measure.
 Read the [protocol](protocol/PROTOCOL.md), [full reference](docs/REFERENCE.md),
-[architecture](docs/architecture.md), [changelog](CHANGELOG.md) and [MIT license](LICENSE).
+[architecture](docs/architecture.md), [changelog](CHANGELOG.md) and [AGPL-3.0-only license](LICENSE).

@@ -73,3 +73,13 @@ facts.sqlite3
 facts.sqlite3-wal
 facts.sqlite3-shm
 facts.sqlite3.migrating*
+
+# Marketplace build products
+/distribution/jetbrains/.gradle/
+/distribution/jetbrains/.intellijPlatform/
+/distribution/jetbrains/build/
+/distribution/vscode/*.vsix
+build/
+
+# GitHub Action functional smoke-test store
+.action-smoke/

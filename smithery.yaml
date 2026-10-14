@@ -1,0 +1,24 @@
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    additionalProperties: false
+    required: [storeRoot]
+    properties:
+      storeRoot:
+        type: string
+        pattern: '^/'
+        minLength: 1
+        description: Absolute persistent store path accessible to the local server.
+      approvalTools:
+        type: boolean
+        default: false
+        description: Expose human review approval tools to the assistant.
+  commandFunction: |-
+    (config) => {
+      if (typeof config.storeRoot !== 'string' || !config.storeRoot.startsWith('/')) {
+        throw new Error('storeRoot must be an absolute path');
+      }
+      return {command: 'commontrace', args: ['serve', '--dest', config.storeRoot,
+        ...(config.approvalTools === true ? [] : ['--no-approval'])]};
+    }
