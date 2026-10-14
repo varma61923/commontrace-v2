@@ -77,6 +77,13 @@ _RLS_BYPASS_SQL = text(
 _RLS_POLICIES_SQL = text(
     "SELECT count(*) FROM pg_policies WHERE schemaname = current_schema()"
 )
+_RLS_UNPROTECTED_SQL = text(
+    "SELECT DISTINCT p.tablename FROM pg_policies p "
+    "JOIN pg_namespace n ON n.nspname = p.schemaname "
+    "JOIN pg_class c ON c.relnamespace = n.oid AND c.relname = p.tablename "
+    "WHERE p.schemaname = current_schema() AND (NOT c.relrowsecurity OR "
+    "(NOT c.relforcerowsecurity AND pg_has_role(c.relowner, 'USAGE'))) ORDER BY p.tablename"
+)
 
 
 async def rls_status(session) -> dict:
@@ -84,11 +91,13 @@ async def rls_status(session) -> dict:
     role = (await session.execute(text("SELECT current_user"))).scalar_one()
     bypasses = bool((await session.execute(_RLS_BYPASS_SQL)).scalar_one())
     policies = int((await session.execute(_RLS_POLICIES_SQL)).scalar_one())
+    unprotected = list((await session.execute(_RLS_UNPROTECTED_SQL)).scalars())
     return {
         "role": role,
         "bypasses_rls": bypasses,
         "policy_count": policies,
-        "enforced": policies > 0 and not bypasses,
+        "unprotected_tables": unprotected,
+        "enforced": policies > 0 and not bypasses and not unprotected,
     }
 
 
@@ -102,8 +111,13 @@ async def check_row_level_security(
     try:
         async with session_factory() as session:
             status = await rls_status(session)
-    except Exception as exc:  # noqa: BLE001 - a diagnostic must never break startup
-        logger.warning("could not determine row-level security status: %r", exc)
+    except Exception as exc:  # noqa: BLE001 - optional diagnostics may degrade; required checks fail closed
+        if require:
+            raise RowLevelSecurityError(
+                "refusing to start: HUB_REQUIRE_RLS is set, but database row-level security "
+                "could not be verified. Check database connectivity, migrations and runtime-role permissions."
+            ) from None
+        logger.warning("could not determine row-level security status", extra={"error_type": type(exc).__name__})
         return None
 
     inert = bool(status["policy_count"]) and bool(status["bypasses_rls"])
@@ -116,12 +130,20 @@ async def check_row_level_security(
             "own org_id predicates, with no database-enforced backstop behind them. "
             "Point HUB_DATABASE_URL at a non-superuser role that owns nothing and "
             "has no BYPASSRLS (docker-compose.yml ships one: see "
-            "hub/postgres-init/10-runtime-role.sql), or set "
-            "HUB_ALLOW_RLS_BYPASS=true to acknowledge this is intentional."
+            "hub/postgres-init/10-runtime-role.sql). An intentional bypass requires "
+            "HUB_ALLOW_RLS_BYPASS=true and HUB_REQUIRE_RLS=false."
         )
-        if not allow_bypass:
-            raise RowLevelSecurityError(f"refusing to start: {message}")
+        if not allow_bypass or require:
+            requirement = "HUB_REQUIRE_RLS is set; " if require else ""
+            raise RowLevelSecurityError(f"refusing to start: {requirement}{message}")
         logger.warning("%s", message)
+    elif status["unprotected_tables"] and (not allow_bypass or require):
+        raise RowLevelSecurityError(
+            "refusing to start: row-level security policies are installed but disabled or bypassed by "
+            "table ownership on: " + ", ".join(status["unprotected_tables"]) + ". "
+            "Enable row-level security and FORCE it for owner roles, or acknowledge an intentional "
+            "bypass with HUB_ALLOW_RLS_BYPASS=true and HUB_REQUIRE_RLS=false."
+        )
     elif require and not status["enforced"]:
         raise RowLevelSecurityError(
             "refusing to start: HUB_REQUIRE_RLS is set, but row-level security is not "
@@ -129,6 +151,9 @@ async def check_row_level_security(
             "installed). Run `alembic -c hub/alembic.ini upgrade head` so the policies "
             "exist, and connect as a role that cannot bypass them."
         )
+    elif status["unprotected_tables"]:
+        logger.warning("row-level security is not enforced on policy-backed tables: %s",
+                       ", ".join(status["unprotected_tables"]))
     elif status["enforced"]:
         logger.info(
             "row-level security active: %d policies enforced for role %r",

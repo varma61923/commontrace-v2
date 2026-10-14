@@ -97,15 +97,18 @@ owner's credentials for migrations only.
   start**, naming both remedies. Set `HUB_ALLOW_RLS_BYPASS=true` to
   acknowledge a deployment that intends to serve as owner/superuser and
   accept that tenant isolation rests on `hub/crud.py`'s own `org_id`
-  predicates alone.
-- **`HUB_REQUIRE_RLS=true`** (opt-in) → additionally refuses unless the
+  predicates alone. This exception also requires `HUB_REQUIRE_RLS=false`.
+- **Policies exist but row security is disabled or an owner bypasses them** →
+  the Hub refuses startup under the same rules. Enable row security and use
+  `FORCE ROW LEVEL SECURITY` for tables accessed as an owner.
+- **`HUB_REQUIRE_RLS=true`** (enabled in shipped server manifests) → additionally refuses unless the
   policies are affirmatively installed *and* enforced, so a database nobody
   migrated, or one somebody dropped the policies from, is refused too.
-- **Undeterminable** (the database is unreachable at boot) → warns and
-  continues, always. "Cannot determine" is not "determined to be unsafe",
-  and a diagnostic that turns a transient blip into a crash-loop is worse
-  than the thing it diagnoses — `/readyz` already reports the process
-  unready in that case.
+- **Undeterminable** (connectivity or permissions prevent verification) →
+  refuses startup when `HUB_REQUIRE_RLS=true`. The operator must restore access
+  and verify the runtime role before the server serves customer data. With the
+  requirement explicitly disabled, the optional diagnostic warns and `/readyz`
+  reports an unavailable database as unready.
 
 One consequence worth knowing: with `HUB_RATE_LIMIT_BACKEND=postgres`, the
 `hub_rate_limit_buckets` table is created by the **owner** (the init script
