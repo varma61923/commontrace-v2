@@ -46,3 +46,14 @@ or distributing clients, including upstream-generated packages.
 The schema is generated from the running gateway's definitions. Run
 `python scripts/export_openapi.py --check` after API changes; CI rejects stale
 contracts. Registry publication is not performed by this generation command.
+
+Release packaging uses the full generated gateway TypeScript SDK and the project
+version through `--package-version`. Parameter interfaces carry API prefixes to
+avoid collisions between measurement and memory contracts. See the
+[next-generation guide](../docs/next-generation.md) for local installation,
+trusted npm publishing, and the complete feature acceptance matrix.
+
+Generation applies two bounded Kotlin compatibility repairs: enum schema forms
+unsupported by the upstream template are represented as strings, and its
+unreachable nullable-body branch is removed for OkHttp 5. Template drift fails
+the build; no SDK operations or transports are handwritten.

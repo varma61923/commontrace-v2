@@ -112,6 +112,8 @@ The multi-tenant [Hub](hub/README.md) adds organization isolation and governance
 
 See the [marketplace and distribution guide](docs/distribution.md) for MCP clients, VS Code/Open VSX, JetBrains, GitHub Actions, PyPI and generated OpenAPI clients.
 
+The [next-generation feature guide](docs/next-generation.md) covers configured providers, guided setup, conversation vector preparation, console history, generated SDK releases, and verified migration operations.
+
 The [enterprise deployment and maintenance guide](docs/enterprise-readiness.md) covers verified database security,
 renewable background-worker claims, crash recovery and measured long-session summary performance.
 
