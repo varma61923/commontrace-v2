@@ -150,6 +150,11 @@ def read(path: str) -> tuple[dict[str, Any], str]:
             content = fh.read()
     except (OSError, UnicodeDecodeError) as exc:
         raise FrontmatterError(f"cannot read {path}: {exc}") from exc
+    return parse_content(content, source=path)
+
+
+def parse_content(content: str, *, source: str = "document") -> tuple[dict[str, Any], str]:
+    """Parse already bounded, safely opened text with the file reader's semantics."""
     if not content.startswith("---"):
         return {}, content
     first = _DELIM_RE.search(content)
@@ -160,12 +165,12 @@ def read(path: str) -> tuple[dict[str, Any], str]:
     try:
         fm = _parse(fm_text)
     except yaml.YAMLError as exc:
-        raise FrontmatterError(f"{path}: malformed YAML frontmatter: {exc}") from exc
+        raise FrontmatterError(f"{source}: malformed YAML frontmatter: {exc}") from exc
     if fm is None:
         fm = {}
     if not isinstance(fm, dict):
         raise FrontmatterError(
-            f"{path}: frontmatter must be a YAML mapping, got {type(fm).__name__}"
+            f"{source}: frontmatter must be a YAML mapping, got {type(fm).__name__}"
         )
     body = content[second.end():].lstrip("\n")
     return fm, body

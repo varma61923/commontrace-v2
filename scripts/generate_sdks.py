@@ -11,6 +11,7 @@ import hashlib
 import http.client
 import json
 import os
+import re
 import subprocess
 import tempfile
 import urllib.error
@@ -22,7 +23,8 @@ VERSION = "7.26.0"
 SHA256 = "1760050094997b9cc790cc1350be095f15da8c08a996b184d3eadc4ccda5e35e"
 GENERATORS = {"typescript": "typescript-fetch", "go": "go", "rust": "rust", "java": "java", "kotlin": "kotlin"}
 PROPERTIES = {
-    "typescript": "npmName=@commontrace/sdk,npmVersion=0.1.0,supportsES6=true",
+    "typescript": "npmName=@commontrace/sdk,npmVersion=0.1.0,supportsES6=true,"
+    "prefixParameterInterfaces=true,licenseName=AGPL-3.0-only",
     "go": "packageName=commontrace,packageVersion=0.1.0,generateInterfaces=true",
     "rust": "packageName=commontrace-sdk,packageVersion=0.1.0,reqwestDefaultFeatures=rustls",
     "java": "groupId=io.commontrace,artifactId=memory-sdk,artifactVersion=0.1.0,"
@@ -103,7 +105,8 @@ def kotlin_compatible_spec(source: Path, target: Path) -> Path:
     return target
 
 
-def generate(command: list[str], spec: Path, language: str, target: Path) -> None:
+def generate(command: list[str], spec: Path, language: str, target: Path, *,
+             package_version: str | None = None) -> None:
     subprocess.run(
         [
             *command,
@@ -114,13 +117,37 @@ def generate(command: list[str], spec: Path, language: str, target: Path) -> Non
             GENERATORS[language],
             "-o",
             str(target),
+            "--git-user-id",
+            "varma61923",
+            "--git-repo-id",
+            "commontrace-v2",
             "--additional-properties",
-            PROPERTIES[language],
+            PROPERTIES[language] if package_version is None else re.sub(
+                r"(npmVersion|packageVersion|artifactVersion)=[^,]+",
+                lambda match: match.group(1) + "=" + package_version, PROPERTIES[language]),
             "--global-property",
             "apiDocs=false,modelDocs=false,apiTests=false,modelTests=false",
         ],
         check=True,
     )
+    if language == "kotlin":
+        normalize_kotlin_transport(target)
+
+
+def normalize_kotlin_transport(target: Path) -> None:
+    """Repair the pinned template's unreachable nullable OkHttp body branch.
+
+    OkHttp 5 guarantees a non-null Response.body. The upstream template retains
+    an Elvis fallback from OkHttp 4, which Kotlin diagnoses as always unreachable.
+    This bounded generation repair adds no SDK operations or handwritten client.
+    Fail on template drift rather than changing unknown generated transport code.
+    """
+    source = target / "src/main/kotlin/io/commontrace/infrastructure/ApiClient.kt"
+    text = source.read_text(encoding="utf-8")
+    expression = "val body = response.body ?: return null"
+    if text.count(expression) != 1:
+        raise ValueError("pinned Kotlin transport template changed; review generator compatibility")
+    source.write_text(text.replace(expression, "val body = response.body"), encoding="utf-8")
 
 
 def main() -> int:
@@ -131,7 +158,12 @@ def main() -> int:
     parser.add_argument("--validate-only", action="store_true")
     parser.add_argument("--api", choices=("memory", "gateway", "hub"), default="memory",
                         help="Generate the memory subset (default), all gateway routes, or the Hub REST API")
+    parser.add_argument("--package-version", help="release version for generated package manifests (SemVer)")
     args = parser.parse_args()
+    if args.package_version is not None and not re.fullmatch(
+            r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?",
+            args.package_version):
+        parser.error("--package-version must be a SemVer release or prerelease")
     jar = checked_jar(args.jar or ROOT / "build" / ("openapi-generator-cli-" + VERSION + ".jar"))
     spec = {"memory": ROOT / "sdk" / "openapi.json", "gateway": ROOT / "openapi" / "gateway.json",
             "hub": ROOT / "hub" / "openapi.json"}[args.api]
@@ -150,9 +182,9 @@ def main() -> int:
         if language == "kotlin":
             with tempfile.TemporaryDirectory(prefix="commontrace-kotlin-openapi-") as directory:
                 normalized = kotlin_compatible_spec(spec, Path(directory) / "openapi.json")
-                generate(command, normalized, language, target)
+                generate(command, normalized, language, target, package_version=args.package_version)
         else:
-            generate(command, spec, language, target)
+            generate(command, spec, language, target, package_version=args.package_version)
     return 0
 
 

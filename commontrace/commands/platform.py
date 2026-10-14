@@ -76,6 +76,64 @@ def migrate_run(args):
 
 
 # connect operations
+def providers_add_parser(subparsers):
+    parser = subparsers.add_parser("providers", help="List providers, inspect schemas and validate configuration.")
+    sub = parser.add_subparsers(dest="action", required=True)
+    listing = sub.add_parser("list", help="Discover supported provider families without loading models or credentials.")
+    listing.add_argument("--json", action="store_true")
+    listing.set_defaults(func=providers_run_list)
+    for name in ("schema", "validate"):
+        command = sub.add_parser(name, help="Inspect or validate a strict optional provider configuration.")
+        command.add_argument("kind", choices=("llm", "embedding", "vector"))
+        if name == "validate":
+            command.add_argument("file", help="JSON configuration file, or - for bounded stdin; secrets are redacted.")
+        command.set_defaults(func=providers_run_config)
+
+
+def providers_run_list(args):
+    import json
+
+    from commontrace import embeddings, providers
+
+    providers.register_local_backends()
+    result = {"llm": list(providers.LLMFactory.names()), "embedding": embeddings.known(),
+              "vector": list(providers.VECTORS.names()), "reranker": list(providers.reranker_names())}
+    if args.json:
+        print(json.dumps(result, indent=2))
+    else:
+        for kind, choices in result.items():
+            print(kind + ": " + (json.dumps(choices) if isinstance(choices, dict) else ", ".join(choices)))
+    return 0
+
+
+def providers_run_config(args):
+    import json
+    import sys
+
+    from commontrace.exceptions import CapabilityError
+    from commontrace.ingest import _open_regular
+
+    try:
+        from commontrace.provider_config import EmbedderConfig, LLMConfig, VectorStoreConfig
+    except ImportError:
+        raise CapabilityError("provider schemas require pip install 'commontrace[providers]'") from None
+    model = {"llm": LLMConfig, "embedding": EmbedderConfig, "vector": VectorStoreConfig}[args.kind]
+    if args.action == "schema":
+        result = model.model_json_schema()
+    else:
+        if args.file == "-":
+            raw = sys.stdin.buffer.read(65_537)
+        else:
+            with _open_regular(args.file, 65_536) as stream:
+                raw = stream.read(65_537)
+        if len(raw) > 65_536:
+            raise ValueError("provider configuration exceeds 64 KiB")
+        validated = model.model_validate_json(raw)
+        result = {"valid": True, "kind": args.kind, "configuration": validated.public_dict()}
+    print(json.dumps(result, indent=2))
+    return 0
+
+
 def connect_add_parser(subparsers):
     from commontrace.connectors import knowledge_streams
     from commontrace.connectors.knowledge import PROVIDERS
@@ -581,6 +639,7 @@ def jobs_run_purge(args, root) -> int:
 
 
 COMMANDS = {
+    "providers": providers_add_parser,
     "codegraph": codegraph_add_parser,
     "migrate": migrate_add_parser,
     "connect": connect_add_parser,

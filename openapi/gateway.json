@@ -821,6 +821,78 @@
         "additionalProperties": true,
         "type": "object"
       },
+      "MeasurementOutcomeRequest": {
+        "additionalProperties": true,
+        "properties": {
+          "agent_id": {
+            "description": "which agent or robot",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+            "type": "string"
+          },
+          "combine": {
+            "enum": [
+              "all",
+              "any"
+            ],
+            "type": "string"
+          },
+          "env": {
+            "description": "must equal the store's environment when it has one; simulation and reality are never pooled",
+            "type": "string"
+          },
+          "occasion_id": {
+            "description": "1-128 characters, no control characters or surrounding whitespace",
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "signals": {
+            "description": "evaluated three-valued",
+            "items": {
+              "$ref": "#/components/schemas/Signal"
+            },
+            "maxItems": 16,
+            "minItems": 1,
+            "type": "array"
+          },
+          "succeeded": {
+            "description": "give this or signals, not both",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "occasion_id"
+        ],
+        "type": "object"
+      },
+      "MeasurementOutcomeResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "note": {
+            "type": "string"
+          },
+          "occasion_id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "recorded": {
+            "type": "boolean"
+          },
+          "succeeded": {
+            "type": "boolean"
+          },
+          "undecided": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "occasion_id",
+          "recorded"
+        ],
+        "type": "object"
+      },
       "Message": {
         "additionalProperties": true,
         "properties": {
@@ -2411,6 +2483,200 @@
         "summary": "Per-agent activity.",
         "tags": [
           "Measurement"
+        ]
+      }
+    },
+    "/v1/benchmark-history": {
+      "get": {
+        "operationId": "benchmark_history",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RequestId"
+          },
+          {
+            "$ref": "#/components/parameters/ContainerTag"
+          },
+          {
+            "description": "latest reports",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 200,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "limit": {
+                      "type": "integer"
+                    },
+                    "reports": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "delta": {
+                            "additionalProperties": true,
+                            "properties": {
+                              "implicit_retrieval_permissive": {
+                                "maximum": 2,
+                                "minimum": -2,
+                                "nullable": true,
+                                "type": "number"
+                              },
+                              "implicit_retrieval_strict": {
+                                "maximum": 2,
+                                "minimum": -2,
+                                "nullable": true,
+                                "type": "number"
+                              },
+                              "lesson_quality": {
+                                "maximum": 2,
+                                "minimum": -2,
+                                "nullable": true,
+                                "type": "number"
+                              },
+                              "transfer_gap": {
+                                "maximum": 2,
+                                "minimum": -2,
+                                "nullable": true,
+                                "type": "number"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "file": {
+                            "type": "string"
+                          },
+                          "metrics": {
+                            "additionalProperties": true,
+                            "properties": {
+                              "implicit_retrieval_permissive": {
+                                "maximum": 1,
+                                "minimum": -1,
+                                "nullable": true,
+                                "type": "number"
+                              },
+                              "implicit_retrieval_strict": {
+                                "maximum": 1,
+                                "minimum": -1,
+                                "nullable": true,
+                                "type": "number"
+                              },
+                              "lesson_quality": {
+                                "maximum": 1,
+                                "minimum": -1,
+                                "nullable": true,
+                                "type": "number"
+                              },
+                              "transfer_gap": {
+                                "maximum": 1,
+                                "minimum": -1,
+                                "nullable": true,
+                                "type": "number"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "timestamp": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "file",
+                          "timestamp",
+                          "metrics",
+                          "delta"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "scan_truncated": {
+                      "type": "boolean"
+                    },
+                    "skipped": {
+                      "type": "integer"
+                    },
+                    "total": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "reports",
+                    "total",
+                    "limit",
+                    "skipped",
+                    "scan_truncated"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or wrong credential"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Refused by policy or scope"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal error; no details"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Saved operator benchmark scores and deltas (?limit=).",
+        "tags": [
+          "History"
         ]
       }
     },
@@ -8955,48 +9221,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "additionalProperties": true,
-                "properties": {
-                  "agent_id": {
-                    "description": "which agent or robot",
-                    "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
-                    "type": "string"
-                  },
-                  "combine": {
-                    "enum": [
-                      "all",
-                      "any"
-                    ],
-                    "type": "string"
-                  },
-                  "env": {
-                    "description": "must equal the store's environment when it has one; simulation and reality are never pooled",
-                    "type": "string"
-                  },
-                  "occasion_id": {
-                    "description": "1-128 characters, no control characters or surrounding whitespace",
-                    "maxLength": 128,
-                    "minLength": 1,
-                    "type": "string"
-                  },
-                  "signals": {
-                    "description": "evaluated three-valued",
-                    "items": {
-                      "$ref": "#/components/schemas/Signal"
-                    },
-                    "maxItems": 16,
-                    "minItems": 1,
-                    "type": "array"
-                  },
-                  "succeeded": {
-                    "description": "give this or signals, not both",
-                    "type": "boolean"
-                  }
-                },
-                "required": [
-                  "occasion_id"
-                ],
-                "type": "object"
+                "$ref": "#/components/schemas/MeasurementOutcomeRequest"
               }
             }
           },
@@ -9007,32 +9232,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "properties": {
-                    "note": {
-                      "type": "string"
-                    },
-                    "occasion_id": {
-                      "type": "string"
-                    },
-                    "reason": {
-                      "type": "string"
-                    },
-                    "recorded": {
-                      "type": "boolean"
-                    },
-                    "succeeded": {
-                      "type": "boolean"
-                    },
-                    "undecided": {
-                      "type": "boolean"
-                    }
-                  },
-                  "required": [
-                    "occasion_id",
-                    "recorded"
-                  ],
-                  "type": "object"
+                  "$ref": "#/components/schemas/MeasurementOutcomeResponse"
                 }
               }
             },
@@ -9725,6 +9925,295 @@
         ]
       }
     },
+    "/v1/trace": {
+      "get": {
+        "operationId": "trace_detail",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RequestId"
+          },
+          {
+            "$ref": "#/components/parameters/ContainerTag"
+          },
+          {
+            "description": "trace filename from the history page",
+            "in": "query",
+            "name": "file",
+            "required": true,
+            "schema": {
+              "maxLength": 250,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "agent_type": {
+                      "type": "string"
+                    },
+                    "body": {
+                      "maxLength": 20000,
+                      "type": "string"
+                    },
+                    "body_truncated": {
+                      "type": "boolean"
+                    },
+                    "date": {
+                      "type": "string"
+                    },
+                    "file": {
+                      "type": "string"
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "file",
+                    "body",
+                    "body_truncated"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or wrong credential"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Refused by policy or scope"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal error; no details"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "One redacted source trace (?file=).",
+        "tags": [
+          "History"
+        ]
+      }
+    },
+    "/v1/traces": {
+      "get": {
+        "operationId": "trace_history",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RequestId"
+          },
+          {
+            "$ref": "#/components/parameters/ContainerTag"
+          },
+          {
+            "description": "page size",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "page start",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 10000,
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "limit": {
+                      "type": "integer"
+                    },
+                    "offset": {
+                      "type": "integer"
+                    },
+                    "scan_truncated": {
+                      "type": "boolean"
+                    },
+                    "skipped": {
+                      "type": "integer"
+                    },
+                    "total": {
+                      "type": "integer"
+                    },
+                    "traces": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "agent_type": {
+                            "type": "string"
+                          },
+                          "date": {
+                            "type": "string"
+                          },
+                          "file": {
+                            "type": "string"
+                          },
+                          "id": {
+                            "type": "string"
+                          },
+                          "title": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "file",
+                          "id",
+                          "title",
+                          "date",
+                          "agent_type"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "traces",
+                    "total",
+                    "limit",
+                    "offset",
+                    "skipped",
+                    "scan_truncated"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or wrong credential"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Refused by policy or scope"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal error; no details"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Operator trace history (?limit=, ?offset=).",
+        "tags": [
+          "History"
+        ]
+      }
+    },
     "/v1/whoami": {
       "get": {
         "operationId": "whoami",
@@ -10116,6 +10605,9 @@
     },
     {
       "name": "Conversations"
+    },
+    {
+      "name": "History"
     },
     {
       "name": "Ledger"

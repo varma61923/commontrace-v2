@@ -23,7 +23,7 @@ MAX_OUTPUT_CHARS = 200_000
 # console can show their help and copyable command shape, but must not block the
 # gateway thread or replace the process serving the UI. Store setup/install are
 # safe because the runner pins their destination to the authenticated store.
-_TERMINAL_ONLY = frozenset({"daemon", "gateway", "serve", "watch", "evolve"})
+_TERMINAL_ONLY = frozenset({"daemon", "gateway", "serve", "watch", "evolve", "up", "setup", "providers"})
 
 _GROUPS: dict[str, tuple[str, ...]] = {
     "Capture": ("capture", "import", "trace", "ingest", "source"),
@@ -38,20 +38,31 @@ _GROUPS: dict[str, tuple[str, ...]] = {
     "Explore": (
         "agent", "conversation", "defense", "doctor", "dream", "export", "fleet",
         "function", "index", "jobs", "kb", "memory", "procedural", "query", "recall",
-        "redact", "session_ledger", "sql_query", "viz",
+        "redact", "session_ledger", "sql_query", "viz", "codegraph", "help",
     ),
-    "Operate": ("account", "commons", "release", "sync"),
-    "Setup": ("init", "install"),
+    "Govern": ("policy", "assurance", "compression", "allocate"),
+    "Operate": ("account", "commons", "release", "sync", "migrate", "connect", "providers", "market"),
+    "Setup": ("init", "install", "setup", "up", "integration"),
     "Runtime": tuple(sorted(_TERMINAL_ONLY)),
 }
 
 _DESCRIPTIONS = {
+    "help": "Find commands by topic, category and common-operation shortcuts.",
+    "setup": "Guide runtime initialization, document ingestion or competitor-data migration.",
+    "providers": "Discover LLM, embedding, vector and reranking providers and validate strict configurations.",
+    "up": "Initialize a runtime with local, team or server settings and native agent hooks.",
+    "migrate": "Import scoped competitor memories or migrate legacy configuration with a dry-run preview.",
+    "connect": "Synchronize knowledge sources into an explicit memory scope.",
+    "integration": "Configure adapters, connectors and marketplace clients.",
+    "codegraph": "Explore code dependencies and symbol relationships.",
+    "memory": "Version, validate, commit and restore a git-backed memory store.",
     "evolve": "Use scoped memory recipes, standing questions, hard rules and coding-agent onboarding.",
-    "query": "Search approved lessons for a task or question.",
-    "recall": "Fuse lessons, facts, graph relations, and conversations into one budgeted context.",
+    "query": "Search approved lessons using lexical and semantic retrieval for a task or question.",
+    "recall": "Fuse semantic and lexical lessons, facts, temporal graph relations and conversations into context.",
+    "index": "Build and refresh semantic embedding indexes for memory retrieval.",
     "fact": "Manage temporal, scoped atomic facts and their lifecycle.",
     "graph": "Inspect, render, and traverse the temporal knowledge graph.",
-    "ingest": "Ingest code, documents, logs, transcripts, and multimodal sources.",
+    "ingest": "Run ingestion of code, documents, logs, transcripts and multimodal sources.",
     "lesson": "Create, validate, edit, approve, reject, and inspect lessons.",
     "conversation": "Add, recall, summarize, profile, and forget conversation memory.",
     "experiment": "Design and analyze randomized memory holdout experiments.",
@@ -115,11 +126,33 @@ class UICommandError(ValueError):
         self.code = code
 
 
+class BoundedCapture(io.StringIO):
+    """Retain a bounded prefix while reporting successful writes to CLI producers."""
+
+    def __init__(self, limit: int = MAX_OUTPUT_CHARS):
+        super().__init__()
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit < 0:
+            raise ValueError("capture limit must be a nonnegative integer")
+        self.limit = limit
+        self.seen = 0
+
+    def write(self, text: str) -> int:
+        room = max(0, self.limit - self.tell())
+        super().write(text[:room])
+        self.seen += len(text)
+        return len(text)
+
+    @property
+    def truncated(self) -> bool:
+        return self.seen > self.limit
+
+
 # Default-deny unreviewed handlers while the operator has disabled approval.
 # Match the parsed function, so argparse option ordering/abbreviations cannot
 # disguise a write behind a read-only subcommand name. Help exits before a
 # function is selected and remains available for every non-lifecycle command.
 _READ_ONLY_HANDLERS = {
+    "help": frozenset({"run"}),
     "doctor": frozenset({"run"}),
     "query": frozenset({"run"}),
     "recall": frozenset({"run"}),
@@ -175,7 +208,8 @@ def catalog() -> list[dict[str, Any]]:
             group=_group_for(name),
             description=_DESCRIPTIONS.get(name, f"Run the CommonTrace {name} command."),
             runnable=name not in _TERMINAL_ONLY,
-            reason=(
+            reason=("Provider configuration is managed from an operator terminal." if name == "providers" else
+                    "Guided workflows require a terminal." if name == "setup" else
                 "This command owns the gateway/process lifecycle and is available from a terminal."
                 if name in _TERMINAL_ONLY else ""
             ),
@@ -213,7 +247,7 @@ def run(root: str, command: object, args: object = None, *, allow_approval: bool
         )
     argv = _validate_args(args)
     command_args = [*argv, "--dest", os.path.abspath(root)] if command in {"init", "install"} else argv
-    stdout, stderr = io.StringIO(), io.StringIO()
+    stdout, stderr = BoundedCapture(), BoundedCapture()
     started = time.perf_counter()
     with _COMMAND_LOCK:
         previous = os.environ.get("COMMONTRACE_ROOT")
@@ -249,6 +283,6 @@ def run(root: str, command: object, args: object = None, *, allow_approval: bool
         "ok": exit_code == 0,
         "stdout": stdout.getvalue()[:MAX_OUTPUT_CHARS],
         "stderr": stderr.getvalue()[:MAX_OUTPUT_CHARS],
-        "truncated": len(stdout.getvalue()) > MAX_OUTPUT_CHARS or len(stderr.getvalue()) > MAX_OUTPUT_CHARS,
+        "truncated": stdout.truncated or stderr.truncated,
         "elapsed_ms": elapsed_ms,
     }

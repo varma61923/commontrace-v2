@@ -420,6 +420,31 @@ OPERATIONS: dict[tuple[str, str], Operation] = {
                              "success_rate": nullable(number()), "seconds_since_seen": nullable(number())})),
         "window": string(), **EVENTS_WINDOW}, ("agents",))),
     # -- lesson review -------------------------------------------------------------------------------
+    ("GET", "/v1/traces"): Operation(
+        "trace_history", "History", None, obj({
+            "traces": array(obj({"file": string(), "id": string(), "title": string(),
+                                  "date": string(), "agent_type": string()},
+                                 ("file", "id", "title", "date", "agent_type"))),
+            "total": integer(), "limit": integer(), "offset": integer(), "skipped": integer(),
+            "scan_truncated": boolean()}, ("traces", "total", "limit", "offset", "skipped", "scan_truncated")),
+        query=(("limit", integer(minimum=1, maximum=200, default=50), False, "page size"),
+               ("offset", integer(minimum=0, maximum=10000, default=0), False, "page start")), errors=(400, 403)),
+    ("GET", "/v1/trace"): Operation(
+        "trace_detail", "History", None, obj({"file": string(), "id": string(), "title": string(),
+            "date": string(), "agent_type": string(), "body": string(maxLength=20000),
+            "body_truncated": boolean()}, ("file", "body", "body_truncated")),
+        query=(("file", string(maxLength=250), True, "trace filename from the history page"),), errors=(400, 403, 404)),
+    ("GET", "/v1/benchmark-history"): Operation(
+        "benchmark_history", "History", None, obj({
+            "reports": array(obj({"file": string(), "timestamp": string(),
+                "metrics": obj({key: nullable(number(minimum=-1, maximum=1)) for key in (
+                    "lesson_quality", "implicit_retrieval_strict", "implicit_retrieval_permissive", "transfer_gap")}),
+                "delta": obj({key: nullable(number(minimum=-2, maximum=2)) for key in (
+                    "lesson_quality", "implicit_retrieval_strict", "implicit_retrieval_permissive", "transfer_gap")})},
+                ("file", "timestamp", "metrics", "delta"))),
+            "total": integer(), "limit": integer(), "skipped": integer(), "scan_truncated": boolean()},
+            ("reports", "total", "limit", "skipped", "scan_truncated")),
+        query=(("limit", integer(minimum=1, maximum=200, default=100), False, "latest reports"),), errors=(400, 403)),
     ("GET", "/v1/lessons"): Operation(
         "lessons", "Lessons", None, obj({"lessons": array(ref("LessonSummary")), "approval_enabled": boolean(),
                                          "total": integer(), "limit": nullable(integer()), "offset": integer()},
@@ -520,6 +545,17 @@ EXTRA_PATHS: dict[str, dict] = {
 
 def memory_operation(operation: str) -> Operation:
     return Operation("memory_" + operation.replace("-", "_"), "Memory")
+
+
+# Inline model names derived from operationId can collide with the named memory
+# contracts in Swagger generators. Preserve distinct measurement models.
+_measurement_outcome = OPERATIONS[("POST", "/v1/outcome")]
+SCHEMAS["MeasurementOutcomeRequest"] = _measurement_outcome.request
+SCHEMAS["MeasurementOutcomeResponse"] = _measurement_outcome.response
+OPERATIONS[("POST", "/v1/outcome")] = Operation(
+    _measurement_outcome.operation_id, _measurement_outcome.tag,
+    ref("MeasurementOutcomeRequest"), ref("MeasurementOutcomeResponse"),
+    errors=_measurement_outcome.errors, description=_measurement_outcome.description)
 
 
 def components() -> dict:

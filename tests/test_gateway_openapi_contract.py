@@ -136,13 +136,14 @@ def test_live_responses_match_the_declared_schemas(tmp_path):
     call("GET", "/v1/palace")
     for target in ("/v1/health", "/v1/health/live", "/v1/health/ready", "/v1/capabilities", "/v1/whoami",
                    "/v1/metrics?format=json", "/v1/command-catalog", "/v1/status", "/v1/memories",
-                   "/v1/occasions?limit=5", "/v1/agents", "/v1/lessons?status=review&limit=10",
+                   "/v1/traces", "/v1/benchmark-history", "/v1/occasions?limit=5", "/v1/agents", "/v1/lessons?status=review&limit=10",
                    "/v1/lesson?slug=draft", "/v1/ledger/executive", "/v1/ledger/releases",
                    f"/v1/ledger/releases?to={second.release_id}",
                    "/v1/ledger/design?baseline=0.5&effect=0.1&rate=0.2&daily=100",
                    "/v1/ledger/forensics?occasion=o1", "/v1/ledger/digest?days=7", "/v1/market/listings",
                    "/v1/openapi.json", "/v1/docs"):
         call("GET", target)
+    call("GET", "/v1/trace?file=absent.md", status=404)
     call("GET", "/v1/metrics")
     call("GET", "/v1/ledger/releases?to=nope", status=404)
     call("POST", "/v1/resolve_tag", {"container_tag": "team-a"})

@@ -27,13 +27,20 @@ _COMMANDS = (
     "block", "fact", "graph", "ingest", "agent", "watch", "daemon", "viz", "conversation", "memory", "recall", "jobs",
     "ontology", "community", "observation", "saga", "page", "session_ledger",
     "procedural", "sql_query", "defense", "evolve", "policy", "assurance", "compression", "up", "connect", "migrate",
-    "codegraph", "market", "allocate", "integration",
+    "codegraph", "market", "allocate", "integration", "providers", "help", "setup",
 )
 
+ALIASES = {
+    "add": ("fact", "add"),
+    "search": ("recall",),
+    "check": ("doctor",),
+    "summarize": ("conversation", "summarize"),
+}
 
 
 
 _COMMAND_GROUPS = {
+    'providers': 'platform',
     'codegraph': 'platform',
     'migrate': 'platform',
     'connect': 'platform',
@@ -161,7 +168,7 @@ def build_parser(only: str | None = None) -> argparse.ArgumentParser:
         help="Keyless mode (first argument only): --offline, plus the in-process local model for "
              "LLM-assisted steps unless COMMONTRACE_LLM_PROVIDER is already set.",
     )
-    subparsers = parser.add_subparsers(dest="command", required=_MISSING_DEPENDENCY is None)
+    subparsers = parser.add_subparsers(dest="command", metavar="COMMAND", required=_MISSING_DEPENDENCY is None)
     clean_only = only.replace("-", "_") if isinstance(only, str) else None
     if clean_only in _COMMANDS:
         _command_module(clean_only).add_parser(subparsers)
@@ -169,10 +176,17 @@ def build_parser(only: str | None = None) -> argparse.ArgumentParser:
     lazy: dict = _LazyCommandMap(subparsers)
     subparsers._name_parser_map = lazy  # type: ignore[assignment]
     subparsers.choices = lazy  # type: ignore[assignment]
-    for name in _COMMANDS:
+    from commontrace.ui_commands import catalog
+
+    groups: dict[str, list[str]] = {}
+    for item in catalog():
+        groups.setdefault(item["group"], []).append(item["name"])
+    for group, names in groups.items():
         subparsers._choices_actions.append(
-            subparsers._ChoicesPseudoAction(name, (), f"{name} command")
+            subparsers._ChoicesPseudoAction(group, (), ", ".join(sorted(names)))
         )
+    parser.epilog = ("Shortcuts: add → fact add; search → recall; check → doctor; summarize → conversation summarize. "
+                     "Use commontrace help TOPIC to discover commands, or commontrace setup for a guided workflow.")
     return parser
 
 
@@ -225,6 +239,8 @@ def main(argv: list[str] | None = None) -> int:
             offline.enable()
         argv = argv[1:]
     offline.apply_environment()
+    if argv and argv[0] in ALIASES:
+        argv = [*ALIASES[argv[0]], *argv[1:]]
     answered = _from_worker(argv)
     if answered is not None:
         return answered
@@ -248,7 +264,7 @@ def main(argv: list[str] | None = None) -> int:
         if argv[0] not in commands and clean_cmd in commands:
             argv = [clean_cmd, *argv[1:]]
     if not argv[0].startswith("-") and argv[0] not in commands:
-        close = difflib.get_close_matches(argv[0], commands, n=3, cutoff=0.6)
+        close = difflib.get_close_matches(argv[0], [*commands, *ALIASES], n=3, cutoff=0.6)
         hint = f" Did you mean: {', '.join(close)}?" if close else ""
         print(
             f"commontrace: unknown command {argv[0]!r}.{hint} "

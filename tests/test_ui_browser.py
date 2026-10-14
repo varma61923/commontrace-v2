@@ -477,3 +477,36 @@ def test_learning_ledger_value_design_forensics_and_digest(page: Page, console: 
     assert download.value.suggested_filename.startswith("commontrace-digest-")
     assert not page.evaluate("() => document.documentElement.scrollWidth > innerWidth")
     assert not errors
+
+
+@pytest.mark.parametrize("width", [390, 1440])
+def test_lesson_trace_and_benchmark_history_are_real_redacted_and_accessible(page: Page, console: Console, width: int) -> None:
+    import json
+    from pathlib import Path
+
+    from commontrace import trace_io
+
+    page.set_viewport_size({"width": width, "height": 1000})
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    draft(console, "lesson_library_contract", MARKUP)
+    trace_io.write_new(console.root, title=MARKUP, context="Payment timeout", solution=SOURCE, tags=["payments"])
+    reports = Path(console.root) / "memory" / "benchmark_reports"
+    reports.mkdir(parents=True)
+    for index, value in enumerate((.5, .75)):
+        (reports / f"2026-10-14_00000{index}.json").write_text(json.dumps({"lesson_quality": {"value": value}}))
+    connect(page, console)
+    navigate(page, "Lesson library")
+    pw.expect(page.get_by_text(MARKUP, exact=True)).to_be_visible()
+    navigate(page, "Trace history")
+    page.get_by_role("link", name=MARKUP, exact=True).click()
+    pw.expect(page.get_by_role("heading", name="Source trace", exact=True)).to_be_visible()
+    pw.expect(page.locator("main pre")).to_contain_text(SOURCE)
+    assert page.locator("main img").count() == 0
+    navigate(page, "Benchmark history")
+    pw.expect(page.get_by_role("img", name="Lesson quality across saved reports", exact=True)).to_be_visible()
+    pw.expect(page.get_by_role("region", name="Saved benchmark scores")).to_contain_text("75.0% (+25.0 pp)")
+    pw.expect(page.get_by_role("region", name="Saved benchmark scores")).to_contain_text("Unavailable")
+    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+    assert page.evaluate("window.auditExecuted") is None
+    assert errors == []

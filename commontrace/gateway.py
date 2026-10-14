@@ -525,6 +525,10 @@ class Gateway:
         self._route("GET", "/v1/memories", self._memories, summary="Each memory's measured verdict.")
         self._route("GET", "/v1/occasions", self._occasions, summary="Recent recalls and outcomes (?limit=).")
         self._route("GET", "/v1/agents", self._agents, summary="Per-agent activity.")
+        self._route("GET", "/v1/traces", self._traces, summary="Operator trace history (?limit=, ?offset=).")
+        self._route("GET", "/v1/trace", self._trace_detail, summary="One redacted source trace (?file=).")
+        self._route("GET", "/v1/benchmark-history", self._benchmark_history,
+                    summary="Saved operator benchmark scores and deltas (?limit=).")
         self._route("GET", "/v1/lessons", self._lessons, summary="Lessons and what is waiting for review (?status=).")
         self._route("GET", "/v1/lesson", self._lesson, summary="One lesson: text, gates, history (?slug=).")
         self._route("POST", "/v1/lesson/edit", self._lesson_edit, request={
@@ -1824,6 +1828,36 @@ class Gateway:
                                        actor="console")
         except marketplace.MarketError as exc:
             raise ApiError(422, "market_refused", str(exc)) from None
+
+    def _history_access(self):
+        if self._request_scope():
+            raise ApiError(403, "container_scope", "history requires an operator's dedicated store")
+
+    @staticmethod
+    def _history_integer(query, name, default, lower, upper):
+        try:
+            value = int((query.get(name) or [default])[0])
+        except (TypeError, ValueError):
+            raise _bad(f"{name} must be an integer") from None
+        if not lower <= value <= upper:
+            raise _bad(f"{name} must be between {lower} and {upper}")
+        return value
+
+    def _traces(self, _body, query):
+        self._history_access()
+        limit = self._history_integer(query, "limit", 50, 1, 200)
+        offset = self._history_integer(query, "offset", 0, 0, 10000)
+        return self._workbench(lambda w: w.trace_page(self.root, limit=limit, offset=offset))
+
+    def _trace_detail(self, _body, query):
+        self._history_access()
+        name = (query.get("file") or [""])[0]
+        return self._workbench(lambda w: w.trace_detail(self.root, name))
+
+    def _benchmark_history(self, _body, query):
+        self._history_access()
+        limit = self._history_integer(query, "limit", 100, 1, 200)
+        return self._workbench(lambda w: w.benchmark_history(self.root, limit=limit))
 
     def _lessons(self, _body, query) -> dict:
         status = (query.get("status") or [None])[0]
