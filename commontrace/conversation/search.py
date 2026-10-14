@@ -895,7 +895,11 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
                     if u in unit_turn and (allowed is None or unit_turn[u] in allowed)))
                 ranked_turns.append((turns, weight))
             for turn, score in _rrf(ranked_turns).items():
-                by_turn[turn] = max(by_turn.get(turn, 0.0), score)
+                # Independent facets are separate evidence for a candidate.
+                # Summing their reciprocal-rank contributions rewards a bridge
+                # turn that supports several parts of an open-domain question;
+                # retaining only the maximum erased that cross-facet signal.
+                by_turn[turn] = by_turn.get(turn, 0.0) + score
         return by_turn
 
     scores = turn_scores(queries)

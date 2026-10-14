@@ -61,6 +61,24 @@ def test_choice_questions_split_but_compound_subjects_do_not():
     assert not any(s.endswith("flea medication?") and "visit" not in s for s in subs)
 
 
+def test_independent_open_domain_facets_fuse_relevant_bridge_turns(tmp_path, monkeypatch):
+    with Store(str(tmp_path), "fusion") as store:
+        store.add("first", [{"role": "user", "text": "Aurora Institute is a research organization."}])
+        store.add("bridge", [{"role": "user", "text": "Aurora Institute received the Helios grant."}])
+        units = store.units()
+        by_turn = {turn: unit for unit, turn, _text, _digest in units}
+        facets = {
+            "facet one": [(by_turn[1], 0.0), (by_turn[2], 0.0)],
+            "facet two": [(by_turn[2], 0.0)],
+        }
+        monkeypatch.setattr(search, "subqueries", lambda _question: ["facet one"])
+        monkeypatch.setattr(store, "lexical", lambda query, _limit, allowed=None: facets[query])
+        result = search._recall(
+            store, "Tell me about Aurora Institute", options=Options(**LEX), extra_queries=["facet two"]
+        )
+        assert result.ranked[0] == 2
+
+
 def test_recency_pool_is_part_of_the_recall_cache_key(tmp_path):
     with Store(str(tmp_path), "s") as store:
         store.add("a", [{"role": "user", "text": "My bike is red."}], session_at="2024-01-01")

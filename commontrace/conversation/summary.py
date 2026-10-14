@@ -93,28 +93,67 @@ Summary:"""
 
 
 def written(turns: Iterable[Turn], complete=None) -> str:
+    """Summarize every turn through a bounded, chronological refine pass.
+
+    Each provider request receives at most ``MAX_TRANSCRIPT_CHARS`` of source.
+    The running summary carries facts forward when a session spans multiple
+    requests, so later updates are not silently omitted from the saved summary.
+    """
     from commontrace import llm
 
     complete = complete or llm.complete
     turns = iter(turns)
     first = next(turns, None)
     when = first.at.date().isoformat() if first and first.at else "unknown date"
-    # Preserve the exact prompt prefix without materializing the rest of a long
-    # session or annotating messages that cannot enter the model context.
-    fragments, remaining = [], MAX_TRANSCRIPT_CHARS
-    for turn in chain((first,), turns) if first is not None else ():
-        line = ("\n" if fragments else "") + f"{turn.speaker}: {turn.annotated()}"
-        fragments.append(line[:remaining])
-        remaining -= len(fragments[-1])
-        if not remaining:
-            break
-    transcript = "".join(fragments)
-    text, _usage = complete(PROMPT.format(when=when, transcript=transcript))
-    return " ".join(text.split())[:MAX_CHARS * 2]
+    return _model_summary(chain((first,), turns) if first is not None else (), complete, when=when)
+
+
+def _model_summary(turns: Iterable[Turn], complete, *, when: str = "unknown date",
+                   previous: str = "") -> str:
+    """Fold an iterable of source turns with fixed-size prompts and bounded memory."""
+    summary = previous
+    fragments: list[str] = []
+    size = 0
+
+    def flush() -> None:
+        nonlocal summary, fragments, size
+        if not fragments:
+            return
+        transcript = "".join(fragments)
+        prompt = (ROLLING_PROMPT.format(summary=summary, transcript=transcript) if summary else
+                  PROMPT.format(when=when, transcript=transcript))
+        text, _usage = complete(prompt)
+        cleaned = " ".join(text.split())[:MAX_CHARS * 2]
+        if cleaned:
+            summary = cleaned
+        fragments, size = [], 0
+
+    for turn in turns:
+        line = f"{turn.speaker}: {turn.annotated()}"
+        # Split an oversized individual message too. Never let a single user
+        # payload exceed the context bound or prevent later turns from being seen.
+        offset = 0
+        while offset < len(line):
+            separator = "\n" if size else ""
+            room = MAX_TRANSCRIPT_CHARS - size - len(separator)
+            if room <= 0:
+                flush()
+                continue
+            if size and len(line) - offset > room:
+                flush()
+                continue
+            fragment = line[offset:offset + room]
+            fragments.append(separator + fragment)
+            size += len(separator) + len(fragment)
+            offset += len(fragment)
+            if size == MAX_TRANSCRIPT_CHARS:
+                flush()
+    flush()
+    return summary
 
 
 def _model_turns(store: Store, session: str):
-    """Read only the ordered source pages the bounded model transcript needs."""
+    """Stream ordered source pages without materializing the whole session."""
     after = -1
     while True:
         page = store.session_turns(session, after_idx=after, limit=MODEL_PAGE)
@@ -283,17 +322,6 @@ def _fold_extractive(state: dict, turns: Iterable[Turn], sentences: int, limit: 
     return " ".join(out)
 
 
-def _transcript(turns: Iterable[Turn]) -> str:
-    fragments, remaining = [], MAX_TRANSCRIPT_CHARS
-    for turn in turns:
-        line = ("\n" if fragments else "") + f"{turn.speaker}: {turn.annotated()}"
-        fragments.append(line[:remaining])
-        remaining -= len(fragments[-1])
-        if not remaining:
-            break
-    return "".join(fragments)
-
-
 def rolling(store: Store, session: str, *, method: str = "extractive", complete=None, force: bool = False,
             verify: str = "full", sentences: int = SENTENCES, limit: int = MAX_CHARS) -> dict:
     """Bring one session's rolling summary up to date, reading only turns it has not seen.
@@ -341,29 +369,36 @@ def _rolling_once(store: Store, session: str, method: str, complete, force: bool
                      "turns": 0, "chain": "", "tail": ""}
         else:
             previous_text = str(state.get("text") or "")
-        new = list(_pages(store, session, after_idx=int(state["through_idx"])))
-        if not new and not reason:
+        new_iter = iter(_pages(store, session, after_idx=int(state["through_idx"])))
+        first = next(new_iter, None)
+        if first is None and not reason:
             return {"space": store.space, "session": session, "method": method, "mode": "unchanged",
                     "reason": "", "new_turns": 0, "turns": int(state["turns"]),
                     "through_idx": int(state["through_idx"]), "text": previous_text}
         chain_hash = str(state.get("chain") or "")
-        for turn in new:
-            chain_hash = _chain(chain_hash, turn)
+        new_count = 0
+        last = None
+
+        def tracked_turns():
+            nonlocal chain_hash, new_count, last
+            for turn in chain((first,), new_iter) if first is not None else ():
+                chain_hash = _chain(chain_hash, turn)
+                new_count += 1
+                last = turn
+                yield turn
+
+        turns = tracked_turns()
         if method == "model":
             from commontrace import llm
 
             complete_fn = complete or llm.complete
-            if previous_text:
-                text, _usage = complete_fn(ROLLING_PROMPT.format(summary=previous_text,
-                                                                 transcript=_transcript(new)))
-                text = " ".join(text.split())[:MAX_CHARS * 2]
-            else:
-                text = written(new, complete_fn)
+            when = first.at.date().isoformat() if first and first.at else "unknown date"
+            text = _model_summary(turns, complete_fn, when=when, previous=previous_text)
         else:
-            text = _fold_extractive(state, new, sentences, limit)
-    if new:
-        state.update(through_idx=new[-1].idx, through_turn=new[-1].id, tail=new[-1].evidence_hash())
-    state.update(turns=int(state["turns"]) + len(new), chain=chain_hash, text=text, method=method,
+            text = _fold_extractive(state, turns, sentences, limit)
+    if last is not None:
+        state.update(through_idx=last.idx, through_turn=last.id, tail=last.evidence_hash())
+    state.update(turns=int(state["turns"]) + new_count, chain=chain_hash, text=text, method=method,
                  updated_at=dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"))
     with store._lock, write_txn(store.db):
         if store.unit_stamp() != revision:
@@ -373,7 +408,7 @@ def _rolling_once(store: Store, session: str, method: str, complete, force: bool
         if text:
             store.set_summary(session, text, "rolling-" + method, expected_revision=revision)
     return {"space": store.space, "session": session, "method": method,
-            "mode": "full" if reason else "incremental", "reason": reason, "new_turns": len(new),
+            "mode": "full" if reason else "incremental", "reason": reason, "new_turns": new_count,
             "turns": state["turns"], "through_idx": state["through_idx"], "text": text}
 
 
