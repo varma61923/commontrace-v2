@@ -150,3 +150,25 @@ temporal designs; they do not copy competitor source or establish universal pari
    evaluation access for Zep/Supermemory/Mem0 platform
    before asserting their internals or complete capability coverage. The current
    local checkouts support only the narrower conclusions recorded above.
+
+## Production architecture and ecosystem review (2026-10-14)
+
+Graphify 0.9.88 AST maps were refreshed for `graphiti`, `cognee`, `mem0`,
+`EverOS`, `hindsight`, `zep`, `letta-code`, `supermemory`, and `commontrace-v2`.
+Maps, filtered queries, and edges were kept outside the checkout. No hosted service,
+model provider, customer trace, or new competitor benchmark was used in this review.
+Existing source-grounded competitor comparisons above remain the parity record;
+static AST presence is evidence of a code surface, not a production capability.
+
+| Area | CommonTrace evidence | Competitive context | Gap closed here |
+| --- | --- | --- | --- |
+| Gateway and service recall | HTTP `/v1` gateway, authenticated MCP transports, bounded shared read pool | The cloned memory systems expose API, MCP, or both; their service auth and current hosted behavior differ by project. | Retain local MCP-first distribution while publishing full gateway and Hub OpenAPI client artifacts from the actual route contracts. |
+| Transport resilience | `commontrace/retry.py`, circuit breaker, strict in-flight store leases | Competitor ingestion clients include retry/bulk pipelines; blindly retrying an ambiguous write can duplicate an accepted event. | Retry a non-idempotent write after transport failure only when connection refusal or DNS proves it was not sent. |
+| Telemetry at service cardinality | `commontrace/telemetry.py`, Prometheus/OTel | Repository maps show tracing and operational metrics across multiple systems. Labels generated from request-controlled inputs can retain unbounded time series in a long-lived process. | Cap metric names, label dimensions and combined counter/histogram series; report dropped series and render outside the write lock. |
+| IDE and registry entry points | `distribution/vscode`, `distribution/jetbrains`, `distribution/action`, `smithery.yaml` | Competitor source includes multiple package and framework integrations; each registry still requires real publisher ownership and release credentials. | Add working, tested packages and immutable CI artifacts for VS Code/Open VSX, JetBrains and GitHub Actions, alongside native MCP fragments and Smithery. |
+| Tenant trust and approval | Trusted IDE workspace, explicit init confirmation, approval tools disabled by default | Local developer tooling must keep project-trust prompts separate from memory approval and remote credentials. | Keep local stdio scope explicit, avoid shell invocation and never place credentials in generated editor config. |
+
+This review does not establish competitive answer accuracy, broad integration
+coverage against hosted services, zero toolchain warnings, marketplace publication,
+or universal performance gains. The new unit, VSIX, plugin, CI Action, OpenAPI and
+SDK gates make the declared local integration contracts executable.

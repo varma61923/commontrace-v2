@@ -468,6 +468,7 @@ jobs:
             commontrace/conversation/coverage.py commontrace/conversation/context_selection.py \
             commontrace/conversation/unicode_index.py \
             commontrace/lesson_admission.py \
+            commontrace/retry.py commontrace/commands/integration_cmd.py \
             commontrace/fact_evidence.py commontrace/vector_snapshots.py \
             commontrace/sqlite_vector_snapshots.py commontrace/postgres_vector_snapshots.py \
             commontrace/evidence_context.py commontrace/explorer.py commontrace/vector_scoring.py \
@@ -846,12 +847,13 @@ jobs:
   generated-sdks:
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    name: OpenAPI generated SDK (${{ matrix.language }})
+    name: OpenAPI generated SDK (${{ matrix.api }}, ${{ matrix.language }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         language: [typescript, go, rust, java, kotlin]
+        api: [memory, gateway, hub]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
@@ -872,7 +874,8 @@ jobs:
       - name: Check and validate the standard contract, then generate with pinned upstream tooling
         run: |
           python scripts/export_openapi.py --check
-          python scripts/generate_sdks.py --languages '${{ matrix.language }}' --output "$RUNNER_TEMP/generated"
+          if [[ '${{ matrix.api }}' == 'hub' ]]; then python -m pip install -r hub/requirements.txt -c hub/requirements-lock.txt; python scripts/export_hub_openapi.py --check; fi
+          python scripts/generate_sdks.py --api '${{ matrix.api }}' --languages '${{ matrix.language }}' --output "$RUNNER_TEMP/generated"
       - name: Compile generated client and models
         working-directory: ${{ runner.temp }}/generated/${{ matrix.language }}
         env:
@@ -886,17 +889,17 @@ jobs:
             kotlin) bash gradlew --no-daemon compileKotlin ;;
           esac
       - name: Exercise generated TypeScript client against the live gateway
-        if: matrix.language == 'typescript'
+        if: matrix.language == 'typescript' && matrix.api == 'memory'
         run: python scripts/smoke_generated_sdk.py "$RUNNER_TEMP/generated/typescript"
       - name: Package generated source for review and distribution
         run: >-
           tar --exclude='./node_modules' --exclude='./target' --exclude='./build' --exclude='./.gradle'
-          -czf "$RUNNER_TEMP/commontrace-sdk-${{ matrix.language }}.tgz"
+          -czf "$RUNNER_TEMP/commontrace-sdk-${{ matrix.api }}-${{ matrix.language }}.tgz"
           -C "$RUNNER_TEMP/generated/${{ matrix.language }}" .
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: commontrace-sdk-${{ matrix.language }}-${{ github.sha }}
-          path: ${{ runner.temp }}/commontrace-sdk-${{ matrix.language }}.tgz
+          name: commontrace-sdk-${{ matrix.api }}-${{ matrix.language }}-${{ github.sha }}
+          path: ${{ runner.temp }}/commontrace-sdk-${{ matrix.api }}-${{ matrix.language }}.tgz
 
   coverage:
     name: Python coverage (80 percent minimum)
@@ -912,3 +915,59 @@ jobs:
         with:
           name: coverage-${{ github.sha }}
           path: coverage.xml
+
+  marketplace-vscode:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    name: VS Code and Open VSX package
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: distribution/vscode
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '22'
+      - run: npm test && npm run lint
+      - run: npx --yes @vscode/vsce@4.0.0 package --out "$RUNNER_TEMP/commontrace.vsix"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: commontrace-vsix-${{ github.sha }}
+          path: ${{ runner.temp }}/commontrace.vsix
+
+  marketplace-jetbrains:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    name: JetBrains Marketplace package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a
+        with:
+          gradle-version: '9.8.1'
+      - run: gradle --no-daemon test buildPlugin
+        working-directory: distribution/jetbrains
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: commontrace-jetbrains-${{ github.sha }}
+          path: distribution/jetbrains/build/distributions/*.zip
+
+  marketplace-action:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    name: GitHub Marketplace action
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - uses: ./
+        with:
+          store: '.action-smoke'
+          initialize: 'true'
