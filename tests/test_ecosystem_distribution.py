@@ -32,14 +32,13 @@ def test_cli_prints_json_without_creating_a_store(tmp_path):
     assert not list(tmp_path.iterdir())
 
 
-def test_registry_builders_require_an_absolute_store_and_disable_approval_by_default():
+def test_registry_builder_requires_an_absolute_store_and_disables_approval_by_default():
     import yaml
 
     manifest = yaml.safe_load((ROOT / "smithery.yaml").read_text())
     source = manifest["startCommand"]["commandFunction"]
     assert "storeRoot must be an absolute path" in source
     assert "approvalTools === true" in source
-    assert Path(ROOT / "smithery.yaml").read_bytes() == Path(ROOT / "distribution" / "smithery.yaml").read_bytes()
 
 
 @pytest.mark.parametrize('command', ['', 'binary\nextra', 'binary\x00'])

@@ -133,9 +133,6 @@ class CausalMemory:
     def recall(self, query: Any, *, occasion_id: str, **kwargs: Any) -> list[Any]:
         return self.recall_detailed(query, occasion_id=occasion_id, **kwargs).items
 
-    def _withdrawn(self) -> dict[str, dict]:
-        return self._watch.current()
-
     def recall_detailed(self, query: Any, *, occasion_id: str, record: bool = True, **kwargs: Any) -> Recall:
         """`recall`, plus which memories were withdrawn for measured harm."""
         if not isinstance(occasion_id, str) or not occasion_id.strip():

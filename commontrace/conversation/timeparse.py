@@ -189,10 +189,6 @@ class _ClauseTense:
         return self.cache[key]
 
 
-def _future_tense(text: str, start: int, end: int) -> bool:
-    return _ClauseTense(text).future(start, end)
-
-
 def ground(text: str, anchor: dt.date | dt.datetime | None) -> list[Grounding]:
     """Absolute dates for the relative time words in `text`, said on `anchor`."""
     if not text or anchor is None:

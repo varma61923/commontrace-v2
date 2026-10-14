@@ -27,12 +27,6 @@ Trigger:
 
 Strictly local: no API call at runtime, no telemetry, model cached under
 ~/.cache/huggingface/ (~420 MB) after first run.
-
-Hooks Dreamer v2.4 (NOT implemented here, documented for future use):
-    index.npz is intentionally exposed so a future Dreamer agent can detect
-    lesson fusion candidates by computing pairwise cosine similarity on the
-    `embeddings` matrix (sim > 0.85 = candidate fusion). The fields above are
-    stable contract for that downstream use.
 """
 from __future__ import annotations
 

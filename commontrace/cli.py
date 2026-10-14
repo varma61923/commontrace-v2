@@ -82,18 +82,6 @@ def _command_module(name):
     return importlib.import_module("commontrace.commands." + name + "_cmd")
 
 
-def _command_modules(only: str | None = None) -> list:
-    names = (only,) if only in _COMMANDS else _COMMANDS
-    seen = set()
-    modules = []
-    for name in names:
-        mod_name = name.replace("-", "_")
-        if mod_name not in seen:
-            seen.add(mod_name)
-            modules.append(_command_module(mod_name))
-    return modules
-
-
 class _LazyCommandMap(dict):
     def __init__(self, subparsers_action=None):
         super().__init__()

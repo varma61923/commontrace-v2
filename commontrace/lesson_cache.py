@@ -148,14 +148,6 @@ def fresh_eligible(
     )
 
 
-def _stat(path: str) -> tuple[int, int] | None:
-    try:
-        st = os.stat(path)
-    except OSError:
-        return None
-    return (st.st_mtime_ns, st.st_size)
-
-
 _SCAN_SCOPE: contextvars.ContextVar[dict | None] = contextvars.ContextVar("commontrace_scan_scope", default=None)
 _LISTING_ROOTS_MAX = 8
 _LISTING_FILES_MAX = 32768

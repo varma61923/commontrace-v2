@@ -698,7 +698,7 @@ def test_every_subcommand_module_registers_exactly_its_own_name():
     assert sorted(cli._COMMANDS) == sorted([*on_disk, *cli._COMMAND_GROUPS])
     for name in cli._COMMANDS:
         sub = argparse.ArgumentParser().add_subparsers()
-        (module,) = cli._command_modules(name)
+        module = cli._command_module(name)
         module.add_parser(sub)
         assert list(sub.choices) == [name]
 

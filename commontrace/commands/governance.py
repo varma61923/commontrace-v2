@@ -887,7 +887,7 @@ def fleet_add_parser(subparsers: argparse._SubParsersAction) -> None:
     mg.set_defaults(func=fleet_run_merge)
 
 
-def fleet__guard(fn):
+def _value_error_guard(fn):
     import sys
 
     def wrapped(args: argparse.Namespace) -> int:
@@ -900,7 +900,7 @@ def fleet__guard(fn):
     return wrapped
 
 
-@fleet__guard
+@_value_error_guard
 def fleet_run_adopt(args: argparse.Namespace) -> int:
     from commontrace import fleet
 
@@ -934,7 +934,7 @@ def fleet__print_report(report: fleet.CheckReport) -> None:
         print(f"  {report.duplicates} identical record(s) appear in more than one store and collapse to one")
 
 
-@fleet__guard
+@_value_error_guard
 def fleet_run_check(args: argparse.Namespace) -> int:
     import json
 
@@ -951,7 +951,7 @@ def fleet_run_check(args: argparse.Namespace) -> int:
     return 0 if report.mergeable else 1
 
 
-@fleet__guard
+@_value_error_guard
 def fleet_run_merge(args: argparse.Namespace) -> int:
     import json
     import sys
@@ -1044,20 +1044,7 @@ def function__kit(args: argparse.Namespace):
     return kit
 
 
-def function__guard(fn):
-    import sys
-
-    def wrapped(args: argparse.Namespace) -> int:
-        try:
-            return fn(args)
-        except ValueError as exc:
-            print(f"[commontrace] error: {exc}", file=sys.stderr)
-            return 2
-
-    return wrapped
-
-
-@function__guard
+@_value_error_guard
 def function_run_list(args: argparse.Namespace) -> int:
     from commontrace import functions
 
@@ -1067,7 +1054,7 @@ def function_run_list(args: argparse.Namespace) -> int:
     return 0
 
 
-@function__guard
+@_value_error_guard
 def function_run_show(args: argparse.Namespace) -> int:
     from commontrace import functions
 
@@ -1075,7 +1062,7 @@ def function_run_show(args: argparse.Namespace) -> int:
     return 0
 
 
-@function__guard
+@_value_error_guard
 def function_run_forecast(args: argparse.Namespace) -> int:
     from commontrace import functions
 
@@ -1094,7 +1081,7 @@ def function_run_forecast(args: argparse.Namespace) -> int:
     return 0
 
 
-@function__guard
+@_value_error_guard
 def function_run_demo(args: argparse.Namespace) -> int:
     from commontrace import functions, paths
 
@@ -1111,7 +1098,7 @@ def function_run_demo(args: argparse.Namespace) -> int:
     return 0
 
 
-@function__guard
+@_value_error_guard
 def function_run_check(args: argparse.Namespace) -> int:
     from commontrace import functions
 

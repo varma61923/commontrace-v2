@@ -8,8 +8,6 @@ from dataclasses import dataclass, field
 
 from commontrace import gateway, holdout_io, paths
 
-LOG_FILES = (holdout_io.holdout_log_path, holdout_io.outcomes_log_path)
-
 
 class FleetError(ValueError):
     """The stores cannot be pooled as asked."""

@@ -482,7 +482,6 @@ class HubSession:
     ):
         self._hub_url = hub_url
         self._api_key = api_key
-        self._timeout_seconds = timeout_seconds
         self._max_attempts = max_attempts
         self._probe = probe
         self._gate = gate if gate is not None else _RateLimitGate()

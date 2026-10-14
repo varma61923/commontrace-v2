@@ -8,10 +8,6 @@ from hub.db import session_scope
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_INTERVAL_SECONDS = 300
-
-DEFAULT_WEBHOOK_INTERVAL_SECONDS = 30
-
 
 async def _sweep_once(session_factory) -> None:
     async with session_scope(session_factory) as session:

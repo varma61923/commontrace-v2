@@ -145,10 +145,6 @@ SCHEMAS: dict[str, dict] = {
 }
 
 
-def _list_response(key: str, item: dict, **extra) -> dict:
-    return obj({key: array(item), **extra}, (key,))
-
-
 EVENTS_WINDOW = {"window_events": integer(), "truncated": boolean("older events were not scanned"),
                  "limit": integer(), "cached": boolean("served from the 5-60 s report memo")}
 
