@@ -82,6 +82,10 @@ def main():
     result["policy_violations"] = violations
     with open(args.output, "w", encoding="utf-8") as stream:
         json.dump(result, stream, indent=2)
+    print(f"modules={result.get('python_modules', '?')} unreachable={len(result['possible_unreachable'])} "
+          f"missing_endpoints={len(result['missing_endpoints'])}")
+    for violation in violations:
+        print("policy violation: " + violation)
     return bool(result["missing_endpoints"] or violations)
 
 
