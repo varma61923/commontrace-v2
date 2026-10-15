@@ -89,6 +89,26 @@ four mentions correctly typed with no model, and over nine in ten typed answers
 correct. The abstract slice of the test set dropped from 1.00 to 0.86: some abstract
 topics now receive a type.
 
+A second round used a fresh model-written dev set
+(`ontology_typing_gemma_dev2.json`, support-ticket and on-call style). Before the
+round it scored 0.774 (classifier) / 0.764 (pipeline), close to the test-set
+estimate above. The rules were generalised on it (compound error names, dotted
+identifiers, "the X class", lowercase code after "call to", conversational person
+cues, word-boundary and preposition fixes in context cues), then scored once on a
+new set written in a different style (meeting notes, design reviews, pull
+requests), `ontology_typing_gemma_test2.json`, which no rule was tuned on:
+
+| Fixture | Rows | Before the round: classifier / pipeline | After: classifier / pipeline | After: typed precision (pipeline) |
+|---|---|---|---|---|
+| `ontology_typing_gemma_dev2.json` (tuned on) | 106 | 0.774 / 0.764 | 0.896 / 0.906 | 0.968 |
+| `ontology_typing_gemma_test2.json` (scored once) | 107 | 0.748 / 0.729 | 0.785 / 0.776 | 0.938 |
+| test2 rows whose name is in no dev set | 39 | 0.590 / 0.590 | 0.641 / 0.641 | 0.917 |
+
+Only about a third of the dev gain carried over: offline typing of fresh text is
+close to four in five mentions, with over nine in ten typed answers correct. The
+generator reuses names across sets, so the unseen-name row is the stricter
+estimate; at 39 rows it is noisy.
+
 On the dev set, local embedders (bge-small via fastembed, arctic-m) did not improve
 accuracy over the offline evidence. They only stopped hurting at a margin of 0.08,
 which is the shipped default; below 0.05 they typed abstract topics. The embedding

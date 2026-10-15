@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (95% conversation-bootstrap interval +0.128 to +0.176), ahead in all ten
   conversations. Retrieval only, not answer accuracy. See
   [performance](docs/performance.md#head-to-head-retrieval-on-locomo-2026-10-15).
+- **Second typing round, scored on a fresh held-out set.** Compound error names,
+  dotted identifiers, stated code and file types, lowercase code after "call to",
+  conversational person cues, and word-boundary and preposition fixes in context
+  cues. On a new model-written set no rule was tuned on, pipeline accuracy rose
+  from 0.729 to 0.776 (typed precision 0.899 to 0.938). See
+  [ontology typing](docs/ontology-typing.md#measurements).
 - **Entity-anchored relation extraction.** Triggers link the nearest typed entities
   on both sides across a bounded gap, in active and passive voice, with
   negation/hedge guards. On a model-written relation test set never used for tuning,
