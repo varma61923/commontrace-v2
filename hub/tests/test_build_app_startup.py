@@ -24,6 +24,19 @@ async def _run_lifespan(app) -> list[dict]:
 
 
 class TestTheProductionAppBoots:
+    async def test_a_missing_api_key_pepper_is_warned_about(self, config, session_factory, monkeypatch, caplog):
+        from hub import auth
+
+        monkeypatch.setattr(auth, "_pepper_env", "")
+        with caplog.at_level("WARNING", logger="commontrace.hub"):
+            build_app(config, session_factory)
+        assert "HUB_API_KEY_PEPPER is not set" in caplog.text
+        caplog.clear()
+        monkeypatch.setattr(auth, "_pepper_env", "a-shared-pepper")
+        with caplog.at_level("WARNING", logger="commontrace.hub"):
+            build_app(config, session_factory)
+        assert "HUB_API_KEY_PEPPER" not in caplog.text
+
     async def test_build_app_returns_an_app_at_all(self, config, session_factory):
         app = build_app(config, session_factory)
         assert app is not None

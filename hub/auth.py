@@ -50,6 +50,11 @@ _pepper_env = env_secret("HUB_API_KEY_PEPPER")
 _PEPPER = _pepper_env.encode("utf-8") if _pepper_env else secrets.token_bytes(32)
 
 
+def pepper_configured() -> bool:
+    """Whether HMAC lookups use an operator-provided pepper rather than a per-process one."""
+    return bool(_pepper_env)
+
+
 def _key_hmac(raw_key: str) -> str:
     # CodeQL false positive (Alert #10): HMAC-SHA256 indexes 256-bit random API keys with
     # a secret pepper for constant-time lookup; legacy API-key hashing still uses Argon2id.

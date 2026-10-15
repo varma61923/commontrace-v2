@@ -1540,6 +1540,12 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
             "limits reset on restart and do not coordinate across replicas; "
             "set HUB_RATE_LIMIT_BACKEND=postgres for shared enforcement"
         )
+    if not auth.pepper_configured():
+        logger.warning(
+            "HUB_API_KEY_PEPPER is not set: this process uses a random pepper, so stored key "
+            "HMACs stop matching after a restart and differ between replicas, and every such "
+            "request falls back to an Argon2 scan; set one shared HUB_API_KEY_PEPPER"
+        )
     mcp = build_mcp_server(config, session_factory, rate_limiter)
     inner_app = mcp.streamable_http_app(
         streamable_http_path=config.streamable_http_path,
