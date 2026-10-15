@@ -145,6 +145,14 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p_l.add_argument("--dest", default=None)
     p_l.set_defaults(func=run_link)
 
+    p_sy = sub.add_parser("sync", help="Project new and changed facts into the graph (entities, mentions, "
+                                       "relations) and close what retired facts produced.")
+    p_sy.add_argument("--limit", type=int, default=2000, help="At most this many facts per pass.")
+    p_sy.add_argument("--llm", action="store_true", help="Extract relations with the configured LLM.")
+    p_sy.add_argument("--json", action="store_true")
+    p_sy.add_argument("--dest", default=None)
+    p_sy.set_defaults(func=run_sync)
+
     p_e = sub.add_parser("entities", help="Known entities, most mentioned first.")
     p_e.add_argument("--type", default=None)
     p_e.add_argument("--limit", type=int, default=50)
@@ -538,8 +546,11 @@ def run_extract(args: argparse.Namespace) -> int:
 
     text = sys.stdin.read() if args.text == "-" else args.text
     try:
-        found = entities.extract(text, onto=ontology.load(paths.resolve_root(args.dest)),
-                                 use_spacy=_spacy_flag(args.spacy))
+        from commontrace import ontology_classify
+
+        root = paths.resolve_root(args.dest)
+        found = entities.extract(text, onto=ontology.load(root), use_spacy=_spacy_flag(args.spacy),
+                                 exemplars=ontology_classify.Exemplars.from_graph(root))
     except RuntimeError as exc:
         print(f"[commontrace] {exc}", file=sys.stderr)
         return 2
@@ -548,6 +559,32 @@ def run_extract(args: argparse.Namespace) -> int:
         return 0
     for m in found:
         print(f"{m.key:40s} {m.name!r}  ({m.source})")
+    return 0
+
+
+def run_sync(args: argparse.Namespace) -> int:
+    from commontrace import graph_sync, llm
+
+    if args.limit < 1:
+        print("[commontrace] --limit must be at least 1", file=sys.stderr)
+        return 2
+    try:
+        complete = None
+        if args.llm:
+            llm.load_config()
+            complete = llm.complete
+        out = graph_sync.sync(paths.resolve_root(args.dest), limit=args.limit, llm=complete)
+    except (RuntimeError, ValueError) as exc:
+        print(f"[commontrace] {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(out, indent=2))
+    else:
+        print(f"[commontrace] projected {out['facts']} fact(s): {out['entities']} entity link(s) "
+              f"({out['new_entities']} new entities), {out['relations']} relation(s); "
+              f"{out['retired']} retired fact(s), {out['closed']} edge(s) closed.")
+        for error in out["errors"][:5]:
+            print(f"  ! {error}", file=sys.stderr)
     return 0
 
 

@@ -41,7 +41,7 @@ import urllib.request
 from dataclasses import dataclass, field
 
 from commontrace.configuration import getenv as _configuration_getenv
-from commontrace.exceptions import CapabilityError, ConfigurationError
+from commontrace.exceptions import CapabilityError, ConfigurationError, InfrastructureError
 
 SCOPE_ADMIN = "commontrace:admin"
 SCOPE_MEMORY = "commontrace:memory"
@@ -51,12 +51,23 @@ MAX_TOKEN_CHARS = 8192
 MAX_JWKS_BYTES = 256 * 1024
 JWKS_TTL_SECONDS = 600.0
 JWKS_MIN_REFRESH_SECONDS = 60.0
+JWKS_MAX_STALE_SECONDS = 24 * 3600.0  # keys served while the issuer is unreachable
+JWKS_RETRY_SECONDS = (1.0, 60.0)      # backoff between failed fetches: first, maximum
 DEFAULT_LEEWAY = 60
 _SEGMENT = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 class InvalidToken(Exception):
     """The bearer is not an acceptable access token. The message is safe to log, never to echo."""
+
+
+class KeysUnavailable(InfrastructureError):
+    """The issuer's signing keys cannot be fetched or read: a server-side outage (503),
+    not a bad token (401). `retry_after` says when the next fetch is attempted."""
+
+    def __init__(self, message: str, retry_after: float):
+        super().__init__(message)
+        self.retry_after = retry_after
 
 
 @dataclass(frozen=True)
@@ -176,6 +187,8 @@ class JWKSCache:
         self._fetch = fetch or self._http_fetch
         self._keys: list[dict] = []
         self._loaded_at = 0.0
+        self._failures = 0
+        self._next_attempt = 0.0
         self._lock = threading.Lock()
 
     def _http_fetch(self, url: str) -> bytes:
@@ -195,27 +208,49 @@ class JWKSCache:
             raise InvalidToken("JWKS document is too large")
         return raw
 
-    def _load(self) -> None:
+    def _read(self) -> list[dict]:
         if self._config.jwks_file:
             with open(self._config.jwks_file, "rb") as fh:
                 raw = fh.read(MAX_JWKS_BYTES + 1)
+            if len(raw) > MAX_JWKS_BYTES:
+                raise InvalidToken("JWKS document is too large")
         else:
             raw = self._fetch(self._config.jwks_url)
         document = json.loads(raw)
         keys = document.get("keys") if isinstance(document, dict) else None
         if not isinstance(keys, list):
             raise InvalidToken("JWKS document has no keys")
-        self._keys = [k for k in keys if isinstance(k, dict) and k.get("use", "sig") == "sig"]
-        self._loaded_at = time.monotonic()
+        return [k for k in keys if isinstance(k, dict) and k.get("use", "sig") == "sig"]
+
+    def _load(self, now: float) -> None:
+        """Refresh the keys. A failure keeps serving keys younger than
+        `JWKS_MAX_STALE_SECONDS`, and backs off so an unreachable issuer is not
+        fetched on every request (each fetch may wait out its timeout)."""
+        if now < self._next_attempt:
+            if self._keys and now - self._loaded_at <= JWKS_MAX_STALE_SECONDS:
+                return
+            raise KeysUnavailable("the issuer's signing keys are unavailable", self._next_attempt - now)
+        try:
+            keys = self._read()
+        except (OSError, ValueError, InvalidToken) as exc:  # URLError, timeouts and bad JSON included
+            self._failures += 1
+            first, maximum = JWKS_RETRY_SECONDS
+            delay = min(maximum, first * 2 ** (self._failures - 1))
+            self._next_attempt = now + delay
+            if self._keys and now - self._loaded_at <= JWKS_MAX_STALE_SECONDS:
+                return
+            raise KeysUnavailable(f"the issuer's signing keys are unavailable ({type(exc).__name__})",
+                                  delay) from None
+        self._keys, self._loaded_at, self._failures, self._next_attempt = keys, now, 0, 0.0
 
     def key_for(self, kid: str | None, alg: str) -> dict:
         with self._lock:
             now = time.monotonic()
             if not self._keys or now - self._loaded_at > JWKS_TTL_SECONDS:
-                self._load()
+                self._load(now)
             match = self._select(kid, alg)
             if match is None and kid and now - self._loaded_at > JWKS_MIN_REFRESH_SECONDS:
-                self._load()  # the issuer may have rotated keys since the last fetch
+                self._load(now)  # the issuer may have rotated keys since the last fetch
                 match = self._select(kid, alg)
         if match is None:
             raise InvalidToken("no signing key matches the token")

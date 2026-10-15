@@ -1,0 +1,1009 @@
+{
+ "schema_version": "1.0.0",
+ "source": "hand-authored synthetic fixture written before the v2 classifier; novel-name rows use invented names no gazetteer can contain",
+ "labels": "expected is the single best type; accept lists other defensible answers; null means no declared type fits",
+ "examples": [
+  {
+   "id": "ot-001",
+   "name": "Kafka",
+   "context": "All order events flow through Kafka before the billing workers consume them.",
+   "expected": "service",
+   "accept": [
+    "tool"
+   ],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-002",
+   "name": "Postgres",
+   "context": "The checkout flow writes every order to Postgres and reads it back on refresh.",
+   "expected": "service",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-003",
+   "name": "auth-gateway",
+   "context": "Requests time out when auth-gateway is restarted during deploys.",
+   "expected": "service",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-004",
+   "name": "Elasticsearch",
+   "context": "Search queries hit Elasticsearch, which runs on three nodes.",
+   "expected": "service",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-005",
+   "name": "S3",
+   "context": "Nightly backups are uploaded to S3.",
+   "expected": "service",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-006",
+   "name": "Stripe",
+   "context": "Payments are charged through Stripe's API.",
+   "expected": "service",
+   "accept": [
+    "organization"
+   ],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-007",
+   "name": "ledger-svc",
+   "context": "ledger-svc exposes a gRPC endpoint on port 9090.",
+   "expected": "service",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-008",
+   "name": "Memcached",
+   "context": "Hot keys are cached in Memcached for five minutes.",
+   "expected": "service",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-009",
+   "name": "Consul",
+   "context": "Service discovery relies on Consul.",
+   "expected": "service",
+   "accept": [
+    "tool"
+   ],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-010",
+   "name": "billing",
+   "context": "The billing service is down again.",
+   "expected": "service",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-011",
+   "name": "RabbitMQ",
+   "context": "Retries are queued in RabbitMQ with a dead-letter exchange.",
+   "expected": "service",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-012",
+   "name": "orbit-api",
+   "context": "orbit-api returns 502 when the queue is full.",
+   "expected": "service",
+   "accept": [],
+   "slice": "novel-name"
+  },
+  {
+   "id": "ot-013",
+   "name": "Halyard",
+   "context": "Every write goes to Halyard, our internal key-value store.",
+   "expected": "service",
+   "accept": [],
+   "slice": "novel-name"
+  },
+  {
+   "id": "ot-014",
+   "name": "ripgrep",
+   "context": "Use ripgrep to search the repository instead of grep.",
+   "expected": "tool",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-015",
+   "name": "pytest",
+   "context": "Run pytest with -n auto to parallelise the suite.",
+   "expected": "tool",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-016",
+   "name": "Terraform",
+   "context": "We provision the clusters with Terraform modules.",
+   "expected": "tool",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-017",
+   "name": "ruff",
+   "context": "ruff flags unused imports before every commit.",
+   "expected": "tool",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-018",
+   "name": "Webpack",
+   "context": "Webpack bundles the frontend assets.",
+   "expected": "tool",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-019",
+   "name": "numpy",
+   "context": "The scorer is vectorised with numpy.",
+   "expected": "tool",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-020",
+   "name": "kubectl",
+   "context": "Use kubectl rollout restart to bounce the pods.",
+   "expected": "tool",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-021",
+   "name": "Docker",
+   "context": "Build the image with Docker and push it to the registry.",
+   "expected": "tool",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-022",
+   "name": "eslint",
+   "context": "eslint is configured to forbid console.log.",
+   "expected": "tool",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-023",
+   "name": "flumectl",
+   "context": "Run flumectl sync to refresh the local mirror.",
+   "expected": "tool",
+   "accept": [],
+   "slice": "novel-name"
+  },
+  {
+   "id": "ot-024",
+   "name": "Pellucid",
+   "context": "Pellucid is a library for parsing PDFs.",
+   "expected": "tool",
+   "accept": [],
+   "slice": "novel-name"
+  },
+  {
+   "id": "ot-025",
+   "name": "Thistle",
+   "context": "Thistle is a framework for building agents.",
+   "expected": "tool",
+   "accept": [],
+   "slice": "novel-name"
+  },
+  {
+   "id": "ot-026",
+   "name": "KeyError",
+   "context": "The parser raised a KeyError when the header was missing.",
+   "expected": "error",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-027",
+   "name": "ECONNRESET",
+   "context": "Uploads fail intermittently with ECONNRESET from the proxy.",
+   "expected": "error",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-028",
+   "name": "NullPointerException",
+   "context": "A NullPointerException crashes the importer on empty rows.",
+   "expected": "error",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-029",
+   "name": "OOMKilled",
+   "context": "The worker pod was OOMKilled after the batch size doubled.",
+   "expected": "error",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-030",
+   "name": "HTTP 503",
+   "context": "Clients see HTTP 503 during the failover window.",
+   "expected": "error",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-031",
+   "name": "segfault",
+   "context": "The native extension hits a segfault on ARM.",
+   "expected": "error",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-032",
+   "name": "ModuleNotFoundError",
+   "context": "CI fails with ModuleNotFoundError for yaml.",
+   "expected": "error",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-033",
+   "name": "E1101",
+   "context": "pylint reports E1101 on the generated client.",
+   "expected": "error",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-034",
+   "name": "TypeError",
+   "context": "Passing None here throws a TypeError.",
+   "expected": "error",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-035",
+   "name": "GlimmerError",
+   "context": "The loader throws GlimmerError on malformed input.",
+   "expected": "error",
+   "accept": [],
+   "slice": "novel-name"
+  },
+  {
+   "id": "ot-036",
+   "name": "deadlock",
+   "context": "Two migrations ran concurrently and caused a deadlock.",
+   "expected": "error",
+   "accept": [
+    "event"
+   ],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-037",
+   "name": "config/settings.yaml",
+   "context": "Set the timeout in config/settings.yaml.",
+   "expected": "file",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-038",
+   "name": "Dockerfile",
+   "context": "The Dockerfile pins python:3.12-slim.",
+   "expected": "file",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-039",
+   "name": "README.md",
+   "context": "Document the new flag in README.md.",
+   "expected": "file",
+   "accept": [
+    "document"
+   ],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-040",
+   "name": "src/app/main.py",
+   "context": "The entry point lives in src/app/main.py.",
+   "expected": "file",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-041",
+   "name": "package-lock.json",
+   "context": "Never edit package-lock.json by hand.",
+   "expected": "file",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-042",
+   "name": ".env",
+   "context": "Secrets are loaded from .env during local development.",
+   "expected": "file",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-043",
+   "name": "Makefile",
+   "context": "The Makefile has a target for linting.",
+   "expected": "file",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-044",
+   "name": "migrations/0042_add_index.sql",
+   "context": "migrations/0042_add_index.sql adds the missing index.",
+   "expected": "file",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-045",
+   "name": "parse_header",
+   "context": "parse_header returns None when the line is empty.",
+   "expected": "symbol",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-046",
+   "name": "UserRepository.find_by_email",
+   "context": "UserRepository.find_by_email ignores case.",
+   "expected": "symbol",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-047",
+   "name": "handleSubmit",
+   "context": "handleSubmit debounces clicks for 300 ms.",
+   "expected": "symbol",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-048",
+   "name": "MAX_RETRIES",
+   "context": "Raise MAX_RETRIES to 5 for flaky networks.",
+   "expected": "symbol",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-049",
+   "name": "useEffect",
+   "context": "Move the fetch into useEffect so it runs after render.",
+   "expected": "symbol",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-050",
+   "name": "__init__",
+   "context": "The __init__ method validates the arguments.",
+   "expected": "symbol",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-051",
+   "name": "get_user()",
+   "context": "get_user() hits the cache first.",
+   "expected": "symbol",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-052",
+   "name": "frobnicate_rows",
+   "context": "frobnicate_rows skips rows without an id.",
+   "expected": "symbol",
+   "accept": [],
+   "slice": "novel-name"
+  },
+  {
+   "id": "ot-053",
+   "name": "Priya Raman",
+   "context": "We hired Priya Raman last month to lead the data team.",
+   "expected": "person",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-054",
+   "name": "Marcus",
+   "context": "Marcus approved the rollback at 2 am.",
+   "expected": "person",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-055",
+   "name": "Dr. Chen",
+   "context": "Dr. Chen reviewed the model card.",
+   "expected": "person",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-056",
+   "name": "Elena Petrova",
+   "context": "Ask Elena Petrova, who wrote the original scheduler.",
+   "expected": "person",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-057",
+   "name": "Tom",
+   "context": "Tom said he prefers tabs over spaces.",
+   "expected": "person",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-058",
+   "name": "Satya Nadella",
+   "context": "Satya Nadella announced the partnership on stage.",
+   "expected": "person",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-059",
+   "name": "Aisha",
+   "context": "Aisha is on call this week.",
+   "expected": "person",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-060",
+   "name": "John Smith",
+   "context": "John Smith, our CTO, signed off on the budget.",
+   "expected": "person",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-061",
+   "name": "Linus Torvalds",
+   "context": "Linus Torvalds created Git in 2005.",
+   "expected": "person",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-062",
+   "name": "Kenji",
+   "context": "Kenji moved to the Tokyo office in March.",
+   "expected": "person",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-063",
+   "name": "Zanele Okonkwo",
+   "context": "We hired Zanele Okonkwo to run support.",
+   "expected": "person",
+   "accept": [],
+   "slice": "novel-name"
+  },
+  {
+   "id": "ot-064",
+   "name": "Brannigan",
+   "context": "Brannigan approved the change yesterday.",
+   "expected": "person",
+   "accept": [],
+   "slice": "novel-name"
+  },
+  {
+   "id": "ot-065",
+   "name": "Marisol",
+   "context": "Marisol said the dashboard is broken.",
+   "expected": "person",
+   "accept": [],
+   "slice": "novel-name"
+  },
+  {
+   "id": "ot-066",
+   "name": "Okafor",
+   "context": "Ask Okafor about the billing export.",
+   "expected": "person",
+   "accept": [],
+   "slice": "novel-name"
+  },
+  {
+   "id": "ot-067",
+   "name": "Lyon",
+   "context": "Lyon, a city in France, hosts our second office.",
+   "expected": "place",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-068",
+   "name": "Berlin",
+   "context": "The team relocated to Berlin last spring.",
+   "expected": "place",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-069",
+   "name": "us-east-1",
+   "context": "The primary database runs in us-east-1.",
+   "expected": "place",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-070",
+   "name": "Japan",
+   "context": "Most of our users are in Japan.",
+   "expected": "place",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-071",
+   "name": "Lake Tahoe",
+   "context": "The offsite is at Lake Tahoe.",
+   "expected": "place",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-072",
+   "name": "São Paulo",
+   "context": "Latency from São Paulo is above 200 ms.",
+   "expected": "place",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-073",
+   "name": "Bangalore",
+   "context": "She lives in Bangalore and works remotely.",
+   "expected": "place",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-074",
+   "name": "Texas",
+   "context": "The data center in Texas lost power.",
+   "expected": "place",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-075",
+   "name": "Mount Everest",
+   "context": "He climbed Mount Everest in 2019.",
+   "expected": "place",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-076",
+   "name": "London",
+   "context": "Our London office handles EMEA support.",
+   "expected": "place",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-077",
+   "name": "Velmora",
+   "context": "Velmora, a small town in the hills, hosts the retreat.",
+   "expected": "place",
+   "accept": [],
+   "slice": "novel-name"
+  },
+  {
+   "id": "ot-078",
+   "name": "Tarnhold",
+   "context": "She lives in Tarnhold and commutes by train.",
+   "expected": "place",
+   "accept": [],
+   "slice": "novel-name"
+  },
+  {
+   "id": "ot-079",
+   "name": "Corvane",
+   "context": "Corvane is a city in the north.",
+   "expected": "place",
+   "accept": [],
+   "slice": "novel-name"
+  },
+  {
+   "id": "ot-080",
+   "name": "Acme",
+   "context": "Acme signed a three-year contract with us.",
+   "expected": "organization",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-081",
+   "name": "Google",
+   "context": "She worked at Google before joining.",
+   "expected": "organization",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-082",
+   "name": "OpenAI",
+   "context": "OpenAI released a new model yesterday.",
+   "expected": "organization",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-083",
+   "name": "FDA",
+   "context": "The FDA approved the device in May.",
+   "expected": "organization",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-084",
+   "name": "Initech Corp",
+   "context": "Initech Corp is our largest customer.",
+   "expected": "organization",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-085",
+   "name": "Netflix",
+   "context": "Netflix open-sourced the chaos tooling.",
+   "expected": "organization",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-086",
+   "name": "Siemens",
+   "context": "Siemens bought a license for the robotics suite.",
+   "expected": "organization",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-087",
+   "name": "Platform team",
+   "context": "The Platform team owns the deploy pipeline.",
+   "expected": "organization",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-088",
+   "name": "MIT",
+   "context": "The paper came out of MIT.",
+   "expected": "organization",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-089",
+   "name": "Quorvex",
+   "context": "Quorvex signed a two-year contract with us.",
+   "expected": "organization",
+   "accept": [],
+   "slice": "novel-name"
+  },
+  {
+   "id": "ot-090",
+   "name": "Nimbusly",
+   "context": "Nimbusly acquired our main competitor last year.",
+   "expected": "organization",
+   "accept": [],
+   "slice": "novel-name"
+  },
+  {
+   "id": "ot-091",
+   "name": "Wexley",
+   "context": "Wexley is our largest customer.",
+   "expected": "organization",
+   "accept": [],
+   "slice": "novel-name"
+  },
+  {
+   "id": "ot-092",
+   "name": "Harrowgate Labs",
+   "context": "Harrowgate Labs publishes the benchmark.",
+   "expected": "organization",
+   "accept": [],
+   "slice": "novel-name"
+  },
+  {
+   "id": "ot-093",
+   "name": "Black Friday",
+   "context": "Traffic tripled during Black Friday.",
+   "expected": "event",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-094",
+   "name": "March outage",
+   "context": "The March outage took checkout down for an hour.",
+   "expected": "event",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-095",
+   "name": "KubeCon",
+   "context": "We demoed the agent at KubeCon.",
+   "expected": "event",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-096",
+   "name": "Q3 planning",
+   "context": "Q3 planning starts next Monday.",
+   "expected": "event",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-097",
+   "name": "WWDC",
+   "context": "Apple announced the API at WWDC.",
+   "expected": "event",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-098",
+   "name": "Sprint 14",
+   "context": "Sprint 14 ends on Friday.",
+   "expected": "event",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-099",
+   "name": "Hackweek",
+   "context": "The prototype was built during Hackweek.",
+   "expected": "event",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-100",
+   "name": "Christmas",
+   "context": "Deploys are frozen over Christmas.",
+   "expected": "event",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-101",
+   "name": "Series B",
+   "context": "We closed the Series B in April.",
+   "expected": "event",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-102",
+   "name": "Driftcon",
+   "context": "Driftcon is a conference for platform engineers.",
+   "expected": "event",
+   "accept": [],
+   "slice": "novel-name"
+  },
+  {
+   "id": "ot-103",
+   "name": "Halvorsen incident",
+   "context": "The Halvorsen incident exposed the missing alert.",
+   "expected": "event",
+   "accept": [],
+   "slice": "novel-name"
+  },
+  {
+   "id": "ot-104",
+   "name": "RFC 7231",
+   "context": "RFC 7231 defines the semantics of HTTP methods.",
+   "expected": "document",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-105",
+   "name": "onboarding guide",
+   "context": "Read the onboarding guide before your first deploy.",
+   "expected": "document",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-106",
+   "name": "ADR-012",
+   "context": "ADR-012 records why we chose Postgres.",
+   "expected": "document",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-107",
+   "name": "Style Guide",
+   "context": "Follow the Style Guide for naming.",
+   "expected": "document",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-108",
+   "name": "PEP 8",
+   "context": "PEP 8 recommends four-space indentation.",
+   "expected": "document",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-109",
+   "name": "Postmortem",
+   "context": "The Postmortem lists five action items.",
+   "expected": "document",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-110",
+   "name": "Terms of Service",
+   "context": "The Terms of Service forbid scraping.",
+   "expected": "document",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-111",
+   "name": "Search Design Doc",
+   "context": "The Search Design Doc proposes a two-stage ranker.",
+   "expected": "document",
+   "accept": [],
+   "slice": "known-name"
+  },
+  {
+   "id": "ot-112",
+   "name": "Brindle Charter",
+   "context": "The Brindle Charter is a document that sets the review rules.",
+   "expected": "document",
+   "accept": [],
+   "slice": "novel-name"
+  },
+  {
+   "id": "ot-113",
+   "name": "Latency",
+   "context": "Latency matters more than throughput here.",
+   "expected": null,
+   "accept": [],
+   "slice": "abstract"
+  },
+  {
+   "id": "ot-114",
+   "name": "Idempotency",
+   "context": "Idempotency keeps retries safe.",
+   "expected": null,
+   "accept": [],
+   "slice": "abstract"
+  },
+  {
+   "id": "ot-115",
+   "name": "Technical Debt",
+   "context": "Technical Debt slows every feature.",
+   "expected": null,
+   "accept": [],
+   "slice": "abstract"
+  },
+  {
+   "id": "ot-116",
+   "name": "Observability",
+   "context": "Observability was the theme of the quarter.",
+   "expected": null,
+   "accept": [],
+   "slice": "abstract"
+  },
+  {
+   "id": "ot-117",
+   "name": "Zorblax",
+   "context": "Nothing here says what Zorblax is.",
+   "expected": null,
+   "accept": [],
+   "slice": "abstract"
+  },
+  {
+   "id": "ot-118",
+   "name": "Backpressure",
+   "context": "Backpressure protects the consumers.",
+   "expected": null,
+   "accept": [],
+   "slice": "abstract"
+  },
+  {
+   "id": "ot-119",
+   "name": "Eventual Consistency",
+   "context": "Eventual Consistency is acceptable for the feed.",
+   "expected": null,
+   "accept": [],
+   "slice": "abstract"
+  },
+  {
+   "id": "ot-120",
+   "name": "Dark Mode",
+   "context": "Users asked for Dark Mode.",
+   "expected": null,
+   "accept": [],
+   "slice": "abstract"
+  },
+  {
+   "id": "ot-121",
+   "name": "Caching",
+   "context": "Caching hides the slow query.",
+   "expected": null,
+   "accept": [],
+   "slice": "abstract"
+  },
+  {
+   "id": "ot-122",
+   "name": "Kindness",
+   "context": "Kindness goes a long way in code review.",
+   "expected": null,
+   "accept": [],
+   "slice": "abstract"
+  },
+  {
+   "id": "ot-123",
+   "name": "Least Privilege",
+   "context": "Least Privilege is the default for new roles.",
+   "expected": null,
+   "accept": [],
+   "slice": "abstract"
+  },
+  {
+   "id": "ot-124",
+   "name": "Scalability",
+   "context": "Scalability was never a goal for the prototype.",
+   "expected": null,
+   "accept": [],
+   "slice": "abstract"
+  }
+ ]
+}

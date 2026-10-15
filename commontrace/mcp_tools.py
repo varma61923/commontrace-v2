@@ -13,7 +13,7 @@ LOCAL_TOOLS = (
     "memory_search", "query_facts", "record_fact", "fact_explain",
     "graph_query", "graph_neighbors", "graph_viz_html", "graph_timeline",
     "list_skills", "load_skill",
-    "conversation_add", "conversation_recall", "conversation_profile", "conversation_forget",
+    "conversation_add", "conversation_recall", "working_memory", "conversation_profile", "conversation_forget",
     "conversation_summarize", "memory_recall",
     "lessons_from_trace", "traces_for_lesson", "community_members", "observation_evidence",
     "ingest_job_status", "ingest_documents_list", "ingest_document_get",

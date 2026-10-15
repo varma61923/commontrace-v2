@@ -48,6 +48,12 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Make the store its own git repository, so forgetting or restoring a fact "
              "is recorded as a commit. Refused when the store sits inside another repository.",
     )
+    p.add_argument(
+        "--fact-store", choices=FACT_STORES, default=None,
+        help="Where a new store keeps facts: 'sqlite' (default; WAL database with indexed dedup, "
+             "contradiction slots and FTS5, constant-time writes) or 'jsonl' (one append-only file, "
+             "rewritten per change; slows as facts grow). Default from COMMONTRACE_FACT_STORE.",
+    )
     p.add_argument("--dest", default=".", help="Directory to scaffold into (default: current directory)")
     p.add_argument("--agent", nargs="?", const="new", help="Mint a scoped local agent key after initialization.")
     p.add_argument("--agent-caller", default=None, metavar="NAME",
@@ -57,6 +63,17 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
 
 
 EPISODE_PROFILES = frozenset({"code-review"})
+FACT_STORES = ("sqlite", "jsonl")
+
+
+def fact_store_choice(args: argparse.Namespace) -> str:
+    """The fact backend for a new store: --fact-store, else COMMONTRACE_FACT_STORE, else sqlite."""
+    from commontrace.configuration import getenv
+
+    choice = (getattr(args, "fact_store", None) or getenv("COMMONTRACE_FACT_STORE", "") or "sqlite").strip().lower()
+    if choice not in FACT_STORES:
+        raise ValueError(f"COMMONTRACE_FACT_STORE must be one of {', '.join(FACT_STORES)}")
+    return choice
 
 
 def _init_git(root: str) -> int:
@@ -118,6 +135,11 @@ def run(args: argparse.Namespace) -> int:
         print(f"[commontrace] error: {exc}", file=sys.stderr)
         return 2
     root = os.path.abspath(args.dest)
+    try:
+        backend = fact_store_choice(args)
+    except ValueError as exc:
+        print(f"[commontrace] error: {exc}", file=sys.stderr)
+        return 2
     if kit is not None:
         paths.STARTER_DOMAINS.setdefault(kit.agent_type, list(kit.domains) or ["other"])
     profile = _profile_for(args)
@@ -196,7 +218,13 @@ def run(args: argparse.Namespace) -> int:
             from commontrace import functions
 
             functions.save_to_store(root, kit)
-        print(f"[commontrace] Initialized a {args.agent_type} store at {mem}")
+        if backend == "sqlite":
+            from commontrace import fact_store
+
+            # A new store has no facts and no writers yet, so it starts on the indexed
+            # backend directly instead of migrating later under load.
+            fact_store.migrate(root)
+        print(f"[commontrace] Initialized a {args.agent_type} store at {mem} (facts: {backend})")
         if kit is not None:
             print(f"  Occasion: one {kit.occasion_label} (e.g. {kit.occasion_example}). "
                   f"Success: {kit.outcome.success}.")

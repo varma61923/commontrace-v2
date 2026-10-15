@@ -176,8 +176,14 @@ OPERATIONS: dict[tuple[str, str], Operation] = {
         "agent_claim", "Agents", obj({"agent_id": string(), "owner": string()}, ("agent_id", "owner")),
         obj({"agent_id": string(), "claimed_by": string()}, ("agent_id", "claimed_by")), errors=(400,)),
     ("POST", "/v1/agent/rotate"): Operation(
-        "agent_rotate", "Agents", obj({"agent_id": string()}, ("agent_id",)), ref("AgentCredential"),
-        errors=(400,)),
+        "agent_rotate", "Agents", obj({"agent_id": string(), "reinstate": boolean(
+            "restore a revoked agent with the new key; without it a revoked agent stays revoked")},
+            ("agent_id",)), ref("AgentCredential"), errors=(400,)),
+    ("POST", "/v1/agent/revoke"): Operation(
+        "agent_revoke", "Agents", obj({"agent_id": string()}, ("agent_id",)),
+        obj({"agent_id": string(), "revoked": boolean(), "revoked_at": string()},
+            ("agent_id", "revoked", "revoked_at")), errors=(400,),
+        description="Owner-only. The record stays for audit; rotate with reinstate to restore."),
     ("POST", "/v1/agent/signup"): Operation(
         "agent_signup", "Agents", obj({"agent_id": AGENT_ID, "scopes": LABELS}, ("agent_id",)),
         ref("AgentCredential"), errors=(400,)),

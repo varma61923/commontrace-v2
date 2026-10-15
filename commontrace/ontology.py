@@ -49,18 +49,24 @@ DEFAULT_RELATIONS: dict[str, dict] = {
 # next to it ("the city of Berlin"); ontology files add or override per type.
 DEFAULT_TYPE_KEYWORDS: dict[str, tuple[str, ...]] = {
     "service": ("service", "server", "api", "database", "db", "queue", "cache", "cluster", "gateway",
-                "backend", "microservice", "endpoint"),
-    "tool": ("cli", "sdk", "library", "framework", "plugin", "toolkit", "compiler", "linter"),
+                "backend", "microservice", "endpoint", "datastore", "broker", "bucket", "registry", "proxy"),
+    "tool": ("cli", "sdk", "library", "framework", "plugin", "toolkit", "compiler", "linter", "formatter",
+             "bundler", "debugger", "profiler", "driver"),
     "error": ("error", "exception", "failure", "fault", "timeout", "crash", "panic"),
     "person": ("mr", "mrs", "ms", "dr", "prof", "engineer", "developer", "manager", "ceo", "cto", "founder"),
     "organization": ("inc", "corp", "corporation", "llc", "ltd", "gmbh", "labs", "company", "foundation",
-                     "university", "institute", "agency", "department"),
+                     "university", "institute", "agency", "department", "team", "squad", "solutions",
+                     "systems", "networks", "software", "technologies", "analytics", "capital", "ventures",
+                     "partners", "holdings", "group"),
     "place": ("city", "town", "village", "country", "county", "province", "region", "street", "avenue",
               "river", "lake", "mountain", "island", "airport"),
     "event": ("outage", "incident", "release", "launch", "conference", "summit", "meeting", "migration",
-              "workshop", "hackathon"),
+              "workshop", "hackathon", "sprint", "retro", "offsite", "standup", "kickoff", "webinar", "keynote",
+              "planning", "freeze", "festival"),
     "document": ("document", "spec", "specification", "rfc", "readme", "report", "runbook", "handbook",
-                 "policy"),
+                 "policy", "guide", "guidelines", "manual", "book", "license", "licence", "contract",
+                 "agreement", "doc", "docs", "whitepaper", "charter", "playbook", "postmortem", "proposal",
+                 "memo", "adr"),
 }
 FALLBACK_TYPE = "concept"
 FALLBACK_RELATION = "relates_to"

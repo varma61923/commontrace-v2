@@ -128,7 +128,7 @@ def test_write_triples_uses_the_validated_graph_path(root):
                                   "since 2023.", source="notes/team.md", run_id="run-1")
     assert report["edges_written"] == 2 and not report["errors"]
     nodes = graph.load_nodes(root)
-    assert nodes["person:alice_smith"].properties["type_inferred_from"] == "works_at"  # domain inference
+    assert nodes["person:alice_smith"].entity_type == "person"  # a first name types the subject directly
     assert nodes["organization:acme_corp"].entity_type == "organization"
     edges = {e.target: e for e in graph.load_edges(root) if e.relation == "works_at"}
     assert edges["organization:acme_corp"].invalid_at == edges["organization:globex_inc"].valid_at  # exclusive
@@ -137,6 +137,12 @@ def test_write_triples_uses_the_validated_graph_path(root):
     records = provenance.list_provenance(root, "person:alice_smith->organization:globex_inc:works_at")
     assert records and records[0]["source_path"] == "notes/team.md" and records[0]["run_id"] == "run-1"
     assert records[0]["detail"]["method"] == "pattern"
+
+
+def test_an_untypable_subject_takes_its_type_from_the_relation_domain(root):
+    rx.ingest_text(root, "Zorvan Kade works at Acme Corp since 2021.", source="notes/team.md")
+    node = graph.load_nodes(root)["person:zorvan_kade"]
+    assert node.properties["type_inferred_from"] == "works_at"
 
 
 def test_write_triples_reuses_known_entities_and_refuses_injections(root):

@@ -206,6 +206,13 @@ def _invoke_hooks(root: str) -> dict:
     except Exception as exc:  # noqa: BLE001
         results["consolidate"] = f"skipped: {exc}"
     try:
+        from commontrace import graph_sync
+
+        synced = graph_sync.run_if_due(root)
+        results["graph"] = synced if synced is not None else "up to date"
+    except Exception as exc:  # noqa: BLE001
+        results["graph"] = f"error: {exc}"
+    try:
         from commontrace import jobs
 
         if os.path.exists(jobs.db_path(root)):

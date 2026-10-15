@@ -1967,6 +1967,34 @@ def build_server(root: str, *, allow_approval: bool = True):
         return _ok(**out)
 
     @mcp.tool()
+    async def working_memory(space: str, session: str, question: str, budget: int = 2000,
+                             recent_turns: int = 6, agent: str = "", now: str = "",
+                             refresh_summary: bool = False) -> dict:
+        """Everything the next call in `session` should see, within `budget` tokens: the
+        session's pinned blocks and summary, its most recent turns, and the evidence from
+        the whole space (other sessions included) that answers `question`. The same
+        assembly as the gateway's POST /v1/working-memory; explain says what each
+        section was allotted, spent and dropped."""
+        from commontrace import working_memory as wm
+        from commontrace.conversation import ConversationError
+
+        if isinstance(budget, bool) or not isinstance(budget, int) or not 50 <= budget <= 32_000:
+            return _err("budget must be an integer number of tokens from 50 to 32000")
+        if isinstance(recent_turns, bool) or not isinstance(recent_turns, int) or \
+                not 0 <= recent_turns <= wm.MAX_RECENT:
+            return _err(f"recent_turns must be an integer from 0 to {wm.MAX_RECENT}")
+
+        def _run():
+            return wm.assemble(root, space, session, question, budget=budget, recent_turns=recent_turns,
+                               agent=agent, now=now or None, refresh_summary=bool(refresh_summary))
+
+        try:
+            out = await STORE_WORKERS.run(_run)
+        except ConversationError as exc:
+            return _err(str(exc))
+        return _ok(**{**out, "space": space})
+
+    @mcp.tool()
     async def conversation_recall(space: str, question: str, budget: int = 1500, now: str = "",
                                   sessions: list[str] | None = None, speakers: list[str] | None = None,
                                   since: str = "", until: str = "", ctx: Any = None,

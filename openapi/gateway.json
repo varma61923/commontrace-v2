@@ -2148,6 +2148,132 @@
         ]
       }
     },
+    "/v1/agent/revoke": {
+      "post": {
+        "description": "Owner-only. The record stays for audit; rotate with reinstate to restore.",
+        "operationId": "agent_revoke",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RequestId"
+          },
+          {
+            "$ref": "#/components/parameters/ContainerTag"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "agent_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "agent_id"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "agent_id": {
+                      "type": "string"
+                    },
+                    "revoked": {
+                      "type": "boolean"
+                    },
+                    "revoked_at": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "agent_id",
+                    "revoked",
+                    "revoked_at"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or wrong credential"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Refused by policy or scope"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Body larger than 1 MiB"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal error; no details"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Owner-only: disable an agent key.",
+        "tags": [
+          "Agents"
+        ]
+      }
+    },
     "/v1/agent/rotate": {
       "post": {
         "operationId": "agent_rotate",
@@ -2167,6 +2293,10 @@
                 "properties": {
                   "agent_id": {
                     "type": "string"
+                  },
+                  "reinstate": {
+                    "description": "restore a revoked agent with the new key; without it a revoked agent stays revoked",
+                    "type": "boolean"
                   }
                 },
                 "required": [

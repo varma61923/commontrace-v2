@@ -98,6 +98,13 @@ def serve(root: str, *, profile: str | None = None):
                     except Exception:  # noqa: BLE001 - the next pass retries
                         pass
                     try:
+                        # New and retired facts reach the knowledge graph without an explicit command.
+                        from commontrace import graph_sync
+
+                        graph_sync.run_if_due(root)
+                    except Exception:  # noqa: BLE001 - the next pass retries
+                        pass
+                    try:
                         from commontrace import fact_vector_projection
 
                         fact_vector_projection.drain(root, model=config["options"].get("embedding", "bge-small"))

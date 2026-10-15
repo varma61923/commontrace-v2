@@ -148,6 +148,47 @@ def test_rotated_keys_are_fetched_on_an_unknown_kid(keys, monkeypatch):
     assert len(fetched) == 2
 
 
+def test_an_unreachable_issuer_serves_stale_keys_then_backs_off(keys, monkeypatch):
+    import urllib.error
+
+    clock = [1000.0]
+    monkeypatch.setattr(oauth.time, "monotonic", lambda: clock[0])
+    calls, down = [], [False]
+
+    def fetch(url):
+        calls.append(clock[0])
+        if down[0]:
+            raise urllib.error.URLError("connection refused")
+        return json.dumps(keys.jwks()).encode()
+
+    srv = oauth.ResourceServer(oauth.OAuthConfig(issuer=ISSUER, audience=AUDIENCE,
+                                                 jwks_url="https://login.example.com/jwks"), fetch=fetch)
+    assert srv.verify(keys.sign(claims())).is_admin
+    down[0] = True
+    clock[0] += oauth.JWKS_TTL_SECONDS + 1  # due for a refresh while the issuer is down
+    assert srv.verify(keys.sign(claims())).is_admin  # stale keys keep serving
+    assert srv.verify(keys.sign(claims())).is_admin
+    assert len(calls) == 2  # the second request did not refetch: backoff
+    clock[0] += oauth.JWKS_MAX_STALE_SECONDS  # far too stale now
+    with pytest.raises(oauth.KeysUnavailable) as raised:
+        srv.verify(keys.sign(claims()))
+    assert raised.value.retry_after > 0
+    with pytest.raises(oauth.KeysUnavailable):
+        srv.verify(keys.sign(claims()))  # within the backoff: fails fast, no fetch
+    assert len(calls) == 3
+    down[0] = False
+    clock[0] += oauth.JWKS_RETRY_SECONDS[1]
+    assert srv.verify(keys.sign(claims())).is_admin  # recovered
+
+
+def test_a_broken_jwks_document_is_an_outage_not_a_crash(tmp_path, keys):
+    path = tmp_path / "jwks.json"
+    path.write_text("{not json")
+    srv = oauth.ResourceServer(oauth.OAuthConfig(issuer=ISSUER, audience=AUDIENCE, jwks_file=str(path)))
+    with pytest.raises(oauth.KeysUnavailable):
+        srv.verify(keys.sign(claims()))
+
+
 def test_configuration_is_validated(tmp_path):
     with pytest.raises(ConfigurationError):
         oauth.OAuthConfig(issuer=ISSUER, audience="")
@@ -192,6 +233,14 @@ def test_gateway_serves_metadata_and_challenges_with_it(oauth_gateway):
     assert status == 200 and meta["authorization_servers"] == [ISSUER]
     status, _body, headers = call(oauth_gateway, "GET", "/v1/status")
     assert status == 401 and 'resource_metadata="https://memory.example.com/' in headers["WWW-Authenticate"]
+
+
+def test_gateway_answers_503_while_the_issuer_is_unavailable(oauth_gateway, keys, tmp_path):
+    (tmp_path / "jwks.json").write_text("{not json")
+    oauth._SERVERS.clear()  # a fresh verifier reads the broken document
+    status, body, headers = call(oauth_gateway, "GET", "/v1/status", keys.sign(claims()))
+    assert status == 503 and body["error"]["code"] == "auth_unavailable"
+    assert int(headers["Retry-After"]) >= 1
 
 
 def test_gateway_admin_token_acts_as_operator(oauth_gateway, keys):

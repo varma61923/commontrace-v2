@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Evidence-fusion ontology typing.** Entity mentions are typed by independent
+  evidence combined by noisy-OR: aliases, head words (camelCase parts included),
+  mention shapes (paths, identifiers, error names and codes, RFCs, cloud regions,
+  sprints), well-known name lists, stated types ("X, a city", "X is a library", "the
+  lead architect is X"), context cues ("Brannigan approved", "lives in X", "Run X"),
+  the store's own earlier typings (exemplars), and optionally embeddings and an LLM.
+  Near-tied siblings back off to their common parent. On a model-written test set
+  never used for tuning (`benchmarks/fixtures/ontology_typing_gemma_test.json`, 107
+  rows), offline accuracy rose from 0.131 to 0.748 (classifier) and from 0.280 to
+  0.738 (extraction pipeline); 0.914 of typed answers are correct. Local embedders
+  did not improve accuracy on the dev set; their margin defaults to 0.08 so they no
+  longer type abstract topics. See [ontology typing](docs/ontology-typing.md).
+- **The knowledge graph builds itself.** `graph_sync` projects every active fact
+  into the graph (typed entities, `mentions` edges, extracted relations, provenance)
+  incrementally, and closes what a fact produced when it is superseded, invalidated,
+  forgotten, deleted or expires, at the time it ended. The hook broker and daemon run
+  it when the fact store changes; `commontrace graph sync` runs it on demand;
+  `COMMONTRACE_GRAPH_AUTO=off` disables it.
+- **Structured contradictions.** An exclusive relation (`works_at`, `located_in`,
+  `owned_by`, `status`, or any relation the ontology marks exclusive) that ends an
+  earlier fact's value records an `exclusive` contradiction ("works at Acme" against
+  "works at Globex"), superseding the earlier fact under
+  `COMMONTRACE_FACT_CONFLICTS=supersede`.
+- **SQLite is the default fact store for new stores.** `commontrace init` creates
+  the indexed WAL store; `--fact-store jsonl` or `COMMONTRACE_FACT_STORE=jsonl` keeps
+  the single file. Median single-fact write: 2.9 ms at 1k and at 10k stored facts,
+  against 73 ms and 905 ms on JSONL.
+- **`working_memory` MCP tool**, the same assembly as `POST /v1/working-memory`.
+- **`POST /v1/agent/revoke`** (owner only).
+
 - **Production conversation read reuse.** HTTP and MCP recall use bounded,
   exclusive read-only leases with schema/file identity checks, snapshot
   consistency, Unicode maintenance and fork-safe service caches. The measured
@@ -438,6 +468,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Rotating a revoked agent no longer re-enables it.** `rotate` keeps a revoked
+  identity revoked unless `reinstate` is passed (recorded as `reinstated_at`).
+- **An unreachable OAuth issuer is a 503, not a 500.** JWKS fetch and parse failures
+  raise `KeysUnavailable`: the gateway answers 503 with `Retry-After` and the MCP
+  transport 503. Cached keys keep serving for up to 24 hours, and failed fetches
+  back off (1-60 s) instead of refetching under a lock on every request.
+- **Publishing needs a version tag.** The release workflow publishes only from a
+  `vX.Y.Z` tag ref, including manual runs.
+- **A damaged marketplace catalog file is skipped** instead of failing listing
+  requests with a 500.
+
 - Dismissed the two reviewed CodeQL false positives named in the next-generation
   brief: peppered HMAC lookup of random API keys and the console's login-view
   condition. The CodeQL configuration documents both decisions and retains the
@@ -446,6 +487,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Hub: commons sharing no longer grants DELETE.** The `traces` row-level policy put `shared_with_commons` in a `FOR ALL` USING clause, which also governs DELETE, so any org could delete another org's shared traces through a query missing its own org filter. Migration `c1d4e8f2a9b6` moves sharing into a SELECT-only policy; a regression test runs as an unprivileged role.
 
 ### Fixed
+
+- **In-process embedders load once per tag.** `fastembed:` providers were rebuilt
+  for every mention typed or resolved, reloading the model each time; an
+  embedding-typed extraction run could exhaust memory.
 
 - History import no longer treats a backticked source file path as a required
   in-file symbol. It verifies the cited path and remaining quoted symbol before

@@ -272,9 +272,13 @@ def catalog(root: str, query: str = "") -> list[dict]:
     for name in sorted(os.listdir(directory)) if os.path.isdir(directory) else []:
         if not re.fullmatch(r"[0-9a-f]{64}\.json", name):
             continue
-        with open(os.path.join(directory, name), encoding="utf-8") as fh:
-            listing = json.load(fh)
-        fm = listing.get("record", {}).get("lesson", {}).get("frontmatter", {})
+        try:
+            with open(os.path.join(directory, name), encoding="utf-8") as fh:
+                listing = json.load(fh)
+            fm = listing.get("record", {}).get("lesson", {}).get("frontmatter", {})
+            fm.get("name")
+        except (OSError, ValueError, AttributeError):
+            continue  # a damaged catalog file is skipped, never a failed listing request
         haystack = " ".join([str(fm.get("name", "")), str(fm.get("description", "")),
                              " ".join(map(str, fm.get("tags") or []))]).lower()
         if all(w in haystack for w in words):

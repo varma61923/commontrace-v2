@@ -408,6 +408,7 @@ class Gateway:
                     summary="Opt-in, rate-limited signup into a new isolated agent scope.", auth=False)
         self._route("POST", "/v1/agent/claim", self._agent_claim, summary="Owner claim of a self-enrolled agent.")
         self._route("POST", "/v1/agent/rotate", self._agent_rotate, summary="Owner-only scoped key rotation.")
+        self._route("POST", "/v1/agent/revoke", self._agent_revoke, summary="Owner-only: disable an agent key.")
         self._route("POST", "/v1/agent/signup", self._agent_signup, summary="Register one scoped agent.")
         self._route("POST", "/v1/agent/plugin", self._agent_plugin, summary="SDK skill and per-agent manifest.")
         self._route("POST", "/v1/agent/heartbeat", self._agent_heartbeat, summary="Record agent liveness.")
@@ -646,6 +647,13 @@ class Gateway:
                         return self._oauth_challenge(
                             server, 401, "invalid_token", "the access token is invalid or expired"
                         )
+                    except oauth.KeysUnavailable as exc:
+                        # The issuer is unreachable: a server-side outage, not a bad token.
+                        response = _json(503, {"error": {"code": "auth_unavailable",
+                                                         "message": "token verification is temporarily "
+                                                                    "unavailable"}})
+                        response.headers["Retry-After"] = str(max(1, int(exc.retry_after + 0.999)))
+                        return response
                     if claims.is_admin:
                         operator = True
                     elif oauth.SCOPE_MEMORY in claims.scopes:
@@ -839,8 +847,19 @@ class Gateway:
     def _agent_rotate(self, body, _query) -> dict:
         from commontrace import agent_registry
 
+        reinstate = body.get("reinstate", False)
+        if not isinstance(reinstate, bool):
+            raise _bad("reinstate must be a boolean")
         try:
-            return agent_registry.rotate(self.root, body.get("agent_id", ""))
+            return agent_registry.rotate(self.root, body.get("agent_id", ""), reinstate=reinstate)
+        except ValueError as exc:
+            raise _bad(str(exc)) from exc
+
+    def _agent_revoke(self, body, _query) -> dict:
+        from commontrace import agent_registry
+
+        try:
+            return agent_registry.revoke(self.root, body.get("agent_id", ""))
         except ValueError as exc:
             raise _bad(str(exc)) from exc
 

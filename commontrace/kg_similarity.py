@@ -43,9 +43,14 @@ def embedder(spec=None):
 
     spec = embeddings.parse(tag)
     local_files_only = spec is not None and spec.tag == embeddings.DEFAULT_LOCAL_TAG
-    if spec is not None and spec.provider == "local":
+    if spec is not None and spec.provider in embeddings.LOCAL_PROVIDERS:
+        # In-process models are loaded once per tag: building one per call reloads the
+        # weights (an ONNX or torch session) for every mention typed or resolved. The
+        # factory is part of the key so a replaced factory never sees a stale model.
+        factory = embeddings.provider
+        target = spec if spec.provider == "local" else tag
         return _LOCAL_PROVIDERS.get_or_load(
-            spec.tag, lambda: embeddings.provider(spec, local_files_only=local_files_only)
+            (spec.tag, factory), lambda: factory(target, local_files_only=local_files_only)
         )
     if local_files_only:
         return embeddings.provider(tag, local_files_only=True)

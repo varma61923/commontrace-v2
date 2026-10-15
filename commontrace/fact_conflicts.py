@@ -37,7 +37,7 @@ _STEM = re.compile(r"(?:ing|ed)$")
 class Conflict:
     older: str
     newer: str
-    kind: str  # negation | value | judged
+    kind: str  # negation | value | judged | exclusive (an exclusive graph relation, see graph_sync)
     older_statement: str
     newer_statement: str
     detected_at: str

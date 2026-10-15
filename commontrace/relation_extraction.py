@@ -236,8 +236,9 @@ def _endpoint(sentence: str, mentions, at: int, side: str):
     return (name, None, False) if len(name) >= 2 else None
 
 
-def extract_patterns(text: str, onto) -> list[Triple]:
-    """Offline extraction: a declared relation's phrasing between two entity names."""
+def extract_patterns(text: str, onto, *, exemplars=None) -> list[Triple]:
+    """Offline extraction: a declared relation's phrasing between two entity names.
+    `exemplars` (`ontology_classify.Exemplars`) type names the way the store already has."""
     from commontrace import entities
 
     phrases = _phrases(onto)
@@ -246,7 +247,7 @@ def extract_patterns(text: str, onto) -> list[Triple]:
         sentence = text[s:e]
         if len(sentence) > 2000:
             continue
-        mentions = entities.extract(sentence, onto=onto, use_spacy=False)
+        mentions = entities.extract(sentence, onto=onto, use_spacy=False, exemplars=exemplars)
         for relation, pattern, swapped in phrases:
             for match in pattern.finditer(sentence):
                 left = _endpoint(sentence, mentions, match.start(), "left")
@@ -361,7 +362,7 @@ def extract_llm(text: str, onto, complete) -> list[Triple]:
     return list(found.values())[:MAX_TRIPLES]
 
 
-def extract(text: str, ontology, *, llm=None) -> list[Triple]:
+def extract(text: str, ontology, *, llm=None, exemplars=None) -> list[Triple]:
     """Triples `text` states, constrained to `ontology`: by `llm` (a completion callable)
     when given, else by the offline patterns."""
     if not isinstance(text, str) or not text.strip():
@@ -370,7 +371,7 @@ def extract(text: str, ontology, *, llm=None) -> list[Triple]:
         raise ValueError(f"relation extraction reads at most {MAX_TEXT} characters")
     if llm is not None:
         return extract_llm(text, ontology, llm)
-    return extract_patterns(text, ontology)
+    return extract_patterns(text, ontology, exemplars=exemplars)
 
 
 # --- writing --------------------------------------------------------------------------
@@ -462,7 +463,8 @@ def ingest_text(root: str, text: str, *, source: str, run_id: str = "", llm=None
     write them; the report lists the triples either way."""
     from commontrace import ontology
 
-    triples = extract(text, ontology.load(root), llm=llm)
+    triples = extract(text, ontology.load(root), llm=llm,
+                      exemplars=ontology_classify.Exemplars.from_graph(root) if llm is None else None)
     report = {"triples": len(triples), "edges_written": 0, "nodes_created": 0, "errors": []}
     if not dry_run and triples:
         report = write_triples(root, triples, source=source, run_id=run_id)
