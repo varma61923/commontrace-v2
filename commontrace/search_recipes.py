@@ -326,15 +326,18 @@ def _recipe_order(rows, cfg, limit, center):
         selected = []
         pool = rows[:max(limit * 10, 100)]
         relevance_scale = max((row["score"] for row in pool), default=1) or 1
-        while pool and len(selected) < limit:
-            def mmr(row):
-                a = set(terms(row["text"]))
-                redundancy = max((len(a & b) / max(1, len(a | b))
-                                  for b in (set(terms(s["text"])) for s in selected)), default=0)
-                return cfg.mmr_lambda * row["score"] / relevance_scale - (1 - cfg.mmr_lambda) * redundancy
-            chosen = max(pool, key=mmr)
+        # Each row's terms are computed once, and its redundancy (max Jaccard overlap
+        # with anything selected) is updated only against the newest pick.
+        candidates = [[row, set(terms(row["text"])), 0.0] for row in pool]
+        while candidates and len(selected) < limit:
+            best = max(range(len(candidates)), key=lambda i: cfg.mmr_lambda * candidates[i][0]["score"]
+                       / relevance_scale - (1 - cfg.mmr_lambda) * candidates[i][2])
+            chosen, chosen_terms, _ = candidates.pop(best)
             selected.append(chosen)
-            pool.remove(chosen)
+            for entry in candidates:
+                overlap = len(entry[1] & chosen_terms) / max(1, len(entry[1] | chosen_terms))
+                if overlap > entry[2]:
+                    entry[2] = overlap
         rows = selected
     return rows[:limit]
 

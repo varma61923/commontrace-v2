@@ -20,6 +20,12 @@ _NAME = re.compile(r"[a-z][a-z0-9_-]{0,63}")
 _ENV = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")
 
 
+# Values copied from examples instead of a real key: fail at configuration time, not
+# as an opaque 401 from the provider on the first request.
+_PLACEHOLDER_SECRET = re.compile(r"(?i)(?:none|null|undefined|changeme|change-me|xxx+|\.\.\.|<[^>]*>|"
+                                 r"(?:your|my)[-_ ]?(?:api)?[-_ ]?(?:key|token|secret)(?:[-_ ]?here)?|"
+                                 r"sk-\.\.\.|sk-x+|replace[-_ ]?me)")
+
 class _Configuration(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, frozen=True, hide_input_in_errors=True)
 
@@ -115,6 +121,8 @@ class LLMConfig(_Configuration):
         key = key.strip()
         if (requires_key and not key) or len(key) > 8192 or any(ord(c) < 32 or ord(c) == 127 for c in key):
             raise ConfigurationError("the selected provider requires a valid API secret")
+        if key and _PLACEHOLDER_SECRET.fullmatch(key):
+            raise ConfigurationError("the API secret is a documentation placeholder, not a key")
         provider, base = self.provider, self.base_url
         if provider in {"openai", "ollama"}:
             base = base or ("https://api.openai.com/v1" if provider == "openai" else "http://localhost:11434/v1")

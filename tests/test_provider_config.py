@@ -302,3 +302,10 @@ def test_legacy_factory_aliases_keep_configuration_local_without_optional_models
     assert model.config.provider == "openai-compatible" and model.config.base_url == endpoint
     assert cfg.provider == provider and cfg.base_url is None
     assert model.complete("query")[1]["provider"] == "openai-compatible"
+
+
+@pytest.mark.parametrize("placeholder", ["your-api-key", "<API_KEY>", "sk-...", "changeme", "None", "YOUR_TOKEN_HERE"])
+def test_documentation_placeholder_secrets_fail_at_configuration(placeholder):
+    with pytest.raises(ConfigurationError, match="placeholder"):
+        LLMConfig(provider="anthropic", model="test", api_key=placeholder).runtime_config()
+    assert LLMConfig(provider="anthropic", model="test", api_key="sk-ant-real-looking-0123").runtime_config().api_key

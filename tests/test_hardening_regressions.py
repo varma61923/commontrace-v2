@@ -84,3 +84,33 @@ def test_in_process_embedders_load_once_per_tag(monkeypatch):
     first = kg_similarity.embedder("fastembed:BAAI/bge-base-en-v1.5")
     assert kg_similarity.embedder("fastembed:BAAI/bge-base-en-v1.5") is first
     assert built == ["fastembed:BAAI/bge-base-en-v1.5"]
+
+
+def test_mmr_recipe_order_matches_the_quadratic_reference():
+    """The incremental MMR loop picks exactly what the per-pass recomputation picked."""
+    import random
+    from types import SimpleNamespace
+
+    from commontrace import search_recipes
+
+    rnd = random.Random(7)
+    words = ["cache", "retry", "deploy", "redis", "queue", "token", "auth", "billing", "latency", "index"]
+    rows = [{"text": " ".join(rnd.sample(words, 4)), "score": round(rnd.random(), 3)} for _ in range(60)]
+    cfg = SimpleNamespace(reranker="mmr", mmr_lambda=0.6)
+
+    def reference(rows, limit):
+        selected, pool = [], rows[:max(limit * 10, 100)]
+        scale = max((r["score"] for r in pool), default=1) or 1
+        while pool and len(selected) < limit:
+            def mmr(row):
+                a = set(search_recipes.terms(row["text"]))
+                red = max((len(a & b) / max(1, len(a | b))
+                           for b in (set(search_recipes.terms(s["text"])) for s in selected)), default=0)
+                return cfg.mmr_lambda * row["score"] / scale - (1 - cfg.mmr_lambda) * red
+            chosen = max(pool, key=mmr)
+            selected.append(chosen)
+            pool.remove(chosen)
+        return selected
+
+    for limit in (1, 5, 12):
+        assert search_recipes._recipe_order(list(rows), cfg, limit, None) == reference(list(rows), limit)
