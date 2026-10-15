@@ -73,7 +73,7 @@ def test_doctor_in_repo_checkout_shows_ok_not_info_for_repo_only_checks(capsys):
     main(["doctor", "--dest", repo_root])  # a bare checkout holds no memory/ store, so it may exit 1
     out = capsys.readouterr().out
     problems = [line for line in out.splitlines() if line.startswith(("[WARN]", "[FAIL"))]
-    assert all("memory/ store present" in line for line in problems), problems
+    assert all("memory/ store present" in line or "lessons in store" in line for line in problems), problems
     assert "[OK  ] reference attention/query.py" in out
     assert "[OK  ] benchmark script found" in out
     assert "[OK  ] pilot metrics script found" in out

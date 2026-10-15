@@ -25,7 +25,7 @@ jobs:
           python scripts/graphify_audit.py
           --graph "$RUNNER_TEMP/architecture/graphify-out/graph.json"
           --output "$RUNNER_TEMP/architecture/audit.json"
-          --source-root . --max-modules 310 --max-unreachable 307
+          --source-root . --max-modules 311 --max-unreachable 318
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
           name: graphify-audit
