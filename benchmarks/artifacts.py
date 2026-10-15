@@ -29,6 +29,19 @@ def package_source(package):
 
 
 def model_artifact(name):
+    if name.startswith("fastembed:"):
+        from commontrace import embeddings
+
+        provider = embeddings.provider(name, local_files_only=True)
+        identity, dimensions = provider.projection_identity()
+        return {
+            "model": provider.spec.model,
+            "tag": provider.spec.tag,
+            "provider": "fastembed",
+            "projection_identity": identity,
+            "dimensions": dimensions,
+        }
+
     from huggingface_hub import try_to_load_from_cache
 
     # Read local artifacts only. Never fetch a model while producing metadata.

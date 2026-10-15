@@ -31,6 +31,7 @@ import struct
 from collections.abc import Iterable, Iterator
 from typing import Any
 
+from commontrace.configuration import getenv as _configuration_getenv
 from commontrace.ingest import Chunk
 
 ENV = "COMMONTRACE_INGEST_EMBEDDER"
@@ -43,12 +44,12 @@ _SCHEMA = "CREATE TABLE IF NOT EXISTS vec (hash TEXT PRIMARY KEY, v BLOB NOT NUL
 
 def configured() -> str | None:
     """The configured ingest embedder tag, or None when the stage is off."""
-    raw = os.environ.get(ENV, "").strip()
+    raw = _configuration_getenv(ENV, "").strip()
     return None if raw.lower() in ("", "none", "off", "0") else raw
 
 
 def _int_env(name: str, default: int, upper: int) -> int:
-    raw = os.environ.get(name, "").strip()
+    raw = _configuration_getenv(name, "").strip()
     if not raw:
         return default
     try:

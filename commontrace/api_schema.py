@@ -5,10 +5,22 @@ OCCASION = {"type": ["string", "null"], "maxLength": 256}
 TEXT = {"type": "string", "maxLength": 20000}
 CONTEXT = {"type": "array", "items": {"type": "string", "maxLength": 256}, "maxItems": 100}
 FIELDS = {
+    "record-put": ({"record": {"type": "object"}}, ["record"]),
+    "record-search": ({"query": TEXT, "limit": {"type": "integer", "minimum": 0, "maximum": 1000}}, []),
+    "record-forget": ({"id": {**TEXT, "minLength": 1, "maxLength": 256},
+                        "reason": {**TEXT, "minLength": 1}}, ["id", "reason"]),
+    "record-reap-due": ({"limit": {"type": "integer", "minimum": 1, "maximum": 100}}, []),
+    "turn": ({"session_id": {"type": "string", "minLength": 1, "maxLength": 256},
+              "query": TEXT, "text": TEXT, "event": TEXT, "payload": {"type": "object"},
+            "budget": {"type": "integer", "minimum": 0, "maximum": 8000}},
+             ["session_id", "query"]),
     "add": ({"text": {**TEXT, "minLength": 1}, "local": {"type": "boolean"}, "memory_type": TEXT}, ["text"]),
     "batch": ({"items": {"type": "array", "items": {"type": "object"}, "maxItems": 200}}, ["items"]),
     "search": ({"query": TEXT, "recipe": TEXT, "retriever": TEXT, "center": TEXT,
-                "as_of": {"type": ["string", "null"]}, "action_class": TEXT,
+                "as_of": {"type": ["string", "null"]}, "known_at": {"type": ["string", "null"]},
+                "graph_hops": {"type": "integer", "minimum": 0, "maximum": 4},
+                "reranker": {"type": ["string", "null"], "enum": [None, "none", "mmr", "cross-encoder",
+                             "cross-encoder-fast", "bge-reranker-v2-m3", "mxbai-rerank"]}, "action_class": TEXT,
                 "limit": {"type": "integer", "minimum": 0, "maximum": 1000}}, ["query"]),
     "profile": ({"query": TEXT, "action_class": TEXT, "occasion_id": OCCASION,
                  "limit": {"type": "integer", "minimum": 0, "maximum": 1000}}, []),
@@ -93,6 +105,13 @@ def components() -> dict:
     def array(name):
         return {"type": "array", "items": {"$ref": "#/components/schemas/"+name}}
     responses = {
+        "record-put": {"record": obj},
+        "record-search": {"results": {"type": "array", "items": obj}},
+        "record-forget": {"deleted": string_array, "reason": {"type": "string"}, "at": {"type": "string"}},
+        "record-reap-due": {"results": {"type": "array", "items": obj}},
+        "turn": {"context": {"type": "string"}, "injected": string_array,
+                 "profile": obj, "buffer": {"type": "array", "items": obj},
+                 "session_id": {"type": "string"}, "scope": obj, "results": array("Evidence")},
         "add": {"calls": {"type": "integer"}, "add_only": {"type": "boolean"}, "facts": array("Fact"),
                 "entity_ids": string_array},
         "batch": {"add_only": {"type": "boolean"}, "facts": array("Fact")},

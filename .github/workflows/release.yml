@@ -55,32 +55,55 @@ jobs:
 
   build-typescript:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: sdk/typescript
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v4
+        with:
+          distribution: temurin
+          java-version: "17"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "22"
-      - run: npm ci
-      - run: npm test
-      - run: npm pack
+          node-version: "24"
+      - name: Cache checksum-verified OpenAPI Generator
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: build/openapi-generator-cli-7.26.0.jar
+          key: openapi-generator-7.26.0-1760050094997b9cc790cc1350be095f15da8c08a996b184d3eadc4ccda5e35e
+      - name: Generate the complete gateway SDK from OpenAPI
+        run: |
+          python -m pip install -e .
+          python scripts/export_openapi.py --check
+          version=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          python scripts/generate_sdks.py --api gateway --languages typescript --package-version "$version" --output build/release-sdk
+      - name: Compile, smoke-test and pack generated TypeScript
+        run: |
+          cd build/release-sdk/typescript
+          npm install --ignore-scripts
+          npm run build
+          npm audit --omit=dev --audit-level=high
+          cd ../../..
+          python scripts/smoke_generated_sdk.py build/release-sdk/typescript
+          cd build/release-sdk/typescript
+          npm pack
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: typescript-dist
-          path: sdk/typescript/*.tgz
+          path: build/release-sdk/typescript/*.tgz
           if-no-files-found: error
 
   publish-pypi:
     needs: [build, build-typescript]
-    if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && !inputs.dry_run)
+    # A tag ref only: a manual run publishes when started from a vX.Y.Z tag, never from a branch.
+    if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || !inputs.dry_run)
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
       id-token: write
     steps:
-      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: python-dist
           path: dist/
@@ -88,7 +111,8 @@ jobs:
 
   publish-npm:
     needs: [build, build-typescript]
-    if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && !inputs.dry_run)
+    # A tag ref only: a manual run publishes when started from a vX.Y.Z tag, never from a branch.
+    if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || !inputs.dry_run)
     runs-on: ubuntu-latest
     environment: npm
     permissions:
@@ -98,9 +122,11 @@ jobs:
         with:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
-      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: typescript-dist
           path: pkg/
       - name: Publish with provenance (trusted publishing)
-        run: npm publish pkg/*.tgz --provenance --access public
+        run: |
+          npm install --global npm@11.15.0
+          npm publish pkg/*.tgz --provenance --access public

@@ -4,8 +4,98 @@ from __future__ import annotations
 import re
 import threading
 from collections.abc import Callable
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING, Any, Protocol
 
 from commontrace.exceptions import CapabilityError, ConfigurationError
+
+if TYPE_CHECKING:
+    from commontrace.llm import Config
+
+
+class LanguageModel(Protocol):
+    @property
+    def config(self) -> Config: ...
+
+    def complete(self, prompt: str) -> tuple[str, dict[str, Any]]: ...
+    def generate(self, prompt: str) -> str: ...
+
+
+@dataclass(frozen=True)
+class _LanguageModel:
+    config: Config
+
+    def complete(self, prompt: str) -> tuple[str, dict[str, Any]]:
+        from commontrace.llm import complete
+
+        return complete(prompt, self.config)
+
+    def generate(self, prompt: str) -> str:
+        return self.complete(prompt)[0]
+
+
+class LLMFactory:
+    """Configured model instances retain the runtime's caching and reliability.
+
+    Existing frozen ``llm.Config`` objects need no extra dependency. Mappings
+    validate through the optional Pydantic provider configurations; secret
+    references are resolved only when constructing an instance.
+    """
+
+    @staticmethod
+    def names() -> tuple[str, ...]:
+        from commontrace.llm import _SUPPORTED_PROVIDERS
+
+        return tuple(sorted(set(_SUPPORTED_PROVIDERS) | {"openai"} | set(LLMS.names())))
+
+    @staticmethod
+    def caller(config: Config, builtins: dict[str, Callable]) -> Callable:
+        return llm_caller(config.provider, builtins)
+
+    @staticmethod
+    def create(provider: str, config) -> LanguageModel:
+        from commontrace.llm import Config
+
+        if isinstance(config, Config):
+            if config.provider != provider or provider not in LLMFactory.names():
+                raise ConfigurationError("model configuration must match the selected registered provider")
+            if provider in {"openai", "ollama"}:
+                config = replace(config, provider="openai-compatible", base_url=config.base_url or (
+                    "https://api.openai.com/v1" if provider == "openai" else "http://localhost:11434/v1"))
+            return _LanguageModel(config)
+        try:
+            from commontrace.provider_config import LLMConfig
+        except ImportError:
+            raise CapabilityError("mapping configurations require pip install 'commontrace[providers]'") from None
+        if isinstance(config, LLMConfig):
+            validated = config
+        elif isinstance(config, dict):
+            if "provider" in config and config["provider"] != provider:
+                raise ConfigurationError("model configuration cannot override the selected provider")
+            validated = LLMConfig.model_validate({**config, "provider": provider})
+        else:
+            raise ConfigurationError("model configuration must be an object or a validated configuration")
+        if validated.provider != provider:
+            raise ConfigurationError("model configuration cannot override the selected provider")
+        return _LanguageModel(validated.runtime_config())
+
+
+class EmbedderFactory:
+    @staticmethod
+    def create(config):
+        """Accept an existing tag/Spec or an optional validated configuration."""
+        from commontrace import embeddings
+
+        if isinstance(config, (str, embeddings.Spec)):
+            tag = config.tag if isinstance(config, embeddings.Spec) else config
+            return (embeddings.provider(config, local_files_only=True) if tag == embeddings.DEFAULT_LOCAL_TAG
+                    else embeddings.provider(config))
+        try:
+            from commontrace.provider_config import EmbedderConfig
+        except ImportError:
+            raise CapabilityError("mapping configurations require pip install 'commontrace[providers]'") from None
+        validated = config if isinstance(config, EmbedderConfig) else EmbedderConfig.model_validate(config)
+        return embeddings.provider(validated.tag(), local_files_only=validated.cache_only)
 
 
 class ProviderRegistry:
@@ -56,6 +146,19 @@ _MODEL_RERANKERS = frozenset({"cohere", "voyage", "jina", "llm"})
 _RERANK_MODEL = re.compile(r"[A-Za-z0-9._/\-]{1,128}")
 
 
+def validate_reranker(name: str) -> tuple[str, str]:
+    """Validate a registered tag without constructing models or resolving secrets."""
+    register_builtin_rerankers()
+    if not isinstance(name, str):
+        raise ConfigurationError("a reranker is chosen by name")
+    base, sep, model = name.partition(":")
+    if base not in RERANKERS.names():
+        raise CapabilityError("unknown registered reranker")
+    if sep and (base not in _MODEL_RERANKERS or not _RERANK_MODEL.fullmatch(model)):
+        raise ConfigurationError("only cohere, voyage, jina and llm take a valid :model suffix")
+    return base, model
+
+
 def reranker(name: str):
     """Resolve a reranker by name or ``provider:model`` tag; built-ins register on first use.
 
@@ -63,13 +166,8 @@ def reranker(name: str):
     cross-encoders, ``cohere``, ``voyage``, ``jina``, ``llm``) also expose
     ``rerank(query, documents, top_n)`` for facts, recall and conversations.
     """
-    register_builtin_rerankers()
-    if not isinstance(name, str):
-        raise ConfigurationError("a reranker is chosen by name")
-    base, _sep, model = name.partition(":")
-    if _sep:
-        if base not in _MODEL_RERANKERS or not _RERANK_MODEL.fullmatch(model):
-            raise ConfigurationError("only cohere, voyage, jina and llm take a :model suffix")
+    base, model = validate_reranker(name)
+    if model:
         return RERANKERS.create(base, model)
     return RERANKERS.create(name)
 
@@ -154,8 +252,11 @@ _RERANK_REGISTERED = [False]
 
 def register_llm(name: str, complete: Callable, *, requires_api_key: bool = False) -> None:
     """Register trusted application code implementing (Config, prompt) -> (text, usage)."""
-    LLMS.register(name, lambda: complete)
-    LLM_CREDENTIALS[name] = requires_api_key
+    if not callable(complete) or not isinstance(requires_api_key, bool):
+        raise ConfigurationError("LLM registration requires a callable and a boolean credential policy")
+    with LLMS._lock:
+        LLMS.register(name, lambda: complete)
+        LLM_CREDENTIALS[name] = requires_api_key
 
 
 def llm_caller(name: str, builtins: dict[str, Callable]) -> Callable:
@@ -226,7 +327,39 @@ class BackendFactory:
             args["dsn"] = dsn
         elif provider == "lance":
             args["root"] = self.root
+        elif provider in VECTORS.names():
+            args["root"] = self.root
         else:
             raise CapabilityError("unsupported configured vector backend")
         value = await STORE_WORKERS.run(VECTORS.create, provider, **args)
-        return await value if inspect.isawaitable(value) else value
+        value = await value if inspect.isawaitable(value) else value
+        expected = {"tenant": scope.tenant, "namespace": scope.namespace, "model": scope.model,
+                    "dimension": scope.dimension}
+        if any(getattr(value, key, None) != wanted for key, wanted in expected.items()):
+            close = getattr(value, "close", None)
+            if callable(close):
+                try:
+                    result = close()
+                    if inspect.isawaitable(result):
+                        await result
+                except Exception:
+                    pass
+            raise CapabilityError("vector provider did not preserve the authenticated scope")
+        return value
+
+    async def from_config(self, config):
+        """Validated configuration is constructed by authenticated server code."""
+        try:
+            from commontrace.provider_config import VectorStoreConfig
+        except ImportError:
+            raise CapabilityError("mapping configurations require pip install 'commontrace[providers]'") from None
+        validated = config if isinstance(config, VectorStoreConfig) else VectorStoreConfig.model_validate(config)
+        from commontrace.secrets_provider import env_secret
+
+        dsn = (validated.dsn.get_secret_value() if validated.dsn is not None else
+               env_secret(validated.dsn_env) if validated.dsn_env is not None else "")
+        if dsn.startswith("postgresql+asyncpg://"):
+            dsn = "postgresql://" + dsn[len("postgresql+asyncpg://"):]
+        return await self.vector(validated.provider, owner=validated.owner, dataset=validated.dataset,
+                                 model=validated.model, dimension=validated.dimension,
+                                 dsn=dsn)

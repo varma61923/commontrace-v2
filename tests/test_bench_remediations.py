@@ -15,15 +15,20 @@ class TestStandaloneRootPathResolution:
         expected_repo = os.path.dirname(os.path.dirname(script_dir))
         assert os.path.abspath(mp._AUTO_ROOT) == os.path.abspath(expected_repo)
         assert os.path.isdir(os.path.join(mp._AUTO_ROOT, "commontrace"))
-        assert os.path.isdir(os.path.join(mp._AUTO_ROOT, "memory"))
 
     def test_pilot_metrics_root_points_to_repo_root(self, monkeypatch):
         monkeypatch.delenv("COMMONTRACE_ROOT", raising=False)
         monkeypatch.delenv("JUSTDOIT_ROOT", raising=False)
 
-        script_path = os.path.abspath(pm.__file__)
-        expected_repo = os.path.dirname(os.path.dirname(os.path.dirname(script_path)))
-        assert os.path.abspath(pm._ROOT) == os.path.abspath(expected_repo)
+        # _ROOT is selected at import time. Import in a fresh process after
+        # clearing overrides so an inherited root cannot invalidate this test.
+        result = subprocess.run(
+            [sys.executable, "-c", "from commontrace.reference import pilot_metrics; print(pilot_metrics._ROOT)"],
+            capture_output=True, text=True, check=True,
+            cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        )
+        expected_repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        assert os.path.abspath(result.stdout.strip()) == expected_repo
 
     def test_measure_performance_standalone_execution(self):
         repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 
 from commontrace import llm_cache as llm_cache_mod
 from commontrace.circuit_breaker import CircuitBreaker, CircuitOpenError
+from commontrace.configuration import getenv as _configuration_getenv
 from commontrace.exceptions import InfrastructureError
 from commontrace.retry import call_with_retries, is_retryable
 from commontrace.runtime_cache import RuntimeCache
@@ -51,14 +52,20 @@ def _transient_provider_failure(error: BaseException) -> bool:
     return False
 
 
+def _credential_hash(key: str) -> str:
+    return hashlib.pbkdf2_hmac("sha256", key.encode("utf-8"), b"commontrace-key-digest", 1000).hex()
+
+
 def _provider_call(cfg: Config, prompt: str, caller) -> tuple[str, dict]:
     from commontrace.overload import OverloadPolicy
 
     key = (cfg.provider, cfg.model, cfg.base_url, cfg.region, cfg.project, cfg.cache_namespace,
-           hashlib.sha256(cfg.api_key.encode("utf-8")).hexdigest())
+           _credential_hash(cfg.api_key))
     overload = _OVERLOADS.get_or_load(key, OverloadPolicy)
+    # A local admission refusal says nothing about provider health and must
+    # neither reset a circuit nor consume its single recovery probe.
+    overload.admit()
     def dispatch():
-        overload.admit()
         try:
             value = caller(cfg, prompt)
         except Exception as exc:
@@ -66,7 +73,7 @@ def _provider_call(cfg: Config, prompt: str, caller) -> tuple[str, dict]:
             raise
         overload.on_success()
         return value
-    if os.environ.get("COMMONTRACE_LLM_CIRCUIT_BREAKER", "1").strip().lower() in ("0", "false", "off", "no"):
+    if _configuration_getenv("COMMONTRACE_LLM_CIRCUIT_BREAKER", "1").strip().lower() in ("0", "false", "off", "no"):
         return dispatch()
     circuit = _CIRCUITS.get_or_load(key, CircuitBreaker)
     try:
@@ -96,39 +103,44 @@ class Config:
 
 def load_config() -> Config:
     """Provider settings from the environment."""
-    provider = os.environ.get("COMMONTRACE_LLM_PROVIDER", DEFAULT_PROVIDER).strip().lower()
-    from commontrace.providers import LLM_CREDENTIALS, LLMS
+    provider = _configuration_getenv("COMMONTRACE_LLM_PROVIDER", DEFAULT_PROVIDER).strip().lower()
+    from commontrace.providers import LLM_CREDENTIALS, LLMFactory
 
-    if provider not in (*_SUPPORTED_PROVIDERS, *LLMS.names()):
+    if provider not in LLMFactory.names():
         raise LLMUnavailable(
             f"COMMONTRACE_LLM_PROVIDER={provider!r} is not supported "
             f"(use one of: {', '.join(_SUPPORTED_PROVIDERS)})."
         )
     ollama_alias = provider == "ollama"
-    if ollama_alias:
+    openai_alias = provider == "openai"
+    if ollama_alias or openai_alias:
         provider = "openai-compatible"
     try:
         api_key = env_secret("COMMONTRACE_LLM_API_KEY").strip()
+        if openai_alias and not api_key:
+            api_key = env_secret("OPENAI_API_KEY").strip()
     except RuntimeError:
         raise LLMUnavailable("configured LLM API secret could not be resolved") from None
     if provider == "local":
         from commontrace import local_llm
 
-        model = os.environ.get("COMMONTRACE_LLM_MODEL", "").strip() or local_llm.DEFAULT_MODEL
+        model = _configuration_getenv("COMMONTRACE_LLM_MODEL", "").strip() or local_llm.DEFAULT_MODEL
         return Config(provider="local", model=model, api_key="",
-                      cache_namespace=os.environ.get("COMMONTRACE_LLM_CACHE_NAMESPACE", "").strip() or None)
+                      cache_namespace=_configuration_getenv("COMMONTRACE_LLM_CACHE_NAMESPACE", "").strip() or None)
     if not api_key and provider not in _CLOUD_PROVIDERS and not ollama_alias and LLM_CREDENTIALS.get(provider, True):
         raise LLMUnavailable(
             "COMMONTRACE_LLM_API_KEY is not set -- no LLM-assisted draft is possible."
         )
-    model = os.environ.get("COMMONTRACE_LLM_MODEL", "").strip() or DEFAULT_MODEL
-    cache_namespace = os.environ.get("COMMONTRACE_LLM_CACHE_NAMESPACE", "").strip() or None
+    model = _configuration_getenv("COMMONTRACE_LLM_MODEL", "").strip() or (
+        "gpt-4.1-mini" if openai_alias else DEFAULT_MODEL
+    )
+    cache_namespace = _configuration_getenv("COMMONTRACE_LLM_CACHE_NAMESPACE", "").strip() or None
     if provider in _CLOUD_PROVIDERS:
-        model = os.environ.get("COMMONTRACE_LLM_MODEL", "").strip()
-        region = os.environ.get("COMMONTRACE_LLM_REGION", "").strip()
+        model = _configuration_getenv("COMMONTRACE_LLM_MODEL", "").strip()
+        region = _configuration_getenv("COMMONTRACE_LLM_REGION", "").strip()
         if not region and provider == "bedrock":
             region = os.environ.get("AWS_REGION", "").strip()
-        project = os.environ.get("COMMONTRACE_LLM_PROJECT", "").strip() or None
+        project = _configuration_getenv("COMMONTRACE_LLM_PROJECT", "").strip() or None
         missing = [name for name, value in (
             ("COMMONTRACE_LLM_MODEL", model), ("COMMONTRACE_LLM_REGION", region),
             *((("COMMONTRACE_LLM_PROJECT", project),) if provider == "vertex" else ())) if not value]
@@ -136,10 +148,12 @@ def load_config() -> Config:
             raise LLMUnavailable(f"COMMONTRACE_LLM_PROVIDER={provider} also needs {', '.join(missing)}.")
         return Config(provider=provider, model=model, api_key="", region=region,
                       project=project, cache_namespace=cache_namespace)
-    base_url = os.environ.get("COMMONTRACE_LLM_BASE_URL", "").strip() or None
+    base_url = _configuration_getenv("COMMONTRACE_LLM_BASE_URL", "").strip() or None
     if provider == "openai-compatible" and not base_url:
         if ollama_alias:
             base_url = _OLLAMA_DEFAULT_BASE_URL
+        elif openai_alias:
+            base_url = "https://api.openai.com/v1"
         else:
             raise LLMUnavailable(
                 "COMMONTRACE_LLM_PROVIDER=openai-compatible requires COMMONTRACE_LLM_BASE_URL "
@@ -293,7 +307,17 @@ def _call_openai_compatible(config: Config, prompt: str) -> tuple[str, dict]:
 def complete_with_image(
     config: Config, prompt: str, image_bytes: bytes, mime: str,
 ) -> tuple[str, dict]:
-    """Ask the model about an image, returning (text, usage)."""
+    """Ask about an image with the same account-scoped admission as text.
+
+    Vision and text share provider cooldowns and circuit recovery. Image
+    completions are not retained in the text completion cache.
+    """
+    return _provider_call(config, prompt, lambda cfg, text: _call_with_image(cfg, text, image_bytes, mime))
+
+
+def _call_with_image(
+    config: Config, prompt: str, image_bytes: bytes, mime: str,
+) -> tuple[str, dict]:
     import base64
 
     provider = "openai-compatible" if config.provider == "ollama" else config.provider
@@ -443,9 +467,9 @@ def complete(prompt: str, config: Config | None = None) -> tuple[str, dict]:
         return runtime.complete(prompt, purpose=PURPOSE.get(), config=config)
     cfg = config or load_config()
     cache = llm_cache_mod.LLMCache() if llm_cache_mod.enabled() else None
-    from commontrace.providers import llm_caller
+    from commontrace.providers import LLMFactory
 
-    caller = llm_caller(cfg.provider, {"anthropic": _call_anthropic, "openai-compatible": _call_openai_compatible,
+    caller = LLMFactory.caller(cfg, {"anthropic": _call_anthropic, "openai-compatible": _call_openai_compatible,
               "ollama": _call_openai_compatible,
               "bedrock": _call_bedrock, "vertex": _call_vertex, "local": _call_local,
               "gemini": _call_gemini})
@@ -456,15 +480,26 @@ def complete(prompt: str, config: Config | None = None) -> tuple[str, dict]:
     # Provider, endpoint and cloud routing prevent cross-account/provider reuse.
     # Only a digest of the credential is used; no plaintext enters disk keys.
     namespace = json.dumps([cfg.provider, cfg.base_url, cfg.region, cfg.project, cfg.cache_namespace,
-                            hashlib.sha256(cfg.api_key.encode("utf-8")).hexdigest()])
+                            _credential_hash(cfg.api_key)])
     key = llm_cache_mod.cache_key(cfg.model, prompt, namespace=namespace)
 
+    computed = False
+
     def compute():
+        nonlocal computed
+        computed = True
         text, usage = _provider_call(cfg, prompt, caller)
-        return {"text": text, "usage": usage}
+        return {"text": text, "usage": usage, "cost_usd": cost_usd(usage, cfg.model)}
 
     value = cache.get_or_compute(key, compute)
-    return value["text"], value.get("usage", {})
+    usage = value.get("usage", {})
+    usage = dict(usage) if isinstance(usage, dict) else {}
+    # Only the call that actually invokes the provider is fresh spend. Hot,
+    # disk-cache, and coalesced waiters all carry the historical usage record.
+    usage["_commontrace_cache_hit"] = not computed
+    if not computed:
+        usage["_commontrace_cached_cost_usd"] = value.get("cost_usd")
+    return value["text"], usage
 
 
 def draft(
@@ -533,7 +568,7 @@ def draft(
 def cost_usd(usage: dict, model: str, prices: dict | None = None) -> float | None:
     """What one call cost, from a price table the OWNER supplies."""
     if prices is None:
-        path = os.environ.get("COMMONTRACE_LLM_PRICES", "").strip()
+        path = _configuration_getenv("COMMONTRACE_LLM_PRICES", "").strip()
         if not path:
             return None
         try:

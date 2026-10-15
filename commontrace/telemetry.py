@@ -21,6 +21,7 @@ import json
 import logging
 import math
 import os
+import re
 import threading
 import time
 import uuid
@@ -28,12 +29,18 @@ from bisect import bisect_left
 from collections.abc import Callable, Iterator
 from typing import Any
 
+from commontrace.configuration import getenv as _configuration_getenv
+
 BUCKETS_MS = (1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000)
 _MAX_ATTR = 256
 _CONTEXT: contextvars.ContextVar[dict] = contextvars.ContextVar("commontrace_telemetry", default={})  # noqa: B039
 _LOCK = threading.Lock()
 _COUNTERS: dict[tuple[str, tuple], float] = {}
 _HISTOGRAMS: dict[tuple[str, tuple], list] = {}
+_MAX_SERIES = 4096
+_DROPPED = {"counter": 0, "histogram": 0}
+_METRIC_NAME = re.compile(r"[a-zA-Z_:][a-zA-Z0-9_:]{0,127}\Z")
+_LABEL_NAME = re.compile(r"[a-zA-Z_][a-zA-Z0-9_]{0,63}\Z")
 _TRACER: Any = None
 _TRACER_STATE = {"tried": False, "error": ""}
 
@@ -51,6 +58,13 @@ def redact(value: Any) -> Any:
 
     text, _found = memory_guard.redact_secrets(text)
     return text if len(text) <= _MAX_ATTR else text[:_MAX_ATTR] + "..."
+
+
+def redact_mapping(fields: dict[str, Any]) -> dict[str, Any]:
+    """Scrub sensitive credentials in mapping keys and nested values."""
+    if not isinstance(fields, dict):
+        return fields
+    return _safe_fields(fields)
 
 
 def _safe_fields(fields: dict[str, Any]) -> dict[str, Any]:
@@ -149,7 +163,7 @@ def spawn_background(
 # --- tracing ---------------------------------------------------------------------
 
 def otel_enabled() -> bool:
-    flag = os.environ.get("COMMONTRACE_OTEL", "").strip().lower()
+    flag = _configuration_getenv("COMMONTRACE_OTEL", "").strip().lower()
     if flag in ("0", "false", "off", "no"):
         return False
     return flag in ("1", "true", "on", "yes") or bool(os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"))
@@ -277,26 +291,51 @@ def _labels(labels: dict) -> tuple:
 
 
 def count(name: str, value: float = 1.0, **labels: Any) -> None:
+    if not _valid_metric(name, value, labels):
+        return
     key = (name, _labels(labels))
     with _LOCK:
-        _COUNTERS[key] = _COUNTERS.get(key, 0.0) + value
+        if key not in _COUNTERS and len(_COUNTERS) + len(_HISTOGRAMS) >= _MAX_SERIES:
+            _DROPPED["counter"] += 1
+            return
+        total = _COUNTERS.get(key, 0.0) + value
+        if not math.isfinite(total):
+            _DROPPED["counter"] += 1
+            return
+        _COUNTERS[key] = total
 
 
 def observe(name: str, value: float, **labels: Any) -> None:
+    if not _valid_metric(name, value, labels):
+        return
     key = (name, _labels(labels))
     with _LOCK:
         hist = _HISTOGRAMS.get(key)
         if hist is None:
+            if len(_COUNTERS) + len(_HISTOGRAMS) >= _MAX_SERIES:
+                _DROPPED["histogram"] += 1
+                return
             hist = _HISTOGRAMS[key] = [[0] * (len(BUCKETS_MS) + 1), 0.0, 0]
+        if not math.isfinite(hist[1] + value):
+            _DROPPED["histogram"] += 1
+            return
         hist[0][bisect_left(BUCKETS_MS, value)] += 1
         hist[1] += value
         hist[2] += 1
+
+
+def _valid_metric(name: str, value: float, labels: dict[str, Any]) -> bool:
+    # Instrumentation must not break a request or create invalid scrape data.
+    return (isinstance(name, str) and _METRIC_NAME.fullmatch(name) is not None
+            and isinstance(value, (int, float)) and math.isfinite(value) and value >= 0
+            and len(labels) <= 16 and all(_LABEL_NAME.fullmatch(key) for key in labels))
 
 
 def reset() -> None:
     with _LOCK:
         _COUNTERS.clear()
         _HISTOGRAMS.clear()
+        _DROPPED.update(counter=0, histogram=0)
 
 
 def _quantile(buckets: list[int], total: int, q: float) -> float:
@@ -312,6 +351,8 @@ def metrics() -> dict:
     """{"counters": [...], "histograms": [...]} with p50/p95 upper bounds."""
     with _LOCK:
         counters = [{"name": n, "labels": dict(lbl), "value": v} for (n, lbl), v in sorted(_COUNTERS.items())]
+        counters.extend({"name": "commontrace_telemetry_dropped_series", "labels": {"kind": kind}, "value": value}
+                        for kind, value in _DROPPED.items() if value)
         hists = [{"name": n, "labels": dict(lbl), "count": h[2], "sum_ms": round(h[1], 3),
                   "p50_ms": _quantile(h[0], h[2], 0.5), "p95_ms": _quantile(h[0], h[2], 0.95)}
                  for (n, lbl), h in sorted(_HISTOGRAMS.items())]
@@ -327,25 +368,30 @@ def _prom_labels(labels: tuple, extra: tuple = ()) -> str:
 
 
 def prometheus() -> str:
-    lines: list[str] = []
+    # Copy bounded state under the lock; sorting and rendering never block writers.
     with _LOCK:
-        names = sorted({n for n, _ in _COUNTERS})
-        for name in names:
+        counters = list(_COUNTERS.items())
+        histograms = [(key, (list(h[0]), h[1], h[2])) for key, h in _HISTOGRAMS.items()]
+        counters.extend((("commontrace_telemetry_dropped_series", (("kind", kind),)), value)
+                        for kind, value in _DROPPED.items() if value)
+    lines: list[str] = []
+    previous = None
+    for (name, lbl), value in sorted(counters):
+        if name != previous:
             lines.append(f"# TYPE {name}_total counter")
-            for (n, lbl), v in sorted(_COUNTERS.items()):
-                if n == name:
-                    lines.append(f"{name}_total{_prom_labels(lbl)} {v:g}")
-        for name in sorted({n for n, _ in _HISTOGRAMS}):
+            previous = name
+        lines.append(f"{name}_total{_prom_labels(lbl)} {value:g}")
+    previous = None
+    for (name, lbl), (buckets, total, count_) in sorted(histograms):
+        if name != previous:
             lines.append(f"# TYPE {name} histogram")
-            for (n, lbl), (buckets, total, count_) in sorted(_HISTOGRAMS.items()):
-                if n != name:
-                    continue
-                running = 0
-                for bound, hits in zip((*BUCKETS_MS, "+Inf"), buckets):
-                    running += hits
-                    lines.append(f"{name}_bucket{_prom_labels(lbl, (('le', str(bound)),))} {running}")
-                lines.append(f"{name}_sum{_prom_labels(lbl)} {total:.3f}")
-                lines.append(f"{name}_count{_prom_labels(lbl)} {count_}")
+            previous = name
+        running = 0
+        for bound, hits in zip((*BUCKETS_MS, "+Inf"), buckets):
+            running += hits
+            lines.append(f"{name}_bucket{_prom_labels(lbl, (('le', str(bound)),))} {running}")
+        lines.append(f"{name}_sum{_prom_labels(lbl)} {total:.3f}")
+        lines.append(f"{name}_count{_prom_labels(lbl)} {count_}")
     return "\n".join(lines) + "\n"
 
 
@@ -389,9 +435,9 @@ def configure_logging(fmt: str | None = None, level: str | None = None, stream=N
                       _logger_name: str = "commontrace") -> None:
     """Configure the `commontrace` logger once (env: COMMONTRACE_LOG_FORMAT=json|text,
     COMMONTRACE_LOG_LEVEL). Without either variable nothing changes."""
-    fmt = (fmt or os.environ.get("COMMONTRACE_LOG_FORMAT", "")).strip().lower()
-    level = (level or os.environ.get("COMMONTRACE_LOG_LEVEL", "")).strip().upper()
-    log_file = log_file or os.environ.get("COMMONTRACE_LOG_FILE", "").strip()
+    fmt = (fmt or _configuration_getenv("COMMONTRACE_LOG_FORMAT", "")).strip().lower()
+    level = (level or _configuration_getenv("COMMONTRACE_LOG_LEVEL", "")).strip().upper()
+    log_file = log_file or _configuration_getenv("COMMONTRACE_LOG_FILE", "").strip()
     if not fmt and not level and not log_file:
         return
     if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes < 1024 or (
@@ -443,5 +489,5 @@ def status() -> dict:
         otel_installed = False
     return {"otel_installed": otel_installed, "otel_enabled": otel_enabled(),
             "tracing": _TRACER is not None, "note": _TRACER_STATE["error"],
-            "log_format": os.environ.get("COMMONTRACE_LOG_FORMAT", "") or "default",
+            "log_format": _configuration_getenv("COMMONTRACE_LOG_FORMAT", "") or "default",
             "endpoint": os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "")}

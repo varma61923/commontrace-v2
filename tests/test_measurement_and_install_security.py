@@ -365,31 +365,3 @@ class TestTraceIoFallback:
         inst, body = trace_io.read(str(trace_file))
         assert inst["context_text"] == "Recovered context text from body section."
         assert inst["solution_text"] == "Recovered solution text from body section."
-
-
-class TestScaffoldStoreSanity:
-    def test_example_trace_conforms_to_schema(self):
-        from commontrace import paths, trace_io, validate
-        root = paths.resolve_root(None)
-        example_trace = os.path.join(paths.traces_dir(root), "2026-07-01_example-trace.md")
-        assert os.path.isfile(example_trace), f"Example trace not found at {example_trace}"
-        inst, _ = trace_io.read(example_trace)
-        schema = validate.load_schema("trace.schema.json")
-        errors = validate.validate(inst, schema)
-        assert errors == [], f"Example trace schema errors: {errors}"
-
-    def test_lesson_template_has_review_status(self):
-        from commontrace import frontmatter, paths
-        root = paths.resolve_root(None)
-        template = os.path.join(paths.lessons_dir(root), "lesson_template.md")
-        assert os.path.isfile(template)
-        fm, _ = frontmatter.read(template)
-        assert fm.get("status") == "review"
-
-    def test_memory_index_declares_agent_type_code(self):
-        from commontrace import paths
-        from commontrace.commands import doctor_cmd
-        root = paths.resolve_root(None)
-        declared = doctor_cmd._declared_agent_type(root)
-        assert declared == "code"
-

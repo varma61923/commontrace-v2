@@ -139,3 +139,58 @@ def test_public_evaluation_uses_real_store_without_gold_leak_or_artifacts(tmp_pa
 def test_invalid_budgets_fail_before_loading_or_ingestion(budgets):
     with pytest.raises(ValueError, match="budgets"):
         evaluate("locomo", "absent-file", budgets=budgets)
+
+
+def test_semantic_and_mmr_evaluation_use_production_paths_and_record_conditions(tmp_path, monkeypatch):
+    pytest.importorskip("numpy")
+    from commontrace import embeddings
+
+    calls = []
+
+    class Encoder:
+        def __init__(self, spec):
+            self.spec = spec
+
+        def embed(self, texts, *, query):
+            calls.append((query, list(texts)))
+            return [[1.0] + [0.0] * 31 for _ in texts]
+
+    monkeypatch.setitem(embeddings._CUSTOM, "fixtureeval", Encoder)
+    data = _dataset(tmp_path / "dataset.json", count=1)
+    result = evaluate("locomo", data, budgets=[100], embedder="fixtureeval:dense@32", reranker="mmr")
+    conditions = result["conditions"]
+    assert conditions["effective_embedders"] == ["fixtureeval:dense@32"]
+    assert conditions["embedding_model"] == "fixtureeval:dense@32"
+    assert conditions["reranker"] == "mmr"
+    assert conditions["dense_failures"] == conditions["rerank_failures"] == 0
+    assert any(query for query, _texts in calls) and any(not query for query, _texts in calls)
+    assert all("PRIVATE_GOLD_ANSWER" not in text for _query, texts in calls for text in texts)
+
+
+def test_evaluation_records_degraded_dense_service_without_fabricating_success(tmp_path, monkeypatch):
+    pytest.importorskip("numpy")
+    from commontrace import embeddings
+
+    class Broken:
+        def __init__(self, spec):
+            self.spec = spec
+
+        def embed(self, texts, *, query):
+            raise RuntimeError("private provider diagnostics")
+
+    monkeypatch.setitem(embeddings._CUSTOM, "fixtureeval", Broken)
+    data = _dataset(tmp_path / "dataset.json", count=1)
+    result = evaluate("locomo", data, budgets=[100], embedder="fixtureeval:dense@32")
+    assert result["conditions"]["dense_failures"] == 2
+    assert "private provider" not in json.dumps(result)
+
+
+def test_benchmark_cli_accepts_registered_rerankers_without_resolving_credentials():
+    import argparse
+
+    from benchmarks.conversation_bench import _reranker_choice
+
+    for value in ("none", "auto", "mmr", "cohere:rerank-v3.5"):
+        assert _reranker_choice(value) == value
+    with pytest.raises(argparse.ArgumentTypeError):
+        _reranker_choice("os.system")

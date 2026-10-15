@@ -20,8 +20,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from commontrace import approval, frontmatter, trace_io, validate  # noqa: E402
-from commontrace.commands import doctor_cmd, import_cmd  # noqa: E402
+from commontrace import approval, trace_io  # noqa: E402
+from commontrace.commands import import_cmd  # noqa: E402
 
 try:
     from hub import auth, crud  # noqa: E402
@@ -344,7 +344,7 @@ class TestTypeScriptSdkHardening:
         console.log("TS_SDK_HARDENING_OK");
         """
         proc = subprocess.run(
-            ["node", "-e", node_script],
+            ["node", "--input-type=module", "-e", node_script],
             cwd=str(REPO_ROOT),
             capture_output=True,
             text=True,
@@ -647,54 +647,3 @@ class TestMcpServerLockSafetyAndTraceIo:
         instance, _ = trace_io.read(str(trace_file))
         assert instance["context_text"] == "12345"
         assert instance["solution_text"] == "67890"
-
-
-class TestMemoryStoreScaffoldingAndInvariants:
-    def test_memory_trace_example_trace_conforms_to_schema(self):
-        trace_path = REPO_ROOT / "memory" / "traces" / "2026-07-01_example-trace.md"
-        assert trace_path.is_file(), f"Expected trace file at {trace_path}"
-
-        trace_data, body = trace_io.read(str(trace_path))
-        schema = validate.load_schema("trace.schema.json")
-        errors = validate.validate(trace_data, schema)
-        assert not errors, f"Example trace has schema errors: {errors}"
-
-        assert trace_data["id"] == "2026-07-01_example-trace"
-        assert trace_data["agent_type"] == "code"
-        assert isinstance(trace_data.get("tags"), list)
-        assert len(trace_data["tags"]) > 0
-        assert trace_data.get("outcome", {}).get("resolved") is True
-        assert "## Context" in body
-        assert "## Solution" in body
-
-    def test_memory_lesson_template_status_review_conforms_to_schema(self):
-        lesson_path = REPO_ROOT / "memory" / "lessons" / "lesson_template.md"
-        assert lesson_path.is_file(), f"Expected lesson template at {lesson_path}"
-
-        fm, _ = frontmatter.read(str(lesson_path))
-        assert fm["status"] == "review", "lesson_template.md status must be 'review'"
-
-        schema = validate.load_schema("lesson.schema.json")
-        errors = validate.validate(fm, schema)
-        assert not errors, f"Lesson template has schema errors: {errors}"
-
-    def test_memory_index_declared_agent_type_is_code(self):
-        index_path = REPO_ROOT / "memory" / "INDEX.md"
-        assert index_path.is_file(), f"Expected index file at {index_path}"
-
-        with open(index_path, encoding="utf-8") as fh:
-            first_line = fh.readline()
-        assert "agent_type: code" in first_line
-
-        declared = doctor_cmd._declared_agent_type(str(REPO_ROOT))
-        assert declared == "code", f"Expected declared agent_type 'code', got {declared!r}"
-
-    def test_memory_episode_template_importance_rationale_populated(self):
-        episode_path = REPO_ROOT / "memory" / "episodes" / "episode_template.md"
-        assert episode_path.is_file(), f"Expected episode template at {episode_path}"
-
-        fm, _ = frontmatter.read(str(episode_path))
-        rationale = fm.get("importance_rationale")
-        assert isinstance(rationale, str), "importance_rationale must be a string"
-        assert len(rationale.strip()) > 0, "importance_rationale must not be empty"
-        assert "1 sentence explaining why this score was assigned" in rationale

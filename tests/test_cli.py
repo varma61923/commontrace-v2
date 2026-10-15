@@ -5,6 +5,7 @@ import sys
 
 import pytest
 
+from commontrace import cli as cli_module
 from commontrace import frontmatter, paths, trace_io, validate
 from commontrace.cli import main
 from commontrace.commands import _shellout
@@ -23,6 +24,23 @@ def test_init_scaffolds_store_for_any_agent_type(store):
     assert os.path.isdir(store / "memory" / "traces")
     assert not os.path.isdir(store / "memory" / "episodes")
     assert os.path.isfile(store / "memory" / "INDEX.md")
+
+
+def test_cli_adds_a_deterministic_remediation_hint_to_generic_errors(monkeypatch, capsys):
+    def fail(_args):
+        raise ValueError("invalid field")
+
+    monkeypatch.setattr(cli_module, "_configured_call", fail)
+
+    assert main(["init"]) == 1
+    error = capsys.readouterr().err
+    assert "ValueError: invalid field" in error
+    assert "Check field types, limits, timestamps and configuration." in error
+
+    from commontrace.exceptions import remediation_hint
+    from commontrace.remediation import hint
+
+    assert hint is remediation_hint
 
 
 def test_init_creates_episodes_dir_for_code_agent_type(store):
@@ -541,16 +559,6 @@ def test_packaged_schemas_are_identical_to_the_normative_ones():
         )
 
 
-def test_skill_description_fits_the_claude_code_limit():
-    import yaml as _yaml
-
-    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    with open(os.path.join(repo, "SKILL.md"), encoding="utf-8") as fh:
-        front = fh.read().split("---")[1]
-    description = _yaml.safe_load(front)["description"]
-    assert len(description) <= 1024, f"SKILL.md description is {len(description)} chars (limit 1024)"
-
-
 def test_shipped_schemas_use_only_keywords_the_validator_enforces():
     for name in ("trace.schema.json", "lesson.schema.json"):
         validate.assert_supported_schema(validate.load_schema(name))
@@ -677,10 +685,10 @@ def test_every_subcommand_module_registers_exactly_its_own_name():
     from commontrace import cli
 
     on_disk = sorted(p.stem[:-4] for p in pathlib.Path(cli.__file__).parent.joinpath("commands").glob("*_cmd.py"))
-    assert sorted(cli._COMMANDS) == on_disk
+    assert sorted(cli._COMMANDS) == sorted([*on_disk, *cli._COMMAND_GROUPS])
     for name in cli._COMMANDS:
         sub = argparse.ArgumentParser().add_subparsers()
-        (module,) = cli._command_modules(name)
+        module = cli._command_module(name)
         module.add_parser(sub)
         assert list(sub.choices) == [name]
 
@@ -738,4 +746,3 @@ def test_init_function_conflicting_with_agent_type_is_refused(store, capsys):
     assert main(["init", "--function", "support", "--agent-type", "sales", "--dest", str(store)]) == 2
     assert "conflicts" in capsys.readouterr().err
     assert not os.path.isdir(store / "memory")
-

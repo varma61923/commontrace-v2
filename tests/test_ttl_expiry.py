@@ -30,7 +30,8 @@ def _write_lesson(root, slug, description="force-push shared branch guidance",
 @pytest.fixture
 def store(tmp_path, capsys):
     root = str(tmp_path / "fleet")
-    assert main(["init", "--agent-type", "code", "--dest", root]) == 0
+    # These tests read and write facts.jsonl directly: the legacy single-file backend.
+    assert main(["init", "--agent-type", "code", "--fact-store", "jsonl", "--dest", root]) == 0
     capsys.readouterr()
     return root
 

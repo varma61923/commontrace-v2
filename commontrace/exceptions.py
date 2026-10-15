@@ -41,3 +41,20 @@ class CapabilityError(CommonTraceError, RuntimeError):
 class ConfigurationError(CommonTraceError, RuntimeError):
     code = "configuration_error"
     default_remediation = "Correct the server configuration; repeating this request will not fix it."
+
+
+def remediation_hint(error: BaseException) -> str:
+    """Return a deterministic, non-secret hint for a generic operator error."""
+    if isinstance(error, CommonTraceError):
+        return error.remediation
+    if isinstance(error, ImportError):
+        return "Install the documented optional extra in the same Python environment."
+    if isinstance(error, PermissionError):
+        return "Check the credential's principal and scopes; do not retry with elevated caller data."
+    if isinstance(error, (TimeoutError, ConnectionError)):
+        return "Check connectivity and retry within a bounded deadline."
+    if isinstance(error, ValueError):
+        return "Check field types, limits, timestamps and configuration."
+    if isinstance(error, OSError):
+        return "Check the path, permissions, or local service named in the error."
+    return "Review the supplied values and local logs for details."

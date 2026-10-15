@@ -136,7 +136,9 @@ class TestCacheMatchesDirectScan:
         cpath = lesson_cache.cache_path(root)
         with open(cpath, encoding="utf-8") as fh:
             on_disk = json.load(fh)
-        on_disk["entries"][path]["terms"] = [["only", "one", "field"]]
+        # Change the serialized size so the cache's metadata invalidation is
+        # deterministic even on filesystems with coarse timestamp precision.
+        on_disk["entries"][path]["terms"] = [["corrupt"]]
         with open(cpath, "w", encoding="utf-8") as fh:
             json.dump(on_disk, fh)
 

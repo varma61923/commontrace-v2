@@ -107,6 +107,7 @@ CREATE TABLE IF NOT EXISTS turns (
     expires TEXT, UNIQUE (session, idx));
 CREATE INDEX IF NOT EXISTS turns_at ON turns (at);
 CREATE INDEX IF NOT EXISTS turns_speaker ON turns (LOWER(speaker));
+CREATE INDEX IF NOT EXISTS turns_grounded_dates ON turns (lo, hi) WHERE lo IS NOT NULL;
 CREATE TABLE IF NOT EXISTS units (
     id INTEGER PRIMARY KEY, turn INTEGER NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
     part INTEGER NOT NULL, body TEXT NOT NULL, hash TEXT NOT NULL);
@@ -158,6 +159,11 @@ def connect(path: str, setup: str = "", *, read_only: bool = False) -> sqlite3.C
         uri = "file:" + urllib.parse.quote(os.path.abspath(path)) + "?mode=ro"
         db = sqlite3.connect(uri, uri=True, timeout=BUSY_SECONDS, check_same_thread=False, isolation_level=None)
         db.execute("PRAGMA query_only=ON")
+        # Connection-local scratch/page-cache limits apply to readers too.
+        # Large FTS sorts must not regress to file-backed scratch work merely
+        # because the service correctly opened its source read-only.
+        db.execute("PRAGMA temp_store=MEMORY")
+        db.execute("PRAGMA cache_size=-8192")
         return db
     db = sqlite3.connect(path, timeout=BUSY_SECONDS, check_same_thread=False, isolation_level=None)
     deadline = time.monotonic() + BUSY_SECONDS
@@ -232,7 +238,7 @@ class UnitChange:
 
 
 def _iso(moment: dt.datetime | None) -> str | None:
-    return moment.isoformat(timespec="minutes") if moment else None
+    return moment.isoformat(timespec="auto" if moment.second or moment.microsecond else "minutes") if moment else None
 
 
 def _moment(value) -> dt.datetime | None:
@@ -343,6 +349,7 @@ class Store:
         self._turn_cache: OrderedDict[int, Turn] = OrderedDict()
         self._turn_cache_bytes = 0
         self.cache_identity = object()
+        self._snapshot_stamp: tuple[int, int] | None = None
         self._read_stamp = None
         self._embedders: dict = {}
         if read_only:
@@ -350,7 +357,8 @@ class Store:
             self.db = connect(self.path, read_only=True)
             self.db.row_factory = sqlite3.Row
             self.db.execute("PRAGMA foreign_keys=ON")
-            self._inspect_schema()
+            with self.read_snapshot():
+                self._inspect_schema()
             return
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
         fts = ("CREATE VIRTUAL TABLE IF NOT EXISTS units_fts USING fts5(body, tokenize='porter unicode61');"
@@ -364,6 +372,7 @@ class Store:
         self._inspect_schema()
 
     def _inspect_schema(self) -> None:
+        self._schema_version = self.db.execute("PRAGMA schema_version").fetchone()[0]
         self._fact_columns = {r[1] for r in self.db.execute("PRAGMA table_info(facts)")}
         self._has_sources = bool(self.db.execute(
             "SELECT 1 FROM sqlite_master WHERE name='fact_sources'").fetchone())
@@ -480,11 +489,15 @@ class Store:
 
     def read_stamp(self) -> tuple[int, int]:
         """Detect local writes and commits by other connections, including deletions."""
-        stamp = (self.db.total_changes, self.db.execute("PRAGMA data_version").fetchone()[0])
+        version = self._snapshot_stamp[1] if self._snapshot_stamp is not None and self.db.in_transaction \
+            else self.db.execute("PRAGMA data_version").fetchone()[0]
+        stamp = (self.db.total_changes, version)
         if stamp != self._read_stamp:
             self._turn_cache.clear()
             self._turn_cache_bytes = 0
             self._read_stamp = stamp
+        if self._snapshot_stamp is not None:
+            self._snapshot_stamp = stamp
         return stamp
 
     def unit_stamp(self) -> tuple:
@@ -521,12 +534,18 @@ class Store:
                 return
             self.db.execute("BEGIN")
             try:
+                # PRAGMA data_version binds the transaction to its read view.
+                # Reuse that version within this snapshot; local writes still
+                # invalidate turn caches through total_changes.
+                self._snapshot_stamp = self.read_stamp()
                 yield
             except BaseException:
                 self.db.execute("ROLLBACK")
                 raise
             else:
                 self.db.execute("COMMIT")
+            finally:
+                self._snapshot_stamp = None
 
     def close(self) -> None:
         from commontrace.conversation import embed, search
@@ -550,8 +569,23 @@ class Store:
     # --- writing -----------------------------------------------------------------
 
     def add(self, session: str, messages: Iterable[Mapping], *, session_at=None,
-            user_speakers: Iterable[str] = (), extract_profile: bool = True) -> dict:
-        """Append messages to a session. Re-adding a message already stored is a no-op."""
+            user_speakers: Iterable[str] = (), extract_profile: bool = True,
+            cache_vectors: bool = False, embedder: str | None = None) -> dict:
+        """Append messages; optionally prepare vectors after committing redacted evidence.
+
+        Precomputation is explicit so capture does not silently run inference or
+        spend on a configured hosted provider. Cache failures never roll back
+        committed source messages; the result reports degraded cache readiness.
+        """
+        if not isinstance(cache_vectors, bool):
+            raise ConversationError("cache_vectors must be boolean")
+        tag = None
+        if cache_vectors:
+            from commontrace.conversation import embed
+
+            tag = embed.configured() if embedder in (None, "auto") else embed.canonical(embedder)
+            if not tag or not embed.available_for(tag):
+                raise ConversationError("vector preparation requires an available configured embedding provider")
         if not SESSION_RE.match(session or ""):
             raise ConversationError("session id must be 1-200 printable characters")
         _validate_session_metadata(session)
@@ -632,8 +666,21 @@ class Store:
                 added += 1
             if added:
                 self.db.execute("DELETE FROM summaries WHERE session=?", (session,))
-        return {"space": self.space, "session": session, "added": added, "skipped": skipped,
-                "secrets_redacted": redacted}
+        result = {"space": self.space, "session": session, "added": added, "skipped": skipped,
+                  "secrets_redacted": redacted}
+        if cache_vectors:
+            encoder = None
+            try:
+                encoder = embed.Embedder(self.root, tag)
+                prepared = embed.prepare(self, encoder, sessions=(session,))
+                result["embedding_cache"] = {"ready": True, **prepared,
+                                             "revision": [int(value) for value in prepared["revision"]]}
+            except Exception as exc:  # noqa: BLE001 - durable source evidence remains available for sparse recall
+                result["embedding_cache"] = {"ready": False, "error_type": type(exc).__name__}
+            finally:
+                if encoder is not None:
+                    encoder.close()
+        return result
 
     def delete_session(self, session: str) -> int:
         with self._lock, write_txn(self.db):
@@ -1122,6 +1169,19 @@ class Store:
         ids: set[int] = set()
         condition, params = self._fact_conditions(as_of=as_of, allowed=allowed)
         suffix = " AND " + condition
+        if instructions and match:
+            # Older relevant directives must not disappear behind a recent-rule
+            # cap. Bounded prefix matching also finds ordinary inflections such
+            # as implement/implementation and HTML/HTML5 without loading all
+            # standing rules. The same scope/time conditions remain mandatory.
+            terms = [term for term in dict.fromkeys(re.findall(r"[A-Za-z0-9]+", query.lower()))
+                     if term not in profile.STOPWORDS][:64]
+            instruction_match = " OR ".join(f'"{term[:5]}"*' if len(term) >= 3 else f'"{term}"'
+                                             for term in terms)
+            ids.update(r[0] for r in self.db.execute(
+                "SELECT f.id FROM facts_fts JOIN facts f ON f.id=facts_fts.rowid JOIN turns t ON t.id=f.turn "  # nosec B608
+                "WHERE facts_fts MATCH ? AND f.kind='instruction'" + suffix + " ORDER BY bm25(facts_fts) LIMIT ?",
+                [instruction_match, *params, limit]))
         if profile_facts and match:
             ids.update(r[0] for r in self.db.execute(
                 "SELECT f.id FROM facts_fts JOIN facts f ON f.id=facts_fts.rowid JOIN turns t ON t.id=f.turn "  # nosec B608 - fixed conditions

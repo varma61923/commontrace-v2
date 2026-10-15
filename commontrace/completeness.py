@@ -19,7 +19,7 @@ mention every term and still not contain the answer.
 from __future__ import annotations
 
 import re
-from typing import Iterable, Mapping
+from typing import Callable, Iterable, Mapping
 
 COMPLETE = "COMPLETE"
 PARTIAL = "PARTIAL"
@@ -57,6 +57,7 @@ def grade_context_completeness(
     *,
     answer: str = "",
     threshold: float = PRESENCE_THRESHOLD,
+    normalize: Callable[[str], str] | None = None,
 ) -> dict:
     """Grade how completely `context` covers the gold evidence.
 
@@ -65,18 +66,23 @@ def grade_context_completeness(
     distinctive tokens appear in the context. With no evidence texts but a gold
     answer, the answer's own distinctive tokens become the elements. With
     nothing checkable, the bucket is None and the score is None.
+
+    ``normalize`` maps a token to its comparison form (the runtime grade passes a
+    stemmer so "fails" matches "failed"); left unset, tokens match exactly, which is
+    what the benchmark grader's published numbers rest on.
     """
-    ctx_tokens = set(_tokens(context or ""))
+    fold = normalize or (lambda token: token)
+    ctx_tokens = {fold(token) for token in _tokens(context or "")}
     elements: dict[str, bool] = {}
     for eid, text in (evidence or {}).items():
         keys = _key_tokens(text)
         if not keys:
             continue
-        hits = sum(1 for k in keys if k in ctx_tokens)
+        hits = sum(1 for k in keys if fold(k) in ctx_tokens)
         elements[str(eid)] = (hits / len(keys)) >= threshold
     if not elements and answer:
         for key in _key_tokens(answer):
-            elements[key] = key in ctx_tokens
+            elements[key] = fold(key) in ctx_tokens
     if not elements:
         return {"bucket": None, "score": None, "present": [], "missing": []}
     present = [eid for eid, ok in elements.items() if ok]
@@ -122,7 +128,10 @@ def grade_question(question: str, context: str, *, threshold: float = PRESENCE_T
     Returns ``{"bucket", "score", "missing", "basis"}``; bucket and score are
     None when the question has no distinctive term to check.
     """
+    from commontrace._stem import stem
+
     terms = question_terms(question)
-    graded = grade_context_completeness(context, {term: term for term in terms}, threshold=threshold)
+    graded = grade_context_completeness(context, {term: term for term in terms}, threshold=threshold,
+                                        normalize=stem)
     return {"bucket": graded["bucket"], "score": graded["score"], "missing": graded["missing"],
             "basis": "question-terms"}

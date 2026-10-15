@@ -13,7 +13,7 @@ def plan(query: str, complete=None) -> dict:
         import re
 
         subqueries = [s.strip() for s in re.split(r"\s+(?:and|then)\s+|[;?]", query) if s.strip()][:8]
-        result = {"subqueries": subqueries or [query], "category": "", "hops": 0, "entity_ids": []}
+        result = {"subqueries": subqueries or [query], "category": "", "hops": 2, "entity_ids": []}
     else:
         result = json.loads(complete("Return only a query plan JSON object: subqueries (1-8 strings), "
             "category (empty or one allowed category), hops (0-2), entity_ids (up to 32 strings). "
@@ -34,22 +34,28 @@ def plan(query: str, complete=None) -> dict:
 
 def retrieve(root: str, query: str, *, complete=None, **options) -> list[dict]:
     from commontrace import graph
-    from commontrace.search_recipes import LocalGraph, _distances, search
+    from commontrace.search_recipes import LocalGraph, search
 
     limit = options.pop("limit", 10)
     if isinstance(limit, bool) or not isinstance(limit, int) or not 0 <= limit <= 1000:
         raise ValueError("limit must be an integer in 0..1000")
     strategy = plan(query, complete)
+    from commontrace.temporal_intent import resolve
+
+    if options.get("as_of") is None and options.get("infer_temporal", True):
+        options["as_of"] = resolve(query)["as_of"]
+    # Resolve once, before splitting: all arms and graph expansion share time.
+    options["infer_temporal"] = False
     backend = options.pop("backend", None) or LocalGraph(root)
-    seeds = strategy["entity_ids"] or graph.extract_entities_from_text(root, query)
-    entities = set(seeds)
-    for seed in seeds[:32]:
-        entities.update(_distances(backend, seed, options.get("as_of"), depth=strategy["hops"]))
+    seeds = options.pop("entity_ids", None)
+    if seeds is None:
+        seeds = strategy["entity_ids"] or graph.extract_entities_from_text(root, query)
+    hops = options.pop("graph_hops", strategy["hops"])
     hits = {}
     eligible = {f.id for f in hierarchical.list_facts(root, category=strategy["category"],
-                as_of=options.get("as_of"))} if strategy["category"] else None
+                as_of=options.get("as_of"), known_at=options.get("known_at"))} if strategy["category"] else None
     for part in strategy["subqueries"]:
-        for row in search(root, part, backend=backend, entity_ids=sorted(entities)[:2000], limit=1000, **options):
+        for row in search(root, part, backend=backend, entity_ids=seeds, graph_hops=hops, limit=1000, **options):
             if eligible is not None and row["id"] not in eligible:
                 continue
             if row["id"] not in hits or row["score"] > hits[row["id"]]["score"]:

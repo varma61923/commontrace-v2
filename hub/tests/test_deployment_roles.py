@@ -54,6 +54,16 @@ class TestTheShippedStackServesAsANonBypassingRole:
         assert "GRANT CREATE ON SCHEMA" not in sql
         assert "GRANT ALL" not in sql
 
+    def test_all_shipped_server_profiles_require_verified_row_level_security(self):
+        import yaml
+
+        compose = yaml.safe_load(self._compose())
+        configmap = yaml.safe_load((self._ROOT / "deploy/k8s/configmap.yaml").read_text(encoding="utf-8"))
+        values = yaml.safe_load((self._ROOT / "deploy/helm/commontrace-hub/values.yaml").read_text(encoding="utf-8"))
+        assert compose["services"]["hub"]["environment"]["HUB_REQUIRE_RLS"] == "true"
+        assert configmap["data"]["HUB_REQUIRE_RLS"] == "true"
+        assert values["config"]["HUB_REQUIRE_RLS"] == "true"
+
     def test_future_migrations_are_covered_by_default_privileges(self):
         sql = self._init_sql()
         assert "ALTER DEFAULT PRIVILEGES IN SCHEMA public" in sql

@@ -883,11 +883,14 @@ async def contribute_trace(
             else None
         ),
     )
-    session.add(trace)
     try:
-        await session.flush()
+        # A savepoint, not a full rollback: losing an idempotency race must undo
+        # only this row, not earlier writes in the same transaction (an OTLP batch)
+        # or the transaction-local tenant binding row-level security reads.
+        async with session.begin_nested():
+            session.add(trace)
+            await session.flush()
     except IntegrityError:
-        await session.rollback()
         existing = (
             await session.execute(
                 select(Trace).where(Trace.org_id == org_id, Trace.idempotency_key == idempotency_key)

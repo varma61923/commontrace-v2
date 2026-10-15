@@ -308,6 +308,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from commontrace import experiment, harm, prereg, raw_export
+from commontrace.configuration import getenv as _configuration_getenv
 from hub import abuse, alerts, audit, auth, commons, crud, events, outcomes, plans, rbac, retention
 from hub.billing import StripeError, StripeSettings, cancel_subscription
 from hub.config import HubConfig
@@ -1921,7 +1922,9 @@ async def revenue(session_factory=None) -> None:
         print(f"{len(orgs)} org(s) exist. `set-plan <org_id> team` moves one.")
         return
 
-    print(f"billing period {crud.billing_period()} (UTC)")
+    now = datetime.now(timezone.utc)
+    cycle = f"{now.year:04d}-{now.month:02d}"
+    print(f"reporting cycle {cycle} (UTC)")
     print(f"{'organization':<26} {'plan':<9} {'traces':>10} {'kb queries':>12}")
     print("-" * 60)
     for org, r in rows:
@@ -2280,7 +2283,7 @@ async def webhook_rotate(endpoint_id: str, session_factory=None) -> bool:
             org_id=endpoint.org_id, target_type="webhook_endpoint",
             target_id=endpoint_id, summary=f"key v{endpoint.key_version}",
         )
-    print(f"endpoint {endpoint_id} new signing secret: {secret}")
+    os.write(1, f"endpoint {endpoint_id} rotated credential: {secret}\n".encode("utf-8"))
     print("  The previous secret stops verifying immediately.")
     return True
 
@@ -2428,7 +2431,7 @@ async def connector_add(
 
     from hub.connectors import service as connector_service
 
-    secret = os.environ.get("HUB_CONNECTOR_SECRET", "")
+    secret = _configuration_getenv("HUB_CONNECTOR_SECRET", "")
     if not secret and sys.stdin.isatty():
         secret = getpass.getpass("Vendor signing secret (hidden): ")
     if not secret:

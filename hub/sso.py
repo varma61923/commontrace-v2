@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from typing import Callable
+from urllib.parse import urlsplit
 
 import jwt
 
@@ -41,6 +42,35 @@ class IdentityProvider:
     audience: str
     jwks: dict | None = None
     jwks_uri: str = ""
+
+
+def protected_resource_metadata(provider: IdentityProvider) -> dict:
+    """RFC 9728 metadata consumed by remote MCP clients during OAuth sign-in.
+
+    CommonTrace is the resource server; the customer's configured OIDC issuer
+    remains the authorization server and owns the interactive login and token
+    issuance flow.
+    """
+    return {
+        "resource": provider.audience,
+        "authorization_servers": [provider.issuer],
+        "bearer_methods_supported": ["header"],
+    }
+
+
+def protected_resource_metadata_paths(provider: IdentityProvider) -> tuple[str, ...]:
+    """RFC 9728 well-known paths for a resource whose audience has a path."""
+    path = urlsplit(provider.audience).path.rstrip("/")
+    bare = "/.well-known/oauth-protected-resource"
+    return (bare, bare + path) if path else (bare,)
+
+
+def protected_resource_metadata_url(provider: IdentityProvider) -> str | None:
+    """Absolute metadata URL suitable for a WWW-Authenticate challenge."""
+    parts = urlsplit(provider.audience)
+    if parts.scheme not in ("https", "http") or not parts.netloc:
+        return None
+    return f"{parts.scheme}://{parts.netloc}{protected_resource_metadata_paths(provider)[-1]}"
 
 
 class JWKSCache:

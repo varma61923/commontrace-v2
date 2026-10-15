@@ -39,7 +39,8 @@ def cli(*argv: str) -> subprocess.CompletedProcess:
 @pytest.fixture
 def store(tmp_path):
     root = str(tmp_path / "fleet")
-    assert cli("init", "--dest", root, "--agent-type", "coding").returncode == 0
+    # These tests read and write facts.jsonl directly: the legacy single-file backend.
+    assert cli("init", "--dest", root, "--agent-type", "coding", "--fact-store", "jsonl").returncode == 0
     return root
 
 

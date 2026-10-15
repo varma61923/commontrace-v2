@@ -145,10 +145,6 @@ SCHEMAS: dict[str, dict] = {
 }
 
 
-def _list_response(key: str, item: dict, **extra) -> dict:
-    return obj({key: array(item), **extra}, (key,))
-
-
 EVENTS_WINDOW = {"window_events": integer(), "truncated": boolean("older events were not scanned"),
                  "limit": integer(), "cached": boolean("served from the 5-60 s report memo")}
 
@@ -180,8 +176,14 @@ OPERATIONS: dict[tuple[str, str], Operation] = {
         "agent_claim", "Agents", obj({"agent_id": string(), "owner": string()}, ("agent_id", "owner")),
         obj({"agent_id": string(), "claimed_by": string()}, ("agent_id", "claimed_by")), errors=(400,)),
     ("POST", "/v1/agent/rotate"): Operation(
-        "agent_rotate", "Agents", obj({"agent_id": string()}, ("agent_id",)), ref("AgentCredential"),
-        errors=(400,)),
+        "agent_rotate", "Agents", obj({"agent_id": string(), "reinstate": boolean(
+            "restore a revoked agent with the new key; without it a revoked agent stays revoked")},
+            ("agent_id",)), ref("AgentCredential"), errors=(400,)),
+    ("POST", "/v1/agent/revoke"): Operation(
+        "agent_revoke", "Agents", obj({"agent_id": string()}, ("agent_id",)),
+        obj({"agent_id": string(), "revoked": boolean(), "revoked_at": string()},
+            ("agent_id", "revoked", "revoked_at")), errors=(400,),
+        description="Owner-only. The record stays for audit; rotate with reinstate to restore."),
     ("POST", "/v1/agent/signup"): Operation(
         "agent_signup", "Agents", obj({"agent_id": AGENT_ID, "scopes": LABELS}, ("agent_id",)),
         ref("AgentCredential"), errors=(400,)),
@@ -327,20 +329,41 @@ OPERATIONS: dict[tuple[str, str], Operation] = {
     ("POST", "/v1/conversation/add"): Operation(
         "conversation_add", "Conversations", obj({
             "space": IDENT, "session": IDENT, "messages": array(ref("Message"), maxItems=1000),
-            "session_at": nullable(string("date the session took place"))}, ("space", "session", "messages")),
+            "session_at": nullable(string("date the session took place")),
+            "cache_vectors": boolean("explicitly prepare vectors after committing redacted source; default false"),
+            "embedder": string("provider tag; default configured model", maxLength=512)},
+            ("space", "session", "messages")),
         obj({"space": string(), "session": string(), "added": integer(), "skipped": integer(),
-             "secrets_redacted": integer()}, ("added", "skipped")), errors=(400,)),
+             "secrets_redacted": integer(), "embedding_cache": obj({"ready": boolean(), "model": string(),
+                "units": integer(), "revision": array(integer()), "elapsed_seconds": number(),
+                "error_type": string()}, ("ready",))}, ("added", "skipped")), errors=(400,)),
     ("POST", "/v1/conversation/recall"): Operation(
         "conversation_recall", "Conversations", obj({
             "space": IDENT, "question": string(minLength=1, maxLength=4000),
             "budget": integer("context size in tokens", minimum=50, maximum=32000, default=1500),
-            "now": nullable(string("date the question is asked")), "sessions": array(string()),
-            "speakers": array(string()), "since": nullable(string()), "until": nullable(string()),
-            "context_strategy": string(enum=["legacy", "coverage-v1"], default="legacy"),
+            "now": nullable(string("date the question is asked", maxLength=128)),
+            "sessions": nullable(array(string())), "speakers": nullable(array(string())),
+            "since": nullable(string(maxLength=128)), "until": nullable(string(maxLength=128)),
+            "context_strategy": string(enum=["legacy", "coverage-v1", "coverage-v2"], default="legacy"),
+            "embedder": nullable(string("auto uses the configured provider; none/null disables dense retrieval",
+                                        maxLength=512, default="auto")),
+            "rerank": nullable(string("auto, none/null, mmr, or a registered text reranker tag",
+                                      maxLength=512, default="auto")),
+            "rerank_depth": integer("bounded reranking candidate head", minimum=1, maximum=200, default=50),
+            "rerank_blend": number("cross-encoder weight beside the fused rank; zero replaces that rank",
+                                   minimum=0, maximum=1, default=1),
+            "graph_hops": nullable(integer("null adapts to relational clauses; zero disables graph expansion",
+                                           minimum=0, maximum=2)),
+            "entity_boost": number(minimum=0, maximum=1, default=0.1),
+            "lexical_weight": number(minimum=0, maximum=1, default=0.5),
+            "second_pass": boolean("retrieve uncovered query facets when context budget remains"),
+            "summaries": boolean("include source-bound session summaries; default true"),
             "adaptive_budget": boolean("treat budget as a floor sized by the question's shape")},
             ("space", "question")),
         obj({"question": string(), "context": string(), "tokens": integer(), "turns": array(integer()),
-             "window": nullable(ANY_OBJECT), "explain": ANY_OBJECT}, ("question", "context", "tokens", "turns")),
+             "window": nullable(array(string(), "start date, end date, and parsed window label",
+                                      minItems=3, maxItems=3)),
+             "explain": ANY_OBJECT}, ("question", "context", "tokens", "turns")),
         errors=(400, 404)),
     ("GET", "/v1/conversation/sessions"): Operation(
         "conversation_sessions", "Conversations", None, obj({
@@ -415,6 +438,31 @@ OPERATIONS: dict[tuple[str, str], Operation] = {
                              "success_rate": nullable(number()), "seconds_since_seen": nullable(number())})),
         "window": string(), **EVENTS_WINDOW}, ("agents",))),
     # -- lesson review -------------------------------------------------------------------------------
+    ("GET", "/v1/traces"): Operation(
+        "trace_history", "History", None, obj({
+            "traces": array(obj({"file": string(), "id": string(), "title": string(),
+                                  "date": string(), "agent_type": string()},
+                                 ("file", "id", "title", "date", "agent_type"))),
+            "total": integer(), "limit": integer(), "offset": integer(), "skipped": integer(),
+            "scan_truncated": boolean()}, ("traces", "total", "limit", "offset", "skipped", "scan_truncated")),
+        query=(("limit", integer(minimum=1, maximum=200, default=50), False, "page size"),
+               ("offset", integer(minimum=0, maximum=10000, default=0), False, "page start")), errors=(400, 403)),
+    ("GET", "/v1/trace"): Operation(
+        "trace_detail", "History", None, obj({"file": string(), "id": string(), "title": string(),
+            "date": string(), "agent_type": string(), "body": string(maxLength=20000),
+            "body_truncated": boolean()}, ("file", "body", "body_truncated")),
+        query=(("file", string(maxLength=250), True, "trace filename from the history page"),), errors=(400, 403, 404)),
+    ("GET", "/v1/benchmark-history"): Operation(
+        "benchmark_history", "History", None, obj({
+            "reports": array(obj({"file": string(), "timestamp": string(),
+                "metrics": obj({key: nullable(number(minimum=-1, maximum=1)) for key in (
+                    "lesson_quality", "implicit_retrieval_strict", "implicit_retrieval_permissive", "transfer_gap")}),
+                "delta": obj({key: nullable(number(minimum=-2, maximum=2)) for key in (
+                    "lesson_quality", "implicit_retrieval_strict", "implicit_retrieval_permissive", "transfer_gap")})},
+                ("file", "timestamp", "metrics", "delta"))),
+            "total": integer(), "limit": integer(), "skipped": integer(), "scan_truncated": boolean()},
+            ("reports", "total", "limit", "skipped", "scan_truncated")),
+        query=(("limit", integer(minimum=1, maximum=200, default=100), False, "latest reports"),), errors=(400, 403)),
     ("GET", "/v1/lessons"): Operation(
         "lessons", "Lessons", None, obj({"lessons": array(ref("LessonSummary")), "approval_enabled": boolean(),
                                          "total": integer(), "limit": nullable(integer()), "offset": integer()},
@@ -515,6 +563,17 @@ EXTRA_PATHS: dict[str, dict] = {
 
 def memory_operation(operation: str) -> Operation:
     return Operation("memory_" + operation.replace("-", "_"), "Memory")
+
+
+# Inline model names derived from operationId can collide with the named memory
+# contracts in Swagger generators. Preserve distinct measurement models.
+_measurement_outcome = OPERATIONS[("POST", "/v1/outcome")]
+SCHEMAS["MeasurementOutcomeRequest"] = _measurement_outcome.request
+SCHEMAS["MeasurementOutcomeResponse"] = _measurement_outcome.response
+OPERATIONS[("POST", "/v1/outcome")] = Operation(
+    _measurement_outcome.operation_id, _measurement_outcome.tag,
+    ref("MeasurementOutcomeRequest"), ref("MeasurementOutcomeResponse"),
+    errors=_measurement_outcome.errors, description=_measurement_outcome.description)
 
 
 def components() -> dict:

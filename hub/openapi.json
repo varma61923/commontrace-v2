@@ -1290,42 +1290,11 @@
       "ScimPatchOp": {
         "additionalProperties": true,
         "properties": {
-          "Operations": {
-            "items": {
-              "additionalProperties": true,
-              "properties": {
-                "op": {
-                  "description": "Case-insensitive.",
-                  "enum": [
-                    "add",
-                    "replace",
-                    "remove",
-                    "Add",
-                    "Replace",
-                    "Remove"
-                  ],
-                  "type": "string"
-                },
-                "path": {
-                  "description": "`active` / `displayName` / `members` / `members[value eq \"<id>\"]`, or empty.",
-                  "type": "string"
-                },
-                "value": {
-                  "description": "The new value; any JSON type."
-                }
-              },
-              "required": [
-                "op"
-              ],
-              "type": "object"
-            },
-            "type": "array"
-          },
           "active": {
             "description": "Users only: a bare `active` with no Operations."
           },
           "operations": {
-            "description": "Lower-case alias accepted.",
+            "description": "Canonical form; the uppercase SCIM `Operations` alias is also accepted.",
             "items": {
               "additionalProperties": true,
               "properties": {
@@ -1969,6 +1938,12 @@
         "name": "Stripe-Signature",
         "type": "apiKey"
       },
+      "userBearer": {
+        "bearerFormat": "JWT",
+        "description": "An access token from the configured OIDC issuer (HUB_OIDC_ISSUER), for a user pre-linked with `hub.manage link-sso`. The user's Hub role determines REST scopes.",
+        "scheme": "bearer",
+        "type": "http"
+      },
       "zendeskSignature": {
         "description": "Zendesk connectors: signature over the timestamp and raw body.",
         "in": "header",
@@ -1986,8 +1961,8 @@
   "info": {
     "description": "Generated from the Hub's live route table by hub/openapi.py. Optional surfaces are registered only when their setting is on (see each tag); a disabled surface answers 404. Every route can also answer 503 (load shed) and 504 (timeout); every body-carrying route 413. When HUB_IP_ALLOWLIST is set, sources outside it get 403 everywhere except /healthz, /readyz and /disclosure.",
     "license": {
-      "identifier": "MIT",
-      "name": "MIT"
+      "identifier": "AGPL-3.0-only",
+      "name": "GNU AGPLv3"
     },
     "summary": "Every HTTP route the CommonTrace Hub serves.",
     "title": "CommonTrace Hub",
@@ -4435,6 +4410,9 @@
         "security": [
           {
             "apiKey": []
+          },
+          {
+            "userBearer": []
           }
         ],
         "summary": "Browse listed lessons",
@@ -4525,6 +4503,9 @@
         "security": [
           {
             "apiKey": []
+          },
+          {
+            "userBearer": []
           }
         ],
         "summary": "Upload a signed listing",
@@ -4588,6 +4569,9 @@
         "security": [
           {
             "apiKey": []
+          },
+          {
+            "userBearer": []
           }
         ],
         "summary": "Withdraw one of your listings",
@@ -4649,6 +4633,9 @@
         "security": [
           {
             "apiKey": []
+          },
+          {
+            "userBearer": []
           }
         ],
         "summary": "Read one listing",
@@ -4724,6 +4711,9 @@
         "security": [
           {
             "apiKey": []
+          },
+          {
+            "userBearer": []
           }
         ],
         "summary": "Register or update your publisher key",
@@ -4787,11 +4777,95 @@
         "security": [
           {
             "apiKey": []
+          },
+          {
+            "userBearer": []
           }
         ],
         "summary": "Read a publisher card",
         "tags": [
           "Marketplace"
+        ]
+      }
+    },
+    "/api/v1/memory/records/{operation}": {
+      "post": {
+        "operationId": "memoryRecordOperation",
+        "parameters": [
+          {
+            "description": "",
+            "in": "path",
+            "name": "operation",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "description": "Versioned memory data",
+                "type": "object"
+              }
+            }
+          },
+          "description": "MemoryRecord envelope, scoped query, erasure id and reason, or optional expiration batch limit.",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "description": "Versioned memory data",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Versioned record, search results, erasure audit, or expiration reaping results."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid record or version conflict."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Payload exceeds 100 kB."
+          },
+          "503": {
+            "$ref": "#/components/responses/Overloaded"
+          },
+          "504": {
+            "$ref": "#/components/responses/Timeout"
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "userBearer": []
+          }
+        ],
+        "summary": "Versioned scoped records: put, search, hard forget or reap due expirations",
+        "tags": [
+          "Memory"
         ]
       }
     },
@@ -4851,6 +4925,9 @@
         "security": [
           {
             "apiKey": []
+          },
+          {
+            "userBearer": []
           }
         ],
         "summary": "Record a client `install` beacon",
@@ -4886,6 +4963,9 @@
         "security": [
           {
             "apiKey": []
+          },
+          {
+            "userBearer": []
           }
         ],
         "summary": "Record a client `ping` beacon",
@@ -4921,6 +5001,9 @@
         "security": [
           {
             "apiKey": []
+          },
+          {
+            "userBearer": []
           }
         ],
         "summary": "Record a client `triggers` beacon",
@@ -5006,6 +5089,9 @@
         "security": [
           {
             "apiKey": []
+          },
+          {
+            "userBearer": []
           }
         ],
         "summary": "Contribute a trace",
@@ -5071,6 +5157,9 @@
         "security": [
           {
             "apiKey": []
+          },
+          {
+            "userBearer": []
           }
         ],
         "summary": "Search your organization's traces",
@@ -8829,6 +8918,87 @@
         ]
       }
     },
+    "/v1/memory/{operation}": {
+      "post": {
+        "operationId": "memoryRecordSDKOperation",
+        "parameters": [
+          {
+            "description": "",
+            "in": "path",
+            "name": "operation",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "description": "Scoped record SDK data",
+                "type": "object"
+              }
+            }
+          },
+          "description": "Record envelope, query, context labels, erasure reason, or expiration batch limit.",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "description": "Record SDK data",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Record SDK response, including bounded expiration reaping results"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid record or version conflict."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Payload exceeds 100 kB."
+          },
+          "503": {
+            "$ref": "#/components/responses/Overloaded"
+          },
+          "504": {
+            "$ref": "#/components/responses/Timeout"
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "userBearer": []
+          }
+        ],
+        "summary": "Local SDK record-put, record-search, record-forget and record-reap-due wire parity",
+        "tags": [
+          "Memory"
+        ]
+      }
+    },
     "/v1/traces": {
       "post": {
         "description": "Needs `write`. Each span becomes a trace (profile `otel`, spanId as idempotency key); a span carrying an occasion id and outcome also records that outcome. Protobuf is not accepted. Ingest stops at the first entitlement or rate-limit refusal.",
@@ -8913,6 +9083,9 @@
         "security": [
           {
             "apiKey": []
+          },
+          {
+            "userBearer": []
           }
         ],
         "summary": "Ingest OTLP/JSON spans as traces",
@@ -8923,6 +9096,10 @@
     }
   },
   "tags": [
+    {
+      "description": "Versioned, tenant-scoped memory records and erasure.",
+      "name": "Memory"
+    },
     {
       "description": "The MCP streamable-HTTP endpoint (path HUB_STREAMABLE_HTTP_PATH, default /mcp). Tools are discovered with `tools/list`; their arguments are described by the server itself.",
       "name": "MCP"

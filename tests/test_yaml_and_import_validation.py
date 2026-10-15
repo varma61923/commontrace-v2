@@ -34,18 +34,6 @@ class TestYamlDatesLoadAsStrings:
         assert fm["a"] is True and fm["b"] is False
         assert fm["c"] == "NO" and fm["d"] == "on"
 
-    def test_the_shipped_example_lessons_validate(self):
-        lessons_dir = os.path.join(REPO_ROOT, "memory", "lessons")
-        schema = validate.load_schema("lesson.schema.json")
-        checked = 0
-        for name in os.listdir(lessons_dir):
-            if not name.startswith("lesson_example_"):
-                continue
-            fm, _ = frontmatter.read(os.path.join(lessons_dir, name))
-            assert validate.validate(fm, schema) == [], f"{name} fails its own schema"
-            checked += 1
-        assert checked >= 1, "no example lessons found to check"
-
 
 class TestImportKeepsEveryOutcomeField:
     def test_baseline_survives_import(self):
@@ -572,11 +560,21 @@ class TestDoctorReportsFailuresInItsExitCode:
         assert r.returncode == 1
         assert "critical check(s) failed" in r.stdout
 
-    def test_a_healthy_store_exits_zero(self):
-        assert self._run().returncode == 0
+    def _healthy_store(self, tmp_path):
+        # The checkout holds no memory/ store, so a bare `doctor` in REPO_ROOT only
+        # passed when another test happened to have left one behind.
+        subprocess.run(
+            [sys.executable, "-m", "commontrace", "init", "--agent-type", "code", "--dest", str(tmp_path)],
+            cwd=REPO_ROOT, capture_output=True, text=True, check=True,
+        )
+        return str(tmp_path)
 
-    def test_info_conditions_do_not_fail_the_run(self):
-        r = self._run()
+    def test_a_healthy_store_exits_zero(self, tmp_path):
+        assert self._run("--dest", self._healthy_store(tmp_path)).returncode == 0
+
+    def test_info_conditions_do_not_fail_the_run(self, tmp_path):
+        r = self._run("--dest", self._healthy_store(tmp_path))
+        assert "[INFO]" in r.stdout
         assert r.returncode == 0
         assert "critical check(s) failed" not in r.stdout
 
@@ -824,7 +822,7 @@ class TestSemanticQueryDetectsIndexMismatch:
             str(index_path),
             slugs=np.array(["lesson_a"]),
             embeddings=np.zeros((1, 384), dtype=np.float32),
-            model_name=np.array(module._TRUSTED_MODEL_NAME),
+            model_name=np.array(module._PINNED_MODEL_NAME),
             n_lessons=np.array(1),
         )
         monkeypatch.setattr(module, "INDEX_PATH", str(index_path))
@@ -857,7 +855,7 @@ class TestSemanticQueryDetectsIndexMismatch:
             str(index_path),
             slugs=np.array(["a", "b", "c"]),
             embeddings=np.zeros((2, 384), dtype=np.float32),
-            model_name=np.array(module._TRUSTED_MODEL_NAME),
+            model_name=np.array(module._PINNED_MODEL_NAME),
             n_lessons=np.array(3),
         )
         monkeypatch.setattr(module, "INDEX_PATH", str(index_path))

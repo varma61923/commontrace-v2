@@ -288,7 +288,7 @@ def test_an_index_naming_an_untrusted_model_loads_nothing(tmp_path, recording_ar
     arrays["model_name"] = np.array("attacker/remote-code-model")
     np.savez(semantic_arm.index_path(root), **arrays)
     rc, slugs, warnings = semantic_arm.ranked_slugs(root, "retry", 2)
-    assert rc != 0 and slugs == [] and "not one of the trusted" in warnings[0]
+    assert rc != 0 and slugs == [] and "not one of the supported models" in warnings[0]
     assert loads == []
 
 

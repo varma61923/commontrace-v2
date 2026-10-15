@@ -45,33 +45,6 @@ class TestAgentsAreToldHowToMeasure:
         assert "commontrace query --experiment" in skill
 
 
-class TestTheReferenceProfileAlsoTeachesIt:
-    @staticmethod
-    def _skill() -> str:
-        import pathlib
-        import re
-
-        text = (pathlib.Path(__file__).resolve().parents[2] / "SKILL.md").read_text(
-            encoding="utf-8"
-        )
-        return re.sub(r"\s+", " ", text)
-
-    def test_the_retrieval_phase_honours_a_running_holdout(self):
-        skill = self._skill()
-        assert "randomized holdout is running" in skill
-        assert "occasion_id" in skill
-        assert "record_occasion_outcome" in skill
-        assert "commontrace query --experiment" in skill
-
-    def test_it_states_the_rule_the_tooling_cannot_enforce(self):
-        skill = self._skill()
-        assert "does not raise an error" in skill
-        assert "biasing the measured effect toward zero" in skill
-
-    def test_the_output_format_has_somewhere_to_report_withheld_lessons(self):
-        assert "### Withheld by the holdout" in self._skill()
-
-
 class TestInstallCmdStaysImportableWithoutTheClientDependencies:
     @staticmethod
     def _import_with_yaml_blocked(module: str) -> subprocess.CompletedProcess:

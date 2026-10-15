@@ -11,6 +11,15 @@ os.environ.setdefault("COMMONTRACE_DEFAULT_RERANK", "none")
 os.environ.setdefault("COMMONTRACE_WARM", "0")
 
 
+@pytest.fixture(autouse=True)
+def close_idle_fact_connections():
+    yield
+    from commontrace import fact_store, memory_journal
+
+    fact_store.close_connections()
+    memory_journal.close_connections()
+
+
 def pytest_collection_modifyitems(items):
     """Classify existing contracts without moving files or changing their execution."""
     integration = {"test_optional_memory_backends.py", "test_new_framework_sdks.py", "test_vector_store.py",

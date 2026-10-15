@@ -47,6 +47,22 @@ def test_extraction_kinds():
     assert by_text["New York"] == "PROPER"
 
 
+def test_entity_free_memory_does_not_access_index(tmp_path, monkeypatch):
+    root = str(tmp_path)
+    entity_store.link_memory(root, "existing", "Postgres uses a journal.")
+    path = entity_store._entities_file(root)
+    before = open(path, "rb").read()
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("entity-free writes must not access the index")
+
+    monkeypatch.setattr(entity_store._jsonl, "locked", forbidden)
+    monkeypatch.setattr(entity_store, "load_entities", forbidden)
+    monkeypatch.setattr(entity_store, "save_entities", forbidden)
+    assert entity_store.link_memory(root, "new", "component item1 uses durable storage") == []
+    assert open(path, "rb").read() == before
+
+
 def test_extraction_identifiers():
     pairs = entity_store.extract_entities("Check auth.tokens.validate_session and api_key before deploy.")
     texts = {value for _, value in pairs}

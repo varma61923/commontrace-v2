@@ -24,6 +24,19 @@ async def _run_lifespan(app) -> list[dict]:
 
 
 class TestTheProductionAppBoots:
+    async def test_a_missing_api_key_pepper_is_warned_about(self, config, session_factory, monkeypatch, caplog):
+        from hub import auth
+
+        monkeypatch.setattr(auth, "_pepper_env", "")
+        with caplog.at_level("WARNING", logger="commontrace.hub"):
+            build_app(config, session_factory)
+        assert "HUB_API_KEY_PEPPER is not set" in caplog.text
+        caplog.clear()
+        monkeypatch.setattr(auth, "_pepper_env", "a-shared-pepper")
+        with caplog.at_level("WARNING", logger="commontrace.hub"):
+            build_app(config, session_factory)
+        assert "HUB_API_KEY_PEPPER" not in caplog.text
+
     async def test_build_app_returns_an_app_at_all(self, config, session_factory):
         app = build_app(config, session_factory)
         assert app is not None
@@ -121,6 +134,22 @@ class TestTheProductionAppBoots:
         cfg = dataclasses.replace(config, rest_api_enabled=True, signup_enabled=False)
         messages = await _run_lifespan(build_app(cfg, session_factory))
         assert "lifespan.startup.complete" in [m["type"] for m in messages]
+
+    async def test_hosted_projection_resources_close_with_the_server(self, config, session_factory):
+        cfg = dataclasses.replace(config, rest_api_enabled=True, signup_enabled=False)
+        app = build_app(cfg, session_factory)
+
+        class ProjectionResources:
+            close_calls = 0
+
+            async def close(self):
+                self.close_calls += 1
+
+        resources = ProjectionResources()
+        app.state.memory_projection_factory = resources
+        messages = await _run_lifespan(app)
+        assert "lifespan.shutdown.complete" in [message["type"] for message in messages]
+        assert resources.close_calls == 1
 
     async def test_it_boots_with_an_ip_allowlist_configured(self, config, session_factory):
         cfg = dataclasses.replace(config, ip_allowlist=("10.0.0.0/8",))

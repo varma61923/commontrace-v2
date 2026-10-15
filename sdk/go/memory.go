@@ -37,7 +37,7 @@ func New(base, token, agent string, scopes []string) (*Client, error) {
 }
 func (c *Client) Call(ctx context.Context, operation string, data map[string]any) (map[string]any, error) {
 	switch operation {
-	case "add", "batch", "search", "profile", "reflect", "outcome", "check-action", "propose":
+	case "add", "batch", "search", "profile", "reflect", "outcome", "check-action", "propose", "turn", "record-put", "record-search", "record-forget", "record-reap-due":
 	default:
 		return nil, fmt.Errorf("unknown memory operation")
 	}
@@ -94,4 +94,37 @@ func (c *Client) Profile(ctx context.Context, query string) (map[string]any, err
 }
 func (c *Client) Outcome(ctx context.Context, occasion string, succeeded bool) (map[string]any, error) {
 	return c.Call(ctx, "outcome", map[string]any{"occasion_id": occasion, "succeeded": succeeded})
+}
+
+// PutRecord stores a versioned envelope without changing its payload or lineage.
+func (c *Client) PutRecord(ctx context.Context, record map[string]any) (map[string]any, error) {
+	return c.Call(ctx, "record-put", map[string]any{"record": record})
+}
+
+func (c *Client) SearchRecords(ctx context.Context, query string, limit int) (map[string]any, error) {
+	return c.Call(ctx, "record-search", map[string]any{"query": query, "limit": limit})
+}
+
+func (c *Client) ForgetRecord(ctx context.Context, id, reason string) (map[string]any, error) {
+	return c.Call(ctx, "record-forget", map[string]any{"id": id, "reason": reason})
+}
+
+// ReapDueRecords erases 1..100 due roots; dependent records may also be erased.
+// The hosted operation requires an admin credential.
+func (c *Client) ReapDueRecords(ctx context.Context, limit int) (map[string]any, error) {
+	if limit < 1 || limit > 100 {
+		return nil, fmt.Errorf("expiration batch must be in 1..100")
+	}
+	return c.Call(ctx, "record-reap-due", map[string]any{"limit": limit})
+}
+
+// Turn captures and retrieves in one request. Options may include text, budget,
+// event and payload; session, query and client scope stay pinned.
+func (c *Client) Turn(ctx context.Context, session, query string, options map[string]any) (map[string]any, error) {
+	body := map[string]any{}
+	for key, value := range options {
+		body[key] = value
+	}
+	body["session_id"], body["query"] = session, query
+	return c.Call(ctx, "turn", body)
 }

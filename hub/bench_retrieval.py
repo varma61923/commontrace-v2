@@ -81,6 +81,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 import uuid
 from pathlib import Path
@@ -97,9 +98,11 @@ sys.path.insert(0, str(ROOT))
 
 from commontrace import retrieval  # noqa: E402
 
-CORPUS = ROOT / "commons" / "seed" / "substrate-v1.jsonl"
-EVAL_DIR = ROOT / "commons" / "eval"
-PROBE_SETS = {"v1": EVAL_DIR / "probes-v1.jsonl", "v2": EVAL_DIR / "probes-v2.jsonl"}
+CORPUS = Path(os.environ.get("COMMONTRACE_EVAL_CORPUS", "corpus.jsonl"))  # bring your own corpus
+PROBE_SETS = {
+    "v1": Path(os.environ.get("COMMONTRACE_EVAL_PROBES_V1", "probes-v1.jsonl")),
+    "v2": Path(os.environ.get("COMMONTRACE_EVAL_PROBES_V2", "probes-v2.jsonl")),
+}
 
 KS = (1, 3, 5, 10)
 

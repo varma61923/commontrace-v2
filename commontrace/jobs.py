@@ -12,12 +12,15 @@ unavailable or fails, fall back to one call per item so one bad item costs only 
 from __future__ import annotations
 
 import json
+import math
 import os
 import sqlite3
+import threading
 import time
 import traceback
 import uuid
 from collections.abc import Callable, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -38,6 +41,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     priority INTEGER NOT NULL DEFAULT 0,
     run_after REAL NOT NULL,
     lease_until REAL,
+    lease_token TEXT,
     dedupe_key TEXT,
     created REAL NOT NULL,
     updated REAL NOT NULL,
@@ -52,6 +56,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS jobs_dedupe ON jobs(dedupe_key)
 
 class JobError(RuntimeError):
     """A queue operation that cannot proceed."""
+
+
+class LeaseLost(JobError):
+    """The claimed attempt expired or was replaced by another worker."""
 
 
 @dataclass
@@ -69,6 +77,7 @@ class Job:
     result: Any = None
     error: str | None = None
     dedupe_key: str | None = None
+    lease_token: str | None = None
 
     def to_dict(self) -> dict:
         return {k: getattr(self, k) for k in ("id", "kind", "payload", "status", "attempts", "max_attempts",
@@ -86,6 +95,15 @@ def _connect(root: str) -> sqlite3.Connection:
     os.makedirs(paths.memory_dir(root), exist_ok=True)
     db = connect(db_path(root), _SCHEMA)
     db.row_factory = sqlite3.Row
+    try:
+        if "lease_token" not in {row[1] for row in db.execute("PRAGMA table_info(jobs)")}:
+            with _write(db):
+                # Another process may have migrated between inspection and lock acquisition.
+                if "lease_token" not in {row[1] for row in db.execute("PRAGMA table_info(jobs)")}:
+                    db.execute("ALTER TABLE jobs ADD COLUMN lease_token TEXT")
+    except BaseException:
+        db.close()
+        raise
     return db
 
 
@@ -98,7 +116,8 @@ def _write(db: sqlite3.Connection):
 def _job(row: sqlite3.Row) -> Job:
     return Job(row["id"], row["kind"], json.loads(row["payload"]), row["status"], row["attempts"],
                row["max_attempts"], row["priority"], row["run_after"], row["created"], row["updated"],
-               json.loads(row["result"]) if row["result"] else None, row["error"], row["dedupe_key"])
+               json.loads(row["result"]) if row["result"] else None, row["error"], row["dedupe_key"],
+               row["lease_token"])
 
 
 def enqueue(root: str, kind: str, payload: dict | None = None, *, dedupe_key: str | None = None,
@@ -106,13 +125,17 @@ def enqueue(root: str, kind: str, payload: dict | None = None, *, dedupe_key: st
     """Queue a job; with a `dedupe_key` already pending, return that job instead."""
     if kind not in HANDLERS:
         raise JobError(f"unknown job kind {kind!r}; known: {', '.join(sorted(HANDLERS))}")
+    if payload is not None and not isinstance(payload, dict):
+        raise JobError("job payload must be an object")
+    if not math.isfinite(delay):
+        raise JobError("job delay must be finite")
     body = json.dumps(payload or {}, sort_keys=True, default=str)
     if len(body) > 256_000:
         raise JobError("job payload is larger than 256 kB; pass a path, not the content")
-    now = time.time()
     db = _connect(root)
     try:
         with _write(db):
+            now = time.time()
             if dedupe_key:
                 row = db.execute("SELECT * FROM jobs WHERE dedupe_key = ? AND status IN "
                                  "('queued', 'running', 'failed')", (dedupe_key,)).fetchone()
@@ -132,12 +155,17 @@ def enqueue(root: str, kind: str, payload: dict | None = None, *, dedupe_key: st
 
 def claim(root: str, *, kinds: Sequence[str] | None = None, lease: float = DEFAULT_LEASE) -> Job | None:
     """Take the next ready job (queued, retry due, or lease expired) for this worker."""
-    now = time.time()
+    if not math.isfinite(lease):
+        raise JobError("job lease must be finite")
     db = _connect(root)
     try:
         with _write(db):
+            now = time.time()
+            db.execute("UPDATE jobs SET status = 'dead', error = ?, lease_until = NULL, lease_token = NULL, "
+                       "updated = ? WHERE status = 'running' AND lease_until <= ? AND attempts >= max_attempts",
+                       ("worker lease expired after maximum attempts", now, now))
             sql = ("SELECT * FROM jobs WHERE ((status IN ('queued', 'failed') AND run_after <= ?) OR "
-                   "(status = 'running' AND lease_until < ?))")
+                   "(status = 'running' AND lease_until <= ?)) AND attempts < max_attempts")
             args: list = [now, now]
             if kinds:
                 sql += " AND kind IN (SELECT value FROM json_each(?))"
@@ -145,53 +173,118 @@ def claim(root: str, *, kinds: Sequence[str] | None = None, lease: float = DEFAU
             row = db.execute(sql + " ORDER BY priority DESC, run_after, created LIMIT 1", args).fetchone()
             if row is None:
                 return None
-            db.execute("UPDATE jobs SET status = 'running', attempts = attempts + 1, lease_until = ?, updated = ? "
-                       "WHERE id = ?", (now + lease, now, row["id"]))
+            db.execute("UPDATE jobs SET status = 'running', attempts = attempts + 1, lease_until = ?, "
+                       "lease_token = ?, updated = ? WHERE id = ?", (now + lease, uuid.uuid4().hex, now, row["id"]))
             return _job(db.execute("SELECT * FROM jobs WHERE id = ?", (row["id"],)).fetchone())
     finally:
         db.close()
 
 
-def complete(root: str, job_id: str, result: Any = None) -> None:
+def complete(root: str, job_id: str, result: Any = None, *, lease_token: str | None = None) -> None:
+    """Save a result; workers pass their claim token to fence replaced attempts.
+
+    Omitting the token retains the legacy operator override. Worker execution
+    always supplies it. Large results must be persisted as artifacts, not clipped
+    into malformed JSON in the queue.
+    """
+    body = json.dumps(result, default=str)
+    if len(body) > 64_000:
+        raise JobError("job result is larger than 64 kB; save an artifact and return its path")
     db = _connect(root)
     try:
         with _write(db):
-            db.execute("UPDATE jobs SET status = 'done', result = ?, error = NULL, lease_until = NULL, updated = ? "
-                       "WHERE id = ?", (json.dumps(result, default=str)[:64_000], time.time(), job_id))
+            now = time.time()
+            sql = ("UPDATE jobs SET status = 'done', result = ?, error = NULL, lease_until = NULL, "
+                   "lease_token = NULL, updated = ? WHERE id = ?")
+            args: list = [body, now, job_id]
+            if lease_token is not None:
+                sql += " AND status = 'running' AND lease_token = ? AND lease_until > ?"
+                args.extend((lease_token, now))
+            changed = db.execute(sql, args).rowcount
+            if lease_token is not None and not changed:
+                raise LeaseLost(f"job {job_id} claim expired or was replaced")
     finally:
         db.close()
 
 
-def fail(root: str, job_id: str, error: str) -> str:
+def fail(root: str, job_id: str, error: str, *, lease_token: str | None = None) -> str:
     """Record a failure: retry later with backoff, or park the job as dead."""
-    now = time.time()
     db = _connect(root)
     try:
         with _write(db):
-            row = db.execute("SELECT attempts, max_attempts FROM jobs WHERE id = ?", (job_id,)).fetchone()
+            now = time.time()
+            row = db.execute("SELECT attempts, max_attempts, status, lease_token, lease_until FROM jobs WHERE id = ?",
+                             (job_id,)).fetchone()
             if row is None:
                 raise JobError(f"no job {job_id}")
+            if lease_token is not None and (row["status"] != "running" or row["lease_token"] != lease_token
+                                            or (row["lease_until"] or 0) <= now):
+                raise LeaseLost(f"job {job_id} claim expired or was replaced")
             dead = row["attempts"] >= row["max_attempts"]
             delay = min(BACKOFF_MAX, BACKOFF_BASE * (2 ** max(0, row["attempts"] - 1)))
             status = "dead" if dead else "failed"
-            db.execute("UPDATE jobs SET status = ?, error = ?, run_after = ?, lease_until = NULL, updated = ? "
+            db.execute("UPDATE jobs SET status = ?, error = ?, run_after = ?, lease_until = NULL, "
+                       "lease_token = NULL, updated = ? "
                        "WHERE id = ?", (status, error[:4000], now + delay, now, job_id))
         return status
     finally:
         db.close()
 
 
-def retry(root: str, job_id: str | None = None) -> int:
-    """Put dead (or failed) jobs back in the queue now; all dead jobs when no id is given."""
-    now = time.time()
+def renew(root: str, job_id: str, lease_token: str, *, lease: float = DEFAULT_LEASE) -> None:
+    """Extend only a still-live claim. An expired worker cannot resurrect its lease."""
+    if not lease_token or not math.isfinite(lease) or lease <= 0:
+        raise JobError("renewal requires a claim token and a finite positive lease")
     db = _connect(root)
     try:
         with _write(db):
+            now = time.time()
+            changed = db.execute(
+                "UPDATE jobs SET lease_until = MAX(lease_until, ?), updated = ? "
+                "WHERE id = ? AND status = 'running' AND lease_token = ? AND lease_until > ?",
+                (now + lease, now, job_id, lease_token, now),
+            ).rowcount
+            if not changed:
+                raise LeaseLost(f"job {job_id} claim expired or was replaced")
+    finally:
+        db.close()
+
+
+@contextmanager
+def _heartbeat(root: str, job: Job, lease: float):
+    """Renew a slow handler's claim without blocking its ordinary fast path."""
+    stop = threading.Event()
+
+    def beat() -> None:
+        while not stop.wait(lease / 3):
+            try:
+                renew(root, job.id, job.lease_token or "", lease=lease)
+            except (JobError, sqlite3.Error, OSError):
+                telemetry.count("commontrace_jobs_renewal_failed", kind=job.kind)
+                return
+
+    worker = threading.Thread(target=beat, name="commontrace-job-lease", daemon=True)
+    worker.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        worker.join(timeout=5)
+
+
+def retry(root: str, job_id: str | None = None) -> int:
+    """Put dead (or failed) jobs back in the queue now; all dead jobs when no id is given."""
+    db = _connect(root)
+    try:
+        with _write(db):
+            now = time.time()
             if job_id:
-                cur = db.execute("UPDATE jobs SET status = 'queued', attempts = 0, run_after = ?, updated = ? "
+                cur = db.execute("UPDATE jobs SET status = 'queued', attempts = 0, run_after = ?, lease_until = NULL, "
+                                 "lease_token = NULL, updated = ? "
                                  "WHERE id = ? AND status IN ('dead', 'failed')", (now, now, job_id))
             else:
-                cur = db.execute("UPDATE jobs SET status = 'queued', attempts = 0, run_after = ?, updated = ? "
+                cur = db.execute("UPDATE jobs SET status = 'queued', attempts = 0, run_after = ?, lease_until = NULL, "
+                                 "lease_token = NULL, updated = ? "
                                  "WHERE status = 'dead'", (now, now))
             return cur.rowcount
     finally:
@@ -250,14 +343,16 @@ def purge(root: str, *, older_than_days: float = 7.0) -> int:
 
 
 def run_pending(root: str, *, limit: int = 20, kinds: Sequence[str] | None = None,
-                time_budget: float | None = None) -> dict:
+                time_budget: float | None = None, lease: float = DEFAULT_LEASE) -> dict:
     """Process ready jobs until none is left, `limit` is reached, or time runs out."""
+    if not math.isfinite(lease) or lease <= 0:
+        raise JobError("worker lease must be finite and positive")
     started = time.monotonic()
     done = failed = 0
     for _ in range(max(0, int(limit))):
         if time_budget is not None and time.monotonic() - started > time_budget:
             break
-        job = claim(root, kinds=kinds)
+        job = claim(root, kinds=kinds, lease=lease)
         if job is None:
             break
         handler = HANDLERS.get(job.kind)
@@ -265,15 +360,25 @@ def run_pending(root: str, *, limit: int = 20, kinds: Sequence[str] | None = Non
             try:
                 if handler is None:
                     raise JobError(f"no handler for job kind {job.kind!r}")
-                result = handler(root, job.payload)
+                with _heartbeat(root, job, lease):
+                    result = handler(root, job.payload)
+                    complete(root, job.id, result, lease_token=job.lease_token)
+            except LeaseLost:
+                handle.set(outcome="lease_lost")
+                telemetry.count("commontrace_jobs_lease_lost", kind=job.kind)
+                continue
             except Exception as exc:  # noqa: BLE001 - a job failure is recorded, never raised
                 last = traceback.format_exception_only(type(exc), exc)[-1].strip()
-                status = fail(root, job.id, last)
+                try:
+                    status = fail(root, job.id, last, lease_token=job.lease_token)
+                except LeaseLost:
+                    handle.set(outcome="lease_lost")
+                    telemetry.count("commontrace_jobs_lease_lost", kind=job.kind)
+                    continue
                 handle.set(outcome=status)
                 telemetry.count("commontrace_jobs_failed", kind=job.kind, status=status)
                 failed += 1
                 continue
-            complete(root, job.id, result)
             telemetry.count("commontrace_jobs_done", kind=job.kind)
             done += 1
     return {"done": done, "failed": failed, "pending": counts(root).get("queued", 0)}
@@ -379,3 +484,23 @@ HANDLERS: dict[str, Callable[[str, dict], Any]] = {
     "commit": _commit,
     "distill": _distill,
 }
+def _learn_session(root: str, payload: dict) -> dict:
+    from commontrace.llm_runtime import LLMRuntime
+    from commontrace.session_learning import learn
+
+    runtime = LLMRuntime(root, payload["session"])
+    with runtime.scope():
+        results = []
+        for _ in range(32):
+            result = learn(root, payload["session"], scope=payload["scope"], semantic_segments=True)
+            results.append(result)
+            if result.get("reason") in ("already reflected", "session still open; cursor unchanged"):
+                break
+        else:
+            # Keep this durable job retryable rather than abandoning an oversized completed transcript.
+            raise RuntimeError("reflection batch limit reached; resume from the committed cursor")
+        result = {"reflections": results}
+    return {**result, "usage": runtime.manifest()}
+
+
+HANDLERS["learn-session"] = _learn_session

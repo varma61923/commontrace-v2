@@ -56,7 +56,7 @@ from commontrace import redundancy  # noqa: E402
 SCHEMA_VERSION = "1.0.0"
 
 DEFAULT_FIXTURES = os.path.join(_REPO, "commontrace", "fixtures", "fields")
-DEFAULT_SEED = os.path.join(_REPO, "commons", "seed", "substrate-v1.jsonl")
+DEFAULT_SEED = os.environ.get("COMMONTRACE_EVAL_CORPUS", "")
 
 SWEEP = (0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80)
 

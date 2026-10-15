@@ -27,7 +27,7 @@ def keys(text, **kw):
 def test_technical_entities():
     found = keys("OperationalError in api/db.py: call reset_pool() and set DATABASE_URL; see `retry.backoff`, "
                  "HTTP 503 and E1101.")
-    for key in ("error:operationalerror", "file:api/db.py", "symbol:reset_pool", "concept:database_url",
+    for key in ("error:operationalerror", "file:api/db.py", "symbol:reset_pool", "symbol:database_url",
                 "symbol:retry.backoff", "error:http_503", "error:e1101"):
         assert key in found
 
@@ -37,7 +37,7 @@ def test_people_organisations_places_and_builtin_aliases():
     assert "person:sarah_chen" in found
     assert "organization:acme_corp" in found
     assert "service:postgres" in found and "tool:kubernetes" in found
-    assert "concept:berlin" in found
+    assert "place:berlin" in found  # well-known places are typed even without an ontology
 
 
 def test_sentence_openers_and_common_words_are_not_entities():

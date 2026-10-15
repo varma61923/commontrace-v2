@@ -128,7 +128,7 @@ def test_write_triples_uses_the_validated_graph_path(root):
                                   "since 2023.", source="notes/team.md", run_id="run-1")
     assert report["edges_written"] == 2 and not report["errors"]
     nodes = graph.load_nodes(root)
-    assert nodes["person:alice_smith"].properties["type_inferred_from"] == "works_at"  # domain inference
+    assert nodes["person:alice_smith"].entity_type == "person"  # a first name types the subject directly
     assert nodes["organization:acme_corp"].entity_type == "organization"
     edges = {e.target: e for e in graph.load_edges(root) if e.relation == "works_at"}
     assert edges["organization:acme_corp"].invalid_at == edges["organization:globex_inc"].valid_at  # exclusive
@@ -137,6 +137,13 @@ def test_write_triples_uses_the_validated_graph_path(root):
     records = provenance.list_provenance(root, "person:alice_smith->organization:globex_inc:works_at")
     assert records and records[0]["source_path"] == "notes/team.md" and records[0]["run_id"] == "run-1"
     assert records[0]["detail"]["method"] == "pattern"
+
+
+def test_an_untypable_subject_takes_its_type_from_the_relation_domain(root, monkeypatch):
+    monkeypatch.setenv("COMMONTRACE_TYPING_MODEL", "off")  # leave the name untypable by every other evidence
+    rx.ingest_text(root, "Zorvan Kade works at Acme Corp since 2021.", source="notes/team.md")
+    node = graph.load_nodes(root)["person:zorvan_kade"]
+    assert node.properties["type_inferred_from"] == "works_at"
 
 
 def test_write_triples_reuses_known_entities_and_refuses_injections(root):
@@ -187,3 +194,49 @@ def test_cli_extract_relations(root, tmp_path, capsys):
     assert cli.main(["graph", "extract-relations", "Kafka is used by the ingest-worker.", "--dest", root]) == 0
     assert "(ingest-worker) --[uses]--> (Kafka)" in capsys.readouterr().out
     assert [e.relation for e in graph.load_edges(root)] == ["uses"]
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("The VoidMapper leverages the NebulaDB cluster to store spatial coordinates.",
+     ("VoidMapper", "uses", "NebulaDB")),
+    ("The FluxCapacitor module is utilized by the ChronosEngine for temporal synchronization.",
+     ("ChronosEngine", "uses", "FluxCapacitor")),
+    ("OmniRoute, which handles all ingress traffic, requires the QuarkSync module to synchronize state.",
+     ("OmniRoute", "depends_on", "QuarkSync")),
+    ("The unexpected reboot of the HyperNode cluster was precipitated by a kernel panic in the VoidOS kernel.",
+     ("VoidOS", "causes", "HyperNode")),
+    ("The SchemaValidator, which handles all incoming JSON payloads, throws ValidationError on bad input.",
+     ("SchemaValidator", "raises", "ValidationError")),
+    ("Within the Python runtime, KeyError is defined as a subclass of LookupError.",
+     ("KeyError", "extends", "LookupError")),
+])
+def test_anchored_triggers_link_the_nearest_named_entities(onto, text, expected):
+    found = [(t.subject, t.relation, t.object) for t in rx.extract(text, onto)]
+    subject, relation, obj = expected
+    assert any(r == relation and subject in s and obj in o for s, r, o in found), found
+    assert not any(r == relation and obj in s and subject in o for s, r, o in found)  # never both directions
+
+
+@pytest.mark.parametrize("text", [
+    "The Payments Service may depend on Redis in the future.",
+    "The Billing API does not use Kafka anymore.",
+    "Next quarter the ChronoCore engine will replace the FluxCapacitor module.",
+])
+def test_hedged_negated_and_planned_statements_assert_nothing(onto, text):
+    assert rx.extract(text, onto) == []
+
+
+def test_relation_benchmark_scores_an_inline_fixture(tmp_path):
+    import json
+
+    from benchmarks import relation_extraction_eval
+
+    rows = [
+        {"id": "p", "text": "The Payments Service depends on Redis.",
+         "triples": [{"subject": "Payments Service", "relation": "depends_on", "object": "Redis"}]},
+        {"id": "n", "text": "The Payments Service does not depend on Redis.", "triples": []},
+    ]
+    path = tmp_path / "relations.json"
+    path.write_text(json.dumps({"schema_version": "1.0.0", "examples": rows}), encoding="utf-8")
+    report = relation_extraction_eval.run(str(path))
+    assert report["lenient"]["f1"] == 1.0 and report["lenient"]["negatives_without_triples"] == "1/1"

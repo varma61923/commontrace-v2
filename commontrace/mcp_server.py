@@ -76,7 +76,6 @@ nothing new until someone opts in.
 
 from __future__ import annotations
 
-import argparse
 import contextlib
 import dataclasses
 import datetime
@@ -133,6 +132,7 @@ from commontrace.async_workers import STORE_WORKERS, WorkerCapacityError
 from commontrace.commands._format import read_or_warn
 from commontrace.commands._traces import load_trace_candidates
 from commontrace.commands._validators import REFUSE_CHARS, check_text_size
+from commontrace.configuration import getenv as _configuration_getenv
 
 logger = logging.getLogger(__name__)
 
@@ -214,31 +214,6 @@ async def _run_cli_async(command: str, argv: list[str]) -> tuple[int, str, str]:
         return completed.returncode, completed.stdout, completed.stderr
 
     return await STORE_WORKERS.run(invoke)
-
-
-def _run_cli(command: str, argv: list[str]) -> tuple[int, str, str]:
-    """Run one `commontrace` subcommand in-process and return (rc, stdout, stderr).
-
-    In-process, through the real argparse parser, rather than reconstructing a
-    Namespace by hand: the parser is the definition of what the command
-    accepts, so an added flag or a renamed dest can never leave this surface
-    silently passing something the command does not read. (It already had:
-    `--frustration` binds to `frustration`, and a hand-built namespace spelled
-    it `frustration_signal` -- accepted in silence, recorded nowhere.)
-    """
-    module = importlib.import_module(f"commontrace.commands.{command}_cmd")
-    parser = argparse.ArgumentParser(prog="commontrace")
-    subparsers = parser.add_subparsers(dest="command", required=True)
-    module.add_parser(subparsers)
-
-    out, err = io.StringIO(), io.StringIO()
-    try:
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            args = parser.parse_args([command, *argv])
-            rc = args.func(args)
-    except SystemExit as exc:
-        rc = exc.code if isinstance(exc.code, int) else 2
-    return int(rc or 0), out.getvalue(), err.getvalue()
 
 
 def _agent_actor(who: str = "") -> str:
@@ -1762,6 +1737,42 @@ def build_server(root: str, *, allow_approval: bool = True):
         return _ok(**out)
 
     @mcp.tool()
+    async def memory_search(query: str, context: list[str] | None = None, limit: int = 10,
+                            recipe: str = "balanced", retriever: str = "hybrid", center: str = "",
+                            as_of: str | None = None, known_at: str | None = None,
+                            graph_hops: int = 2, reranker: str | None = None,
+                            action_class: str = "", ctx: Any = None) -> dict:
+        """Search governed facts with semantic/BM25 RRF, entities and bounded graph traversal.
+
+        Uses the same request contract as `/v1/memory/search`. Semantic search
+        and automatic cross-encoder reranking use cached local models, falling
+        back to lexical retrieval when unavailable. `as_of` selects valid time;
+        `known_at` independently selects record time. `reranker="mmr"` diversifies
+        evidence; `graph_hops=0` disables expansion. Current scope, erasure,
+        authority and proof checks apply to every candidate and memory bridge.
+        The older query_facts and archival_memory_search tools retain sparse
+        ranking compatibility.
+        """
+        from commontrace.api_schema import validate_request
+        from commontrace.search_recipes import REGISTRY
+
+        body = {"query": query, "context": context or [], "limit": limit,
+                "recipe": recipe, "retriever": retriever, "center": center,
+                "as_of": as_of, "known_at": known_at, "graph_hops": graph_hops,
+                "reranker": reranker, "action_class": action_class}
+        try:
+            validate_request("search", body)
+            await _progress(ctx, 0, "Retrieving governed fact evidence")
+            results = await STORE_WORKERS.run(
+                lambda: REGISTRY.retrieve(retriever, root, query,
+                    **{name: value for name, value in body.items() if name not in ("query", "retriever")})
+            )
+        except (ValueError, OSError, RuntimeError) as exc:
+            return _err(f"could not search memory: {type(exc).__name__}: {exc}")
+        await _progress(ctx, 1, "Fact retrieval complete")
+        return _ok(results=results, count=len(results))
+
+    @mcp.tool()
     def query_facts(
         query: str,
         scope: str = "",
@@ -1956,6 +1967,34 @@ def build_server(root: str, *, allow_approval: bool = True):
         return _ok(**out)
 
     @mcp.tool()
+    async def working_memory(space: str, session: str, question: str, budget: int = 2000,
+                             recent_turns: int = 6, agent: str = "", now: str = "",
+                             refresh_summary: bool = False) -> dict:
+        """Everything the next call in `session` should see, within `budget` tokens: the
+        session's pinned blocks and summary, its most recent turns, and the evidence from
+        the whole space (other sessions included) that answers `question`. The same
+        assembly as the gateway's POST /v1/working-memory; explain says what each
+        section was allotted, spent and dropped."""
+        from commontrace import working_memory as wm
+        from commontrace.conversation import ConversationError
+
+        if isinstance(budget, bool) or not isinstance(budget, int) or not 50 <= budget <= 32_000:
+            return _err("budget must be an integer number of tokens from 50 to 32000")
+        if isinstance(recent_turns, bool) or not isinstance(recent_turns, int) or \
+                not 0 <= recent_turns <= wm.MAX_RECENT:
+            return _err(f"recent_turns must be an integer from 0 to {wm.MAX_RECENT}")
+
+        def _run():
+            return wm.assemble(root, space, session, question, budget=budget, recent_turns=recent_turns,
+                               agent=agent, now=now or None, refresh_summary=bool(refresh_summary))
+
+        try:
+            out = await STORE_WORKERS.run(_run)
+        except ConversationError as exc:
+            return _err(str(exc))
+        return _ok(**{**out, "space": space})
+
+    @mcp.tool()
     async def conversation_recall(space: str, question: str, budget: int = 1500, now: str = "",
                                   sessions: list[str] | None = None, speakers: list[str] | None = None,
                                   since: str = "", until: str = "", ctx: Any = None,
@@ -1967,12 +2006,13 @@ def build_server(root: str, *, allow_approval: bool = True):
         and `until` narrow what may be recalled. Turns the injection screen flags are
         withheld and listed under explain.withheld.
         `context_strategy=coverage-v1` prioritizes distinct query facets within
-        the same evidence budget; the default preserves existing ranking.
+        the same evidence budget; coverage-v2 also diversifies relevant sessions
+        and chronological span for history queries. The default preserves existing ranking.
         `adaptive_budget=true` treats `budget` as a floor and sizes it by the
         question's shape (summaries, orderings, counts and lists get up to 3x,
         capped at 12000); explain.budget reports what was used and why.
         """
-        from commontrace.conversation import ConversationError, Options, Store, recall
+        from commontrace.conversation import ConversationError, Options, recall
 
         try:
             budget = max(50, min(int(budget), 32_000))
@@ -1984,7 +2024,9 @@ def build_server(root: str, *, allow_approval: bool = True):
                        adaptive_budget=bool(adaptive_budget), max_budget=max(budget, 12_000))
 
         def _run():
-            with Store(root, space, create=False) as store:
+            from commontrace.conversation.pool import READ_POOL
+
+            with READ_POOL.lease(root, space, query=question) as store:
                 return recall(store, question, now=now or None, options=opts).as_dict()
 
         try:
@@ -2658,7 +2700,7 @@ def serve(root: str, *, allow_approval: bool = True) -> int:
     import anyio  # optional: only needed to run the stdio transport
 
     mcp = build_server(root, allow_approval=allow_approval)
-    if os.environ.get(WARM_ENV, "1").strip().lower() not in ("0", "false", "no", "off"):
+    if _configuration_getenv(WARM_ENV, "1").strip().lower() not in ("0", "false", "no", "off"):
         threading.Thread(target=_warm_models, args=(root,), name="commontrace-warm", daemon=True).start()
     anyio.run(mcp.run_stdio_async)
     return 0

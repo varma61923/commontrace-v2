@@ -132,3 +132,20 @@ def test_installed_llamaindex_tools_invoke_real_functions(tmp_path):
         assert "Kestrel" in json.loads(recalled.raw_output)["context"]
 
     asyncio.run(exercise())
+
+
+def test_legacy_ag2_registration_binds_each_native_tool(tmp_path, monkeypatch):
+    import sys
+    import types
+
+    registered = []
+    fake = types.ModuleType("autogen")
+    fake.register_function = lambda function, **kw: registered.append((function, kw))
+    monkeypatch.setitem(sys.modules, "autogen", fake)
+    bundle = tools(str(tmp_path))
+    names = bundle.register_ag2(caller="assistant", executor="user")
+    assert names == [tool.name for tool in bundle.native_tools()]
+    assert all(kw["caller"] == "assistant" and kw["executor"] == "user" for _f, kw in registered)
+    monkeypatch.setitem(sys.modules, "autogen", None)
+    with pytest.raises(FrameworkUnavailable):
+        bundle.register_ag2(caller="assistant", executor="user")

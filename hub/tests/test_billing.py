@@ -74,6 +74,10 @@ class TestWebhookSignatureVerification:
         header = f"t={ts},v1={old_sig},v1={new_sig}"
         assert billing.verify_webhook_signature(payload, header, WEBHOOK_SECRET) is True
 
+    async def test_a_non_ascii_signature_is_rejected_not_raised(self):
+        header = f"t={int(time.time())},v1=d\u00e9adbeef"
+        assert billing.verify_webhook_signature(b"{}", header, WEBHOOK_SECRET) is False
+
     async def test_no_configured_secret_always_rejects(self):
         payload = b"{}"
         header = _sign(payload, secret="")
@@ -342,6 +346,31 @@ class TestSubscriptionLifecycle:
         assert "ignored" in outcome
         async with session_scope(session_factory) as session:
             assert (await session.get(Organization, org)).plan == "team"
+
+    @pytest.mark.parametrize("event_type,status", [
+        ("customer.subscription.deleted", "canceled"),
+        ("customer.subscription.updated", "canceled"),
+    ])
+    async def test_the_end_of_a_superseded_subscription_does_not_downgrade(
+        self, session_factory, org, event_type, status
+    ):
+        settings = StripeSettings(secret_key="sk", price_team="price_t")
+        async with session_scope(session_factory) as session:
+            o = await session.get(Organization, org)
+            o.plan = "team"
+            o.stripe_customer_id = "cus_5"
+            o.stripe_subscription_id = "sub_new"
+
+        event = _event(event_type, {
+            "customer": "cus_5", "id": "sub_old", "status": status,
+            "items": {"data": [{"price": {"id": "price_t"}}]},
+        })
+        async with session_scope(session_factory) as session:
+            outcome = await billing.apply_webhook_event(session, settings, event)
+        assert "not the org's current subscription" in outcome
+        async with session_scope(session_factory) as session:
+            fresh = await session.get(Organization, org)
+            assert (fresh.plan, fresh.stripe_subscription_id) == ("team", "sub_new")
 
     async def test_an_event_for_an_unknown_customer_is_a_no_op(self, session_factory):
         settings = StripeSettings(secret_key="sk", price_team="price_t")

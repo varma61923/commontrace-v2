@@ -47,7 +47,15 @@ class CircuitBreaker:
         try:
             result = fn()
         except BaseException as error:
-            retryable = isinstance(error, Exception) and transient(error)
+            try:
+                retryable = isinstance(error, Exception) and transient(error)
+            except BaseException:
+                # An application-supplied classifier can fail too. Do not
+                # strand the only recovery probe or mark the provider healthy.
+                with self._lock:
+                    if self._generation == generation and probe:
+                        self._probe = False
+                raise
             with self._lock:
                 if self._generation == generation:
                     if probe:

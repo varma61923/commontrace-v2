@@ -1,14 +1,14 @@
 """Shared rendering helpers for the listing commands."""
 from __future__ import annotations
 
-import os
 import sys
 
 from commontrace import frontmatter
+from commontrace.configuration import getenv as _configuration_getenv
 
 
 def resolve_hub(args) -> tuple[str, str] | None:
-    hub_url = args.hub_url or os.environ.get("COMMONTRACE_HUB_URL")
+    hub_url = args.hub_url or _configuration_getenv("COMMONTRACE_HUB_URL")
     if args.hub_api_key:
         api_key = args.hub_api_key
     else:

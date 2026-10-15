@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 from datetime import datetime, timezone
 
@@ -19,11 +18,12 @@ def test_t1_fact_add_and_metadata(isolated_store: str):
     res_add.assert_success()
     assert "Added fact" in res_add.stdout
 
-    facts_file = os.path.join(isolated_store, "memory", "facts", "facts.jsonl")
-    assert os.path.exists(facts_file), "facts.jsonl must exist on disk"
+    # New stores keep facts in SQLite; older ones in facts.jsonl. Either is durable on disk.
+    facts_dir = os.path.join(isolated_store, "memory", "facts")
+    assert any(os.path.exists(os.path.join(facts_dir, name)) for name in ("facts.sqlite3", "facts.jsonl")), \
+        "the fact store must exist on disk"
 
-    with open(facts_file, encoding="utf-8") as f:
-        facts = [json.loads(line) for line in f if line.strip()]
+    facts = [f.to_dict() for f in hierarchical.load_facts(isolated_store).values()]
     assert len(facts) >= 1
     f0 = facts[0]
     assert f0["category"] == "constraint"

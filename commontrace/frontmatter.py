@@ -13,7 +13,6 @@ import sys
 import tempfile
 import threading
 import time
-import uuid
 from typing import Any
 
 import yaml
@@ -151,6 +150,11 @@ def read(path: str) -> tuple[dict[str, Any], str]:
             content = fh.read()
     except (OSError, UnicodeDecodeError) as exc:
         raise FrontmatterError(f"cannot read {path}: {exc}") from exc
+    return parse_content(content, source=path)
+
+
+def parse_content(content: str, *, source: str = "document") -> tuple[dict[str, Any], str]:
+    """Parse already bounded, safely opened text with the file reader's semantics."""
     if not content.startswith("---"):
         return {}, content
     first = _DELIM_RE.search(content)
@@ -161,12 +165,12 @@ def read(path: str) -> tuple[dict[str, Any], str]:
     try:
         fm = _parse(fm_text)
     except yaml.YAMLError as exc:
-        raise FrontmatterError(f"{path}: malformed YAML frontmatter: {exc}") from exc
+        raise FrontmatterError(f"{source}: malformed YAML frontmatter: {exc}") from exc
     if fm is None:
         fm = {}
     if not isinstance(fm, dict):
         raise FrontmatterError(
-            f"{path}: frontmatter must be a YAML mapping, got {type(fm).__name__}"
+            f"{source}: frontmatter must be a YAML mapping, got {type(fm).__name__}"
         )
     body = content[second.end():].lstrip("\n")
     return fm, body
@@ -198,16 +202,9 @@ def validate_expires(value: object) -> str:
 
 
 def _new_file_mode(target_dir: str) -> int:
-    # A directory does not fix process umask or inherited ACLs. Probe each new
-    # file without temporarily changing the process-wide umask in other threads.
-    probe_path = os.path.join(target_dir, f".commontrace-umask-probe-{uuid.uuid4().hex}")
-    fd = os.open(probe_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
-    try:
-        mode = stat.S_IMODE(os.fstat(fd).st_mode)
-        return mode
-    finally:
-        os.close(fd)
-        os.unlink(probe_path)
+    current_umask = os.umask(0)
+    os.umask(current_umask)
+    return 0o666 & ~current_umask
 
 
 def write(path: str, frontmatter: dict[str, Any], body: str) -> None:

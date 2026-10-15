@@ -20,7 +20,8 @@ public final class MemoryClient {
     private final List<String> scopes;
     private final HttpClient http;
     private final ObjectMapper json = new ObjectMapper();
-    private static final Set<String> OPERATIONS = Set.of("add", "batch", "search", "profile", "reflect", "outcome", "check-action", "propose");
+    private static final Set<String> OPERATIONS = Set.of("add", "batch", "search", "profile", "reflect", "outcome", "check-action", "propose",
+        "turn", "record-put", "record-search", "record-forget", "record-reap-due");
     public MemoryClient(String url, String token, String agent, List<String> context) {
         base = URI.create(url.replaceAll("/$", ""));
         boolean local = Set.of("localhost", "127.0.0.1", "[::1]", "::1").contains(base.getHost() == null ? "" : base.getHost());
@@ -65,5 +66,31 @@ public final class MemoryClient {
     }
     public JsonNode outcome(String occasion, boolean succeeded) throws IOException, InterruptedException {
         return call("outcome", json.createObjectNode().put("occasion_id", occasion).put("succeeded", succeeded));
+    }
+    public JsonNode putRecord(ObjectNode record) throws IOException, InterruptedException {
+        return call("record-put", json.createObjectNode().set("record", record));
+    }
+    public JsonNode searchRecords(String query, int limit) throws IOException, InterruptedException {
+        return call("record-search", json.createObjectNode().put("query", query).put("limit", limit));
+    }
+    public JsonNode forgetRecord(String id, String reason) throws IOException, InterruptedException {
+        return call("record-forget", json.createObjectNode().put("id", id).put("reason", reason));
+    }
+    /** Erase a bounded batch of due roots and their dependents; hosted use requires admin scope. */
+    public JsonNode reapDueRecords(int limit) throws IOException, InterruptedException {
+        if (limit < 1 || limit > 100) throw new IllegalArgumentException("Expiration batch must be in 1..100");
+        return call("record-reap-due", json.createObjectNode().put("limit", limit));
+    }
+    public JsonNode reapDueRecords() throws IOException, InterruptedException {
+        return reapDueRecords(16);
+    }
+    /** Capture and retrieve in one request; session, query and context remain pinned. */
+    public JsonNode turn(String session, String query, ObjectNode options) throws IOException, InterruptedException {
+        ObjectNode body = options.deepCopy();
+        body.put("session_id", session).put("query", query);
+        return call("turn", body);
+    }
+    public JsonNode turn(String session, String query) throws IOException, InterruptedException {
+        return turn(session, query, json.createObjectNode());
     }
 }

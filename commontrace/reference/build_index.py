@@ -27,12 +27,6 @@ Trigger:
 
 Strictly local: no API call at runtime, no telemetry, model cached under
 ~/.cache/huggingface/ (~420 MB) after first run.
-
-Hooks Dreamer v2.4 (NOT implemented here, documented for future use):
-    index.npz is intentionally exposed so a future Dreamer agent can detect
-    lesson fusion candidates by computing pairwise cosine similarity on the
-    `embeddings` matrix (sim > 0.85 = candidate fusion). The fields above are
-    stable contract for that downstream use.
 """
 from __future__ import annotations
 
@@ -68,7 +62,7 @@ _SLUG_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 TRUSTED_MODELS = ("multi-qa-mpnet-base-dot-v1", "Snowflake/snowflake-arctic-embed-m-v1.5")
 DEFAULT_MODEL_NAME = "Snowflake/snowflake-arctic-embed-m-v1.5"
-_TRUSTED_MODEL_NAME = DEFAULT_MODEL_NAME
+_PINNED_MODEL_NAME = DEFAULT_MODEL_NAME
 MODEL_NAME = DEFAULT_MODEL_NAME
 EMBEDDING_DIM = 768
 

@@ -21,7 +21,8 @@ def add_connector_routes(app, session_factory, *, config: HubConfig, trusted_pro
     cipher = config.cipher()
 
     async def events(request: Request) -> Response:
-        allowed, retry_after = await limiter.check(rate_limit_key(request, trusted_proxy_hops))
+        client_key = rate_limit_key(request, trusted_proxy_hops)
+        allowed, retry_after = await limiter.check(client_key)
         if not allowed:
             return JSONResponse(
                 {"error": "rate_limited"}, status_code=429,
@@ -32,6 +33,10 @@ def add_connector_routes(app, session_factory, *, config: HubConfig, trusted_pro
             session_factory, request.path_params["connector_id"], request.headers, body,
             cipher=cipher,
         )
+        if result.status != 401:
+            # Only unverifiable deliveries spend the budget; a provider sending genuine,
+            # signed events from a few addresses must not be throttled for volume.
+            limiter.refund(client_key)
         return JSONResponse(result.body, status_code=result.status)
 
     app.add_route(CONNECTOR_EVENTS_PATH, events, methods=["POST"])

@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import html as _html
+import ipaddress
 import re
+import socket
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -18,6 +20,7 @@ from commontrace.connectors.base import (
     record_chunks,
     resolve_cursor,
     save_connector_state,
+    scoped_key,
 )
 from commontrace.ingest import Chunk, IngestionResult, _fingerprint, _redact_secrets
 
@@ -30,16 +33,60 @@ MAX_VISITED = 10_000
 def _is_http_url(url: str) -> bool:
     try:
         parts = urllib.parse.urlsplit(url)
+        # Accessing port also validates malformed or out-of-range port values.
+        _ = parts.port
+        return (
+            parts.scheme.lower() in ("http", "https")
+            and bool(parts.hostname)
+            and parts.username is None
+            and parts.password is None
+            and not any(ord(char) <= 32 or ord(char) == 127 for char in url)
+        )
     except ValueError:
         return False
-    return parts.scheme.lower() in ("http", "https") and bool(parts.netloc)
+
+
+def _redirect_target_is_public(url: str) -> bool:
+    """Check all DNS answers; a redirect must not introduce an internal target.
+
+    Explicit intranet/loopback seeds remain supported. This guards cross-origin
+    redirects, not DNS rebinding: network egress policy is still required when
+    crawling untrusted domains in a privileged network.
+    """
+    parts = urllib.parse.urlsplit(url)
+    host = parts.hostname or ""
+    if host.lower() == "localhost" or host.lower().endswith(".localhost"):
+        return False
+    try:
+        addresses = [ipaddress.ip_address(host)]
+    except ValueError:
+        answers = socket.getaddrinfo(host, parts.port or (443 if parts.scheme == "https" else 80),
+                                     type=socket.SOCK_STREAM)
+        addresses = [ipaddress.ip_address(answer[4][0].split("%", 1)[0]) for answer in answers]
+    return bool(addresses) and all(
+        address.is_global and not address.is_multicast
+        and not getattr(address, "is_site_local", False) for address in addresses
+    )
 
 
 class _HttpOnlyRedirects(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
+        from commontrace import offline
+
         if not _is_http_url(newurl):
             raise urllib.error.HTTPError(newurl, code, "redirect to a non-http(s) URL refused", headers, fp)
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
+        offline.check_url(newurl, "web crawling redirect")
+        source = urllib.parse.urlsplit(req.full_url)
+        target = urllib.parse.urlsplit(newurl)
+        if (source.hostname, source.port) != (target.hostname, target.port):
+            if not _redirect_target_is_public(newurl):
+                raise ValueError("redirect to a non-public network address refused")
+        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirected is not None and (source.scheme, source.netloc) != (target.scheme, target.netloc):
+            # urllib copies arbitrary headers across origins. Never forward credentials.
+            for name in ("Authorization", "Proxy-authorization", "Cookie"):
+                redirected.remove_header(name)
+        return redirected
 
 
 _OPENER = urllib.request.build_opener(_HttpOnlyRedirects)
@@ -49,10 +96,17 @@ def _get(url: str, user_agent: str, timeout: float, limit: int) -> tuple[str, by
     from commontrace import offline
 
     offline.check_url(url, "web crawling")
+    if not _is_http_url(url):
+        raise ValueError("web crawling requires an http(s) URL without embedded credentials")
+    if limit <= 0:
+        raise ValueError("web crawling response size limit must be positive")
     req = urllib.request.Request(url, headers={"User-Agent": user_agent})
     with _OPENER.open(req, timeout=timeout) as resp:  # nosec B310 - http(s) only, checked above
         ctype = str(resp.headers.get("Content-Type", "") or "")
-        return ctype, resp.read(limit)
+        raw = resp.read(limit + 1)
+        if len(raw) > limit:
+            raise ValueError("web crawling response exceeds size limit")
+        return ctype, raw
 
 
 def _robots_allowed(url: str, user_agent: str, timeout: float) -> bool:
@@ -62,7 +116,10 @@ def _robots_allowed(url: str, user_agent: str, timeout: float) -> bool:
         _ctype, raw = _get(robots_url, user_agent, timeout, MAX_ROBOTS_BYTES)
     except urllib.error.HTTPError as exc:
         return exc.code not in (401, 403)
-    except (OSError, ValueError):
+    except ValueError:
+        # Truncated robots rules must never silently turn a disallow into allow.
+        return False
+    except OSError:
         return True
     parser = urllib.robotparser.RobotFileParser()
     parser.parse(raw.decode("utf-8", errors="replace").splitlines())
@@ -85,7 +142,12 @@ def _html_to_markdown_text(html_text: str) -> str:
 
 
 class WebCrawlerConnector(Connector):
-    """Fetch a set of seed URLs; each URL is fetched once until its state is reset."""
+    """Fetch seeds once per scope until state is reset.
+
+    Explicit local/intranet seeds are supported. Cross-origin redirects cannot
+    introduce non-public destinations. Use network egress controls when accepting
+    untrusted seeds; DNS rebinding and initial private seeds are not blocked here.
+    """
 
     name = "web_crawler"
 
@@ -153,12 +215,13 @@ class WebCrawlerConnector(Connector):
         ))
         rid = run_id or new_run_id()
         active_scope = scope or self.scope
+        state_key = scoped_key(STATE_KEY, active_scope)
         limit = max(0, int(max_pages if max_pages is not None else self.max_pages))
         if timeout is not None:
             self.timeout = int(timeout)
         result = IngestionResult(source_path=",".join(seeds), source_type="web_crawler")
 
-        visited = resolve_cursor(root, STATE_KEY, state_token).get("visited", [])
+        visited = resolve_cursor(root, state_key, state_token, scope=active_scope).get("visited", [])
         visited = [v for v in visited if isinstance(v, str)] if isinstance(visited, list) else []
         seen = set(visited)
         pending = [u for u in seeds if u not in seen]
@@ -180,16 +243,19 @@ class WebCrawlerConnector(Connector):
             fetched.append((target, page_chunks))
         result.chunks_extracted = len(chunks)
 
-        new_visited = (visited + [t for t, _c in fetched])[-MAX_VISITED:]
-        new_cursor = {"visited": new_visited}
-        new_token = encode_state_token(new_cursor)
+        completed = [t for t, _c in fetched] if dry_run else []
         if not dry_run:
             for target, page_chunks in fetched:
-                record_chunks(root, page_chunks, source_id=f"web:{target}", scope=active_scope,
-                              run_id=rid, connector=self.name, result=result)
+                if record_chunks(root, page_chunks, source_id=f"web:{target}",
+                                 scope=active_scope, run_id=rid, connector=self.name, result=result):
+                    completed.append(target)
+        new_visited = (visited + completed)[-MAX_VISITED:]
+        new_cursor = {"visited": new_visited, "scope": active_scope, "connector_key": state_key}
+        new_token = encode_state_token(new_cursor)
+        if not dry_run:
             try:
-                save_connector_state(root, STATE_KEY, new_token, new_cursor)
+                save_connector_state(root, state_key, new_token, new_cursor)
             except OSError as exc:
                 result.errors.append("state persist error: %s" % exc)
         return SyncResult(connector=self.name, chunks=chunks, result=result, new_state_token=new_token,
-                          run_id=rid, dry_run=dry_run, pending=max(0, len(pending) - limit))
+                          run_id=rid, dry_run=dry_run, pending=max(0, len(pending) - len(completed)))

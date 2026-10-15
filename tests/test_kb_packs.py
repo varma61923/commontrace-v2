@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 
 import pytest
@@ -25,14 +24,6 @@ def _installed(store) -> list[str]:
 
 
 class TestPacksAreASelectionNotNewContent:
-    def test_every_pack_record_exists_verbatim_in_the_curated_corpus(self):
-        with open(CORPUS, encoding="utf-8") as fh:
-            corpus = {json.dumps(json.loads(line), sort_keys=True) for line in fh if line.strip()}
-        for info in kb_packs.list_packs():
-            with open(os.path.join(kb_packs.PACKS_DIR, f"{info.name}.jsonl"), encoding="utf-8") as fh:
-                for line in fh:
-                    if line.strip():
-                        assert json.dumps(json.loads(line), sort_keys=True) in corpus, info.name
 
     def test_every_record_carries_a_source_citation(self):
         for info in kb_packs.list_packs():

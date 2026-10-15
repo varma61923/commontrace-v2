@@ -1,0 +1,49 @@
+{
+  "extension": "hybrid-retrieval-v1",
+  "graph": [
+    {
+      "name": "semantic-hit-expands-support",
+      "facts": {"anchor": {"statement": "Grammar boundary", "scopes": ["agent:a"]}, "support": {"statement": "Bound the syntax tree", "scopes": ["agent:a"]}},
+      "dense": {"anchor": 0.9},
+      "edges": {"memory:anchor": ["memory:support"]},
+      "context": ["agent:a"],
+      "expected_ids": ["anchor", "support"]
+    },
+    {
+      "name": "private-memory-is-not-a-bridge",
+      "facts": {"anchor": {"statement": "Grammar boundary", "scopes": ["agent:a"]}, "bridge": {"statement": "Private account", "scopes": ["agent:b"]}, "support": {"statement": "Bound the syntax tree", "scopes": ["agent:a"]}},
+      "dense": {"anchor": 0.9},
+      "edges": {"memory:anchor": ["memory:bridge"], "memory:bridge": ["memory:support"]},
+      "context": ["agent:a"],
+      "expected_ids": ["anchor"]
+    },
+    {
+      "name": "expired-support-excluded",
+      "facts": {"anchor": {"statement": "Grammar boundary", "scopes": []}, "support": {"statement": "Bound the syntax tree", "scopes": [], "expires_at": "2024-01-02T00:00:00Z"}},
+      "dense": {"anchor": 0.9},
+      "edges": {"memory:anchor": ["memory:support"]},
+      "context": [],
+      "expected_ids": ["anchor"]
+    }
+  ],
+  "multi_round": [
+    {
+      "name": "distinct-facets-survive-common-hits",
+      "question": "question",
+      "limit": 3,
+      "searches": {"question": ["common-a", "common-b"], "facet-one": ["one", "common-a", "common-b"], "facet-two": ["two", "common-a", "common-b"]},
+      "decisions": [{"grade": "PARTIAL", "queries": ["facet-one", "facet-two"]}, {"grade": "COMPLETE", "queries": []}],
+      "expected_ids": ["common-a", "one", "two"],
+      "expected_searches": ["question", "facet-one", "facet-two"]
+    },
+    {
+      "name": "core-first-and-query-exhaustion",
+      "question": "question",
+      "limit": 2,
+      "searches": {"question": ["common", "core"], "detail": ["facet"]},
+      "decisions": [{"grade": "PARTIAL", "queries": ["detail", " DETAIL ", "question"], "core_ids": ["core"]}, {"grade": "PARTIAL", "queries": ["detail"]}],
+      "expected_ids": ["core", "common"],
+      "expected_searches": ["question", "detail"]
+    }
+  ]
+}

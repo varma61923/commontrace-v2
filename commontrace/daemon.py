@@ -5,6 +5,8 @@ import json
 import os
 import time
 
+from commontrace.configuration import getenv as _configuration_getenv
+
 try:
     import fcntl
 except ImportError:  # pragma: no cover - platform fallback
@@ -204,10 +206,25 @@ def _invoke_hooks(root: str) -> dict:
     except Exception as exc:  # noqa: BLE001
         results["consolidate"] = f"skipped: {exc}"
     try:
+        from commontrace import graph_sync
+
+        synced = graph_sync.run_if_due(root)
+        results["graph"] = synced if synced is not None else "up to date"
+    except Exception as exc:  # noqa: BLE001
+        results["graph"] = f"error: {exc}"
+    try:
+        from commontrace.conversation import anticipate
+
+        indexed = anticipate.run_if_enabled(root)
+        if indexed is not None:
+            results["anticipate"] = indexed
+    except Exception as exc:  # noqa: BLE001
+        results["anticipate"] = f"error: {exc}"
+    try:
         from commontrace import jobs
 
         if os.path.exists(jobs.db_path(root)):
-            budget = float(os.environ.get("COMMONTRACE_JOBS_SECONDS", "300") or 300)
+            budget = float(_configuration_getenv("COMMONTRACE_JOBS_SECONDS", "300") or 300)
             results["jobs"] = jobs.run_pending(root, limit=100, time_budget=budget)
     except Exception as exc:  # noqa: BLE001
         results["jobs"] = f"error: {exc}"

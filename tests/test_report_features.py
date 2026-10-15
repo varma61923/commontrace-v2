@@ -113,7 +113,7 @@ def test_failed_conversation_document_is_not_sealed(tmp_path, monkeypatch):
     monkeypatch.setattr(Store, "add", fail_one)
     pipeline = pl.create_document_pipeline(str(source), str(root), space="test", contextualize="none")
     assert pipeline.run().errors
-    ledger = pl.Ledger(str(root))
+    ledger = pipeline.loader.ledger
     assert sorted(row["status"] for row in ledger.rows.values()) == ["error", "ingested"]
     monkeypatch.setattr(Store, "add", original)
     retry = pl.create_document_pipeline(str(source), str(root), space="test", contextualize="none")
@@ -239,6 +239,11 @@ def test_backend_factory_physically_isolates_owner_datasets(tmp_path):
     ("graphiti", {"nodes": [{"uuid": "node-a", "name": "Office"}, {"uuid": "node-b", "name": "Tokyo"}],
                   "edges": [{"uuid": "edge-a", "source_node_uuid": "node-a", "target_node_uuid": "node-b",
                              "fact": "Office is Tokyo", "valid_at": "2025-01-01T00:00:00Z"}]}),
+    ("cognee", {"nodes": [{"id": "n1", "name": "Office", "description": "Office is Tokyo"}],
+                "edges": [{"source": "n1", "target": "n2", "relation": "located_in"}]}),
+    ("supermemory", {"memories": [{"id": "sm1", "content": "Office is Tokyo"}]}),
+    ("hindsight", {"facts": [{"id": "hf1", "text": "Office is Tokyo", "valid_at": "2025-01-01T00:00:00Z"}]}),
+    ("everos", {"atomic_facts": [{"id": "ef1", "fact": "Office is Tokyo", "valid_from": "2025-01-01T00:00:00Z"}]}),
 ])
 def test_all_vendor_migrations_are_reviewable_scoped_and_replayable(tmp_path, vendor, document):
     root = str(tmp_path)
@@ -320,6 +325,32 @@ def test_wiki_refresh_is_source_driven_and_provider_failure_keeps_watermark(tmp_
     assert wiki.enqueue_changed(root) == 1
     assert jobs.run_pending(root, kinds=["wiki"])["done"] == 1
     assert "Osaka" in knowledge_pages.get_page(root, "company/office").content
+
+
+def test_withdrawn_wiki_source_hides_current_page_but_keeps_audit_history(tmp_path):
+    root = str(tmp_path)
+    fact = hierarchical.add_fact(root, "Office is Tokyo", scopes=["project:test"])[0]
+    registration = wiki.register(
+        root, "company/office", "Where is the office?", [fact.id], context=["project:test"]
+    )
+    wiki.refresh(root, registration["id"])
+
+    assert "Tokyo" in knowledge_pages.get_page(root, "company/office").content
+    assert len(knowledge_pages.page_history(root, "company/office")) == 1
+
+    hierarchical.invalidate_fact(root, fact.id)
+
+    # A source-bound page is excluded from all current retrieval surfaces as soon
+    # as its grounding is withdrawn, even before its queued refresh can run.
+    assert knowledge_pages.get_page(root, "company/office") is None
+    assert knowledge_pages.list_pages(root) == []
+    assert knowledge_pages.search_pages(root, "Tokyo") == []
+    assert knowledge_pages.page_history(root, "company/office") == []
+
+    # The immutable revision remains available through the explicit audit path;
+    # this is a retraction, not a forgetting/erasure request.
+    audit = knowledge_pages.page_history(root, "company/office", _check_sources=False)
+    assert len(audit) == 1 and "Tokyo" in audit[0]["content"]
 
 
 def test_gmail_stream_imports_native_body_and_preserves_failed_page_checkpoint(tmp_path):

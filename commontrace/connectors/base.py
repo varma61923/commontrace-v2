@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import uuid
@@ -76,17 +77,35 @@ def decode_state_token(token: str | None) -> dict[str, Any]:
     return dict(data) if isinstance(data, dict) else {}
 
 
-def resolve_cursor(root: str, key: str, state_token: str | None) -> dict[str, Any]:
+def scoped_key(key: str, scope: str) -> str:
+    """Separate checkpoints by exact owner scope.
+
+    Preserve existing global identities so unscoped stores resume normally.
+    """
+    return key + ":scope:" + hashlib.sha256(scope.encode("utf-8")).hexdigest() if scope else key
+
+
+def resolve_cursor(root: str, key: str, state_token: str | None, *, scope: str = "") -> dict[str, Any]:
     """An explicit token wins; otherwise the persisted cursor for *key*."""
     cursor = decode_state_token(state_token)
     if cursor:
+        _check_cursor(cursor, key, scope)
         return cursor
     entry = load_connector_state(root, key)
     cursor = decode_state_token(entry.get("state_token"))
     if cursor:
+        _check_cursor(cursor, key, scope)
         return cursor
     stored = entry.get("cursor")
-    return dict(stored) if isinstance(stored, dict) else {}
+    cursor = dict(stored) if isinstance(stored, dict) else {}
+    if cursor:
+        _check_cursor(cursor, key, scope)
+    return cursor
+
+
+def _check_cursor(cursor: dict[str, Any], key: str, scope: str) -> None:
+    if cursor.get("scope", "") != scope or cursor.get("connector_key", key) != key:
+        raise ValueError("connector cursor does not match its source and owner scope")
 
 
 def chunk_markdown_text(text: str, source_path: str) -> list[Chunk]:
@@ -102,10 +121,28 @@ def record_chunks(
     run_id: str,
     connector: str,
     result: IngestionResult,
-) -> None:
-    """Write *chunks* as facts attributed to *source_id*, retiring that source's stale facts."""
-    from commontrace import hierarchical, provenance
+) -> bool:
+    """Write facts and provenance; acknowledge only complete source submission.
 
+    Rejected content remains rejected. Storage and audit failures return False
+    so connectors retain the source's previous checkpoint and retry it.
+    """
+    from commontrace import hierarchical, memory_guard, provenance
+
+    details = []
+    try:
+        for chunk in chunks:
+            detail = {"connector": connector, "breadcrumb": chunk.breadcrumb, "chunk_type": chunk.chunk_type}
+            if chunk.provenance:
+                detail["extraction"] = chunk.provenance
+            if chunk.modality:
+                detail["modality"] = chunk.modality
+            clean, _ = memory_guard.sanitize_metadata(detail, pii=memory_guard.privacy_redaction_enabled())
+            json.dumps(clean, allow_nan=False)
+            details.append(clean)
+    except (ValueError, TypeError) as exc:
+        result.errors.append(f"provenance metadata error: {exc}")
+        return False
     items: list[dict[str, Any]] = []
     for chunk in chunks:
         statement = _screened_statement(f"{chunk.breadcrumb}: {chunk.content[:200]}", result)
@@ -117,18 +154,23 @@ def record_chunks(
     try:
         written = hierarchical.add_facts(root, items)
         result.facts_written += len(written)
-        hierarchical.retire_source(root, source_id, keep={f.id for f, _ in written})
+        hierarchical.retire_source(root, source_id, keep={f.id for f, _ in written},
+                                   scopes=[scope] if scope else [])
     except (OSError, ValueError) as exc:
         result.errors.append(f"fact error: {exc}")
-    for chunk in chunks:
+        return False
+    complete = True
+    for chunk, detail in zip(chunks, details):
         try:
             provenance.append_provenance(
                 root, target_kind="chunk", target_id=chunk.chunk_id, source_path=chunk.source_path,
                 run_id=run_id,
-                detail={"connector": connector, "breadcrumb": chunk.breadcrumb, "chunk_type": chunk.chunk_type},
+                detail=detail,
             )
         except OSError as exc:
             result.errors.append(f"provenance error: {exc}")
+            complete = False
+    return complete
 
 
 @dataclass

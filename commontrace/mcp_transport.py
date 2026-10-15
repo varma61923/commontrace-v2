@@ -83,7 +83,13 @@ class BearerBoundary:
             accepted = expected is not None and expected != "" and supplied is not None \
                 and secrets.compare_digest(supplied, expected.encode("utf-8"))
             if not accepted and supplied is not None and self.oauth_server is not None:
-                accepted = await asyncio.to_thread(self._oauth_ok, supplied)
+                from commontrace import oauth
+
+                try:
+                    accepted = await asyncio.to_thread(self._oauth_ok, supplied)
+                except oauth.KeysUnavailable:
+                    await self._deny(send, 503, b'{"error":"auth_unavailable"}')
+                    return
             if not accepted:
                 await self._deny(send, 401, b'{"error":"unauthorized"}')
                 return
@@ -100,7 +106,9 @@ class BearerBoundary:
             claims = self.oauth_server.verify(supplied.decode("ascii"))
         except (oauth.InvalidToken, UnicodeDecodeError):
             return False
-        except Exception:  # noqa: BLE001 - an unavailable JWKS or missing extra fails closed
+        except oauth.KeysUnavailable:
+            raise  # an issuer outage is a 503, not a rejected token
+        except Exception:  # noqa: BLE001 - a missing extra or anything unexpected fails closed
             return False
         return claims.is_admin or oauth.SCOPE_MCP in claims.scopes
 

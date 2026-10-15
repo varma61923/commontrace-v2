@@ -114,11 +114,12 @@ def test_query_reads_through_the_mirror_with_relation_filters(store, monkeypatch
     assert ("multi_hop", ("service:api",), 2) in mirror.calls and mirror.closed
 
 
-def test_unconfigured_mirror_and_misused_relation_fail_clearly(store, monkeypatch, capsys):
+def test_unconfigured_mirror_fails_and_local_relation_filters_work(store, monkeypatch, capsys):
     monkeypatch.delenv("COMMONTRACE_GRAPH_BACKEND", raising=False)
     assert graph_cmd.run_mirror(_args(store, backend=None)) == 2
     assert "COMMONTRACE_GRAPH_BACKEND" in capsys.readouterr().err
-    assert graph_cmd.run_query(_args(store, backend="local", relation=["depends_on"])) == 1
-    assert "--backend mirror" in capsys.readouterr().err
+    assert graph_cmd.run_query(_args(store, backend="local", relation=["depends_on"])) == 0
+    filtered = capsys.readouterr().out
+    assert "service:db" in filtered and "owned_by" not in filtered
     assert graph_cmd.run_query(_args(store, backend="local")) == 0  # the local path is unchanged
     assert "service:db" in capsys.readouterr().out

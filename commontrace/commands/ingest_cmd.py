@@ -14,7 +14,8 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         "ingest",
         help="Ingest a source (code, markdown, json-logs, transcript) into governed memory.",
     )
-    p.add_argument("source", nargs="?", default=None, help="Path to file or directory to ingest.")
+    p.add_argument("source", nargs="?", default=None,
+                   help="Path to file or directory to ingest; '-' reads one document from stdin (--type docs).")
     p.add_argument("--list-docs", action="store_true", help="List lightweight document summaries in catalog.")
     p.add_argument("--get-doc", default=None, help="Retrieve full content of a document by ID or path.")
     p.add_argument("--job-status", default=None, help="Check status and lifecycle stage of an ingestion job.")
@@ -80,22 +81,29 @@ def _run_docs(args: argparse.Namespace, root: str) -> int:
     from commontrace import llm
     from commontrace.ingest.pipeline import create_document_pipeline
 
+    stdin = args.source == "-"
     if getattr(args, "background", False):
         if args.preview:
             print("[commontrace] --background and --preview cannot be combined.", file=sys.stderr)
+            return 2
+        if stdin:
+            print("[commontrace] --background needs a path; stdin is ingested in the foreground.",
+                  file=sys.stderr)
             return 2
         return _queue_docs(args, root)
 
     try:
         pipeline = create_document_pipeline(
-            args.source, root, scope=args.scope, space=args.space, contextualize=args.contextualize,
-            force=args.force, max_files=args.max_files)
+            "stdin" if stdin else args.source, root, scope=args.scope, space=args.space,
+            contextualize=args.contextualize, force=args.force, max_files=args.max_files,
+            text=sys.stdin.read() if stdin else None)
     except (ValueError, llm.LLMUnavailable) as exc:
         print(f"[commontrace] {exc}", file=sys.stderr)
         return 2
     if args.preview:
         report = pipeline.preview(limit=None)
         payload = {"preview": True, **report.would_write, "warnings": report.warnings,
+                   "errors": report.errors,
                    "sample": [{"source": c.source_path, "chunk": c.chunk_id, "text": c.content[:160]}
                               for c in report.chunks[:5]]}
     else:

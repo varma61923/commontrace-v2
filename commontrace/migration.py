@@ -8,7 +8,7 @@ import uuid
 
 from commontrace import _jsonl, hierarchical, interop, memory_authority, paths, trace_io
 
-VENDORS = ("mem0", "letta", "zep", "graphiti")
+VENDORS = ("mem0", "letta", "zep", "graphiti", "cognee", "supermemory", "hindsight", "everos")
 
 
 def graphiti_records(document) -> list[dict]:
@@ -41,8 +41,16 @@ def graphiti_records(document) -> list[dict]:
 
 
 def convert(vendor: str, document) -> list[dict]:
-    converters = {"mem0": interop.import_mem0_dump, "letta": interop.import_letta_blocks,
-                  "zep": interop.import_zep_episodes, "graphiti": graphiti_records}
+    converters = {
+        "mem0": interop.import_mem0_dump,
+        "letta": interop.import_letta_blocks,
+        "zep": interop.import_zep_episodes,
+        "graphiti": graphiti_records,
+        "cognee": interop.import_cognee_dump,
+        "supermemory": interop.import_supermemory_dump,
+        "hindsight": interop.import_hindsight_dump,
+        "everos": interop.import_everos_dump,
+    }
     if vendor not in converters:
         raise ValueError("unsupported vendor")
     rows = converters[vendor](document)

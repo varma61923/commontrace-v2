@@ -39,16 +39,17 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import os
 import re
 from collections import Counter, defaultdict
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
 from commontrace import hierarchical, redundancy
 from commontrace._lexical import STOPWORDS
 from commontrace._stem import stem
+from commontrace.configuration import getenv as _configuration_getenv
 from commontrace.overlap import DEFAULT_NUM_PERM, minhash
 
 DEFAULT_THRESHOLD = 0.5
@@ -137,7 +138,7 @@ def _lexical_pairs(norms: Sequence[str], threshold: float) -> dict[tuple[int, in
 def _resolve_embedder(embedder) -> tuple[Any, str]:
     """(provider or None, tag) from a tag, a provider object, or the environment."""
     if embedder is None:
-        embedder = os.environ.get(EMBEDDER_ENV, "").strip() or None
+        embedder = _configuration_getenv(EMBEDDER_ENV, "").strip() or None
     if embedder is None or embedder in ("", "none", "off"):
         return None, ""
     if isinstance(embedder, str):
@@ -257,7 +258,14 @@ def cluster_facts(
     if summarize not in ("extractive", "model", "none"):
         raise ValueError("summarize must be extractive, model or none")
     provider, tag = _resolve_embedder(embedder)
-    pool = list(facts) if facts is not None else hierarchical.list_facts(root, status="active", scope=scope)
+    if facts is not None:
+        pool = list(facts)
+    else:
+        # Only facts true now are candidates. A fact whose validity window has ended is history,
+        # not a duplicate of its replacement ("works at Acme" until 2025, then "works at Initech").
+        moment = datetime.now(timezone.utc)
+        pool = [fact for fact in hierarchical.list_facts(root, status="active", scope=scope)
+                if hierarchical._valid_at(fact, moment)]
     groups: dict[tuple[str, ...], list[hierarchical.AtomicFact]] = defaultdict(list)
     for fact in sorted(pool, key=lambda f: f.id):
         groups[tuple(sorted(fact.scopes))].append(fact)

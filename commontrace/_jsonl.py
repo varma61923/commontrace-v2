@@ -110,7 +110,7 @@ def append_row(path: str, row: dict[str, Any]) -> None:
     """Append one JSON object line to *path* in a single write."""
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     data = (json.dumps(row, ensure_ascii=False) + "\n").encode("utf-8")
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     try:
         os.write(fd, data)
     finally:

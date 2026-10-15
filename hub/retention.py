@@ -7,7 +7,7 @@ import datetime
 import hashlib
 from dataclasses import dataclass, field
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 
 from hub import audit, events
 from hub.models import (
@@ -18,6 +18,7 @@ from hub.models import (
     Organization,
     RetentionPolicy,
     Trace,
+    TraceRelation,
     Vote,
 )
 
@@ -508,9 +509,19 @@ async def apply(
         if bucket.blocked or not bucket.doomed:
             continue
         model = KINDS[bucket.object_type].model
-        result = await session.execute(
-            delete(model).where(model.id.in_(list(bucket.doomed)))
-        )
+        doomed = list(bucket.doomed)
+        if model is Trace:
+            # As crud.delete_trace does: relations pointing at a purged trace carry
+            # no foreign key, so they would otherwise be left dangling.
+            await session.execute(delete(TraceRelation).where(TraceRelation.related_trace_id.in_(doomed)))
+        result = await session.execute(delete(model).where(model.id.in_(doomed)))
+        if model is Trace and result.rowcount:
+            # The plan's trace quota reads this counter; purged traces must free it.
+            await session.execute(
+                update(Organization)
+                .where(Organization.id == org_id)
+                .values(trace_count=func.greatest(0, Organization.trace_count - result.rowcount))
+            )
         deleted[bucket.object_type] = (
             deleted.get(bucket.object_type, 0) + (result.rowcount or 0)
         )

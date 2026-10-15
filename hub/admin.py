@@ -302,7 +302,7 @@ def content_security_policy(*scripts: str) -> str:
 
     hashes = []
     for script in scripts:
-        for body in re.findall(r"<script>(.*?)</script>", script, flags=re.S):
+        for body in re.findall(r"(?is)<script[^>]*>(.*?)</script[^>]*>", script):
             digest = base64.b64encode(hashlib.sha256(body.encode()).digest()).decode()
             hashes.append(f"'sha256-{digest}'")
     return (
@@ -419,7 +419,8 @@ def _csrf_token(admin_token: str, action: str, target: str) -> str:
 
 
 def _csrf_ok(admin_token: str, action: str, target: str, presented: str) -> bool:
-    return hmac.compare_digest(_csrf_token(admin_token, action, target), presented or "")
+    return hmac.compare_digest(_csrf_token(admin_token, action, target).encode(),
+                               (presented or "").encode("utf-8", "replace"))
 
 
 def _same_site(request: Request) -> bool:
@@ -447,7 +448,7 @@ def _authorized(request: Request, token: str) -> bool:
     except (binascii.Error, ValueError, UnicodeDecodeError):
         return False
     _, _, presented = decoded.partition(":")
-    return hmac.compare_digest(presented, token)
+    return hmac.compare_digest(presented.encode("utf-8"), token.encode("utf-8"))
 
 
 async def _overview(session) -> dict:
@@ -1452,7 +1453,8 @@ def add_admin_routes(
     def _flash(request: Request) -> str:
         message = request.query_params.get("done", "")[:500]
         signature = request.query_params.get("sig", "")
-        if message and hmac.compare_digest(_flash_sig(admin_token, message), signature):
+        if message and hmac.compare_digest(_flash_sig(admin_token, message).encode(),
+                                            signature.encode("utf-8", "replace")):
             return message
         return ""
 

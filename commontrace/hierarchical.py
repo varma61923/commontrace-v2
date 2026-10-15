@@ -2,16 +2,20 @@
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import hashlib
 import json
 import os
 import re
-from collections.abc import Iterator, Sequence
+import sys
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
 from commontrace import _jsonl, lesson_cache, paths
+from commontrace.configuration import configured
+from commontrace.configuration import getenv as _configuration_getenv
 from commontrace.fact_evidence import MAX_EVIDENCE, EvidenceError, EvidenceResolver, FactEvidence, claim_revision
 
 DEFAULT_CATEGORY = "general"
@@ -68,9 +72,31 @@ class AtomicFact:
     retracted_at: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        if (type(self) is not AtomicFact or type(self.evidence) is not list or self.evidence
+                or type(self.origin) is not dict or any(
+                    type(key) not in _FACT_SCALARS or type(value) not in _FACT_SCALARS
+                    for key, value in self.origin.items()
+                )):
+            return asdict(self)
+        result = {}
+        for name in AtomicFact.__dataclass_fields__:
+            value = getattr(self, name)
+            if type(value) in _FACT_SCALARS:
+                result[name] = value
+            elif type(value) is list and all(type(item) in _FACT_SCALARS for item in value):
+                result[name] = value.copy()
+            elif type(value) is dict and all(
+                type(key) in _FACT_SCALARS and type(item) in _FACT_SCALARS for key, item in value.items()
+            ):
+                result[name] = value.copy()
+            else:
+                # Preserve recursive dataclass conversion and custom deepcopy
+                # behavior for evidence, nested origins and scalar subclasses.
+                return asdict(self)
+        return result
 
 
+_FACT_SCALARS = (str, int, float, bool, type(None))
 _FACT_FIELDS = frozenset(AtomicFact.__dataclass_fields__)
 
 
@@ -98,7 +124,10 @@ def _coerce_fact(data: dict[str, Any]) -> AtomicFact:
         valid_until = _moment(data.get("valid_until"), "valid_until")
     except ValueError:
         raise TypeError("invalid fact validity window") from None
-    _check_window(valid_from, valid_until)
+    # A same-instant replacement creates an empty historical interval. Keep
+    # this terminal record for provenance instead of dropping it on reload.
+    if valid_until != valid_from or data.get("status") not in {"superseded", "deleted", "invalidated", "retired"}:
+        _check_window(valid_from, valid_until)
     try:
         expires_at = _normalize_expires_at(data.get("expires_at"))
     except ValueError:
@@ -181,7 +210,77 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _feature_weight(value: Any) -> int | None:
+    """Conservatively account for retained immutable lexical values only."""
+    if type(value) is str:
+        return sys.getsizeof(value)
+    if type(value) in (tuple, frozenset):
+        weight = sys.getsizeof(value)
+        for child in value:
+            child_weight = sys.getsizeof(child) if type(child) is str else _feature_weight(child)
+            if child_weight is None:
+                return None
+            weight += child_weight
+        return weight
+    return None
+
+
+class _StatementFeatures:
+    """Pure lexical reuse bounded by one write transaction's lifetime."""
+
+    def __init__(self, *, max_entries: int = 4096, max_weight: int = 8 * 1024 * 1024):
+        if max_entries < 1 or max_weight < 1:
+            raise ValueError("feature cache bounds must be positive")
+        self.max_entries, self.max_weight = max_entries, max_weight
+        self.values: dict[tuple[str, Any], Any] = {}
+        self.weight = 0
+        self.closed = False
+
+    def get(self, kind: str, key: Any, build: Callable) -> Any:
+        if self.closed or type(key) is not str:
+            return build(key)
+        cache_key = (kind, key)
+        missing = _FEATURE_MISSING
+        value = self.values.get(cache_key, missing)
+        if value is not missing:
+            return value
+        value = build(key)
+        value_weight, key_weight = _feature_weight(value), _feature_weight(cache_key)
+        if value_weight is None or key_weight is None:
+            return value
+        # Includes a conservative allowance for the dict entry and allocator
+        # overhead. Shared strings are deliberately counted more than once.
+        weight = value_weight + key_weight + 384
+        if weight > self.max_weight:
+            return value
+        if len(self.values) >= self.max_entries or self.weight + weight > self.max_weight:
+            self.values.clear()
+            self.weight = 0
+        self.values[cache_key] = value
+        self.weight += weight
+        return value
+
+    def close(self) -> None:
+        self.values.clear()
+        self.weight = 0
+        self.closed = True
+
+
+_FEATURE_MISSING = object()
+_STATEMENT_FEATURES: contextvars.ContextVar[_StatementFeatures | None] = contextvars.ContextVar(
+    "statement_features", default=None)
+
+
+def _cached_feature(kind: str, key: Any, build: Callable) -> Any:
+    owner = _STATEMENT_FEATURES.get()
+    return build(key) if owner is None else owner.get(kind, key, build)
+
+
 def _normalize_statement(text: str) -> str:
+    return _cached_feature("norm", text, _normalize_statement_uncached)
+
+
+def _normalize_statement_uncached(text: str) -> str:
     return re.sub(r"\s+", " ", text.strip().lower())
 
 
@@ -241,6 +340,10 @@ def _normalize_expires_at(expires_at: str | None) -> str | None:
 
 def load_facts(root: str) -> dict[str, AtomicFact]:
     """Every fact on disk, keyed by id; unreadable rows are skipped."""
+    from commontrace import fact_store
+
+    if fact_store.enabled(root):
+        return fact_store.load(root)
     facts: dict[str, AtomicFact] = {}
     for row in _jsonl.read_rows(_facts_file(root)):
         try:
@@ -259,8 +362,11 @@ def save_facts(root: str, facts: dict[str, AtomicFact]) -> None:
     reader available. Exact serialized bytes, not caller-owned mutable facts,
     bind the publication to its committed source generation.
     """
-    from commontrace import fact_index
+    from commontrace import fact_index, fact_store
 
+    if fact_store.enabled(root):
+        fact_store.replace(root, facts)
+        return
     with _jsonl.locked(_facts_file(root)):
         try:
             base = fact_index.capture_for_write(root)
@@ -289,6 +395,12 @@ def save_facts(root: str, facts: dict[str, AtomicFact]) -> None:
 @contextlib.contextmanager
 def mutate_facts(root: str) -> Iterator[dict[str, AtomicFact]]:
     """Load, lock and save the fact file around one read-modify-write."""
+    from commontrace import fact_store
+
+    if fact_store.enabled(root):
+        with fact_store.transaction(root, write=True) as facts:
+            yield facts
+        return
     path = _facts_file(root)
     with _jsonl.locked(path):
         facts = load_facts(root)
@@ -308,7 +420,7 @@ NEAR_DUPLICATE_COSINE = 0.95
 def dedup_mode() -> str:
     """``exact`` (normalized text only), ``near`` (default: also high-precision lexical
     paraphrases) or ``semantic`` (also embedding near-duplicates; needs COMMONTRACE_FACT_EMBEDDER)."""
-    mode = os.environ.get("COMMONTRACE_FACT_DEDUP", "near").strip().lower() or "near"
+    mode = _configuration_getenv("COMMONTRACE_FACT_DEDUP", "near").strip().lower() or "near"
     if mode not in ("exact", "near", "semantic"):
         raise ValueError("COMMONTRACE_FACT_DEDUP must be exact, near or semantic")
     return mode
@@ -317,6 +429,10 @@ def dedup_mode() -> str:
 def _signature(statement: str) -> tuple[frozenset, tuple, frozenset]:
     """Words, the numbers in order, and the negations: two statements that differ in a
     number or a negation are never duplicates, however similar their wording."""
+    return _cached_feature("signature", statement, _signature_uncached)
+
+
+def _signature_uncached(statement: str) -> tuple[frozenset, tuple, frozenset]:
     norm = _normalize_statement(statement)
     words = _WORD.findall(norm)
     return frozenset(words), tuple(_NUMBER.findall(norm)), frozenset(w for w in words if w in _NEGATIONS)
@@ -420,23 +536,74 @@ class _StatementIndex:
         return best
 
 
+def _statement_index(facts):
+    from commontrace import fact_store
+
+    return fact_store.StatementIndex(facts) if isinstance(facts, fact_store.FactMap) else _StatementIndex(facts)
+
+
+def _index_add(index, fact: AtomicFact, snapshot: dict[str, Any]) -> None:
+    """Pass a detached payload to the built-in SQLite index, preserving legacy add overrides."""
+    from commontrace import fact_store
+
+    add_with_snapshot = getattr(index, "add_with_snapshot", None)
+    if (isinstance(index, fact_store.StatementIndex) and callable(add_with_snapshot)
+            and getattr(type(index), "add", None) is fact_store.StatementIndex.add):
+        add_with_snapshot(fact, snapshot)
+    else:
+        index.add(fact)
+
+
 def _matching_active(facts: dict[str, AtomicFact], statement: str, scopes: list[str],
                      index: _StatementIndex | None = None) -> AtomicFact | None:
-    return (index or _StatementIndex(facts)).exact(statement, scopes)
+    return (index or _statement_index(facts)).exact(statement, scopes)
+
+
+def _semantic_pool(root, facts, statement, scopes, *, exclude=frozenset()):
+    """Bounded indexed candidates; JSONL retains its legacy compatibility scan."""
+    from commontrace import fact_store
+    requested = frozenset(scopes)
+    if isinstance(facts, fact_store.FactMap):
+        tokens = sorted(_signature(statement)[0])[:32]
+        expression = " OR ".join('"' + token.replace('"', '""') + '"' for token in tokens)
+        identities = [row[0] for row in facts.connection.execute(
+            "SELECT fact_id FROM fact_fts WHERE fact_fts MATCH ? ORDER BY bm25(fact_fts) LIMIT 100",
+            (expression,),
+        )] if expression else []
+        # Pending writes are not yet in the materialized FTS projection.
+        identities += [key for key, fact in facts.loaded.items()
+                       if set(tokens) & _signature(fact.statement)[0]][:100]
+        if root:
+            from commontrace import fact_vector_projection
+            try:
+                identities += [key for key, score in fact_vector_projection.search(root, statement, limit=15)
+                               if score >= 0.6]
+            except (ImportError, OSError, ValueError, RuntimeError):
+                pass
+        pool = [facts[key] for key in dict.fromkeys(identities) if key in facts and key not in exclude]
+    else:
+        pool = [fact for fact in facts.values() if fact.id not in exclude]
+    return [fact for fact in pool if fact.status == "active" and not fact.forgotten
+            and _scopes_compatible(requested, fact.scopes)]
 
 
 def _semantic_duplicate(root: str | None, facts: dict[str, AtomicFact], statement: str,
-                        scopes: list[str]) -> AtomicFact | None:
+                        scopes: list[str], decision: dict | None = None) -> AtomicFact | None:
     """An embedding near-duplicate in compatible scope with the same numbers and negations."""
     if not root:
         return None
     from commontrace import fact_embeddings
 
     _w, numbers, negations = _signature(statement)
-    requested = frozenset(scopes)
-    pool = [f for f in facts.values() if f.status == "active" and not f.forgotten
-            and _scopes_compatible(requested, f.scopes)
-            and _signature(f.statement)[1:] == (numbers, negations)]
+    pool = _semantic_pool(root, facts, statement, scopes)
+    if decision is not None and _configuration_getenv("COMMONTRACE_FACT_CONFLICT_JUDGE", "").lower() == "llm":
+        from commontrace import fact_conflicts
+        ranked = fact_embeddings.similar(statement, pool, root=root, threshold=0.6)
+        candidates = [fact for fact, _ in ranked[:15]] if ranked is not None else pool[:15]
+        decision.update(fact_conflicts.judge_joint(statement, candidates))
+        return next((fact for fact in candidates if fact.id in decision["duplicates"]
+                     and _signature(fact.statement)[1:] == (numbers, negations)), None)
+    pool = [fact for fact in pool if _signature(fact.statement)[1:] == (numbers, negations)]
     if not pool:
         return None
     found = fact_embeddings.similar(statement, pool, root=root, threshold=NEAR_DUPLICATE_COSINE)
@@ -447,7 +614,8 @@ MAX_VALUE_VARIANTS = 2
 
 
 def _detect_conflicts(facts: dict[str, AtomicFact], index: _StatementIndex, fact: AtomicFact,
-                      root: str | None, sink: list, *, may_supersede: bool, later=frozenset()) -> None:
+                      root: str | None, sink: list, *, may_supersede: bool, later=frozenset(),
+                      joint_decision=None) -> None:
     """Contradictions between a newly added fact and active facts in identical scope (see fact_conflicts).
 
     Candidates come from the index by lookup: the same slot with the opposite
@@ -463,9 +631,18 @@ def _detect_conflicts(facts: dict[str, AtomicFact], index: _StatementIndex, fact
     mode = fact_conflicts.mode()
     if mode == "off":
         return
-    _words, numbers, negations = _signature(fact.statement)
-    slot = fact_conflicts.slot_key(fact.statement)
+    cached_features = getattr(facts, "conflict_features", None)
+    prepared = cached_features(fact) if callable(cached_features) else None
+    if prepared is None:
+        _words, numbers, negations = _signature(fact.statement)
+        slot = fact_conflicts.slot_key(fact.statement)
+    else:
+        numbers, negations, slot = prepared
     if len(slot) < 2:
+        return
+    has_other_slot = getattr(index, "has_other_slot", None)
+    joint_judge = _configuration_getenv("COMMONTRACE_FACT_CONFLICT_JUDGE", "").strip().lower() == "llm"
+    if callable(has_other_slot) and not joint_judge and not has_other_slot(slot, fact.id):
         return
 
     def live(ids) -> list[AtomicFact]:
@@ -483,18 +660,21 @@ def _detect_conflicts(facts: dict[str, AtomicFact], index: _StatementIndex, fact
             if len(n) == len(numbers) and sum(a != b for a, b in zip(n, numbers)) == 1:
                 for older in live(same[n]):
                     found.setdefault(older.id, (older, "value"))
-    if os.environ.get("COMMONTRACE_FACT_CONFLICT_JUDGE", "").strip().lower() == "llm":
-        pool = [f for f, _k in found.values()]
-        if root:
-            from commontrace import fact_embeddings
-
-            near = fact_embeddings.similar(fact.statement, [
-                f for f in facts.values() if f.id != fact.id and f.id not in later and f.status == "active"
-                and not f.forgotten
-                and f.scopes == fact.scopes], root=root, threshold=0.8) or []
-            pool += [f for f, _cos in near[:5] if f not in pool]
-        for fid in fact_conflicts.judge(fact.statement, pool):
-            found[fid] = (facts[fid], "judged")
+    if _configuration_getenv("COMMONTRACE_FACT_CONFLICT_JUDGE", "").strip().lower() == "llm":
+        if joint_decision is None:
+            pool = [f for f, _k in found.values()]
+            if root:
+                from commontrace import fact_embeddings
+                candidates = _semantic_pool(root, facts, fact.statement, fact.scopes,
+                                            exclude=later | {fact.id})
+                near = fact_embeddings.similar(fact.statement, candidates, root=root, threshold=0.6) or []
+                pool += [f for f, _cos in near[:15] if f not in pool]
+            judged = fact_conflicts.judge(fact.statement, pool[:15])
+        else:
+            judged = joint_decision["contradictions"]
+        for fid in judged:
+            if fid in facts and fid != fact.id and fid not in later and facts[fid].scopes == fact.scopes:
+                found[fid] = (facts[fid], "judged")
     now = _now()
     for fid, (older, kind) in sorted(found.items()):
         action = "flagged"
@@ -512,11 +692,12 @@ def _detect_conflicts(facts: dict[str, AtomicFact], index: _StatementIndex, fact
 def _batch_conflicts(facts: dict[str, AtomicFact], index: _StatementIndex, added: list[AtomicFact],
                      root: str | None, sink: list, *, may_supersede: bool) -> None:
     """Conflict detection once a batch is indexed, so the value-variant cap sees the whole batch."""
-    ids = [f.id for f in added]
-    for position, fact in enumerate(added):
+    later = {fact.id for fact in added}
+    for fact in added:
+        later.discard(fact.id)
         if facts[fact.id].status == "active":
             _detect_conflicts(facts, index, fact, root, sink, may_supersede=may_supersede,
-                              later=frozenset(ids[position + 1:]))
+                              later=later)
 
 
 def _add_locked(
@@ -539,13 +720,14 @@ def _add_locked(
     root: str | None = None,
     conflicts: list | None = None,
 ) -> tuple[AtomicFact, str]:
-    index = index if index is not None else _StatementIndex(facts)
+    index = index if index is not None else _statement_index(facts)
     existing = index.exact(statement, scopes)
+    decision = {}
     if existing is None and dedupe in ("near", "semantic") and evidence is None:
         # A paraphrase of an active fact reinforces it instead of becoming a second record.
         existing = index.near(statement, scopes)
         if existing is None and dedupe == "semantic":
-            existing = _semantic_duplicate(root, facts, statement, scopes)
+            existing = _semantic_duplicate(root, facts, statement, scopes, decision)
     if existing is not None:
         if existing.evidence_bound or evidence is not None:
             before = existing.to_dict()
@@ -607,11 +789,13 @@ def _add_locked(
     if fact.evidence_bound:
         fact.confirmations = len({(r.kind, r.source_id) for r in fact.evidence if r.polarity == "support"})
         fact.evidence_revision = claim_revision(fact)
-    fact.revision = _compute_revision(fact.to_dict())
+    snapshot = fact.to_dict()
+    fact.revision = _compute_revision(snapshot)
+    snapshot["revision"] = fact.revision
     facts[fact.id] = fact
-    index.add(fact)
+    _index_add(index, fact, snapshot)
     if conflicts is not None:
-        _detect_conflicts(facts, index, fact, root, conflicts, may_supersede=True)
+        _detect_conflicts(facts, index, fact, root, conflicts, may_supersede=True, joint_decision=decision or None)
     return fact, "ADD"
 
 
@@ -629,6 +813,7 @@ def prepare_fact(statement: str, category: str, valid_from, valid_until, expires
     return statement, category, valid_from, valid_until, _normalize_expires_at(expires_at)
 
 
+@configured
 def add_fact(
     root: str,
     statement: str,
@@ -687,6 +872,7 @@ def _validate_evidence_policy(min_support: int) -> None:
         raise EvidenceError(f"min_support must be an integer in 1..{MAX_EVIDENCE}")
 
 
+@configured
 def add_facts(root: str, items: list[dict[str, Any]]) -> list[tuple[AtomicFact, str]]:
     """Add or reinforce many facts in one locked write; bad items raise ValueError."""
     prepared = []
@@ -704,7 +890,12 @@ def add_facts(root: str, items: list[dict[str, Any]]) -> list[tuple[AtomicFact, 
     mode = dedup_mode()
     found: list = []
     with mutate_facts(root) as facts:
-        index = _StatementIndex(facts)
+        if hasattr(facts, "defer_new_fts"):
+            facts.defer_new_fts = (
+                mode != "semantic"
+                and _configuration_getenv("COMMONTRACE_FACT_CONFLICT_JUDGE", "").strip().lower() != "llm"
+            )
+        index = _statement_index(facts)
         results = []
         for s, c, sc, vf, vu, ea, conf, src, stab, created, receipts, minimum in prepared:
             _validate_evidence_policy(minimum)
@@ -770,7 +961,7 @@ def append_facts(root: str, items: list[dict[str, Any]]) -> list[tuple[AtomicFac
     mode = dedup_mode()
     found: list = []
     with mutate_facts(root) as facts:
-        index = _StatementIndex(facts)
+        index = _statement_index(facts)
         for statement, category, labels, start, end, expiry, confidence, source, stability, memory_type in prepared:
             def same_record(f: AtomicFact) -> bool:
                 return (not f.forgotten and f.scopes == labels and (start is None or f.valid_from == start)
@@ -1088,15 +1279,22 @@ def delete_fact(root: str, fact_id: str) -> bool:
     return True
 
 
-def retire_source(root: str, source_id: str, keep: set[str]) -> int:
-    """End the facts that only *source_id* supports and that it no longer states."""
+def retire_source(root: str, source_id: str, keep: set[str], *, scopes: list[str] | None = None) -> int:
+    """End facts no longer stated by a source, optionally within its exact scope.
+
+    Connectors must pass their owner scopes: historical source identifiers can
+    be shared by several independent owner-scoped syncs.
+    """
     if not source_id:
         return 0
     ended = 0
     ended_ids: list[str] = []
+    required_scopes = _clean_scopes(scopes) if scopes is not None else None
     with mutate_facts(root) as facts:
         now_iso = _now()
         for fact in facts.values():
+            if required_scopes is not None and sorted(set(fact.scopes)) != required_scopes:
+                continue
             if fact.id in keep or fact.status != "active" or source_id not in fact.source_traces:
                 continue
             fact.source_traces = [s for s in fact.source_traces if s != source_id]
@@ -1254,6 +1452,7 @@ def _fact_tokens(fact: AtomicFact) -> frozenset:
     return toks
 
 
+@configured
 def search_facts(
     root: str,
     query: str,
@@ -1274,8 +1473,13 @@ def search_facts(
     English stemming and Unicode/CJK tokenization. Evidence is revalidated only for candidate results
     and their dependency ancestry; proof eligibility is never cached.
     """
+    from commontrace import fact_store
     from commontrace.fact_index import search
 
+    if fact_store.enabled(root):
+        return fact_store.search(root, query, scope=scope, category=category, as_of=as_of, limit=limit,
+                                 include_forgotten=include_forgotten, show_expired=show_expired,
+                                 stability=stability, scorer=scorer, known_at=known_at)
     if known_at is None:
         return search(root, query, scope=scope, category=category, as_of=as_of, limit=limit,
                       include_forgotten=include_forgotten, show_expired=show_expired,

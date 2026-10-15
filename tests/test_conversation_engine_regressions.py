@@ -423,7 +423,7 @@ def test_reranking_a_terminal_passage_keeps_its_two_hop_support_within_budget(tm
             store.add(f"noise{i}", [{"text": "Project Zephyr award eligibility discussion " + "routine detail " * 8}])
         source, bridge, target = [store.session_turns(s)[0].id for s in ("project", "connection", "answer")]
 
-        def terminal_first(_store, _question, ranked, *args):
+        def terminal_first(_store, _question, ranked, *args, **kwargs):
             return [target] + [t for t in ranked if t not in (source, bridge, target)] + [bridge, source]
 
         monkeypatch.setattr(search, "_rerank", terminal_first)

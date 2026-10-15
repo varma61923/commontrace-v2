@@ -247,3 +247,9 @@ main { max-width: 86rem; padding-top: 1.75rem; }
   .explore-metrics { grid-template-columns: 1fr; }
   .explore-empty { padding: 2rem 1rem; min-height: 19rem; }
 }
+
+/* Historical evidence and saved scores share the existing accessible palette. */
+.source-text { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 100%; }
+.history-line { stroke: var(--accent); stroke-width: 2; }
+.history-dot { fill: var(--accent); }
+nav[aria-label="History pages"] { display: flex; gap: 1.5rem; padding: 1rem 0; }

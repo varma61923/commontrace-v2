@@ -325,11 +325,11 @@ class TestTheHubNoticesWhenRlsCannotBite:
         if bypasses:
             assert status["enforced"] is False
 
-    async def test_the_check_never_breaks_startup_on_a_dead_database(self):
+    async def test_dead_database_is_optional_only_when_rls_is_not_required(self):
         import dataclasses
 
         from hub.config import HubConfig
-        from hub.db import check_row_level_security, make_engine, make_session_factory
+        from hub.db import RowLevelSecurityError, check_row_level_security, make_engine, make_session_factory
 
         cfg = dataclasses.replace(
             HubConfig(database_url="postgresql+asyncpg://nobody:nobody@127.0.0.1:1/nope"),
@@ -339,14 +339,79 @@ class TestTheHubNoticesWhenRlsCannotBite:
         try:
             factory = make_session_factory(engine)
             assert await check_row_level_security(factory) is None
-            assert await check_row_level_security(
-                factory, allow_bypass=False, require=True
-            ) is None
+            with pytest.raises(RowLevelSecurityError, match="could not be verified"):
+                await check_row_level_security(factory, allow_bypass=False, require=True)
         finally:
             await engine.dispose()
 
 
 class TestTheHubRefusesToStartWhenRlsCannotBite:
+    async def test_disabled_security_is_not_mistaken_for_enforced_policies(
+        self, rls, enforcing_factory, session_factory
+    ):
+        from hub.db import RowLevelSecurityError, check_row_level_security, rls_status
+
+        async with session_scope(session_factory) as session:
+            await session.execute(text("ALTER TABLE traces DISABLE ROW LEVEL SECURITY"))
+        try:
+            async with enforcing_factory() as session:
+                status = await rls_status(session)
+            assert status["policy_count"] > 0
+            assert "traces" in status["unprotected_tables"] and not status["enforced"]
+            with pytest.raises(RowLevelSecurityError, match="disabled or bypassed"):
+                await check_row_level_security(enforcing_factory, allow_bypass=False, require=True)
+            with pytest.raises(RowLevelSecurityError, match="disabled or bypassed"):
+                await check_row_level_security(enforcing_factory, allow_bypass=True, require=True)
+        finally:
+            async with session_scope(session_factory) as session:
+                await session.execute(text("ALTER TABLE traces ENABLE ROW LEVEL SECURITY"))
+
+    async def test_owner_bypass_requires_forced_security_or_explicit_acknowledgment(
+        self, rls, enforcing_factory, bypassing_factory
+    ):
+        from hub.db import RowLevelSecurityError, check_row_level_security, rls_status
+
+        async with enforcing_factory() as session:
+            role = (await session.execute(text("SELECT current_user"))).scalar_one()
+        quoted_role = '"' + role.replace('"', '""') + '"'
+        async with session_scope(bypassing_factory) as session:
+            await session.execute(text("CREATE TABLE rls_owner_probe (org_id text)"))
+            await session.execute(text("ALTER TABLE rls_owner_probe OWNER TO " + quoted_role))
+            await session.execute(text("ALTER TABLE rls_owner_probe ENABLE ROW LEVEL SECURITY"))
+            await session.execute(text("CREATE POLICY org_isolation ON rls_owner_probe USING (true)"))
+        try:
+            async with enforcing_factory() as session:
+                status = await rls_status(session)
+            assert not status["bypasses_rls"] and not status["enforced"]
+            assert "rls_owner_probe" in status["unprotected_tables"]
+            with pytest.raises(RowLevelSecurityError, match="table ownership"):
+                await check_row_level_security(enforcing_factory, allow_bypass=False)
+            assert not (await check_row_level_security(enforcing_factory, allow_bypass=True))["enforced"]
+            with pytest.raises(RowLevelSecurityError, match="table ownership"):
+                await check_row_level_security(enforcing_factory, allow_bypass=True, require=True)
+            async with session_scope(bypassing_factory) as session:
+                await session.execute(text("ALTER TABLE rls_owner_probe FORCE ROW LEVEL SECURITY"))
+            assert (await check_row_level_security(enforcing_factory, allow_bypass=False, require=True))["enforced"]
+        finally:
+            async with session_scope(bypassing_factory) as session:
+                await session.execute(text("DROP TABLE rls_owner_probe"))
+
+    @pytest.mark.parametrize("failure", [ConnectionError, PermissionError, TimeoutError])
+    async def test_required_verification_fails_closed_without_exposing_database_errors(self, failure):
+        from hub.db import RowLevelSecurityError, check_row_level_security
+
+        class UnavailableSession:
+            async def __aenter__(self):
+                raise failure("private-database-credential")
+
+            async def __aexit__(self, *args):
+                return False
+
+        with pytest.raises(RowLevelSecurityError, match="HUB_REQUIRE_RLS") as caught:
+            await check_row_level_security(UnavailableSession, require=True)
+        assert "private-database-credential" not in str(caught.value)
+        assert caught.value.__suppress_context__
+
     async def test_installed_but_bypassed_policies_refuse_startup(
         self, rls, bypassing_factory
     ):
@@ -367,11 +432,13 @@ class TestTheHubRefusesToStartWhenRlsCannotBite:
     async def test_an_acknowledged_bypass_is_allowed_through(
         self, rls, bypassing_factory
     ):
-        from hub.db import check_row_level_security
+        from hub.db import RowLevelSecurityError, check_row_level_security
 
         status = await check_row_level_security(bypassing_factory, allow_bypass=True)
         assert status is not None
         assert status["enforced"] is False
+        with pytest.raises(RowLevelSecurityError, match="HUB_REQUIRE_RLS"):
+            await check_row_level_security(bypassing_factory, allow_bypass=True, require=True)
 
     async def test_an_enforcing_connection_starts_normally(self, rls, enforcing_factory):
         from hub.db import check_row_level_security

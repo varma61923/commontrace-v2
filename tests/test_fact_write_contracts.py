@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import pytest
@@ -73,6 +74,36 @@ def test_failed_mutation_body_never_commits_or_revises_warm_generation(tmp_path:
     assert hierarchical.load_facts(root)[fact.id].statement == "Original configuration."
 
 
+def test_mutating_fact_identity_moves_history_and_indexes_to_new_id(tmp_path: Path) -> None:
+    from commontrace import fact_store
+
+    root = str(tmp_path)
+    fact_store.migrate(root)
+    fact, _ = hierarchical.add_fact(root, "Original instrument constraint.")
+    old_id = fact.id
+    new_id = "renamed:" + old_id
+    with hierarchical.mutate_facts(root) as facts:
+        moved = facts.pop(old_id)
+        moved.id = new_id
+        facts[new_id] = moved
+
+    stored = hierarchical.load_facts(root)
+    assert old_id not in stored and new_id in stored
+    assert stored[new_id].statement == fact.statement
+    event_rows = fact_store.events(root)
+    old_events = [row for row in event_rows if row["record"]["id"] == old_id]
+    new_events = [row for row in event_rows if row["record"]["id"] == new_id]
+    assert [(row["record"]["version"], row["operation"]) for row in old_events] == [(1, "put"), (2, "remove")]
+    assert [(row["record"]["version"], row["operation"]) for row in new_events] == [(1, "put")]
+    assert old_events[1]["record"]["payload"]["id"] == old_id
+    fact_store.rebuild(root)
+    rebuilt = hierarchical.load_facts(root)
+    assert old_id not in rebuilt and new_id in rebuilt
+    candidates = fact_store.fts_candidates(root, "instrument constraint", limit=10)
+    assert candidates[0][0].id == new_id
+    assert not any(candidate.id == old_id for candidate, _ in candidates)
+
+
 def test_serialization_error_preserves_authoritative_file(tmp_path: Path) -> None:
     root = str(tmp_path)
     fact, _ = hierarchical.add_fact(root, "Original configuration.")
@@ -83,3 +114,73 @@ def test_serialization_error_preserves_authoritative_file(tmp_path: Path) -> Non
         hierarchical.save_facts(root, facts)
     view.ensure_current()
     assert hierarchical.load_facts(root)[fact.id].source_traces == []
+
+
+def _snapshot_fact():
+    return hierarchical.AtomicFact(
+        "snapshot", "部署 uses a durable journal", "general", ["tenant:a"], 0.8, 1,
+        "2026-01-01T00:00:00+00:00", None, source_traces=["trace"], origin={"author": "human"},
+    )
+
+
+def test_fact_snapshot_detaches_scalar_containers_and_preserves_field_order():
+    fact = _snapshot_fact()
+    expected = asdict(fact)
+    actual = fact.to_dict()
+    assert actual == expected
+    assert list(actual) == list(expected)
+    actual["scopes"].append("tenant:b")
+    actual["source_traces"].clear()
+    actual["origin"]["author"] = "changed"
+    assert fact.scopes == ["tenant:a"]
+    assert fact.source_traces == ["trace"]
+    assert fact.origin == {"author": "human"}
+
+
+def test_fact_snapshot_preserves_nested_dataclass_conversion_and_detachment():
+    @dataclass
+    class Detail:
+        labels: list[str]
+
+    fact = _snapshot_fact()
+    fact.origin = {"details": [Detail(["quoted"])]}
+    actual = fact.to_dict()
+    assert actual == asdict(fact)
+    actual["origin"]["details"][0]["labels"].append("changed")
+    assert fact.origin["details"][0].labels == ["quoted"]
+
+
+def test_fact_snapshot_preserves_custom_scalar_copy_and_subclass_fields():
+    class MutableString(str):
+        def __deepcopy__(self, memo):
+            result = type(self)(self)
+            result.labels = self.labels.copy()
+            return result
+
+    @dataclass
+    class SpecializedFact(hierarchical.AtomicFact):
+        tags: list[str] | None = None
+
+    value = MutableString("human")
+    value.labels = ["original"]
+    fact = _snapshot_fact()
+    fact.origin = {"author": value}
+    actual = fact.to_dict()
+    assert actual == asdict(fact)
+    actual["origin"]["author"].labels.append("changed")
+    assert value.labels == ["original"]
+    specialized = SpecializedFact(**asdict(_snapshot_fact()), tags=["custom"])
+    snapshot = specialized.to_dict()
+    assert snapshot == asdict(specialized)
+    snapshot["tags"].append("changed")
+    assert specialized.tags == ["custom"]
+
+
+def test_fact_snapshot_ignores_dynamic_fields_and_keeps_class_defaults():
+    fact = _snapshot_fact()
+    fact.temporary = ["not a dataclass field"]
+    del fact.forgotten
+    actual = fact.to_dict()
+    assert actual == asdict(fact)
+    assert actual["forgotten"] is False
+    assert "temporary" not in actual

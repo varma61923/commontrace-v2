@@ -961,16 +961,9 @@ def _extract_metric(report, path):
 
 
 def _new_file_mode(target_dir):
-    import stat
-    import uuid
-
-    probe_path = os.path.join(target_dir, f".measure-performance-umask-probe-{uuid.uuid4().hex}")
-    fd = os.open(probe_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
-    try:
-        return stat.S_IMODE(os.fstat(fd).st_mode)
-    finally:
-        os.close(fd)
-        os.unlink(probe_path)
+    current_umask = os.umask(0)
+    os.umask(current_umask)
+    return 0o666 & ~current_umask
 
 
 def _atomic_write_text(path, content, out_dir, suffix):
@@ -1414,10 +1407,9 @@ def render_html(md_content, timestamp, alerts=None):
         items = "\n".join(f"<li>{html.escape(str(a))}</li>" for a in alerts)
         alert_html = f'<div class="alerts"><h2>Alerts</h2><ul>{items}</ul></div>'
     body_md = re.sub(
-        r"^## Alerts\s*\n(\n|\s)*" r"((- \*\*WARNING\*\*:.*\n)+)",
+        r"(?m)^## Alerts[ \t]*\n+(?:[ \t]*- \*\*WARNING\*\*:.*\n)+",
         "",
         md_content,
-        flags=re.MULTILINE,
     )
     body_html = _md_to_html_fragment(body_md)
     return f"""<!DOCTYPE html>

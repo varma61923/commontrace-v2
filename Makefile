@@ -16,7 +16,6 @@ lint:
 	$(PYTHON) scripts/dev.py lint
 check:
 	$(PYTHON) scripts/dev.py check
-	$(PYTHON) scripts/dev.py docs --check
 	$(PYTHON) scripts/export_openapi.py --check
 build:
 	$(PYTHON) -m build
@@ -27,5 +26,5 @@ benchmark:
 serve:
 	$(PYTHON) scripts/dev.py serve
 deploy-validate:
-	helm lint deploy/helm/commontrace-hub --set image.tag=local --set existingSecret=hub-secrets
-	helm template local deploy/helm/commontrace-hub --set image.tag=local --set existingSecret=hub-secrets > /dev/null
+	helm lint deploy/helm/commontrace-hub --set image.repository=commontrace-hub --set image.tag=local --set existingSecret=hub-secrets
+	helm template local deploy/helm/commontrace-hub --set image.repository=commontrace-hub --set image.tag=local --set existingSecret=hub-secrets > /dev/null

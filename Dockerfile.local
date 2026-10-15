@@ -25,7 +25,8 @@ ENV PYTHONUNBUFFERED=1 \
 COPY --from=builder /install /usr/local
 RUN useradd --create-home --uid 10001 commontrace \
     && mkdir -p /data && chown commontrace:commontrace /data
-COPY --chmod=0755 deploy/docker/local-entrypoint.sh /usr/local/bin/commontrace-entrypoint
+COPY deploy/docker/local-entrypoint.sh /usr/local/bin/commontrace-entrypoint
+RUN chmod 0755 /usr/local/bin/commontrace-entrypoint
 
 USER commontrace
 WORKDIR /data

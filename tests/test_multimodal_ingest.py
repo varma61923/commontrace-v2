@@ -404,7 +404,7 @@ class TestSubtitles:
 class TestDispatch:
     def test_ingest_fns_keys(self):
         assert set(INGEST_FNS) == {
-            ".pdf", ".docx", ".html", ".htm", ".png", ".jpg", ".jpeg",
+            ".pdf", ".docx", ".xlsx", ".pptx", ".html", ".htm", ".png", ".jpg", ".jpeg",
             ".wav", ".mp3", ".ogg", ".flac", ".vtt", ".srt",
         }
 

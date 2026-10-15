@@ -36,6 +36,7 @@ HORIZON = 2000
 CHECK_EVERY = 50
 FIRST_CHECK = 100
 ALPHA = 0.05
+MIXTURE_TARGET_N_PER_ARM = experiment.required_n_per_arm(2 * 0.10, 0.5)
 STRATA = {
     "flat": (0.5,),
     "moderate": (0.2, 0.5, 0.8),
@@ -92,10 +93,9 @@ def _simulate(design: str, bases: tuple[float, ...], tau: float, rng: random.Ran
         n[injected] += 1
         withheld_helpful += (not injected) and tau > 0
         if t in checkpoints and design.endswith("mixture") and n[True] and n[False]:
-            baseline = (s[True] + s[False]) / t
-            target = experiment.required_n_per_arm(2 * 0.10, baseline) if 0 < baseline < 1 else 0
             intervals[t] = experiment.anytime_confidence_interval(s[True], n[True], s[False], n[False],
-                                                                  alpha=ALPHA, target_n_per_arm=target)
+                                                                  alpha=ALPHA,
+                                                                  target_n_per_arm=MIXTURE_TARGET_N_PER_ARM)
     if not design.endswith("mixture"):
         scores = allocation.aipw_scores(observations)
         # The running intersection, as allocation.estimate reports it (from 50 scores on).
@@ -147,7 +147,8 @@ def run(*, reps: int = 400, seed: int = 0, designs=DESIGNS, strata=tuple(STRATA)
     with open(__file__, "rb") as fh:
         source = hashlib.sha256(fh.read()).hexdigest()
     return {"benchmark": "adaptive-allocation", "version": 1, "seed": seed, "reps": reps, "horizon": HORIZON,
-            "alpha": ALPHA, "checkpoints": f"every {CHECK_EVERY} from {FIRST_CHECK}", "source_sha256": source,
+            "alpha": ALPHA, "checkpoints": f"every {CHECK_EVERY} from {FIRST_CHECK}",
+            "mixture_target_n_per_arm": MIXTURE_TARGET_N_PER_ARM, "source_sha256": source,
             "cells": cells,
             "note": "Seeded simulation of the estimators and allocation policy; not a measurement of any deployment."}
 

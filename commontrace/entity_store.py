@@ -153,10 +153,11 @@ def save_entities(root: str, entities: dict[str, dict[str, Any]]) -> None:
     _jsonl.write_rows(_entities_file(root), rows)
 
 
-def _link_into(entities: dict[str, dict[str, Any]], memory_id: str, text: str) -> list[str]:
+def _link_into(entities: dict[str, dict[str, Any]], memory_id: str, text: str,
+               *, extracted: list[tuple[str, str]] | None = None) -> list[str]:
     """Fold one memory's entities into *entities*; returns the touched names."""
     touched: list[str] = []
-    for etype, value in extract_entities(text):
+    for etype, value in extract_entities(text) if extracted is None else extracted:
         name = normalize_entity(value)
         entry = entities.get(name)
         if entry is None:
@@ -176,10 +177,13 @@ def link_memory(root: str, memory_id: str, text: str) -> list[str]:
     """Link *memory_id* to every entity extracted from *text* (idempotent per memory)."""
     if not memory_id or not text or not text.strip():
         return []
+    extracted = extract_entities(text)
+    if not extracted:
+        return []
     path = _entities_file(root)
     with _jsonl.locked(path):
         entities = load_entities(root)
-        touched = _link_into(entities, str(memory_id), text)
+        touched = _link_into(entities, str(memory_id), text, extracted=extracted)
         if touched:
             save_entities(root, entities)
         return touched
@@ -288,23 +292,28 @@ def entity_boost_for(
     allowed = set(candidate_ids)
     if not allowed:
         return {}
+    # Scope admission precedes this call. Prepare only entities linked to its
+    # candidate union, once rather than tokenizing the whole index per query entity.
+    entries = []
+    for name, entry in entities.items():
+        identities = [identity for identity in entry.get("memory_ids", []) if identity in allowed]
+        if identities:
+            count_weight = 1.0 / (1.0 + math.log1p(max(int(entry.get("count", 1)), 1)))
+            entries.append((name, _tokens(name), identities, count_weight))
     boosts: dict = {}
     for _, value in extract_entities(query):
         q_norm = normalize_entity(value)
         q_toks = _tokens(q_norm)
         if not q_toks:
             continue
-        for name, entry in entities.items():
+        for name, e_toks, identities, count_weight in entries:
             if name == q_norm:
                 similarity = 1.0
             else:
-                e_toks = _tokens(name)
                 if not e_toks or q_toks.isdisjoint(e_toks):
                     continue
                 similarity = len(q_toks & e_toks) / len(q_toks | e_toks)
-            count_weight = 1.0 / (1.0 + math.log1p(max(int(entry.get("count", 1)), 1)))
             contribution = similarity * weight * count_weight
-            for memory_id in entry.get("memory_ids", []):
-                if memory_id in allowed:
-                    boosts[memory_id] = min(cap, boosts.get(memory_id, 0.0) + contribution)
+            for memory_id in identities:
+                boosts[memory_id] = min(cap, boosts.get(memory_id, 0.0) + contribution)
     return {mid: round(boost, 4) for mid, boost in boosts.items() if boost > 0}

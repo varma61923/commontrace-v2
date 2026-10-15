@@ -236,7 +236,7 @@ def github_push(root: str, body: bytes, signature: str, delivery: str, event: st
     if len(secret) < 32 or len(body) > 1024*1024 or not re.fullmatch(r"[A-Za-z0-9-]{1,64}", delivery):
         raise PermissionError("invalid webhook credential, delivery or body")
     expected = "sha256="+hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(signature, expected):
+    if not hmac.compare_digest(str(signature).encode("utf-8", "replace"), expected.encode()):
         raise PermissionError("GitHub webhook signature mismatch")
     if event != "push":
         return {"ignored": True}

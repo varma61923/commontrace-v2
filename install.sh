@@ -82,6 +82,18 @@ else
       --exclude='sdk/generated' \
       --exclude='build' \
       --exclude='dist' \
+      --exclude='.terraform' \
+      --exclude='.gradle' \
+      --exclude='.intellijPlatform' \
+      --exclude='.mypy_cache' \
+      --exclude='.pytest_cache' \
+      --exclude='.ruff_cache' \
+      --exclude='node_modules' \
+      --exclude='target' \
+      --exclude='*.tfstate' \
+      --exclude='*.tfstate.*' \
+      --exclude='*.tfplan' \
+      --exclude='*.tfvars' \
       --exclude='__pycache__' \
       --exclude='*.pyc' \
       --exclude='*.pyo' \
@@ -100,8 +112,10 @@ else
     tar -C "${SCRIPT_DIR}" --exclude='.git' --exclude='__pycache__' --exclude='*.pyc' \
       --exclude='node_modules' --exclude='.venv' --exclude='.pytest_cache' --exclude='.ruff_cache' \
       --exclude='./sdk/rust/target' --exclude='./sdk/jvm/target' --exclude='./sdk/generated' \
-      --exclude='./build' --exclude='./dist' --exclude='.env' --exclude='.env.*' \
-      --exclude='./memory/attention/index.npz' -cf - . | tar -C "${DEST}" -xf -
+      --exclude='build' --exclude='dist' --exclude='target' --exclude='.env' --exclude='.env.*' \
+      --exclude='.terraform' --exclude='.gradle' --exclude='.intellijPlatform' --exclude='.mypy_cache' \
+      --exclude='*.tfstate' --exclude='*.tfstate.*' --exclude='*.tfplan' --exclude='*.tfvars' \
+      --exclude='./memory/attention/index.npz' --exclude='./memory/benchmark_reports' -cf - . | tar -C "${DEST}" -xf -
     rm -f "${DEST}/memory/attention/index.npz" 2>/dev/null || true
     rm -rf "${DEST}/.git" 2>/dev/null || true
     find "${DEST}" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true

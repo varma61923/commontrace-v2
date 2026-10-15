@@ -53,7 +53,7 @@ def test_no_experiment_means_no_extra_fields(fleet):
 
 def test_a_lesson_that_helps_says_so_and_agrees_with_experiment_status(fleet):
     root, server, slug = fleet
-    holdout_io.configure(root, rate=0.5)
+    holdout_io.configure(root, rate=0.5, salt="fixed-test-salt")
     _run(server, root, slug, 120, report=lambda i, injected: injected)
 
     out = call(server, "retrieve", task=TASK)
@@ -69,7 +69,7 @@ def test_a_lesson_that_helps_says_so_and_agrees_with_experiment_status(fleet):
 
 def test_a_compromised_experiment_shows_no_numbers(fleet):
     root, server, slug = fleet
-    holdout_io.configure(root, rate=0.5)
+    holdout_io.configure(root, rate=0.5, salt="fixed-test-salt")
     _run(server, root, slug, 120,
          report=lambda i, injected: (i % 2 == 0) if (injected or i % 4 == 0) else None)
 

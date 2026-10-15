@@ -96,4 +96,30 @@ def env_secret(name: str, default: str = "", *, provider: SecretProvider | None 
         aws = _AWS_PROVIDERS.get_or_load(region, lambda: AWSSecretsProvider(region=region))
         field = os.environ.get(f"{name}_AWS_SECRET_FIELD")
         return aws.get_field(secret_id, field) if field else aws.get(secret_id)
+    from commontrace.configuration import current, secret_reference
+
+    if name in os.environ:
+        return os.environ[name]
+    reference = secret_reference(name)
+    if reference:
+        kind, _, target = reference.partition(":")
+        if not target:
+            raise RuntimeError("configured secret reference is empty")
+        if kind == "env":
+            if target not in os.environ:
+                raise RuntimeError("configured secret environment source is unavailable")
+            return os.environ[target]
+        if kind == "file":
+            if not os.path.isabs(target):
+                target = os.path.join((current() or {}).get("root", os.getcwd()), target)
+            try:
+                with open(target, encoding="utf-8") as stream:
+                    value = stream.read(65537).strip()
+                if len(value) > 65536:
+                    raise ValueError("secret exceeds its bound")
+                return value
+            except (OSError, ValueError):
+                raise RuntimeError("configured secret file source is unavailable") from None
+        aws = _AWS_PROVIDERS.get_or_load(None, lambda: AWSSecretsProvider())
+        return aws.get(target)
     return os.environ.get(name, default)

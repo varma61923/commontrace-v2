@@ -17,6 +17,7 @@ import ipaddress
 import os
 from urllib.parse import urlsplit
 
+from commontrace.configuration import getenv as _configuration_getenv
 from commontrace.exceptions import CapabilityError
 
 ENV = "COMMONTRACE_OFFLINE"
@@ -31,7 +32,7 @@ class OfflineError(CapabilityError):
 
 
 def enabled() -> bool:
-    return os.environ.get(ENV, "").strip().lower() in _TRUTHY
+    return _configuration_getenv(ENV, "").strip().lower() in _TRUTHY
 
 
 def enable() -> None:

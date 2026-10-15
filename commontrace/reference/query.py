@@ -44,13 +44,15 @@ try:
 except ImportError:
     SentenceTransformer = None
 
-TRUSTED_MODELS = {
+SUPPORTED_MODELS = {
     "multi-qa-mpnet-base-dot-v1": "",
     "Snowflake/snowflake-arctic-embed-m-v1.5":
         "Represent this sentence for searching relevant passages: ",
 }
+TRUSTED_MODELS = SUPPORTED_MODELS
 DEFAULT_MODEL_NAME = "Snowflake/snowflake-arctic-embed-m-v1.5"
-_TRUSTED_MODEL_NAME = DEFAULT_MODEL_NAME
+_DEFAULT_MODEL_NAME = DEFAULT_MODEL_NAME
+_PINNED_MODEL_NAME = DEFAULT_MODEL_NAME  # same alias build_index.py keeps; the index tests use it
 
 _DELIM_RE = re.compile(r"^---[ \t]*\r?$", re.MULTILINE)
 
@@ -307,17 +309,18 @@ def load_index(index_path):
             fast_importances = load_importances_from_index(data)
     except (zipfile.BadZipFile, OSError, ValueError, EOFError, KeyError) as exc:
         return Ranked(1, stderr=[
-            f"[ERR] Index file at {index_path} is corrupted ({exc}). "
-            "Please rebuild the index: python memory/attention/build_index.py --force",
+            f"[ERR] Index file at {index_path} is corrupted. "
+            "Please rebuild the index: python memory/attention/build_index.py --force. "
+            f"Details: {exc}",
         ])
     return (model_name, embeddings, slugs, agent_types, n_lessons, fast_importances)
 
 
 def load_model(model_name=DEFAULT_MODEL_NAME):
-    if model_name not in TRUSTED_MODELS:
+    if model_name not in SUPPORTED_MODELS:
         return Ranked(1, stderr=[
-            f"[ERR] {model_name!r} is not a trusted embedding model; expected one of "
-            f"{sorted(TRUSTED_MODELS)}.",
+            f"[ERR] {model_name!r} is not an accepted embedding model; expected one of "
+            f"{sorted(SUPPORTED_MODELS)}.",
         ])
     try:
         return _load_cached_first(model_name)
@@ -343,19 +346,19 @@ def rank(query, top_k=10, include_importance_floor=4, agent_type=None, *,
         return index
     model_name, embeddings, slugs, agent_types, n_lessons, fast_importances = index
 
-    if model_name not in TRUSTED_MODELS:
+    if model_name not in SUPPORTED_MODELS:
         return Ranked(1, stderr=[
             f"[WARN] {index_path} declares model_name={model_name!r}, which is not "
-            f"one of the trusted {sorted(TRUSTED_MODELS)}. Refusing to load an "
-            "untrusted model name from an index file -- run build_index.py --force "
-            "to regenerate a trustworthy index.",
+            f"one of the supported models {sorted(SUPPORTED_MODELS)}. Refusing to load an "
+            "unsupported model name from an index file -- run build_index.py --force "
+            "to regenerate index.",
         ])
     if model is None:
         model = load_model(model_name)
     if isinstance(model, Ranked):
         return model
     q_emb = model.encode(
-        TRUSTED_MODELS[model_name] + query, normalize_embeddings=True, convert_to_numpy=True,
+        SUPPORTED_MODELS[model_name] + query, normalize_embeddings=True, convert_to_numpy=True,
         show_progress_bar=False)
 
     if embeddings.ndim != 2 or embeddings.shape[1] != q_emb.shape[0]:
@@ -489,6 +492,20 @@ def rank(query, top_k=10, include_importance_floor=4, agent_type=None, *,
     })
 
 
+def _emit(fd, stream, text):
+    """Write to a real process stream by file descriptor, otherwise through the Python stream.
+
+    A direct os.write confirms delivery and avoids a buffered success on a broken pipe, but it
+    bypasses sys.stdout/sys.stderr. The warm worker, and anything else that redirects those
+    streams to capture a run, then lost every result line. Redirected streams are honoured.
+    """
+    original = sys.__stdout__ if fd == 1 else sys.__stderr__
+    if stream is original and original is not None:
+        os.write(fd, text.encode("utf-8"))
+    else:
+        stream.write(text)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("query", help="Incoming task / query string (verbatim)")
@@ -507,14 +524,21 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    from commontrace.memory_guard import scrub_text
+
+    def redact(line):
+        # Scrub credentials but never truncate: telemetry.redact() cuts at 256 characters, which
+        # silently clipped long lesson lines and the actionable tail of error messages.
+        return scrub_text(str(line))
+
     _t0 = time.monotonic()
     result = rank(args.query, args.top_k, args.include_importance_floor, args.agent_type)
     for message in result.stderr:
-        print(message, file=sys.stderr)
+        _emit(2, sys.stderr, str(redact(message)) + "\n")
     if result.rc != 0:
         return result.rc
     for line in result.lines:
-        print(line)
+        _emit(1, sys.stdout, str(redact(line)) + "\n")
 
     elapsed_ms = (time.monotonic() - _t0) * 1000.0
     brief_text = "\n".join(result.lines)

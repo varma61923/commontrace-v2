@@ -50,7 +50,16 @@ _pepper_env = env_secret("HUB_API_KEY_PEPPER")
 _PEPPER = _pepper_env.encode("utf-8") if _pepper_env else secrets.token_bytes(32)
 
 
+def pepper_configured() -> bool:
+    """Whether HMAC lookups use an operator-provided pepper rather than a per-process one."""
+    return bool(_pepper_env)
+
+
 def _key_hmac(raw_key: str) -> str:
+    # CodeQL false positive (Alert #10): HMAC-SHA256 indexes 256-bit random API keys with
+    # a secret pepper for constant-time lookup; legacy API-key hashing still uses Argon2id.
+    # lgtm[py/weak-sensitive-data-hashing]
+    # codeql[py/weak-sensitive-data-hashing]
     return hmac.new(_PEPPER, raw_key.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
@@ -164,6 +173,7 @@ class AuthenticatedKey:
     key_prefix: str
     scopes: tuple[str, ...] | None = None
     expires_at: datetime | None = field(default=None, compare=False, repr=False)
+    key_id: str = field(default="", compare=False)
 
 
 _AUTH_CACHE_TTL = 0.0
@@ -295,7 +305,7 @@ async def _verify_by_hmac(session: AsyncSession, raw_key: str, now: datetime) ->
         await session.execute(update(ApiKey).where(ApiKey.id == row.id).values(last_used_at=now))
     return AuthenticatedKey(
         org_id=row.org_id, key_prefix=row.key_prefix, scopes=_scopes_of(row.scopes),
-        expires_at=row.expires_at,
+        expires_at=row.expires_at, key_id=row.id,
     )
 
 
@@ -336,6 +346,7 @@ async def _verify_by_legacy_scan(session: AsyncSession, raw_key: str, now: datet
         return AuthenticatedKey(
             org_id=candidate.org_id, key_prefix=candidate.key_prefix,
             scopes=_scopes_of(candidate.scopes), expires_at=candidate.expires_at,
+            key_id=candidate.id,
         )
     return None
 

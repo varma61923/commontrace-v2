@@ -1,0 +1,26 @@
+{
+  "extension": "record-governance-v1",
+  "at": "2030-01-01T00:00:00Z",
+  "visibility": [
+    {"name": "unexpired", "payload": {"forget_after": "2030-01-01T00:00:01Z", "forget_reason": "retention"}, "visible": true},
+    {"name": "exact-expiration", "payload": {"forget_after": "2030-01-01T00:00:00Z", "forget_reason": "retention"}, "visible": false},
+    {"name": "naive-means-utc", "payload": {"forget_after": "2030-01-01T00:00:00", "forget_reason": "retention"}, "visible": false},
+    {"name": "offset-same-instant", "payload": {"forget_after": "2029-12-31T19:00:00-05:00", "forget_reason": "retention"}, "visible": false},
+    {"name": "valid-start-inclusive", "valid_from": "2030-01-01T00:00:00Z", "visible": true},
+    {"name": "valid-end-exclusive", "valid_until": "2030-01-01T00:00:00Z", "visible": false},
+    {"name": "retraction-exclusive", "retracted_at": "2030-01-01T00:00:00Z", "visible": false},
+    {"name": "nonlatest", "is_latest": false, "visible": false},
+    {"name": "shadow-not-current", "status": "shadow", "visible": false},
+    {"name": "all-scope-dimensions", "scope": {"tenant": "t", "user": "u"}, "request_scope": {"tenant": "t"}, "visible": false},
+    {"name": "missing-label", "scope": {"labels": ["private"]}, "request_scope": {"labels": []}, "visible": false},
+    {"name": "extra-label-permitted", "scope": {"labels": ["private"]}, "request_scope": {"labels": ["private", "team"]}, "visible": true}
+  ],
+  "erasure": {
+    "root": {"id": "due", "kind": "fact", "version": 1, "payload": {"text": "temporary source", "forget_after": "2000-01-01T00:00:00Z", "forget_reason": "retention elapsed"}},
+    "derived": {"id": "derived", "kind": "observation", "version": 1, "payload": {"text": "temporary observation"}, "relations": {"derives": ["due"]}},
+    "survivor": {"id": "future", "kind": "fact", "version": 1, "payload": {"text": "retained source", "forget_after": "2999-01-01T00:00:00Z", "forget_reason": "long retention"}},
+    "limit": 1,
+    "deleted": ["derived", "due"],
+    "reason": "retention elapsed"
+  }
+}

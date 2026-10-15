@@ -8,8 +8,10 @@ from __future__ import annotations
 import copy
 import dataclasses
 import datetime as dt
+import heapq
 import json
 import math
+import os
 import re
 import threading
 import unicodedata
@@ -20,6 +22,7 @@ from itertools import chain
 
 from commontrace import injection_guard
 from commontrace._lexical import WORD_RE, has_cjk, segment_cjk
+from commontrace.conversation import graph_walk as _graph_walk
 from commontrace.conversation import profile, timeparse, unicode_index
 from commontrace.conversation.store import (  # noqa: F401 - re-exported (canonical home: store)
     ConversationError,
@@ -65,6 +68,9 @@ class Options:
     since: str | None = None
     until: str | None = None
     graph_hops: int | None = None  # None: adapt to relational clauses; 0 disables; maximum 2
+    # Personalized PageRank over the turn-entity graph (graph_walk.py), added to every
+    # turn's score as weight x top score x normalised walk probability; 0 disables.
+    graph_walk: float | None = None
     adaptive_budget: bool = False  # True: scale `budget` by question shape (see budget_for), up to max_budget
     max_budget: int = 12_000
     context_strategy: str = "legacy"  # coverage-v1 prioritizes marginal excerpt facets per quoted token
@@ -95,6 +101,8 @@ class _EmittedText:
 
     body: str
     speaker: str = ""
+    turn: int | None = None
+    kind: str = "turn"
 
 
 @dataclass(frozen=True)
@@ -118,8 +126,8 @@ def tokens(text: str) -> int:
 
 
 def _context_strategy(value: object) -> str:
-    if not isinstance(value, str) or value not in ("legacy", "coverage-v1"):
-        raise ConversationError("context_strategy must be legacy or coverage-v1")
+    if not isinstance(value, str) or value not in ("legacy", "coverage-v1", "coverage-v2"):
+        raise ConversationError("context_strategy must be legacy, coverage-v1 or coverage-v2")
     return value
 
 
@@ -133,8 +141,11 @@ _BROAD = re.compile(
 
 
 _ABOUT_ASSISTANT = re.compile(r"\b(?:you (?:said|told|suggested|recommended|mentioned|gave|listed|provided|wrote|"
-                              r"explained|shared|described|came up with)|your (?:suggestion|recommendation|answer|"
-                              r"advice|list)|our (?:previous |last |earlier )?(?:chat|conversation))\b", re.I)
+                              r"explained|shared|described|came up with)|your (?:suggestions?|recommendations?|"
+                              r"answers?|"
+                              r"advice|lists?)|(?:did|have) you (?:suggest|recommend|explain|provide|write)|"
+                              r"(?:the )?assistant (?:said|suggested|recommended|explained)|"
+                              r"our (?:previous |last |earlier )?(?:chat|conversation))\b", re.I)
 _SUMMARY = re.compile(r"\b(?:summar(?:y|ise|ize|ies)|overview|recap)\b", re.I)
 
 
@@ -160,6 +171,8 @@ _PREFERENCE = re.compile(
 
 _RELATIONAL = re.compile(r"\b(?:whose|(?:my|the) (?:person|friend|colleague|company|project|team) (?:who|that)|"
                          r"(?:friend|colleague|manager|partner|owner|author|founder)(?:'s| of)|"
+                         r"(?:company|organization|university|school|book|software|project) (?:that|which)|"
+                         r"(?:founded|created|built|owned|managed|acquired|written|authored|led|produced) (?:by|of)|"
                          r"(?:connected|related|associated) (?:to|with))\b", re.I)
 
 
@@ -208,6 +221,39 @@ def _graph_candidates(store: Store, question: str, ranked: list[int], allowed: s
             break
     safe = set(candidates)
     return candidates, [p for p in paths if p["turn"] in safe]
+
+
+GRAPH_WALK_WEIGHT = float(os.environ.get("COMMONTRACE_GRAPH_WALK", "0") or 0)
+GRAPH_WALK_SEEDS = 8
+
+
+def _apply_graph_walk(store: Store, question: str, scores: dict[int, float], allowed: set[int] | None,
+                      weight: float, explain: dict) -> None:
+    """Spread relevance from the best matches and the question's entities along shared
+    entities, and add it to every turn's score; turns it discovers join the ranking
+    only if they pass the injection screen."""
+    top = max(scores.values())
+    if top <= 0:
+        return
+    seeds = {t: scores[t] / top for t in heapq.nlargest(GRAPH_WALK_SEEDS, scores, key=lambda t: (scores[t], -t))}
+    walk = _graph_walk.personalized_pagerank(store, seeds, profile.entities(question), allowed=allowed)
+    if not walk:
+        return
+    peak = max(walk.values())
+    discovered = [t for t in walk if t not in scores]
+    if discovered:
+        fetched = store.turns(discovered)
+        blocked = {t for t in discovered if t not in fetched or _flagged(fetched[t])}
+    else:
+        blocked = set()
+    added = 0
+    for turn, value in walk.items():
+        if turn in blocked:
+            continue
+        if turn not in scores:
+            added += 1
+        scores[turn] = scores.get(turn, 0.0) + weight * top * value / peak
+    explain["graph_walk"] = {"turns": len(walk), "discovered": added}
 
 
 def asks_current(question: str) -> bool:
@@ -615,10 +661,44 @@ _RECALL_CACHE: OrderedDict = OrderedDict()
 _RECALL_LOCK = threading.Lock()
 
 
+def _reset_after_fork() -> None:
+    global _RECALL_CACHE, _RECALL_LOCK
+    _RECALL_CACHE = OrderedDict()
+    _RECALL_LOCK = threading.Lock()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_after_fork)
+
+
+@dataclass(frozen=True, slots=True)
+class _CachedRecall:
+    result: Recall
+    size: int
+
+
 def _recall_size(result: Recall) -> int:
     # Conservative bound including the copied metadata and candidate lists.
     return len(result.context.encode("utf-8")) + len(result.question.encode("utf-8")) \
+        + len(json.dumps(result.explain, ensure_ascii=False).encode("utf-8")) \
         + 128 * (len(result.ranked) + len(result.turns)) + 4096
+
+
+def _recall_telemetry(result: Recall) -> dict:
+    """Export only a fixed numeric summary, never explain text or identities."""
+    summary = result.explain.get("retrieval_score", {})
+    confidence = result.explain.get("confidence", 0.0)
+    coverage = result.explain.get("coverage", {})
+    return {
+        "tokens": result.tokens,
+        "turns": len(result.turns),
+        "recall_top_score_raw": summary.get("top", 0.0),
+        "recall_score_margin_raw": summary.get("margin", 0.0),
+        "recall_score_scale": "conversation_weighted_rrf",
+        "recall_score_stage": "first_stage",
+        "recall_assessment_confidence": confidence,
+        "recall_abstained": coverage.get("abstain", result.explain.get("abstain", confidence == 0.0)),
+    }
 
 
 def forget_store(store: Store) -> None:
@@ -638,6 +718,11 @@ def _recall_key(store: Store, question: str, now, opts: Options,
     relative deltas against that moment.
     """
     try:
+        from commontrace.conversation import embed
+
+        resolved_model = embed.configured() if opts.embedder == "auto" else opts.embedder
+        model_binding = (resolved_model, bool(resolved_model and resolved_model != "none"
+                                              and embed.available_for(resolved_model)))
         stamp = store.read_stamp()
         # With an implicit clock an expiry can pass without a write. Do not
         # cache that view; explicit moments are stable and safe to cache.
@@ -653,8 +738,9 @@ def _recall_key(store: Store, question: str, now, opts: Options,
         opts.neighbour_hits, opts.neighbour_minutes, opts.bridge_turns, opts.excerpt_tokens,
         opts.window_boost, opts.entity_boost, opts.lexical_weight, opts.rerank, opts.recency_pool,
         opts.rerank_depth, opts.rerank_blend, opts.profile_facts, opts.instructions,
-        opts.broad, opts.recency_boost, opts.primary_hits, opts.embedder,
+        opts.broad, opts.recency_boost, opts.primary_hits, opts.embedder, model_binding,
         opts.summaries, opts.sessions, opts.speakers, opts.since, opts.until, opts.graph_hops,
+        GRAPH_WALK_WEIGHT if opts.graph_walk is None else opts.graph_walk,
         opts.context_strategy, opts.second_pass, tuple(extra_queries), stamp,
     )
 
@@ -723,7 +809,7 @@ def recall(store: Store, question: str, *, now=None, options: Options | None = N
         _context_strategy((options or Options()).context_strategy)
         store.prepare_lexical(question)
     with store.read_snapshot(), telemetry.span(
-            "conversation.recall", space=store.space, queries=1 + len(extra_queries)) as handle:
+            "conversation.recall", queries=1 + len(extra_queries)) as handle:
         opts = options or Options()
         _context_strategy(opts.context_strategy)
         key = _recall_key(store, question, now, opts, extra_queries) if dense_candidates is None else None
@@ -732,22 +818,26 @@ def recall(store: Store, question: str, *, now=None, options: Options | None = N
                 hit = _RECALL_CACHE.get(key)
                 if hit is not None:
                     _RECALL_CACHE.move_to_end(key)
-                    handle.set(tokens=hit.tokens, turns=len(hit.turns), cached=True)
-                    return copy.deepcopy(hit)
+                    handle.set(**_recall_telemetry(hit.result), cached=True)
+                    return copy.deepcopy(hit.result)
         result = _recall(store, question, now=now, options=options, extra_queries=extra_queries,
                          dense_candidates=dense_candidates)
-        handle.set(tokens=result.tokens, turns=len(result.turns))
-        if key is not None and _recall_size(result) <= _RECALL_CACHE_BYTES:
+        handle.set(**_recall_telemetry(result))
+        cacheable = (key is not None and not result.explain.get("dense_fallback")
+                     and not result.explain.get("rerank_fallback")
+                     and not result.explain.get("rerank_stage", {}).get("error"))
+        cache_size = _recall_size(result) if cacheable else 0
+        if cacheable and cache_size <= _RECALL_CACHE_BYTES:
             with _RECALL_LOCK:
                 # Remove older revisions of this store before retaining another
                 # copy of potentially sensitive evidence.
                 for old in list(_RECALL_CACHE):
                     if old[0] is store.cache_identity and old[-1] != key[-1]:
                         del _RECALL_CACHE[old]
-                _RECALL_CACHE[key] = copy.deepcopy(result)
+                _RECALL_CACHE[key] = _CachedRecall(copy.deepcopy(result), cache_size)
                 _RECALL_CACHE.move_to_end(key)
                 while len(_RECALL_CACHE) > _RECALL_CACHE_MAX or sum(
-                        _recall_size(r) for r in _RECALL_CACHE.values()) > _RECALL_CACHE_BYTES:
+                        entry.size for entry in _RECALL_CACHE.values()) > _RECALL_CACHE_BYTES:
                     _RECALL_CACHE.popitem(last=False)
         return result
 
@@ -774,7 +864,12 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
         if dense_candidates.identity != (store._units_identity or store.cache_identity) \
                 or dense_candidates.stamp != store.unit_stamp() or dense_candidates.model != expected_model:
             raise ConversationError("external vector candidates are stale or use a different embedding model")
-    embedder = _embedder(store, opts.embedder) if dense_candidates is None else None
+    dense_fallback: list[str] = []
+    try:
+        embedder = _embedder(store, opts.embedder) if dense_candidates is None else None
+    except (ImportError, RuntimeError, ValueError, OSError) as exc:
+        embedder = None
+        dense_fallback.append(type(exc).__name__)
     until: str | dt.datetime | None = opts.until
     if now is not None and moment is not None:
         parsed_until = timeparse.parse_moment(opts.until) if opts.until else moment
@@ -793,16 +888,24 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
         query: list(units) for query, units in dense_candidates.rankings.items()
     } if dense_candidates is not None else {}
     def encode_dense(batch_queries: list[str]) -> None:
+        nonlocal embedder
         if embedder is None or allowed == set() or pool <= 0 or not batch_queries:
             return
         from commontrace.conversation import embed
 
         # Encode related facets together and scan each bounded query batch once.
-        for start in range(0, len(batch_queries), embed.QUERY_BATCH):
-            batch = batch_queries[start:start + embed.QUERY_BATCH]
-            vectors = embedder.encode(batch, query=True)
-            pages = embed.search_many(store, embedder, vectors, pool, allowed=allowed)
-            dense_rankings.update((q, [u for u, _s in hits]) for q, hits in zip(batch, pages))
+        try:
+            for start in range(0, len(batch_queries), embed.QUERY_BATCH):
+                batch = batch_queries[start:start + embed.QUERY_BATCH]
+                vectors = embedder.encode(batch, query=True)
+                pages = embed.search_many(store, embedder, vectors, pool, allowed=allowed)
+                dense_rankings.update((q, [u for u, _s in hits]) for q, hits in zip(batch, pages))
+        except (ImportError, RuntimeError, ValueError, OSError) as exc:
+            # A missing optional model or a cache-only miss must not suppress
+            # the lexical arm; discard any partial vector rankings as well.
+            embedder = None
+            dense_rankings.clear()
+            dense_fallback.append(type(exc).__name__)
 
     encode_dense(queries)
 
@@ -813,20 +916,34 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
         return [(dense_rankings.get(query, []), 1.0), (lexical, opts.lexical_weight)]
 
     def turn_scores(queries: list[str]) -> dict[int, float]:
+        # Resolve every lexical/vector unit id in one indexed lookup. A broad
+        # question may expand into a dozen facets; querying `units` once per
+        # facet serialized otherwise-independent reads on the same SQLite
+        # connection and amplified latency for real multi-hop questions.
+        arms = {query: arm_rankings(query) for query in queries}
+        unit_ids = list(dict.fromkeys(unit for query_arms in arms.values()
+                                      for units, _weight in query_arms for unit in units))
+        unit_turn = store.unit_turns(unit_ids)
         by_turn: dict[int, float] = {}
-        for query in queries:
+        for query_arms in arms.values():
             ranked_turns = []
-            for units, weight in arm_rankings(query):
-                unit_turn = store.unit_turns(units)
-                ranked_turns.append((list(dict.fromkeys(
-                    unit_turn[u] for u in units if u in unit_turn and (allowed is None or unit_turn[u] in allowed))),
-                    weight))
+            for units, weight in query_arms:
+                turns = list(dict.fromkeys(
+                    unit_turn[u] for u in units
+                    if u in unit_turn and (allowed is None or unit_turn[u] in allowed)))
+                ranked_turns.append((turns, weight))
             for turn, score in _rrf(ranked_turns).items():
-                by_turn[turn] = max(by_turn.get(turn, 0.0), score)
+                # Independent facets are separate evidence for a candidate.
+                # Summing their reciprocal-rank contributions rewards a bridge
+                # turn that supports several parts of an open-domain question;
+                # retaining only the maximum erased that cross-facet signal.
+                by_turn[turn] = by_turn.get(turn, 0.0) + score
         return by_turn
 
     scores = turn_scores(queries)
     explain: dict = {"subqueries": queries}
+    if dense_fallback:
+        explain["dense_fallback"] = dense_fallback[-1]
     if allowed is not None:
         explain["filtered_to"] = len(allowed)
     if opts.entity_boost and scores:
@@ -841,13 +958,11 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
             pass
         if named:
             top = max(scores.values())
-            boosted = 0
             for name, turns in store.entity_turns(named, max_matches=pool).items():
                 weight = 1.0 / (1.0 + 0.001 * (len(turns) - 1) ** 2) if turns else 0.0
                 for turn in turns:
                     if allowed is None or turn in allowed:
                         scores[turn] = scores.get(turn, 0.0) + opts.entity_boost * top * weight
-                        boosted += 1
             explain["entities"] = sorted(named)
     if window is not None:
         inside = store.in_window(window[0], window[1])
@@ -883,6 +998,9 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
             # proportional: a dated turn rises among its peers instead of jumping irrelevant ones
             scores[turn] += 0.4 * scores[turn]
         explain["asks_when"] = True
+    walk_weight = GRAPH_WALK_WEIGHT if opts.graph_walk is None else opts.graph_walk
+    if walk_weight and scores:
+        _apply_graph_walk(store, question, scores, allowed, walk_weight, explain)
     ranked = sorted(scores, key=lambda t: (-scores[t], t))
     ranked, n_self = filter_self_turns(store, question, ranked)
     if n_self:
@@ -909,10 +1027,22 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
             ranked.insert(min(2 + 2 * i, len(ranked)), turn)
         explain["graph_paths"] = paths
     rerank = opts.rerank
+    auto_rerank = rerank == "auto"
     if rerank == "auto":
-        rerank = "cross-encoder" if embedder is not None else None
+        from commontrace import configuration
+
+        rerank = configuration.load(store.root)["options"].get("reranker", "cross-encoder-fast") \
+            if embedder is not None else None
     if rerank and ranked:
-        ranked = _rerank(store, question, ranked, rerank, opts.rerank_depth, explain, opts.rerank_blend)
+        try:
+            ranked = _rerank(
+                store, question, ranked, rerank, opts.rerank_depth, explain, opts.rerank_blend,
+                local_files_only=auto_rerank,
+            )
+        except TypeError:
+            ranked = _rerank(
+                store, question, ranked, rerank, opts.rerank_depth, explain, opts.rerank_blend,
+            )
         explain["rerank"] = rerank
     withheld: list[int] = []
     # Relative deltas are shown only when the caller supplies a reference
@@ -932,13 +1062,30 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
                           evidence_paths=explain.get("graph_paths", ()), emitted=emitted, selection=selection)
         found = assess(question, [part.body for part in emitted if part.body],
                        labels=[part.speaker for part in emitted if part.body and part.speaker])
+        if opts.context_strategy == "coverage-v2":
+            sources = store.turns(part.turn for part in emitted if part.turn is not None and part.body)
+            selection["evidence"] = [
+                {"id": f"T{part.turn}", "turn": part.turn, "kind": part.kind, "speaker": part.speaker,
+                 "session": sources[part.turn].session, "role": sources[part.turn].role,
+                 "at": sources[part.turn].at.isoformat() if sources[part.turn].at else None, "text": part.body}
+                for part in emitted if part.body and part.turn in sources]
         return packed, selection, found
 
     (context, used, n_tokens), selection, coverage = pack(ranked, withheld)
     if opts.second_pass:
         ranked, withheld, (context, used, n_tokens), selection, coverage = _second_pass(
             store, question, ranked, withheld, (context, used, n_tokens), selection, coverage, opts, explain,
-            encode_dense, turn_scores, pack)
+            encode_dense, turn_scores, pack, candidate_scores=scores)
+        if dense_fallback:
+            explain["dense_fallback"] = dense_fallback[-1]
+    # The ranking score is uncalibrated and precedes reranking. Retain only two
+    # scalar aggregates over delivered scored turns, including accepted second-
+    # pass additions. Graph-only/profile context does not invent ranking scores.
+    top = heapq.nlargest(2, (scores[turn] for turn in used if turn in scores))
+    explain["retrieval_score"] = {
+        "top": top[0] if top else 0.0,
+        "margin": top[0] - top[1] if len(top) > 1 else 0.0,
+    }
     explain["context_selection"] = selection
     if explain.get("graph_paths"):
         chosen = set(used)
@@ -956,7 +1103,8 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
 
 
 def _second_pass(store: Store, question: str, ranked: list[int], withheld: list[int], packed: tuple,
-                 selection: dict, coverage, opts: Options, explain: dict, encode_dense, turn_scores, pack):
+                 selection: dict, coverage, opts: Options, explain: dict, encode_dense, turn_scores, pack,
+                 *, candidate_scores: dict[int, float] | None = None):
     """Search facet queries for the subject terms the first context missed.
 
     Runs only when the first pass did not abstain, some subject term is
@@ -999,23 +1147,51 @@ def _second_pass(store: Store, question: str, ranked: list[int], withheld: list[
     if not new:
         report["skipped"] = "the new turns did not fit the remaining budget"
         return unchanged
+    if candidate_scores is not None:
+        candidate_scores.update((turn, scores[turn]) for turn in added)
     return merged, second_withheld, packed2, selection2, coverage2
 
 
 def _rerank(store: Store, question: str, ranked: list[int], mode: str, depth: int,
-            explain: dict | None = None, blend: float = 0.0) -> list[int]:
+            explain: dict | None = None, blend: float = 0.0, *, local_files_only: bool = False) -> list[int]:
     from commontrace import rerank_arm
 
+    if mode == "mmr":
+        from commontrace import providers
+        from commontrace.retrieval import RankedLesson
+
+        head = ranked[:max(1, min(depth, 200))]
+        turns = store.turns(head)
+        candidates = [RankedLesson("", str(t), _excerpt(turns[t], question, 300),
+                                  1.0 / (RRF_K + 1 + n), []) for n, t in enumerate(head) if t in turns]
+        diverse = providers.mmr_reranker()(question, candidates)
+        order = [int(row.slug) for row in diverse]
+        selected = set(order)
+        if explain is not None:
+            explain["rerank_stage"] = {"reranker": "mmr", "depth": depth, "items": len(order),
+                                       "moved": sum(a != b for a, b in zip(head, order))}
+        return order + [t for t in ranked if t not in selected]
     if mode not in rerank_arm.MODELS:
         return _rerank_provider(store, question, ranked, mode, depth, explain, blend)
-    if rerank_arm.ready(mode):
+    unavailable = (
+        rerank_arm.ready(mode, local_files_only=True)
+        if local_files_only else rerank_arm.ready(mode)
+    )
+    if unavailable:
+        if explain is not None:
+            explain["rerank_fallback"] = unavailable
         return ranked
     head = ranked[:depth]
     turns = store.turns(head)
     # the cross-encoder reads ~512 tokens: give it the passages of a long turn that bear on
     # the question rather than its opening, which is also several times faster
     text_of = {str(t): _excerpt(turns[t], question, 300) for t in head if t in turns}
-    page, _ = rerank_arm.rerank(question, list(text_of), text_of, len(text_of), mode=mode)
+    if local_files_only:
+        page, _ = rerank_arm.rerank(
+            question, list(text_of), text_of, len(text_of), mode=mode, local_files_only=True,
+        )
+    else:
+        page, _ = rerank_arm.rerank(question, list(text_of), text_of, len(text_of), mode=mode)
     order = [int(s) for s, _x in page]
     if explain is not None and page:
         explain["rerank_top"] = round(float(page[0][1]), 4)
@@ -1068,6 +1244,9 @@ def _rerank_provider(store: Store, question: str, ranked: list[int], name: str, 
 _GLOBAL_RULE = re.compile(r"\b(?:format\w*|style|length|short|shorter|concise|brief|bullet\w*|list|language|units?|"
                           r"metric|imperial|code|snippets?|syntax|tone|formal|casual|words?|examples?|step|steps|"
                           r"explain\w*|answers?|responses?|repl(?:y|ies)|summar\w*|cite|sources?|emoji\w*)\b", re.I)
+_RULE_CONTEXT = re.compile(
+    r"\b(?:when(?:ever)? I (?:ask|request|need|discuss)|for questions?)\s+(?:about\s+)?(.+)", re.I)
+_RULE_FRAME = _stems("please show give tell explain include provide respond answer ask example common help")
 
 
 def _instruction_lines(store: Store, limit: int, question: str = "", *,
@@ -1083,7 +1262,7 @@ def _instruction_lines(store: Store, limit: int, question: str = "", *,
         store.db.execute("SELECT COUNT(DISTINCT speaker) FROM turns").fetchone()[0] <= 1
     if not addressed:
         return []
-    asked = _stems(question)
+    asked = _stems(question) - _RULE_FRAME
     picked, seen = [], set()
     for f in reversed(facts if facts is not None else store.facts(["instruction"])):
         if f["kind"] != "instruction":
@@ -1093,6 +1272,9 @@ def _instruction_lines(store: Store, limit: int, question: str = "", *,
             continue
         seen.add(key)
         overlap = len(asked & _stems(f["statement"])) + (1 if _GLOBAL_RULE.search(f["statement"]) else 0)
+        condition = _RULE_CONTEXT.search(f["statement"])
+        if condition:
+            overlap += 4 * len(asked & _stems(condition.group(1)))
         picked.append((overlap, f))
     picked.sort(key=lambda x: -x[0])  # most relevant first; newest first among equals
     out = []
@@ -1101,7 +1283,7 @@ def _instruction_lines(store: Store, limit: int, question: str = "", *,
         item = (f"- {day}{f['statement']}", f["turn"])
         out.append(item)
         if emissions is not None:
-            emissions[item] = _EmittedText(f["statement"])
+            emissions[item] = _EmittedText(f["statement"], turn=f["turn"], kind="instruction")
     return out
 
 
@@ -1141,7 +1323,7 @@ def _profile_lines(store: Store, question: str, limit: int, *,
         item = (f"- {day}{owner}: {f['statement']}", f["turn"])
         out.append(item)
         if emissions is not None:
-            emissions[item] = _EmittedText(f["statement"], owner)
+            emissions[item] = _EmittedText(f["statement"], owner, f["turn"], "profile")
         if len(out) >= limit:
             break
     return out
@@ -1172,9 +1354,13 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
     """Fill the budget best-first, each hit with its neighbours, then render by time.
     A turn the injection screen flags is never shown; its id goes to `withheld`."""
     strategy = _context_strategy(opts.context_strategy)
+    from commontrace.conversation.context_selection import history_question
+
+    history_mode = strategy == "coverage-v2" and history_question(question)
     if selection is not None:
         selection.clear()
         selection["strategy"] = strategy
+        selection["mode"] = "history" if history_mode else "detail"
     withheld = [] if withheld is None else withheld
     if emitted is not None:
         emitted.clear()
@@ -1233,6 +1419,8 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
         return cost
 
     broad = is_broad(question) if opts.broad is None else opts.broad
+    if history_mode and opts.broad is None:
+        broad = True
     cap = opts.excerpt_tokens or (max(60, min(120, budget // 30)) if broad else max(200, budget // 5))
     summary = broad and bool(_SUMMARY.search(question or ""))
     if summary and not opts.excerpt_tokens:
@@ -1319,8 +1507,9 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
             sess = t.session if t else str(tid)
             session_to_tids[sess].append(tid)
         for sess in session_to_tids:
+            preferred_role = "assistant" if _ABOUT_ASSISTANT.search(question) and not about_user_only else "user"
             session_to_tids[sess].sort(
-                key=lambda tid: (0 if all_head.get(tid) and all_head[tid].role in ("user", "") else 1)
+                key=lambda tid: (0 if all_head.get(tid) and all_head[tid].role in (preferred_role, "") else 1)
             )
         diversified = []
         max_depth = max((len(tids) for tids in session_to_tids.values()), default=0)
@@ -1335,13 +1524,14 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
         stream += [t for t in raised if t not in listed]
 
     priority_quota = 0
-    if strategy == "coverage-v1":
+    if strategy == "coverage-v1" or history_mode:
         from commontrace.conversation.context_selection import (
             MAX_CANDIDATES,
             MAX_PASSAGE_CHARS,
             MAX_TOKEN_COST,
             Candidate,
             prioritize,
+            prioritize_history,
         )
 
         candidates: list[Candidate] = []
@@ -1364,10 +1554,11 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
             if sum(map(len, passages)) > MAX_PASSAGE_CHARS or cost > MAX_TOKEN_COST:
                 skipped_oversized += 1
                 continue
-            candidates.append(Candidate(tid, passages, max(1, cost)))
+            candidates.append(Candidate(tid, passages, max(1, cost), evidence[tid].session, evidence[tid].at))
         try:
             anchor_count = opts.primary_hits if opts.primary_hits is not None else 3
-            plan = prioritize(question, candidates, anchor_count=min(MAX_CANDIDATES, max(0, anchor_count)))
+            selector = prioritize_history if strategy == "coverage-v2" else prioritize
+            plan = selector(question, candidates, anchor_count=min(MAX_CANDIDATES, max(0, anchor_count)))
         except ValueError as exc:
             raise ConversationError(str(exc)) from exc
         planned = set(plan.order)
@@ -1499,7 +1690,7 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
                 lines.append("…")
             lines.append(line_of(displayed_turn))
             delivered.append(_EmittedText(line_of(displayed_turn).removeprefix(displayed_turn.speaker + ": "),
-                                          displayed_turn.speaker))
+                                          displayed_turn.speaker, displayed_turn.id))
             previous = displayed_turn.idx
         blocks.append("\n".join(lines))
     context = profile_block + "\n\n".join(blocks)
@@ -1520,7 +1711,7 @@ def assemble(store: Store, question: str, ranked: list[int], opts: Options,
             body = snippet.removeprefix(prefix) if displayed_speaker else snippet
             if displayed_speaker and prefix.startswith(snippet):
                 body, displayed_speaker = "", ""
-            delivered = [_EmittedText(body, displayed_speaker)]
+            delivered = [_EmittedText(body, displayed_speaker, ranked[0])]
     if emitted is not None:
         emitted.extend(delivered)
     return context, list(chosen) + [t for t in dict.fromkeys(pinned) if t not in chosen], tokens(context)

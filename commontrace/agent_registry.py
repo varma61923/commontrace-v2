@@ -102,24 +102,38 @@ def heartbeat(root: str, agent_id: str) -> dict:
     return {"agent_id": agent_id, "heartbeat_at": agents[agent_id]["heartbeat_at"], "refreshes_queued": queued}
 
 
-def revoke(root: str, agent_id: str) -> None:
-    path = _path(root)
-    with _jsonl.locked(path):
-        agents = load(root)
-        agents[agent_id]["revoked"] = True
-        _jsonl.write_json(path, agents)
-
-
-def rotate(root: str, agent_id: str) -> dict:
-    """Local/owner credential recovery: revoke the old key and return a new key once."""
+def revoke(root: str, agent_id: str) -> dict:
+    """Disable an agent's key now. The record stays (audit); only `rotate(...,
+    reinstate=True)` brings the identity back, with a new key."""
     path = _path(root)
     with _jsonl.locked(path):
         agents = load(root)
         if agent_id not in agents:
             raise ValueError("unknown agent")
+        now = datetime.now(timezone.utc).isoformat()
+        agents[agent_id].update(revoked=True, revoked_at=now)
+        _jsonl.write_json(path, agents)
+    return {"agent_id": agent_id, "revoked": True, "revoked_at": now}
+
+
+def rotate(root: str, agent_id: str, *, reinstate: bool = False) -> dict:
+    """Local/owner credential recovery: replace the key and return the new one once.
+
+    Rotating never quietly re-enables a revoked agent: a revoked identity stays revoked
+    unless `reinstate` says the owner means to restore it (recorded as `reinstated_at`)."""
+    path = _path(root)
+    with _jsonl.locked(path):
+        agents = load(root)
+        if agent_id not in agents:
+            raise ValueError("unknown agent")
+        if agents[agent_id].get("revoked") and not reinstate:
+            raise ValueError("agent is revoked; rotate with reinstate to restore it")
         token = "cta_" + secrets.token_urlsafe(32)
-        agents[agent_id].update(token_hash=hashlib.sha256(token.encode()).hexdigest(), revoked=False,
-                               rotated_at=datetime.now(timezone.utc).isoformat())
+        now = datetime.now(timezone.utc).isoformat()
+        update = {"token_hash": hashlib.sha256(token.encode()).hexdigest(), "rotated_at": now}
+        if agents[agent_id].get("revoked"):
+            update.update(revoked=False, reinstated_at=now)
+        agents[agent_id].update(update)
         _jsonl.write_json(path, agents)
     return {"agent_id": agent_id, "token": token, "scopes": agents[agent_id]["scopes"],
             "plugin": plugin(root, agent_id)}

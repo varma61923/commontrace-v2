@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -10,8 +11,11 @@ sys.path.insert(0, str(ROOT))
 
 from commontrace import retrieval  # noqa: E402
 
-CORPUS = ROOT / "commons" / "seed" / "substrate-v1.jsonl"
-PROBE_SETS = ("probes-v1.jsonl", "probes-v2.jsonl")
+CORPUS = Path(os.environ.get("COMMONTRACE_EVAL_CORPUS", "corpus.jsonl"))  # bring your own corpus
+PROBE_SETS = {  # bring your own probes
+    "probes-v1": Path(os.environ.get("COMMONTRACE_EVAL_PROBES_V1", "probes-v1.jsonl")),
+    "probes-v2": Path(os.environ.get("COMMONTRACE_EVAL_PROBES_V2", "probes-v2.jsonl")),
+}
 
 MODEL_NAME = "multi-qa-mpnet-base-dot-v1"
 
@@ -111,7 +115,7 @@ def main() -> int:
     folds = {}
     for name in PROBE_SETS:
         probes = [
-            p for p in _load(Path(__file__).resolve().parent / name)
+            p for p in _load(PROBE_SETS[name])
             if p["expect"] == "covered" and p["target"] in in_corpus
         ]
         folds[name] = (probes,) + _rankings(model, corpus, probes, lessons)
@@ -124,7 +128,7 @@ def main() -> int:
     print()
 
     net = 0
-    for tune, test in (PROBE_SETS, tuple(reversed(PROBE_SETS))):
+    for tune, test in (tuple(PROBE_SETS), tuple(reversed(PROBE_SETS))):
         t_probes, t_lex, t_sem = folds[tune]
         h_probes, h_lex, h_sem = folds[test]
 

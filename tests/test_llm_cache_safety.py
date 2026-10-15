@@ -45,7 +45,11 @@ def test_provider_endpoint_account_region_and_project_partition_completions(tmp_
                llm.Config("anthropic", "m", "account-one", cache_namespace="tenant-two")]
     for cfg in configs:
         first = llm.complete("q", cfg)
-        assert llm.complete("q", cfg) == first
+        second = llm.complete("q", cfg)
+        assert second[0] == first[0]
+        assert second[1]["input_tokens"] == first[1]["input_tokens"]
+        assert first[1]["_commontrace_cache_hit"] is False
+        assert second[1]["_commontrace_cache_hit"] is True
     assert len(calls) == len(configs)
     with sqlite3.connect(tmp_path / "c.db") as db:
         keys = str(db.execute("SELECT key FROM cache").fetchall())

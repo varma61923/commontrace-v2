@@ -7,6 +7,16 @@ import json
 from commontrace import paths, session_ledger
 
 
+def _cost_label(summary: dict) -> str:
+    cost = summary.get("total_cost_usd", summary.get("cost_usd"))
+    if cost is not None:
+        return f"${cost:.6f}"
+    known = summary.get("known_cost_usd", 0.0)
+    count = summary.get("unpriced_calls", 0)
+    label = "call" if count == 1 else "calls"
+    return f"Unknown (known subtotal ${known:.6f}; {count} unpriced {label})"
+
+
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p = subparsers.add_parser(
         "session_ledger",
@@ -54,18 +64,18 @@ def run_show(args: argparse.Namespace) -> int:
     print(f"  Prompt Tokens:    {summary['prompt_tokens']:,}")
     print(f"  Output Tokens:    {summary['completion_tokens']:,}")
     print(f"  Total Tokens:     {summary['total_tokens']:,}")
-    print(f"  Estimated Cost:   ${summary['total_cost_usd']:.6f}")
+    print(f"  Estimated Cost:   {_cost_label(summary)}")
     if summary["by_model"]:
         print("\n  Attribution by Model:")
         for m, stat in summary["by_model"].items():
             print(
-                f"    - {m:<18} {stat['calls']} call(s) | {stat['total_tokens']:,} tokens | ${stat['cost_usd']:.6f}"
+                f"    - {m:<18} {stat['calls']} call(s) | {stat['total_tokens']:,} tokens | {_cost_label(stat)}"
             )
     if summary["by_occasion"]:
         print("\n  Attribution by Occasion:")
         for occ, stat in summary["by_occasion"].items():
             print(
-                f"    - {occ:<18} {stat['calls']} call(s) | {stat['total_tokens']:,} tokens | ${stat['cost_usd']:.6f}"
+                f"    - {occ:<18} {stat['calls']} call(s) | {stat['total_tokens']:,} tokens | {_cost_label(stat)}"
             )
     return 0
 
@@ -83,12 +93,12 @@ def run_summary(args: argparse.Namespace) -> int:
     print(f"  Prompt Tokens:    {summary['prompt_tokens']:,}")
     print(f"  Output Tokens:    {summary['completion_tokens']:,}")
     print(f"  Total Tokens:     {summary['total_tokens']:,}")
-    print(f"  Total Spend:      ${summary['total_cost_usd']:.6f}")
+    print(f"  Total Spend:      {_cost_label(summary)}")
     if summary["by_model"]:
         print("\n  Spend by Model:")
         for m, stat in summary["by_model"].items():
             print(
-                f"    - {m:<18} {stat['calls']} call(s) | {stat['total_tokens']:,} tokens | ${stat['cost_usd']:.6f}"
+                f"    - {m:<18} {stat['calls']} call(s) | {stat['total_tokens']:,} tokens | {_cost_label(stat)}"
             )
     return 0
 

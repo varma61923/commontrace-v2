@@ -177,3 +177,21 @@ def test_the_simulation_reports_power_coverage_and_cost():
     assert {c["design"] for c in report["cells"]} == {"fixed50-aipw", "adaptive-aipw-strata"}
     adaptive = next(c for c in report["cells"] if c["design"].startswith("adaptive") and c["effect"] == 0.1)
     assert 0 <= adaptive["withheld_share_of_helpful"] <= 0.5 and adaptive["time_uniform_coverage"] <= 1
+
+
+def test_mixture_benchmark_uses_a_predeclared_horizon(monkeypatch):
+    observed_targets = []
+    original = experiment.anytime_confidence_interval
+
+    def capture(*args, **kwargs):
+        observed_targets.append(kwargs["target_n_per_arm"])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(experiment, "anytime_confidence_interval", capture)
+    for seed in (4, 19):
+        bench._simulate("fixed10-mixture", (0.2, 0.5, 0.8), 0.1, random.Random(seed))
+
+    expected = experiment.required_n_per_arm(0.2, 0.5)
+    assert observed_targets
+    assert set(observed_targets) == {expected}
+    assert bench.MIXTURE_TARGET_N_PER_ARM == expected

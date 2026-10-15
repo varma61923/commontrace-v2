@@ -48,6 +48,7 @@ env/
 # Pytest / coverage artifacts
 .pytest_cache/
 .coverage
+.coverage.*
 htmlcov/
 
 # Jupyter (if anyone runs notebooks locally)
@@ -57,13 +58,30 @@ htmlcov/
 # Machine-local lint caches and generated evaluation outputs
 .ruff_cache/
 /benchmark-results/
+/graphify-out/
 
 # Disposable benchmark output and type-checker cache
 /benchmarks/results/
 .mypy_cache/
 
 # SDK build products
+node_modules/
 sdk/rust/target/
 sdk/jvm/target/
 sdk/generated/
 coverage.xml
+
+# Machine-local migrated fact stores and transient SQLite journals
+facts.sqlite3
+facts.sqlite3-wal
+facts.sqlite3-shm
+facts.sqlite3.migrating*
+
+# Marketplace build products
+/distribution/jetbrains/.gradle/
+/distribution/jetbrains/.intellijPlatform/
+/distribution/jetbrains/build/
+/distribution/vscode/*.vsix
+
+# GitHub Action functional smoke-test store
+.action-smoke/

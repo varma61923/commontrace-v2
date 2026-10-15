@@ -15,7 +15,7 @@
   var token = "";
   var timer = null;
   var lastOk = 0;
-  var state = { status: null, capabilities: null, memories: null, agents: null, events: null, lessons: null, lesson: null, commandCatalog: null, commandResult: null, explorer: null, reviewDraft: null, ledger: null };
+  var state = { status: null, capabilities: null, memories: null, agents: null, events: null, lessons: null, lesson: null, commandCatalog: null, commandResult: null, explorer: null, reviewDraft: null, ledger: null, library: null, traces: null, trace: null, benchmarks: null };
   var selected = {};   // slug -> true, the review queue's bulk selection; survives repaints
   var notice = null;   // { kind: "ok"|"crit", text } shown on the next paint of the review views
   var lastPaint = "";
@@ -144,6 +144,10 @@
     { id: "explore", label: "Explore memory", title: "Explore memory" },
     { id: "memories", label: "Memories", title: "What each memory did" },
     { id: "ledger", label: "Learning Ledger", title: "Learning Ledger" },
+    { id: "library", label: "Lesson library", title: "Lesson library" },
+    { id: "traces", label: "Trace history", title: "Trace history" },
+    { id: "trace", label: "Trace history", title: "Source trace", hidden: true },
+    { id: "benchmarks", label: "Benchmark history", title: "Benchmark history" },
     { id: "review", label: "Review", title: "Review queue" },
     { id: "lesson", label: "Review", title: "Lesson", hidden: true },
     { id: "live", label: "Live", title: "Live activity" },
@@ -1180,7 +1184,94 @@
     return root;
   }
 
-  var VIEWS = { ledger: viewLedger, overview: viewOverview, palace: viewPalace, explore: viewExplore, memories: viewMemories, review: viewReview, lesson: viewLesson, live: viewLive, fleet: viewFleet, commands: viewCommands, safety: viewSafety };
+  function historyPage(title, lede) {
+    return h("section", {}, h("h1", { text: title }), h("p", { class: "lede", text: lede }));
+  }
+  function historyPager(view, data, route) {
+    if (!data || data.total <= data.limit) return;
+    var paging = h("nav", { "aria-label": "History pages" });
+    if (data.offset > 0) paging.appendChild(h("a", { href: "#/" + route + "?offset=" + Math.max(0, data.offset - data.limit), text: "Previous page" }));
+    if (data.offset + data.limit < data.total) paging.appendChild(h("a", { href: "#/" + route + "?offset=" + (data.offset + data.limit), text: "Next page" }));
+    view.appendChild(paging);
+  }
+  function viewLibrary() {
+    var view = historyPage("Lesson library", "Browse lessons across their lifecycle. Open a lesson to inspect its evidence, revision and review gates.");
+    var d = state.library;
+    if (!d) { view.appendChild(h("p", { text: "Loading lessons…" })); return view; }
+    if (!d.lessons.length) view.appendChild(h("p", { text: "No lessons yet. Capture a trace and extract a lesson to begin." }));
+    var list = h("ul", { class: "queue" });
+    d.lessons.forEach(function (item) {
+      list.appendChild(h("li", { class: "card" },
+        h("a", { href: "#/lesson?slug=" + encodeURIComponent(item.slug), text: item.slug }),
+        h("span", { class: "chip", text: item.status }), h("p", { text: item.description })));
+    });
+    view.appendChild(list); historyPager(view, d, "library"); return view;
+  }
+  function viewTraces() {
+    var view = historyPage("Trace history", "Source records retained in this store. Trace text is redacted before display.");
+    var d = state.traces;
+    if (!d) { view.appendChild(h("p", { text: "Loading traces…" })); return view; }
+    if (!d.traces.length) view.appendChild(h("p", { text: "No traces on this page. Capture a trace to record an experience." }));
+    var list = h("ul", { class: "queue" });
+    d.traces.forEach(function (item) {
+      list.appendChild(h("li", { class: "card" }, h("a", { href: "#/trace?file=" + encodeURIComponent(item.file), text: item.title || item.file }),
+        h("p", { class: "muted", text: [item.date, item.agent_type, item.id].filter(Boolean).join(" · ") })));
+    });
+    view.appendChild(list);
+    if (d.skipped || d.scan_truncated) view.appendChild(h("p", { class: "muted", text: "Some source files were unsafe, unreadable or outside the bounded scan. Use the CLI to inspect the full archive." }));
+    historyPager(view, d, "traces"); return view;
+  }
+  function viewTrace() {
+    var view = historyPage("Source trace", state.trace && state.trace.title || "Inspect retained source evidence.");
+    view.appendChild(h("a", { href: "#/traces", text: "Back to trace history" }));
+    if (state.trace) {
+      view.appendChild(h("pre", { class: "source-text", text: state.trace.body }));
+      if (state.trace.body_truncated) view.appendChild(h("p", { text: "Display limited to 20,000 characters. The full source remains in the store." }));
+    } else view.appendChild(h("p", { text: "Loading source…" }));
+    return view;
+  }
+  function viewBenchmarks() {
+    var view = historyPage("Benchmark history", "Saved measurements from this store, rather than estimated gains. Save a snapshot with commontrace bench --save.");
+    var d = state.benchmarks;
+    if (!d) { view.appendChild(h("p", { text: "Loading saved reports…" })); return view; }
+    if (!d.reports.length) { view.appendChild(h("p", { text: "No saved reports yet. Run commontrace bench --save to establish a baseline." })); return view; }
+    var labels = { lesson_quality: "Lesson quality", implicit_retrieval_strict: "Strict retrieval", implicit_retrieval_permissive: "Permissive retrieval", transfer_gap: "Transfer gap" };
+    function score(value) { return typeof value === "number" ? (100 * value).toFixed(1) + "%" : "Unavailable"; }
+    Object.keys(labels).forEach(function (key) {
+      var panel = h("section", { class: "card" }, h("h2", { text: labels[key] }));
+      var chart = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      chart.setAttribute("viewBox", "0 0 600 120"); chart.setAttribute("role", "img"); chart.setAttribute("aria-label", labels[key] + " across saved reports");
+      var last = null;
+      d.reports.forEach(function (report, index) {
+        var value = report.metrics[key];
+        if (typeof value !== "number") { last = null; return; }
+        var point = [10 + 580 * index / Math.max(1, d.reports.length - 1), 110 - 100 * (key === "transfer_gap" ? (value + 1) / 2 : value)];
+        if (last) {
+          var line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+          line.setAttribute("x1", last[0]); line.setAttribute("y1", last[1]); line.setAttribute("x2", point[0]); line.setAttribute("y2", point[1]); line.setAttribute("class", "history-line"); chart.appendChild(line);
+        }
+        var dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+        dot.setAttribute("cx", point[0]); dot.setAttribute("cy", point[1]); dot.setAttribute("r", "3"); dot.setAttribute("class", "history-dot"); chart.appendChild(dot); last = point;
+      });
+      panel.appendChild(chart); view.appendChild(panel);
+    });
+    var table = h("table", {}, h("caption", { text: "Saved report values and change from the previous report (percentage points)" }));
+    var head = h("tr", {}, h("th", { scope: "col", text: "Snapshot" }));
+    Object.keys(labels).forEach(function (key) { head.appendChild(h("th", { scope: "col", text: labels[key] })); });
+    table.appendChild(h("thead", {}, head)); var body = h("tbody");
+    d.reports.forEach(function (report) {
+      var row = h("tr", {}, h("th", { scope: "row", text: report.timestamp }));
+      Object.keys(labels).forEach(function (key) {
+        var delta = report.delta[key];
+        row.appendChild(h("td", { text: score(report.metrics[key]) + (typeof delta === "number" ? " (" + (delta >= 0 ? "+" : "") + (100 * delta).toFixed(1) + " pp)" : "") }));
+      }); body.appendChild(row);
+    });
+    table.appendChild(body); view.appendChild(h("div", { class: "table-wrap", tabindex: "0", role: "region", "aria-label": "Saved benchmark scores" }, table));
+    if (d.skipped || d.scan_truncated) view.appendChild(h("p", { text: "Unreadable reports were skipped or the scan limit was reached. Missing scores remain unavailable." }));
+    return view;
+  }
+
+  var VIEWS = { library: viewLibrary, traces: viewTraces, trace: viewTrace, benchmarks: viewBenchmarks, ledger: viewLedger, overview: viewOverview, palace: viewPalace, explore: viewExplore, memories: viewMemories, review: viewReview, lesson: viewLesson, live: viewLive, fleet: viewFleet, commands: viewCommands, safety: viewSafety };
 
   function viewAuth(message) {
     var input = h("input", { id: "tok", type: "password", autocomplete: "off", spellcheck: "false", "aria-describedby": "tok-help" });
@@ -1209,7 +1300,7 @@
   function paint(force) {
     var route = currentRoute();
     var sig = route.id + "|" + location.hash + "|" + JSON.stringify([state.status, state.capabilities, state.memories, state.agents, state.events,
-      state.lessons, state.lesson, state.commandCatalog, state.commandResult, state.explorer, state.reviewDraft, state.ledger, selected, notice]);
+      state.lessons, state.lesson, state.commandCatalog, state.commandResult, state.explorer, state.reviewDraft, state.ledger, state.library, state.traces, state.trace, state.benchmarks, selected, notice]);
     if (!force && sig === lastPaint) return;
     if (!force && editing()) return;
     lastPaint = sig;
@@ -1262,6 +1353,7 @@
       return generation === refreshGeneration && token === requestedToken && location.hash === requestedHash;
     }
     if (stateToken !== token) clearCredentialState();
+    // CodeQL false positive (Alert #1): client-side UI gate; gateway enforces 401 on every route.
     if (!token) { main.textContent = ""; main.appendChild(viewAuth()); setConn("bad", "Not connected"); return Promise.resolve(); }
     var route = currentRoute().id;
     var wants = ["status"];
@@ -1276,6 +1368,13 @@
     if (!Number.isSafeInteger(reviewOffset) || reviewOffset < 0) reviewOffset = 0;
     var reviewPath = "lessons?status=review&limit=50&offset=" + reviewOffset;
     if (route === "review") wants.push(reviewPath);
+    var libraryPath = "lessons?limit=50&offset=" + reviewOffset;
+    var tracesPath = "traces?limit=50&offset=" + reviewOffset;
+    var tracePath = "trace?file=" + encodeURIComponent(hashQuery("file"));
+    if (route === "library") wants.push(libraryPath);
+    if (route === "traces") wants.push(tracesPath);
+    if (route === "trace") wants.push(tracePath);
+    if (route === "benchmarks") wants.push("benchmark-history");
     if (route === "lesson") wants.push("lesson?slug=" + encodeURIComponent(hashQuery("slug")));
     if (route === "commands") wants.push("command-catalog");
     var ledgerWant = route === "ledger" ? ledgerPath() : null;
@@ -1285,6 +1384,7 @@
       "command-catalog": "commandCatalog"
     };
     keys[reviewPath] = "lessons";
+    keys[libraryPath] = "library"; keys[tracesPath] = "traces"; keys[tracePath] = "trace"; keys["benchmark-history"] = "benchmarks";
     return Promise.all(wants.map(function (w) { return api("/v1/" + w).then(function (d) { return [w, d]; }); }))
       .then(function (pairs) {
         // A slow poll from an earlier page or credential must never replace
@@ -1358,7 +1458,11 @@
   if (skipLink) skipLink.addEventListener("click", function (event) {
     event.preventDefault(); main.focus();
   });
-  window.addEventListener("hashchange", function () { navigationGeneration++; render(); main.focus(); refresh(); });
+  window.addEventListener("hashchange", function () {
+    navigationGeneration++;
+    state.library = null; state.traces = null; state.trace = null; state.benchmarks = null;
+    render(); main.focus(); refresh();
+  });
   document.addEventListener("visibilitychange", function () { if (!document.hidden) refresh(); });
   setInterval(function () { if (lastOk && connState.indexOf("ok") === 0) setConn("ok", "Live · updated " + ago(new Date(lastOk).toISOString())); }, 1000);
 

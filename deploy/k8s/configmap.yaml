@@ -8,6 +8,7 @@ data:
   HUB_HOST: "0.0.0.0"
   HUB_PORT: "8420"
   HUB_LOG_LEVEL: "INFO"
+  HUB_REQUIRE_RLS: "true"
 
   HUB_ALLOW_INSECURE_HTTP: "true"
 

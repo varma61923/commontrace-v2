@@ -6,6 +6,7 @@ import urllib.request
 from collections.abc import Callable
 
 from commontrace import additive_extract, memory_control
+from commontrace.configuration import configured
 
 
 class MemoryClient:
@@ -42,6 +43,45 @@ class MemoryClient:
                 raise ValueError("gateway response must be an object")
             return result
 
+    def put_record(self, record) -> dict:
+        return self._record_operation("record-put", {"record": record.to_dict()})
+
+    def search_records(self, query: str = "", *, limit: int = 20) -> list[dict]:
+        return self._record_operation("record-search", {"query": query, "limit": limit})["results"]
+
+    def forget_record(self, identity: str, *, reason: str) -> dict:
+        return self._record_operation("record-forget", {"id": identity, "reason": reason})
+
+    def reap_due_records(self, *, limit: int = 16) -> list[dict]:
+        """Erase a bounded batch of records whose forget_after timestamp has passed."""
+        return self._record_operation("record-reap-due", {"limit": limit})["results"]
+
+    @configured
+    def _record_operation(self, operation: str, payload: dict) -> dict:
+        from commontrace.api_schema import validate_request
+        payload = {**payload, "context": self.context}
+        validate_request(operation, payload)
+        if self.url:
+            return self._request(operation, payload)
+        from commontrace.record_api import operate
+        return operate(self.root, operation, payload, context=self.context, untrusted=bool(self.agent_id))
+
+    @configured
+    def turn(self, session_id: str, query: str, *, text: str = "", budget: int = 600,
+             event: str | None = None, payload: dict | None = None) -> dict:
+        """Capture a user turn and return profile, memory and pending buffer in one call."""
+        capture_payload = payload
+        payload = {"session_id": session_id, "query": query, "text": text,
+                   "budget": budget, "context": self.context}
+        if event:
+            payload.update({"event": event, "payload": capture_payload or {}})
+        if self.url:
+            return self._request("turn", payload)
+        from commontrace.framework_middleware import turn
+        return turn(self.root, session_id, query, text=text, budget=budget, context=self.context,
+                    event=event, payload=capture_payload)
+
+    @configured
     def add(self, text: str, *, local: bool = True, complete=None, memory_type: str = "general",
             entity_model=None, entity_model_path: str | None = None) -> dict:
         if self.url:
@@ -56,6 +96,7 @@ class MemoryClient:
                                              scopes=self.context, memory_type=memory_type,
                                              entity_model=entity_model, entity_model_path=entity_model_path)
 
+    @configured
     def profile(self, query: str = "", *, limit: int = 10, occasion_id: str | None = None,
                 action_class: str = "") -> dict:
         occasion_id = self._occasion(occasion_id)
@@ -68,20 +109,31 @@ class MemoryClient:
             return memory_control.profile(self.root, query, context=self.context, limit=limit,
                                           occasion_id=occasion_id, action_class=action_class)
 
+    @configured
     def search(self, query: str, *, recipe: str = "balanced", retriever: str = "hybrid",
                limit: int = 10, center: str = "", as_of: str | None = None, action_class: str = "",
+               known_at: str | None = None, graph_hops: int = 2, reranker: str | None = None,
                **local_options) -> list[dict]:
         if self.url:
             if local_options:
                 raise ValueError("injected adapters are local-only")
-            return self._request("search", {"query": query, "recipe": recipe, "retriever": retriever,
+            body = {"query": query, "recipe": recipe, "retriever": retriever,
                 "limit": limit, "center": center, "as_of": as_of, "context": self.context,
-                "action_class": action_class})["results"]
+                "action_class": action_class}
+            if known_at is not None:
+                body["known_at"] = known_at
+            if graph_hops != 2:
+                body["graph_hops"] = graph_hops
+            if reranker is not None:
+                body["reranker"] = reranker
+            return self._request("search", body)["results"]
         from commontrace.search_recipes import REGISTRY
 
         return REGISTRY.retrieve(retriever, self.root, query, recipe=recipe, limit=limit, center=center,
-                                 as_of=as_of, context=self.context, action_class=action_class, **local_options)
+                                 as_of=as_of, context=self.context, action_class=action_class,
+                                 known_at=known_at, graph_hops=graph_hops, reranker=reranker, **local_options)
 
+    @configured
     def batch(self, items: list[dict]) -> dict:
         if self.url:
             return self._request("batch", {"items": items, "context": self.context})
@@ -95,6 +147,7 @@ class MemoryClient:
             return self._request("propose", {"text": text, "sources": sources, "context": self.context})
         return memory_control.proposal(self.root, text, sources=sources, context=self.context)
 
+    @configured
     def reflect(self, query: str, *, budget: int = 600, occasion_id: str | None = None,
                 exploration_slots: int = 0, action_class: str = "", adaptive_budget: bool = False) -> dict:
         occasion_id = self._occasion(occasion_id)

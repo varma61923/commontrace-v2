@@ -7,7 +7,9 @@ old second full-corpus load. Alternating trials require identical ranked scores
 and recalled context. Cold builds, mutation rebuilds, broad queries and retained
 cache bytes are reported separately. ``--check`` requires warm generations to
 remain retained without rebuilding and indexed medians to beat the exact
-baseline. Timings compare alternating arms on this host, not absolute latency
+baseline. Each query/channel comparison clears the cache before its untimed
+warm-up, giving that block a fresh TTL; expiration during measured trials still
+counts as a warm rebuild. Timings compare alternating arms on this host, not absolute latency
 or a competitor service. No external LLM is used.
 """
 from __future__ import annotations
@@ -102,6 +104,10 @@ def _recall(root: str, query: str, baseline: bool) -> str:
 
 
 def _compare(root: str, query: str, trials: int, channel: str) -> dict[str, Any]:
+    # Independent blocks must not inherit a nearly expired generation from
+    # earlier, potentially slow baseline comparisons. The existing untimed
+    # pair builds fresh state; measured pairs still count every cache miss.
+    fact_index.clear_cache()
     calls: dict[str, Callable[[], str]]
     if channel == 'search':
         calls = {'baseline': lambda: _rows(original_search(root, query, scope='alpha')),

@@ -455,6 +455,164 @@
           }
         ]
       },
+      "RecordForgetRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "context": {
+            "items": {
+              "maxLength": 256,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "type": "array"
+          },
+          "id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "reason": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "RecordForgetResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "at": {
+            "type": "string"
+          },
+          "deleted": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "deleted",
+          "reason",
+          "at"
+        ],
+        "type": "object"
+      },
+      "RecordPutRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "context": {
+            "items": {
+              "maxLength": 256,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "type": "array"
+          },
+          "record": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "record"
+        ],
+        "type": "object"
+      },
+      "RecordPutResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "record": {
+            "additionalProperties": true,
+            "type": "object"
+          }
+        },
+        "required": [
+          "record"
+        ],
+        "type": "object"
+      },
+      "RecordReapDueRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "context": {
+            "items": {
+              "maxLength": 256,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "type": "array"
+          },
+          "limit": {
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "RecordReapDueResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "results": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "results"
+        ],
+        "type": "object"
+      },
+      "RecordSearchRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "context": {
+            "items": {
+              "maxLength": 256,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "type": "array"
+          },
+          "limit": {
+            "maximum": 1000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "query": {
+            "maxLength": 20000,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "RecordSearchResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "results": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "results"
+        ],
+        "type": "object"
+      },
       "ReflectRequest": {
         "additionalProperties": false,
         "properties": {
@@ -582,6 +740,15 @@
             "maxItems": 100,
             "type": "array"
           },
+          "graph_hops": {
+            "maximum": 4,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "known_at": {
+            "nullable": true,
+            "type": "string"
+          },
           "limit": {
             "maximum": 1000,
             "minimum": 0,
@@ -593,6 +760,19 @@
           },
           "recipe": {
             "maxLength": 20000,
+            "type": "string"
+          },
+          "reranker": {
+            "enum": [
+              null,
+              "none",
+              "mmr",
+              "cross-encoder",
+              "cross-encoder-fast",
+              "bge-reranker-v2-m3",
+              "mxbai-rerank"
+            ],
+            "nullable": true,
             "type": "string"
           },
           "retriever": {
@@ -619,6 +799,97 @@
           "results"
         ],
         "type": "object"
+      },
+      "TurnRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "budget": {
+            "maximum": 8000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "context": {
+            "items": {
+              "maxLength": 256,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "type": "array"
+          },
+          "event": {
+            "maxLength": 20000,
+            "type": "string"
+          },
+          "payload": {
+            "type": "object"
+          },
+          "query": {
+            "maxLength": 20000,
+            "type": "string"
+          },
+          "session_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 20000,
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "query"
+        ],
+        "type": "object"
+      },
+      "TurnResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "buffer": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "context": {
+            "type": "string"
+          },
+          "injected": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "profile": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/Evidence"
+            },
+            "type": "array"
+          },
+          "scope": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "context",
+          "injected",
+          "profile",
+          "buffer",
+          "session_id",
+          "scope",
+          "results"
+        ],
+        "type": "object"
       }
     },
     "securitySchemes": {
@@ -632,8 +903,8 @@
   "info": {
     "description": "Append-only memory, source-linked recall and observed outcomes. Bearer agent keys bind the owner scope; a request cannot replace its principal's context. Retrieved evidence never authorizes an action. Use HTTPS for hosted gateways; localhost is intended for a trusted local operator.",
     "license": {
-      "name": "MIT",
-      "url": "https://opensource.org/license/mit/"
+      "name": "GNU Affero General Public License v3.0 only",
+      "url": "https://www.gnu.org/licenses/agpl-3.0.html"
     },
     "title": "CommonTrace gateway",
     "version": "1"
@@ -1276,6 +1547,430 @@
         ]
       }
     },
+    "/v1/memory/record-forget": {
+      "post": {
+        "operationId": "memory_record_forget",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordForgetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordForgetResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or wrong credential"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Refused by policy or scope"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflicts with recorded state"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Body larger than 1 MiB"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Quota or rate limit"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal error; no details"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Scoped memory record-forget.",
+        "tags": [
+          "Memory"
+        ]
+      }
+    },
+    "/v1/memory/record-put": {
+      "post": {
+        "operationId": "memory_record_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordPutRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordPutResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or wrong credential"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Refused by policy or scope"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflicts with recorded state"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Body larger than 1 MiB"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Quota or rate limit"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal error; no details"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Scoped memory record-put.",
+        "tags": [
+          "Memory"
+        ]
+      }
+    },
+    "/v1/memory/record-reap-due": {
+      "post": {
+        "operationId": "memory_record_reap_due",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordReapDueRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordReapDueResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or wrong credential"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Refused by policy or scope"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflicts with recorded state"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Body larger than 1 MiB"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Quota or rate limit"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal error; no details"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Scoped memory record-reap-due.",
+        "tags": [
+          "Memory"
+        ]
+      }
+    },
+    "/v1/memory/record-search": {
+      "post": {
+        "operationId": "memory_record_search",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordSearchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordSearchResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or wrong credential"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Refused by policy or scope"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflicts with recorded state"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Body larger than 1 MiB"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Quota or rate limit"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal error; no details"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Scoped memory record-search.",
+        "tags": [
+          "Memory"
+        ]
+      }
+    },
     "/v1/memory/reflect": {
       "post": {
         "operationId": "memory_reflect",
@@ -1483,6 +2178,112 @@
           }
         ],
         "summary": "Scoped memory search.",
+        "tags": [
+          "Memory"
+        ]
+      }
+    },
+    "/v1/memory/turn": {
+      "post": {
+        "operationId": "memory_turn",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TurnRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TurnResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or wrong credential"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Refused by policy or scope"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflicts with recorded state"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Body larger than 1 MiB"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Quota or rate limit"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal error; no details"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Scoped memory turn.",
         "tags": [
           "Memory"
         ]

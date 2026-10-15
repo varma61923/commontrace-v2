@@ -85,6 +85,7 @@ class Recall:
     withdrawn: dict = field(default_factory=dict)
     quarantined: dict = field(default_factory=dict)
     graduated: dict = field(default_factory=dict)
+    assignments: list[dict] = field(default_factory=list)
 
 
 class CausalMemory:
@@ -132,10 +133,7 @@ class CausalMemory:
     def recall(self, query: Any, *, occasion_id: str, **kwargs: Any) -> list[Any]:
         return self.recall_detailed(query, occasion_id=occasion_id, **kwargs).items
 
-    def _withdrawn(self) -> dict[str, dict]:
-        return self._watch.current()
-
-    def recall_detailed(self, query: Any, *, occasion_id: str, **kwargs: Any) -> Recall:
+    def recall_detailed(self, query: Any, *, occasion_id: str, record: bool = True, **kwargs: Any) -> Recall:
         """`recall`, plus which memories were withdrawn for measured harm."""
         if not isinstance(occasion_id, str) or not occasion_id.strip():
             raise ValueError("occasion_id must be a non-empty string")
@@ -179,19 +177,19 @@ class CausalMemory:
 
         config = holdout_io.load_config(self._root)
         withheld: set[str] = set()
+        assignments: list[dict] = []
         if ids and config.running:
-            withheld = holdout_io.assign_and_log(
-                self._root,
-                ids,
-                occasion_id=occasion_id,
-                rate=config.rate,
-                salt=config.salt,
-                scorer=self._scorer,
-                revisions=revisions,
-                durable=self._durable,
-            )
+            if record:
+                withheld = holdout_io.assign_and_log(self._root, ids, occasion_id=occasion_id,
+                    rate=config.rate, salt=config.salt, scorer=self._scorer,
+                    revisions=revisions, durable=self._durable)
+            else:
+                withheld, assignments = holdout_io.plan_assignments(self._root, ids, occasion_id=occasion_id,
+                    rate=config.rate, salt=config.salt, scorer=self._scorer,
+                    revisions=revisions, durable=self._durable)
         return Recall(
             items=[item for item_id, item in keyed if item_id not in withheld], withdrawn=removed,
+            assignments=assignments,
             quarantined=quarantined,
             graduated={item_id: helping[item_id] for item_id, _item in keyed
                        if item_id in helping and item_id not in self._pinned},

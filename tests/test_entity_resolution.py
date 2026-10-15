@@ -143,3 +143,132 @@ def test_cli_resolve(root, capsys, monkeypatch):
     text = capsys.readouterr().out
     assert "merged concept:acme_corporation into organization:acme_corp" in text and "[blocked" in text
     assert cli.main(["graph", "resolve", "--embedder", "not a tag!", "--dest", root]) == 2
+
+
+def test_tiered_minhash_threshold_is_explicit_and_observable(tmp_path):
+    root = str(tmp_path)
+    graph.add_node(root, "concept:machine_a", "concept", name="International Business Machine")
+    graph.add_node(root, "concept:machine_b", "concept", name="International Business Machines")
+
+    default = entity_resolution.tiered_candidates(root)
+    strict = entity_resolution.tiered_candidates(root, minhash_threshold=0.99)
+
+    assert default["pairs"][0]["tier"] == "minhash"
+    assert default["thresholds"] == {
+        "entropy": 2.0, "minhash": 0.8, "jaccard": 0.8, "cosine": 0.6, "top_k": 15,
+    }
+    assert strict["pairs"] == []
+
+
+def test_tiered_lsh_shortlist_preserves_every_default_minhash_match():
+    from itertools import combinations
+
+    from commontrace.overlap import estimate_jaccard
+
+    names = [
+        "International Business Machine",
+        "International Business Machines",
+        "International Business Machin",
+        "PostgreSQL connection pool",
+        "PostgreSQL connection pools",
+        "Kubernetes controller reconciliation",
+        "Quasar rotates encrypted archives nightly",
+        "Zebra migration deadline follows September release",
+    ]
+    surfaces = [entity_resolution._tiered_surface([name]) for name in names]
+    candidates = entity_resolution._tiered_minhash_pairs(
+        surfaces, entropy_threshold=2.0, minhash_threshold=0.8
+    )
+    from commontrace import overlap
+
+    eligible = [i for i, surface in enumerate(surfaces) if surface.entropy >= 2.0]
+    exhaustive, accepted_from_shortlist = set(), set()
+    for a, b in combinations(eligible, 2):
+        similarity = estimate_jaccard(surfaces[a].signature, surfaces[b].signature)
+        jaccard = kg_similarity.jaccard(surfaces[a].grams, surfaces[b].grams)
+        if similarity >= 0.8 and jaccard >= 0.8:
+            exhaustive.add((a, b))
+        if (a, b) in candidates and similarity >= 0.8 and jaccard >= 0.8:
+            accepted_from_shortlist.add((a, b))
+
+    assert exhaustive
+    assert accepted_from_shortlist == exhaustive
+    assert len(candidates) < len(list(combinations(eligible, 2)))
+    assert overlap.DEFAULT_NUM_PERM == 128
+
+
+def test_tiered_lsh_falls_back_to_exhaustive_at_low_threshold():
+    from itertools import combinations
+
+    surfaces = [
+        entity_resolution._tiered_surface(["International Business Machine"]),
+        entity_resolution._tiered_surface(["International Business Machines"]),
+        entity_resolution._tiered_surface(["Quasar rotates encrypted archives nightly"]),
+    ]
+    eligible = [i for i, surface in enumerate(surfaces) if surface.entropy >= 2.0]
+    pairs = entity_resolution._tiered_minhash_pairs(
+        surfaces, entropy_threshold=2.0, minhash_threshold=0.75
+    )
+    assert pairs == set(combinations(eligible, 2))
+
+
+def test_tiered_exact_aliases_survive_entropy_gate(tmp_path):
+    root = str(tmp_path)
+    graph.add_node(root, "concept:ibm_short", "concept", name="IBM")
+    graph.add_node(root, "concept:ibm_short_alias", "concept", name=" ibm ")
+
+    result = entity_resolution.tiered_candidates(root)
+
+    assert result["pairs"] == [{
+        "a": "concept:ibm_short",
+        "b": "concept:ibm_short_alias",
+        "score": 1.0,
+        "tier": "exact",
+        "a_type": "concept",
+        "b_type": "concept",
+        "compatible": True,
+    }]
+
+
+def test_tiered_embedding_candidates_are_batched_and_llm_sees_only_remainder(tmp_path):
+    root = str(tmp_path)
+    graph.add_node(root, "concept:ibm", "concept", name="IBM")
+    graph.add_node(root, "concept:international_business_machines", "concept", name="International Business Machines")
+
+    class Embedder:
+        calls = 0
+
+        def embed(self, texts, *, query):
+            self.calls += 1
+            return [[1.0, 0.0] for _ in texts]
+
+    provider = Embedder()
+    seen = []
+
+    def judge(prompt):
+        import json
+
+        offered = json.loads(prompt.rsplit("\n", 1)[1])
+        seen.append(offered)
+        return json.dumps({"duplicates": [[offered[0]["a"], offered[0]["b"]]]}), {}
+
+    result = entity_resolution.tiered_candidates(root, embedder=provider, complete=judge)
+
+    assert result["pairs"][0]["tier"] == "llm"
+    assert result["llm_batches"] == 1 and len(seen) == 1
+    assert provider.calls == 1
+    assert seen[0][0]["a_names"] == ["ibm"]
+
+
+def test_tiered_embedding_floor_and_top_k_are_validated(tmp_path):
+    root = str(tmp_path)
+    graph.add_node(root, "concept:a", "concept", name="IBM")
+    graph.add_node(root, "concept:b", "concept", name="International Business Machines")
+
+    class Embedder:
+        def embed(self, texts, *, query):
+            return [[1.0, 0.0] if text.startswith("IBM") else [0.0, 1.0] for text in texts]
+
+    assert entity_resolution.tiered_candidates(root, embedder=Embedder(), cosine_threshold=0.9)["pairs"] == []
+    with pytest.raises(ValueError, match="top_k"):
+        entity_resolution.tiered_candidates(root, top_k=0)

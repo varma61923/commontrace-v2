@@ -10,11 +10,11 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-import os
 import re
 from collections.abc import Mapping
 from typing import Any, cast
 
+from commontrace.configuration import getenv as _configuration_getenv
 from commontrace.secrets_provider import env_secret
 
 _FIELD = "_integrity"
@@ -91,11 +91,12 @@ def verification_policy() -> tuple[dict[str, bytes], bool]:
         previous = env_secret("COMMONTRACE_COMMONS_VERIFY_KEY_PREVIOUS")
     except (RuntimeError, UnicodeError):
         raise CommonsIntegrityError("commons verification secret source is unavailable") from None
-    key_id = os.environ.get("COMMONTRACE_COMMONS_VERIFY_KEY_ID", "default")
-    previous_id = os.environ.get("COMMONTRACE_COMMONS_VERIFY_KEY_PREVIOUS_ID", "previous")
-    required = bool(raw or previous) or os.environ.get("COMMONTRACE_COMMONS_REQUIRE_SIGNED", "").strip().lower() in {
+    key_id = _configuration_getenv("COMMONTRACE_COMMONS_VERIFY_KEY_ID", "default")
+    previous_id = _configuration_getenv("COMMONTRACE_COMMONS_VERIFY_KEY_PREVIOUS_ID", "previous")
+    required = bool(raw or previous) or (
+        _configuration_getenv("COMMONTRACE_COMMONS_REQUIRE_SIGNED", "").strip().lower() in {
         "1", "true", "yes", "on",
-    }
+    })
     keys: dict[str, bytes] = {}
     if raw:
         keys[key_id] = _key(raw.encode("utf-8"))

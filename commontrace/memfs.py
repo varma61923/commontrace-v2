@@ -16,6 +16,7 @@ import time
 from dataclasses import dataclass, field
 
 from commontrace import memory_git, paths
+from commontrace.configuration import getenv as _configuration_getenv
 
 CONFIG = "memfs.json"
 DEFAULTS = {"max_file_bytes": 5 * 1024 * 1024, "max_files": 50_000, "max_lesson_chars": 20_000,
@@ -97,7 +98,7 @@ def install_hook(root: str) -> str:
               f"exec {prefix} memory validate --staged --dest {shlex.quote(os.path.abspath(root))}\n")
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(script)
-    os.chmod(path, 0o755)  # nosec B103 - a git hook must be executable
+    os.chmod(path, 0o700)  # nosec B103 - git hook executable by owner only
     return path
 
 
@@ -288,7 +289,7 @@ def repair(root: str) -> dict:
 # --- signed handoff --------------------------------------------------------------------
 
 def _key(root: str) -> bytes:
-    env = os.environ.get("COMMONTRACE_HANDOFF_KEY", "").strip()
+    env = _configuration_getenv("COMMONTRACE_HANDOFF_KEY", "").strip()
     if env:
         if len(env) < 32:
             raise MemfsError("COMMONTRACE_HANDOFF_KEY must be at least 32 characters")
@@ -358,7 +359,7 @@ def verify_handoff(root: str, token: str, *, audience: str | None = None) -> dic
     if len(parts) != 3 or parts[0] != "cth1":
         raise MemfsError("not a handoff token")
     expected = _b64(hmac.new(_key(root), parts[1].encode(), hashlib.sha256).digest())
-    if not hmac.compare_digest(expected, parts[2]):
+    if not hmac.compare_digest(expected.encode(), parts[2].encode("utf-8", "replace")):
         raise MemfsError("signature does not verify (wrong key, or the token was altered)")
     try:
         claims = json.loads(_unb64(parts[1]))
@@ -409,7 +410,7 @@ def verify_snapshot(root: str, attestation: dict) -> bool:
             return (memory_authority.verify(root, attestation["origin"], claims)
                     and _tree_digest(root, claims["commit"], claims["scope"]) == claims["tree"])
         signature = hmac.new(_key(root), json.dumps(claims, sort_keys=True).encode(), hashlib.sha256).hexdigest()
-        return (hmac.compare_digest(signature, attestation["signature"])
+        return (hmac.compare_digest(signature.encode(), str(attestation["signature"]).encode("utf-8", "replace"))
                 and _tree_digest(root, claims["commit"], claims["scope"]) == claims["tree"])
     except (KeyError, ValueError, MemfsError):
         return False

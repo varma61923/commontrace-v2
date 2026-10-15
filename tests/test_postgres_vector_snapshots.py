@@ -52,6 +52,30 @@ async def publish(snapshots: PostgresSnapshots, revision: int, generation: str,
     assert await snapshots.publish(lease)
 
 
+def test_hard_erasure_overrides_old_pins_and_revokes_builders() -> None:
+    async def run() -> None:
+        async with backend() as (snapshots, pool):
+            await publish(snapshots, 0, "first", [VectorRecord("a", [1, 0, 0]),
+                                                VectorRecord("b", [0, 1, 0])], full=True)
+            old = await snapshots.pin("first")
+            await publish(snapshots, 1, "next", [VectorRecord("a", [-1, 0, 0])])
+            pending = await snapshots.begin(2, "pending")
+            assert pending is not None
+            await snapshots.stage(pending, [VectorRecord("a", [1, 0, 0])])
+            assert await snapshots.erase(["a"]) == 2
+            assert [hit.key for hit in await snapshots.search(old, [1, 0, 0])] == ["b"]
+            assert not await snapshots.publish(pending)
+            with pytest.raises(SnapshotConflict):
+                await snapshots.stage(pending, [VectorRecord("a", [1, 0, 0])])
+            async with pool.acquire() as db:
+                for table in ("commontrace_vector_versions", "commontrace_vector_stages"):
+                    assert await db.fetchval(f"SELECT count(*) FROM {table} WHERE tenant=$1 AND namespace=$2 "
+                                             "AND model=$3 AND dimension=$4 AND key='a'", *snapshots._scope) == 0
+            assert await snapshots.erase(["a"]) == 0
+            await snapshots.release(old)
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("approximate", [False, True])
 def test_private_staging_and_stable_readers_across_incremental_publication(approximate: bool) -> None:
     async def run() -> None:

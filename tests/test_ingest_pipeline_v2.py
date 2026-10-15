@@ -111,3 +111,20 @@ def test_ingest_docs_cli(tmp_path):
                           "--dest", store, "--contextualize", "none"],
                          capture_output=True, text=True, check=False)
     assert out.returncode == 0, out.stderr
+
+
+def test_ingest_docs_reads_one_document_from_stdin(tmp_path):
+    from commontrace.conversation import Store
+
+    store = str(tmp_path / "store")
+    text = "# Runbook\n\nRestart the billing worker after rotating the queue credentials.\n"
+    out = subprocess.run([sys.executable, "-m", "commontrace.cli", "ingest", "-", "--type", "docs",  # nosec
+                          "--dest", store, "--contextualize", "none", "--space", "docs", "--json"],
+                         input=text, capture_output=True, text=True, check=False)
+    assert out.returncode == 0, out.stderr
+    with Store(store, "docs") as conv:
+        stored = conv.db.execute("SELECT text FROM turns").fetchall()
+    assert any("billing worker" in row[0] for row in stored)
+    background = subprocess.run([sys.executable, "-m", "commontrace.cli", "ingest", "-", "--type", "docs",  # nosec
+                                 "--background", "--dest", store], input=text, capture_output=True, text=True)
+    assert background.returncode == 2 and "stdin" in background.stderr

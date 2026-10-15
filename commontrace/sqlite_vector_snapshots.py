@@ -208,6 +208,27 @@ class SQLiteSnapshots:
                                      (*self._scope, lease.token))
         await self._run(execute)
 
+    async def erase(self, keys: Iterable[str]) -> int:
+        """Forget every historical vector, including copies in private builds."""
+        def execute() -> int:
+            deleted = snapshot_deletes(keys)
+            if not deleted:
+                return 0
+            with write_txn(self._db):
+                self._head()
+                removed = self._db.execute(
+                    "DELETE FROM commontrace_snapshot_versions WHERE " + PREDICATE  # nosec B608
+                    + " AND key IN (SELECT value FROM json_each(?))", (*self._scope, json.dumps(deleted))
+                ).rowcount
+                # Revoke all builders from before erasure. Removing only the
+                # staged key would allow such a lease to stage it again later.
+                self._db.execute("DELETE FROM commontrace_snapshot_builds WHERE " + PREDICATE,  # nosec B608
+                                 self._scope)
+                self._db.execute("DELETE FROM commontrace_snapshot_stage WHERE " + PREDICATE,  # nosec B608
+                                 self._scope)
+                return removed
+        return await self._run(execute)
+
     async def pin(self, generation: str, *, lease_seconds: float = 60) -> ReadLease:
         duration, wanted = lease_duration(lease_seconds), _generation(generation)
         def execute() -> ReadLease:

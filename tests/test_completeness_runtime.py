@@ -32,3 +32,25 @@ def test_runtime_grade_uses_the_questions_own_terms():
     assert part["bucket"] == "PARTIAL" and part["missing"] == ["keep", "helmet"] and part["score"] == 0.3333
     assert completeness.grade_question("bike helmet", "")["bucket"] == "INSUFFICIENT"
     assert completeness.grade_question("what is it?", "anything")["bucket"] is None
+
+
+def test_inflections_of_a_question_term_count_as_present():
+    from commontrace import completeness
+
+    context = "The billing database failed over to the replica and recovered in nine minutes."
+    graded = completeness.grade_question("what should I do when the billing database fails over?", context)
+    assert graded["missing"] == [] and graded["bucket"] == completeness.COMPLETE
+    # A term that really is absent is still reported.
+    graded = completeness.grade_question("what should I do when the billing database fails over?", "billing database")
+    assert graded["bucket"] == completeness.PARTIAL and "fails" in graded["missing"]
+
+
+def test_the_benchmark_grader_keeps_exact_token_matching():
+    from commontrace import completeness
+
+    exact = completeness.grade_context_completeness("failed", {"e": "fails"})
+    assert exact["bucket"] == completeness.INSUFFICIENT  # no stemming unless a caller opts in
+    from commontrace._stem import stem
+
+    folded = completeness.grade_context_completeness("failed", {"e": "fails"}, normalize=stem)
+    assert folded["bucket"] == completeness.COMPLETE  # the opt-in used by the runtime grade

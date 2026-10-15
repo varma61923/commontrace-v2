@@ -36,6 +36,8 @@ from commontrace import (
     retrieval,
     retrieval_io,
 )
+from commontrace.configuration import configured, current
+from commontrace.configuration import getenv as _configuration_getenv
 from commontrace.exceptions import CommonTraceError
 from commontrace.gateway_tokens import load_or_create_token, token_path  # noqa: F401 - public compatibility
 from commontrace.measure import CausalMemory, HarmWatch
@@ -375,6 +377,8 @@ class Gateway:
         token_provider: Callable[[], str | None] | None = None, allow_self_signup: bool = False,
     ) -> None:
         self.root = os.path.abspath(root)
+        selected = current()
+        self._runtime_configuration = selected if selected and selected.get("root") == self.root else None
         self.allow_approval = allow_approval
         self.allow_self_signup = allow_self_signup
         self.token = token
@@ -389,6 +393,7 @@ class Gateway:
         self._memo_work: weakref.WeakValueDictionary[str, threading.Lock] = weakref.WeakValueDictionary()
         self._event_tail_lock = threading.Lock()
         self._event_tail = None
+        self._conversation_pool = None  # optional local adapter; requests cannot set it
         self.routes: dict[tuple[str, str], tuple[Callable, dict]] = {}
         self._register()
 
@@ -403,13 +408,31 @@ class Gateway:
                     summary="Opt-in, rate-limited signup into a new isolated agent scope.", auth=False)
         self._route("POST", "/v1/agent/claim", self._agent_claim, summary="Owner claim of a self-enrolled agent.")
         self._route("POST", "/v1/agent/rotate", self._agent_rotate, summary="Owner-only scoped key rotation.")
+        self._route("POST", "/v1/agent/revoke", self._agent_revoke, summary="Owner-only: disable an agent key.")
         self._route("POST", "/v1/agent/signup", self._agent_signup, summary="Register one scoped agent.")
         self._route("POST", "/v1/agent/plugin", self._agent_plugin, summary="SDK skill and per-agent manifest.")
         self._route("POST", "/v1/agent/heartbeat", self._agent_heartbeat, summary="Record agent liveness.")
-        for operation in ("add", "batch", "profile", "reflect", "search", "check-action", "propose", "outcome"):
-            self._route("POST", "/v1/memory/" + operation,
+        for operation in (
+            "record-put",
+            "record-search",
+            "record-forget",
+            "record-reap-due",
+            "turn",
+            "add",
+            "batch",
+            "profile",
+            "reflect",
+            "search",
+            "check-action",
+            "propose",
+            "outcome",
+        ):
+            self._route(
+                "POST",
+                "/v1/memory/" + operation,
                         lambda body, query, op=operation: self._memory_operation(op, body),
-                        summary="Scoped memory " + operation + ".")
+                summary="Scoped memory " + operation + ".",
+            )
         self._route("GET", "/v1/palace", self._palace, summary="Overview, attention and memory suggestions.")
         for operation in ("directive", "question", "refresh", "reject-proposal", "review-foresight", "skill-review"):
             self._route("POST", "/v1/control/" + operation,
@@ -478,7 +501,7 @@ class Gateway:
             "now": "optional date the question is asked",
             "sessions": "optional list of session ids", "speakers": "optional list of speakers",
             "since": "optional date", "until": "optional date",
-            "context_strategy": "optional legacy or coverage-v1 context packing (default legacy)",
+            "context_strategy": "optional legacy, coverage-v1 or coverage-v2 context packing (default legacy)",
             "adaptive_budget": "optional boolean: treat budget as a floor sized by the question's shape "
                                "(summaries, orderings, counts, lists); explain.budget reports the decision",
         }, summary="The turns that answer a question, as a dated context within a token budget.")
@@ -503,6 +526,10 @@ class Gateway:
         self._route("GET", "/v1/memories", self._memories, summary="Each memory's measured verdict.")
         self._route("GET", "/v1/occasions", self._occasions, summary="Recent recalls and outcomes (?limit=).")
         self._route("GET", "/v1/agents", self._agents, summary="Per-agent activity.")
+        self._route("GET", "/v1/traces", self._traces, summary="Operator trace history (?limit=, ?offset=).")
+        self._route("GET", "/v1/trace", self._trace_detail, summary="One redacted source trace (?file=).")
+        self._route("GET", "/v1/benchmark-history", self._benchmark_history,
+                    summary="Saved operator benchmark scores and deltas (?limit=).")
         self._route("GET", "/v1/lessons", self._lessons, summary="Lessons and what is waiting for review (?status=).")
         self._route("GET", "/v1/lesson", self._lesson, summary="One lesson: text, gates, history (?slug=).")
         self._route("POST", "/v1/lesson/edit", self._lesson_edit, request={
@@ -530,6 +557,7 @@ class Gateway:
             "id": "a catalog listing id", "accept_licence": "its licence id"},
             summary="Install a verified listing at status=review. Needs --allow-approval.")
 
+    @configured
     def handle(
         self, method: str, target: str, headers: Mapping[str, str] | None = None,
         body: bytes | None = None, *, trusted: bool = False,
@@ -564,16 +592,25 @@ class Gateway:
                 lowered = {k.lower(): v for k, v in headers.items()}
                 request_origin = lowered.get("origin")
                 host = lowered.get("host", "").lower()
-                if (lowered.get("sec-fetch-site") == "cross-site" or request_origin
-                        and (urlsplit(request_origin).scheme not in ("http", "https")
-                             or urlsplit(request_origin).netloc.lower() != host)):
+                if (
+                    lowered.get("sec-fetch-site") == "cross-site"
+                    or request_origin
+                    and (
+                        urlsplit(request_origin).scheme not in ("http", "https")
+                        or urlsplit(request_origin).netloc.lower() != host
+                    )
+                ):
                     raise ApiError(403, "bad_origin", "cross-origin memory operations are refused")
-            if path in ("/benchmarks", "/benchmarks/", "/benchmarks/run.json") and method == "GET":
+            if method == "GET" and path in (
+                "/benchmarks", "/benchmarks/", "/benchmarks/run.json", "/benchmarks/public-key.txt"
+            ):
                 if path == "/benchmarks":
                     return Response(301, b"", headers={"Location": "/benchmarks/"})
                 return self._benchmark_site(path)
-            if path in ("/", "/index.html", "/ui/app.js", "/ui/app.css", "/ui/tokens.css",
-                        "/ui/favicon.svg") and method == "GET":
+            if (
+                path in ("/", "/index.html", "/ui/app.js", "/ui/app.css", "/ui/tokens.css", "/ui/favicon.svg")
+                and method == "GET"
+            ):
                 return self._static(path)
             if path.startswith("/.well-known/oauth-protected-resource") and method == "GET":
                 return self._oauth_metadata(path)
@@ -583,10 +620,18 @@ class Gateway:
                     raise ApiError(405, "method_not_allowed", f"{method} is not allowed on {path}")
                 raise ApiError(404, "not_found", f"no such endpoint: {path}")
             handler, spec = entry
-            if self._request_scope() and (path.startswith("/v1/memory/") or path.startswith("/v1/control/")
-                    or path.startswith("/v1/agent/") or path == "/v1/palace"):
-                raise ApiError(403, "container_scope", "memory evolution routes require a dedicated store; "
-                               "container-scoped requests use the existing recall and review routes")
+            if self._request_scope() and (
+                path.startswith("/v1/memory/")
+                or path.startswith("/v1/control/")
+                or path.startswith("/v1/agent/")
+                or path == "/v1/palace"
+            ):
+                raise ApiError(
+                    403,
+                    "container_scope",
+                    "memory evolution routes require a dedicated store; "
+                    "container-scoped requests use the existing recall and review routes",
+                )
             principal = None
             if spec["auth"] and not trusted and not self._authorised(headers):
                 from commontrace import agent_registry, oauth
@@ -599,21 +644,31 @@ class Gateway:
                     try:
                         claims = server.verify(supplied)
                     except oauth.InvalidToken:
-                        return self._oauth_challenge(server, 401, "invalid_token",
-                                                     "the access token is invalid or expired")
+                        return self._oauth_challenge(
+                            server, 401, "invalid_token", "the access token is invalid or expired"
+                        )
+                    except oauth.KeysUnavailable as exc:
+                        # The issuer is unreachable: a server-side outage, not a bad token.
+                        response = _json(503, {"error": {"code": "auth_unavailable",
+                                                         "message": "token verification is temporarily "
+                                                                    "unavailable"}})
+                        response.headers["Retry-After"] = str(max(1, int(exc.retry_after + 0.999)))
+                        return response
                     if claims.is_admin:
                         operator = True
                     elif oauth.SCOPE_MEMORY in claims.scopes:
                         principal = claims.principal()
                     else:
-                        return self._oauth_challenge(server, 403, "insufficient_scope",
-                                                     "the access token grants no CommonTrace scope")
+                        return self._oauth_challenge(
+                            server, 403, "insufficient_scope", "the access token grants no CommonTrace scope"
+                        )
                 elif supplied.startswith("cta_"):
                     principal = agent_registry.authenticate(self.root, supplied)
                 if principal is None and not operator:
                     if server is not None:
-                        return self._oauth_challenge(server, 401, None,
-                                                     "a valid Authorization: Bearer token is required")
+                        return self._oauth_challenge(
+                            server, 401, None, "a valid Authorization: Bearer token is required"
+                        )
                     raise ApiError(401, "unauthorized", "a valid Authorization: Bearer token is required")
                 if principal is not None:
                     if not (path.startswith("/v1/memory/") or path in ("/v1/agent/plugin", "/v1/agent/heartbeat")):
@@ -623,10 +678,9 @@ class Gateway:
                             agent_registry.admit(self.root, principal["id"])
                         except PermissionError as exc:
                             raise ApiError(429, "agent_quota", str(exc)) from exc
-            container_tag = next((
-                v for k, v in headers.items()
-                if k.lower() in ("x-container-tag", "container-tag")
-            ), "")
+            container_tag = next(
+                (v for k, v in headers.items() if k.lower() in ("x-container-tag", "container-tag")), ""
+            )
             if container_tag:
                 self._validated_tag(container_tag)
             payload: dict = {}
@@ -634,17 +688,19 @@ class Gateway:
                 payload = self._parse_body(body)
                 if path == "/v1/connectors/github/push":
                     lowered = {k.lower(): v for k, v in headers.items()}
-                    payload = {"raw": body, "signature": lowered.get("x-hub-signature-256", ""),
+                    payload = {
+                        "raw": body,
+                        "signature": lowered.get("x-hub-signature-256", ""),
                                "delivery": lowered.get("x-github-delivery", ""),
-                               "event": lowered.get("x-github-event", "")}
+                        "event": lowered.get("x-github-event", ""),
+                    }
                 # Never accept caller-supplied internal authorization context.
                 payload.pop("_principal", None)
                 if principal is not None:
                     payload["_principal"] = principal
             from commontrace import telemetry
 
-            with telemetry.bind(user_id=principal["id"] if principal else
-                                "operator" if spec["auth"] else "anonymous"):
+            with telemetry.bind(user_id=principal["id"] if principal else "operator" if spec["auth"] else "anonymous"):
                 result = handler(payload, parse_qs(split.query))
             if isinstance(result, Response):
                 return result
@@ -734,13 +790,20 @@ class Gateway:
         })
 
     def _benchmark_site(self, path: str) -> Response:
-        directory = os.path.join(self.root, "benchmark-results", "evolution", "second")
+        directory = os.path.join(self.root, "docs", "strategy", "leaderboard")
+        release = os.path.isfile(os.path.join(directory, "run.json"))
+        if not release:
+            directory = os.path.join(self.root, "benchmark-results", "evolution", "second")
         try:
             with open(os.path.join(directory, "run.json"), encoding="utf-8") as fh:
                 report = json.load(fh)
-            if report.get("synthetic") is not True:
-                raise ApiError(403, "private_benchmark", "only the synthetic showcase can be served publicly")
-            name = "run.json" if path.endswith("run.json") else "index.html"
+            public = (report.get("report", {}).get("public_aggregate_only") is True
+                      if release else report.get("synthetic") is True)
+            if not public:
+                raise ApiError(403, "private_benchmark",
+                               "only explicitly public aggregate benchmarks can be served publicly")
+            name = "public-key.txt" if release and path.endswith("public-key.txt") else (
+                "run.json" if path.endswith("run.json") else "index.html")
             with open(os.path.join(directory, name), "rb") as fh:
                 data = fh.read()
         except (OSError, ValueError):
@@ -784,8 +847,19 @@ class Gateway:
     def _agent_rotate(self, body, _query) -> dict:
         from commontrace import agent_registry
 
+        reinstate = body.get("reinstate", False)
+        if not isinstance(reinstate, bool):
+            raise _bad("reinstate must be a boolean")
         try:
-            return agent_registry.rotate(self.root, body.get("agent_id", ""))
+            return agent_registry.rotate(self.root, body.get("agent_id", ""), reinstate=reinstate)
+        except ValueError as exc:
+            raise _bad(str(exc)) from exc
+
+    def _agent_revoke(self, body, _query) -> dict:
+        from commontrace import agent_registry
+
+        try:
+            return agent_registry.revoke(self.root, body.get("agent_id", ""))
         except ValueError as exc:
             raise _bad(str(exc)) from exc
 
@@ -833,7 +907,26 @@ class Gateway:
         context = principal["scopes"] if principal else body.get("context", [])
         if not isinstance(context, list) or any(not isinstance(s, str) for s in context):
             raise _bad("context must be a list of scope labels")
+        if principal and (operation == "turn" or operation.startswith("record-")):
+            context = [label for label in context if not label.startswith("agent:")] + ["agent:" + principal["id"]]
         try:
+            if operation.startswith("record-"):
+                from commontrace.record_api import operate
+
+                return operate(self.root, operation, body, context=context, untrusted=bool(principal))
+            if operation == "turn":
+                from commontrace.framework_middleware import turn
+
+                return turn(
+                    self.root,
+                    body["session_id"],
+                    body["query"],
+                    context=context,
+                    text=body.get("text", ""),
+                    budget=body.get("budget", 600),
+                    event=body.get("event"),
+                    payload=body.get("payload"),
+                )
             if operation == "batch":
                 from commontrace import ingestion_contract
 
@@ -842,25 +935,43 @@ class Gateway:
                 local = body.get("local", True)
                 if not isinstance(local, bool) or (principal and not local):
                     raise _bad("agent writes use local ADD-only admission")
-                return additive_extract.extract(self.root, body.get("text", ""), scopes=context, local=local,
+                return additive_extract.extract(
+                    self.root,
+                    body.get("text", ""),
+                    scopes=context,
+                    local=local,
                                                  memory_type=body.get("memory_type", "general"),
-                                                 entity_model_path=os.environ.get("COMMONTRACE_GLINER_MODEL_PATH"))
+                    entity_model_path=_configuration_getenv("COMMONTRACE_GLINER_MODEL_PATH"),
+                )
             query = body.get("query", "")
             if not isinstance(query, str) or len(query) > MAX_TEXT_CHARS:
                 raise _bad("query must be bounded text")
             if operation == "profile":
-                occasion_id = memory_control.occasion(body.get("occasion_id"),
-                                                       principal=principal["id"] if principal else "")
-                return memory_control.profile(self.root, query, context=context, limit=body.get("limit", 10),
-                                               occasion_id=occasion_id, action_class=body.get("action_class", ""))
+                occasion_id = memory_control.occasion(
+                    body.get("occasion_id"), principal=principal["id"] if principal else ""
+                )
+                return memory_control.profile(
+                    self.root,
+                    query,
+                    context=context,
+                    limit=body.get("limit", 10),
+                    occasion_id=occasion_id,
+                    action_class=body.get("action_class", ""),
+                )
             if operation == "reflect":
-                occasion_id = memory_control.occasion(body.get("occasion_id"),
-                                                       principal=principal["id"] if principal else "")
-                return memory_control.reflect(self.root, query, context=context, budget=body.get("budget", 600),
+                occasion_id = memory_control.occasion(
+                    body.get("occasion_id"), principal=principal["id"] if principal else ""
+                )
+                return memory_control.reflect(
+                    self.root,
+                    query,
+                    context=context,
+                    budget=body.get("budget", 600),
                                                occasion_id=occasion_id,
                                                exploration_slots=body.get("exploration_slots", 0),
                                                action_class=body.get("action_class", ""),
-                                               adaptive_budget=body.get("adaptive_budget", False))
+                    adaptive_budget=body.get("adaptive_budget", False),
+                )
             if operation == "outcome":
                 occasion_id = memory_control.occasion(body.get("occasion_id"), generate=False)
                 if principal and not occasion_id.startswith(principal["id"] + ":"):
@@ -875,10 +986,22 @@ class Gateway:
                 explored = causal_policy.record_outcome(self.root, occasion_id, float(body["succeeded"]))
                 return {"recorded": holdout_io.record_outcome(self.root, occasion_id, body["succeeded"]) or explored}
             if operation == "search":
-                return {"results": REGISTRY.retrieve(body.get("retriever", "hybrid"), self.root, query,
-                        recipe=body.get("recipe", "balanced"), context=context, limit=body.get("limit", 10),
-                        center=body.get("center", ""), as_of=body.get("as_of"),
-                        action_class=body.get("action_class", ""))}
+                return {
+                    "results": REGISTRY.retrieve(
+                        body.get("retriever", "hybrid"),
+                        self.root,
+                        query,
+                        recipe=body.get("recipe", "balanced"),
+                        context=context,
+                        limit=body.get("limit", 10),
+                        center=body.get("center", ""),
+                        as_of=body.get("as_of"),
+                        known_at=body.get("known_at"),
+                        graph_hops=body.get("graph_hops", 2),
+                        reranker=body.get("reranker"),
+                        action_class=body.get("action_class", ""),
+                    )
+                }
             if operation == "check-action":
                 memory_control.check_action(self.root, body.get("tool", ""), context=context, tags=body.get("tags", []))
                 from commontrace import profile_activity
@@ -886,8 +1009,9 @@ class Gateway:
                 profile_activity.record(self.root, "action_check", body.get("tool", ""), context)
                 return {"allowed": True}
             if operation == "propose":
-                return memory_control.proposal(self.root, body.get("text", ""),
-                        sources=body.get("sources", []), context=context)
+                return memory_control.proposal(
+                    self.root, body.get("text", ""), sources=body.get("sources", []), context=context
+                )
         except (ValueError, TypeError) as exc:
             raise _bad(str(exc)) from exc
         except PermissionError as exc:
@@ -1103,8 +1227,8 @@ class Gateway:
         retrieval_config = retrieval_io.load_config(self.root)
         has_embed = bool(retrieval_io.parse_embedder(retrieval_config.fusion))
         has_rerank = retrieval_config.rerank != retrieval_io.RERANK_NONE
-        provider = os.environ.get("COMMONTRACE_LLM_PROVIDER", "").strip().lower()
-        has_key = any(os.environ.get(name, "").strip() for name in (
+        provider = _configuration_getenv("COMMONTRACE_LLM_PROVIDER", "").strip().lower()
+        has_key = any(_configuration_getenv(name, "").strip() for name in (
             "COMMONTRACE_LLM_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
             "GOOGLE_API_KEY", "GEMINI_API_KEY",
         ))
@@ -1316,15 +1440,23 @@ class Gateway:
         messages = req.get("messages")
         try:
             validate_messages(messages)
+            cache_vectors = req.get("cache_vectors", False)
+            if not isinstance(cache_vectors, bool):
+                raise _bad("cache_vectors must be true or false")
+            embedder = req.get("embedder")
+            if embedder is not None:
+                embedder = _text(embedder, "embedder", limit=512)
             space = self._scoped_space(_ident(req.get("space"), "space"))
             with Store(self.root, space) as store:
                 return store.add(_ident(req.get("session"), "session"), messages,
-                                 session_at=req.get("session_at") or None)
+                                 session_at=req.get("session_at") or None,
+                                 cache_vectors=cache_vectors, embedder=embedder)
         except ConversationError as exc:
             raise _bad(str(exc)) from None
 
     def _conversation_recall(self, req: dict, _query) -> dict:
-        from commontrace.conversation import ConversationError, Options, Store, recall
+        from commontrace.conversation import ConversationError, Options, recall
+        from commontrace.conversation.pool import READ_POOL, PoolBusy
 
         budget = req.get("budget", 1500)
         adaptive = req.get("adaptive_budget", False)
@@ -1335,22 +1467,79 @@ class Gateway:
         question = _text(req.get("question"), "question", limit=4000)
         lists = {}
         for key in ("sessions", "speakers"):
-            value = req.get(key) or []
+            value = req.get(key)
+            value = [] if value is None else value
             if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
                 raise _bad(f"{key} must be a list of strings")
             lists[key] = tuple(value)
+        dates = {}
+        for key in ("since", "until", "now"):
+            value = req.get(key)
+            if value is not None and not isinstance(value, str):
+                raise _bad(f"{key} must be a date string or null")
+            if value is not None and len(value) > 128:
+                raise _bad(f"{key} date is too long")
+            dates[key] = value or None
         strategy = req.get("context_strategy", "legacy")
-        if not isinstance(strategy, str) or strategy not in ("legacy", "coverage-v1"):
-            raise _bad("context_strategy must be legacy or coverage-v1")
-        opts = Options(budget=budget, since=req.get("since") or None, until=req.get("until") or None,
+        if not isinstance(strategy, str) or strategy not in ("legacy", "coverage-v1", "coverage-v2"):
+            raise _bad("context_strategy must be legacy, coverage-v1 or coverage-v2")
+        advanced = {}
+        for key in ("second_pass", "summaries"):
+            if key in req:
+                if not isinstance(req[key], bool):
+                    raise _bad(f"{key} must be true or false")
+                advanced[key] = req[key]
+        for key, lo, hi in (("graph_hops", 0, 2), ("rerank_depth", 1, 200)):
+            if key in req:
+                value = req[key]
+                if key == "graph_hops" and value is None:
+                    advanced[key] = None
+                elif isinstance(value, int) and not isinstance(value, bool) and lo <= value <= hi:
+                    advanced[key] = value
+                else:
+                    raise _bad(f"{key} must be an integer from {lo} to {hi}")
+        for key in ("rerank_blend", "entity_boost", "lexical_weight"):
+            if key in req:
+                value = req[key]
+                if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 1:
+                    raise _bad(f"{key} must be a finite number from 0 to 1")
+                advanced[key] = float(value)
+        for key in ("embedder", "rerank"):
+            if key in req:
+                value = req[key]
+                if value is not None:
+                    value = _text(value, key, limit=512)
+                    if value not in ("auto", "none"):
+                        try:
+                            if key == "embedder":
+                                from commontrace.conversation.embed import canonical
+
+                                value = canonical(value)
+                            else:
+                                from commontrace.providers import validate_reranker
+
+                                validate_reranker(value)
+                        except (ConversationError, CommonTraceError) as exc:
+                            raise _bad(str(exc)) from None
+                advanced[key] = value
+        opts = Options(budget=budget, since=dates["since"], until=dates["until"],
                        context_strategy=strategy, adaptive_budget=adaptive,
-                       max_budget=max(budget, 12_000), **lists)
+                       max_budget=max(budget, 12_000), **lists, **advanced)
         try:
             space = self._scoped_space(_ident(req.get("space"), "space"))
-            with Store(self.root, space, create=False) as store:
-                return recall(store, question, now=req.get("now") or None, options=opts).as_dict()
+            pool = self._conversation_pool or READ_POOL
+            with pool.lease(self.root, space, query=question) as store:
+                return recall(store, question, now=dates["now"], options=opts).as_dict()
+        except PoolBusy as exc:
+            raise ApiError(503, "conversation_busy", str(exc)) from None
         except ConversationError as exc:
             raise ApiError(404 if "no conversations" in str(exc) else 400, "conversation", str(exc)) from None
+
+    def close(self) -> None:
+        """Release service read handles; active leases finish before retirement."""
+        from commontrace.conversation.pool import READ_POOL
+
+        (self._conversation_pool or READ_POOL).discard_root(self.root)
 
     @staticmethod
     def _conversation_error(exc: Exception) -> ApiError:
@@ -1709,6 +1898,36 @@ class Gateway:
                                        actor="console")
         except marketplace.MarketError as exc:
             raise ApiError(422, "market_refused", str(exc)) from None
+
+    def _history_access(self):
+        if self._request_scope():
+            raise ApiError(403, "container_scope", "history requires an operator's dedicated store")
+
+    @staticmethod
+    def _history_integer(query, name, default, lower, upper):
+        try:
+            value = int((query.get(name) or [default])[0])
+        except (TypeError, ValueError):
+            raise _bad(f"{name} must be an integer") from None
+        if not lower <= value <= upper:
+            raise _bad(f"{name} must be between {lower} and {upper}")
+        return value
+
+    def _traces(self, _body, query):
+        self._history_access()
+        limit = self._history_integer(query, "limit", 50, 1, 200)
+        offset = self._history_integer(query, "offset", 0, 0, 10000)
+        return self._workbench(lambda w: w.trace_page(self.root, limit=limit, offset=offset))
+
+    def _trace_detail(self, _body, query):
+        self._history_access()
+        name = (query.get("file") or [""])[0]
+        return self._workbench(lambda w: w.trace_detail(self.root, name))
+
+    def _benchmark_history(self, _body, query):
+        self._history_access()
+        limit = self._history_integer(query, "limit", 100, 1, 200)
+        return self._workbench(lambda w: w.benchmark_history(self.root, limit=limit))
 
     def _lessons(self, _body, query) -> dict:
         status = (query.get("status") or [None])[0]

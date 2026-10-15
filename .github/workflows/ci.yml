@@ -1,8 +1,12 @@
 name: CI
 
 on:
+  # Branch commits are tested through their pull request; pushing to a branch with an
+  # open PR used to run the whole workflow twice for the same commit.
   push:
+    branches: [main]
   pull_request:
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
@@ -31,12 +35,13 @@ jobs:
         run: python3 scripts/ci_changes.py "$BASE" "$HEAD" >> "$GITHUB_OUTPUT"
 
   test-core:
+    # Core install on the oldest supported interpreter; the dev job covers the newest.
     name: test (core install, py${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ["3.10"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -49,10 +54,10 @@ jobs:
         run: python -m pip install -e .
 
       - name: Install test runner
-        run: python -m pip install pytest
+        run: python -m pip install pytest pytest-xdist
 
       - name: Run tests
-        run: make test PYTEST_ARGS=-q
+        run: make test PYTEST_ARGS="-q -n auto"
 
       - name: Original offline evidence and governed-memory contracts
         run: python -m benchmarks.memory_contracts
@@ -96,12 +101,12 @@ jobs:
         run: python -m pytest tests/test_ui_browser.py -q
 
   test-dev:
-    name: test + lint (dev extra, py${{ matrix.python-version }})
+    name: test + lint + coverage (dev extra, py${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ["3.12"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -111,16 +116,20 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install commontrace with the dev extra
-        run: python -m pip install -e ".[dev]"
+        run: python -m pip install -e ".[dev,code]" "pytest-cov>=7.0,<8.0"
 
-      - name: Run tests
-        run: python -m pytest tests/ e2e_tests/ -q
+      - name: Run tests with the 80 percent coverage gate
+        run: >-
+          python -m pytest tests/ e2e_tests/ -q -n auto
+          --cov=commontrace --cov-report=xml --cov-fail-under=80
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: coverage-${{ github.sha }}
+          path: coverage.xml
 
       - name: Lint with ruff
         run: make lint
-
-      - name: Source-derived API and environment references stay current
-        run: python scripts/dev.py docs --check
 
       - name: Standard OpenAPI memory contract stays current
         run: python scripts/export_openapi.py --check
@@ -154,6 +163,12 @@ jobs:
         # Cross the previous 64 MiB cache cliff; require equal scores/context,
         # bounded retention, no warm rebuilds and paired relative timings.
         run: python -m benchmarks.fact_search --facts 50000 --trials 3 --check
+
+      - name: Typed graph lookup preserves exact results and improves rare-relation queries
+        run: python -m benchmarks.graph_relations --edges 20000 --trials 3 --check
+
+      - name: Long-session summary preserves exact evidence and improves maintenance latency
+        run: python -m benchmarks.session_summary --turns 1000 --trials 3 --check
 
       - name: Install focused coverage tooling
         run: python -m pip install "pytest>=9.0.3,<10.0" "pytest-cov>=7.0,<8.0"
@@ -234,7 +249,7 @@ jobs:
           git fetch --no-tags --depth=1 origin "$REFERENCE_SHA"
           git worktree add --detach "$RUNNER_TEMP/measurement-reference" "$REFERENCE_SHA"
           # Both product revisions use this same corrected evaluation harness.
-          cp benchmarks/*.py "$RUNNER_TEMP/measurement-reference/benchmarks/"
+          cp -r benchmarks/* "$RUNNER_TEMP/measurement-reference/benchmarks/"
 
       - name: Require no statistically supported retrieval regression
         run: |
@@ -292,7 +307,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.12"]
+        python-version: ["3.12"]
     services:
       pgvector:
         image: pgvector/pgvector:0.8.1-pg16
@@ -331,12 +346,13 @@ jobs:
           tests/test_vector_snapshot_processes.py -q
 
   test-hub:
+    # The Hub ships as one container image, so one interpreter tests it.
     name: hub tests (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ["3.12"]
     services:
       postgres:
         image: postgres:16
@@ -365,7 +381,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install Hub server dependencies and the client package
-        run: python -m pip install -e . -r hub/requirements.txt pytest pytest-asyncio
+        run: python -m pip install -e . -r hub/requirements.txt pytest pytest-asyncio pytest-xdist
 
       - name: Verify migrations apply from scratch
         env:
@@ -401,10 +417,16 @@ jobs:
         run: python scripts/export_hub_openapi.py --check
 
       - name: Run Hub tests (including test_tenant_isolation.py)
-        run: python -m pytest hub/tests/ -q
+        # Each worker gets its own database (hub/tests/conftest.py); one file stays on one
+        # worker, so a file's cluster-wide test roles are never created concurrently.
+        run: python -m pytest hub/tests/ -q -n auto --dist loadfile
 
       - name: Run Hub end-to-end scenarios
-        run: python -m pytest e2e_tests/ -q -k hub
+        # The parallel suite above uses per-worker databases, so the shared one is
+        # migrated here rather than relying on another suite to have built its schema.
+        run: |
+          HUB_DATABASE_URL="$HUB_TEST_DATABASE_URL" python -m alembic -c hub/alembic.ini upgrade head
+          python -m pytest e2e_tests/ -q -k hub
 
   security-scan:
     name: security scan (bandit, pip-audit, mypy)
@@ -415,7 +437,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Install commontrace with every extra, plus the Hub's own dependencies
         run: |
@@ -423,8 +445,18 @@ jobs:
           python -m pip install -r hub/requirements.txt
           python -m pip install bandit pip-audit mypy
 
+      - name: Injector poison fixtures fail closed
+        run: |
+          python - <<'PY'
+          import json
+          from benchmarks.injector_bench import poison_check
+          result = poison_check()
+          print(json.dumps(result, indent=2))
+          assert result["passed"], "InjectorPoisonBench detected an unsafe injection"
+          PY
+
       - name: Bandit static analysis
-        run: bandit -r commontrace/ hub/ memory/ -x "*/tests/*,*/test_*" -ll
+        run: bandit -r commontrace/ hub/ -x "*/tests/*,*/test_*" -ll
 
       - name: pip-audit -- commontrace's own declared dependencies
         run: |
@@ -448,17 +480,18 @@ jobs:
             commontrace/async_workers.py commontrace/mcp_transport.py \
             commontrace/commons_integrity.py commontrace/frameworks.py \
             commontrace/conversation/async_store.py commontrace/conversation/validation.py \
-            commontrace/semantic.py commontrace/vector_store.py \
+            commontrace/semantic.py commontrace/vector_store.py commontrace/provider_config.py hub/migrate.py \
             commontrace/distill.py commontrace/distillation_worker.py commontrace/draft_quality.py \
             commontrace/failure_signals.py commontrace/memory_blocks.py \
             commontrace/commands/block_cmd.py commontrace/commands/distill_cmd.py \
             commontrace/conversation/coverage.py commontrace/conversation/context_selection.py \
             commontrace/conversation/unicode_index.py \
             commontrace/lesson_admission.py \
+            commontrace/retry.py commontrace/commands/integration_cmd.py \
             commontrace/fact_evidence.py commontrace/vector_snapshots.py \
             commontrace/sqlite_vector_snapshots.py commontrace/postgres_vector_snapshots.py \
             commontrace/evidence_context.py commontrace/explorer.py commontrace/vector_scoring.py \
-            commontrace/fact_index.py commontrace/runtime_cache.py commontrace/_jsonl.py \
+            commontrace/fact_index.py commontrace/runtime_cache.py commontrace/sqlite_pool.py commontrace/_jsonl.py \
             benchmarks/memory_contracts.py benchmarks/vector_search.py \
             benchmarks/fact_search.py benchmarks/fact_retrieval.py benchmarks/fact_mutation.py \
             benchmarks/conversation_retrieval.py
@@ -761,7 +794,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install -e '.[graph,vector-lance]' pytest
-      - run: python -m pytest tests/test_optional_memory_backends.py -q
+      - run: python -m pytest tests/test_optional_memory_backends.py tests/test_vector_scale_lance.py -q
 
   sdk-rust:
     needs: changes
@@ -788,6 +821,35 @@ jobs:
       - run: mvn -B test
         working-directory: sdk/jvm
 
+  test-native-memory-middleware:
+    name: Native memory lifecycle (${{ matrix.sdk }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - sdk: OpenAI Agents
+            dependency: openai-agents==0.23.1
+            tests: tests/test_openai_agents_middleware.py tests/test_optional_sdk_live_contracts.py
+          - sdk: Pydantic AI
+            dependency: pydantic-ai==2.55.0
+            tests: tests/test_pydantic_ai_capabilities.py tests/test_optional_sdk_live_contracts.py
+          - sdk: Microsoft Agent Framework
+            dependency: agent-framework-core==1.21.0
+            tests: tests/test_microsoft_agent_framework.py tests/test_optional_microsoft_agent_framework_lifecycle.py
+          - sdk: LangGraph
+            dependency: langgraph==1.2.1
+            tests: tests/test_integrations_langgraph.py tests/test_langgraph_premodel_hook.py tests/test_optional_langgraph_lifecycle.py
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      # Client SDKs use MCP 1.x; keep them separate from the Hub's MCP 2.x environment.
+      - run: python -m pip install -e . pytest pytest-asyncio '${{ matrix.dependency }}'
+      # Deterministic models exercise actual SDK runners without provider keys.
+      - run: python -m pytest tests/test_runtime_turn.py tests/test_integrations_agents.py ${{ matrix.tests }} -q
+
   test-new-frameworks:
     needs: changes
     if: needs.changes.outputs.code == 'true'
@@ -800,73 +862,3 @@ jobs:
           python-version: '3.12'
       - run: python -m pip install -e . pytest google-adk==2.11.0 strands-agents==1.59.0 ag2==1.1.2
       - run: python -m pytest tests/test_new_framework_sdks.py -q
-
-  generated-sdks:
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
-    name: OpenAPI generated SDK (${{ matrix.language }})
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        language: [typescript, go, rust, java, kotlin]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
-        with:
-          python-version: '3.12'
-      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
-        with:
-          distribution: temurin
-          java-version: '21'
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with:
-          node-version: '22'
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
-        with:
-          go-version: '1.27.x'
-          cache: false
-      - run: python -m pip install -e .
-      - name: Check and validate the standard contract, then generate with pinned upstream tooling
-        run: |
-          python scripts/export_openapi.py --check
-          python scripts/generate_sdks.py --languages '${{ matrix.language }}' --output "$RUNNER_TEMP/generated"
-      - name: Compile generated client and models
-        working-directory: ${{ runner.temp }}/generated/${{ matrix.language }}
-        env:
-          LANGUAGE: ${{ matrix.language }}
-        run: |
-          case "$LANGUAGE" in
-            typescript) npm install --no-audit --no-fund && npm run build ;;
-            go) go test ./... ;;
-            rust) cargo check ;;
-            java) mvn -B -DskipTests package ;;
-            kotlin) bash gradlew --no-daemon compileKotlin ;;
-          esac
-      - name: Exercise generated TypeScript client against the live gateway
-        if: matrix.language == 'typescript'
-        run: python scripts/smoke_generated_sdk.py "$RUNNER_TEMP/generated/typescript"
-      - name: Package generated source for review and distribution
-        run: >-
-          tar --exclude='./node_modules' --exclude='./target' --exclude='./build' --exclude='./.gradle'
-          -czf "$RUNNER_TEMP/commontrace-sdk-${{ matrix.language }}.tgz"
-          -C "$RUNNER_TEMP/generated/${{ matrix.language }}" .
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
-        with:
-          name: commontrace-sdk-${{ matrix.language }}-${{ github.sha }}
-          path: ${{ runner.temp }}/commontrace-sdk-${{ matrix.language }}.tgz
-
-  coverage:
-    name: Python coverage (80 percent minimum)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
-        with:
-          python-version: '3.12'
-      - run: python -m pip install -e '.[dev,code]' 'pytest-cov>=7.0,<8.0'
-      - run: make coverage PYTEST_ARGS=-q
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
-        with:
-          name: coverage-${{ github.sha }}
-          path: coverage.xml

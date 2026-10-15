@@ -167,13 +167,17 @@ _SKIP_DIRS = frozenset({
 
 
 def _walk_files(source: str, extensions: tuple[str, ...] | None, max_files: int | None,
-                *, stats: dict[str, int] | None = None) -> Iterator[str]:
+                *, stats: dict[str, int] | None = None, strict: bool = False) -> Iterator[str]:
     if os.path.isfile(source):
         if extensions is None or source.lower().endswith(extensions):
             yield source
         return
     count = 0
-    for dirpath, dirnames, filenames in os.walk(source):
+    def scan_error(error: OSError) -> None:
+        if strict:
+            raise error
+
+    for dirpath, dirnames, filenames in os.walk(source, onerror=scan_error):
         dirnames[:] = sorted(
             d for d in dirnames
             if d not in _SKIP_DIRS and not d.endswith(".egg-info")
@@ -948,6 +952,7 @@ def preview_ingest(
             result.chunks_extracted = len(report.chunks)
             result.facts_written = len(report.chunks)
             result.errors.extend(w for w in report.warnings if "Preview limited" not in w)
+            result.errors.extend(report.errors)
         else:
             result.errors.append(f"unknown source_type: {source_type!r}")
     except (OSError, ValueError) as exc:
@@ -963,7 +968,7 @@ def ingest_multimodal_document(
     *,
     force: bool = False,
 ) -> IngestionResult:
-    """PDF, DOCX, HTML, image, audio and subtitle files into reference facts.
+    """PDF, Office, HTML, image, audio and subtitle files into reference facts.
 
     Resumable: files unchanged since the last ingest are skipped via the ledger;
     oversized files, unsupported formats and max_files truncation are counted,

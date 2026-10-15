@@ -40,7 +40,9 @@ LEXICON: tuple[tuple[str, str, bool], ...] = (
     ("depends_on", r"(?:depends|depend|depended|relies|rely|relied) on|requires|required|needs", False),
     ("depends_on", r"(?:is|are|was|were) (?:required|needed) by", True),
     ("uses", r"uses|used|(?:is|are|was|were) using|utili[sz]es|utili[sz]ed|calls|talks to|connects to|"
-             r"reads from|writes to", False),
+             r"reads from|writes to|communicates with|communicated with|integrates with|integrated with|"
+             r"publishes to|published to|consumes from|subscribes to|queries|queried|invokes|invoked|"
+             r"sends (?:requests|events|messages|data) to|pushes to|pulls from|streams to", False),
     ("uses", r"(?:is|are|was|were) used by", True),
     ("causes", r"causes|caused|leads to|led to|triggers|triggered|results in|resulted in", False),
     ("causes", r"(?:is|are|was|were) (?:caused|triggered) by", True),
@@ -236,8 +238,156 @@ def _endpoint(sentence: str, mentions, at: int, side: str):
     return (name, None, False) if len(name) >= 2 else None
 
 
-def extract_patterns(text: str, onto) -> list[Triple]:
-    """Offline extraction: a declared relation's phrasing between two entity names."""
+# --- entity-anchored triggers --------------------------------------------------------
+# A trigger links the nearest entity before it to the nearest entity after it, across
+# a bounded number of words ("The VoidMapper leverages the NebulaDB cluster",
+# "OmniRoute, which handles all ingress traffic, requires QuarkSync"). `swapped`
+# triggers name the relation object-first (passive voice: "is used by").
+_A = r"(?:is|are|was|were|has been|have been|had been|being|be)\s+(?:\w+ly\s+)?"
+TRIGGERS: tuple[tuple[str, str, bool], ...] = (
+    ("depends_on", r"depends? (?:up)?on|depended (?:up)?on|reli(?:es|ed) (?:up)?on|rel(?:y|ying) (?:up)?on|"
+                   r"requires?|required|needs|needed|" + _A + r"(?:contingent|dependent|reliant) (?:up)?on|"
+                   + _A + r"(?:supported|backed|powered) by|cannot (?:run|work|start) without", False),
+    ("depends_on", _A + r"(?:required|needed|relied (?:up)?on) by", True),
+    ("uses", r"uses|used|utili[sz]es|utili[sz]ed|leverages|leveraged|employs|employed|calls|called|invokes|"
+             r"invoked|talks to|connects to|reads from|writes to|pushes|pushed|sends|sent|publishes to|"
+             r"published to|consumes from|subscribes to|queries|queried|communicates with|integrates with|"
+             r"streams to|relays to|forwards to|delegates to|is built on|runs on", False),
+    ("uses", _A + r"(?:used|utili[sz]ed|employed|leveraged|called|invoked|consumed|queried) by", True),
+    ("causes", r"causes|caused|triggers|triggered|induces|induced|provokes|provoked|precipitates|precipitated|"
+               r"leads to|led to|results in|resulted in|gives rise to|gave rise to|is responsible for", False),
+    ("causes", _A + r"(?:caused|triggered|induced|provoked|precipitated) by|stems from|stemmed from|"
+               r"originates from|originated from|is due to|was due to", True),
+    ("resolves", r"resolves|resolved|fixes|fixed|solves|solved|mitigates|mitigated|addresses|addressed|"
+                 r"clears up|cleared up|eliminates|eliminated|remediates|remediated|patches|patched|corrects", False),
+    ("resolves", _A + r"(?:resolved|fixed|solved|mitigated|addressed|eliminated|remediated|patched) by", True),
+    ("affects", r"affects|affected|impacts|impacted|breaks|broke|degrades|degraded|disrupts|disrupted|"
+                r"compromises|compromised|slows down|slowed down|destabili[sz]es|corrupts|corrupted|"
+                r"(?:negatively|severely|adversely) (?:affects|impacts|impacted|affected)", False),
+    ("affects", _A + r"(?:affected|impacted|broken|degraded|disrupted|compromised|corrupted|slowed) by", True),
+    ("raises", r"raises|raised|throws|threw|thrown|emits|emitted|will throw|will raise|signals", False),
+    ("raises", _A + r"(?:raised|thrown|emitted) by", True),
+    ("contains", r"contains|contained|includes|included|comprises|comprised|incorporates|incorporated|"
+                 r"encapsulates|embeds|bundles|houses|integrates(?! with)|consists of|" + _A +
+                 r"(?:composed|made up) of", False),
+    ("contains", _A + r"(?:contained|included|encapsulated|embedded|bundled|housed) (?:in|within|by)|"
+                 + _A + r"part of|belongs to|belong to|belonged to", True),
+    ("located_in", r"(?:" + _A + r")?(?:located|based|hosted|deployed|running|situated|stationed|"
+                   r"headquartered|provisioned) (?:in|within)|runs in|lives in|resides in|sits in", False),
+    ("works_at", r"works (?:at|for)|worked (?:at|for)|working (?:at|for)|(?:" + _A + r")?employed (?:at|by)|"
+                 r"joined|(?:" + _A + r")?based at|representing (?:the )?(?:[\w-]+ ){0,2}at|"
+                 r"from (?:the )?(?:[\w-]+ ){0,3}at|, (?:a|an|the|our) (?:[\w-]+ ){0,4}(?:at|for) ", False),
+    ("owned_by", _A + r"(?:owned|maintained|managed|run|operated|stewarded|administered) by|resides with|"
+                 r"rests with|is the responsibility of", False),
+    ("owned_by", r"owns|owned|maintains|manages|operates|stewards", True),
+    ("supersedes", r"supersedes|superseded|replaces|replaced|takes the place of|took the place of|displaces|"
+                   r"displaced|succeeds|deprecates|obsoletes|(?:\w+ )?to supersede|to replace", False),
+    ("supersedes", _A + r"(?:superseded|replaced|displaced|succeeded|deprecated) by", True),
+    ("extends", r"extends|extended|inherits from|inherited from|derives from|" + _A +
+                r"(?:an? )?(?:extension|subclass|specialization|subtype|child|descendant) of|" + _A +
+                r"derived from|subclasses|specializes|(?:defined|declared|implemented|modell?ed) as (?:an? )?"
+                r"(?:extension|subclass|specialization|subtype|child) of", False),
+    ("extends", _A + r"(?:extended|subclassed|inherited) by", True),
+)
+_HEDGE = re.compile(r"\b(?:not|no|never|cannot|can't|don't|doesn't|didn't|won't|isn't|aren't|wasn't|weren't|"
+                    r"may|might|could|would|should|plans?|planned|planning|consider(?:s|ed|ing)?|whether|"
+                    r"hypothetical(?:ly)?|propos(?:e|es|ed|al)|intends?|wants? to|wish(?:es)?|unless|instead of|"
+                    r"rather than|potentially|possibly|perhaps|eventually|someday|proposal)\b", re.I)
+_FUTURE = re.compile(r"\b(?:will|going to|shall|scheduled to|about to)\b", re.I)
+_BEHAVIOUR = frozenset({"raises", "causes", "affects", "resolves"})  # "will throw" describes behaviour
+MAX_LEFT_GAP, MAX_RIGHT_GAP = 12, 6
+_TRIGGER_CACHE: dict[tuple, list] = {}
+
+
+def _triggers(onto) -> list[tuple[str, re.Pattern, bool]]:
+    key = tuple(sorted(onto.relations))
+    found = _TRIGGER_CACHE.get(key)
+    if found is None:
+        found = [(r, re.compile(r"(?<![\w-])(?:" + p + r")(?![\w-])", re.I), sw) for r, p, sw in TRIGGERS
+                 if r in onto.relations]
+        _TRIGGER_CACHE[key] = found
+    return found
+
+
+def _words_between(text: str) -> int:
+    return len(re.findall(r"[\w'-]+", text))
+
+
+_CLAUSE = re.compile(r",\s*(?:which|who|that|whose)\b[^,]*,", re.I)
+_LOCATIVE_TAIL = re.compile(r"^\s*(?:in|within|inside|of|on|from|at)\s+(?:the\s+|a\s+|an\s+)?", re.I)
+_CONSEQUENCE = frozenset({"error", "event"})  # "a deadlock within X": X is the party, not the deadlock
+
+
+def _proper(mention) -> bool:
+    return any(c.isupper() or c.isdigit() for c in mention.name) or "_" in mention.name
+
+
+def _pick(candidates, key):
+    """The nearest proper-name mention (a capitalised name, identifier or code), else the nearest."""
+    ordered = sorted(candidates, key=key)
+    return next((m for m in ordered if _proper(m)), ordered[0] if ordered else None)
+
+
+def _anchored(sentence: str, mentions, onto) -> list[Triple]:
+    """Triples linking the nearest typed entities on both sides of a relation trigger."""
+    from commontrace.ontology import FALLBACK_TYPE
+
+    if len(mentions) < 2:
+        return []
+    clauses = [(m.start(), m.end()) for m in _CLAUSE.finditer(sentence)]
+    matches = []
+    for relation, pattern, swapped in _triggers(onto):
+        matches += [(match.start(), match.end(), relation, swapped) for match in pattern.finditer(sentence)]
+    # The longest phrase owns its span: "was utilized by" and "is owned by" do not also
+    # fire their inner verbs ("utilized", "owned") in the opposite direction.
+    spans = [(a, b) for a, b, _r, _sw in matches]
+    out = []
+    for ts, te, relation, swapped in matches:
+        if any(a <= ts and te <= b and (b - a) > (te - ts) for a, b in spans):
+            continue
+        inside = [c for c in clauses if c[0] <= ts < c[1]]
+        lefts = [m for m in mentions if m.end <= ts and _words_between(sentence[m.end:ts]) <= MAX_LEFT_GAP
+                 and not any(a <= m.start < b and (a, b) not in inside for a, b in clauses)]
+        rights = [m for m in mentions if m.start >= te and _words_between(sentence[te:m.start]) <= MAX_RIGHT_GAP]
+        left = _pick(lefts, key=lambda m: -m.end)
+        right = _pick(rights, key=lambda m: m.start)
+        if left is None or right is None or left.key == right.key:
+            continue
+        between = any(te <= m.start and m.end <= right.start for m in mentions)
+        if relation == "causes" and not between and re.search(
+                r"\b(?:in|on|for|across|within|to)\s+(?:the\s+|a\s+)?$", sentence[te:right.start], re.I):
+            relation = "affects"  # "caused a latency spike in the Payments Service"
+        if right.type in _CONSEQUENCE and relation in ("causes", "affects"):
+            tail = _LOCATIVE_TAIL.match(sentence[right.end:])
+            beyond = [m for m in mentions if tail and m.start == right.end + tail.end()]
+            if beyond:
+                right = beyond[0]  # "a kernel panic in the VoidOS kernel" -> VoidOS
+        before, after = sentence[left.end:ts], sentence[te:right.start]
+        if ";" in before + after or "," in after or re.search(r"[.!?]\s", before + after):
+            continue
+        span = sentence[left.end:right.start]
+        if _HEDGE.search(span) or (relation not in _BEHAVIOUR and _FUTURE.search(span)):
+            continue
+        if re.search(r"\bbecause of\b|\bdue to\b", before, re.I) and relation != "causes":
+            continue
+        subj, obj = (right, left) if swapped else (left, right)
+        stype = subj.type if subj.type != FALLBACK_TYPE else None
+        otype = obj.type if obj.type != FALLBACK_TYPE else None
+        if relation == "works_at" and stype not in ("person", "user"):
+            continue  # employment needs a known person: "X, a library at Y" is not a job
+        if relation in ("uses", "owned_by", "contains") and stype in ("person", "user") and \
+                otype in (None, "organization"):
+            continue  # "Zephyr Thorne is employed by NexaCore" is employment, not use
+        if type_conflicts(onto, relation, stype, otype):
+            continue
+        out.append(Triple(subj.name, relation, obj.name, _valid_at(sentence), 0.55, sentence[:MAX_SPAN],
+                          stype, otype, "pattern"))
+    return out
+
+
+def extract_patterns(text: str, onto, *, exemplars=None) -> list[Triple]:
+    """Offline extraction: a declared relation's phrasing between two entity names.
+    `exemplars` (`ontology_classify.Exemplars`) type names the way the store already has."""
     from commontrace import entities
 
     phrases = _phrases(onto)
@@ -246,7 +396,7 @@ def extract_patterns(text: str, onto) -> list[Triple]:
         sentence = text[s:e]
         if len(sentence) > 2000:
             continue
-        mentions = entities.extract(sentence, onto=onto, use_spacy=False)
+        mentions = entities.extract(sentence, onto=onto, use_spacy=False, exemplars=exemplars)
         for relation, pattern, swapped in phrases:
             for match in pattern.finditer(sentence):
                 left = _endpoint(sentence, mentions, match.start(), "left")
@@ -263,7 +413,17 @@ def extract_patterns(text: str, onto) -> list[Triple]:
                                 sentence[:MAX_SPAN], stype, otype, "pattern")
                 if key not in found or found[key].confidence < triple.confidence:
                     found[key] = triple
+        for triple in _anchored(sentence, mentions, onto):
+            key = (triple.subject.casefold(), triple.relation, triple.object.casefold())
+            if key not in found and not any(k[1] == triple.relation and _overlaps(k, key) for k in found):
+                found[key] = triple
     return list(found.values())[:MAX_TRIPLES]
+
+
+def _overlaps(a: tuple, b: tuple) -> bool:
+    """Two triples of one relation whose subjects and objects name the same entities
+    ("Payments Service" and "the Payments Service API")."""
+    return (a[0] in b[0] or b[0] in a[0]) and (a[2] in b[2] or b[2] in a[2])
 
 
 # --- LLM ----------------------------------------------------------------------------------
@@ -361,7 +521,7 @@ def extract_llm(text: str, onto, complete) -> list[Triple]:
     return list(found.values())[:MAX_TRIPLES]
 
 
-def extract(text: str, ontology, *, llm=None) -> list[Triple]:
+def extract(text: str, ontology, *, llm=None, exemplars=None) -> list[Triple]:
     """Triples `text` states, constrained to `ontology`: by `llm` (a completion callable)
     when given, else by the offline patterns."""
     if not isinstance(text, str) or not text.strip():
@@ -370,7 +530,7 @@ def extract(text: str, ontology, *, llm=None) -> list[Triple]:
         raise ValueError(f"relation extraction reads at most {MAX_TEXT} characters")
     if llm is not None:
         return extract_llm(text, ontology, llm)
-    return extract_patterns(text, ontology)
+    return extract_patterns(text, ontology, exemplars=exemplars)
 
 
 # --- writing --------------------------------------------------------------------------
@@ -382,17 +542,26 @@ def _compatible(onto, a: str, b: str) -> bool:
 
 
 def _node_index(txn) -> dict[str, list[str]]:
-    """slug -> ids of live nodes by local id, name and aliases, for reusing known entities."""
+    """slug -> ids of live nodes by local id, name and aliases, for reusing known entities.
+
+    Kept on the transaction and extended with nodes added since the last call, so a
+    batch writing triples for many facts indexes each node once, not once per fact."""
+    import itertools
+
     from commontrace.entities import slug
 
-    index: dict[str, list[str]] = {}
-    for node in txn.nodes.values():
+    index: dict[str, list[str]] = getattr(txn, "_rx_node_index", None) or {}
+    seen = getattr(txn, "_rx_node_count", 0)
+    for node in itertools.islice(txn.nodes.values(), seen, None):
         if node.is_forgotten or (node.properties or {}).get("merged_into"):
             continue
         forms = {slug(node.id.split(":", 1)[-1].replace("_", " ")), slug(node.name),
                  *(slug(a) for a in (node.properties or {}).get("aliases", [])[:20] if isinstance(a, str))}
         for form in forms - {""}:
-            index.setdefault(form, []).append(node.id)
+            ids = index.setdefault(form, [])
+            if node.id not in ids:
+                ids.append(node.id)
+    txn._rx_node_index, txn._rx_node_count = index, len(txn.nodes)
     return index
 
 
@@ -462,7 +631,8 @@ def ingest_text(root: str, text: str, *, source: str, run_id: str = "", llm=None
     write them; the report lists the triples either way."""
     from commontrace import ontology
 
-    triples = extract(text, ontology.load(root), llm=llm)
+    triples = extract(text, ontology.load(root), llm=llm,
+                      exemplars=ontology_classify.Exemplars.from_graph(root) if llm is None else None)
     report = {"triples": len(triples), "edges_written": 0, "nodes_created": 0, "errors": []}
     if not dry_run and triples:
         report = write_triples(root, triples, source=source, run_id=run_id)

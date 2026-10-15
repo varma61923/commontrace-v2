@@ -15,6 +15,8 @@ import time
 import uuid
 from datetime import datetime, timezone
 
+from commontrace.configuration import getenv as _configuration_getenv
+
 GENERIC_TYPE = "MEMORY"
 MAX_HOPS = 4
 MAX_ROWS = 2000
@@ -287,25 +289,26 @@ def from_env(name: str | None = None):
     """
     from commontrace.secrets_provider import env_secret
 
-    choice = (name or os.environ.get("COMMONTRACE_GRAPH_BACKEND", "")).strip().lower()
+    choice = (name or _configuration_getenv("COMMONTRACE_GRAPH_BACKEND", "")).strip().lower()
     if not choice or choice in ("local", "none"):
         return None
     if choice not in BACKENDS:
         raise ValueError(f"graph backend must be one of {', '.join(BACKENDS)}, not {choice!r}")
-    namespace = os.environ.get("COMMONTRACE_GRAPH_NAMESPACE", "commontrace").strip() or "commontrace"
+    namespace = _configuration_getenv("COMMONTRACE_GRAPH_NAMESPACE", "commontrace").strip() or "commontrace"
     if choice == "neo4j":
-        uri = os.environ.get("COMMONTRACE_NEO4J_URI", "").strip()
+        uri = _configuration_getenv("COMMONTRACE_NEO4J_URI", "").strip()
         if not uri:
             raise ValueError("COMMONTRACE_NEO4J_URI is required for the neo4j graph backend")
-        return Neo4jGraph(uri, username=os.environ.get("COMMONTRACE_NEO4J_USER", "neo4j"),
+        return Neo4jGraph(uri, username=_configuration_getenv("COMMONTRACE_NEO4J_USER", "neo4j"),
                           password=env_secret("COMMONTRACE_NEO4J_PASSWORD"),
-                          database=os.environ.get("COMMONTRACE_NEO4J_DATABASE", "neo4j"), namespace=namespace)
-    port = os.environ.get("COMMONTRACE_FALKORDB_PORT", "6379")
+                          database=_configuration_getenv("COMMONTRACE_NEO4J_DATABASE", "neo4j"), namespace=namespace)
+    port = _configuration_getenv("COMMONTRACE_FALKORDB_PORT", "6379")
     if not port.isdigit():
         raise ValueError("COMMONTRACE_FALKORDB_PORT must be a port number")
-    return FalkorGraph(host=os.environ.get("COMMONTRACE_FALKORDB_HOST", "localhost"), port=int(port),
+    return FalkorGraph(host=_configuration_getenv("COMMONTRACE_FALKORDB_HOST", "localhost"), port=int(port),
                        password=env_secret("COMMONTRACE_FALKORDB_PASSWORD") or None,
-                       graph_name=os.environ.get("COMMONTRACE_FALKORDB_GRAPH", "commontrace"), namespace=namespace)
+                       graph_name=_configuration_getenv("COMMONTRACE_FALKORDB_GRAPH", "commontrace"),
+                       namespace=namespace)
 
 
 def rebuild(root: str, backend) -> dict:

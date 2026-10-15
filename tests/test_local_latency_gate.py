@@ -49,7 +49,10 @@ class TestTheGateActuallyCatchesTheRegressionItExistsFor:
 
         assert uncached_worst_ms > cached_worst_ms
 
-        ceiling = (cached_worst_ms + uncached_worst_ms) / 2
+        # A quarter of the way from cached to uncached: still above the cached run, and
+        # far enough below the uncached one that run-to-run variance (measured locally
+        # at 23-55 ms cached, 104-140 ms uncached) cannot carry a rerun under it.
+        ceiling = cached_worst_ms + (uncached_worst_ms - cached_worst_ms) / 4
         gated = subprocess.run(
             [sys.executable, "-m", "commontrace.reference.measure_local_latency",
              "--sizes", "100,1600", "--runs", "2", "--no-cache",
@@ -61,9 +64,19 @@ class TestTheGateActuallyCatchesTheRegressionItExistsFor:
         assert "exceeds" in gated.stderr
 
     def test_max_alpha_flag_fails_the_process_when_exceeded(self, tmp_path):
+        # A cached path can legitimately have a flat or negative fitted slope.
+        # Exercise the CLI gate with known linear measurements, not noisy timing.
+        script = """
+import sys
+from commontrace.reference import measure_local_latency as benchmark
+points = [{"n_lessons": 50, "total_ms": 1.0}, {"n_lessons": 200, "total_ms": 4.0}]
+report = {"points": points, "alpha_total": benchmark.fit_alpha(points, "total_ms")}
+benchmark.compute = lambda **kwargs: report
+sys.argv = ["measure_local_latency", "--json", "--max-alpha", "0.01"]
+raise SystemExit(benchmark.main())
+"""
         result = subprocess.run(
-            [sys.executable, "-m", "commontrace.reference.measure_local_latency",
-             *_FAST_ARGS, "--max-alpha", "0.01"],
+            [sys.executable, "-c", script],
             cwd=REPO_ROOT, capture_output=True, text=True,
         )
         assert result.returncode == 1

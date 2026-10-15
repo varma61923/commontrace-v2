@@ -5,12 +5,18 @@ Optional: recall works without it, and nothing here runs unless asked."""
 from __future__ import annotations
 
 import json
+import re
 
 from commontrace import injection_guard
 from commontrace.conversation.store import FACT_KINDS, ConversationError, Store
 
 BATCH = 40
 KNOWN = 30
+
+_FUTURE_ASSERTION = re.compile(
+    r"\b(?:plans?|planning|scheduled|intends?|promises?)\s+to\b|"
+    r"\bwill\s+(?:not\s+)?(?:be|have|work|join|move|live|start|leave|relocate|study|marry|buy|"
+    r"become|take|end|begin|return|travel|attend|prefer|drive|avoid|use|visit|change)\b", re.I)
 
 PROMPT = """You extract memories from a conversation so an assistant can answer questions
 about it months later. Extract every memorable fact from the NEW MESSAGES: who people
@@ -26,6 +32,9 @@ Rules:
 - Do not repeat a KNOWN memory. If a new message changes a known fact (a new job,
   a new home, a changed preference), write the new fact and give it the same "slot"
   as the fact it replaces.
+- Future plans, promises and scheduled events are assertions known on the observation
+  date. Keep their future occurrence date in the text, never move the assertion
+  time to that date. A planned job or home must not replace the current one.
 - kind is one of: {kinds}.
 - slot is a short key for single-valued facts (job, home, partner, favorite:<thing>),
   otherwise null.
@@ -89,6 +98,11 @@ def extract(store: Store, sessions: list[str] | None = None, *, complete=None) -
             by_id = {t.id: t for t in batch}
             default_owner = next((t.speaker for t in reversed(batch) if t.role == "user"), batch[-1].speaker)
             for m in _parse(text):
+                # Keep a future plan in its own belief chain. An upcoming job is
+                # retrievable now without invalidating the current employment.
+                if _FUTURE_ASSERTION.search(str(m.get("text") or "")) and m.get("slot"):
+                    slot = str(m["slot"]).strip().lower()
+                    m = {**m, "slot": slot if slot.startswith("plan:") else "plan:" + slot[:75]}
                 if injection_guard.injection_labels({"text": str(m.get("text") or "")}):
                     refused += 1
                     continue

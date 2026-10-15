@@ -16,7 +16,7 @@ class ExplorerError(ValueError):
 
 
 def _integer(data: dict[str, Any], key: str, default: int, minimum: int, maximum: int) -> int:
-    value = data.get(key, default)
+    value: object = data.get(key, default)
     if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
         raise ExplorerError(f"{key} must be an integer from {minimum} to {maximum}")
     return value

@@ -45,10 +45,19 @@ def use_worker(enabled: bool = True) -> None:
     _USE_WORKER = enabled
 
 
-def _worker_scores(mode: str, pairs: list[tuple[str, str]]) -> list[float] | None:
+def _worker_scores(mode: str, pairs: list[tuple[str, str]], *, local_files_only: bool = False) -> list[float] | None:
     if not _USE_WORKER:
         return None
-    from commontrace import warm
+    if local_files_only:
+        # Automatic retrieval may use a reranker already loaded in this process,
+        # but must not ask a separately started worker to initialize one.
+        return None
+    from commontrace import offline, warm
+
+    # A reused worker can have inherited an earlier online environment. Load
+    # cache-only in this process rather than allowing it to fetch model weights.
+    if offline.enabled():
+        return None
 
     return warm.rerank_scores(mode, pairs)
 
@@ -92,27 +101,40 @@ def _no_progress_bars():
             enable()
 
 
-def _load(mode: str = DEFAULT_MODE):
+def _load(mode: str = DEFAULT_MODE, *, local_files_only: bool = False):
     if mode not in _LOADED:
         from sentence_transformers import CrossEncoder
 
         try:
             with _no_progress_bars():
                 _LOADED[mode] = CrossEncoder(MODELS[mode][0], device="cpu", local_files_only=True)
-        except Exception:  # noqa: BLE001 - not cached (or an older library): fetch it
+        except Exception as exc:  # noqa: BLE001 - model runtimes report cache failures with backend-specific errors
+            from commontrace import offline
+
+            if offline.enabled():
+                raise offline.OfflineError(
+                    f"offline mode: local reranker model {MODELS[mode][0]!r} is not available in the cache"
+                ) from exc
+            if local_files_only:
+                raise RuntimeError(
+                    f"local reranker model {MODELS[mode][0]!r} is not available in the cache"
+                ) from exc
             _LOADED[mode] = CrossEncoder(MODELS[mode][0], device="cpu")
     return _LOADED[mode]
 
 
-def ready(mode: str = DEFAULT_MODE) -> str:
+def ready(mode: str = DEFAULT_MODE, *, local_files_only: bool = False) -> str:
     """Load the model now; "" when it can rerank, else why not."""
     if not available():
         return "the reranker needs the attention extra (`pip install commontrace[attention]`)"
-    if _worker_scores(mode, []) is not None:
+    if not local_files_only and _worker_scores(mode, []) is not None:
         return ""
     try:
         with _LOCK:
-            _load(mode)
+            if local_files_only:
+                _load(mode, local_files_only=True)
+            else:
+                _load(mode)
     except Exception as exc:  # noqa: BLE001 - no model is a fallback, never a crash
         return f"the reranker could not load {MODELS[mode][0]}: {type(exc).__name__}: {exc}"
     return ""
@@ -142,7 +164,8 @@ def lesson_text(frontmatter: Mapping, body: str) -> str:
 
 
 def pool_size(want: int, mode: str | None = None, embedder: str = "") -> int:
-    return max(want, POOL_DEPTHS.get((mode, embedder), POOL))
+    depth = POOL_DEPTHS.get((mode, embedder), POOL) if mode is not None else POOL
+    return max(want, depth)
 
 
 def gate_threshold(mode: str, embedder: str = "") -> float:
@@ -164,6 +187,7 @@ def rerank(
     withdrawn: Sequence[str] = (),
     mode: str = DEFAULT_MODE,
     admit: Callable[[str, float], bool] | None = None,
+    local_files_only: bool = False,
 ) -> tuple[list[tuple[str, float]], list[str]]:
     """Reorder `pool` by cross-encoder score and keep the top `want`."""
     candidates = [s for s in pool if s in text_of]
@@ -171,10 +195,10 @@ def rerank(
     if not candidates and not extra:
         return [], []
     pairs = [(task, text_of[s][:MAX_CHARS]) for s in candidates + extra]
-    scores = _worker_scores(mode, pairs)
+    scores = _worker_scores(mode, pairs, local_files_only=True) if local_files_only else _worker_scores(mode, pairs)
     if scores is None:
         with _LOCK:
-            model = _load(mode)
+            model = _load(mode, local_files_only=True) if local_files_only else _load(mode)
             scores = model.predict(pairs, batch_size=64, show_progress_bar=False)
     scored = [(s, float(x)) for s, x in zip(candidates, scores[: len(candidates)])]
     if admit is not None:

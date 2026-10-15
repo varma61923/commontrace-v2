@@ -16,11 +16,28 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     sub = p.add_subparsers(dest="subcommand", required=True)
 
+    for command, help_text, handler in (
+        ("migrate", "Activate SQLite WAL storage with a checksum report; preserve the original JSONL.", run_migrate),
+        ("export", "Export migrated facts to portable JSONL.", run_export),
+        ("rebuild", "Rebuild SQLite indexes from the committed event ledger.", run_rebuild),
+        ("purge", "Erase a fact, derived payloads, history and cached vectors locally.", run_purge),
+    ):
+        storage = sub.add_parser(command, help=help_text)
+        storage.add_argument("--dest", default=None)
+        if command == "purge":
+            storage.add_argument("fact_id")
+            storage.add_argument("--reason", required=True)
+        if command == "export":
+            storage.add_argument("--output", required=True, help="Destination JSONL file.")
+        storage.set_defaults(func=handler)
+
     p_list = sub.add_parser("list", help="List facts with optional filters.")
     p_list.add_argument("--status", default="active", choices=("active", "superseded", "invalidated", "deleted", "all"))
     p_list.add_argument("--category", default="", choices=("", *hierarchical.CATEGORIES))
     p_list.add_argument("--scope", default="", help="Filter by routing scope.")
     p_list.add_argument("--as-of", default="", help="Point-in-time temporal evaluation date.")
+    p_list.add_argument("--known-at", default="",
+                        help="Record time: the facts the store believed at this moment, whatever happened later.")
     p_list.add_argument(
         "--include-forgotten", action="store_true",
         help="Include forgotten facts (hidden by default); shown with a [forgotten] marker.",
@@ -58,6 +75,8 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p_srch.add_argument("--scorer", default="overlap-v1", choices=("overlap-v1", "bm25-v1"),
                         help="Fact ranking: compatible overlap or stemmed multilingual BM25.")
     p_srch.add_argument("--as-of", default="", help="Point-in-time date.")
+    p_srch.add_argument("--known-at", default="",
+                        help="Record time: search what the store believed at this moment, whatever happened later.")
     p_srch.add_argument(
         "--show-expired", action="store_true",
         help="Include TTL-expired facts (hidden by default).",
@@ -123,6 +142,7 @@ def run_list(args: argparse.Namespace) -> int:
         scope=args.scope,
         category=args.category,
         as_of=args.as_of or None,
+        known_at=getattr(args, "known_at", "") or None,
         include_forgotten=bool(getattr(args, "include_forgotten", False)),
         show_expired=bool(getattr(args, "show_expired", False)),
     )
@@ -214,6 +234,7 @@ def run_search(args: argparse.Namespace) -> int:
         scope=args.scope,
         category=args.category,
         as_of=args.as_of or None,
+        known_at=getattr(args, "known_at", "") or None,
         limit=args.limit,
         show_expired=bool(getattr(args, "show_expired", False)),
         scorer=getattr(args, "scorer", "overlap-v1"),
@@ -299,4 +320,51 @@ def run_forget(args: argparse.Namespace) -> int:
         print(f"Forgot fact '{fact.id}' (hidden from default listings).")
     else:
         print(f"Restored fact '{fact.id}' to default listings.")
+    return 0
+
+
+def run_migrate(args: argparse.Namespace) -> int:
+    from commontrace import fact_store
+
+    try:
+        report = fact_store.migrate(paths.resolve_root(args.dest))
+    except (OSError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    print(json.dumps(report, indent=2))
+    return 0
+
+
+def run_export(args: argparse.Namespace) -> int:
+    from commontrace import fact_store
+
+    root = paths.resolve_root(args.dest)
+    if not fact_store.enabled(root):
+        print("Store has not been migrated; run commontrace fact migrate first.", file=sys.stderr)
+        return 1
+    try:
+        fact_store.export(root, args.output)
+    except (OSError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    print(args.output)
+    return 0
+
+
+def run_rebuild(args: argparse.Namespace) -> int:
+    from commontrace import fact_store
+
+    root = paths.resolve_root(args.dest)
+    if not fact_store.enabled(root):
+        print("Store has not been migrated; run commontrace fact migrate first.", file=sys.stderr)
+        return 1
+    fact_store.rebuild(root)
+    print("Rebuilt SQLite fact projections from committed events.")
+    return 0
+
+
+def run_purge(args):
+    from commontrace.privacy_erasure import purge_fact
+    result = purge_fact(paths.resolve_root(args.dest), args.fact_id, reason=args.reason)
+    print(json.dumps(result, indent=2))
     return 0

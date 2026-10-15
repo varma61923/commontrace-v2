@@ -77,12 +77,27 @@ def add_rest_routes(
     auth_limiter = make_named_limiter(
         config, config.auth_attempts_per_minute, config.auth_attempts_burst, "rest_auth"
     )
+    identity_provider = config.identity_provider()
+    jwks_cache = None
+    if identity_provider is not None and identity_provider.jwks_uri:
+        from hub.sso import JWKSCache
+
+        def fetch_jwks(uri: str) -> dict:
+            import httpx
+
+            response = httpx.get(uri, timeout=5.0, follow_redirects=False)
+            response.raise_for_status()
+            document = response.json()
+            if not isinstance(document, dict):
+                raise ValueError("OIDC JWKS response must be a JSON object")
+            return document
+
+        jwks_cache = JWKSCache(fetch_jwks)
     signup_limiter = make_named_limiter(config, 1, 2, "signup")
 
     async def _authenticate(request: Request):
-        allowed, retry_after = await auth_limiter.check(
-            rate_limit_key(request, trusted_proxy_hops)
-        )
+        client_key = rate_limit_key(request, trusted_proxy_hops)
+        allowed, retry_after = await auth_limiter.check(client_key)
         if not allowed:
             return None, JSONResponse(
                 {"error": "rate_limited", "detail": "too many requests"},
@@ -90,12 +105,32 @@ def add_rest_routes(
                 headers={"Retry-After": str(max(1, math.ceil(retry_after)))},
             )
         raw_key = request.headers.get("X-API-Key", "")
+        authorization = request.headers.get("authorization", "")
+        if not raw_key and authorization.lower().startswith("bearer "):
+            bearer = authorization[len("bearer "):].strip()
+            from hub.sso import looks_like_jwt
+
+            if identity_provider is not None and looks_like_jwt(bearer):
+                async with session_scope(session_factory) as session:
+                    person = await auth.verify_user_token(
+                        session, bearer, identity_provider, jwks_cache=jwks_cache,
+                    )
+                if person is not None:
+                    from hub import rbac
+
+                    auth_limiter.refund(client_key)
+                    return auth.AuthenticatedKey(
+                        person.org_id, f"user:{person.id}", rbac.scopes_of(person.role),
+                    ), None
+            return None, _json_error(401, "unauthorized", "OIDC bearer token was rejected or is not linked")
         if not raw_key:
-            return None, _json_error(401, "unauthorized", "X-API-Key header is required")
+            return None, _json_error(401, "unauthorized", "X-API-Key or linked OIDC bearer token is required")
         async with session_scope(session_factory) as session:
             authenticated = await auth.verify_api_key(session, raw_key)
         if authenticated is None:
             return None, _json_error(401, "unauthorized", "that key was not accepted")
+        # The limiter bounds failed guesses; a valid key must not spend the budget.
+        auth_limiter.refund(client_key)
         return authenticated, None
 
     def _require_scope(authenticated, required: str) -> Response | None:
@@ -191,7 +226,7 @@ def add_rest_routes(
                     tags=_tags(payload.get("tags")),
                     agent_type=_text(payload.get("agent_type")) or _DEFAULT_AGENT_TYPE,
                     agent_id=_text(payload.get("agent_id")),
-                    actor=ACTOR_REST_API,
+                    actor=authenticated.key_prefix if authenticated.key_prefix.startswith("user:") else ACTOR_REST_API,
                     idempotency_key=idempotency_key,
                     scopes=_tags(payload.get("scopes")),
                     valid_from=_text(payload.get("valid_from")) or None,
@@ -209,6 +244,8 @@ def add_rest_routes(
                 status_code=429,
                 headers={"Retry-After": str(max(1, math.ceil(exc.retry_after or 1)))},
             )
+        except ValueError as exc:
+            return _json_error(400, "bad_request", str(exc))
         return JSONResponse(result, status_code=201)
 
     async def search(request: Request) -> Response:
@@ -258,6 +295,12 @@ def add_rest_routes(
             return denied
         return Response(status_code=204)
 
+    from hub.memory_embedding import ProjectionFactory
+    from hub.memory_records import add_memory_routes
+
+    if not hasattr(app.state, "memory_projection_factory"):
+        app.state.memory_projection_factory = ProjectionFactory(session_factory, config.database_url)
+    add_memory_routes(app, session_factory, authenticate=_authenticate, require_scope=_require_scope)
     add_market_routes(app, session_factory, config=config, authenticate=_authenticate,
                       require_scope=_require_scope)
     app.add_route(f"{API_PREFIX}/traces", contribute, methods=["POST"])

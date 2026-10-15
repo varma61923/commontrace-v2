@@ -9,7 +9,9 @@ import hmac
 import json
 import logging
 import time
+from collections.abc import Mapping
 from datetime import datetime, timezone
+from types import MappingProxyType
 from urllib.parse import quote as _url_quote
 
 from sqlalchemy import or_, select
@@ -43,6 +45,17 @@ SESSION_COOKIE = "ct_console"
 
 SESSION_TTL_SECONDS = 8 * 60 * 60
 
+# Far enough out for any real rotation policy, and well inside datetime's range.
+MAX_KEY_EXPIRY_DAYS = 3650
+
+MAX_EMAIL_CHARS = 320
+MAX_DISPLAY_NAME_CHARS = 200
+
+
+def _plausible_email(email: str) -> bool:
+    local, at, domain = email.rpartition("@")
+    return bool(at and local and domain) and len(email) <= MAX_EMAIL_CHARS and not any(c.isspace() for c in email)
+
 
 def _sign(secret: str, payload: bytes) -> str:
     return base64.urlsafe_b64encode(
@@ -50,12 +63,17 @@ def _sign(secret: str, payload: bytes) -> str:
     ).decode("ascii").rstrip("=")
 
 
-def issue_session(secret: str, org_id: str, key_prefix: str = "") -> str:
-    """A signed, self-contained session token."""
-    payload = json.dumps(
-        {"org": org_id, "key": key_prefix, "exp": int(time.time()) + SESSION_TTL_SECONDS},
-        separators=(",", ":"), sort_keys=True,
-    ).encode("utf-8")
+def issue_session(secret: str, org_id: str, key_prefix: str = "", key_id: str = "") -> str:
+    """A signed, self-contained session token.
+
+    `key_id` pins the session to the exact key that signed in. A 12-character
+    prefix is not unique, so matching on it alone could let a session outlive
+    its own key's revocation, or pick up another key's scopes.
+    """
+    claims = {"org": org_id, "key": key_prefix, "exp": int(time.time()) + SESSION_TTL_SECONDS}
+    if key_id:
+        claims["kid"] = key_id
+    payload = json.dumps(claims, separators=(",", ":"), sort_keys=True).encode("utf-8")
     body = base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
     return f"{body}.{_sign(secret, payload)}"
 
@@ -69,7 +87,7 @@ def read_session(secret: str, token: str) -> dict | None:
         payload = base64.urlsafe_b64decode(body + "=" * (-len(body) % 4))
     except Exception:  # noqa: BLE001 - a malformed cookie is simply not a session
         return None
-    if not hmac.compare_digest(_sign(secret, payload), signature):
+    if not hmac.compare_digest(_sign(secret, payload).encode(), signature.encode("utf-8", "replace")):
         return None
     try:
         claims = json.loads(payload)
@@ -106,7 +124,7 @@ def read_share_token(secret: str, token: str) -> dict | None:
         payload = base64.urlsafe_b64decode(body + "=" * (-len(body) % 4))
     except Exception:  # noqa: BLE001 - a malformed link is simply not a valid one
         return None
-    if not hmac.compare_digest(_sign(secret, payload), signature):
+    if not hmac.compare_digest(_sign(secret, payload).encode(), signature.encode("utf-8", "replace")):
         return None
     try:
         claims = json.loads(payload)
@@ -148,7 +166,7 @@ _NAV_GROUPS = (
 _NAV = tuple((path, label, title) for _group, items in _NAV_GROUPS for path, label, title, *_rest in items)
 
 
-_VIEW: contextvars.ContextVar[dict] = contextvars.ContextVar("console_view", default={})
+_VIEW: contextvars.ContextVar[Mapping] = contextvars.ContextVar("console_view", default=MappingProxyType({}))
 
 
 _SIGN_OUT_FORM = (
@@ -1108,12 +1126,14 @@ def _render_users(users: list[User], is_admin: bool, error: str = "") -> str:
     return "".join(body)
 
 
-def _render_keys(keys: list[ApiKey], is_admin: bool, fresh: dict | None = None) -> str:
+def _render_keys(keys: list[ApiKey], is_admin: bool, fresh: dict | None = None, error: str = "") -> str:
     actions = (f'<a class="btn" href="#issue-key" data-command="Issue a new API key">{ui_kit.icon("plus")}'
                "Issue a key</a>" if is_admin else "")
     body = [_head("API keys",
                   "Scopes do not imply each other: <code>admin</code> alone cannot read a trace. A production "
                   "agent wants <code>read,write</code>; a dashboard wants <code>read</code>.", actions)]
+    if error:
+        body.append(f'<p class="err" role="alert">{h(error)}</p>')
     if fresh:
         body.append(
             '<div class="verdict warn"><h2 id="new-key-label">New key — shown once</h2>'
@@ -1168,7 +1188,7 @@ def _render_keys(keys: list[ApiKey], is_admin: bool, fresh: dict | None = None) 
             f'<fieldset><legend>Scopes</legend>{scope_boxes}</fieldset>'
             '<div class="form-grid"><div><label for="new-key-expires">Expires in N days</label>'
             '<input type="number" id="new-key-expires" name="expires_days" '
-            'placeholder="blank = never" min="1"></div>'
+            f'placeholder="blank = never" min="1" max="{MAX_KEY_EXPIRY_DAYS}"></div>'
             '<div><button type="submit">Issue</button></div></div></form></section>'
         )
     else:
@@ -1584,6 +1604,7 @@ def add_console_routes(
                     .where(
                         ApiKey.org_id == str(claims["org"]),
                         ApiKey.key_prefix == prefix,
+                        *((ApiKey.id == str(claims["kid"]),) if claims.get("kid") else ()),
                         ApiKey.revoked_at.is_(None),
                         or_(ApiKey.expires_at.is_(None), ApiKey.expires_at > now),
                     ).limit(1)
@@ -1640,7 +1661,7 @@ def add_console_routes(
         response = RedirectResponse(CONSOLE_PATH, status_code=303)
         response.set_cookie(
             SESSION_COOKIE,
-            issue_session(_secret(), authenticated.org_id, authenticated.key_prefix),
+            issue_session(_secret(), authenticated.org_id, authenticated.key_prefix, authenticated.key_id),
             max_age=SESSION_TTL_SECONDS,
             httponly=True,
             samesite="strict",
@@ -2083,12 +2104,22 @@ def add_console_routes(
         form = await request.form()
         email = str(form.get("email") or "").strip()
         role = str(form.get("role") or "").strip()
-        display_name = str(form.get("display_name") or "").strip()
-        actor = audit.actor_for_api_key(str(claims.get("key") or ""))
-        await manage.create_user(
-            org_id, email, role, display_name,
-            session_factory=session_factory, actor=actor,
-        )
+        display_name = str(form.get("display_name") or "").strip()[:MAX_DISPLAY_NAME_CHARS]
+        error = ""
+        if not _plausible_email(email):
+            error = "Enter a valid email address."
+        elif role not in rbac.ROLES:
+            error = f"Unknown role {role!r}."
+        else:
+            actor = audit.actor_for_api_key(str(claims.get("key") or ""))
+            if not await manage.create_user(
+                org_id, email, role, display_name,
+                session_factory=session_factory, actor=actor,
+            ):
+                error = f"Your organization already has a user with email {email}."
+        if error:
+            users = await _list_users(org_id)
+            return _page("Users & roles", _render_users(users, True, error=error))
         return RedirectResponse(f"{CONSOLE_PATH}/users", status_code=303)
 
     async def _mutate_own_org_user(
@@ -2109,27 +2140,35 @@ def add_console_routes(
             return _page("Users & roles", _render_users(
                 users, True, error="No such user in your organization."))
         actor = audit.actor_for_api_key(str(claims.get("key") or ""))
-        await action(user_id, actor)
+        error = await action(user_id, actor)
+        if error:
+            users = await _list_users(org_id)
+            return _page("Users & roles", _render_users(users, True, error=error))
         return RedirectResponse(f"{CONSOLE_PATH}/users", status_code=303)
 
     async def users_set_role(request: Request) -> Response:
         role = str((await request.form()).get("role") or "")
 
-        async def action(user_id: str, actor: str) -> None:
+        async def action(user_id: str, actor: str) -> str:
+            if role not in rbac.ROLES:
+                return f"Unknown role {role!r}."
             await manage.set_user_role(
                 user_id, role, session_factory=session_factory, actor=actor)
+            return ""
 
         return await _mutate_own_org_user(request, request.path_params["user_id"], action)
 
     async def users_disable(request: Request) -> Response:
-        async def action(user_id: str, actor: str) -> None:
+        async def action(user_id: str, actor: str) -> str:
             await manage.disable_user(user_id, session_factory=session_factory, actor=actor)
+            return ""
 
         return await _mutate_own_org_user(request, request.path_params["user_id"], action)
 
     async def users_enable(request: Request) -> Response:
-        async def action(user_id: str, actor: str) -> None:
+        async def action(user_id: str, actor: str) -> str:
             await manage.enable_user(user_id, session_factory=session_factory, actor=actor)
+            return ""
 
         return await _mutate_own_org_user(request, request.path_params["user_id"], action)
 
@@ -2161,16 +2200,29 @@ def add_console_routes(
         chosen_scopes = form.getlist("scopes")
         if not chosen_scopes:
             keys = await _list_keys(org_id)
-            return _page("API keys", _render_keys(keys, True))
+            return _page("API keys", _render_keys(keys, True, error="Choose at least one scope."))
         raw_days = str(form.get("expires_days") or "").strip()
+        expires_days = None
+        if raw_days:
+            # A value that does not parse must not silently become "never expires".
+            try:
+                expires_days = int(raw_days)
+            except ValueError:
+                expires_days = 0
+            if not 1 <= expires_days <= MAX_KEY_EXPIRY_DAYS:
+                keys = await _list_keys(org_id)
+                return _page("API keys", _render_keys(keys, True, error=(
+                    f"Expiry must be a whole number of days from 1 to {MAX_KEY_EXPIRY_DAYS}, "
+                    "or blank for a key that never expires.")))
         try:
-            expires_days = int(raw_days) if raw_days else None
-        except ValueError:
-            expires_days = None
+            granted = scopes.parse(chosen_scopes)
+        except scopes.ScopeError as exc:
+            keys = await _list_keys(org_id)
+            return _page("API keys", _render_keys(keys, True, error=str(exc)))
         actor = audit.actor_for_api_key(str(claims.get("key") or ""))
         async with session_scope(session_factory) as session:
             issued = await auth.issue_api_key(
-                session, org_id, expires_days=expires_days, scopes=chosen_scopes,
+                session, org_id, expires_days=expires_days, scopes=granted,
             )
             await audit.record(
                 session, actor=actor, action="issue_key",

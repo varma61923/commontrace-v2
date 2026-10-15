@@ -126,6 +126,8 @@ def test_handoff_round_trip_audience_tamper_drift_and_expiry(store, monkeypatch)
     head, body, sig = token.split(".")
     with pytest.raises(memfs.MemfsError, match="signature"):
         memfs.verify_handoff(store, f"{head}.{body}x.{sig}")
+    with pytest.raises(memfs.MemfsError, match="signature"):
+        memfs.verify_handoff(store, f"{head}.{body}.{sig}\u00e9")
     _append(store, "facts.jsonl", '{"id": "b"}\n')
     with pytest.raises(memfs.MemfsError, match="uncommitted"):
         memfs.handoff(store, audience="agent-b")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import dataclasses
 import hashlib
 import hmac
 import json
@@ -504,6 +505,19 @@ class TestRoute:
             codes = [(await client.post("/connectors/00000000-0000-0000-0000-000000000000/events",
                                         content=b"{}")).status_code for _ in range(6)]
         assert 429 in codes and codes[0] == 401
+
+    async def test_genuine_deliveries_do_not_spend_the_failed_attempt_budget(
+        self, session_factory, config, monkeypatch
+    ):
+        monkeypatch.setattr(type(config), "cipher", lambda self: CIPHER)
+        tight = dataclasses.replace(config, auth_attempts_per_minute=1, auth_attempts_burst=2)
+        org = await _org(session_factory)
+        cid = await _connector(session_factory, org, config={"window_days": 0})
+        async with self._client(session_factory, tight) as client:
+            for i in range(5):
+                headers, body = _zd(_zd_status("SOLVED", "OPEN", ticket=str(2000 + i), event_id=f"evt-{i}"))
+                response = await client.post(f"/connectors/{cid}/events", content=body, headers=headers)
+                assert response.status_code == 200, response.text
 
 
 async def test_deleting_an_org_removes_its_connectors_ledger_and_pending(session_factory):

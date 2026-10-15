@@ -18,7 +18,7 @@ if str(REPO_ROOT) not in sys.path:
 pytest.importorskip("hub")
 
 from commons.eval import representations  # noqa: E402 -- must follow importorskip above
-from commontrace import frontmatter, validate  # noqa: E402 -- must follow importorskip above
+from commontrace import validate  # noqa: E402 -- must follow importorskip above
 from hub import abuse, outcomes  # noqa: E402 -- must follow importorskip above
 
 
@@ -88,20 +88,6 @@ class TestValidateOutcomeNullableMetrics:
         t = outcomes.tally(trace_outcomes)
         assert t.props["resolved"] == (1, 2)
         assert t.means["tokens_used"] == (200.0, 2)
-
-
-class TestLessonTemplateSchemaConformance:
-    def test_lesson_template_validates_cleanly_against_schema(self):
-        schema = validate.load_schema("lesson.schema.json")
-        fm, _ = frontmatter.read("memory/lessons/lesson_template.md")
-        errs = validate.validate(fm, schema)
-        assert errs == [], f"Validation errors found on lesson_template.md: {errs}"
-
-    def test_lesson_template_importance_rationale_min_length(self):
-        fm, _ = frontmatter.read("memory/lessons/lesson_template.md")
-        rationale = fm.get("importance_rationale")
-        assert isinstance(rationale, str)
-        assert len(rationale.strip()) >= 1
 
 
 def _load_protocol_trace_schema() -> dict:
@@ -414,4 +400,3 @@ class TestHubAuthArgon2Remediation:
                 )
                 assert result is None
                 assert any("argon2-cffi is not installed" in rec.message for rec in caplog.records)
-

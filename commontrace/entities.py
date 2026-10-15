@@ -17,7 +17,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 from commontrace import paths
-from commontrace.ontology import FALLBACK_TYPE
+from commontrace.configuration import getenv as _configuration_getenv
 
 SPACY_LABELS = {
     "PERSON": "person", "ORG": "organization", "GPE": "place", "LOC": "place", "FAC": "place",
@@ -115,7 +115,7 @@ def spacy_model():
         if _NLP_TRIED:
             return _NLP
         _NLP_TRIED = True
-        name = os.environ.get("COMMONTRACE_SPACY_MODEL", "en_core_web_sm").strip()
+        name = _configuration_getenv("COMMONTRACE_SPACY_MODEL", "en_core_web_sm").strip()
         if not name or name.lower() == "none":
             return None
         try:
@@ -133,48 +133,214 @@ def backend() -> str:
 
 # --- extraction --------------------------------------------------------------------
 
-def _gazetteer(text: str) -> list[tuple[str, str, int, int]]:
-    out = []
-    lowered = text.lower()
-    for type_, names in (("service", KNOWN_SERVICES), ("tool", KNOWN_TOOLS)):
+_LETTER_UP = "A-ZÀ-Þ"
+_NAME_WORD = r"[" + _LETTER_UP + r"][\w'À-ɏ-]*"
+_CONNECTOR = r"(?:of(?: the)?|de|da|du|del|della|la|le|von|van|der|den|y)"
+# Capitalised words (inner capitals allowed: OpenAI, KubeCon), joined by spaces, hyphens
+# and name connectors ("Bank of the West", "Rio de Janeiro").
+_PROPER = re.compile(r"(?<![\w.@/$'-])(" + _NAME_WORD + r"(?:[ -](?:" + _CONNECTOR + r" )?" + _NAME_WORD
+                     + r")*)(?![\w@/$-])")
+_TOKEN = re.compile(r"[\wÀ-ɏ][\wÀ-ɏ.'+#:-]*[\w+#]|[\wÀ-ɏ]")
+_TOOL_OBJECT = re.compile(r"\b(?i:run|runs|ran|running|use|uses|used|using|install|installs|installed|installing|"
+                          r"invoke|invoked|via|upgrade|upgraded)\s+([a-z][a-z0-9_.+-]{2,30}[a-z0-9])\b")
+# Lowercase code named by what is done to it: "a call to malloc", "chmod is a system call".
+_CODE_SLOT = re.compile(r"\b(?i:call|calls|calling|invoke|invokes|invoking|execute|executes|executing|"
+                        r"executed)\s+(?:to\s+|of\s+)?([a-z_][a-z0-9_]{2,30})\b"
+                        r"|(?:^|[.!?]\s+)([a-z_][a-z0-9_]{2,30}) (?:is|was) (?:a|an|the) ")
+_SENTENCE_OPENERS = (".", "!", "?", "\n", ":", ";", '"', "(", "-", "*", "#", ">")
+
+
+def _lexicon_index() -> tuple[dict[str, str], dict[str, list[tuple[tuple[str, ...], str]]]]:
+    from commontrace import ontology_lexicon
+
+    single: dict[str, str] = {}
+    multi: dict[str, list[tuple[tuple[str, ...], str]]] = {}
+    lists = [*ontology_lexicon.LISTS.items(), ("service", frozenset(KNOWN_SERVICES)),
+             ("tool", frozenset(KNOWN_TOOLS))]
+    for type_, names in lists:
+        if type_ == "person":
+            continue  # first names type people through the classifier, not as whole mentions
         for name in names:
-            for m in re.finditer(r"(?<![\w.-])" + re.escape(name) + r"(?![\w-])", lowered):
-                out.append((BUILTIN_ALIASES.get(name, text[m.start():m.end()]), type_, m.start(), m.end()))
+            # split as the text is tokenised, so "google i/o" meets "Google I/O"
+            words = tuple(t.rstrip(".:'") for t in _TOKEN.findall(name))
+            if len(words) == 1:
+                single.setdefault(name, type_)
+            else:
+                multi.setdefault(words[0], []).append((words, type_))
+    for entries in multi.values():
+        entries.sort(key=lambda e: -len(e[0]))
+    return single, multi
+
+
+_LEXICON: tuple | None = None
+_CAPITALISED_TYPES = frozenset({"person", "place", "organization"})
+
+
+def _lexicon_mentions(text: str) -> list[tuple[str, str, int, int, str]]:
+    """Well-known names by one pass over the tokens (no regex per name). People,
+    places and organizations must be written capitalised, and ambiguous names
+    ("black", "target") count only then."""
+    global _LEXICON
+    from commontrace import ontology_lexicon
+
+    if _LEXICON is None:
+        _LEXICON = _lexicon_index()
+    single, multi = _LEXICON
+    tokens = [(m.group(0).rstrip(".:'"), m.start()) for m in _TOKEN.finditer(text)]
+    out = []
+    i = 0
+    while i < len(tokens):
+        word, start = tokens[i]
+        lowered = word.lower()
+        matched = False
+        for words, type_ in multi.get(lowered, ()):
+            span = tokens[i:i + len(words)]
+            if len(span) == len(words) and tuple(w.lower() for w, _s in span) == words:
+                end = span[-1][1] + len(span[-1][0])
+                if type_ not in _CAPITALISED_TYPES or word[:1].isupper():
+                    out.append((text[start:end], type_, start, end, "gazetteer"))
+                    i += len(words)
+                    matched = True
+                    break
+        if matched:
+            continue
+        type_ = single.get(lowered)
+        capital = word[:1].isupper()
+        if type_ and (capital or (type_ not in _CAPITALISED_TYPES and lowered not in ontology_lexicon.AMBIGUOUS)):
+            name = BUILTIN_ALIASES.get(lowered, word)
+            out.append((name, type_, start, start + len(word), "gazetteer"))
+        i += 1
     return out
 
 
-def _pattern_mentions(text: str, onto_aliases: dict[str, str]) -> list[tuple[str, str, int, int, str]]:
-    found: list[tuple[str, str, int, int, str]] = []
-    for name, type_, s, e in _gazetteer(text):
-        found.append((name, type_, s, e, "gazetteer"))
+def _shape_patterns() -> list[tuple[str, re.Pattern[str]]]:
+    from commontrace import ontology_lexicon
+
+    out = []
+    for type_, _score, pattern in ontology_lexicon.SHAPES:
+        body = pattern.pattern.removeprefix("^").removesuffix("$")
+        if type_ == "person" and "Dr" in body:
+            continue  # titled names are found by _HONORIFIC, keyed without the title
+        out.append((type_, re.compile(r"(?<![\w@./$-])(" + body + r")(?![\w@/$-]|\.\w)", pattern.flags)))
+    return out
+
+
+_SHAPES: list[tuple[str, re.Pattern[str]]] | None = None
+
+
+def _head_pattern(onto) -> re.Pattern[str] | None:
+    """Noun phrases ending in a word that names a declared type: "March outage",
+    "the billing service", "Platform team"."""
+    if onto is None:
+        return None
+    from commontrace import ontology_classify
+
+    heads = sorted({" ".join(p) for t in ontology_classify.candidate_types(onto)
+                    for p in ontology_classify._vocabulary(onto, t) if len(p) == 1 and len(p[0]) > 2},
+                   key=len, reverse=True)
+    key = tuple(heads)
+    cached = _HEAD_PATTERNS.get(key)
+    if cached is None:
+        alternation = "|".join(re.escape(h) for h in heads)
+        cached = re.compile(r"(?:\b(?i:the|our|their|a|an|this|that|its)\s+((?:[a-z][\w-]*\s+){1,2}(?:" + alternation
+                            + r"))|\b((?:" + _NAME_WORD + r"\s+){1,3}(?:" + alternation + r")))\b")
+        if len(_HEAD_PATTERNS) >= 8:
+            _HEAD_PATTERNS.pop(next(iter(_HEAD_PATTERNS)))
+        _HEAD_PATTERNS[key] = cached
+    return cached
+
+
+_HEAD_PATTERNS: dict[tuple, re.Pattern[str]] = {}
+
+
+def _trim(text: str, name: str, start: int) -> tuple[str, int, bool] | None:
+    """`name` without leading ordinary words ("Follow the Style Guide" is "Style Guide"),
+    trailing connectors or a possessive; and whether it opens a sentence. None if
+    nothing name-like is left."""
+    from commontrace import ontology_lexicon
+
+    words = name.split(" ")
+    opener = start == 0 or text[max(0, start - 2):start].strip()[-1:] in _SENTENCE_OPENERS
+    # Only a sentence's first word is capitalised for grammar: mid-sentence "the Search
+    # API" keeps "Search", while "Follow the Style Guide" drops "Follow".
+    while opener and words and (words[0].lower() in ontology_lexicon.COMMON_WORDS or words[0].lower() in _COMMON):
+        start += len(words[0]) + 1
+        words = words[1:]
+    if opener and len(words) > 2 and words[1].lower() == "of" and \
+            ontology_lexicon.ABSTRACT_SUFFIX.search(words[0].lower()):
+        # "Ownership of the Quasar-DB schema" names the schema, not the ownership
+        drop = 3 if len(words) > 3 and words[2].lower() == "the" else 2
+        start += sum(len(w) + 1 for w in words[:drop])
+        words = words[drop:]
+    while words and words[-1].lower() in ("of", "the", "de", "von", "van", "la", "le", "y"):
+        words = words[:-1]
+    if not words:
+        return None
+    name = re.sub(r"['’]s$", "", " ".join(words))
+    opener = start == 0 or text[max(0, start - 2):start].strip()[-1:] in _SENTENCE_OPENERS
+    return name, start, opener
+
+
+def _pattern_mentions(text: str, onto_aliases: dict[str, str], onto=None) -> list[tuple[str, str, int, int, str]]:
+    """Candidate mentions with a provisional type and their source: ``alias`` (the
+    ontology's), ``gazetteer`` (built-in names), ``shape`` (code and identifier forms),
+    ``pattern`` (capitalised names, noun phrases with a type's head word) and ``weak``
+    (a sentence-initial word, a word after "run"/"use"); a weak candidate is kept only
+    if the classifier gives it a declared type."""
+    from commontrace import ontology_lexicon
+
+    global _SHAPES
+    if _SHAPES is None:
+        _SHAPES = _shape_patterns()
+    found: list[tuple[str, str, int, int, str]] = list(_lexicon_mentions(text))
     for type_, pattern in _PATTERNS:
         for m in pattern.finditer(text):
             found.append((m.group(1), type_, m.start(1), m.end(1), "pattern"))
+    for type_, pattern in _SHAPES:
+        for m in pattern.finditer(text):
+            found.append((m.group(1), type_, m.start(1), m.end(1), "shape"))
     lowered = text.lower()
     for alias, canonical in onto_aliases.items():
         for m in re.finditer(r"(?<![\w-])" + re.escape(alias) + r"(?![\w-])", lowered):
-            found.append((text[m.start():m.end()], canonical.split(":", 1)[0], m.start(), m.end(), "gazetteer"))
+            found.append((text[m.start():m.end()], canonical.split(":", 1)[0], m.start(), m.end(), "alias"))
     for m in _PROPER.finditer(text):
-        name = m.group(1)
-        words = name.split()
-        if words[0].lower() in _COMMON:
-            words = words[1:]
-            if not words:
-                continue
-            name = " ".join(words)
-        if len(words) == 1 and (len(name) < 3 or name.lower() in _COMMON):
+        trimmed = _trim(text, m.group(1), m.start(1))
+        if trimmed is None:
             continue
-        start = m.end(1) - len(name)
-        sentence_start = start == 0 or text[max(0, start - 2):start].strip() in (".", "!", "?", "\n", "#", "-", "*")
-        if len(words) == 1 and sentence_start:
-            continue  # a capitalised first word is usually just a sentence opener
-        found.append((name, "organization" if _ORG_SUFFIX.search(name) else "concept", start, m.end(1),
-                      "pattern"))
+        name, start, opener = trimmed
+        words = name.split()
+        if len(words) == 1 and (len(name) < 2 or name.lower() in _COMMON
+                                or name.lower() in ontology_lexicon.COMMON_WORDS):
+            continue
+        # Only a plain capitalised word opening a sentence is doubtful; "OmniRoute" or
+        # "Zylos-4" is a name wherever it stands.
+        plain = len(words) == 1 and re.fullmatch(r"[A-Z\u00c0-\u00de][a-z\u00df-\u00ff']+", name) is not None
+        source = "weak" if plain and opener else "pattern"
+        found.append((name, "organization" if _ORG_SUFFIX.search(name) else "concept", start, start + len(name),
+                      source))
     for m in _HONORIFIC.finditer(text):
-        found.append((m.group(1), "person", m.start(), m.end(), "gazetteer"))
+        found.append((m.group(1), "person", m.start(1), m.end(1), "gazetteer"))
     for m in _ACRONYM.finditer(text):
         if m.group(1).rstrip("s") not in _ACRONYM_STOP and m.group(1) not in _ACRONYM_STOP:
             found.append((m.group(1), "concept", m.start(1), m.end(1), "pattern"))
+    for m in _TOOL_OBJECT.finditer(text):
+        word = m.group(1)
+        if word not in ontology_lexicon.COMMON_WORDS and word not in _COMMON:
+            found.append((word, "concept", m.start(1), m.end(1), "weak"))
+    for m in _CODE_SLOT.finditer(text):
+        group = 1 if m.group(1) else 2
+        word = m.group(group)
+        if word not in ontology_lexicon.COMMON_WORDS and word not in _COMMON:
+            found.append((word, "concept", m.start(group), m.end(group), "weak"))
+    heads = _head_pattern(onto)
+    if heads is not None:
+        for m in heads.finditer(text):
+            group = 1 if m.group(1) else 2
+            trimmed = _trim(text, m.group(group), m.start(group))
+            if trimmed is None or " " not in trimmed[0]:
+                continue
+            name, start, _opener = trimmed
+            found.append((name, "concept", start, start + len(name), "weak" if group == 1 else "pattern"))
     return found
 
 
@@ -187,40 +353,57 @@ def _spacy_mentions(doc) -> list[tuple[str, str, int, int, str]]:
     return out
 
 
-_PRIORITY = {"gazetteer": 0, "spacy": 1, "pattern": 2}
+_PRIORITY = {"alias": 0, "gazetteer": 1, "shape": 1, "spacy": 2, "pattern": 3, "weak": 4}
 _TYPE_RANK = {"error": 0, "file": 1, "symbol": 2, "service": 3, "tool": 4, "person": 5, "organization": 6,
               "place": 7, "event": 8, "concept": 9}
 
 
-def _ontology_type(name: str, text: str, start: int, end: int, onto, embedder) -> str | None:
-    """A declared type for an untyped (fallback) mention, from the ontology's aliases and
-    keywords, and from embeddings when an embedder is given; None when unknown."""
+def _classify(name: str, text: str, start: int, end: int, onto, embedder, exemplars=None):
+    """The ontology classification of one candidate, from the windows around its first
+    three occurrences in the text: a name typed by its second mention ("Zylith, our
+    message broker") is typed everywhere."""
     from commontrace import ontology_classify
 
+    windows = [text[max(0, start - 120):end + 80]]
+    if len(text) > end + 80 and len(name) >= 3:
+        for m in re.finditer(r"(?<!\w)" + re.escape(name) + r"(?!\w)", text[end + 80:]):
+            at = end + 80 + m.start()
+            windows.append(text[max(0, at - 120):at + len(name) + 80])
+            if len(windows) == 3:
+                break
     methods = ("keyword", "embedding") if embedder is not None else ("keyword",)
-    found = ontology_classify.classify(name, text[max(0, start - 80):end + 40], onto=onto, embedder=embedder,
-                                       methods=methods)
-    return found.type
+    return ontology_classify.classify(name, " … ".join(windows), onto=onto, embedder=embedder,
+                                      methods=methods, exemplars=exemplars)
 
 
-def _resolve(text: str, raw: list[tuple[str, str, int, int, str]], onto, embedder=None) -> list[Mention]:
+def _resolve(text: str, raw: list[tuple[str, str, int, int, str]], onto, embedder=None,
+             exemplars=None) -> list[Mention]:
     """Overlapping spans keep the most specific reading; one key per entity, first
-    occurrence kept. A mention left at the fallback type is classified into the
-    ontology's types (`ontology_classify`) when its name or context says which."""
+    occurrence kept. With an ontology every candidate but a declared alias is typed by
+    `ontology_classify` (its own evidence included), a weak candidate the classifier
+    cannot type is dropped, and an untyped strong one keeps its provisional type."""
     raw = sorted(raw, key=lambda r: (r[2], -(r[3] - r[2]), _PRIORITY[r[4]], _TYPE_RANK.get(r[1], 9)))
     taken: list[tuple[int, int]] = []
     by_key: dict[str, Mention] = {}
     for name, type_, s, e, source in raw:
         if any(s < te and ts < e for ts, te in taken):
             continue
+        if onto is None and source == "weak":
+            continue
         type_ = onto.entity_type(type_) if onto is not None else type_
-        if onto is not None and type_ == FALLBACK_TYPE:
-            type_ = _ontology_type(name, text, s, e, onto, embedder) or type_
+        if onto is not None and source != "alias":
+            found = _classify(name, text, s, e, onto, embedder, exemplars)
+            if found.known:
+                type_ = found.type
+            elif source == "weak":
+                continue
         key = canonical_key(name, type_, onto)
         if not key.split(":", 1)[-1]:
             continue
         taken.append((s, e))
-        by_key.setdefault(key, Mention(name, key.split(":", 1)[0], key, s, e, source))
+        by_key.setdefault(key, Mention(name, key.split(":", 1)[0], key, s, e,
+                                       "gazetteer" if source in ("alias", "gazetteer") else
+                                       "spacy" if source == "spacy" else "pattern"))
     return sorted(by_key.values(), key=lambda m: m.start)
 
 
@@ -237,14 +420,16 @@ def _alias_map(onto) -> dict[str, str]:
     return out
 
 
-def extract(text: str, *, onto=None, use_spacy: bool | None = None, embedder=None) -> list[Mention]:
-    """Entities in `text`, each once, in order of first mention. With an ontology, untyped
-    mentions are classified into its types; `embedder` adds semantic classification."""
-    return extract_batch([text], onto=onto, use_spacy=use_spacy, embedder=embedder)[0]
+def extract(text: str, *, onto=None, use_spacy: bool | None = None, embedder=None,
+            exemplars=None) -> list[Mention]:
+    """Entities in `text`, each once, in order of first mention. With an ontology,
+    mentions are classified into its types (`ontology_classify`); `embedder` adds
+    semantic classification and `exemplars` the store's earlier typings."""
+    return extract_batch([text], onto=onto, use_spacy=use_spacy, embedder=embedder, exemplars=exemplars)[0]
 
 
 def extract_batch(texts: Iterable[str], *, onto=None, use_spacy: bool | None = None,
-                  embedder=None) -> list[list[Mention]]:
+                  embedder=None, exemplars=None) -> list[list[Mention]]:
     """`extract` over many texts; spaCy (when used) processes them as one stream."""
     texts = [(t or "")[:MAX_TEXT] for t in texts]
     nlp = spacy_model() if use_spacy is not False else None
@@ -255,10 +440,10 @@ def extract_batch(texts: Iterable[str], *, onto=None, use_spacy: bool | None = N
     aliases = _alias_map(onto)
     out = []
     for text, doc in zip(texts, docs):
-        raw = _pattern_mentions(text, aliases)
+        raw = _pattern_mentions(text, aliases, onto)
         if doc is not None:
             raw += _spacy_mentions(doc)
-        out.append(_resolve(text, raw, onto, embedder))
+        out.append(_resolve(text, raw, onto, embedder, exemplars))
     return out
 
 
@@ -304,7 +489,10 @@ def link_lessons(root: str, slugs: list[str] | None = None, *, use_spacy: bool |
             continue
         names.append(name)
         texts.append(text)
-    mentions = extract_batch(texts, onto=onto, use_spacy=use_spacy, embedder=embedder)
+    from commontrace import ontology_classify
+
+    mentions = extract_batch(texts, onto=onto, use_spacy=use_spacy, embedder=embedder,
+                             exemplars=ontology_classify.Exemplars.from_graph(root))
     counts: dict[str, int] = {}
     for found in mentions:
         for m in found:

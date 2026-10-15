@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,7 +8,7 @@ version = "2.0.0"
 description = "CommonTrace Protocol client — capture agent experience, validate lessons, and inject them into any agent platform (Claude Code, Cursor, Devin, Windsurf, generic MCP)."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "AGPL-3.0-only"
 authors = [{ name = "CommonTrace" }]
 keywords = ["agents", "llm", "mcp", "memory", "protocol", "fleet-learning"]
 dependencies = [
@@ -16,6 +16,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+providers = ["pydantic>=2.12,<3.0"]
 code = ["tree-sitter>=0.25,<0.27", "tree-sitter-typescript>=0.23,<0.24"]
 ontology = [
     "jsonschema>=4.23,<5.0",
@@ -30,6 +31,12 @@ attention = [
     "numpy>=1.24,<3.0",
     "sentence-transformers>=6.0,<7.0",
     "transformers>=5.5.0,<7.0",
+]
+fastembed = [
+    "fastembed==0.8.0",
+    "huggingface-hub>=0.36.2,<2.0",
+    "onnxruntime==1.23.2; python_version < '3.14'",
+    "onnxruntime==1.30.0; python_version >= '3.14'",
 ]
 hub-sync = [
     "mcp>=2.0,<3.0",
@@ -46,7 +53,7 @@ otel = [
     "opentelemetry-sdk>=1.20,<2.0",
 ]
 graph = ["neo4j>=6.0,<7.0", "falkordb>=1.2,<2.0"]
-vector-lance = ["lancedb>=0.26,<1.0"]
+vector-lance = ["lancedb>=0.40,<1.0"]
 vector-postgres = [
     "asyncpg>=0.31,<1.0",
 ]
@@ -54,13 +61,13 @@ dev = [
     "pytest>=9.0.3,<10.0",
     "ruff>=0.4,<1.0",
     "pytest-asyncio>=1.0,<2.0",
+    "pytest-xdist>=3.6,<4.0",
     "mcp>=2.0,<3.0",
     "opentelemetry-sdk>=1.20,<2.0",
 ]
 
 [project.urls]
 Homepage = "https://github.com/denemlabs/commontrace-v2"
-Protocol = "https://github.com/denemlabs/commontrace-v2/blob/main/protocol/PROTOCOL.md"
 
 [project.scripts]
 commontrace = "commontrace.cli:main"
@@ -69,7 +76,7 @@ commontrace = "commontrace.cli:main"
 include = ["commontrace*"]
 
 [tool.setuptools.package-data]
-commontrace = ["schemas/*.json", "reference/*.py", "fixtures/fields/*.json", "kb_packs/*.jsonl", "ui/*", "conformance_vectors.json"]
+commontrace = ["schemas/*.json", "configuration.schema.json", "reference/*.py", "fixtures/fields/*.json", "kb_packs/*.jsonl", "ui/*", "conformance_vectors.json", "ontology_typing_model.json"]
 
 [tool.ruff]
 line-length = 120

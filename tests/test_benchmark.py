@@ -365,12 +365,6 @@ class TestIntegrationExamples:
     def teardown_method(self):
         bm.BASE_DIR = self._old_base
 
-    def test_example_episode_loads(self):
-        episodes, _skipped = bm.load_episodes()
-        assert len(episodes) >= 1
-        ep = episodes[0]
-        assert "name" in ep
-        assert "verdict" in ep
 
     def test_example_episode_verdict_conform(self):
         episodes, _skipped = bm.load_episodes()
@@ -380,9 +374,6 @@ class TestIntegrationExamples:
                 "Expected CONFORM | ARBITRATION | ABANDON."
             )
 
-    def test_example_lessons_load(self):
-        lessons, _skipped = bm.load_lessons()
-        assert len(lessons) >= 1
 
     def test_example_lesson_importance_valid(self):
         lessons, _skipped = bm.load_lessons()

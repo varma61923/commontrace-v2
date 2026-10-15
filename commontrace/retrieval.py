@@ -17,6 +17,7 @@ from commontrace._lexical import WORD_RE as _WORD_RE
 from commontrace._lexical import has_cjk as _has_cjk
 from commontrace._lexical import segment_cjk as _segment_cjk
 from commontrace._stem import stem as _stem
+from commontrace.configuration import getenv as _configuration_getenv
 from commontrace.runtime_cache import RuntimeCache
 
 IDF_V2_FLOOR = 0.04
@@ -392,7 +393,7 @@ def rank_lessons(
 
     # Dynamic signals are never frozen in a result cache. Weak identity keeps
     # this cache from retaining a corpus, and cannot alias a recycled object ID.
-    cache_enabled = cache_results and os.environ.get("COMMONTRACE_QUERY_CACHE", "1").strip().lower() \
+    cache_enabled = cache_results and _configuration_getenv("COMMONTRACE_QUERY_CACHE", "1").strip().lower() \
         not in ("0", "false", "off", "no")
     if cache_enabled and not (reliability_lookup or recency_lookup or graph_boost_lookup):
         key = (_IndexIdentity(index), scorer, tuple(sorted(query_terms)), top_k, floor, adaptive_tail)

@@ -163,3 +163,14 @@ def test_cli_report_and_apply(root):
     assert "status=review" in res.stdout
     assert len(memory_control.records(root, "proposal")) == 1
     assert cli("facts", "--threshold", "0").returncode == 2
+
+
+def test_a_fact_whose_validity_ended_is_history_not_a_duplicate_of_its_replacement(root):
+    hierarchical.add_fact(root, "Dana works at Acme as the platform lead",
+                          valid_from="2024-01-01", valid_until="2025-06-30")
+    hierarchical.add_fact(root, "Dana works at Initech as the platform lead", valid_from="2025-07-01")
+    report = fc.cluster_facts(root)
+    assert report["clusters"] == [] and report["facts"] == 1
+    # Two facts that are both true now and say the same thing are still reported.
+    hierarchical.add_fact(root, "Dana is the platform lead at Initech")
+    assert len(fc.cluster_facts(root)["clusters"]) == 1

@@ -16,10 +16,10 @@ def _create(root):
     return tokens.load_or_create_token(root)
 
 
-@pytest.mark.skipif("fork" not in multiprocessing.get_all_start_methods(), reason="requires fork")
 def test_first_start_is_atomic_across_processes(tmp_path):
     root = str(tmp_path)
-    with ProcessPoolExecutor(6, mp_context=multiprocessing.get_context("fork")) as pool:
+    ctx = multiprocessing.get_context("spawn")
+    with ProcessPoolExecutor(6, mp_context=ctx) as pool:
         values = list(pool.map(_create, [root] * 24))
     assert len(set(values)) == 1
     assert json.loads(open(tokens.token_path(root)).read())["token"] == values[0]
@@ -55,7 +55,7 @@ def test_plaintext_legacy_token_and_permission_repair(tmp_path):
     value = "legacy" * 8
     with open(path, "w") as fh:
         fh.write(value + "\n")
-    os.chmod(path, 0o644)
+    os.chmod(path, 0o644)  # lgtm[py/overly-permissive-file] - deliberately testing permission repair
     assert tokens.load_or_create_token(root) == tokens.FileTokenProvider(root)() == value
     assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
 

@@ -8,7 +8,8 @@ import os
 import sys
 
 from commontrace import PROTOCOL_VERSION, __version__
-from commontrace.exceptions import CommonTraceError
+from commontrace.configuration import getenv as _configuration_getenv
+from commontrace.exceptions import CommonTraceError, remediation_hint
 
 try:
     from commontrace.frontmatter import FrontmatterError
@@ -26,22 +27,59 @@ _COMMANDS = (
     "block", "fact", "graph", "ingest", "agent", "watch", "daemon", "viz", "conversation", "memory", "recall", "jobs",
     "ontology", "community", "observation", "saga", "page", "session_ledger",
     "procedural", "sql_query", "defense", "evolve", "policy", "assurance", "compression", "up", "connect", "migrate",
-    "codegraph", "market", "allocate",
+    "codegraph", "market", "allocate", "integration", "providers", "help", "setup",
 )
 
+ALIASES = {
+    "add": ("fact", "add"),
+    "search": ("recall",),
+    "check": ("doctor",),
+    "summarize": ("conversation", "summarize"),
+}
 
 
 
-def _command_modules(only: str | None = None) -> list:
-    names = (only,) if only in _COMMANDS else _COMMANDS
-    seen = set()
-    modules = []
-    for name in names:
-        mod_name = name.replace("-", "_")
-        if mod_name not in seen:
-            seen.add(mod_name)
-            modules.append(importlib.import_module(f"commontrace.commands.{mod_name}_cmd"))
-    return modules
+_COMMAND_GROUPS = {
+    'providers': 'platform',
+    'codegraph': 'platform',
+    'migrate': 'platform',
+    'connect': 'platform',
+    'sql_query': 'platform',
+    'viz': 'platform',
+    'gateway': 'platform',
+    'jobs': 'platform',
+    'policy': 'governance',
+    'assurance': 'governance',
+    'gate': 'governance',
+    'conformance': 'governance',
+    'defense': 'governance',
+    'compression': 'governance',
+    'allocate': 'governance',
+    'bill': 'governance',
+    'reliability': 'governance',
+    'signals': 'governance',
+    'fleet': 'governance',
+    'function': 'governance',
+    'kb': 'knowledge',
+    'community': 'knowledge',
+    'observation': 'knowledge',
+    'procedural': 'knowledge',
+    'ontology': 'knowledge',
+    'page': 'knowledge',
+    'source': 'knowledge',
+    'agent': 'knowledge',
+    'recall': 'knowledge',
+    'memory': 'knowledge',
+}
+
+
+def _command_module(name):
+    if name in _COMMAND_GROUPS:
+        from types import SimpleNamespace
+
+        module = importlib.import_module("commontrace.commands." + _COMMAND_GROUPS[name])
+        return SimpleNamespace(add_parser=module.COMMANDS[name])
+    return importlib.import_module("commontrace.commands." + name + "_cmd")
 
 
 class _LazyCommandMap(dict):
@@ -69,7 +107,7 @@ class _LazyCommandMap(dict):
         if key not in _COMMANDS and clean not in _COMMANDS:
             raise KeyError(key)
         target = clean if clean in _COMMANDS else key
-        module = importlib.import_module(f"commontrace.commands.{target}_cmd")
+        module = _command_module(target)
         action = self._subparsers_action
         if action is None:
             raise KeyError(key)
@@ -118,18 +156,25 @@ def build_parser(only: str | None = None) -> argparse.ArgumentParser:
         help="Keyless mode (first argument only): --offline, plus the in-process local model for "
              "LLM-assisted steps unless COMMONTRACE_LLM_PROVIDER is already set.",
     )
-    subparsers = parser.add_subparsers(dest="command", required=_MISSING_DEPENDENCY is None)
+    subparsers = parser.add_subparsers(dest="command", metavar="COMMAND", required=_MISSING_DEPENDENCY is None)
     clean_only = only.replace("-", "_") if isinstance(only, str) else None
     if clean_only in _COMMANDS:
-        importlib.import_module(f"commontrace.commands.{clean_only}_cmd").add_parser(subparsers)
+        _command_module(clean_only).add_parser(subparsers)
         return parser
     lazy: dict = _LazyCommandMap(subparsers)
     subparsers._name_parser_map = lazy  # type: ignore[assignment]
     subparsers.choices = lazy  # type: ignore[assignment]
-    for name in _COMMANDS:
+    from commontrace.ui_commands import catalog
+
+    groups: dict[str, list[str]] = {}
+    for item in catalog():
+        groups.setdefault(item["group"], []).append(item["name"])
+    for group, names in groups.items():
         subparsers._choices_actions.append(
-            subparsers._ChoicesPseudoAction(name, (), f"{name} command")
+            subparsers._ChoicesPseudoAction(group, (), ", ".join(sorted(names)))
         )
+    parser.epilog = ("Shortcuts: add → fact add; search → recall; check → doctor; summarize → conversation summarize. "
+                     "Use commontrace help TOPIC to discover commands, or commontrace setup for a guided workflow.")
     return parser
 
 
@@ -154,6 +199,14 @@ def _from_worker(argv: list[str]) -> int | None:
     return rc
 
 
+def _configured_call(args):
+    from commontrace import configuration, paths
+
+    root = paths.resolve_root(getattr(args, "dest", None))
+    if getattr(args, "command", "") == "up" or not os.path.isfile(configuration.config_path(root)):
+        return args.func(args)
+    with configuration.apply(configuration.load(root)):
+        return args.func(args)
 def main(argv: list[str] | None = None) -> int:
     if _MISSING_DEPENDENCY is not None:
         print(
@@ -174,6 +227,8 @@ def main(argv: list[str] | None = None) -> int:
             offline.enable()
         argv = argv[1:]
     offline.apply_environment()
+    if argv and argv[0] in ALIASES:
+        argv = [*ALIASES[argv[0]], *argv[1:]]
     answered = _from_worker(argv)
     if answered is not None:
         return answered
@@ -197,7 +252,7 @@ def main(argv: list[str] | None = None) -> int:
         if argv[0] not in commands and clean_cmd in commands:
             argv = [clean_cmd, *argv[1:]]
     if not argv[0].startswith("-") and argv[0] not in commands:
-        close = difflib.get_close_matches(argv[0], commands, n=3, cutoff=0.6)
+        close = difflib.get_close_matches(argv[0], [*commands, *ALIASES], n=3, cutoff=0.6)
         hint = f" Did you mean: {', '.join(close)}?" if close else ""
         print(
             f"commontrace: unknown command {argv[0]!r}.{hint} "
@@ -207,18 +262,24 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     args = parser.parse_args(argv)
     try:
-        if os.environ.get("COMMONTRACE_LOG_FILE") or os.environ.get("COMMONTRACE_LOG_FORMAT") or \
-                os.environ.get("COMMONTRACE_LOG_LEVEL") or \
-                os.environ.get("COMMONTRACE_OTEL") or os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"):
+        if (
+            _configuration_getenv("COMMONTRACE_LOG_FILE")
+            or _configuration_getenv("COMMONTRACE_LOG_FORMAT")
+            or _configuration_getenv("COMMONTRACE_LOG_LEVEL")
+            or _configuration_getenv("COMMONTRACE_OTEL")
+            or os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
+        ):
             from commontrace import telemetry
 
             telemetry.configure_logging()
             sub = getattr(args, "subcommand", None) or getattr(args, "action", None)
-            with telemetry.bind(request_id=telemetry.new_request_id(), command=argv[0]), \
-                    telemetry.span(f"cli.{argv[0]}" + (f".{sub}" if isinstance(sub, str) else "")):
-                res = args.func(args)
+            with (
+                telemetry.bind(request_id=telemetry.new_request_id(), command=argv[0]),
+                telemetry.span(f"cli.{argv[0]}" + (f".{sub}" if isinstance(sub, str) else "")),
+            ):
+                res = _configured_call(args)
         else:
-            res = args.func(args)
+            res = _configured_call(args)
         return 0 if res is None else int(res)
     except FrontmatterError as exc:
         print(f"[commontrace] error: {exc}", file=sys.stderr)
@@ -248,7 +309,11 @@ def main(argv: list[str] | None = None) -> int:
         IndexError,
         AttributeError,
     ) as exc:
-        print(f"[commontrace] error: {type(exc).__name__}: {exc}", file=sys.stderr)
+        print(
+            f"[commontrace] error: {type(exc).__name__}: {exc}\n"
+            f"  Remediation: {remediation_hint(exc)}",
+            file=sys.stderr,
+        )
         return 1
 
 

@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -46,11 +47,11 @@ sys.path.insert(0, str(ROOT))
 
 from hub import commons  # noqa: E402
 
-CORPUS = ROOT / "commons" / "seed" / "substrate-v1.jsonl"
+CORPUS = Path(os.environ.get("COMMONTRACE_EVAL_CORPUS", "corpus.jsonl"))  # bring your own corpus
 EVAL_DIR = Path(__file__).resolve().parent
 PROBE_SETS = {
-    "v1": EVAL_DIR / "probes-v1.jsonl",
-    "v2": EVAL_DIR / "probes-v2.jsonl",
+    "v1": Path(os.environ.get("COMMONTRACE_EVAL_PROBES_V1", "probes-v1.jsonl")),
+    "v2": Path(os.environ.get("COMMONTRACE_EVAL_PROBES_V2", "probes-v2.jsonl")),
 }
 PROBES = PROBE_SETS["v1"]
 

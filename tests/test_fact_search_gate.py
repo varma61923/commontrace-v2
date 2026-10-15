@@ -8,6 +8,7 @@ import pytest
 
 from benchmarks import fact_search
 from benchmarks.fact_search import check, measure
+from commontrace import fact_index, hierarchical
 
 
 @pytest.fixture(scope="module")
@@ -78,3 +79,53 @@ def test_measurement_rejects_a_changed_source_fingerprint(monkeypatch: pytest.Mo
     monkeypatch.setattr(fact_search, '_implementation_sha256', lambda: next(versions))
     with pytest.raises(RuntimeError, match='source changed'):
         measure(facts=20, trials=1)
+
+
+@pytest.mark.parametrize("channel", ['search', 'recall'])
+def test_each_comparison_warms_a_fresh_generation_instead_of_inheriting_old_expiry(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, channel: str,
+) -> None:
+    now = [0.0]
+    monkeypatch.setattr(fact_index._CACHE, '_clock', lambda: now[0])
+    root = str(tmp_path)
+    fact_search.seed(root, 20)
+    fact_index.clear_cache()
+    try:
+        hierarchical.search_facts(root, 'rarecalibration', scope='alpha')
+        before = fact_index.cache_info()['snapshots']['misses']
+        now[0] = 280.0
+        original = fact_search.original_search
+
+        def slow_baseline(*args, **kwargs):
+            now[0] += 10.0
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(fact_search, 'original_search', slow_baseline)
+        output = fact_search._compare(root, 'rarecalibration', 2, channel)
+        assert now[0] == 310.0  # The inherited generation would have expired.
+        assert output['warm_snapshot_loads'] == 0
+        assert fact_index.cache_info()['snapshots']['misses'] - before == 1
+    finally:
+        fact_index.clear_cache()
+
+
+def test_measured_comparison_still_counts_expiration_within_its_own_block(
+    tmp_path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = [0.0]
+    monkeypatch.setattr(fact_index._CACHE, '_clock', lambda: now[0])
+    root = str(tmp_path)
+    fact_search.seed(root, 20)
+    original = fact_search.original_search
+
+    def slow_baseline(*args, **kwargs):
+        now[0] += 180.0
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(fact_search, 'original_search', slow_baseline)
+    try:
+        output = fact_search._compare(root, 'rarecalibration', 2, 'search')
+        assert now[0] == 540.0
+        assert output['warm_snapshot_loads'] == 1
+    finally:
+        fact_index.clear_cache()

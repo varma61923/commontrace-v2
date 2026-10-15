@@ -168,9 +168,10 @@ def test_recall_fuses_a_dense_arm_into_the_facts_channel(tmp_path, monkeypatch):
     tokyo, _ = hierarchical.add_fact(root, "Bob's company headquarters sit in Tokyo")
     hierarchical.add_fact(root, "The quarterly report is due on Friday")
     question = "where is the tokyo head office"
-    lexical_only = recall.recall(root, question, channels=("facts",))
+    monkeypatch.setenv("COMMONTRACE_FACT_EMBEDDER", "none")
+    lexical_only = recall.recall(root, question, channels=("facts",), embedder="none")
     assert all(i.id != f"fact:{tokyo.id}" or "dense_cosine" not in i.provenance["search"]
-               for i in lexical_only.items)  # no embedder configured: lexical behaviour unchanged
+               for i in lexical_only.items)  # explicit opt-out preserves lexical-only behavior
     monkeypatch.setenv("COMMONTRACE_FACT_EMBEDDER", "fake")
     hybrid = recall.recall(root, question, channels=("facts",))
     top = hybrid.items[0]

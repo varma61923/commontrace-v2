@@ -821,6 +821,78 @@
         "additionalProperties": true,
         "type": "object"
       },
+      "MeasurementOutcomeRequest": {
+        "additionalProperties": true,
+        "properties": {
+          "agent_id": {
+            "description": "which agent or robot",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+            "type": "string"
+          },
+          "combine": {
+            "enum": [
+              "all",
+              "any"
+            ],
+            "type": "string"
+          },
+          "env": {
+            "description": "must equal the store's environment when it has one; simulation and reality are never pooled",
+            "type": "string"
+          },
+          "occasion_id": {
+            "description": "1-128 characters, no control characters or surrounding whitespace",
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "signals": {
+            "description": "evaluated three-valued",
+            "items": {
+              "$ref": "#/components/schemas/Signal"
+            },
+            "maxItems": 16,
+            "minItems": 1,
+            "type": "array"
+          },
+          "succeeded": {
+            "description": "give this or signals, not both",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "occasion_id"
+        ],
+        "type": "object"
+      },
+      "MeasurementOutcomeResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "note": {
+            "type": "string"
+          },
+          "occasion_id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "recorded": {
+            "type": "boolean"
+          },
+          "succeeded": {
+            "type": "boolean"
+          },
+          "undecided": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "occasion_id",
+          "recorded"
+        ],
+        "type": "object"
+      },
       "Message": {
         "additionalProperties": true,
         "properties": {
@@ -1060,6 +1132,164 @@
         ],
         "type": "object"
       },
+      "RecordForgetRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "context": {
+            "items": {
+              "maxLength": 256,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "type": "array"
+          },
+          "id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "reason": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "RecordForgetResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "at": {
+            "type": "string"
+          },
+          "deleted": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "deleted",
+          "reason",
+          "at"
+        ],
+        "type": "object"
+      },
+      "RecordPutRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "context": {
+            "items": {
+              "maxLength": 256,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "type": "array"
+          },
+          "record": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "record"
+        ],
+        "type": "object"
+      },
+      "RecordPutResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "record": {
+            "additionalProperties": true,
+            "type": "object"
+          }
+        },
+        "required": [
+          "record"
+        ],
+        "type": "object"
+      },
+      "RecordReapDueRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "context": {
+            "items": {
+              "maxLength": 256,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "type": "array"
+          },
+          "limit": {
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "RecordReapDueResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "results": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "results"
+        ],
+        "type": "object"
+      },
+      "RecordSearchRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "context": {
+            "items": {
+              "maxLength": 256,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "type": "array"
+          },
+          "limit": {
+            "maximum": 1000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "query": {
+            "maxLength": 20000,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "RecordSearchResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "results": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "results"
+        ],
+        "type": "object"
+      },
       "ReflectRequest": {
         "additionalProperties": false,
         "properties": {
@@ -1187,6 +1417,15 @@
             "maxItems": 100,
             "type": "array"
           },
+          "graph_hops": {
+            "maximum": 4,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "known_at": {
+            "nullable": true,
+            "type": "string"
+          },
           "limit": {
             "maximum": 1000,
             "minimum": 0,
@@ -1198,6 +1437,19 @@
           },
           "recipe": {
             "maxLength": 20000,
+            "type": "string"
+          },
+          "reranker": {
+            "enum": [
+              null,
+              "none",
+              "mmr",
+              "cross-encoder",
+              "cross-encoder-fast",
+              "bge-reranker-v2-m3",
+              "mxbai-rerank"
+            ],
+            "nullable": true,
             "type": "string"
           },
           "retriever": {
@@ -1286,6 +1538,97 @@
           "sha256"
         ],
         "type": "object"
+      },
+      "TurnRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "budget": {
+            "maximum": 8000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "context": {
+            "items": {
+              "maxLength": 256,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "type": "array"
+          },
+          "event": {
+            "maxLength": 20000,
+            "type": "string"
+          },
+          "payload": {
+            "type": "object"
+          },
+          "query": {
+            "maxLength": 20000,
+            "type": "string"
+          },
+          "session_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 20000,
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "query"
+        ],
+        "type": "object"
+      },
+      "TurnResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "buffer": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "context": {
+            "type": "string"
+          },
+          "injected": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "profile": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/Evidence"
+            },
+            "type": "array"
+          },
+          "scope": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "context",
+          "injected",
+          "profile",
+          "buffer",
+          "session_id",
+          "scope",
+          "results"
+        ],
+        "type": "object"
       }
     },
     "securitySchemes": {
@@ -1299,8 +1642,8 @@
   "info": {
     "description": "Did the memory change how the occasion went? Language-neutral.",
     "license": {
-      "name": "MIT",
-      "url": "https://opensource.org/license/mit/"
+      "name": "GNU Affero General Public License v3.0 only",
+      "url": "https://www.gnu.org/licenses/agpl-3.0.html"
     },
     "title": "CommonTrace gateway",
     "version": "1"
@@ -1805,6 +2148,132 @@
         ]
       }
     },
+    "/v1/agent/revoke": {
+      "post": {
+        "description": "Owner-only. The record stays for audit; rotate with reinstate to restore.",
+        "operationId": "agent_revoke",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RequestId"
+          },
+          {
+            "$ref": "#/components/parameters/ContainerTag"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "agent_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "agent_id"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "agent_id": {
+                      "type": "string"
+                    },
+                    "revoked": {
+                      "type": "boolean"
+                    },
+                    "revoked_at": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "agent_id",
+                    "revoked",
+                    "revoked_at"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or wrong credential"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Refused by policy or scope"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Body larger than 1 MiB"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal error; no details"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Owner-only: disable an agent key.",
+        "tags": [
+          "Agents"
+        ]
+      }
+    },
     "/v1/agent/rotate": {
       "post": {
         "operationId": "agent_rotate",
@@ -1824,6 +2293,10 @@
                 "properties": {
                   "agent_id": {
                     "type": "string"
+                  },
+                  "reinstate": {
+                    "description": "restore a revoked agent with the new key; without it a revoked agent stays revoked",
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -2162,6 +2635,200 @@
         "summary": "Per-agent activity.",
         "tags": [
           "Measurement"
+        ]
+      }
+    },
+    "/v1/benchmark-history": {
+      "get": {
+        "operationId": "benchmark_history",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RequestId"
+          },
+          {
+            "$ref": "#/components/parameters/ContainerTag"
+          },
+          {
+            "description": "latest reports",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 200,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "limit": {
+                      "type": "integer"
+                    },
+                    "reports": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "delta": {
+                            "additionalProperties": true,
+                            "properties": {
+                              "implicit_retrieval_permissive": {
+                                "maximum": 2,
+                                "minimum": -2,
+                                "nullable": true,
+                                "type": "number"
+                              },
+                              "implicit_retrieval_strict": {
+                                "maximum": 2,
+                                "minimum": -2,
+                                "nullable": true,
+                                "type": "number"
+                              },
+                              "lesson_quality": {
+                                "maximum": 2,
+                                "minimum": -2,
+                                "nullable": true,
+                                "type": "number"
+                              },
+                              "transfer_gap": {
+                                "maximum": 2,
+                                "minimum": -2,
+                                "nullable": true,
+                                "type": "number"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "file": {
+                            "type": "string"
+                          },
+                          "metrics": {
+                            "additionalProperties": true,
+                            "properties": {
+                              "implicit_retrieval_permissive": {
+                                "maximum": 1,
+                                "minimum": -1,
+                                "nullable": true,
+                                "type": "number"
+                              },
+                              "implicit_retrieval_strict": {
+                                "maximum": 1,
+                                "minimum": -1,
+                                "nullable": true,
+                                "type": "number"
+                              },
+                              "lesson_quality": {
+                                "maximum": 1,
+                                "minimum": -1,
+                                "nullable": true,
+                                "type": "number"
+                              },
+                              "transfer_gap": {
+                                "maximum": 1,
+                                "minimum": -1,
+                                "nullable": true,
+                                "type": "number"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "timestamp": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "file",
+                          "timestamp",
+                          "metrics",
+                          "delta"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "scan_truncated": {
+                      "type": "boolean"
+                    },
+                    "skipped": {
+                      "type": "integer"
+                    },
+                    "total": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "reports",
+                    "total",
+                    "limit",
+                    "skipped",
+                    "scan_truncated"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or wrong credential"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Refused by policy or scope"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal error; no details"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Saved operator benchmark scores and deltas (?limit=).",
+        "tags": [
+          "History"
         ]
       }
     },
@@ -3373,6 +4040,15 @@
               "schema": {
                 "additionalProperties": true,
                 "properties": {
+                  "cache_vectors": {
+                    "description": "explicitly prepare vectors after committing redacted source; default false",
+                    "type": "boolean"
+                  },
+                  "embedder": {
+                    "description": "provider tag; default configured model",
+                    "maxLength": 512,
+                    "type": "string"
+                  },
                   "messages": {
                     "items": {
                       "$ref": "#/components/schemas/Message"
@@ -3418,6 +4094,36 @@
                   "properties": {
                     "added": {
                       "type": "integer"
+                    },
+                    "embedding_cache": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "elapsed_seconds": {
+                          "type": "number"
+                        },
+                        "error_type": {
+                          "type": "string"
+                        },
+                        "model": {
+                          "type": "string"
+                        },
+                        "ready": {
+                          "type": "boolean"
+                        },
+                        "revision": {
+                          "items": {
+                            "type": "integer"
+                          },
+                          "type": "array"
+                        },
+                        "units": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "ready"
+                      ],
+                      "type": "object"
                     },
                     "secrets_redacted": {
                       "type": "integer"
@@ -3541,12 +4247,40 @@
                     "default": "legacy",
                     "enum": [
                       "legacy",
-                      "coverage-v1"
+                      "coverage-v1",
+                      "coverage-v2"
                     ],
                     "type": "string"
                   },
+                  "embedder": {
+                    "default": "auto",
+                    "description": "auto uses the configured provider; none/null disables dense retrieval",
+                    "maxLength": 512,
+                    "nullable": true,
+                    "type": "string"
+                  },
+                  "entity_boost": {
+                    "default": 0.1,
+                    "maximum": 1,
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  "graph_hops": {
+                    "description": "null adapts to relational clauses; zero disables graph expansion",
+                    "maximum": 2,
+                    "minimum": 0,
+                    "nullable": true,
+                    "type": "integer"
+                  },
+                  "lexical_weight": {
+                    "default": 0.5,
+                    "maximum": 1,
+                    "minimum": 0,
+                    "type": "number"
+                  },
                   "now": {
                     "description": "date the question is asked",
+                    "maxLength": 128,
                     "nullable": true,
                     "type": "string"
                   },
@@ -3555,13 +4289,40 @@
                     "minLength": 1,
                     "type": "string"
                   },
+                  "rerank": {
+                    "default": "auto",
+                    "description": "auto, none/null, mmr, or a registered text reranker tag",
+                    "maxLength": 512,
+                    "nullable": true,
+                    "type": "string"
+                  },
+                  "rerank_blend": {
+                    "default": 1,
+                    "description": "cross-encoder weight beside the fused rank; zero replaces that rank",
+                    "maximum": 1,
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  "rerank_depth": {
+                    "default": 50,
+                    "description": "bounded reranking candidate head",
+                    "maximum": 200,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "second_pass": {
+                    "description": "retrieve uncovered query facets when context budget remains",
+                    "type": "boolean"
+                  },
                   "sessions": {
                     "items": {
                       "type": "string"
                     },
+                    "nullable": true,
                     "type": "array"
                   },
                   "since": {
+                    "maxLength": 128,
                     "nullable": true,
                     "type": "string"
                   },
@@ -3575,9 +4336,15 @@
                     "items": {
                       "type": "string"
                     },
+                    "nullable": true,
                     "type": "array"
                   },
+                  "summaries": {
+                    "description": "include source-bound session summaries; default true",
+                    "type": "boolean"
+                  },
                   "until": {
+                    "maxLength": 128,
                     "nullable": true,
                     "type": "string"
                   }
@@ -3619,9 +4386,14 @@
                       "type": "array"
                     },
                     "window": {
-                      "additionalProperties": true,
+                      "description": "start date, end date, and parsed window label",
+                      "items": {
+                        "type": "string"
+                      },
+                      "maxItems": 3,
+                      "minItems": 3,
                       "nullable": true,
-                      "type": "object"
+                      "type": "array"
                     }
                   },
                   "required": [
@@ -7524,6 +8296,482 @@
         ]
       }
     },
+    "/v1/memory/record-forget": {
+      "post": {
+        "operationId": "memory_record_forget",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RequestId"
+          },
+          {
+            "$ref": "#/components/parameters/ContainerTag"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordForgetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordForgetResponse"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or wrong credential"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Refused by policy or scope"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflicts with recorded state"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Body larger than 1 MiB"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Quota or rate limit"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal error; no details"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Scoped memory record-forget.",
+        "tags": [
+          "Memory"
+        ]
+      }
+    },
+    "/v1/memory/record-put": {
+      "post": {
+        "operationId": "memory_record_put",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RequestId"
+          },
+          {
+            "$ref": "#/components/parameters/ContainerTag"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordPutRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordPutResponse"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or wrong credential"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Refused by policy or scope"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflicts with recorded state"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Body larger than 1 MiB"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Quota or rate limit"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal error; no details"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Scoped memory record-put.",
+        "tags": [
+          "Memory"
+        ]
+      }
+    },
+    "/v1/memory/record-reap-due": {
+      "post": {
+        "operationId": "memory_record_reap_due",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RequestId"
+          },
+          {
+            "$ref": "#/components/parameters/ContainerTag"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordReapDueRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordReapDueResponse"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or wrong credential"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Refused by policy or scope"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflicts with recorded state"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Body larger than 1 MiB"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Quota or rate limit"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal error; no details"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Scoped memory record-reap-due.",
+        "tags": [
+          "Memory"
+        ]
+      }
+    },
+    "/v1/memory/record-search": {
+      "post": {
+        "operationId": "memory_record_search",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RequestId"
+          },
+          {
+            "$ref": "#/components/parameters/ContainerTag"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordSearchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordSearchResponse"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or wrong credential"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Refused by policy or scope"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflicts with recorded state"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Body larger than 1 MiB"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Quota or rate limit"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal error; no details"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Scoped memory record-search.",
+        "tags": [
+          "Memory"
+        ]
+      }
+    },
     "/v1/memory/reflect": {
       "post": {
         "operationId": "memory_reflect",
@@ -7757,6 +9005,125 @@
           }
         ],
         "summary": "Scoped memory search.",
+        "tags": [
+          "Memory"
+        ]
+      }
+    },
+    "/v1/memory/turn": {
+      "post": {
+        "operationId": "memory_turn",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RequestId"
+          },
+          {
+            "$ref": "#/components/parameters/ContainerTag"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TurnRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TurnResponse"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or wrong credential"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Refused by policy or scope"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflicts with recorded state"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Body larger than 1 MiB"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Quota or rate limit"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal error; no details"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Scoped memory turn.",
         "tags": [
           "Memory"
         ]
@@ -8071,48 +9438,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "additionalProperties": true,
-                "properties": {
-                  "agent_id": {
-                    "description": "which agent or robot",
-                    "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
-                    "type": "string"
-                  },
-                  "combine": {
-                    "enum": [
-                      "all",
-                      "any"
-                    ],
-                    "type": "string"
-                  },
-                  "env": {
-                    "description": "must equal the store's environment when it has one; simulation and reality are never pooled",
-                    "type": "string"
-                  },
-                  "occasion_id": {
-                    "description": "1-128 characters, no control characters or surrounding whitespace",
-                    "maxLength": 128,
-                    "minLength": 1,
-                    "type": "string"
-                  },
-                  "signals": {
-                    "description": "evaluated three-valued",
-                    "items": {
-                      "$ref": "#/components/schemas/Signal"
-                    },
-                    "maxItems": 16,
-                    "minItems": 1,
-                    "type": "array"
-                  },
-                  "succeeded": {
-                    "description": "give this or signals, not both",
-                    "type": "boolean"
-                  }
-                },
-                "required": [
-                  "occasion_id"
-                ],
-                "type": "object"
+                "$ref": "#/components/schemas/MeasurementOutcomeRequest"
               }
             }
           },
@@ -8123,32 +9449,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "properties": {
-                    "note": {
-                      "type": "string"
-                    },
-                    "occasion_id": {
-                      "type": "string"
-                    },
-                    "reason": {
-                      "type": "string"
-                    },
-                    "recorded": {
-                      "type": "boolean"
-                    },
-                    "succeeded": {
-                      "type": "boolean"
-                    },
-                    "undecided": {
-                      "type": "boolean"
-                    }
-                  },
-                  "required": [
-                    "occasion_id",
-                    "recorded"
-                  ],
-                  "type": "object"
+                  "$ref": "#/components/schemas/MeasurementOutcomeResponse"
                 }
               }
             },
@@ -8841,6 +10142,295 @@
         ]
       }
     },
+    "/v1/trace": {
+      "get": {
+        "operationId": "trace_detail",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RequestId"
+          },
+          {
+            "$ref": "#/components/parameters/ContainerTag"
+          },
+          {
+            "description": "trace filename from the history page",
+            "in": "query",
+            "name": "file",
+            "required": true,
+            "schema": {
+              "maxLength": 250,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "agent_type": {
+                      "type": "string"
+                    },
+                    "body": {
+                      "maxLength": 20000,
+                      "type": "string"
+                    },
+                    "body_truncated": {
+                      "type": "boolean"
+                    },
+                    "date": {
+                      "type": "string"
+                    },
+                    "file": {
+                      "type": "string"
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "file",
+                    "body",
+                    "body_truncated"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or wrong credential"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Refused by policy or scope"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal error; no details"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "One redacted source trace (?file=).",
+        "tags": [
+          "History"
+        ]
+      }
+    },
+    "/v1/traces": {
+      "get": {
+        "operationId": "trace_history",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RequestId"
+          },
+          {
+            "$ref": "#/components/parameters/ContainerTag"
+          },
+          {
+            "description": "page size",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "page start",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 10000,
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "limit": {
+                      "type": "integer"
+                    },
+                    "offset": {
+                      "type": "integer"
+                    },
+                    "scan_truncated": {
+                      "type": "boolean"
+                    },
+                    "skipped": {
+                      "type": "integer"
+                    },
+                    "total": {
+                      "type": "integer"
+                    },
+                    "traces": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "agent_type": {
+                            "type": "string"
+                          },
+                          "date": {
+                            "type": "string"
+                          },
+                          "file": {
+                            "type": "string"
+                          },
+                          "id": {
+                            "type": "string"
+                          },
+                          "title": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "file",
+                          "id",
+                          "title",
+                          "date",
+                          "agent_type"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "traces",
+                    "total",
+                    "limit",
+                    "offset",
+                    "skipped",
+                    "scan_truncated"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or wrong credential"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Refused by policy or scope"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal error; no details"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Operator trace history (?limit=, ?offset=).",
+        "tags": [
+          "History"
+        ]
+      }
+    },
     "/v1/whoami": {
       "get": {
         "operationId": "whoami",
@@ -9232,6 +10822,9 @@
     },
     {
       "name": "Conversations"
+    },
+    {
+      "name": "History"
     },
     {
       "name": "Ledger"

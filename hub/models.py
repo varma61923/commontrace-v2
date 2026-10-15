@@ -803,3 +803,118 @@ class MarketListing(Base):
     status: Mapped[str] = mapped_column(String(16), default="listed", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
     withdrawn_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+class MemoryRecordEvent(Base):
+    __tablename__ = "memory_record_events"
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True
+    )
+    id: Mapped[str] = mapped_column(String(256), primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, primary_key=True)
+    record: Mapped[dict] = mapped_column(JSONB, nullable=False)
+
+
+class MemoryRecordProjection(Base):
+    __tablename__ = "memory_records"
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True
+    )
+    id: Mapped[str] = mapped_column(String(256), primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    change_seq: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0", nullable=False)
+    record: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    scope: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    search_vector: Mapped[str] = mapped_column(
+        TSVECTOR, Computed("to_tsvector('english', coalesce(record->'payload'->>'text',''))", persisted=True)
+    )
+    __table_args__ = (
+        Index("ix_memory_records_search", "search_vector", postgresql_using="gin"),
+        Index("ix_memory_records_scope", "scope", postgresql_using="gin"),
+        Index("ix_memory_records_session", "org_id", text("((record -> 'payload'::text) ->> 'session_id'::text)"),
+              text("(record ->> 'created_at'::text)")),
+    )
+
+
+class MemoryVectorErasure(Base):
+    """Durable retry after canonical erasure commits and an external vector engine fails."""
+
+    __tablename__ = "memory_vector_erasures"
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True
+    )
+    record_id: Mapped[str] = mapped_column(String(256), primary_key=True)
+
+
+class MemoryChangeClock(Base):
+    """Tenant-local stream sequence and stable canonical-store identity."""
+
+    __tablename__ = "memory_change_clocks"
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True
+    )
+    sequence: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0", nullable=False)
+    source_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), default=_uuid, server_default=text("gen_random_uuid()"), nullable=False
+    )
+    __table_args__ = (CheckConstraint("sequence >= 0", name="ck_memory_change_clock_sequence"),)
+
+
+class MemoryChangeEvent(Base):
+    """Immutable ordered snapshot, except destructive erasure removes payloads."""
+
+    __tablename__ = "memory_change_events"
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True
+    )
+    sequence: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    record_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    operation: Mapped[str] = mapped_column(String(16), nullable=False)
+    record: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
+    __table_args__ = (
+        CheckConstraint("sequence > 0 AND version > 0", name="ck_memory_change_event_revision"),
+        CheckConstraint(
+            "(operation = 'upsert' AND record IS NOT NULL) OR (operation = 'delete' AND record IS NULL)",
+            name="ck_memory_change_event_operation",
+        ),
+        Index("ix_memory_change_events_record", "org_id", "record_id"),
+    )
+
+
+class MemoryProjectionState(Base):
+    """Independent acknowledgements for each namespace/model/revision/dimension."""
+
+    __tablename__ = "memory_projection_states"
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True
+    )
+    projection: Mapped[str] = mapped_column(String(64), primary_key=True)
+    namespace: Mapped[str] = mapped_column(String(256), nullable=False)
+    model: Mapped[str] = mapped_column(String(256), nullable=False)
+    dimension: Mapped[int] = mapped_column(Integer, nullable=False)
+    cursor: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0", nullable=False)
+    generation: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    __table_args__ = (
+        CheckConstraint("length(projection) = 64", name="ck_memory_projection_identity"),
+        CheckConstraint("dimension > 0 AND cursor >= 0", name="ck_memory_projection_position"),
+    )
+
+
+class MemoryEmbeddingCache(Base):
+    """Content-addressed vectors survive replay without retaining erased text."""
+
+    __tablename__ = "memory_embedding_cache"
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True
+    )
+    projection: Mapped[str] = mapped_column(String(64), primary_key=True)
+    record_id: Mapped[str] = mapped_column(String(256), primary_key=True)
+    checksum: Mapped[str] = mapped_column(String(64), primary_key=True)
+    vector: Mapped[list] = mapped_column(JSONB, nullable=False)
+    __table_args__ = (
+        CheckConstraint("length(projection) = 64 AND length(checksum) = 64", name="ck_memory_embedding_identity"),
+        CheckConstraint("jsonb_typeof(vector) = 'array'", name="ck_memory_embedding_array"),
+        CheckConstraint(
+            "jsonb_array_length(vector) > 0 AND NOT jsonb_path_exists(vector, '$[*] ? (@.type() != \"number\")')",
+            name="ck_memory_embedding_numeric",
+        ),
+    )

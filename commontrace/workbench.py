@@ -386,3 +386,108 @@ def reject(root: str, slug: str, reason: str, scope: str = "", expected_revision
     if code != 0:
         raise WorkbenchError(409, "refused", message or "could not reject")
     return {"slug": name, "status": "archived"}
+
+
+# History endpoints deliberately expose operator-owned files only. They do not
+# reuse a query cache or trust symlinks, and never load an unbounded report body.
+HISTORY_SCAN_LIMIT = 10_000
+HISTORY_FILE_BYTES = 2 * 1024 * 1024
+_HISTORY_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,249}$")
+_HISTORY_METRICS = {
+    "lesson_quality": ("lesson_quality", "value"),
+    "implicit_retrieval_strict": ("implicit_retrieval", "strict"),
+    "implicit_retrieval_permissive": ("implicit_retrieval", "permissive"),
+    "transfer_gap": ("transfer_gap", "value"),
+}
+
+
+def _history_files(root: str, directory: str, suffix: str) -> tuple[list[str], bool]:
+    from commontrace.ingest import _open_directory
+
+    names = []
+    try:
+        with _open_directory(os.path.join(root, "memory", directory)) as fd, os.scandir(fd) as entries:
+            for index, entry in enumerate(entries):
+                if index >= HISTORY_SCAN_LIMIT:
+                    return sorted(names, reverse=True), True
+                if (entry.name.endswith(suffix) and _HISTORY_NAME.fullmatch(entry.name)
+                        and entry.is_file(follow_symlinks=False)):
+                    names.append(entry.name)
+    except FileNotFoundError:
+        return [], False
+    except OSError as exc:
+        raise WorkbenchError(403, "unsafe_history", "history directory is unavailable or unsafe") from exc
+    return sorted(names, reverse=True), False
+
+
+def _history_read(root: str, directory: str, name: str, suffix: str) -> str:
+    from commontrace.ingest import _read_bytes
+
+    if not _HISTORY_NAME.fullmatch(name) or not name.endswith(suffix):
+        raise WorkbenchError(400, "invalid_history_id", "invalid history file identifier")
+    try:
+        return _read_bytes(os.path.join(root, "memory", directory, name), HISTORY_FILE_BYTES).decode("utf-8-sig")
+    except FileNotFoundError as exc:
+        raise WorkbenchError(404, "not_found", "history file not found") from exc
+    except (OSError, ValueError) as exc:
+        raise WorkbenchError(403, "unsafe_history", "history file is unreadable, oversized or unsafe") from exc
+
+
+def trace_page(root: str, *, limit: int = 50, offset: int = 0) -> dict:
+    """A bounded metadata page; source text is loaded only for the selected trace."""
+    from commontrace import memory_guard
+
+    names, truncated = _history_files(root, "traces", ".md")
+    rows, skipped = [], 0
+    for name in names[offset:offset + limit]:
+        try:
+            fm, _ = frontmatter.parse_content(_history_read(root, "traces", name, ".md"))
+            metadata = {key: str(fm.get(key, ""))[:2000] for key in ("id", "title", "date", "agent_type")}
+            metadata, _ = memory_guard.sanitize_metadata(metadata, pii=memory_guard.privacy_redaction_enabled())
+            rows.append({"file": name, **metadata})
+        except (WorkbenchError, ValueError):
+            skipped += 1
+    return {"traces": rows, "total": len(names), "limit": limit, "offset": offset,
+            "skipped": skipped, "scan_truncated": truncated}
+
+
+def trace_detail(root: str, name: str) -> dict:
+    from commontrace import memory_guard
+
+    fm, body = frontmatter.parse_content(_history_read(root, "traces", name, ".md"))
+    # Historical imports predate write-time redaction. Do not return credentials
+    # or unbounded arbitrary frontmatter to a browser even on an operator route.
+    value = {"file": name, **{key: str(fm.get(key, ""))[:2000]
+                             for key in ("id", "title", "date", "agent_type")},
+             "body": body[:MAX_BODY_CHARS], "body_truncated": len(body) > MAX_BODY_CHARS}
+    return memory_guard.sanitize_metadata(value, pii=memory_guard.privacy_redaction_enabled())[0]
+
+
+def benchmark_history(root: str, *, limit: int = 100) -> dict:
+    """Actual saved scores and adjacent deltas; absent/invalid values stay null."""
+    import math
+
+    names, truncated = _history_files(root, "benchmark_reports", ".json")
+    rows, skipped = [], 0
+    for name in reversed(names[:limit]):
+        try:
+            report = json.loads(_history_read(root, "benchmark_reports", name, ".json"))
+            if not isinstance(report, dict):
+                raise ValueError("invalid report")
+            metrics = {}
+            for key, (section, field) in _HISTORY_METRICS.items():
+                group = report.get(section)
+                value = group.get(field) if isinstance(group, dict) else None
+                metrics[key] = (float(value) if isinstance(value, (int, float)) and not isinstance(value, bool)
+                                and -1 <= value <= 1 and math.isfinite(value) else None)
+                if key != "transfer_gap" and metrics[key] is not None and metrics[key] < 0:
+                    metrics[key] = None
+            previous = rows[-1]["metrics"] if rows else {}
+            delta = {key: (value - previous[key] if value is not None and previous.get(key) is not None else None)
+                     for key, value in metrics.items()}
+            rows.append({"file": name, "timestamp": name.removesuffix(".json"),
+                         "metrics": metrics, "delta": delta})
+        except (WorkbenchError, ValueError):
+            skipped += 1
+    return {"reports": rows, "total": len(names), "limit": limit,
+            "skipped": skipped, "scan_truncated": truncated}

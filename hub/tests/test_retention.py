@@ -17,6 +17,7 @@ from hub.models import (
     Organization,
     RetentionPolicy,
     Trace,
+    TraceRelation,
 )
 
 NOW = datetime(2026, 9, 12, tzinfo=timezone.utc)
@@ -206,6 +207,24 @@ class TestApply:
                 )).scalars()
             )
         assert left == {ids[2]}
+
+    async def test_purged_traces_free_their_quota_and_leave_no_dangling_relations(
+        self, session_factory, org
+    ):
+        ids = await _add_traces(session_factory, org, [400, 400, 10])
+        async with session_scope(session_factory) as session:
+            (await session.get(Organization, org)).trace_count = 3
+            session.add(TraceRelation(trace_id=ids[2], related_trace_id=ids[0], relationship_type="AMENDS"))
+        await self._one_policy(session_factory, org)
+        async with session_scope(session_factory) as session:
+            plan = await retention.plan(session, org, now=NOW)
+            await retention.apply(session, org, plan.digest, now=NOW)
+        async with session_scope(session_factory) as session:
+            assert (await session.get(Organization, org)).trace_count == 1
+            dangling = (await session.execute(
+                select(func.count()).select_from(TraceRelation).where(TraceRelation.trace_id == ids[2])
+            )).scalar()
+        assert dangling == 0
 
     async def test_a_stale_digest_deletes_nothing(self, session_factory, org):
         await _add_traces(session_factory, org, [400])
@@ -455,18 +474,22 @@ class TestSchemaSafety:
             _NEW_TABLES as _SCIM_GROUP_TABLES,
         )
         from hub.alembic.versions.d5c8b3a91e77_row_level_security import _SCOPED_TABLES
+        from hub.alembic.versions.d6e8a1b2c3f4_memory_record_events import _NEW_TABLES as _MEMORY_TABLES
         from hub.alembic.versions.d7f2a63b9c41_retention_policies_and_legal_holds import (
             _NEW_TABLES as _RETENTION_TABLES,
         )
         from hub.alembic.versions.e9b4c07d15a8_webhook_event_export import (
             _NEW_TABLES as _WEBHOOK_TABLES,
         )
+        from hub.alembic.versions.f8a0b3c4d5e6_memory_vector_stream import (
+            _TABLES as _VECTOR_STREAM_TABLES,
+        )
         from hub.models import Base
 
         protected = {
             *_SCOPED_TABLES, *_RETENTION_TABLES, *_WEBHOOK_TABLES,
             *_USER_TABLES, *_COLLAB_TABLES, *_ALERT_TABLES, *_SCIM_GROUP_TABLES, *_CONNECTOR_TABLES,
-            *_MARKET_TABLES, "traces",
+            *_MARKET_TABLES, *_MEMORY_TABLES, *_VECTOR_STREAM_TABLES, "traces",
         }
         exempt = {
             "api_keys",

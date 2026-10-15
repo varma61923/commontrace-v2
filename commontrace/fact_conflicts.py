@@ -27,6 +27,8 @@ import os
 import re
 from dataclasses import asdict, dataclass
 
+from commontrace.configuration import getenv as _configuration_getenv
+
 MODES = ("off", "flag", "supersede")
 _STEM = re.compile(r"(?:ing|ed)$")
 
@@ -35,7 +37,7 @@ _STEM = re.compile(r"(?:ing|ed)$")
 class Conflict:
     older: str
     newer: str
-    kind: str  # negation | value | judged
+    kind: str  # negation | value | judged | exclusive (an exclusive graph relation, see graph_sync)
     older_statement: str
     newer_statement: str
     detected_at: str
@@ -44,7 +46,7 @@ class Conflict:
 
 
 def mode() -> str:
-    value = os.environ.get("COMMONTRACE_FACT_CONFLICTS", "flag").strip().lower() or "flag"
+    value = _configuration_getenv("COMMONTRACE_FACT_CONFLICTS", "flag").strip().lower() or "flag"
     if value not in MODES:
         raise ValueError("COMMONTRACE_FACT_CONFLICTS must be off, flag or supersede")
     return value
@@ -66,6 +68,12 @@ def _stem(word: str) -> str:
 
 def slot_key(statement: str) -> frozenset:
     """Stemmed content words without numbers or negations: equal keys are candidate pairs."""
+    from commontrace import hierarchical
+
+    return hierarchical._cached_feature("slot", statement, _slot_key_uncached)
+
+
+def _slot_key_uncached(statement: str) -> frozenset:
     from commontrace import hierarchical
 
     words, numbers, negations = hierarchical._signature(statement)
@@ -91,36 +99,14 @@ def classify(older: str, newer: str) -> str | None:
     return None
 
 
-_JUDGE_PROMPT = """You compare a NEW fact with EXISTING facts from the same memory.
-For each existing fact, decide whether the NEW fact replaces it: they describe the
-same subject and attribute and cannot both be true now (for example a changed
-employer, address, preference or count). Facts about different subjects, or that
-can both be true, are not replaced.
-
-NEW: {new}
-EXISTING:
-{existing}
-
-Answer with JSON only: {{"replaces": ["<id>", ...]}} listing only ids shown above."""
-
-
 def judge(newer: str, candidates: list, complete=None) -> set[str]:
     """Ids among `candidates` (facts) that an LLM judges the newer statement to replace.
 
     Defensive: only ids that were offered are accepted, and any failure means none.
     """
-    if not candidates:
-        return set()
-    from commontrace import llm
-
-    offered = {f.id: f.statement for f in candidates[:8]}
-    prompt = _JUDGE_PROMPT.format(new=newer, existing="\n".join(f"- {i}: {s}" for i, s in offered.items()))
-    try:
-        text = complete(prompt) if complete is not None else llm.complete(prompt)[0]
-        ids = llm._extract_json_object(str(text)).get("replaces", [])
-    except Exception:  # noqa: BLE001 - a judge that fails judges nothing
-        return set()
-    return {i for i in ids if isinstance(i, str) and i in offered}
+    if complete is None:
+        return judge_joint(newer, candidates)['contradictions']
+    return judge_joint(newer, candidates, complete=lambda prompt: (complete(prompt), {}))['contradictions']
 
 
 def _queue_path(root: str) -> str:
@@ -141,21 +127,60 @@ def record(root: str, conflicts: list[Conflict]) -> None:
 
 def pending(root: str) -> list[Conflict]:
     """Recorded contradictions whose older fact is still active (newest first)."""
-    from commontrace import hierarchical
+    from commontrace import _jsonl, hierarchical
 
     path = _queue_path(root)
     if not os.path.isfile(path):
         return []
     facts = hierarchical.load_facts(root)
     seen, out = set(), []
-    with open(path, encoding="utf-8") as fh:
-        rows = [json.loads(line) for line in fh if line.strip()]
+    rows = _jsonl.read_rows(path)
     for row in reversed(rows):
-        key = (row["older"], row["newer"])
+        try:
+            conflict = Conflict(**row)
+        except TypeError:
+            continue
+        if not isinstance(conflict.older, str) or not isinstance(conflict.newer, str):
+            continue
+        key = (conflict.older, conflict.newer)
         if key in seen:
             continue
         seen.add(key)
-        older, newer = facts.get(row["older"]), facts.get(row["newer"])
+        older, newer = facts.get(conflict.older), facts.get(conflict.newer)
         if older is not None and newer is not None and older.status == "active" and newer.status == "active":
-            out.append(Conflict(**row))
+            out.append(conflict)
     return out
+
+
+def judge_joint(newer: str, candidates: list, complete=None) -> dict[str, set[str]]:
+    """One bounded duplicate/contradiction decision; no model-selected arbitrary ids."""
+    from commontrace import llm
+    from commontrace.llm_runtime import purpose
+
+    offered = {fact.id: fact.statement for fact in candidates[:15]}
+    empty = {"duplicates": set(), "contradictions": set()}
+    if not offered:
+        return empty
+    try:
+        with purpose("fact-dedup-contradiction"):
+            text, _ = (complete or llm.complete)(
+                'Return JSON {"duplicates":["id"],"contradictions":["id"]}. Duplicate means the same claim; '
+                "contradiction means identical subject, facet and overlapping time with mutually exclusive claims. "
+                "Choose only offered identifiers. Different dates do not establish a contradiction.\n"
+                + __import__("json").dumps({"new": newer, "existing": offered})
+            )
+        payload = llm._extract_json_object(text)
+        result = {}
+        for key in empty:
+            identities = payload.get(key, payload.get("replaces", []) if key == "contradictions" else [])
+            # Strings and object keys are iterable too. Neither is a validated
+            # decision, and malformed output must never close a fact's window.
+            if (not isinstance(identities, list) or len(identities) > 15
+                    or any(not isinstance(identity, str) for identity in identities)):
+                return empty
+            result[key] = {identity for identity in identities if identity in offered}
+        if result["duplicates"] & result["contradictions"]:
+            return empty
+        return result
+    except Exception:  # noqa: BLE001 - failed judgments never mutate temporal truth
+        return empty

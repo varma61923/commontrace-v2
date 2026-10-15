@@ -1,4 +1,4 @@
-"""Zero-dependency multimodal ingestion (pdf/docx/html/image/audio/subtitles)."""
+"""Zero-dependency multimodal ingestion (pdf/office/html/image/audio/subtitles)."""
 
 from __future__ import annotations
 
@@ -1019,9 +1019,23 @@ def chunk_srt(path: str) -> list[Chunk]:
     return _chunk_subtitle_cues(_parse_srt_cues(text), path, "SRT")
 
 
+def chunk_xlsx(path: str) -> list[Chunk]:
+    from commontrace.ingest.office import chunk_xlsx as extract
+
+    return extract(path)
+
+
+def chunk_pptx(path: str) -> list[Chunk]:
+    from commontrace.ingest.office import chunk_pptx as extract
+
+    return extract(path)
+
+
 INGEST_FNS: dict[str, object] = {
     ".pdf": chunk_pdf,
     ".docx": chunk_docx,
+    ".xlsx": chunk_xlsx,
+    ".pptx": chunk_pptx,
     ".html": chunk_html,
     ".htm": chunk_html,
     ".png": chunk_image,
@@ -1038,6 +1052,8 @@ INGEST_FNS: dict[str, object] = {
 _EXT_MODALITY = {
     ".pdf": "pdf",
     ".docx": "docx",
+    ".xlsx": "xlsx",
+    ".pptx": "pptx",
     ".html": "html",
     ".htm": "html",
     ".png": "image",
@@ -1054,6 +1070,8 @@ _EXT_MODALITY = {
 _MODALITY_SOURCE_TYPE = {
     "pdf": "pdf",
     "docx": "docx",
+    "xlsx": "xlsx",
+    "pptx": "pptx",
     "html": "html",
     "image": "image",
     "audio": "audio",

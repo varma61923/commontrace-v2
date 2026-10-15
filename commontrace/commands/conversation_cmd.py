@@ -26,13 +26,16 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     a.add_argument("--file", default="-", help="messages as JSON or JSONL, - for stdin (default)")
     a.add_argument("--text", default=None, help="add one message with this text instead of reading --file")
     a.add_argument("--speaker", default="user", help="speaker of --text (default user)")
+    a.add_argument("--cache-vectors", action="store_true",
+                   help="Prepare semantic vectors after committing messages; may invoke the selected provider.")
+    a.add_argument("--embedder", default=None, help="Embedding provider tag for --cache-vectors (default configured).")
     a.add_argument("--dest", default=None)
     a.set_defaults(func=run_add)
 
     ix = sub.add_parser("index", help="Prepare local semantic vectors before serving questions.")
     ix.add_argument("space", help=SPACE_HELP)
-    ix.add_argument("--model", choices=("arctic-m", "minilm"), default=None,
-                    help="local embedding model (default: COMMONTRACE_CONVERSATION_EMBEDDER)")
+    ix.add_argument("--model", default=None,
+                    help="Local or registered embedding provider tag (default: COMMONTRACE_CONVERSATION_EMBEDDER).")
     ix.add_argument("--session", action="append", default=[], help="only these sessions (repeatable)")
     ix.add_argument("--json", action="store_true")
     ix.add_argument("--dest", default=None)
@@ -51,7 +54,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     r.add_argument("--rerank", choices=("auto", "none", "cross-encoder", "cross-encoder-fast"), default="auto",
                    help="second-stage reranker (auto: the accurate one when the attention extra is installed)")
     r.add_argument("--lexical", action="store_true", help="keyword search only, no embedding model")
-    r.add_argument("--context-strategy", choices=("legacy", "coverage-v1"), default="legacy",
+    r.add_argument("--context-strategy", choices=("legacy", "coverage-v1", "coverage-v2"), default="legacy",
                    help="context packing: preserve ranking or diversify delivered query facets")
     _filters(r)
     r.add_argument("--json", action="store_true")
@@ -63,10 +66,12 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     q.add_argument("question")
     q.add_argument("--rounds", type=int, default=1,
                    help="up to 4: the model may ask for follow-up searches before answering")
+    q.add_argument("--grounded", action="store_true",
+                   help="require bounded JSON answers with citations to delivered evidence; invalid replies abstain")
     q.add_argument("--budget", type=_budget_arg, default=None, help="tokens, or 'auto' (see recall)")
     q.add_argument("--max-budget", type=int, default=None)
     q.add_argument("--now", default=None)
-    q.add_argument("--context-strategy", choices=("legacy", "coverage-v1"), default="legacy")
+    q.add_argument("--context-strategy", choices=("legacy", "coverage-v1", "coverage-v2"), default="legacy")
     _filters(q)
     q.add_argument("--json", action="store_true")
     q.add_argument("--dest", default=None)
@@ -102,6 +107,15 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     x.add_argument("--session", action="append", default=[], help="only this session (repeatable)")
     x.add_argument("--dest", default=None)
     x.set_defaults(func=run_extract)
+
+    an = sub.add_parser("anticipate", help="Index the questions each message answers, written by the configured "
+                                           "model (sleep-time indexing; generated text is never shown as evidence).")
+    an.add_argument("space", help=SPACE_HELP)
+    an.add_argument("--limit", type=int, default=None, help="at most this many pending messages")
+    an.add_argument("--workers", type=int, default=4, help="concurrent model calls (default 4)")
+    an.add_argument("--json", action="store_true")
+    an.add_argument("--dest", default=None)
+    an.set_defaults(func=run_anticipate)
 
     e = sub.add_parser("export", help="Write a space as JSONL (one session per line).")
     e.add_argument("space", help=SPACE_HELP)
@@ -221,13 +235,21 @@ def run_add(args) -> int:
         messages = [{"speaker": args.speaker, "text": args.text}] if args.text is not None \
             else _read_messages(args.file)
         with _store(args) as store:
-            result = store.add(args.session, messages, session_at=args.at)
+            result = store.add(args.session, messages, session_at=args.at,
+                               cache_vectors=args.cache_vectors, embedder=args.embedder)
     except (ConversationError, ValueError, OSError) as exc:
         print(f"[commontrace] {exc}", file=sys.stderr)
         return 2
     note = f", {result['secrets_redacted']} secret(s) redacted" if result["secrets_redacted"] else ""
     print(f"[commontrace] {result['added']} message(s) added to {args.space}/{args.session}"
           f" ({result['skipped']} already stored or empty{note}).")
+    cache = result.get("embedding_cache")
+    if cache:
+        if cache["ready"]:
+            print(f"[commontrace] semantic cache ready: {cache['units']} unit(s), {cache['model']}.")
+        else:
+            print(f"[commontrace] source saved; semantic cache unavailable ({cache['error_type']}). "
+                  "Retry with conversation index.", file=sys.stderr)
     return 0
 
 
@@ -257,22 +279,27 @@ def run_index(args) -> int:
     encoder = None
     try:
         tag = args.model or embed.configured()
-        if not tag or not embed.available():
-            raise ConversationError("local semantic indexing requires the attention extra and an enabled embedder")
+        if not tag or not embed.available_for(tag):
+            raise ConversationError(
+                "semantic indexing requires an enabled embedder/embedding provider and its optional dependency"
+            )
         with _store(args, create=False) as store:
             encoder = embed.Embedder(store.root, tag)
             result = embed.prepare(store, encoder, sessions=args.session)
-    except (ConversationError, OSError) as exc:
+    except (ConversationError, ImportError, RuntimeError, OSError) as exc:
         print(f"[commontrace] {exc}", file=sys.stderr)
         return 2
     finally:
         if encoder is not None:
             encoder.close()
+    from commontrace.telemetry import redact_mapping
+
+    safe_result = redact_mapping(result) if isinstance(result, dict) else result
     if args.json:
-        print(json.dumps(result))
+        print(json.dumps(safe_result))
     else:
-        print(f"[commontrace] {result['units']} passage(s) prepared with {result['model']} "
-              f"in {result['elapsed_seconds']:.3f}s.")
+        print(f"[commontrace] {safe_result.get('units', 0)} passage(s) prepared with {safe_result.get('model', '')} "
+              f"in {safe_result.get('elapsed_seconds', 0.0):.3f}s.")
     return 0
 
 
@@ -284,7 +311,8 @@ def run_answer(args) -> int:
     try:
         opts = _options(args)
         with _store(args, create=False) as store:
-            out = answer(store, args.question, now=args.now, options=opts, rounds=args.rounds)
+            out = answer(store, args.question, now=args.now, options=opts, rounds=args.rounds,
+                         grounded=getattr(args, "grounded", False))
     except (ConversationError, ValueError, llm.LLMUnavailable) as exc:
         print(f"[commontrace] {exc}", file=sys.stderr)
         return 2
@@ -357,6 +385,30 @@ def run_extract(args) -> int:
         return 2
     note = f", {out['refused']} refused by the injection screen" if out["refused"] else ""
     print(f"[commontrace] {out['memories']} memory(ies) from {out['calls']} model call(s){note}.")
+    return 0
+
+
+def run_anticipate(args) -> int:
+    from commontrace import llm
+    from commontrace.conversation import ConversationError, anticipate
+
+    if args.limit is not None and args.limit < 0 or args.workers < 1:
+        print("[commontrace] --limit must be >= 0 and --workers >= 1", file=sys.stderr)
+        return 2
+    try:
+        llm.load_config()
+        with _store(args, create=False) as store:
+            out = anticipate.expand(store, llm.complete, limit=args.limit, workers=args.workers)
+            out["pending"] = len(anticipate.pending(store))
+    except (ConversationError, llm.LLMUnavailable, ValueError) as exc:
+        print(f"[commontrace] {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(out, sort_keys=True))
+    else:
+        print(f"[commontrace] indexed {out['indexed']} message(s), {out['empty']} without content, "
+              f"{out['rejected']} refused by the injection screen, {out['failed_batches']} batch(es) left "
+              f"for the next pass; {out['pending']} pending.")
     return 0
 
 

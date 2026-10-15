@@ -127,6 +127,12 @@ def make_http_server(gateway: Gateway, host: str, port: int, *, tls: tuple[str, 
         allow_reuse_address = True
         request_queue_size = 64
 
+        def server_close(self):
+            try:
+                super().server_close()
+            finally:
+                gateway.close()
+
         def __init__(self, *args, **kwargs):
             self.connection_slots = threading.BoundedSemaphore(max_connections)
             super().__init__(*args, **kwargs)

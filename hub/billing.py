@@ -124,7 +124,8 @@ def verify_webhook_signature(
         return False
     signed_payload = f"{timestamp}.".encode("ascii") + payload
     expected = hmac.new(secret.encode("utf-8"), signed_payload, hashlib.sha256).hexdigest()
-    return any(hmac.compare_digest(expected, candidate) for candidate in signatures)
+    return any(hmac.compare_digest(expected.encode(), candidate.encode("utf-8", "replace"))
+               for candidate in signatures)
 
 
 def _looks_like_org_id(value: str | None) -> bool:
@@ -185,6 +186,16 @@ async def _apply_webhook_event_once(session: AsyncSession, settings: StripeSetti
         ).scalar_one_or_none()
         if org is None:
             return f"ignored {event_type}: no org for customer {customer_id}"
+
+        # Stripe delivers out of order, and one customer can hold more than one
+        # subscription over time: the end of an old one must not downgrade an org
+        # that has already moved to a newer one.
+        subscription_id = str(obj.get("id") or "")
+        if subscription_id and org.stripe_subscription_id and subscription_id != org.stripe_subscription_id:
+            status = str(obj.get("status") or "")
+            if event_type == "customer.subscription.deleted" or status not in ("active", "trialing"):
+                return (f"ignored {event_type}: subscription {subscription_id} is not the org's "
+                        f"current subscription {org.stripe_subscription_id}")
 
         if event_type == "customer.subscription.deleted":
             org.plan = plans.DEFAULT_PLAN

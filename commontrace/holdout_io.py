@@ -115,6 +115,56 @@ def _append_lines(path: str, lines: list[str], durable: bool = True) -> None:
             os.fsync(fh.fileno())
 
 
+def plan_assignments(
+    root: str,
+    slugs: list[str],
+    *,
+    occasion_id: str,
+    rate: float,
+    salt: str,
+    relevance: dict[str, float] | None = None,
+    scorer: str = "",
+    floor: float | None = None,
+    revisions: dict[str, str | None] | None = None,
+    durable: bool = True,
+) -> tuple[set[str], list[dict]]:
+    """Freeze deterministic arms and schedule metadata without claiming delivery."""
+    from commontrace import allocation
+
+    moment = datetime.datetime.now(datetime.timezone.utc)
+    schedule = allocation.active(root, salt, moment)
+    rates = {s: (schedule.rate_for(s) if schedule is not None else rate) for s in slugs}
+    withheld = {s for s in slugs if experiment.is_held_out(s, occasion_id, rates[s], salt)}
+    now = moment.isoformat()
+
+    rows: list[dict] = []
+    for rank, slug in enumerate(slugs, start=1):
+        row = {
+            "occasion_id": occasion_id,
+            "lesson": slug,
+            "injected": slug not in withheld,
+            "rate": rates[slug],
+            "salt": salt,
+            "at": now,
+            "rank": rank,
+            "revision": (
+                revisions[slug]
+                if revisions is not None and slug in revisions
+                else lesson_io.revision_for_slug(root, slug)
+            ),
+        }
+        if relevance is not None and slug in relevance:
+            row["relevance"] = round(float(relevance[slug]), 6)
+        if scorer:
+            row["scorer"] = scorer
+        if floor is not None:
+            row["floor"] = float(floor)
+        if schedule is not None:
+            row["schedule"] = schedule.digest[:16]
+        rows.append(row)
+    return withheld, rows
+
+
 def assign_and_log(
     root: str,
     slugs: list[str],
@@ -128,49 +178,13 @@ def assign_and_log(
     revisions: dict[str, str | None] | None = None,
     durable: bool = True,
 ) -> set[str]:
-    """Decide which of `slugs` to withhold on this occasion, and record it.
-
-    When adaptive allocation is on for this experiment, each memory's rate
-    comes from the schedule in force now (see `allocation`); otherwise every
-    memory gets `rate`. Either way the logged rate is the one compared.
-    """
-    from commontrace import allocation
-
-    moment = datetime.datetime.now(datetime.timezone.utc)
-    schedule = allocation.active(root, salt, moment)
-    rates = {s: (schedule.rate_for(s) if schedule is not None else rate) for s in slugs}
-    withheld = {s for s in slugs if experiment.is_held_out(s, occasion_id, rates[s], salt)}
-    now = moment.isoformat()
-
+    """Decide and persist assignments; all legacy callers keep their existing behavior."""
+    withheld, rows = plan_assignments(root, slugs, occasion_id=occasion_id, rate=rate, salt=salt,
+        relevance=relevance, scorer=scorer, floor=floor, revisions=revisions, durable=durable)
     path = holdout_log_path(root)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    lines: list[str] = []
     with frontmatter.locked(path):
-        for rank, slug in enumerate(slugs, start=1):
-            row = {
-                "occasion_id": occasion_id,
-                "lesson": slug,
-                "injected": slug not in withheld,
-                "rate": rates[slug],
-                "salt": salt,
-                "at": now,
-                "rank": rank,
-                "revision": (
-                    revisions[slug]
-                    if revisions is not None and slug in revisions
-                    else lesson_io.revision_for_slug(root, slug)
-                ),
-            }
-            if relevance is not None and slug in relevance:
-                row["relevance"] = round(float(relevance[slug]), 6)
-            if scorer:
-                row["scorer"] = scorer
-            if floor is not None:
-                row["floor"] = float(floor)
-            if schedule is not None:
-                row["schedule"] = schedule.digest[:16]
-            lines.append(json.dumps(row))
-        _append_lines(path, lines, durable)
+        _append_lines(path, [json.dumps(row) for row in rows], durable)
     return withheld
 
 
@@ -208,6 +222,14 @@ class _OutcomeCache:
 
 _outcome_cache: dict[str, _OutcomeCache] = {}
 _outcome_cache_lock = threading.Lock()
+
+
+def clear_root_caches(root: str) -> None:
+    """Forget assignment and outcome rows for a store that is being removed."""
+    with _outcome_cache_lock:
+        _outcome_cache.pop(outcomes_log_path(root), None)
+    with _log_cache_lock:
+        _log_cache.pop(holdout_log_path(root), None)
 
 
 def _outcomes_shared(path: str) -> dict[str, bool]:

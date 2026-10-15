@@ -75,15 +75,18 @@ def test_head_word_prefers_the_most_specific_type(onto):
 
 def test_word_and_context_scores(onto):
     word = ontology_classify.classify("API Gateway Squad", onto=onto)
-    assert word.type == "team" and word.confidence == pytest.approx(0.9)
-    context = ontology_classify.classify("Lyon", "We opened an office in the city of Lyon last year.", onto=onto)
-    assert (context.type, context.confidence) == ("place", pytest.approx(0.7))
+    assert word.type == "team" and word.confidence == pytest.approx(ontology_classify.SCORES["head"])
+    context = ontology_classify.classify("Velmora", "We opened an office in the city of Velmora last year.",
+                                         onto=onto)
+    # "the city of X" (0.8) and "city" beside the mention (0.7) are independent evidence: noisy-OR.
+    assert (context.type, context.confidence) == ("place", pytest.approx(1 - 0.2 * 0.3))
+    assert context.method == "pattern"
 
 
 def test_unknown_below_threshold(onto):
     found = ontology_classify.classify("Zorblax", "Nothing here says what Zorblax is.", onto=onto)
     assert not found.known and found.method == "none"
-    strict = ontology_classify.classify("Lyon", "the city of Lyon", onto=onto, threshold=0.8)
+    strict = ontology_classify.classify("Velmora", "near Velmora", onto=onto, threshold=0.8)
     assert strict.type is None
 
 

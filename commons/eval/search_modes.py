@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import statistics
 import sys
 from pathlib import Path
@@ -12,8 +13,8 @@ sys.path.insert(0, str(ROOT))
 from commontrace import overlap, retrieval  # noqa: E402
 from hub import commons as hub_commons  # noqa: E402
 
-CORPUS = ROOT / "commons" / "seed" / "substrate-v1.jsonl"
-PROBES = Path(__file__).resolve().parent / "probes-v1.jsonl"
+CORPUS = Path(os.environ.get("COMMONTRACE_EVAL_CORPUS", "corpus.jsonl"))  # bring your own corpus
+PROBES = Path(os.environ.get("COMMONTRACE_EVAL_PROBES", "probes.jsonl"))  # bring your own probes
 
 KS = (1, 3, 5, 10)
 

@@ -178,7 +178,7 @@ def _op(
 # ---------------------------------------------------------------------------
 
 PUBLIC: list = []
-API_KEY = [{"apiKey": []}]
+API_KEY = [{"apiKey": []}, {"userBearer": []}]
 ADMIN = [{"adminBasic": []}]
 CONSOLE = [{"consoleSession": []}]
 SCIM = [{"scimBearer": []}]
@@ -197,6 +197,11 @@ _SECURITY_SCHEMES = {
         "type": "apiKey", "in": "header", "name": "X-API-Key",
         "description": "An org API key (`ct_...`). Each route also requires a scope on that key "
                        "(read, write); a key without it gets 403.",
+    },
+    "userBearer": {
+        "type": "http", "scheme": "bearer", "bearerFormat": "JWT",
+        "description": "An access token from the configured OIDC issuer (HUB_OIDC_ISSUER), for a user "
+                       "pre-linked with `hub.manage link-sso`. The user's Hub role determines REST scopes.",
     },
     "mcpBearer": {
         "type": "http", "scheme": "bearer",
@@ -547,8 +552,7 @@ def _schemas() -> dict:
         }, additional=True, description="Members that are not users of this org are dropped."),
         "ScimPatchOp": _object({
             "schemas": _array(_string()),
-            "Operations": _array(patch_op),
-            "operations": _array(patch_op, "Lower-case alias accepted."),
+            "operations": _array(patch_op, "Canonical form; the uppercase SCIM `Operations` alias is also accepted."),
             "active": {"description": "Users only: a bare `active` with no Operations."},
         }, additional=True),
         "ScimUserList": _object({
@@ -630,18 +634,28 @@ _HEADERS = {
 }
 
 _TAGS = [
-    ("MCP", "The MCP streamable-HTTP endpoint (path HUB_STREAMABLE_HTTP_PATH, default /mcp). Tools are "
-            "discovered with `tools/list`; their arguments are described by the server itself."),
+    ("Memory", "Versioned, tenant-scoped memory records and erasure."),
+    (
+        "MCP",
+        "The MCP streamable-HTTP endpoint (path HUB_STREAMABLE_HTTP_PATH, default /mcp). Tools are "
+        "discovered with `tools/list`; their arguments are described by the server itself.",
+    ),
     ("REST", "The /api/v1 REST API (HUB_REST_API_ENABLED) the CommonTrace client plugin speaks. X-API-Key."),
-    ("Marketplace", "The lesson marketplace under /api/v1/market (HUB_REST_API_ENABLED). Uploads are verified "
-                    "against HUB_MARKET_REFEREES_FILE."),
+    (
+        "Marketplace",
+        "The lesson marketplace under /api/v1/market (HUB_REST_API_ENABLED). Uploads are verified "
+        "against HUB_MARKET_REFEREES_FILE.",
+    ),
     ("Telemetry", "Client beacons under /api/v1/telemetry (HUB_REST_API_ENABLED). Authenticated, body ignored."),
     ("Signup", "Self-serve account creation (HUB_SIGNUP_ENABLED; POST /api/v1/keys also needs the REST API)."),
     ("Console", "The customer console under /app (HUB_CONSOLE_SECRET): HTML pages and form posts."),
-    ("Admin", "The operator console under /admin (HUB_ADMIN_TOKEN): HTML pages and form posts. Each form "
+    (
+        "Admin",
+        "The operator console under /admin (HUB_ADMIN_TOKEN): HTML pages and form posts. Each form "
               "names its target in a body field (`org_id`, `user_id`, `key_id`, `trace_id`, `hold_id`, "
               "`submission_id`, `digest` or `target`) together with a matching `csrf` token; that field, not "
-              "the URL, selects what is changed."),
+        "the URL, selects what is changed.",
+    ),
     ("Billing", "The Stripe webhook (HUB_STRIPE_WEBHOOK_SECRET)."),
     ("OTLP", "OpenTelemetry trace ingest (HUB_OTLP_INGEST_ENABLED), OTLP/JSON only."),
     ("Connectors", "System-of-record webhooks that record outcomes (HUB_CONNECTORS_ENABLED)."),
@@ -1423,6 +1437,40 @@ def _operations() -> dict[tuple[str, str], dict]:
             ok={"200": _html("HUB_COMMONS_ENABLED=false: an explanatory page.")},
         ),
     }
+    ops[("POST", "/api/v1/memory/records/{operation}")] = _api(
+        "memoryRecordOperation",
+        "Memory",
+        "Versioned scoped records: put, search, hard forget or reap due expirations",
+        body=_json_body(
+            _free_object("Versioned memory data"),
+            "MemoryRecord envelope, scoped query, erasure id and reason, or optional expiration batch limit.",
+        ),
+        ok={
+            "200": _json(
+                "Versioned record, search results, erasure audit, or expiration reaping results.",
+                _free_object("Versioned memory data"),
+            ),
+            "400": _error("Invalid record or version conflict."),
+            "413": _error("Payload exceeds 100 kB."),
+        },
+    )
+    ops[("POST", "/v1/memory/{operation}")] = _api(
+        "memoryRecordSDKOperation",
+        "Memory",
+        "Local SDK record-put, record-search, record-forget and record-reap-due wire parity",
+        body=_json_body(
+            _free_object("Scoped record SDK data"),
+            "Record envelope, query, context labels, erasure reason, or expiration batch limit.",
+        ),
+        ok={
+            "200": _json(
+                "Record SDK response, including bounded expiration reaping results",
+                _free_object("Record SDK data"),
+            ),
+            "400": _error("Invalid record or version conflict."),
+            "413": _error("Payload exceeds 100 kB."),
+        },
+    )
     return ops
 
 
@@ -1570,7 +1618,7 @@ def document(app=None) -> dict:
                 "413. When HUB_IP_ALLOWLIST is set, sources outside it get 403 everywhere except /healthz, "
                 "/readyz and /disclosure."
             ),
-            "license": {"name": "MIT", "identifier": "MIT"},
+            "license": {"name": "GNU AGPLv3", "identifier": "AGPL-3.0-only"},
         },
         "tags": [{"name": name, "description": text} for name, text in _TAGS],
         "paths": paths,
