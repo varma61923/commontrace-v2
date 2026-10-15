@@ -82,6 +82,10 @@ def _verify_argon2(secret: str, stored_hash: str) -> bool:
 
 _LAST_USED_AT_UPDATE_INTERVAL = timedelta(minutes=5)
 
+# Far enough out for any real rotation policy, and well inside datetime's
+# range: an unbounded expiry raised OverflowError (500) past about year 9999.
+MAX_KEY_EXPIRY_DAYS = 3650
+
 
 @dataclass(frozen=True)
 class IssuedKey:
@@ -112,6 +116,8 @@ async def issue_api_key(
     if expires_days is not None:
         if expires_days <= 0:
             raise ValueError(f"expires_days must be positive, got {expires_days}")
+        if expires_days > MAX_KEY_EXPIRY_DAYS:
+            raise ValueError(f"expires_days must be at most {MAX_KEY_EXPIRY_DAYS}, got {expires_days}")
         expires_at = datetime.now(timezone.utc) + timedelta(days=expires_days)
 
     raw_key = generate_raw_key()
@@ -148,7 +154,7 @@ async def rotate_api_key(session: AsyncSession, old_key_id: str) -> IssuedKey:
     expires_days = None
     if old.expires_at is not None:
         span = old.expires_at - old.created_at
-        expires_days = max(1, round(span.total_seconds() / 86400))
+        expires_days = min(MAX_KEY_EXPIRY_DAYS, max(1, round(span.total_seconds() / 86400)))
     return await issue_api_key(
         session, old.org_id, expires_days=expires_days, scopes=list(old.scopes),
     )

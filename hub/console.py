@@ -46,8 +46,7 @@ SESSION_COOKIE = "ct_console"
 
 SESSION_TTL_SECONDS = 8 * 60 * 60
 
-# Far enough out for any real rotation policy, and well inside datetime's range.
-MAX_KEY_EXPIRY_DAYS = 3650
+MAX_KEY_EXPIRY_DAYS = auth.MAX_KEY_EXPIRY_DAYS
 
 MAX_EMAIL_CHARS = 320
 MAX_DISPLAY_NAME_CHARS = 200

@@ -1089,6 +1089,42 @@ class TestKeyIssuanceFromTheConsole:
         assert "shown once" in r.text
         assert "ct_" in r.text
 
+    @pytest.mark.parametrize("days", ["30d", "0", "-1", "99999999"])
+    async def test_an_unusable_expiry_issues_nothing_rather_than_a_permanent_key(self, session_factory, days):
+        # "30d" used to fall back to expires_days=None: a key that never expires.
+        from sqlalchemy import select
+
+        from hub.db import session_scope
+        from hub.models import ApiKey
+
+        org_id = await self._seed(session_factory)
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.post(
+                f"/admin/org/{org_id}/keys/issue", headers=_basic("op", "s3cret"),
+                data={
+                    "org_id": org_id, "scopes": ["read"], "expires_days": days,
+                    "csrf": admin._csrf_token("s3cret", "issue_key", org_id),
+                },
+            )
+        assert r.status_code == 200
+        assert "Expiry must be" in r.text
+        async with session_scope(session_factory) as session:
+            keys = (await session.execute(select(ApiKey).where(ApiKey.org_id == org_id))).scalars().all()
+        assert keys == []
+
+    async def test_an_unknown_scope_is_reported_not_a_500(self, session_factory):
+        org_id = await self._seed(session_factory)
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.post(
+                f"/admin/org/{org_id}/keys/issue", headers=_basic("op", "s3cret"),
+                data={
+                    "org_id": org_id, "scopes": ["root"],
+                    "csrf": admin._csrf_token("s3cret", "issue_key", org_id),
+                },
+            )
+        assert r.status_code == 200
+        assert "Could not issue a key" in r.text
+
     async def test_issuing_with_no_scopes_checked_issues_nothing(self, session_factory):
         from sqlalchemy import select
 
