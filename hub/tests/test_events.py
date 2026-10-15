@@ -558,6 +558,24 @@ class TestDelivery:
         assert again.attempted == 0
         assert len(transport.calls) == 1
 
+    async def test_concurrent_sweeps_never_deliver_the_same_event_twice(
+        self, session_factory, endpoint
+    ):
+        # Two replicas sweeping at once: the first holds its rows in an open
+        # transaction while the second sweeps, exactly as overlapping
+        # scheduler ticks do in production.
+        await self._queue(session_factory, endpoint["org"], n=3)
+        first, second = Recorder(), Recorder()
+        async with session_scope(session_factory) as first_session:
+            first_result = await events.deliver_pending(
+                first_session, first, signing_key=KEY, now=NOW)
+            async with session_scope(session_factory) as second_session:
+                second_result = await events.deliver_pending(
+                    second_session, second, signing_key=KEY, now=NOW)
+        assert first_result.delivered == 3
+        assert second_result.attempted == 0
+        assert second.calls == []
+
     async def test_pending_count_tracks_the_queue(self, session_factory, endpoint):
         await self._queue(session_factory, endpoint["org"], n=3)
         async with session_scope(session_factory) as session:

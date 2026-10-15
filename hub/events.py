@@ -371,6 +371,11 @@ async def deliver_pending(
         )
         .order_by(WebhookDelivery.created_at)
         .limit(limit)
+        # Several replicas may run the delivery scheduler at once. Without a
+        # row lock each one selects the same due rows and POSTs them, so a
+        # receiver sees every event once per replica. SKIP LOCKED hands each
+        # due row to exactly one sweep and lets the others move on.
+        .with_for_update(skip_locked=True)
     )
     attempted = delivered = retrying = gave_up = 0
     for delivery in rows.scalars():
