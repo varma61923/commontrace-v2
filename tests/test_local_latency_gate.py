@@ -49,7 +49,10 @@ class TestTheGateActuallyCatchesTheRegressionItExistsFor:
 
         assert uncached_worst_ms > cached_worst_ms
 
-        ceiling = (cached_worst_ms + uncached_worst_ms) / 2
+        # A quarter of the way from cached to uncached: still above the cached run, and
+        # far enough below the uncached one that run-to-run variance (measured locally
+        # at 23-55 ms cached, 104-140 ms uncached) cannot carry a rerun under it.
+        ceiling = cached_worst_ms + (uncached_worst_ms - cached_worst_ms) / 4
         gated = subprocess.run(
             [sys.executable, "-m", "commontrace.reference.measure_local_latency",
              "--sizes", "100,1600", "--runs", "2", "--no-cache",
