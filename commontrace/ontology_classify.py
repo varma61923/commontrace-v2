@@ -65,7 +65,9 @@ CAMEL_HEAD = 0.85       # the type word is a part of a compound name: "OmniQueue
 NAME_FORM_SCORE = 0.55  # "Kaelen Voss": two or three capitalised words that name nothing else
 LEXICON_SCORE, LEXICON_AMBIGUOUS_SCORE = 0.88, 0.7
 PATTERN_SCORES = {"copula": 0.9, "apposition": 0.88, "parenthesis": 0.85, "such_as": 0.85, "and_other": 0.85,
-                  "reverse": 0.85, "of": 0.8, "named": 0.8, "before": 0.75}
+                  "reverse": 0.85, "of": 0.8, "named": 0.8, "before": 0.75, "after": 0.88}
+# Types whose noun after the name states it outright: "the KaelithCache class", "the .env file".
+_AFTER_TYPES = frozenset({"symbol", "file"})
 # The type noun must end its noun phrase: "a standard error code" is a code, not a standard.
 _NP_END = (r"(?=$|[^\w\s-]| (?:of|for|in|on|at|to|with|from|by|that|which|who|whose|where|when|and|or|but|is|"
            r"was|are|were|we|our|it|its|has|have|had|used|so|because|than|since|after|before|during|until)\b)")
@@ -411,6 +413,8 @@ def _hypernym_patterns(onto, types: list[str]) -> list[tuple[str, str, re.Patter
             ("named", type_name, re.compile(noun + r" (?:called|named|known as) §")),
             ("before", type_name, re.compile(r"\b(?:the|a|an|our|their) " + noun + r" §")),
         ]
+        if type_name in _AFTER_TYPES:
+            out.append(("after", type_name, re.compile(r"(?:^|\b(?:the|a|an|our|their|this|that) )§ " + head)))
     with _PATTERN_LOCK:
         if len(_PATTERN_CACHE) >= 32:
             _PATTERN_CACHE.pop(next(iter(_PATTERN_CACHE)))
@@ -460,6 +464,12 @@ def by_name_form(name: str, onto, types: list[str]) -> dict[str, float]:
     return {"person": NAME_FORM_SCORE}
 
 
+_GOVERNED = re.compile(r"(?<![\w-])(?:in|at|from|of|near|into|on|within|across|inside|outside|for) (?:the )?§")
+_LOWER_IDENTIFIER = re.compile(r"[a-z_][a-z0-9_]*")
+_CALL_TO = re.compile(r"(?<![\w-])(?:call|calls|invocation|invocations|invoke|invokes|invoking|invoked) "
+                      r"(?:to |of )?§")
+
+
 def by_cues(name: str, context: str, types: list[str]) -> dict[str, float]:
     """Types the context implies by what it says the mention does or undergoes."""
     marked = _marked(name, context)
@@ -468,9 +478,16 @@ def by_cues(name: str, context: str, types: list[str]) -> dict[str, float]:
         return out
     if "symbol" in types and f"`{name.strip()}`" in (context or ""):
         out["symbol"] = 0.85  # code in backticks
+    # "The team in Oakhaven mentioned": after a preposition the mention is not the verb's subject.
+    governed = _GOVERNED.search(marked) is not None
     for type_name, score, pattern in ontology_lexicon.CUES:
+        if governed and type_name == "person" and pattern.pattern.startswith("§ ") \
+                and not pattern.pattern.startswith("§ to "):  # "waiting for X to approve" still holds
+            continue
         if type_name in types and score > out.get(type_name, 0.0) and pattern.search(marked):
             out[type_name] = score
+    if "symbol" in types and _LOWER_IDENTIFIER.fullmatch(name.strip()) and _CALL_TO.search(marked):
+        out["symbol"] = max(out.get("symbol", 0.0), 0.85)  # "an unchecked call to malloc"
     if name.isupper() and "person" in out:
         out["person"] *= 0.5  # people are not written in capitals; "The FDA approved" is an agency
     return out

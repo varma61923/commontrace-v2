@@ -27,6 +27,37 @@ def test_mention_shapes(name, expected):
     assert typed(name).type == expected
 
 
+@pytest.mark.parametrize("name, context, expected", [
+    ("ZetaSyncMismatch", "Replication lag is triggering a ZetaSyncMismatch.", "error"),
+    ("requests.get", "The service attempts to execute requests.get.", "symbol"),
+    ("KaelithCache", "I suspect the KaelithCache class is not a singleton.", "symbol"),
+    ("chmod", "chmod is a system call that we should avoid.", "symbol"),
+    ("malloc", "The leak comes from an unchecked call to malloc.", "symbol"),
+    ("Kaelen Voss", "I'll check with Kaelen Voss about the migration.", "person"),
+    ("KodaLint", "The CI fails on warnings from KodaLint, a static analyzer.", "tool"),
+])
+def test_second_dev_set_phrasings(name, context, expected):
+    assert typed(name, context).type == expected
+
+
+def test_cues_respect_word_boundaries_and_prepositions():
+    # "within X." is not "in X."; after "in", "X mentioned" does not make X the speaker
+    assert typed("VeloxAuth", "The spike comes from the handshake within VeloxAuth.").type != "place"
+    assert typed("Oakhaven", "The local team in Oakhaven mentioned the fiber cut.").type == "place"
+    assert typed("Soren Kaelo", "We are waiting for Soren Kaelo to approve the audit.").type == "person"
+    types = ontology_classify.candidate_types(ONTO)
+    for prose in ("e.g", "i.e", "example.com", "node.js"):
+        assert "symbol" not in ontology_classify.by_shape(prose, types)  # not attribute access
+
+
+def test_extraction_finds_lowercase_code_and_compound_events():
+    found = {m.name: m.type for m in entities.extract(
+        "The leak comes from an unchecked call to malloc. Then it calls requests.get. "
+        "We announced it at Google I/O and AWS re:Invent.", onto=ONTO, use_spacy=False)}
+    assert found.get("malloc") == "symbol" and found.get("requests.get") == "symbol"
+    assert found.get("Google I/O") == "event" and found.get("AWS re:Invent") == "event"
+
+
 def test_shapes_do_not_misread_prose():
     assert typed("and/or", "Use one and/or the other.").type is None  # not a path
     assert typed("Node.js", "We run Node.js 20.").type == "tool"  # a framework, not a file
@@ -170,11 +201,13 @@ def test_typing_benchmark_reports_slices():
     assert report["pipeline"]["typed_precision"] >= 0.95  # regression gate on the hand-written set
     here = os.path.dirname(ontology_typing_eval.DEFAULT_FIXTURE)
     dev = ontology_typing_eval.run(os.path.join(here, "ontology_typing_gemma_dev.json"))
-    assert dev["classifier"]["accuracy"] >= 0.85  # regression gate on the model-written dev set
+    assert dev["classifier"]["accuracy"] >= 0.85  # regression gate on the model-written dev sets
+    dev2 = ontology_typing_eval.run(os.path.join(here, "ontology_typing_gemma_dev2.json"))
+    assert dev2["pipeline"]["accuracy"] >= 0.85
 
 
 def test_fixture_rows_are_self_consistent():
-    for path in ("ontology_typing_v1.json", "ontology_typing_gemma_dev.json"):
+    for path in ("ontology_typing_v1.json", "ontology_typing_gemma_dev.json", "ontology_typing_gemma_dev2.json"):
         with open(os.path.join(os.path.dirname(ontology_typing_eval.DEFAULT_FIXTURE), path), encoding="utf-8") as fh:
             rows = json.load(fh)["examples"]
         assert all(r["name"] in r["context"] for r in rows)

@@ -52,7 +52,7 @@ DEFAULT_TYPE_KEYWORDS: dict[str, tuple[str, ...]] = {
                 "backend", "microservice", "endpoint", "datastore", "broker", "bucket", "registry", "proxy",
                 "worker", "daemon", "scheduler", "consumer", "producer"),
     "tool": ("cli", "sdk", "library", "framework", "plugin", "toolkit", "compiler", "linter", "formatter",
-             "bundler", "debugger", "profiler", "driver"),
+             "bundler", "debugger", "profiler", "driver", "lint", "analyzer"),
     "error": ("error", "exception", "failure", "fault", "timeout", "crash", "panic"),
     "person": ("mr", "mrs", "ms", "dr", "prof", "engineer", "developer", "manager", "ceo", "cto", "founder"),
     "organization": ("inc", "corp", "corporation", "llc", "ltd", "gmbh", "labs", "company", "foundation",
@@ -67,7 +67,7 @@ DEFAULT_TYPE_KEYWORDS: dict[str, tuple[str, ...]] = {
     "document": ("document", "spec", "specification", "rfc", "readme", "report", "runbook", "handbook",
                  "policy", "guide", "guidelines", "manual", "book", "license", "licence", "contract",
                  "agreement", "doc", "docs", "whitepaper", "charter", "playbook", "postmortem", "proposal",
-                 "memo", "adr"),
+                 "memo", "adr", "protocol", "procedure"),
 }
 FALLBACK_TYPE = "concept"
 FALLBACK_RELATION = "relates_to"

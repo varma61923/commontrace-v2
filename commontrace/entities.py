@@ -143,6 +143,10 @@ _PROPER = re.compile(r"(?<![\w.@/$'-])(" + _NAME_WORD + r"(?:[ -](?:" + _CONNECT
 _TOKEN = re.compile(r"[\wÀ-ɏ][\wÀ-ɏ.'+#:-]*[\w+#]|[\wÀ-ɏ]")
 _TOOL_OBJECT = re.compile(r"\b(?i:run|runs|ran|running|use|uses|used|using|install|installs|installed|installing|"
                           r"invoke|invoked|via|upgrade|upgraded)\s+([a-z][a-z0-9_.+-]{2,30}[a-z0-9])\b")
+# Lowercase code named by what is done to it: "a call to malloc", "chmod is a system call".
+_CODE_SLOT = re.compile(r"\b(?i:call|calls|calling|invoke|invokes|invoking|execute|executes|executing|"
+                        r"executed)\s+(?:to\s+|of\s+)?([a-z_][a-z0-9_]{2,30})\b"
+                        r"|(?:^|[.!?]\s+)([a-z_][a-z0-9_]{2,30}) (?:is|was) (?:a|an|the) ")
 _SENTENCE_OPENERS = (".", "!", "?", "\n", ":", ";", '"', "(", "-", "*", "#", ">")
 
 
@@ -157,7 +161,8 @@ def _lexicon_index() -> tuple[dict[str, str], dict[str, list[tuple[tuple[str, ..
         if type_ == "person":
             continue  # first names type people through the classifier, not as whole mentions
         for name in names:
-            words = tuple(name.split())
+            # split as the text is tokenised, so "google i/o" meets "Google I/O"
+            words = tuple(t.rstrip(".:'") for t in _TOKEN.findall(name))
             if len(words) == 1:
                 single.setdefault(name, type_)
             else:
@@ -322,6 +327,11 @@ def _pattern_mentions(text: str, onto_aliases: dict[str, str], onto=None) -> lis
         word = m.group(1)
         if word not in ontology_lexicon.COMMON_WORDS and word not in _COMMON:
             found.append((word, "concept", m.start(1), m.end(1), "weak"))
+    for m in _CODE_SLOT.finditer(text):
+        group = 1 if m.group(1) else 2
+        word = m.group(group)
+        if word not in ontology_lexicon.COMMON_WORDS and word not in _COMMON:
+            found.append((word, "concept", m.start(group), m.end(group), "weak"))
     heads = _head_pattern(onto)
     if heads is not None:
         for m in heads.finditer(text):

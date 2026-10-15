@@ -142,6 +142,7 @@ christmas thanksgiving easter halloween diwali ramadan eid hanukkah newyear
 blackfriday cybermonday kubecon pycon wwdc reinvent re:invent neurips icml iclr cvpr acl emnlp ces
 mwc defcon blackhat siggraph hackweek hackathon standup retro retrospective offsite allhands all-hands
 """) | frozenset({"black friday", "cyber monday", "new year", "new year's eve", "google i/o", "re:invent",
+                 "aws re:invent", "apple wwdc", "microsoft build", "google cloud next", "aws summit",
                  "world cup", "super bowl", "the olympics", "olympics", "all hands", "game day"})
 
 ERRORS = _words("""
@@ -176,7 +177,8 @@ HYPERNYMS: dict[str, frozenset[str]] = {
         designer researcher scientist analyst architect admin administrator user customer-contact author
         creator inventor leader head chair chairperson president assignee reporter approver contact
         maintainer reviewer owner author writer professor student teacher doctor nurse lawyer recruiter
-        candidate hire friend boss mentor partner-manager sre on-call sales salesperson representative"""),
+        candidate hire friend boss mentor partner-manager sre on-call sales salesperson representative
+        pioneer mathematician physicist entrepreneur philosopher novelist poet journalist"""),
     "place": _words("""place city town village country state province region county district area capital
         island continent neighborhood neighbourhood suburb municipality metropolis lake river mountain
         valley coast port harbor harbour location site campus"""),
@@ -187,7 +189,8 @@ HYPERNYMS: dict[str, frozenset[str]] = {
     "tool": _words("""tool library framework sdk cli utility package plugin extension linter formatter
         compiler bundler toolkit toolchain editor ide debugger profiler module dependency language driver
         client wrapper
-        command program binary script app application"""),
+        command program binary script app application analyzer analyser transpiler interpreter runtime
+        emulator simulator scanner"""),
     "service": _words("""service server database db datastore data-store store queue broker cache cluster
         gateway backend microservice endpoint api warehouse index search-engine platform proxy balancer
         load-balancer registry bucket key-value"""),
@@ -196,6 +199,10 @@ HYPERNYMS: dict[str, frozenset[str]] = {
     "event": _words("""event conference summit meetup meeting launch release outage incident migration
         workshop hackathon sprint holiday festival ceremony offsite retreat webinar keynote round funding
         quarter season election celebration deadline milestone kickoff kick-off review"""),
+    "symbol": _words("""function method class variable constant field property attribute struct interface
+        enum macro syscall decorator getter setter constructor destructor member identifier callback
+        coroutine lambda typedef""") | frozenset({"system call", "global variable", "environment variable"}),
+    "file": _words("""file files directory folder path filename dotfile"""),
     "document": _words("""document doc docs spec specification rfc readme report runbook handbook policy
         guide guideline manual memo proposal postmortem post-mortem charter contract agreement standard
         paper whitepaper article page wiki note notes plan roadmap design adr decision record template
@@ -225,7 +232,14 @@ SHAPES: tuple[tuple[str, float, re.Pattern[str]], ...] = (
     ("symbol", 0.85, re.compile(r"^[a-z]+(?:[A-Z][a-z0-9]*)+$")),
     ("symbol", 0.85, re.compile(r"^[A-Za-z_]\w*(?:\.[a-z_]\w*)*\.(?:[a-z]+_[a-z_\d]+|[a-z]+[A-Z]\w*)$")),
     ("symbol", 0.8, re.compile(r"^[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]+)+\.[a-z_]\w*$")),
+    # requests.get, os.path.join; two letters a part, so "e.g" and "i.e" are not code
+    ("symbol", 0.8, re.compile(r"^[a-z_][a-z0-9_]+(?:\.[a-z_][a-z0-9_]+)+(?<!\.com)(?<!\.org)(?<!\.net)"
+                               r"(?<!\.io)(?<!\.dev)(?<!\.ai)(?<!\.js)$")),
     ("error", 0.95, re.compile(r"^[A-Z]\w*(?:Error|Exception|Fault|Panic|Failure)$")),
+    # "ZetaSyncMismatch", "VoidPointerLeakSignal": a compound whose last part is a failure noun
+    ("error", 0.9, re.compile(r"^[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]+)*(?:Mismatch|Violation|Timeout|Overflow|"
+                              r"Underflow|Deadlock|Corruption|Rejection|Conflict|Signal|Leak|Abort|Halt|"
+                              r"Crash|Denied|Refused|Unavailable|NotFound|Exceeded)$")),
     ("error", 0.95, re.compile(r"^(?:HTTP )?[45]\d\d(?: [A-Z][A-Za-z-]+)+$")),  # 404 Not Found
     ("error", 0.92, re.compile(r"^(?:E|ERR|ERROR)_[A-Z0-9_]+$|^[A-Z][A-Z0-9_]*_(?:ERROR|ERR|FAILED|FAILURE|"
                                r"INVALID|MALFORMED|DENIED|TIMEOUT|EXCEEDED|NOT_FOUND|REFUSED|UNAVAILABLE|"
@@ -260,14 +274,21 @@ SHAPES: tuple[tuple[str, float, re.Pattern[str]], ...] = (
 # --- context cues: phrases next to the mention ("§" marks it) ----------------------
 
 _N = r"(?:[\w'-]+ ){0,3}"  # up to three words in between
+# A cue that opens with a word starts at a word boundary: "within X." is not "in X.".
 CUES: tuple[tuple[str, float, re.Pattern[str]], ...] = tuple(
-    (type_, score, re.compile(pattern)) for type_, score, pattern in (
-        ("person", 0.8, r"§ (?:said|says|told|asked|thinks|thought|believes|believed|prefers|preferred|wants|"
+    (type_, score, re.compile(pattern if pattern.startswith("§") else r"(?<![\w-])" + pattern))
+    for type_, score, pattern in (
+        ("person", 0.8, r"§ (?:often |always |usually |also |never |just |recently )?"
+                        r"(?:said|says|told|asked|thinks|thought|believes|believed|prefers|preferred|wants|"
                         r"wanted|approved|reviewed|wrote|joined|left|quit|resigned|retired|signed off|"
                         r"is on call|was on call|is on leave|was promoted|got promoted|replied|commented|"
                         r"mentioned|suggested|proposed|recommended|noted|agreed|disagreed|explained|complained|"
                         r"volunteered|paired|fixed|pushed|merged|reverted|created|founded|co-founded|"
-                        r"climbed|moved|relocated|lives|lived|was born|tweeted|emailed|called)\b"),
+                        r"climbed|moved|relocated|lives|lived|was born|tweeted|emailed|called|emphasizes|emphasized|"
+                        r"emphasises|emphasised|argues|argued|insists|insisted|claims|claimed|warned|warns|"
+                        r"advocates|advocated|stressed|stresses)\b"),
+        ("person", 0.75, r"(?:check|checked|checking|talk|talked|talking|speak|spoke|speaking|chat|chatted|"
+                         r"meeting|a call|on a call|met|meet|catch up|caught up|paired|pairing|interview) with §"),
         ("person", 0.75, r"(?:hired|ask|asked|thank|thanks|ping|pinged|cc|email|emailed|call|called|message|"
                          r"messaged|tell|told|meet|met|congratulate|welcome|interview|interviewed|promote|"
                          r"promoted|onboard|onboarded|according to) §"),
