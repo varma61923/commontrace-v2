@@ -237,7 +237,7 @@ def _head_pattern(onto) -> re.Pattern[str] | None:
     cached = _HEAD_PATTERNS.get(key)
     if cached is None:
         alternation = "|".join(re.escape(h) for h in heads)
-        cached = re.compile(r"(?:\b(?:the|our|their|a|an|this|that|its)\s+((?:[a-z][\w-]*\s+){1,2}(?:" + alternation
+        cached = re.compile(r"(?:\b(?i:the|our|their|a|an|this|that|its)\s+((?:[a-z][\w-]*\s+){1,2}(?:" + alternation
                             + r"))|\b((?:" + _NAME_WORD + r"\s+){1,3}(?:" + alternation + r")))\b")
         if len(_HEAD_PATTERNS) >= 8:
             _HEAD_PATTERNS.pop(next(iter(_HEAD_PATTERNS)))

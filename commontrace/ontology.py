@@ -49,7 +49,8 @@ DEFAULT_RELATIONS: dict[str, dict] = {
 # next to it ("the city of Berlin"); ontology files add or override per type.
 DEFAULT_TYPE_KEYWORDS: dict[str, tuple[str, ...]] = {
     "service": ("service", "server", "api", "database", "db", "queue", "cache", "cluster", "gateway",
-                "backend", "microservice", "endpoint", "datastore", "broker", "bucket", "registry", "proxy"),
+                "backend", "microservice", "endpoint", "datastore", "broker", "bucket", "registry", "proxy",
+                "worker", "daemon", "scheduler", "consumer", "producer"),
     "tool": ("cli", "sdk", "library", "framework", "plugin", "toolkit", "compiler", "linter", "formatter",
              "bundler", "debugger", "profiler", "driver"),
     "error": ("error", "exception", "failure", "fault", "timeout", "crash", "panic"),

@@ -40,7 +40,9 @@ LEXICON: tuple[tuple[str, str, bool], ...] = (
     ("depends_on", r"(?:depends|depend|depended|relies|rely|relied) on|requires|required|needs", False),
     ("depends_on", r"(?:is|are|was|were) (?:required|needed) by", True),
     ("uses", r"uses|used|(?:is|are|was|were) using|utili[sz]es|utili[sz]ed|calls|talks to|connects to|"
-             r"reads from|writes to", False),
+             r"reads from|writes to|communicates with|communicated with|integrates with|integrated with|"
+             r"publishes to|published to|consumes from|subscribes to|queries|queried|invokes|invoked|"
+             r"sends (?:requests|events|messages|data) to|pushes to|pulls from|streams to", False),
     ("uses", r"(?:is|are|was|were) used by", True),
     ("causes", r"causes|caused|leads to|led to|triggers|triggered|results in|resulted in", False),
     ("causes", r"(?:is|are|was|were) (?:caused|triggered) by", True),
