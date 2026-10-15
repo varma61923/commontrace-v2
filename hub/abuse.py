@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import concurrent.futures
 import ipaddress
 import json
@@ -153,7 +154,10 @@ class RateLimiter:
     def __init__(self, per_minute: int, burst: int):
         self._rate_per_sec = per_minute / 60.0
         self._capacity = 0 if per_minute <= 0 else max(burst, 1)
-        self._buckets: dict[str, _Bucket] = {}
+        # Ordered by last access (every check() moves its key to the end), so
+        # the least-recently-refilled bucket is always first: eviction and the
+        # idle sweep are O(1) per removed key instead of a scan of the table.
+        self._buckets: collections.OrderedDict[str, _Bucket] = collections.OrderedDict()
         self._lock = threading.Lock()
         self._last_sweep = time.monotonic()
 
@@ -169,6 +173,8 @@ class RateLimiter:
                 bucket = _Bucket(tokens=float(self._capacity), last_refill=now)
                 self._evict_if_over_capacity(now)
                 self._buckets[key] = bucket
+            else:
+                self._buckets.move_to_end(key)
             elapsed = now - bucket.last_refill
             bucket.tokens = min(self._capacity, bucket.tokens + elapsed * self._rate_per_sec)
             bucket.last_refill = now
@@ -186,8 +192,7 @@ class RateLimiter:
             return
         self._sweep_idle_buckets(now)
         while len(self._buckets) >= self._MAX_TRACKED_KEYS:
-            oldest = min(self._buckets, key=lambda k: self._buckets[k].last_refill)
-            del self._buckets[oldest]
+            self._buckets.popitem(last=False)
 
     def refund(self, key: str) -> None:
         """Give back one token, never exceeding capacity."""
@@ -197,12 +202,11 @@ class RateLimiter:
                 bucket.tokens = min(self._capacity, bucket.tokens + 1.0)
 
     def _sweep_idle_buckets(self, now: float) -> None:
-        stale_keys = [
-            key for key, bucket in self._buckets.items()
-            if now - bucket.last_refill >= self._IDLE_TTL_SECONDS
-        ]
-        for key in stale_keys:
-            del self._buckets[key]
+        while self._buckets:
+            oldest_key, oldest = next(iter(self._buckets.items()))
+            if now - oldest.last_refill < self._IDLE_TTL_SECONDS:
+                break
+            del self._buckets[oldest_key]
         self._last_sweep = now
 
 
