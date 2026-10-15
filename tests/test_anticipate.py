@@ -6,8 +6,7 @@ import json
 import pytest
 
 from commontrace import cli
-from commontrace.conversation import Options, Store, anticipate, recall
-from commontrace.conversation import graph_walk
+from commontrace.conversation import Options, Store, anticipate, graph_walk, recall
 
 
 @pytest.fixture(autouse=True)
