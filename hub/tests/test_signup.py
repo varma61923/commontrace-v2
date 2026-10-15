@@ -116,6 +116,14 @@ class TestValidation:
         async with session_scope(session_factory) as session:
             assert (await session.execute(select(Organization.id))).first() is None
 
+    async def test_a_name_postgres_cannot_store_is_rejected_not_a_500(self, session_factory):
+        async with _client(_app(session_factory)) as client:
+            response = await client.post(signup.SIGNUP_PATH, data={"org_name": "Acme\x00Corp"})
+        assert response.status_code == 200
+        assert "must be" in response.text
+        async with session_scope(session_factory) as session:
+            assert (await session.execute(select(Organization.id))).first() is None
+
 
 class TestHoneypot:
     async def test_a_filled_honeypot_field_creates_no_org(self, session_factory):

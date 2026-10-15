@@ -263,6 +263,13 @@ class TestKeyProvisioning:
         assert response.headers["cache-control"] == "no-store"
 
 
+class TestKeyProvisioningRefusesUnstorableNames:
+    async def test_a_nul_in_the_name_is_a_400_not_a_500(self, session_factory, config):
+        async with _client(_app(session_factory, config)) as client:
+            response = await client.post("/api/v1/keys", json={"display_name": "Agent\x00Co"})
+        assert response.status_code == 400
+
+
 class TestAuthentication:
     async def test_a_missing_key_is_refused_before_any_work(self, session_factory, config):
         async with _client(_app(session_factory, config)) as client:

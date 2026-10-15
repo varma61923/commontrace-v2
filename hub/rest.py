@@ -10,7 +10,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from hub import audit, auth, crud, scopes
-from hub.abuse import RateLimited, TraceRejected, make_named_limiter, rate_limit_key
+from hub.abuse import RateLimited, TraceRejected, make_named_limiter, rate_limit_key, reject_unstorable_text
 from hub.config import HubConfig
 from hub.db import session_scope
 from hub.market import add_market_routes
@@ -184,6 +184,10 @@ def add_rest_routes(
             return _json_error(
                 400, "bad_request", "one of display_name or email is required"
             )
+        try:
+            reject_unstorable_text(org_name, "display_name")
+        except ValueError as exc:
+            return _json_error(400, "bad_request", str(exc))
 
         async with session_scope(session_factory) as session:
             org = Organization(name=org_name)
