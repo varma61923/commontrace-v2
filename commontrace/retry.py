@@ -61,10 +61,7 @@ def is_retryable(exc: BaseException, *, idempotent: bool) -> tuple[bool, str | N
         # Reads and declared-idempotent writes may be retried. A write may
         # also be retried when DNS or TCP refusal proves it was never sent.
         safe_to_replay = idempotent or isinstance(reason, (ConnectionRefusedError, socket.gaierror))
-        retry_after = None
-        if isinstance(exc, urllib.error.HTTPError) and exc.headers:
-            retry_after = exc.headers.get("Retry-After")
-        return safe_to_replay, retry_after
+        return safe_to_replay, None
     return False, None
 
 
@@ -81,14 +78,18 @@ def call_with_retries(
     exhausted budget return ``(None, exc)``. Mirrors zep's tuple return so a
     bulk caller can record-and-continue instead of losing submitted work.
     """
+    # At least one attempt: with max_retries <= 0 the loop never ran and the
+    # caller got (None, None) -- "succeeded, with no result" -- without fn
+    # ever being called.
+    attempts = max(1, max_retries)
     error: BaseException | None = None
-    for attempt in range(1, max_retries + 1):
+    for attempt in range(1, attempts + 1):
         try:
             return fn(), None
         except Exception as exc:  # noqa: BLE001 - classified below
             retry, hint = is_retryable(exc, idempotent=idempotent)
             error = exc
-            if not retry or attempt >= max_retries:
+            if not retry or attempt >= attempts:
                 return None, exc
             sleep(retry_after_seconds(hint, attempt))
     return None, error
