@@ -29,6 +29,16 @@ class TestMoments:
     def test_rejects(self, text):
         assert timeparse.parse_moment(text) is None
 
+    def test_an_imported_hostile_date_is_refused_quickly(self):
+        # The trailing-time pattern is quadratic in length: 20,000 spaces used
+        # to cost ~9s per message timestamp in an imported transcript.
+        import time
+
+        started = time.perf_counter()
+        assert timeparse.parse_moment(" " * 200_000 + "x") is None
+        assert timeparse.parse_moment("May 8, 2023" + " " * 300 + "at 3:15 pm") is None
+        assert time.perf_counter() - started < 1.0
+
 
 class TestGrounding:
     ANCHOR = dt.date(2023, 5, 8)  # a Monday

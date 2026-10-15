@@ -59,6 +59,11 @@ _SPOKEN = re.compile(
 
 _TRAILING_TIME = re.compile(r"^(.*?)[,\s]+(?:at\s+)?(\d{1,2}):(\d{2})(?:\s*([ap])\.?m\.?)?\s*$", re.I)
 
+# Every format above fits comfortably in this; _TRAILING_TIME's lazy prefix
+# and separator overlap on whitespace, so its cost is quadratic in length
+# (20,000 spaces took ~9s). Dates arrive from imported transcripts unbounded.
+_MAX_MOMENT_CHARS = 256
+
 
 def parse_moment(text: str | None) -> dt.datetime | None:
     """A wall-clock moment from the formats conversations carry, or None. A UTC offset
@@ -66,6 +71,8 @@ def parse_moment(text: str | None) -> dt.datetime | None:
     if not text:
         return None
     text = str(text)
+    if len(text) > _MAX_MOMENT_CHARS:
+        return None
     m = _ISO.match(text)
     if m:
         y, mo, d, hh, mm, ss, fraction, tz = m.groups()
