@@ -40,6 +40,7 @@ import threading
 import time
 import urllib.request
 from dataclasses import dataclass, field
+from typing import TypeGuard
 
 from commontrace.configuration import getenv as _configuration_getenv
 from commontrace.exceptions import CapabilityError, ConfigurationError, InfrastructureError
@@ -372,7 +373,7 @@ class ResourceServer:
         return Claims(subject=subject, scopes=scopes, issuer=self.config.issuer, expires_at=int(exp), raw=payload)
 
 
-def _numeric_date(value: object) -> bool:
+def _numeric_date(value: object) -> TypeGuard[int | float]:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
