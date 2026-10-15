@@ -501,7 +501,12 @@ def _emit(fd, stream, text):
     """
     original = sys.__stdout__ if fd == 1 else sys.__stderr__
     if stream is original and original is not None:
-        os.write(fd, text.encode("utf-8"))
+        encoded = text.encode("utf-8")
+        while encoded:  # os.write may be partial on a pipe interrupted by a signal
+            written = os.write(fd, encoded)
+            if not written:
+                raise OSError("output stream closed")
+            encoded = encoded[written:]
     else:
         stream.write(text)
 
