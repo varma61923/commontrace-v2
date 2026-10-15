@@ -15,7 +15,6 @@ class TestStandaloneRootPathResolution:
         expected_repo = os.path.dirname(os.path.dirname(script_dir))
         assert os.path.abspath(mp._AUTO_ROOT) == os.path.abspath(expected_repo)
         assert os.path.isdir(os.path.join(mp._AUTO_ROOT, "commontrace"))
-        assert os.path.isdir(os.path.join(mp._AUTO_ROOT, "memory"))
 
     def test_pilot_metrics_root_points_to_repo_root(self, monkeypatch):
         monkeypatch.delenv("COMMONTRACE_ROOT", raising=False)

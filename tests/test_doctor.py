@@ -70,8 +70,10 @@ def test_doctor_warns_when_pilot_metrics_is_missing_from_a_damaged_install(
 
 def test_doctor_in_repo_checkout_shows_ok_not_info_for_repo_only_checks(capsys):
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    assert main(["doctor", "--dest", repo_root]) == 0
+    main(["doctor", "--dest", repo_root])  # a bare checkout holds no memory/ store, so it may exit 1
     out = capsys.readouterr().out
+    problems = [line for line in out.splitlines() if line.startswith(("[WARN]", "[FAIL"))]
+    assert all("memory/ store present" in line for line in problems), problems
     assert "[OK  ] reference attention/query.py" in out
     assert "[OK  ] benchmark script found" in out
     assert "[OK  ] pilot metrics script found" in out
