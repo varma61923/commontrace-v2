@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Anticipatory indexing (sleep-time question generation).** While the store is
+  idle, the configured LLM writes the questions each message answers, with names and
+  dates resolved, and they are indexed as hidden search keys of that message (never
+  shown as evidence, deleted with it). On the LoCoMo conversations indexed so far,
+  evidence recall rose from 0.802 to 0.862 (+0.060, 95% interval +0.035 to +0.085)
+  with no model at query time; open-domain +0.136, multi-hop +0.112. `commontrace
+  conversation anticipate`, or `COMMONTRACE_ANTICIPATE=on` for the daemon pass. A
+  Personalized PageRank walk over the message-entity graph is included opt-in; it did
+  not help on LoCoMo. See [anticipatory indexing](docs/anticipatory-indexing.md).
 - **Head-to-head retrieval measurement against mem0 and Graphiti.** On all 1,540
   LoCoMo questions at a 1,500-token budget, with every system on raw source turns
   and no LLM, CommonTrace's evidence recall is 0.787 with no model, 0.788 with
