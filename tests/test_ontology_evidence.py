@@ -179,3 +179,13 @@ def test_fixture_rows_are_self_consistent():
             rows = json.load(fh)["examples"]
         assert all(r["name"] in r["context"] for r in rows)
         assert len({r["id"] for r in rows}) == len(rows)
+
+
+def test_a_later_mention_types_the_name_everywhere():
+    filler = "We looked at the dashboards for a long time and saw nothing unusual in the metrics at all. " * 3
+    text = "Zylith keeps crashing under load. " + filler + "Zylith, our message broker, needs more memory."
+    found = {m.name: m.type for m in entities.extract(text, onto=ONTO, use_spacy=False)}
+    assert found["Zylith"] == "service"
+    alone = {m.name: m.type for m in entities.extract("Zylith keeps crashing under load. " + filler,
+                                                     onto=ONTO, use_spacy=False)}
+    assert "Zylith" not in alone  # one uninformative mention stays untyped and is dropped

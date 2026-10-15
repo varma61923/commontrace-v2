@@ -371,12 +371,13 @@ def by_lexicon(name: str, types: list[str]) -> dict[str, float]:
 
 
 def _marked(name: str, context: str) -> str | None:
-    """The context in lower case with the mention replaced by §, or None if absent."""
+    """The context in lower case with every occurrence of the mention replaced by §
+    (whole words only), or None if absent: what any occurrence says counts."""
     lowered, needle = " ".join((context or "").lower().split()), " ".join(name.lower().split())
-    at = lowered.find(needle) if needle else -1
-    if at < 0:
+    if not needle:
         return None
-    return lowered[:at] + "§" + lowered[at + len(needle):]
+    marked = re.sub(r"(?<![\w])" + re.escape(needle) + r"(?![\w])", "§", lowered)
+    return marked if "§" in marked else None
 
 
 _PATTERN_CACHE: dict[tuple, list[tuple[str, str, re.Pattern[str]]]] = {}

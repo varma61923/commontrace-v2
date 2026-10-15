@@ -340,11 +340,20 @@ _TYPE_RANK = {"error": 0, "file": 1, "symbol": 2, "service": 3, "tool": 4, "pers
 
 
 def _classify(name: str, text: str, start: int, end: int, onto, embedder, exemplars=None):
-    """The ontology classification of one candidate in its context window."""
+    """The ontology classification of one candidate, from the windows around its first
+    three occurrences in the text: a name typed by its second mention ("Zylith, our
+    message broker") is typed everywhere."""
     from commontrace import ontology_classify
 
+    windows = [text[max(0, start - 120):end + 80]]
+    if len(text) > end + 80 and len(name) >= 3:
+        for m in re.finditer(r"(?<!\w)" + re.escape(name) + r"(?!\w)", text[end + 80:]):
+            at = end + 80 + m.start()
+            windows.append(text[max(0, at - 120):at + len(name) + 80])
+            if len(windows) == 3:
+                break
     methods = ("keyword", "embedding") if embedder is not None else ("keyword",)
-    return ontology_classify.classify(name, text[max(0, start - 120):end + 80], onto=onto, embedder=embedder,
+    return ontology_classify.classify(name, " … ".join(windows), onto=onto, embedder=embedder,
                                       methods=methods, exemplars=exemplars)
 
 
