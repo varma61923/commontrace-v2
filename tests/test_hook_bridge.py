@@ -298,8 +298,14 @@ def test_broken_stdout_never_acknowledges_delivery(tmp_path):
 
     def handler(client):
         frame(client)
-        client.sendall(b'{"context":"undelivered","delivery_token":"receipt"}\n')
-        observed.append(frame(client))
+        try:
+            client.sendall(b'{"context":"undelivered","delivery_token":"receipt"}\n')
+            observed.append(frame(client))
+        except (BrokenPipeError, ConnectionResetError):
+            # The bridge answers within a 25 ms budget. Under a loaded parallel
+            # run it can give up and close (or reset) before this exchange
+            # finishes; it then acknowledged nothing, the property under test.
+            observed.append(b"")
 
     with peer(tmp_path, handler):
         with subprocess.Popen(command(tmp_path), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
