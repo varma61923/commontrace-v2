@@ -560,11 +560,21 @@ class TestDoctorReportsFailuresInItsExitCode:
         assert r.returncode == 1
         assert "critical check(s) failed" in r.stdout
 
-    def test_a_healthy_store_exits_zero(self):
-        assert self._run().returncode == 0
+    def _healthy_store(self, tmp_path):
+        # The checkout holds no memory/ store, so a bare `doctor` in REPO_ROOT only
+        # passed when another test happened to have left one behind.
+        subprocess.run(
+            [sys.executable, "-m", "commontrace", "init", "--agent-type", "code", "--dest", str(tmp_path)],
+            cwd=REPO_ROOT, capture_output=True, text=True, check=True,
+        )
+        return str(tmp_path)
 
-    def test_info_conditions_do_not_fail_the_run(self):
-        r = self._run()
+    def test_a_healthy_store_exits_zero(self, tmp_path):
+        assert self._run("--dest", self._healthy_store(tmp_path)).returncode == 0
+
+    def test_info_conditions_do_not_fail_the_run(self, tmp_path):
+        r = self._run("--dest", self._healthy_store(tmp_path))
+        assert "[INFO]" in r.stdout
         assert r.returncode == 0
         assert "critical check(s) failed" not in r.stdout
 
