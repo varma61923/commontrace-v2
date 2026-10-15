@@ -283,3 +283,30 @@ class TestOccasionJoin:
                                   json=_otlp_body(self._outcome_span("f" * 16, "ep-4", True)))
         assert r.json()["occasions_resolved"] == 0
         assert await self._succeeded(session_factory, model, org_a, "ep-4") is None
+
+
+class TestMalformedInputIsNotA500:
+    @pytest.mark.parametrize("body", [
+        {"resourceSpans": 5},
+        {"resourceSpans": "spans"},
+        {"resourceSpans": [{"scopeSpans": 7}]},
+        {"resourceSpans": [{"scopeSpans": [{"spans": {"spanId": "x"}}]}]},
+    ])
+    async def test_a_wrongly_typed_array_is_a_clean_no_op(self, session_factory, config, body):
+        _org_id, raw_key = await _org_with_key(session_factory)
+        async with _client(_app(session_factory, config)) as client:
+            response = await client.post(otlp.OTLP_TRACES_PATH, json=body, headers=_key(raw_key))
+        assert response.status_code == 200
+        assert response.json()["accepted"] == 0
+
+    async def test_one_unstorable_span_costs_only_itself(self, session_factory, config):
+        org_id, raw_key = await _org_with_key(session_factory)
+        body = _otlp_body(_span("a" * 16), _span("b" * 16, prompt="nul\x00byte"), _span("c" * 16))
+        async with _client(_app(session_factory, config)) as client:
+            response = await client.post(otlp.OTLP_TRACES_PATH, json=body, headers=_key(raw_key))
+        assert response.status_code == 207
+        assert response.json()["accepted"] == 2
+        assert [e["span_id"] for e in response.json()["errors"]] == ["b" * 16]
+        async with session_scope(session_factory) as session:
+            stored = (await session.execute(select(Trace).where(Trace.org_id == org_id))).scalars().all()
+        assert len(stored) == 2
