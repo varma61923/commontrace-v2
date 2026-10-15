@@ -425,7 +425,11 @@ jobs:
         run: python -m pytest hub/tests/ -q -n auto --dist loadfile
 
       - name: Run Hub end-to-end scenarios
-        run: python -m pytest e2e_tests/ -q -k hub
+        # The parallel suite above uses per-worker databases, so the shared one is
+        # migrated here rather than relying on another suite to have built its schema.
+        run: |
+          HUB_DATABASE_URL="$HUB_TEST_DATABASE_URL" python -m alembic -c hub/alembic.ini upgrade head
+          python -m pytest e2e_tests/ -q -k hub
 
   security-scan:
     name: security scan (bandit, pip-audit, mypy)
