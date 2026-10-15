@@ -48,7 +48,7 @@ cryptography==50.0.2       # AES-256-GCM envelope encryption for WebhookEndpoint
 # 2.2.6 is the newest release that still supports Python 3.10, which this
 # project's CI matrix and ruff target-version both include. numpy >= 2.3.0
 # is Python >= 3.11 only, so pinning higher silently drops 3.10 support.
-numpy==2.2.6
+numpy==2.5.4
 
 PyYAML==6.0.3
-pydantic==2.13.5          # validated provider configurations; already pinned transitively in the image lock
+pydantic==2.14.1          # validated provider configurations; already pinned transitively in the image lock
