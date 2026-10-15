@@ -145,6 +145,7 @@ commontrace/ingest/*
 !commontrace/offline.py
 !commontrace/ontology.py
 !commontrace/ontology_classify.py
+!commontrace/ontology_lexicon.py
 !commontrace/overload.py
 !commontrace/parallel.py
 !commontrace/policy.py

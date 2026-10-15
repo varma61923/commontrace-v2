@@ -2,7 +2,7 @@ name: Graphify architecture audit
 on:
   workflow_dispatch:
   push:
-    branches: ['main', 'codex/**']
+    branches: ['main']
     paths: ['commontrace/**', 'hub/**', 'scripts/graphify_audit.py', '.github/workflows/graphify.yml']
   pull_request:
     paths: ['commontrace/**', 'hub/**', 'scripts/graphify_audit.py']

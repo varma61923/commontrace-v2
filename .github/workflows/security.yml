@@ -1,6 +1,7 @@
 name: Supply chain and CodeQL
 on:
   push:
+    branches: [main]
     paths: ['commontrace/**', 'hub/**', 'sdk/**', 'pyproject.toml', '.github/workflows/**']
   pull_request:
     paths: ['commontrace/**', 'hub/**', 'sdk/**', 'pyproject.toml', '.github/workflows/**']

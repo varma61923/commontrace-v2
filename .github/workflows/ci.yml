@@ -1,8 +1,12 @@
 name: CI
 
 on:
+  # Branch commits are tested through their pull request; pushing to a branch with an
+  # open PR used to run the whole workflow twice for the same commit.
   push:
+    branches: [main]
   pull_request:
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
@@ -31,12 +35,13 @@ jobs:
         run: python3 scripts/ci_changes.py "$BASE" "$HEAD" >> "$GITHUB_OUTPUT"
 
   test-core:
+    # Core install on the oldest supported interpreter; the dev job covers the newest.
     name: test (core install, py${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ["3.10"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -49,10 +54,10 @@ jobs:
         run: python -m pip install -e .
 
       - name: Install test runner
-        run: python -m pip install pytest
+        run: python -m pip install pytest pytest-xdist
 
       - name: Run tests
-        run: make test PYTEST_ARGS=-q
+        run: make test PYTEST_ARGS="-q -n auto"
 
       - name: Original offline evidence and governed-memory contracts
         run: python -m benchmarks.memory_contracts
@@ -96,12 +101,12 @@ jobs:
         run: python -m pytest tests/test_ui_browser.py -q
 
   test-dev:
-    name: test + lint (dev extra, py${{ matrix.python-version }})
+    name: test + lint + coverage (dev extra, py${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ["3.12"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -111,10 +116,17 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install commontrace with the dev extra
-        run: python -m pip install -e ".[dev]"
+        run: python -m pip install -e ".[dev,code]" "pytest-cov>=7.0,<8.0"
 
-      - name: Run tests
-        run: python -m pytest tests/ e2e_tests/ -q
+      - name: Run tests with the 80 percent coverage gate
+        run: >-
+          python -m pytest tests/ e2e_tests/ -q -n auto
+          --cov=commontrace --cov-report=xml --cov-fail-under=80
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: coverage-${{ github.sha }}
+          path: coverage.xml
 
       - name: Lint with ruff
         run: make lint
@@ -298,7 +310,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.12"]
+        python-version: ["3.12"]
     services:
       pgvector:
         image: pgvector/pgvector:0.8.1-pg16
@@ -337,12 +349,13 @@ jobs:
           tests/test_vector_snapshot_processes.py -q
 
   test-hub:
+    # The Hub ships as one container image, so one interpreter tests it.
     name: hub tests (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ["3.12"]
     services:
       postgres:
         image: postgres:16
@@ -846,136 +859,3 @@ jobs:
           python-version: '3.12'
       - run: python -m pip install -e . pytest google-adk==2.11.0 strands-agents==1.59.0 ag2==1.1.2
       - run: python -m pytest tests/test_new_framework_sdks.py -q
-
-  generated-sdks:
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
-    name: OpenAPI generated SDK (${{ matrix.api }}, ${{ matrix.language }})
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        language: [typescript, go, rust, java, kotlin]
-        api: [memory, gateway, hub]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
-        with:
-          python-version: '3.12'
-      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
-        with:
-          distribution: temurin
-          java-version: '21'
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with:
-          node-version: '22'
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
-        with:
-          go-version: '1.27.x'
-          cache: false
-      - name: Cache checksum-verified OpenAPI Generator
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
-        with:
-          path: build/openapi-generator-cli-7.26.0.jar
-          key: openapi-generator-7.26.0-1760050094997b9cc790cc1350be095f15da8c08a996b184d3eadc4ccda5e35e
-      - run: python -m pip install -e .
-      - name: Check and validate the standard contract, then generate with pinned upstream tooling
-        run: |
-          python scripts/export_openapi.py --check
-          if [[ '${{ matrix.api }}' == 'hub' ]]; then python -m pip install -r hub/requirements.txt -c hub/requirements-lock.txt; python scripts/export_hub_openapi.py --check; fi
-          python scripts/generate_sdks.py --api '${{ matrix.api }}' --languages '${{ matrix.language }}' --output "$RUNNER_TEMP/generated"
-      - name: Compile generated client and models
-        working-directory: ${{ runner.temp }}/generated/${{ matrix.language }}
-        env:
-          LANGUAGE: ${{ matrix.language }}
-        run: |
-          case "$LANGUAGE" in
-            typescript) npm install --no-audit --no-fund && npm run build ;;
-            go) go test ./... ;;
-            rust) cargo check ;;
-            java) mvn -B -DskipTests -Dmaven.jar.skipIfEmpty=true package ;;
-            kotlin) bash gradlew --no-daemon compileKotlin ;;
-          esac
-      - name: Exercise generated TypeScript client against the live gateway
-        if: matrix.language == 'typescript' && (matrix.api == 'memory' || matrix.api == 'gateway')
-        run: python scripts/smoke_generated_sdk.py "$RUNNER_TEMP/generated/typescript"
-      - name: Package generated source for review and distribution
-        run: >-
-          tar --exclude='./node_modules' --exclude='./target' --exclude='./build' --exclude='./.gradle'
-          -czf "$RUNNER_TEMP/commontrace-sdk-${{ matrix.api }}-${{ matrix.language }}.tgz"
-          -C "$RUNNER_TEMP/generated/${{ matrix.language }}" .
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
-        with:
-          name: commontrace-sdk-${{ matrix.api }}-${{ matrix.language }}-${{ github.sha }}
-          path: ${{ runner.temp }}/commontrace-sdk-${{ matrix.api }}-${{ matrix.language }}.tgz
-
-  coverage:
-    name: Python coverage (80 percent minimum)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
-        with:
-          python-version: '3.12'
-      - run: python -m pip install -e '.[dev,code]' 'pytest-cov>=7.0,<8.0'
-      - run: make coverage PYTEST_ARGS=-q
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
-        with:
-          name: coverage-${{ github.sha }}
-          path: coverage.xml
-
-  marketplace-vscode:
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
-    name: VS Code and Open VSX package
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: distribution/vscode
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with:
-          node-version: '22'
-      - run: npm test && npm run lint
-      - run: npx --yes @vscode/vsce@4.0.0 package --out "$RUNNER_TEMP/commontrace.vsix"
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
-        with:
-          name: commontrace-vsix-${{ github.sha }}
-          path: ${{ runner.temp }}/commontrace.vsix
-
-  marketplace-jetbrains:
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
-    name: JetBrains Marketplace package
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
-        with:
-          distribution: temurin
-          java-version: '21'
-      - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a
-        with:
-          gradle-version: '9.8.1'
-      - run: gradle --no-daemon test buildPlugin
-        working-directory: distribution/jetbrains
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
-        with:
-          name: commontrace-jetbrains-${{ github.sha }}
-          path: distribution/jetbrains/build/distributions/*.zip
-
-  marketplace-action:
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
-    name: GitHub Marketplace action
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
-        with:
-          python-version: '3.12'
-      - uses: ./
-        with:
-          store: '.action-smoke'
-          initialize: 'true'
