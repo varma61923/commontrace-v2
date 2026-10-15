@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import Callable
@@ -18,6 +19,8 @@ DEFAULT_CLOCK_SKEW_SECONDS = 60
 UNKNOWN_KID_REFETCH_SECONDS = 60
 
 _KTY_FOR_ALG_PREFIX = {"RS": "RSA", "ES": "EC"}
+
+logger = logging.getLogger("commontrace.hub.sso")
 
 
 class IdentityError(Exception):
@@ -87,31 +90,62 @@ class JWKSCache:
         self._ttl = max(1, ttl_seconds)
         self._clock = clock
         self._cached: dict[str, tuple[float, dict]] = {}
+        self._retry_not_before: dict[str, float] = {}
 
     def get(self, jwks_uri: str) -> dict:
         now = self._clock()
         cached = self._cached.get(jwks_uri)
-        if cached is not None and now - cached[0] < self._ttl:
+        if cached is not None and (
+            now - cached[0] < self._ttl or now < self._retry_not_before.get(jwks_uri, now)
+        ):
             return cached[1]
-        document = self._fetch(jwks_uri)
-        self._cached[jwks_uri] = (now, document)
-        return document
+        return self._refetch(jwks_uri, now, cached)
 
     def refresh_for_unknown_kid(self, jwks_uri: str) -> dict | None:
         now = self._clock()
         cached = self._cached.get(jwks_uri)
-        if cached is not None and now - cached[0] < UNKNOWN_KID_REFETCH_SECONDS:
+        if cached is not None and (
+            now - cached[0] < UNKNOWN_KID_REFETCH_SECONDS
+            or now < self._retry_not_before.get(jwks_uri, now)
+        ):
             return None
-        document = self._fetch(jwks_uri)
+        return self._refetch(jwks_uri, now, cached)
+
+    def _refetch(self, jwks_uri: str, now: float, cached: tuple[float, dict] | None) -> dict:
+        """Fetch a fresh document; on failure keep serving the last good one.
+
+        An IdP outage or a network blip must not turn every signed-in request
+        into an unhandled 500, nor throw away keys that still verify. With a
+        previous document the stale copy is served and the next attempt is
+        deferred by UNKNOWN_KID_REFETCH_SECONDS, so a down IdP does not cost a
+        blocking fetch per request. With none, it is an IdentityError -- a 401
+        the caller can retry -- never an exception escaping the middleware.
+        """
+        try:
+            document = self._fetch(jwks_uri)
+            if not isinstance(document, dict):
+                raise ValueError(f"JWKS document is a {type(document).__name__}, not an object")
+        except Exception as exc:  # noqa: BLE001 - every fetch failure is handled the same way
+            if cached is not None:
+                logger.warning("JWKS refresh from %s failed (%s); serving the cached key set",
+                               jwks_uri, type(exc).__name__)
+                self._retry_not_before[jwks_uri] = now + UNKNOWN_KID_REFETCH_SECONDS
+                return cached[1]
+            raise IdentityError(
+                f"could not fetch the identity provider's signing keys ({type(exc).__name__})"
+            ) from None
         self._cached[jwks_uri] = (now, document)
+        self._retry_not_before.pop(jwks_uri, None)
         return document
 
     def invalidate(self, jwks_uri: str = "") -> None:
         """Force the next `get` to refetch. `""` clears every entry."""
         if jwks_uri:
             self._cached.pop(jwks_uri, None)
+            self._retry_not_before.pop(jwks_uri, None)
         else:
             self._cached.clear()
+            self._retry_not_before.clear()
 
 
 class UnknownKid(IdentityError):

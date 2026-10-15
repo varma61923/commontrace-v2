@@ -280,6 +280,60 @@ class TestJWKSCache:
         with pytest.raises(sso.IdentityError, match="JWKSCache"):
             sso.verify_bearer_token(token, provider)
 
+    def test_a_failed_first_fetch_is_an_identity_error_not_a_crash(self, signing_key):
+        key, _ = signing_key
+
+        def fetch(uri):
+            raise ConnectionError("idp unreachable")
+
+        cache = sso.JWKSCache(fetch, clock=lambda: 0.0)
+        provider = sso.IdentityProvider(
+            issuer=ISSUER, audience=AUDIENCE, jwks_uri="https://idp/jwks.json"
+        )
+        with pytest.raises(sso.IdentityError, match="signing keys"):
+            sso.verify_bearer_token(_token(key, "k1"), provider, jwks_cache=cache)
+
+    def test_a_non_object_document_is_an_identity_error(self):
+        cache = sso.JWKSCache(lambda uri: ["not", "an", "object"], clock=lambda: 0.0)
+        with pytest.raises(sso.IdentityError):
+            cache.get("uri")
+
+    def test_a_failed_refresh_keeps_serving_the_last_good_keys(self, signing_key):
+        key, pub = signing_key
+        now = [0.0]
+        outage = [False]
+        calls = []
+
+        def fetch(uri):
+            calls.append(now[0])
+            if outage[0]:
+                raise ConnectionError("idp unreachable")
+            return {"keys": [_jwk(pub, "k1")]}
+
+        cache = sso.JWKSCache(fetch, ttl_seconds=100, clock=lambda: now[0])
+        provider = sso.IdentityProvider(
+            issuer=ISSUER, audience=AUDIENCE, jwks_uri="https://idp/jwks.json"
+        )
+        token = _token(key, "k1")
+        assert sso.verify_bearer_token(token, provider, jwks_cache=cache).subject == "user-1"
+
+        outage[0] = True
+        now[0] = 200.0
+        assert sso.verify_bearer_token(token, provider, jwks_cache=cache).subject == "user-1"
+        assert len(calls) == 2
+
+        # Neither the TTL path nor the unknown-kid path refetches inside the back-off.
+        now[0] = 210.0
+        sso.verify_bearer_token(token, provider, jwks_cache=cache)
+        with pytest.raises(sso.IdentityError):
+            sso.verify_bearer_token(_token(key, "unknown"), provider, jwks_cache=cache)
+        assert len(calls) == 2
+
+        outage[0] = False
+        now[0] = 200.0 + sso.UNKNOWN_KID_REFETCH_SECONDS + 1
+        sso.verify_bearer_token(token, provider, jwks_cache=cache)
+        assert len(calls) == 3
+
     def test_a_provider_with_neither_static_jwks_nor_uri_is_refused(self, signing_key):
         key, _ = signing_key
         provider = sso.IdentityProvider(issuer=ISSUER, audience=AUDIENCE)
