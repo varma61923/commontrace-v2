@@ -33,6 +33,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import math
 import os
 import re
 import threading
@@ -346,11 +347,13 @@ class ResourceServer:
         if self.config.audience not in audiences:
             raise InvalidToken("token audience does not include this resource")
         exp = payload.get("exp")
-        if not isinstance(exp, (int, float)) or isinstance(exp, bool) or exp + leeway <= now:
+        # json.loads accepts NaN and Infinity, and NaN fails every comparison:
+        # without the finiteness check a NaN expiry would never expire.
+        if not _numeric_date(exp) or exp + leeway <= now:
             raise InvalidToken("token is expired or has no expiry")
         for claim in ("nbf", "iat"):
             value = payload.get(claim)
-            if value is not None and (not isinstance(value, (int, float)) or value - leeway > now):
+            if value is not None and (not _numeric_date(value) or value - leeway > now):
                 raise InvalidToken(f"token {claim} is in the future")
         subject = payload.get("sub")
         if not isinstance(subject, str) or not subject or len(subject) > 256 or \
@@ -367,6 +370,10 @@ class ResourceServer:
         if missing:
             raise InvalidToken("token lacks a required scope")
         return Claims(subject=subject, scopes=scopes, issuer=self.config.issuer, expires_at=int(exp), raw=payload)
+
+
+def _numeric_date(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
 def www_authenticate(metadata_url: str | None, *, error: str | None = None) -> str:
