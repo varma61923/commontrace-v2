@@ -450,3 +450,33 @@ class TestEveryCollabToolHasACapabilityMapping:
             "list_my_notifications", "mark_notification_read",
         ):
             assert name in rbac.TOOL_CAPABILITY, name
+
+
+@pytest.mark.asyncio
+class TestBoundaries:
+    async def test_a_comment_postgres_cannot_store_is_refused_cleanly(self, session_factory, org):
+        trace_id = await _trace(session_factory, org)
+        uid = await _user(session_factory, org)
+        author = _as_authenticated(uid, org, rbac.ROLE_CURATOR, "p@x.test")
+        async with session_scope(session_factory) as session:
+            with pytest.raises(collab.CollabError, match="NUL"):
+                await collab.add_comment(session, org, author, trace_id, "hi\x00there")
+
+    async def test_the_inbox_returns_only_the_newest_notifications(self, session_factory, org, monkeypatch):
+        from hub.models import Notification
+
+        monkeypatch.setattr(collab, "MAX_NOTIFICATIONS", 3)
+        uid = await _user(session_factory, org)
+        person = _as_authenticated(uid, org, rbac.ROLE_CURATOR, "p@x.test")
+        from datetime import datetime, timedelta, timezone
+
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        trace_id = await _trace(session_factory, org)
+        async with session_scope(session_factory) as session:
+            for i in range(5):
+                session.add(Notification(org_id=org, user_id=uid, kind="comment", target_type="trace",
+                                         target_id=trace_id, summary=f"n{i}",
+                                         created_at=base + timedelta(minutes=i)))
+        async with session_scope(session_factory) as session:
+            inbox = await collab.list_my_notifications(session, org, person)
+        assert [n["summary"] for n in inbox] == ["n4", "n3", "n2"]

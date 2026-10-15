@@ -7,11 +7,16 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from hub import audit
+from hub.abuse import reject_unstorable_text
 from hub.models import Assignment, Comment, Notification, Trace, User
 
 TARGET_TRACE = "trace"
 
 _MAX_COMMENT_CHARS = 4000
+
+# Newest first. Notifications accumulate with every comment and assignment,
+# so an unbounded inbox read grows without limit for long-lived users.
+MAX_NOTIFICATIONS = 200
 
 
 class CollabError(ValueError):
@@ -48,6 +53,10 @@ async def add_comment(
         raise CollabError("comment body must not be empty")
     if len(body) > _MAX_COMMENT_CHARS:
         raise CollabError(f"comment body must be at most {_MAX_COMMENT_CHARS} characters")
+    try:
+        reject_unstorable_text(body, "comment body")
+    except ValueError as exc:
+        raise CollabError(str(exc)) from None
 
     await _get_trace_or_raise(session, org_id, trace_id)
 
@@ -182,7 +191,7 @@ async def list_my_notifications(
     )
     if unread_only:
         stmt = stmt.where(Notification.read_at.is_(None))
-    stmt = stmt.order_by(Notification.created_at.desc())
+    stmt = stmt.order_by(Notification.created_at.desc()).limit(MAX_NOTIFICATIONS)
     rows = (await session.execute(stmt)).scalars().all()
     return [
         {

@@ -1474,8 +1474,8 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
     async def list_my_notifications(unread_only: bool = False) -> dict:
         """Your own inbox: 'you were assigned a trace' / 'someone commented
         on a trace assigned to you'. Requires a signed-in PERSON -- there
-        is no per-person inbox for a shared API key. Mark one read with
-        `mark_notification_read`."""
+        is no per-person inbox for a shared API key. Newest first, at most
+        the 200 most recent. Mark one read with `mark_notification_read`."""
         try:
             org_id = auth.get_current_org_id()
             person = auth.get_current_user()
