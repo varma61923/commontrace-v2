@@ -5,6 +5,62 @@ They establish specific workload improvements, not universal 30 ms latency or
 superiority over competitor answer quality. No inference service is used by
 the measured request profiles.
 
+## Head-to-head retrieval on LoCoMo (2026-10-15)
+
+```bash
+python -m benchmarks.conversation_bench --dataset locomo --data locomo10.json \
+  --memory-adapter {commontrace,mem0-raw,graphiti-episodic} --embedder {none,minilm,arctic-m,auto} \
+  --root <fresh directory> --out result.json
+```
+
+Every system reads the same LoCoMo sources (sha256 `79fa87e9…`, all 1,540
+category 1–4 questions across ten conversations) and returns whole source turns
+packed into the same 1,500-token budget. The competitor profiles are the
+upstream libraries run locally on raw turns, without their LLM extraction or
+managed services: `mem0-raw` is mem0 2.2.1 with all-MiniLM-L6-v2 embeddings,
+`graphiti-episodic` is graphiti-core 0.30.2 with native episode BM25 and RRF on
+FalkorDB Lite. No inference service is used. Evidence is the share of a question's
+gold turns that reach the context; complete means all of them did.
+
+| System | Embedder | Evidence | Complete | Turn recall@10 | nDCG@10 | Recall p50 / p95 | Ingest |
+|---|---|---|---|---|---|---|---|
+| CommonTrace | none | 0.787 | 0.723 | 0.631 | 0.475 | 8.1 / 12.5 ms | 2.4 s |
+| CommonTrace | all-MiniLM-L6-v2 | 0.788 | 0.721 | 0.641 | 0.500 | 52.9 / 76.7 ms | 2.4 s + lazy |
+| CommonTrace | arctic-embed-m v1.5 | **0.824** | **0.757** | **0.699** | **0.560** | 88.5 / 142.1 ms | cached |
+| mem0 (raw) | all-MiniLM-L6-v2 | 0.635 | 0.567 | 0.444 | 0.301 | 29.9 / 42.1 ms | 54.3 s |
+| Graphiti (episodic) | none (BM25) | 0.433 | 0.384 | 0.305 | 0.214 | 39.6 / 60.2 ms | 7.4 s |
+
+Paired differences in evidence over the 1,536 questions with resolvable gold
+turns, with 95% intervals from a bootstrap that resamples whole conversations:
+
+| Comparison | Difference | 95% interval | Conversations ahead |
+|---|---|---|---|
+| CommonTrace vs mem0, same embedder (MiniLM) | +0.153 | [+0.128, +0.176] | 10/10 |
+| CommonTrace with no model vs mem0 (MiniLM) | +0.152 | [+0.115, +0.188] | 10/10 |
+| CommonTrace with no model vs Graphiti (BM25) | +0.354 | [+0.302, +0.404] | 10/10 |
+| CommonTrace arctic-m vs CommonTrace with no model | +0.037 | [+0.022, +0.054] | 9/10 |
+| CommonTrace MiniLM vs CommonTrace with no model | +0.001 | [−0.019, +0.021] | 5/10 |
+
+By question type (evidence), CommonTrace with no model / with arctic-m against
+mem0: single-hop 0.894 / 0.896 vs 0.698, temporal 0.844 / 0.904 vs 0.682,
+multi-hop 0.521 / 0.608 vs 0.473, open-domain 0.423 / 0.550 vs 0.381.
+
+What this does and does not show:
+
+- It measures retrieval of source evidence, not answer accuracy; no reader or
+  judge ran.
+- It compares the competitors' raw-source modes. Their default modes extract
+  memories with an LLM, which this run excludes for every system.
+- CommonTrace stores turns at ingest and embeds lazily, so its embedding cost
+  falls inside the first recalls (the MiniLM run took 120 s end to end against
+  18 s with no model). The arctic-m run reused a cached store, so its ingest is
+  not a measurement.
+- mem0's recall is faster than CommonTrace with an in-process embedder; with no
+  embedder CommonTrace is the fastest and the most accurate of the three
+  model-free or MiniLM configurations.
+- The hindsight-raw profile exists in the harness but was not run here.
+- Measured on a 4-vCPU Xeon at 2.10 GHz; latencies are machine-specific.
+
 ## Typed graph lookup (2026-10-13)
 
 ```bash

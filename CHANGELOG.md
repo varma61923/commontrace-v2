@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Head-to-head retrieval measurement against mem0 and Graphiti.** On all 1,540
+  LoCoMo questions at a 1,500-token budget, with every system on raw source turns
+  and no LLM, CommonTrace's evidence recall is 0.787 with no model, 0.788 with
+  MiniLM and 0.824 with arctic-m, against 0.635 for mem0 (MiniLM) and 0.433 for
+  Graphiti (BM25). With the same embedder the paired gap over mem0 is +0.153
+  (95% conversation-bootstrap interval +0.128 to +0.176), ahead in all ten
+  conversations. Retrieval only, not answer accuracy. See
+  [performance](docs/performance.md#head-to-head-retrieval-on-locomo-2026-10-15).
 - **Entity-anchored relation extraction.** Triggers link the nearest typed entities
   on both sides across a bounded gap, in active and passive voice, with
   negation/hedge guards. On a model-written relation test set never used for tuning,
