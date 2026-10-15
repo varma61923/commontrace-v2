@@ -102,3 +102,31 @@ evidence left undecided), test-set accuracy was 0.907: 26 of 107 mentions (24%)
 needed a model call, taking 852 s in total on the hosted API. The same model wrote
 these labels, so this number flatters the LLM tier; treat it as an upper bound for a
 comparable model, not a measured gain on independent data.
+
+## Relation extraction
+
+Offline extraction combines two strategies. Adjacent phrasings link two names joined
+by a verb ("Payments Service depends on Redis"). Entity-anchored triggers link the
+nearest typed entities on either side of a relation trigger across a few words, in
+active or passive voice ("The VoidMapper leverages the NebulaDB cluster", "OmniRoute,
+which handles all ingress traffic, requires QuarkSync", "X was utilized by Y"). Negated,
+hedged and planned statements ("may depend on", "does not use", "will replace") never
+produce a triple. The longest trigger phrase owns its span, so a passive phrase does
+not also fire its inner verb in the opposite direction. When a component and its error
+are both named, the component is the party ("a kernel panic in the VoidOS kernel").
+
+`python -m benchmarks.relation_extraction_eval --fixture <file>` scores triples
+strictly (exact names) and leniently (one name contains the other). Every triple from
+a negative sentence is a false positive. The fixtures were written by
+`gemma-4-31b-it` with unedited labels: 72 positive and 24 negative sentences each, a
+dev set in documentation style and a test set in Slack, incident and review style.
+The rules were tuned on the dev set only; the test set was scored once.
+
+| Fixture | Baseline F1 (strict / lenient) | New F1 (strict / lenient) | New lenient P / R | Negatives clean |
+|---|---|---|---|---|
+| `relation_extraction_gemma_dev.json` | 0.337 / 0.382 | 0.783 / 0.927 | 0.970 / 0.889 | 24/24 |
+| `relation_extraction_gemma_test.json` (never tuned on) | 0.209 / 0.279 | 0.672 / 0.797 | 0.911 / 0.708 | 24/24 |
+
+Weakest on the test set: employment phrased conversationally (`works_at` recall 1/6),
+because the person's name must be typed as a person before employment is asserted.
+

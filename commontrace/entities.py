@@ -261,6 +261,12 @@ def _trim(text: str, name: str, start: int) -> tuple[str, int, bool] | None:
     while opener and words and (words[0].lower() in ontology_lexicon.COMMON_WORDS or words[0].lower() in _COMMON):
         start += len(words[0]) + 1
         words = words[1:]
+    if opener and len(words) > 2 and words[1].lower() == "of" and \
+            ontology_lexicon.ABSTRACT_SUFFIX.search(words[0].lower()):
+        # "Ownership of the Quasar-DB schema" names the schema, not the ownership
+        drop = 3 if len(words) > 3 and words[2].lower() == "the" else 2
+        start += sum(len(w) + 1 for w in words[:drop])
+        words = words[drop:]
     while words and words[-1].lower() in ("of", "the", "de", "von", "van", "la", "le", "y"):
         words = words[:-1]
     if not words:
@@ -301,7 +307,10 @@ def _pattern_mentions(text: str, onto_aliases: dict[str, str], onto=None) -> lis
         if len(words) == 1 and (len(name) < 2 or name.lower() in _COMMON
                                 or name.lower() in ontology_lexicon.COMMON_WORDS):
             continue
-        source = "weak" if len(words) == 1 and opener else "pattern"
+        # Only a plain capitalised word opening a sentence is doubtful; "OmniRoute" or
+        # "Zylos-4" is a name wherever it stands.
+        plain = len(words) == 1 and re.fullmatch(r"[A-Z\u00c0-\u00de][a-z\u00df-\u00ff']+", name) is not None
+        source = "weak" if plain and opener else "pattern"
         found.append((name, "organization" if _ORG_SUFFIX.search(name) else "concept", start, start + len(name),
                       source))
     for m in _HONORIFIC.finditer(text):

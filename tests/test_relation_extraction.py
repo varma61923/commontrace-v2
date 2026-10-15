@@ -193,3 +193,44 @@ def test_cli_extract_relations(root, tmp_path, capsys):
     assert cli.main(["graph", "extract-relations", "Kafka is used by the ingest-worker.", "--dest", root]) == 0
     assert "(ingest-worker) --[uses]--> (Kafka)" in capsys.readouterr().out
     assert [e.relation for e in graph.load_edges(root)] == ["uses"]
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("The VoidMapper leverages the NebulaDB cluster to store spatial coordinates.",
+     ("VoidMapper", "uses", "NebulaDB")),
+    ("The FluxCapacitor module is utilized by the ChronosEngine for temporal synchronization.",
+     ("ChronosEngine", "uses", "FluxCapacitor")),
+    ("OmniRoute, which handles all ingress traffic, requires the QuarkSync module to synchronize state.",
+     ("OmniRoute", "depends_on", "QuarkSync")),
+    ("The unexpected reboot of the HyperNode cluster was precipitated by a kernel panic in the VoidOS kernel.",
+     ("VoidOS", "causes", "HyperNode")),
+    ("The SchemaValidator, which handles all incoming JSON payloads, throws ValidationError on bad input.",
+     ("SchemaValidator", "raises", "ValidationError")),
+    ("Within the Python runtime, KeyError is defined as a subclass of LookupError.",
+     ("KeyError", "extends", "LookupError")),
+])
+def test_anchored_triggers_link_the_nearest_named_entities(onto, text, expected):
+    found = [(t.subject, t.relation, t.object) for t in rx.extract(text, onto)]
+    subject, relation, obj = expected
+    assert any(r == relation and subject in s and obj in o for s, r, o in found), found
+    assert not any(r == relation and obj in s and subject in o for s, r, o in found)  # never both directions
+
+
+@pytest.mark.parametrize("text", [
+    "The Payments Service may depend on Redis in the future.",
+    "The Billing API does not use Kafka anymore.",
+    "Next quarter the ChronoCore engine will replace the FluxCapacitor module.",
+])
+def test_hedged_negated_and_planned_statements_assert_nothing(onto, text):
+    assert rx.extract(text, onto) == []
+
+
+def test_relation_benchmark_gate_on_the_dev_set():
+    import os
+
+    from benchmarks import relation_extraction_eval
+
+    here = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "benchmarks", "fixtures")
+    report = relation_extraction_eval.run(os.path.join(here, "relation_extraction_gemma_dev.json"))
+    assert report["lenient"]["f1"] >= 0.85 and report["lenient"]["precision"] >= 0.9
+    assert report["lenient"]["negatives_without_triples"] == "24/24"

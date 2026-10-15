@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Entity-anchored relation extraction.** Triggers link the nearest typed entities
+  on both sides across a bounded gap, in active and passive voice, with
+  negation/hedge guards. On a model-written relation test set never used for tuning,
+  lenient F1 rose from 0.279 to 0.797 (strict 0.209 to 0.672) with every negated or
+  hedged sentence still producing nothing. See [relation extraction](docs/ontology-typing.md#relation-extraction).
 - **Evidence-fusion ontology typing.** Entity mentions are typed by independent
   evidence combined by noisy-OR: aliases, head words (camelCase parts included),
   mention shapes (paths, identifiers, error names and codes, RFCs, cloud regions,
