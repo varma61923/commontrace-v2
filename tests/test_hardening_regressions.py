@@ -114,3 +114,12 @@ def test_mmr_recipe_order_matches_the_quadratic_reference():
 
     for limit in (1, 5, 12):
         assert search_recipes._recipe_order(list(rows), cfg, limit, None) == reference(list(rows), limit)
+
+
+def test_scrub_text_matches_redact_secrets():
+    from commontrace import memory_guard
+
+    text = "deploy with api_key=sk-live-0123456789abcdefghijkl and continue"
+    assert memory_guard.scrub_text(text) == memory_guard.redact_secrets(text)[0]
+    assert "0123456789abcdef" not in memory_guard.scrub_text(text)
+    assert memory_guard.scrub_text("") == ""

@@ -524,12 +524,12 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    from commontrace.memory_guard import redact_secrets
+    from commontrace.memory_guard import scrub_text
 
     def redact(line):
         # Scrub credentials but never truncate: telemetry.redact() cuts at 256 characters, which
         # silently clipped long lesson lines and the actionable tail of error messages.
-        return redact_secrets(str(line))[0]
+        return scrub_text(str(line))
 
     _t0 = time.monotonic()
     result = rank(args.query, args.top_k, args.include_importance_floor, args.agent_type)

@@ -139,6 +139,16 @@ def _redact(text: str, start: int, end: int) -> str:
 
 
 def redact_secrets(text: str) -> tuple[str, list[str]]:
+    """(text with credentials replaced by [REDACTED <kind>], the kinds found)."""
+    return _scrub(text)
+
+
+def scrub_text(text: str) -> str:
+    """The text with every credential replaced, for anything printed or logged."""
+    return _scrub(text)[0]
+
+
+def _scrub(text: str) -> tuple[str, list[str]]:
     found: list[str] = []
     if not text:
         return text, found
