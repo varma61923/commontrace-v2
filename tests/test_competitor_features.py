@@ -430,6 +430,23 @@ class TestRetry:
             llm._post_json("https://api.example.com/v1/x", {}, {"a": 1})
         assert attempts["n"] == 1
 
+    @pytest.mark.parametrize("reply", [[1, 2], "text", 3, None])
+    def test_llm_post_non_object_json_is_unavailable_not_a_crash(self, monkeypatch, reply):
+        import json as json_mod
+        import urllib.request
+
+        from commontrace import llm
+
+        class FakeResp:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self, _limit=-1): return json_mod.dumps(reply).encode()
+
+        monkeypatch.setattr(urllib.request, "build_opener", lambda *_args: type(
+            "Opener", (), {"open": staticmethod(lambda request, timeout=None: FakeResp())})())
+        with pytest.raises(llm.LLMUnavailable, match="not an object"):
+            llm._post_json("https://api.example.com/v1/x", {}, {"a": 1})
+
 
 # --- 8. batched entity lookup / dedup snapshot / gates ----------------------------
 
