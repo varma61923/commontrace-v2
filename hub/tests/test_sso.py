@@ -334,6 +334,27 @@ class TestJWKSCache:
         sso.verify_bearer_token(token, provider, jwks_cache=cache)
         assert len(calls) == 3
 
+    def test_stale_keys_stop_being_trusted_after_the_ceiling(self, signing_key):
+        key, pub = signing_key
+        now = [0.0]
+        outage = [False]
+
+        def fetch(uri):
+            if outage[0]:
+                raise ConnectionError("idp unreachable")
+            return {"keys": [_jwk(pub, "k1")]}
+
+        cache = sso.JWKSCache(fetch, ttl_seconds=100, clock=lambda: now[0])
+        provider = sso.IdentityProvider(
+            issuer=ISSUER, audience=AUDIENCE, jwks_uri="https://idp/jwks.json"
+        )
+        token = _token(key, "k1")
+        sso.verify_bearer_token(token, provider, jwks_cache=cache)
+        outage[0] = True
+        now[0] = sso.MAX_STALE_JWKS_SECONDS + 1
+        with pytest.raises(sso.IdentityError, match="signing keys"):
+            sso.verify_bearer_token(token, provider, jwks_cache=cache)
+
     def test_a_provider_with_neither_static_jwks_nor_uri_is_refused(self, signing_key):
         key, _ = signing_key
         provider = sso.IdentityProvider(issuer=ISSUER, audience=AUDIENCE)

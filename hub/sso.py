@@ -18,6 +18,11 @@ DEFAULT_CLOCK_SKEW_SECONDS = 60
 
 UNKNOWN_KID_REFETCH_SECONDS = 60
 
+# How long a cached key set may stand in for an unreachable JWKS endpoint.
+# Bounded so that blocking the fetch cannot keep a rotated-out key trusted
+# indefinitely (the same ceiling commontrace/oauth.py applies locally).
+MAX_STALE_JWKS_SECONDS = 24 * 3600
+
 _KTY_FOR_ALG_PREFIX = {"RS": "RSA", "ES": "EC"}
 
 logger = logging.getLogger("commontrace.hub.sso")
@@ -126,7 +131,7 @@ class JWKSCache:
             if not isinstance(document, dict):
                 raise ValueError(f"JWKS document is a {type(document).__name__}, not an object")
         except Exception as exc:  # noqa: BLE001 - every fetch failure is handled the same way
-            if cached is not None:
+            if cached is not None and now - cached[0] <= MAX_STALE_JWKS_SECONDS:
                 logger.warning("JWKS refresh from %s failed (%s); serving the cached key set",
                                jwks_uri, type(exc).__name__)
                 self._retry_not_before[jwks_uri] = now + UNKNOWN_KID_REFETCH_SECONDS
