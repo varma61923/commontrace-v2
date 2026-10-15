@@ -18,6 +18,10 @@ from commontrace.memory_journal import Journal
 
 pytestmark = pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="Unix socket transport")
 
+# Upper bound for starting a bridge process (Node, then Python) under a loaded,
+# coverage-instrumented parallel run; a bound, not a latency assertion.
+SPAWN_TIMEOUT = 30
+
 
 def command(root):
     return shlex.split(HookKit(str(root), "agent", embedder="none").manifest("claude")["events"]["UserPromptSubmit"])
@@ -27,7 +31,7 @@ def run(root, *, agent=None, payload=None, **kwargs):
     args = command(root) + (["--format", agent] if agent else [])
     return subprocess.run(
         args, input=payload if payload is not None else '{"session_id":"s","prompt":"code"}',
-        text=True, capture_output=True, timeout=5, check=True, **kwargs,
+        text=True, capture_output=True, timeout=SPAWN_TIMEOUT, check=True, **kwargs,
     )
 
 
@@ -38,7 +42,7 @@ def peer(root, handler):
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
         server.bind(str(root / "memory" / "hooks.sock"))
         server.listen(1)
-        server.settimeout(5)
+        server.settimeout(SPAWN_TIMEOUT)
 
         def work():
             try:
@@ -53,7 +57,7 @@ def peer(root, handler):
         try:
             yield
         finally:
-            worker.join(timeout=6)
+            worker.join(timeout=SPAWN_TIMEOUT + 1)
             assert not worker.is_alive(), "transport failed to disconnect"
             if errors:
                 raise errors[0]
@@ -85,7 +89,7 @@ def test_warm_transport_avoids_argparse_import(tmp_path):
     args[1:1] = ["-X", "importtime"]
     with peer(tmp_path, handler):
         result = subprocess.run(
-            args, input='{"session_id":"s"}', text=True, capture_output=True, timeout=5, check=True
+            args, input='{"session_id":"s"}', text=True, capture_output=True, timeout=SPAWN_TIMEOUT, check=True
         )
     assert "argparse" not in result.stderr
     assert json.loads(result.stdout) == {"context": "", "injected": []}
@@ -93,7 +97,7 @@ def test_warm_transport_avoids_argparse_import(tmp_path):
 
 def test_help_and_invalid_options_keep_native_hook_fail_safe(tmp_path):
     help_result = subprocess.run(
-        command(tmp_path) + ["--help"], input="", text=True, capture_output=True, timeout=5, check=True
+        command(tmp_path) + ["--help"], input="", text=True, capture_output=True, timeout=SPAWN_TIMEOUT, check=True
     )
     assert "--dest" in help_result.stdout
     assert "--agent-id" in help_result.stdout
@@ -103,7 +107,7 @@ def test_help_and_invalid_options_keep_native_hook_fail_safe(tmp_path):
 
     invalid = subprocess.run(
         command(tmp_path) + ["--not-a-hook-option"],
-        input='{"session_id":"s"}', text=True, capture_output=True, timeout=5, check=True,
+        input='{"session_id":"s"}', text=True, capture_output=True, timeout=SPAWN_TIMEOUT, check=True,
     )
     assert json.loads(invalid.stdout) == {"context": "", "injected": []}
     assert not invalid.stderr
@@ -132,7 +136,7 @@ def test_equals_options_and_legacy_python_flag_preserve_delivery(tmp_path):
             input='{"session_id":"s","prompt":"code"}',
             text=True,
             capture_output=True,
-            timeout=5,
+            timeout=SPAWN_TIMEOUT,
             check=True,
         )
     assert json.loads(result.stdout) == {
@@ -158,7 +162,7 @@ def test_invalid_choices_and_missing_values_fail_closed(tmp_path, invalid_option
         input='{"session_id":"s"}',
         text=True,
         capture_output=True,
-        timeout=5,
+        timeout=SPAWN_TIMEOUT,
         check=True,
     )
     assert json.loads(result.stdout) == {"context": "", "injected": []}
@@ -282,7 +286,7 @@ raise SystemExit(bridge.main(sys.argv[2:]))
                 process.stdin.close()
                 assert json.loads(process.stdout.readline())["context"] == "delivered"
                 read_output.set()
-                assert process.wait(timeout=5) == 0
+                assert process.wait(timeout=SPAWN_TIMEOUT) == 0
                 assert process.stderr.read() == ""
             finally:
                 release_peer.set()
@@ -303,7 +307,7 @@ def test_broken_stdout_never_acknowledges_delivery(tmp_path):
             process.stdout.close()
             process.stdin.write('{"session_id":"s"}')
             process.stdin.close()
-            assert process.wait(timeout=5) == 0
+            assert process.wait(timeout=SPAWN_TIMEOUT) == 0
             assert process.stderr.read() == ""
     assert observed == [b""]
 
@@ -375,6 +379,6 @@ def test_previously_installed_node_command_delegates_to_same_transport(tmp_path)
                                  "--dest", str(tmp_path), "--agent-id", "agent", "--scope", '{}',
                                  "--event", "UserPromptSubmit", "--format", "cursor"],
                                 input='{"session_id":"s"}', text=True, capture_output=True,
-                                timeout=5, check=True)
+                                timeout=SPAWN_TIMEOUT, check=True)
     assert json.loads(result.stdout) == {"additional_context": "legacy command"}
     assert not result.stderr
