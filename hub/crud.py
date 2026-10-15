@@ -1047,10 +1047,13 @@ async def search_trace_content(
         context_hit = Trace.context_text.op("~*")(pattern)
         solution_hit = Trace.solution_text.op("~*")(pattern)
     else:
-        like = f"%{pattern}%"
-        title_hit = Trace.title.ilike(like)
-        context_hit = Trace.context_text.ilike(like)
-        solution_hit = Trace.solution_text.ilike(like)
+        # A literal scan: `%` and `_` in an identifier (an email address, a
+        # ticket id) must match themselves, not act as LIKE wildcards.
+        escaped = pattern.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        like = f"%{escaped}%"
+        title_hit = Trace.title.ilike(like, escape="\\")
+        context_hit = Trace.context_text.ilike(like, escape="\\")
+        solution_hit = Trace.solution_text.ilike(like, escape="\\")
     stmt = (
         select(
             Trace.id, Trace.title, Trace.context_text, Trace.solution_text,
