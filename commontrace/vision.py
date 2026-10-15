@@ -23,23 +23,30 @@ def _enabled(flag: bool | None) -> bool:
     return _configuration_getenv(_ENABLE_ENV, "").strip().lower() in _TRUTHY
 
 
+def _sniff_image_mime(blob: bytes) -> str | None:
+    # Magic-byte detection for the formats the stdlib `imghdr` module used to
+    # recognise; `imghdr` was removed in Python 3.13, where importing it failed
+    # silently and every extensionless JPEG/WebP/BMP/TIFF became octet-stream.
+    if blob.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if blob.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if blob.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if len(blob) >= 12 and blob.startswith(b"RIFF") and blob[8:12] == b"WEBP":
+        return "image/webp"
+    if blob.startswith(b"BM"):
+        return "image/bmp"
+    if blob.startswith((b"II*\x00", b"MM\x00*")):
+        return "image/tiff"
+    return None
+
+
 def _mime_for(path: str, blob: bytes) -> str:
     guessed, _ = mimetypes.guess_type(path)
     if guessed and guessed.startswith("image/"):
         return guessed
-    try:
-        import imghdr
-
-        kind = imghdr.what(None, h=blob)
-    except Exception:  # noqa: BLE001 - detection is best-effort
-        kind = None
-    if kind:
-        return f"image/{'jpeg' if kind == 'jpg' else kind}"
-    if blob[:8].startswith(b"\x89PNG\r\n\x1a\n"):
-        return "image/png"
-    if blob[:3] == b"GIF":
-        return "image/gif"
-    return "application/octet-stream"
+    return _sniff_image_mime(blob) or "application/octet-stream"
 
 
 def _metadata(mime: str, size: int, path: str) -> str:
