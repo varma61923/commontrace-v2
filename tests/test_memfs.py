@@ -117,6 +117,22 @@ def test_restore_is_a_new_commit(store):
         memfs.restore(store, "HEAD; rm -rf /")
 
 
+@pytest.mark.parametrize("rev", ["--ext-diff", "--no-index", "-p", "-"])
+def test_an_option_shaped_revision_never_reaches_git(store, rev):
+    # The revision allowlist permits "-" for names like HEAD~1 or feature-x,
+    # but git would read a leading dash as an option (CWE-88).
+    with pytest.raises(memfs.MemfsError, match="not a revision"):
+        memfs.diff(store, rev)
+    with pytest.raises(memfs.MemfsError, match="not a revision"):
+        memfs.restore(store, rev)
+
+
+def test_ordinary_revisions_with_dashes_are_still_accepted(store):
+    _git(store, "branch", "feature-x")
+    assert memfs.diff(store, "feature-x") == ""
+    assert memfs.diff(store, "HEAD~0") == ""
+
+
 def test_handoff_round_trip_audience_tamper_drift_and_expiry(store, monkeypatch):
     token = memfs.handoff(store, audience="agent-b", ttl_seconds=600)
     claims = memfs.verify_handoff(store, token, audience="agent-b")
