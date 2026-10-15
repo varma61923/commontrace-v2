@@ -50,7 +50,7 @@ from commontrace import kg_similarity, ontology_learned, ontology_lexicon
 THRESHOLD = 0.6
 EMBEDDING_THRESHOLD = 0.45
 # Margin the nearest type must hold over every unrelated type and the abstain prototype.
-# Measured on the model-written dev set (benchmarks/fixtures/ontology_typing_gemma_dev.json):
+# Measured on a model-written dev set of 132 mentions (not shipped with the repository):
 # with bge-small and arctic-m, margins below 0.05 typed abstract topics; 0.08 kept them
 # untyped at no loss elsewhere.
 EMBEDDING_MARGIN = 0.08

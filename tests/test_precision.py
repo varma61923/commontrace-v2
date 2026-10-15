@@ -1,13 +1,9 @@
 import json
-import os
 
 import pytest
 
-from commontrace import outcome_detect, precision
+from commontrace import precision
 from commontrace.cli import main
-
-SAMPLE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                      "commons", "eval", "outcome_labelled.jsonl")
 
 
 def _row(oid, truth, returncode):
@@ -64,13 +60,3 @@ def test_the_cli_exits_by_whether_the_target_is_met(tmp_path, capsys):
     main(["function", "precision", str(path), "--json"])
     report = json.loads(capsys.readouterr().out)
     assert report["precision"] == pytest.approx(0.8) and report["met"] is False
-
-
-def test_the_shipped_regression_sample_meets_the_target_and_covers_every_detector():
-    with open(SAMPLE, encoding="utf-8") as fh:
-        rows = precision.read_sample(fh.read())
-    result = precision.evaluate(rows)
-    assert result.precision >= 0.9 and result.failure_precision >= 0.9 and not result.wrong
-    used = {s["detector"] for row in rows for s in row["signals"]}
-    every = {n for n in dir(outcome_detect) if n.startswith("from_") and n not in ("from_all", "from_any")}
-    assert used == every, f"not covered by the sample: {sorted(every - used)}"

@@ -1,4 +1,3 @@
-import json
 
 import pytest
 
@@ -157,13 +156,3 @@ def test_codex_failed_tool_result_is_admitted_as_post_tool_failure():
 
     assert event == "PostToolUseFailure"
     assert payload["error"] == {"exit_code": 1, "stderr": "request timed out"}
-
-
-def test_event_fixture_keeps_cases_and_relevance_labels_separate_by_event():
-    with open("benchmarks/fixtures/injector-labels.json", encoding="utf-8") as stream:
-        fixture = json.load(stream)
-
-    assert set(fixture["event_cases"]) == set(SEMANTIC_EVENTS) - {"UserPromptSubmit"}
-    for event, cases in fixture["event_cases"].items():
-        assert cases and all("payload" in case and "relevant" in case for case in cases)
-        assert all(isinstance(case["relevant"], list) for case in cases)

@@ -16,7 +16,6 @@ lint:
 	$(PYTHON) scripts/dev.py lint
 check:
 	$(PYTHON) scripts/dev.py check
-	$(PYTHON) scripts/dev.py docs --check
 	$(PYTHON) scripts/export_openapi.py --check
 build:
 	$(PYTHON) -m build

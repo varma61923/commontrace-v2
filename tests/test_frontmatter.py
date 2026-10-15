@@ -396,11 +396,6 @@ class TestLessonFrontmatterRequiredFields:
             content = fh.read()
         return bm.parse_frontmatter(content)
 
-    def test_lesson_template_parseable(self):
-        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        template = os.path.join(repo_root, "memory", "lessons", "lesson_template.md")
-        fm = self._load_lesson(template)
-        assert fm is not None
 
     def test_example_lessons_have_required_fields(self):
         repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -483,21 +478,6 @@ class TestEpisodeFrontmatterRequiredFields:
             content = fh.read()
         return bm.parse_frontmatter(content)
 
-    def test_episode_template_parseable(self):
-        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        template = os.path.join(repo_root, "memory", "episodes", "episode_template.md")
-        fm = self._load_episode(template)
-        assert fm is not None
-
-    def test_episode_template_verdict_is_conform(self):
-        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        template = os.path.join(repo_root, "memory", "episodes", "episode_template.md")
-        fm = self._load_episode(template)
-        assert fm is not None
-        assert fm.get("verdict") in self.VALID_VERDICTS, (
-            f"episode_template verdict '{fm.get('verdict')}' not in {self.VALID_VERDICTS}. "
-            "Use CONFORM | ARBITRATION | ABANDON (English, not French)."
-        )
 
     def test_example_episodes_verdict_valid(self):
         repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

@@ -9,9 +9,7 @@
 venv
 env
 
-memory/
 tests/
-assets/
 
 commontrace/**
 !commontrace/__init__.py

@@ -142,9 +142,9 @@ def poison_check() -> dict:
     }
 
 
-def measure(*, model="bge-small", repetitions=5) -> dict:
-    filename = os.path.join(os.path.dirname(__file__), "fixtures", "injector-labels.json")
-    raw = open(filename, "rb").read()
+def measure(*, fixture_path: str, model="bge-small", repetitions=5) -> dict:
+    with open(fixture_path, "rb") as stream:
+        raw = stream.read()
     fixture = json.loads(raw)
     cases_by_event = _fixture_cases(fixture)
     provider = embeddings.provider(model)
@@ -326,6 +326,7 @@ def measure_transport(*, repetitions=50) -> dict:
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", default="bge-small")
+    parser.add_argument("--fixture", help="labeled lessons and event cases (JSON); required for the latency and relevance run")
     parser.add_argument("--repetitions", type=int, default=5)
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--safety-only", action="store_true")
@@ -334,12 +335,15 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if not 1 <= args.repetitions <= 100:
         parser.error("repetitions must be in 1..100")
+    if not (args.transport_only or args.safety_only or args.fixture):
+        parser.error("--fixture is required unless --safety-only or --transport-only is given")
     report = (
         measure_transport(repetitions=args.repetitions)
         if args.transport_only
         else poison_check()
         if args.safety_only
-        else {**measure(model=args.model, repetitions=args.repetitions), "safety": poison_check()}
+        else {**measure(fixture_path=args.fixture, model=args.model, repetitions=args.repetitions),
+           "safety": poison_check()}
     )
     if args.out:
         with open(args.out, "w", encoding="utf-8") as stream:

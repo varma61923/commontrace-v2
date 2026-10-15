@@ -34,18 +34,6 @@ class TestYamlDatesLoadAsStrings:
         assert fm["a"] is True and fm["b"] is False
         assert fm["c"] == "NO" and fm["d"] == "on"
 
-    def test_the_shipped_example_lessons_validate(self):
-        lessons_dir = os.path.join(REPO_ROOT, "memory", "lessons")
-        schema = validate.load_schema("lesson.schema.json")
-        checked = 0
-        for name in os.listdir(lessons_dir):
-            if not name.startswith("lesson_example_"):
-                continue
-            fm, _ = frontmatter.read(os.path.join(lessons_dir, name))
-            assert validate.validate(fm, schema) == [], f"{name} fails its own schema"
-            checked += 1
-        assert checked >= 1, "no example lessons found to check"
-
 
 class TestImportKeepsEveryOutcomeField:
     def test_baseline_survives_import(self):

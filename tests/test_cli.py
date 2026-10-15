@@ -559,16 +559,6 @@ def test_packaged_schemas_are_identical_to_the_normative_ones():
         )
 
 
-def test_skill_description_fits_the_claude_code_limit():
-    import yaml as _yaml
-
-    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    with open(os.path.join(repo, "SKILL.md"), encoding="utf-8") as fh:
-        front = fh.read().split("---")[1]
-    description = _yaml.safe_load(front)["description"]
-    assert len(description) <= 1024, f"SKILL.md description is {len(description)} chars (limit 1024)"
-
-
 def test_shipped_schemas_use_only_keywords_the_validator_enforces():
     for name in ("trace.schema.json", "lesson.schema.json"):
         validate.assert_supported_schema(validate.load_schema(name))
@@ -756,4 +746,3 @@ def test_init_function_conflicting_with_agent_type_is_refused(store, capsys):
     assert main(["init", "--function", "support", "--agent-type", "sales", "--dest", str(store)]) == 2
     assert "conflicts" in capsys.readouterr().err
     assert not os.path.isdir(store / "memory")
-

@@ -26,8 +26,6 @@ from commontrace import (
     relation_extraction,
 )
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_FIXTURE = os.path.join(_HERE, "fixtures", "graph_quality_v1.json")
 SCHEMA_VERSION = "1.0.0"
 ENTROPY_SWEEP = (1.0, 1.5, 2.0, 2.5, 3.0)
 SIMILARITY_SWEEP = (0.5, 0.6, 0.7, 0.8, 0.9, 1.0)
@@ -35,7 +33,7 @@ CLASSIFICATION_SWEEP = (0.45, 0.6, 0.7, 0.75, 0.9, 0.95)
 LEGACY_NGRAM_SWEEP = (0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 1.0)
 
 
-def load_fixture(path: str = DEFAULT_FIXTURE) -> dict[str, Any]:
+def load_fixture(path: str) -> dict[str, Any]:
     with open(path, encoding="utf-8") as stream:
         data = json.load(stream)
     required = {"entity_pairs", "classifications", "relation_extraction", "edge_pairs"}
@@ -359,7 +357,7 @@ def _edge_pair_report(rows: list[dict]) -> dict[str, Any]:
     }
 
 
-def evaluate(fixture: str = DEFAULT_FIXTURE) -> dict[str, Any]:
+def evaluate(fixture: str) -> dict[str, Any]:
     data = load_fixture(fixture)
     with open(fixture, "rb") as stream:
         fixture_sha256 = hashlib.sha256(stream.read()).hexdigest()
@@ -372,7 +370,7 @@ def evaluate(fixture: str = DEFAULT_FIXTURE) -> dict[str, Any]:
             implementations[f"commontrace/{name}"] = hashlib.sha256(stream.read()).hexdigest()
     return {
         "schema_version": SCHEMA_VERSION,
-        "fixture": os.path.relpath(fixture, _HERE) if os.path.isabs(fixture) else fixture,
+        "fixture": os.path.basename(fixture),
         "fixture_sha256": fixture_sha256,
         "harness_sha256": harness_sha256,
         "implementation_sha256": implementations,
@@ -449,7 +447,8 @@ def render(report: dict[str, Any]) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--fixture", default=DEFAULT_FIXTURE)
+    parser.add_argument("--fixture", required=True,
+                        help="labeled graph-quality data (JSON, schema_version 1.0.0); none ships with the repository")
     parser.add_argument("--json", action="store_true", help="emit reproducible JSON instead of a Markdown summary")
     parser.add_argument("--out", help="write the report to this file instead of stdout")
     args = parser.parse_args(argv)

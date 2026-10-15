@@ -14,7 +14,7 @@ are reported overall and per slice: ``known-name`` rows may be helped by built-i
 gazetteers, ``novel-name`` rows use invented names that only the mention's shape
 and context can type, and ``abstract`` rows must stay untyped.
 
-Run with ``python -m benchmarks.ontology_typing_eval --json`` (add
+Run with ``python -m benchmarks.ontology_typing_eval --fixture FILE --json`` (add
 ``--methods keyword,embedding --embedder fastembed:BAAI/bge-small-en-v1.5`` or
 ``--llm`` to include the model tiers; those numbers depend on the model).
 """
@@ -28,11 +28,8 @@ import time
 from collections import Counter, defaultdict
 from typing import Any
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_FIXTURE = os.path.join(_HERE, "fixtures", "ontology_typing_v1.json")
 
-
-def load_fixture(path: str = DEFAULT_FIXTURE) -> list[dict[str, Any]]:
+def load_fixture(path: str) -> list[dict[str, Any]]:
     with open(path, encoding="utf-8") as stream:
         data = json.load(stream)
     rows = data.get("examples")
@@ -108,7 +105,7 @@ def predict_pipeline(rows, onto, embedder=None) -> list[str | None]:
     return out
 
 
-def run(path: str = DEFAULT_FIXTURE, *, methods: tuple[str, ...] = ("keyword",), embedder=None,
+def run(path: str, *, methods: tuple[str, ...] = ("keyword",), embedder=None,
         llm=None) -> dict[str, Any]:
     from commontrace import ontology
 
@@ -132,7 +129,8 @@ def run(path: str = DEFAULT_FIXTURE, *, methods: tuple[str, ...] = ("keyword",),
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--fixture", default=DEFAULT_FIXTURE)
+    parser.add_argument("--fixture", required=True,
+                        help="labeled mentions (JSON, schema_version 1.0.0); none ship with the repository")
     parser.add_argument("--methods", default="keyword", help="comma-separated classify methods")
     parser.add_argument("--embedder", default=None, help="embedding provider tag for the embedding tier")
     parser.add_argument("--llm", action="store_true", help="use the configured LLM for the llm tier")

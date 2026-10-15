@@ -4,7 +4,7 @@ Rows come from labeled typing fixtures (``name``, ``context``, ``expected``; a n
 ``expected`` trains the ``none`` class). Training is deterministic for a given seed
 and set of fixtures, so the shipped weights can be reproduced:
 
-    python -m benchmarks.train_ontology_typing --fixture benchmarks/fixtures/ontology_typing_gemma_train.json
+    python -m benchmarks.train_ontology_typing --fixture TRAINING_ROWS.json
 
 Never train on a fixture that is used to report held-out accuracy.
 """

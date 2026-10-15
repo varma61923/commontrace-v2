@@ -1,7 +1,6 @@
 """Would a different token representation fix the commons' recall problem?"""
 from __future__ import annotations
 
-import json
 import re
 import statistics
 import sys
@@ -19,8 +18,6 @@ from commontrace.overlap import (  # noqa: E402
 )
 from hub import commons  # noqa: E402
 
-CORPUS = ROOT / "commons" / "seed" / "substrate-v1.jsonl"
-HERE = Path(__file__).resolve().parent
 NUM_PERM = commons.COMMONS_NUM_PERM
 THRESHOLD = commons.DEFAULT_COMMONS_THRESHOLD
 
@@ -82,10 +79,6 @@ def signature(tokens: set[str]) -> list[int]:
     return [min((a * h + b) % _MERSENNE_61 for h in hashes) for a, b in _permutations(NUM_PERM)]
 
 
-def _load(path: Path) -> list[dict]:
-    return [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines() if x.strip()]
-
-
 def score(tokenize, probes: list[dict], corpus: list[dict], threshold: float = THRESHOLD) -> dict:
     titles = [r["title"] for r in corpus]
     corpus_sigs = [
@@ -130,55 +123,3 @@ def score(tokenize, probes: list[dict], corpus: list[dict], threshold: float = T
         "false_positive": false_pos / n_neg if n_neg else 0.0,
         "hits": hits, "n_pos": n_pos, "false_pos": false_pos, "n_neg": n_neg,
     }
-
-
-def main() -> int:
-    corpus = _load(CORPUS)
-    dev = _load(HERE / "probes-v1.jsonl")
-    held = _load(HERE / "probes-v2.jsonl")
-
-    print(f"corpus {len(corpus)} records | threshold {THRESHOLD} (shipped, unchanged) "
-          f"| metric estimate_jaccard (unchanged)")
-    print(f"dev = probes-v1 ({sum(1 for p in dev if p['expect']=='covered')}+"
-          f"{sum(1 for p in dev if p['expect']=='uncovered')})  "
-          f"held-out = probes-v2 ({sum(1 for p in held if p['expect']=='covered')}+"
-          f"{sum(1 for p in held if p['expect']=='uncovered')})")
-    print()
-    print(f"{'representation':<18} {'dev recall':>11} {'dev FP':>8} "
-          f"{'HELD recall':>12} {'HELD FP':>9} {'rank1':>7} {'med sim':>8}")
-    print("-" * 82)
-
-    rows = {}
-    for name, fn in CANDIDATES.items():
-        d = score(fn, dev, corpus)
-        h = score(fn, held, corpus)
-        rows[name] = (d, h)
-        print(f"{name:<18} {d['recall']:>10.1%} {d['false_positive']:>8.1%} "
-              f"{h['recall']:>11.1%} {h['false_positive']:>9.1%} "
-              f"{h['rank1']:>7.0%} {h['median_true_sim']:>8.3f}")
-
-    print()
-    base_d, base_h = rows["words (shipped)"]
-    print("Read the HELD columns, not the dev ones. A candidate is only better if")
-    print("recall rises AND false positives stay at zero -- recall bought with false")
-    print("positives is the bar dropping, not the matcher improving.")
-    print()
-    print("rank1 = the correct record was ranked FIRST, threshold ignored.")
-    print("med sim = median similarity between a probe and the record it targets.")
-    print()
-    for name, (_d, h) in rows.items():
-        if name == "words (shipped)":
-            continue
-        dr = h["recall"] - base_h["recall"]
-        dfp = h["false_positive"] - base_h["false_positive"]
-        verdict = (
-            "REAL GAIN" if dr > 0 and dfp <= 0
-            else "gain paid for with false positives" if dr > 0
-            else "no gain"
-        )
-        print(f"  {name:<16} recall {dr:+.1%}, false positives {dfp:+.1%}  -> {verdict}")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

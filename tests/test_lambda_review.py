@@ -44,12 +44,6 @@ def test_the_field_survives_the_fallback_parser():
         "lesson_a": "ACCEPTED", "lesson_b": "REJECTED"}
 
 
-def test_the_templates_ask_for_it():
-    for path in ("SKILL.md", os.path.join("memory", "episodes", "episode_template.md")):
-        with open(os.path.join(REPO, path), encoding="utf-8") as fh:
-            assert "lambda_decisions:" in fh.read(), path
-
-
 def _minimal_report():
     episodes = [{"name": "e", "lessons_proposed_by_omega": ["a", "b"],
                  "lessons_validated_by_lambda": ["a"]}]

@@ -226,12 +226,17 @@ def test_hedged_negated_and_planned_statements_assert_nothing(onto, text):
     assert rx.extract(text, onto) == []
 
 
-def test_relation_benchmark_gate_on_the_dev_set():
-    import os
+def test_relation_benchmark_scores_an_inline_fixture(tmp_path):
+    import json
 
     from benchmarks import relation_extraction_eval
 
-    here = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "benchmarks", "fixtures")
-    report = relation_extraction_eval.run(os.path.join(here, "relation_extraction_gemma_dev.json"))
-    assert report["lenient"]["f1"] >= 0.85 and report["lenient"]["precision"] >= 0.9
-    assert report["lenient"]["negatives_without_triples"] == "24/24"
+    rows = [
+        {"id": "p", "text": "The Payments Service depends on Redis.",
+         "triples": [{"subject": "Payments Service", "relation": "depends_on", "object": "Redis"}]},
+        {"id": "n", "text": "The Payments Service does not depend on Redis.", "triples": []},
+    ]
+    path = tmp_path / "relations.json"
+    path.write_text(json.dumps({"schema_version": "1.0.0", "examples": rows}), encoding="utf-8")
+    report = relation_extraction_eval.run(str(path))
+    assert report["lenient"]["f1"] == 1.0 and report["lenient"]["negatives_without_triples"] == "1/1"

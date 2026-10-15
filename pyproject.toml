@@ -68,7 +68,6 @@ dev = [
 
 [project.urls]
 Homepage = "https://github.com/denemlabs/commontrace-v2"
-Protocol = "https://github.com/denemlabs/commontrace-v2/blob/main/protocol/PROTOCOL.md"
 
 [project.scripts]
 commontrace = "commontrace.cli:main"

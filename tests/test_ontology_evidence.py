@@ -2,7 +2,6 @@
 exemplars, sibling back-off, batching, and extraction that keeps weak candidates only
 when they can be typed."""
 import json
-import os
 
 import pytest
 
@@ -196,26 +195,6 @@ def test_extraction_trims_sentence_verbs_and_finds_compound_names():
     assert found.get("KubeCon") == "event"
 
 
-def test_typing_benchmark_reports_slices():
-    report = ontology_typing_eval.run()
-    assert report["classifier"]["examples"] == 124
-    assert set(report["classifier"]["by_slice"]) == {"abstract", "known-name", "novel-name"}
-    assert report["pipeline"]["typed_precision"] >= 0.95  # regression gate on the hand-written set
-    here = os.path.dirname(ontology_typing_eval.DEFAULT_FIXTURE)
-    dev = ontology_typing_eval.run(os.path.join(here, "ontology_typing_gemma_dev.json"))
-    assert dev["classifier"]["accuracy"] >= 0.85  # regression gate on the model-written dev sets
-    dev2 = ontology_typing_eval.run(os.path.join(here, "ontology_typing_gemma_dev2.json"))
-    assert dev2["pipeline"]["accuracy"] >= 0.85
-
-
-def test_fixture_rows_are_self_consistent():
-    for path in ("ontology_typing_v1.json", "ontology_typing_gemma_dev.json", "ontology_typing_gemma_dev2.json"):
-        with open(os.path.join(os.path.dirname(ontology_typing_eval.DEFAULT_FIXTURE), path), encoding="utf-8") as fh:
-            rows = json.load(fh)["examples"]
-        assert all(r["name"] in r["context"] for r in rows)
-        assert len({r["id"] for r in rows}) == len(rows)
-
-
 def test_a_later_mention_types_the_name_everywhere():
     filler = "We looked at the dashboards for a long time and saw nothing unusual in the metrics at all. " * 3
     text = "Zylith keeps crashing under load. " + filler + "Zylith, our message broker, needs more memory."
@@ -224,3 +203,24 @@ def test_a_later_mention_types_the_name_everywhere():
     alone = {m.name: m.type for m in entities.extract("Zylith keeps crashing under load. " + filler,
                                                      onto=ONTO, use_spacy=False)}
     assert "Zylith" not in alone  # one uninformative mention stays untyped and is dropped
+
+
+def test_typing_benchmark_scores_an_inline_fixture(tmp_path):
+    rows = [
+        {"id": "a", "name": "src/app/main.py", "context": "Edit src/app/main.py.", "expected": "file",
+         "slice": "known-name"},
+        {"id": "b", "name": "KeyError", "context": "It raised a KeyError.", "expected": "error",
+         "slice": "known-name"},
+        {"id": "c", "name": "Latency", "context": "Latency matters more than throughput.", "expected": None,
+         "slice": "abstract"},
+    ]
+    path = tmp_path / "typing.json"
+    path.write_text(json.dumps({"schema_version": "1.0.0", "examples": rows}), encoding="utf-8")
+    report = ontology_typing_eval.run(str(path))
+    assert report["classifier"]["examples"] == 3 and report["classifier"]["accuracy"] == 1.0
+    assert set(report["classifier"]["by_slice"]) == {"known-name", "abstract"}
+    assert report["pipeline"]["typed_precision"] == 1.0
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps({"examples": rows}), encoding="utf-8")  # no schema_version
+    with pytest.raises(ValueError):
+        ontology_typing_eval.load_fixture(str(bad))

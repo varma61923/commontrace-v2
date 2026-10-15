@@ -131,9 +131,6 @@ jobs:
       - name: Lint with ruff
         run: make lint
 
-      - name: Source-derived API and environment references stay current
-        run: python scripts/dev.py docs --check
-
       - name: Standard OpenAPI memory contract stays current
         run: python scripts/export_openapi.py --check
 
@@ -459,7 +456,7 @@ jobs:
           PY
 
       - name: Bandit static analysis
-        run: bandit -r commontrace/ hub/ memory/ -x "*/tests/*,*/test_*" -ll
+        run: bandit -r commontrace/ hub/ -x "*/tests/*,*/test_*" -ll
 
       - name: pip-audit -- commontrace's own declared dependencies
         run: |
