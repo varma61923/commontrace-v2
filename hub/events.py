@@ -259,7 +259,7 @@ def verify_signature(
     if abs(moment - timestamp) > tolerance:
         return False
     expected = signature_header(secret, timestamp, body).split(f"{_SIGNATURE_VERSION}=")[1]
-    return hmac.compare_digest(sent, expected)
+    return hmac.compare_digest(sent.encode("utf-8", "replace"), expected.encode())
 
 
 async def add_endpoint(

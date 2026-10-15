@@ -81,6 +81,12 @@ class TestConsoleAuthentication:
             r = await c.get("/admin", headers={"Authorization": f"Basic {raw}"})
         assert r.status_code == 401
 
+    async def test_a_non_ascii_password_is_refused_not_crashed(self):
+        raw = base64.b64encode("op:pässwörd".encode()).decode()
+        async with _client(_app()) as c:
+            r = await c.get("/admin", headers={"Authorization": f"Basic {raw}"})
+        assert r.status_code == 401
+
     async def test_the_username_is_ignored(self):
         assert admin._authorized(_FakeRequest(_basic("anyone-at-all", "s3cret")), "s3cret")
 

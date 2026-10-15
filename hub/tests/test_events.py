@@ -144,6 +144,10 @@ class TestSigning:
         assert not events.verify_signature(
             "s3cret", forged, body, now=stamp + 600)
 
+    def test_a_non_ascii_signature_is_false_not_a_crash(self):
+        stamp = int(NOW.timestamp())
+        assert not events.verify_signature("s", f"t={stamp},v1=\u00e9", "{}", now=stamp)
+
     def test_a_malformed_header_is_false_not_a_crash(self):
         for header in ("", "garbage", "t=notanumber,v1=abc", "v1=abc"):
             assert not events.verify_signature("s", header, "{}", now=1)

@@ -96,9 +96,8 @@ def add_rest_routes(
     signup_limiter = make_named_limiter(config, 1, 2, "signup")
 
     async def _authenticate(request: Request):
-        allowed, retry_after = await auth_limiter.check(
-            rate_limit_key(request, trusted_proxy_hops)
-        )
+        client_key = rate_limit_key(request, trusted_proxy_hops)
+        allowed, retry_after = await auth_limiter.check(client_key)
         if not allowed:
             return None, JSONResponse(
                 {"error": "rate_limited", "detail": "too many requests"},
@@ -119,6 +118,7 @@ def add_rest_routes(
                 if person is not None:
                     from hub import rbac
 
+                    auth_limiter.refund(client_key)
                     return auth.AuthenticatedKey(
                         person.org_id, f"user:{person.id}", rbac.scopes_of(person.role),
                     ), None
@@ -129,6 +129,8 @@ def add_rest_routes(
             authenticated = await auth.verify_api_key(session, raw_key)
         if authenticated is None:
             return None, _json_error(401, "unauthorized", "that key was not accepted")
+        # The limiter bounds failed guesses; a valid key must not spend the budget.
+        auth_limiter.refund(client_key)
         return authenticated, None
 
     def _require_scope(authenticated, required: str) -> Response | None:
@@ -242,6 +244,8 @@ def add_rest_routes(
                 status_code=429,
                 headers={"Retry-After": str(max(1, math.ceil(exc.retry_after or 1)))},
             )
+        except ValueError as exc:
+            return _json_error(400, "bad_request", str(exc))
         return JSONResponse(result, status_code=201)
 
     async def search(request: Request) -> Response:

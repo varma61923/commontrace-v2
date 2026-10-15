@@ -359,7 +359,7 @@ def verify_handoff(root: str, token: str, *, audience: str | None = None) -> dic
     if len(parts) != 3 or parts[0] != "cth1":
         raise MemfsError("not a handoff token")
     expected = _b64(hmac.new(_key(root), parts[1].encode(), hashlib.sha256).digest())
-    if not hmac.compare_digest(expected, parts[2]):
+    if not hmac.compare_digest(expected.encode(), parts[2].encode("utf-8", "replace")):
         raise MemfsError("signature does not verify (wrong key, or the token was altered)")
     try:
         claims = json.loads(_unb64(parts[1]))
@@ -410,7 +410,7 @@ def verify_snapshot(root: str, attestation: dict) -> bool:
             return (memory_authority.verify(root, attestation["origin"], claims)
                     and _tree_digest(root, claims["commit"], claims["scope"]) == claims["tree"])
         signature = hmac.new(_key(root), json.dumps(claims, sort_keys=True).encode(), hashlib.sha256).hexdigest()
-        return (hmac.compare_digest(signature, attestation["signature"])
+        return (hmac.compare_digest(signature.encode(), str(attestation["signature"]).encode("utf-8", "replace"))
                 and _tree_digest(root, claims["commit"], claims["scope"]) == claims["tree"])
     except (KeyError, ValueError, MemfsError):
         return False

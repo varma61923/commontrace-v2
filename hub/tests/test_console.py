@@ -2595,3 +2595,97 @@ class TestTheCatalogueShowsTheGroundsForAVerdict:
             response = await client.get(f"{console.CONSOLE_PATH}/kb")
         assert secret not in response.text
         assert "does not work" in response.text
+
+
+class TestKeyAndUserFormValidation:
+    async def _keys(self, session_factory, org_id):
+        async with session_scope(session_factory) as session:
+            return (await session.execute(select(ApiKey).where(ApiKey.org_id == org_id))).scalars().all()
+
+    @pytest.mark.parametrize("expires_days", ["abc", "0", "-3", "99999999999"])
+    async def test_an_unusable_expiry_is_refused_not_issued_as_never_expiring(
+        self, session_factory, org_and_key, expires_days
+    ):
+        org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.post(
+                f"{console.CONSOLE_PATH}/keys/issue",
+                data={"scopes": ["read"], "expires_days": expires_days},
+            )
+        assert response.status_code == 200
+        assert "Expiry must be a whole number of days" in response.text
+        assert len(await self._keys(session_factory, org_id)) == 1
+
+    async def test_an_unknown_scope_is_refused_with_a_message(self, session_factory, org_and_key):
+        org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.post(f"{console.CONSOLE_PATH}/keys/issue", data={"scopes": ["root"]})
+        assert response.status_code == 200
+        assert "unknown scope" in response.text
+        assert len(await self._keys(session_factory, org_id)) == 1
+
+    async def test_a_valid_expiry_is_applied(self, session_factory, org_and_key):
+        org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.post(
+                f"{console.CONSOLE_PATH}/keys/issue", data={"scopes": ["read"], "expires_days": "7"})
+        assert "shown once" in response.text
+        fresh = [k for k in await self._keys(session_factory, org_id) if k.scopes == ["read"]]
+        assert len(fresh) == 1 and fresh[0].expires_at is not None
+
+    async def test_a_duplicate_or_invalid_user_is_reported(self, session_factory, org_and_key):
+        _org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            first = await client.post(f"{console.CONSOLE_PATH}/users/create",
+                                      data={"email": "ada@example.com", "role": "viewer"})
+            assert first.status_code == 303
+            again = await client.post(f"{console.CONSOLE_PATH}/users/create",
+                                      data={"email": "ada@example.com", "role": "viewer"})
+            assert "already has a user" in again.text
+            bad_email = await client.post(f"{console.CONSOLE_PATH}/users/create",
+                                          data={"email": "not-an-email", "role": "viewer"})
+            assert "valid email" in bad_email.text
+            bad_role = await client.post(f"{console.CONSOLE_PATH}/users/create",
+                                         data={"email": "bob@example.com", "role": "emperor"})
+            assert "Unknown role" in bad_role.text
+
+    async def test_setting_an_unknown_role_is_reported(self, session_factory, org_and_key):
+        org_id, raw_key = org_and_key
+        async with session_scope(session_factory) as session:
+            user = User(org_id=org_id, email="cy@example.com", role="viewer")
+            session.add(user)
+            await session.flush()
+            user_id = user.id
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.post(f"{console.CONSOLE_PATH}/users/{user_id}/role", data={"role": "emperor"})
+        assert "Unknown role" in response.text
+        async with session_scope(session_factory) as session:
+            assert (await session.get(User, user_id)).role == "viewer"
+
+
+class TestSessionIsPinnedToItsKey:
+    async def test_a_sibling_key_sharing_the_prefix_does_not_keep_the_session(
+        self, session_factory, org_and_key
+    ):
+        org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            async with session_scope(session_factory) as session:
+                await session.execute(
+                    sa_update(ApiKey).where(ApiKey.org_id == org_id)
+                    .values(revoked_at=datetime.now(timezone.utc))
+                )
+                # A different, live key of the same org that happens to share the 12-char prefix.
+                session.add(ApiKey(org_id=org_id, key_prefix=raw_key[:12], key_hash="x", scopes=["admin"]))
+            assert (await client.get(console.CONSOLE_PATH)).status_code == 303
+
+    async def test_a_non_ascii_cookie_signature_is_not_a_server_error(self):
+        token = console.issue_session(SECRET, "org-1", "ct_live_ab")
+        body = token.partition(".")[0]
+        assert console.read_session(SECRET, body + ".sïgnature") is None
+        assert console.read_share_token(SECRET, body + ".sïgnature") is None

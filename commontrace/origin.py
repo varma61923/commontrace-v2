@@ -67,7 +67,8 @@ def verify(receipt: dict, principals: dict[str, Principal], *, authority: str | 
             signature_valid = True
         else:
             expected = hmac.new(principal.key, _bytes(body), hashlib.sha256).hexdigest()
-            signature_valid = hmac.compare_digest(expected, receipt["signature"])
+            signature_valid = hmac.compare_digest(expected.encode(),
+                                                  str(receipt["signature"]).encode("utf-8", "replace"))
         return (signature_valid
                 and receipt["organization"] == principal.organization
                 and receipt["authority"] == principal.authority

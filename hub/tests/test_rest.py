@@ -295,6 +295,22 @@ class TestAuthentication:
         assert revoked.json() == unknown.json()
 
 
+class TestAuthAttemptBudget:
+    async def test_a_valid_key_does_not_spend_the_failed_attempt_budget(self, session_factory, config):
+        tight = replace(config, auth_attempts_per_minute=1, auth_attempts_burst=2)
+        _org_id, raw_key = await _org_with_key(session_factory)
+        async with _client(_app(session_factory, tight)) as client:
+            for _ in range(5):
+                response = await client.post(
+                    "/api/v1/traces/search", json={"q": "anything"}, headers=_key(raw_key))
+                assert response.status_code == 200
+            for _ in range(2):
+                await client.post("/api/v1/traces/search", json={"q": "x"}, headers=_key("ct_live_wrong"))
+            refused = await client.post(
+                "/api/v1/traces/search", json={"q": "x"}, headers=_key("ct_live_wrong"))
+        assert refused.status_code == 429
+
+
 class TestScopes:
     async def test_a_read_only_key_cannot_contribute(self, session_factory, config):
         _org_id, raw_key = await _org_with_key(session_factory, scopes=["read"])
@@ -378,6 +394,17 @@ class TestContributing:
             response = await client.post(
                 "/api/v1/traces",
                 json={"title": {"nested": "object"}, "context_text": None, "solution_text": []},
+                headers=_key(raw_key),
+            )
+        assert response.status_code == 400
+
+    @pytest.mark.parametrize("extra", [{"valid_from": "not-a-date"}, {"scopes": ["x" * 10_000]}])
+    async def test_an_invalid_optional_field_is_a_400_not_a_500(self, session_factory, config, extra):
+        _org_id, raw_key = await _org_with_key(session_factory)
+        async with _client(_app(session_factory, config)) as client:
+            response = await client.post(
+                "/api/v1/traces",
+                json={"title": "t", "context_text": "c", "solution_text": "s", **extra},
                 headers=_key(raw_key),
             )
         assert response.status_code == 400

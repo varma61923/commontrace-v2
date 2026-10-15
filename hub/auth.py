@@ -168,6 +168,7 @@ class AuthenticatedKey:
     key_prefix: str
     scopes: tuple[str, ...] | None = None
     expires_at: datetime | None = field(default=None, compare=False, repr=False)
+    key_id: str = field(default="", compare=False)
 
 
 _AUTH_CACHE_TTL = 0.0
@@ -299,7 +300,7 @@ async def _verify_by_hmac(session: AsyncSession, raw_key: str, now: datetime) ->
         await session.execute(update(ApiKey).where(ApiKey.id == row.id).values(last_used_at=now))
     return AuthenticatedKey(
         org_id=row.org_id, key_prefix=row.key_prefix, scopes=_scopes_of(row.scopes),
-        expires_at=row.expires_at,
+        expires_at=row.expires_at, key_id=row.id,
     )
 
 
@@ -340,6 +341,7 @@ async def _verify_by_legacy_scan(session: AsyncSession, raw_key: str, now: datet
         return AuthenticatedKey(
             org_id=candidate.org_id, key_prefix=candidate.key_prefix,
             scopes=_scopes_of(candidate.scopes), expires_at=candidate.expires_at,
+            key_id=candidate.id,
         )
     return None
 
