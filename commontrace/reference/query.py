@@ -52,7 +52,7 @@ SUPPORTED_MODELS = {
 TRUSTED_MODELS = SUPPORTED_MODELS
 DEFAULT_MODEL_NAME = "Snowflake/snowflake-arctic-embed-m-v1.5"
 _DEFAULT_MODEL_NAME = DEFAULT_MODEL_NAME
-_TRUSTED_MODEL_NAME = DEFAULT_MODEL_NAME  # same alias build_index.py keeps; the index tests use it
+_PINNED_MODEL_NAME = DEFAULT_MODEL_NAME  # same alias build_index.py keeps; the index tests use it
 
 _DELIM_RE = re.compile(r"^---[ \t]*\r?$", re.MULTILINE)
 

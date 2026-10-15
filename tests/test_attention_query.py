@@ -53,7 +53,7 @@ class TestTamperedModelName:
 
     def test_trusted_model_name_still_loads(self, tmp_path, monkeypatch):
         index_path = tmp_path / "index.npz"
-        _write_index(str(index_path), attn_query._TRUSTED_MODEL_NAME)
+        _write_index(str(index_path), attn_query._PINNED_MODEL_NAME)
         monkeypatch.setattr(attn_query, "INDEX_PATH", str(index_path))
         monkeypatch.setattr(attn_query, "LESSONS_DIR", str(tmp_path))
         monkeypatch.setattr(attn_query, "TELEMETRY_PATH", str(tmp_path / "alpha_telemetry.jsonl"))
@@ -70,11 +70,11 @@ class TestTamperedModelName:
 
         rc = attn_query.main()
         assert rc == 0
-        assert called == [attn_query._TRUSTED_MODEL_NAME]
+        assert called == [attn_query._PINNED_MODEL_NAME]
 
     def test_a_network_load_failure_is_a_clean_error_not_a_traceback(self, tmp_path, monkeypatch, capsys):
         index_path = tmp_path / "index.npz"
-        _write_index(str(index_path), attn_query._TRUSTED_MODEL_NAME)
+        _write_index(str(index_path), attn_query._PINNED_MODEL_NAME)
         monkeypatch.setattr(attn_query, "INDEX_PATH", str(index_path))
         monkeypatch.setattr(attn_query, "LESSONS_DIR", str(tmp_path))
         monkeypatch.setattr(attn_query, "TELEMETRY_PATH", str(tmp_path / "alpha_telemetry.jsonl"))
@@ -95,7 +95,7 @@ class TestTamperedModelName:
 class TestAlphaTelemetry:
     def _run(self, tmp_path, monkeypatch, query="some task"):
         index_path = tmp_path / "index.npz"
-        _write_index(str(index_path), attn_query._TRUSTED_MODEL_NAME, n=3)
+        _write_index(str(index_path), attn_query._PINNED_MODEL_NAME, n=3)
         _write_active_lesson_files(tmp_path, 3)
         telemetry_path = tmp_path / "alpha_telemetry.jsonl"
         monkeypatch.setattr(attn_query, "INDEX_PATH", str(index_path))
@@ -138,7 +138,7 @@ class TestAlphaTelemetry:
     def test_telemetry_creates_parent_dir_if_absent(self, tmp_path, monkeypatch):
         nested = tmp_path / "nested" / "dir"
         index_path = tmp_path / "index.npz"
-        _write_index(str(index_path), attn_query._TRUSTED_MODEL_NAME, n=1)
+        _write_index(str(index_path), attn_query._PINNED_MODEL_NAME, n=1)
         monkeypatch.setattr(attn_query, "INDEX_PATH", str(index_path))
         monkeypatch.setattr(attn_query, "LESSONS_DIR", str(tmp_path))
         monkeypatch.setattr(attn_query, "TELEMETRY_PATH", str(nested / "alpha_telemetry.jsonl"))
@@ -233,7 +233,7 @@ class TestArchivedLessonsExcludedFromTopK:
             str(index_path),
             slugs=np.array(["active_one", "archived_one"]),
             embeddings=np.array([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=np.float32),
-            model_name=np.array(attn_query._TRUSTED_MODEL_NAME),
+            model_name=np.array(attn_query._PINNED_MODEL_NAME),
             encoded_field=np.array("x"),
             timestamp=np.array("2026-01-01T00:00:00"),
             n_lessons=np.array(2),
@@ -271,7 +271,7 @@ class TestImportanceFloorZeroDisablesOverride:
     def test_floor_zero_does_not_dump_the_whole_store(self, tmp_path, monkeypatch):
         n = 5
         index_path = tmp_path / "index.npz"
-        _write_index(str(index_path), attn_query._TRUSTED_MODEL_NAME, n=n)
+        _write_index(str(index_path), attn_query._PINNED_MODEL_NAME, n=n)
         _write_active_lesson_files(tmp_path, n)
         monkeypatch.setattr(attn_query, "INDEX_PATH", str(index_path))
         monkeypatch.setattr(attn_query, "LESSONS_DIR", str(tmp_path))
@@ -386,7 +386,7 @@ class TestCheckStaleness:
 class TestQueryMainSurfacesStaleness:
     def _setup(self, tmp_path, monkeypatch, lesson_slugs=("lesson_0", "lesson_1", "lesson_2")):
         index_path = tmp_path / "index.npz"
-        _write_index(str(index_path), attn_query._TRUSTED_MODEL_NAME, n=len(lesson_slugs))
+        _write_index(str(index_path), attn_query._PINNED_MODEL_NAME, n=len(lesson_slugs))
         os.utime(index_path, (2_000_000_000, 2_000_000_000))
         monkeypatch.setattr(attn_query, "INDEX_PATH", str(index_path))
         monkeypatch.setattr(attn_query, "LESSONS_DIR", str(tmp_path))

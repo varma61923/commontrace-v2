@@ -62,7 +62,7 @@ _SLUG_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 TRUSTED_MODELS = ("multi-qa-mpnet-base-dot-v1", "Snowflake/snowflake-arctic-embed-m-v1.5")
 DEFAULT_MODEL_NAME = "Snowflake/snowflake-arctic-embed-m-v1.5"
-_TRUSTED_MODEL_NAME = DEFAULT_MODEL_NAME
+_PINNED_MODEL_NAME = DEFAULT_MODEL_NAME
 MODEL_NAME = DEFAULT_MODEL_NAME
 EMBEDDING_DIM = 768
 

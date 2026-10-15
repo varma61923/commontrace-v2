@@ -824,7 +824,7 @@ class TestSemanticQueryDetectsIndexMismatch:
             str(index_path),
             slugs=np.array(["lesson_a"]),
             embeddings=np.zeros((1, 384), dtype=np.float32),
-            model_name=np.array(module._TRUSTED_MODEL_NAME),
+            model_name=np.array(module._PINNED_MODEL_NAME),
             n_lessons=np.array(1),
         )
         monkeypatch.setattr(module, "INDEX_PATH", str(index_path))
@@ -857,7 +857,7 @@ class TestSemanticQueryDetectsIndexMismatch:
             str(index_path),
             slugs=np.array(["a", "b", "c"]),
             embeddings=np.zeros((2, 384), dtype=np.float32),
-            model_name=np.array(module._TRUSTED_MODEL_NAME),
+            model_name=np.array(module._PINNED_MODEL_NAME),
             n_lessons=np.array(3),
         )
         monkeypatch.setattr(module, "INDEX_PATH", str(index_path))
