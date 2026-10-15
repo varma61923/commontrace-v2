@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, select
@@ -73,6 +74,10 @@ async def compute_metric(session: AsyncSession, org_id: str, metric: str) -> flo
     return await fn(session, org_id)
 
 
+# Comfortably inside the Integer column, which a larger value overflowed (500).
+MAX_COOLDOWN_MINUTES = 365 * 24 * 60
+
+
 def _check_holds(comparator: str, value: float, threshold: float) -> bool:
     return value > threshold if comparator == COMPARATOR_GT else value < threshold
 
@@ -89,6 +94,14 @@ async def create_rule(
         )
     if cooldown_minutes < 1:
         raise AlertError(f"cooldown_minutes must be at least 1, got {cooldown_minutes}")
+    if cooldown_minutes > MAX_COOLDOWN_MINUTES:
+        raise AlertError(
+            f"cooldown_minutes must be at most {MAX_COOLDOWN_MINUTES} (a year), got {cooldown_minutes}"
+        )
+    # NaN compares False against every metric value, so such a rule could
+    # never fire while still appearing configured.
+    if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or not math.isfinite(threshold):
+        raise AlertError(f"threshold must be a finite number, got {threshold!r}")
     org = await session.get(Organization, org_id)
     if org is None:
         raise AlertError(f"no such organization: {org_id}")
