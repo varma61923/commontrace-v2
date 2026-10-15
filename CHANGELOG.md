@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (95% conversation-bootstrap interval +0.128 to +0.176), ahead in all ten
   conversations. Retrieval only, not answer accuracy. See
   [performance](docs/performance.md#head-to-head-retrieval-on-locomo-2026-10-15).
+- **Learned offline typer.** A pure-Python softmax model, distilled from 592
+  model-written sentences decontaminated against every evaluation set, types the
+  mentions the rules leave undecided. On a fresh set scored once (two writing styles
+  absent from training), pipeline accuracy rose from 0.838 to 0.892; on the earlier
+  held-out set from 0.776 to 0.869. Ships as `ontology_typing_model.json`; turn off
+  with `COMMONTRACE_TYPING_MODEL=off`. See [ontology typing](docs/ontology-typing.md#the-learned-typer).
 - **Second typing round, scored on a fresh held-out set.** Compound error names,
   dotted identifiers, stated code and file types, lowercase code after "call to",
   conversational person cues, and word-boundary and preposition fixes in context

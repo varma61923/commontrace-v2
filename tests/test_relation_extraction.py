@@ -139,7 +139,8 @@ def test_write_triples_uses_the_validated_graph_path(root):
     assert records[0]["detail"]["method"] == "pattern"
 
 
-def test_an_untypable_subject_takes_its_type_from_the_relation_domain(root):
+def test_an_untypable_subject_takes_its_type_from_the_relation_domain(root, monkeypatch):
+    monkeypatch.setenv("COMMONTRACE_TYPING_MODEL", "off")  # leave the name untypable by every other evidence
     rx.ingest_text(root, "Zorvan Kade works at Acme Corp since 2021.", source="notes/team.md")
     node = graph.load_nodes(root)["person:zorvan_kade"]
     assert node.properties["type_inferred_from"] == "works_at"

@@ -146,6 +146,8 @@ commontrace/ingest/*
 !commontrace/ontology.py
 !commontrace/ontology_classify.py
 !commontrace/ontology_lexicon.py
+!commontrace/ontology_learned.py
+!commontrace/ontology_typing_model.json
 !commontrace/overload.py
 !commontrace/parallel.py
 !commontrace/policy.py

@@ -21,6 +21,7 @@ are stronger than either alone.
 | `cue` | what the context says the mention does: "Brannigan approved", "lives in X", "X signed a contract", "Run X", "raised a X", "during X", "X defines" | 0.6-0.85 |
 | `exemplar` | how the store already typed the same name, or three or more names with the same head word | 0.65-0.85 |
 | `form` | a weak person prior for a name shaped like a personal name (needs any other cue) | 0.55 |
+| `learned` | a shipped softmax model over the mention's form and neighbouring words, consulted only when the evidence above is undecided | 0.34-0.85 |
 | `embedding` | the mention in context against each type's description, with an abstain prototype and a margin rule | 0.5-0.9 |
 | `llm` | an optional completion whose answer must be a declared type | model-reported |
 
@@ -108,6 +109,43 @@ Only about a third of the dev gain carried over: offline typing of fresh text is
 close to four in five mentions, with over nine in ten typed answers correct. The
 generator reuses names across sets, so the unseen-name row is the stricter
 estimate; at 39 rows it is noisy.
+
+### The learned typer
+
+Rules generalise only as far as their authors foresaw. The learned typer
+(`commontrace/ontology_learned.py`) is distilled from model-written examples into a
+softmax regression over generic features: character 3- and 4-grams and the shape of
+the mention, its head word, and the words just before and after it. It is pure
+Python, its weights ship with the package (`ontology_typing_model.json`, about 400
+KiB, 4,336 features), it adds 0.3-0.4 ms per mention, and
+`COMMONTRACE_TYPING_MODEL=off` disables it.
+
+Training data: `ontology_typing_gemma_train.json`, 1,143 sentences written by
+`gemma-4-31b-it` in nine styles (tickets, on-call chat, postmortems, code review,
+design docs, personal chat, commit messages, status emails, READMEs), of which every
+row whose name appears in any evaluation fixture was removed, leaving 592. Training
+is deterministic (`python -m benchmarks.train_ontology_typing --fixture ...`).
+
+How it is combined (fallback only, weight 0.85, probability floor 0.4) was chosen on
+the three dev sets. A fresh test set, `ontology_typing_gemma_test3.json` (130 rows,
+two styles absent from training: customer-success calls and tech news), was then
+scored once:
+
+| Fixture | Rules only: classifier / pipeline | With the learned typer: classifier / pipeline | Typed precision (pipeline), rules / learned |
+|---|---|---|---|
+| `ontology_typing_gemma_test3.json` (scored once) | 0.838 / 0.838 | **0.900 / 0.892** | 0.934 / 0.906 |
+| `ontology_typing_gemma_test2.json` (never tuned on) | 0.785 / 0.776 | **0.879 / 0.869** | 0.938 / 0.915 |
+| `ontology_typing_gemma_dev2.json` (tuning) | 0.896 / 0.906 | 0.934 / 0.943 | |
+| `ontology_typing_gemma_dev.json` (tuning) | 0.924 / 0.924 | 0.955 / 0.962 | |
+| `ontology_typing_v1.json` (hand-written) | 0.992 / 0.984 | 0.976 / 0.976 | |
+
+Offline typing of fresh text is now close to nine in ten mentions, with no model at
+runtime. The trade: about one more typed answer in thirty is wrong, and one
+hand-written row regressed. The labels and the training data come from the same
+model family, so this measures how well the offline typer reproduces that model's
+judgement on unseen names and styles, not agreement with human annotators.
+Relation extraction, which types its endpoints, rose on its dev set (lenient F1
+0.927 to 0.943) and was unchanged on its test set.
 
 On the dev set, local embedders (bge-small via fastembed, arctic-m) did not improve
 accuracy over the offline evidence. They only stopped hurting at a margin of 0.08,

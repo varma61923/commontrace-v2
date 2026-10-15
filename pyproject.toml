@@ -77,7 +77,7 @@ commontrace = "commontrace.cli:main"
 include = ["commontrace*"]
 
 [tool.setuptools.package-data]
-commontrace = ["schemas/*.json", "configuration.schema.json", "reference/*.py", "fixtures/fields/*.json", "kb_packs/*.jsonl", "ui/*", "conformance_vectors.json"]
+commontrace = ["schemas/*.json", "configuration.schema.json", "reference/*.py", "fixtures/fields/*.json", "kb_packs/*.jsonl", "ui/*", "conformance_vectors.json", "ontology_typing_model.json"]
 
 [tool.ruff]
 line-length = 120

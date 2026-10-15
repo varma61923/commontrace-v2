@@ -103,8 +103,10 @@ def test_independent_evidence_combines_by_noisy_or():
     assert found.confidence == pytest.approx(1 - (1 - 0.88) * (1 - 0.88))
 
 
-def test_a_personal_name_needs_a_cue():
-    assert typed("Kaelen Voss", "Kaelen Voss.").type is None  # the name form alone is not enough
+def test_a_personal_name_needs_a_cue(monkeypatch):
+    assert typed("Kaelen Voss", "Kaelen Voss.").method == "learned"  # the learned typer reads the form
+    monkeypatch.setenv("COMMONTRACE_TYPING_MODEL", "off")
+    assert typed("Kaelen Voss", "Kaelen Voss.").type is None  # for the rules the name form alone is not enough
     assert typed("Kaelen Voss", "Kaelen Voss should review the pull request.").type == "person"
     assert typed("Aetheria Systems", "Aetheria Systems should review it.").type == "organization"
 

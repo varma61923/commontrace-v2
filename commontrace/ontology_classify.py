@@ -38,13 +38,14 @@ declares; `allowed` restricts the answer to types inheriting from an allowed typ
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 
-from commontrace import kg_similarity, ontology_lexicon
+from commontrace import kg_similarity, ontology_learned, ontology_lexicon
 
 THRESHOLD = 0.6
 EMBEDDING_THRESHOLD = 0.45
@@ -493,6 +494,30 @@ def by_cues(name: str, context: str, types: list[str]) -> dict[str, float]:
     return out
 
 
+# The learned typer (``ontology_learned``): its probability, scaled, is one more kind
+# of evidence. In "fallback" mode it is consulted only when the other evidence is
+# undecided; a confident "none" damps what the context alone suggests.
+LEARNED_MODE = "fallback"
+LEARNED_WEIGHT = 0.85
+LEARNED_FLOOR = 0.4
+LEARNED_NONE_VETO = 0.0  # 0 disables the veto
+
+
+def _learned_probabilities(name: str, context: str) -> dict[str, float]:
+    if os.environ.get("COMMONTRACE_TYPING_MODEL", "on").strip().lower() == "off" or LEARNED_MODE == "off":
+        return {}
+    model = ontology_learned.load()
+    return model.probabilities(name, context) if model is not None else {}
+
+
+def by_learned(name: str, context: str, types: list[str],
+               probabilities: dict[str, float] | None = None) -> dict[str, float]:
+    """Types the learned typer gives at least LEARNED_FLOOR probability, scaled."""
+    probs = _learned_probabilities(name, context) if probabilities is None else probabilities
+    return {t: round(p * LEARNED_WEIGHT, 4) for t, p in probs.items()
+            if t in types and p >= LEARNED_FLOOR}
+
+
 def _abstract(name: str) -> bool:
     tokens = name.strip().split()
     return len(tokens) == 1 and name[:1].isalpha() and not name.isupper() \
@@ -525,6 +550,16 @@ def evidence(name: str, context: str, onto, types: list[str], exemplars: Exempla
         for source in ("pattern", "cue"):
             if source in out:
                 out[source] = {t: s * ABSTRACT_DAMPING for t, s in out[source].items()}
+    probabilities = _learned_probabilities(name, context)
+    if probabilities:
+        formal = {"alias", "shape", "lexicon", "exemplar"} & set(out)
+        if LEARNED_NONE_VETO and probabilities.get(ontology_learned.NONE, 0.0) >= LEARNED_NONE_VETO and not formal:
+            for source in ("pattern", "cue", "keyword", "form"):
+                if source in out:
+                    out[source] = {t: s * ABSTRACT_DAMPING for t, s in out[source].items()}
+        learned = by_learned(name, context, types, probabilities)
+        if learned and (LEARNED_MODE == "fuse" or max(fuse(out)[0].values(), default=0.0) < THRESHOLD):
+            out["learned"] = learned
     return out
 
 
@@ -549,7 +584,7 @@ def _common_ancestor(onto, a: str, b: str, types: list[str]) -> str | None:
 # On equal scores the more reliable kind of evidence wins: a mention's own form over
 # what the context happens to say about it ("raise MAX_RETRIES" names a setting).
 SOURCE_RANK = {"alias": 9, "shape": 8, "lexicon": 7, "pattern": 6, "keyword": 5, "exemplar": 4, "llm": 3,
-               "embedding": 2, "cue": 1, "form": 0}
+               "learned": 2, "embedding": 2, "cue": 1, "form": 0}
 
 
 def select(onto, combined: dict[str, float], types: list[str], threshold: float,
