@@ -112,6 +112,20 @@ class TestAddComment:
                     session, org, author, "00000000-0000-0000-0000-000000000000", "hi",
                 )
 
+    @pytest.mark.parametrize("bad_id", ["not-a-uuid", "", "1; DROP TABLE traces"])
+    async def test_a_malformed_id_is_not_found_not_a_database_error(self, session_factory, org, bad_id):
+        person_id = await _user(session_factory, org)
+        person = _as_authenticated(person_id, org, rbac.ROLE_CURATOR, "p@x.test")
+        trace_id = await _trace(session_factory, org)
+        async with session_scope(session_factory) as session:
+            with pytest.raises(collab.CollabNotFound):
+                await collab.add_comment(session, org, person, bad_id, "hi")
+        async with session_scope(session_factory) as session:
+            with pytest.raises(collab.CollabNotFound):
+                await collab.assign(session, org, person, trace_id, bad_id)
+        async with session_scope(session_factory) as session:
+            assert await collab.mark_notification_read(session, org, person, bad_id) is False
+
     async def test_commenting_on_another_orgs_trace_is_not_found(
         self, session_factory, org, other_org
     ):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import select
@@ -21,8 +22,18 @@ class CollabNotFound(CollabError):
     ...
 
 
+def _is_uuid(value: object) -> bool:
+    # Ids are UUID columns: anything else would fail the database cast and
+    # surface as an internal error rather than "not found".
+    try:
+        uuid.UUID(str(value))
+    except ValueError:
+        return False
+    return isinstance(value, str)
+
+
 async def _get_trace_or_raise(session: AsyncSession, org_id: str, trace_id: str) -> Trace:
-    trace = await session.get(Trace, trace_id)
+    trace = await session.get(Trace, trace_id) if _is_uuid(trace_id) else None
     if trace is None or trace.org_id != org_id:
         raise CollabNotFound(f"no trace with id {trace_id}")
     return trace
@@ -102,7 +113,7 @@ async def assign(
 ) -> dict:
     await _get_trace_or_raise(session, org_id, trace_id)
 
-    assignee = await session.get(User, assignee_user_id)
+    assignee = await session.get(User, assignee_user_id) if _is_uuid(assignee_user_id) else None
     if assignee is None or assignee.org_id != org_id:
         raise CollabNotFound(f"no user with id {assignee_user_id} in this organization")
     if assignee.disabled_at is not None:
@@ -187,6 +198,8 @@ async def list_my_notifications(
 async def mark_notification_read(
     session: AsyncSession, org_id: str, person, notification_id: str,
 ) -> bool:
+    if not _is_uuid(notification_id):
+        return False
     notification = await session.get(Notification, notification_id)
     if (
         notification is None
