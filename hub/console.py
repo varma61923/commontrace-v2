@@ -9,7 +9,9 @@ import hmac
 import json
 import logging
 import time
+from collections.abc import Mapping
 from datetime import datetime, timezone
+from types import MappingProxyType
 from urllib.parse import quote as _url_quote
 
 from sqlalchemy import or_, select
@@ -148,7 +150,7 @@ _NAV_GROUPS = (
 _NAV = tuple((path, label, title) for _group, items in _NAV_GROUPS for path, label, title, *_rest in items)
 
 
-_VIEW: contextvars.ContextVar[dict] = contextvars.ContextVar("console_view", default={})
+_VIEW: contextvars.ContextVar[Mapping] = contextvars.ContextVar("console_view", default=MappingProxyType({}))
 
 
 _SIGN_OUT_FORM = (

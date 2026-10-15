@@ -94,7 +94,7 @@ vienna warsaw wellington zurich
                  "new york city", "rio de janeiro", "san diego", "san francisco", "san jose", "são paulo",
                  "sao paulo", "tel aviv", "silicon valley", "bay area", "south africa", "south korea",
                  "north korea", "new zealand", "saudi arabia", "united states", "united kingdom",
-                 "sri lanka", "costa rica", "puerto rico", "hong kong", "north america", "south america",
+                 "sri lanka", "costa rica", "puerto rico", "north america", "south america",
                  "latin america", "middle east", "lake tahoe", "mount everest", "new jersey", "new mexico",
                  "north carolina", "south carolina", "rhode island", "west virginia", "british columbia"})
 

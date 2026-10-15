@@ -991,10 +991,12 @@ def create_document_pipeline(
     chunk_size: int = 1500,
     overlap: int = 100,
     complete: Callable | None = None,
+    text: str | None = None,
 ) -> Pipeline:
     """Documents under `source` -> chunked, screened, deduplicated, contextualised,
     canonicalised with the store's ontology aliases -> facts (or a conversation space).
-    Re-running skips files that have not changed since they were ingested."""
+    Re-running skips files that have not changed since they were ingested. With `text`,
+    that text is the one document (named `source`), as from stdin or an API body."""
     if contextualize not in ("none", "heuristic", "model"):
         raise ValueError("contextualize must be none, heuristic or model")
     # The same source can feed several owner scopes or conversation spaces.
@@ -1002,7 +1004,8 @@ def create_document_pipeline(
     namespace = json.dumps(["conversation", space], separators=(",", ":")) if space else \
         json.dumps(["facts", scope], separators=(",", ":")) if scope else ""
     ledger = None if force else Ledger(dest_root, namespace=namespace)
-    loader = DirectoryLoader(source, max_files=max_files, ledger=ledger)
+    loader: Loader = TextLoader(text, name=source or "text") if text is not None else \
+        DirectoryLoader(source, max_files=max_files, ledger=ledger)
     transforms: list[Transform] = [
         TextChunker(max_chars=chunk_size, overlap=overlap),
         InjectionScreen(),

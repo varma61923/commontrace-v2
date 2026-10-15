@@ -26,6 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (95% conversation-bootstrap interval +0.128 to +0.176), ahead in all ten
   conversations. Retrieval only, not answer accuracy. See
   [performance](docs/performance.md#head-to-head-retrieval-on-locomo-2026-10-15).
+- **Document ingestion from stdin.** `commontrace ingest - --type docs` reads one
+  document from standard input through the same chunking, injection screening,
+  deduplication and contextualisation as files.
 - **Learned offline typer.** A pure-Python softmax model, distilled from 592
   model-written sentences decontaminated against every evaluation set, types the
   mentions the rules leave undecided. On a fresh set scored once (two writing styles

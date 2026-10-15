@@ -12,7 +12,7 @@ from hub.models import Organization, Trace
 pytestmark = pytest.mark.asyncio
 
 HOSTILE = [
-    "../../etc/passwd", "' OR '1'='1", "1; DROP TABLE traces;--", "%00", "‮",
+    "../../etc/passwd", "' OR '1'='1", "1; DROP TABLE traces;--", "%00", "\u202e",
     "-1", "{{7*7}}", "A" * 1500, "", "00000000-0000-0000-0000-000000000000",
 ]
 
