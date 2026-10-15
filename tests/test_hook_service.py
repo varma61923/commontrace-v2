@@ -258,3 +258,50 @@ def test_broker_socket_is_never_created_wider_than_owner_only(tmp_path, monkeypa
         os.umask(previous)
         monkeypatch.setattr(socket.socket, "bind", real_bind)
     assert seen == [0o177]
+
+
+def test_a_running_broker_bridges_a_lesson_approved_after_it_started(tmp_path):
+    """No re-run of `up` and no broker restart: approving a lesson is enough for it to be injected."""
+    if not hasattr(socket, "AF_UNIX"):
+        pytest.skip("native Unix transport requires Unix sockets")
+    from commontrace import frontmatter
+    from commontrace.bootstrap_runtime import setup
+    from commontrace.cli import main as cli
+
+    root = str(tmp_path)
+    (tmp_path / "commontrace.yaml").write_text("profiles:\n  local:\n    embedding: none\n")
+    repo = hashlib.sha256(os.path.realpath(root).encode()).hexdigest()[:24]
+    agent_id = "claude-" + repo
+    setup(root, config={"agents": {"claude": {"config_path": "hooks.json"}}, "histories": []})
+    broker = subprocess.Popen(
+        [sys.executable, "-c", "import sys\nfrom commontrace.hook_service import main\nraise SystemExit(main(sys.argv[1:]))",
+         "--dest", root], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        ready_by = time.monotonic() + 15
+        while not os.path.exists(tmp_path / "memory" / "hooks.sock"):
+            assert broker.poll() is None
+            if time.monotonic() >= ready_by:
+                pytest.fail("native broker did not become ready within the startup budget")
+            time.sleep(0.01)
+        # A directive injects without embeddings, so this isolates the bridge from retrieval quality.
+        assert cli(["lesson", "new", "--slug", "never-print-secrets", "--domain", "security", "--importance", "5",
+                    "--description", "Never print credentials", "--importance-rationale", "leak prevention",
+                    "--applies-when", "any command touches credentials", "--dest", root]) == 0
+        path = tmp_path / "memory" / "lessons" / "lesson_never-print-secrets.md"
+        fm, _ = frontmatter.read(str(path))
+        fm["lesson_kind"] = "directive"
+        frontmatter.write(str(path), fm, "## Rule\nNever print credentials to the terminal.\n\n## Why\nLeaks.\n\n"
+                          "## How to apply\nRedact before output.\n")
+        assert cli(["lesson", "approve", "never-print-secrets", "--force", "--dest", root]) == 0
+        native = shlex.split(HookKit(root, agent_id, scope={"repo": repo}).manifest("claude")["events"]["UserPromptSubmit"])
+        command = functional_command(native) + ["--format", "claude"]
+        deadline, context = time.monotonic() + 20, ""
+        while time.monotonic() < deadline and "credentials" not in context:
+            time.sleep(0.5)
+            reply = subprocess.run(command, input=json.dumps({"session_id": f"s-{time.monotonic()}", "prompt": "hello"}),
+                                   text=True, capture_output=True, timeout=10, check=True)
+            context = json.loads(reply.stdout).get("hookSpecificOutput", {}).get("additionalContext", "")
+        assert "Never print credentials to the terminal." in context
+    finally:
+        broker.terminate()
+        broker.wait(timeout=10)

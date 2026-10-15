@@ -36,6 +36,8 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p_list.add_argument("--category", default="", choices=("", *hierarchical.CATEGORIES))
     p_list.add_argument("--scope", default="", help="Filter by routing scope.")
     p_list.add_argument("--as-of", default="", help="Point-in-time temporal evaluation date.")
+    p_list.add_argument("--known-at", default="",
+                        help="Record time: the facts the store believed at this moment, whatever happened later.")
     p_list.add_argument(
         "--include-forgotten", action="store_true",
         help="Include forgotten facts (hidden by default); shown with a [forgotten] marker.",
@@ -73,6 +75,8 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p_srch.add_argument("--scorer", default="overlap-v1", choices=("overlap-v1", "bm25-v1"),
                         help="Fact ranking: compatible overlap or stemmed multilingual BM25.")
     p_srch.add_argument("--as-of", default="", help="Point-in-time date.")
+    p_srch.add_argument("--known-at", default="",
+                        help="Record time: search what the store believed at this moment, whatever happened later.")
     p_srch.add_argument(
         "--show-expired", action="store_true",
         help="Include TTL-expired facts (hidden by default).",
@@ -138,6 +142,7 @@ def run_list(args: argparse.Namespace) -> int:
         scope=args.scope,
         category=args.category,
         as_of=args.as_of or None,
+        known_at=getattr(args, "known_at", "") or None,
         include_forgotten=bool(getattr(args, "include_forgotten", False)),
         show_expired=bool(getattr(args, "show_expired", False)),
     )
@@ -229,6 +234,7 @@ def run_search(args: argparse.Namespace) -> int:
         scope=args.scope,
         category=args.category,
         as_of=args.as_of or None,
+        known_at=getattr(args, "known_at", "") or None,
         limit=args.limit,
         show_expired=bool(getattr(args, "show_expired", False)),
         scorer=getattr(args, "scorer", "overlap-v1"),

@@ -85,7 +85,18 @@ def serve(root: str, *, profile: str | None = None):
                     ready.set()
                 except (ImportError, ValueError, RuntimeError, OSError):
                     ready.clear()
+                bridged = None
                 while True:
+                    try:
+                        # Lessons approved after onboarding must reach the injector without a re-run of `up`.
+                        from commontrace import bootstrap_runtime
+
+                        signature = bootstrap_runtime.lessons_signature(root)
+                        if signature != bridged:
+                            bootstrap_runtime.bridge_all(root)
+                            bridged = signature
+                    except Exception:  # noqa: BLE001 - the next pass retries
+                        pass
                     try:
                         from commontrace import fact_vector_projection
 

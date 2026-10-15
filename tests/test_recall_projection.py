@@ -26,7 +26,7 @@ def test_dense_recall_uses_projection_and_scores_only_pending_facts(tmp_path, mo
         assert query == "how to change parser boundaries"
         assert model == "recall-projection-test"
         assert limit == 200
-        return [(indexed.id, 0.8), (private.id, 0.99), (expired.id, 0.98)]
+        return [(indexed.id, 0.9), (private.id, 0.99), (expired.id, 0.98)]
 
     def score_pending(query, facts, *, model, root):
         assert query == "how to change parser boundaries"
@@ -42,7 +42,7 @@ def test_dense_recall_uses_projection_and_scores_only_pending_facts(tmp_path, mo
     results = recall._dense_facts(root, "how to change parser boundaries", None, 10, "repo")
 
     assert set(results) == {indexed.id, pending.id}
-    assert results[indexed.id][1] == 0.8
+    assert results[indexed.id][1] == 0.9
     assert results[pending.id][1] == 0.95
 
 

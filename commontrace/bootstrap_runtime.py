@@ -264,6 +264,38 @@ def bridge_lessons(root: str, *, scope: dict) -> int:
     return count
 
 
+def lessons_signature(root: str) -> tuple[int, int]:
+    """(lesson file count, newest mtime): a cheap stamp that changes when any lesson is added or edited."""
+    try:
+        entries = [e for e in os.scandir(paths.lessons_dir(root)) if e.name.endswith(".md")]
+    except OSError:
+        return (0, 0)
+    newest = 0
+    for entry in entries:
+        try:
+            newest = max(newest, entry.stat().st_mtime_ns)
+        except OSError:
+            continue
+    return (len(entries), newest)
+
+
+def bridge_all(root: str) -> int:
+    """Bridge approved lessons for every agent identity this store has onboarded.
+
+    `setup` bridges once, so a lesson approved afterwards would never reach the hook injector. The
+    broker calls this whenever `lessons_signature` changes; each lesson is journaled once per content
+    digest, so repeating it is cheap and idempotent. Revocation and edits need no help here: the
+    injector re-checks each lesson's canonical file at read time.
+    """
+    directory = os.path.join(root, "distribution", "agents")
+    try:
+        identities = sorted(e.name for e in os.scandir(directory) if e.is_dir())
+    except OSError:
+        return 0
+    repo = hashlib.sha256(os.path.realpath(root).encode()).hexdigest()[:24]
+    return sum(bridge_lessons(root, scope={"agent": identity, "repo": repo}) for identity in identities)
+
+
 def setup(
     root: str,
     *,

@@ -214,3 +214,87 @@ def test_codex_post_tool_events_route_failures_through_supported_native_hook(tmp
 def test_codex_post_tool_normalization_only_marks_explicit_failures(response, expected_event):
     event, _ = normalize("codex", "PostToolUse", {"tool_response": response})
     assert event == expected_event
+
+
+def test_a_lesson_approved_after_onboarding_reaches_the_injector_and_revocation_removes_it(tmp_path):
+    """The learner-to-injector loop: `up` ran once, a lesson is approved later, no re-run of `up`."""
+    from commontrace import frontmatter, holdout_io
+    from commontrace.bootstrap_runtime import bridge_all, lessons_signature
+    from commontrace.cli import main
+    from commontrace.hook_kit import HookKit
+
+    root = str(tmp_path)
+    repo = hashlib.sha256(os.path.realpath(root).encode()).hexdigest()[:24]
+    agent_id = "claude-" + repo
+    setup(root, config={"agents": {"claude": {"config_path": "hooks.json"}}, "histories": []})
+    holdout_io.configure(root, rate=0)  # every eligible lesson is shown: no randomized control arm
+
+    class Embedder:
+        def embed(self, texts, *, query=False):
+            return [[1.0, 0.0] if any(term in text.lower() for term in ("oom", "worker", "memory"))
+                    else [0.0, 1.0] for text in texts]
+
+    def prompt(session):
+        kit = HookKit(root, agent_id, scope={"repo": repo}, embedder=Embedder())
+        return kit.handle("UserPromptSubmit", {
+            "session_id": session, "prompt": "the ingest worker was killed by the OOM killer, how do I recover it?"})
+
+    before = lessons_signature(root)
+    # The real lifecycle: create a review-status lesson, fill in its rule, approve it.
+    assert main(["lesson", "new", "--slug", "restart-worker-on-oom", "--domain", "ops", "--importance", "4",
+                 "--description", "Restart the ingest worker after an OOM kill",
+                 "--importance-rationale", "avoids silent data loss",
+                 "--applies-when", "the ingest worker exits because of an out-of-memory kill",
+                 "--dest", root]) == 0
+    path = os.path.join(root, "memory", "lessons", "lesson_restart-worker-on-oom.md")
+    fm, _ = frontmatter.read(path)
+    frontmatter.write(path, fm, "## Rule\nRestart the ingest worker and halve its batch size before replaying the queue.\n\n"
+                      "## Why\nSilent OOM kills dropped queued items.\n\n## How to apply\nRestart, halve BATCH_SIZE, replay.\n")
+    assert main(["lesson", "approve", "restart-worker-on-oom", "--force", "--dest", root]) == 0
+    assert lessons_signature(root) != before  # the broker notices the change
+    assert prompt("s-before")["injected"] == []  # not bridged yet: this is the gap the loop closes
+
+    assert bridge_all(root) == 1
+    injected = prompt("s-after")
+    assert len(injected["injected"]) == 1
+    assert "halve its batch size" in injected["context"]
+    assert bridge_all(root) == 0  # idempotent: one journal entry per content digest
+
+    assert main(["lesson", "revoke", "restart-worker-on-oom", "--reason", "superseded", "--dest", root]) == 0
+    assert prompt("s-revoked")["injected"] == []  # revocation takes effect at read time, with no bridge pass
+
+
+def test_the_dense_relevance_gate_defaults_to_the_calibrated_value_and_can_be_overridden(tmp_path, monkeypatch):
+    """Cosine scales differ by embedding model, so a relevant lesson at 0.5 needs the gate lowered."""
+    from commontrace import holdout_io
+    from commontrace.hook_kit import HOOK_MIN_COSINE, HookKit, min_cosine
+    from commontrace.memory_journal import Journal
+    from commontrace.memory_record import MemoryRecord
+
+    monkeypatch.delenv("COMMONTRACE_HOOK_MIN_COSINE", raising=False)
+    assert min_cosine() == HOOK_MIN_COSINE == 0.6
+    for bad in ("not-a-number", "nan", "7", "-3"):
+        monkeypatch.setenv("COMMONTRACE_HOOK_MIN_COSINE", bad)
+        assert min_cosine() == HOOK_MIN_COSINE  # a bad override never disables or breaks the gate
+    monkeypatch.setenv("COMMONTRACE_HOOK_MIN_COSINE", "0.4")
+    assert min_cosine() == 0.4
+
+    root = str(tmp_path)
+    scope = {"agent": "agent-x", "repo": "r"}
+    Journal(root).put(MemoryRecord(
+        "parser-rule", "lesson", 1, {"text": "Run pytest before editing parser boundaries.", "lesson_kind": "procedure",
+                                     "trigger": {}}, status="active", scope=scope, created_at="2026-10-12T00:00:00Z"))
+    holdout_io.configure(root, rate=0)
+
+    class HalfRelevant:  # every related text is exactly 0.5 cosine from the query
+        def embed(self, texts, *, query=False):
+            return [[1.0, 0.0] if query else [0.5, 0.8660254037844386] for _ in texts]
+
+    def inject(session):
+        kit = HookKit(root, "agent-x", scope={"repo": "r"}, embedder=HalfRelevant())
+        return kit.handle("UserPromptSubmit", {"session_id": session, "prompt": "check pytest before changing parser boundaries"})
+
+    monkeypatch.delenv("COMMONTRACE_HOOK_MIN_COSINE", raising=False)
+    assert inject("default-gate")["injected"] == []
+    monkeypatch.setenv("COMMONTRACE_HOOK_MIN_COSINE", "0.4")
+    assert inject("lowered-gate")["injected"] == ["parser-rule"]

@@ -25,6 +25,21 @@ from commontrace.search_recipes import _bm25, terms
 
 _HOOK_GENERIC_TERMS = LEXICAL_STOPWORDS | frozenset({"after", "before"})
 
+# The dense relevance gate. 0.6 separates relevant from unrelated text for the default model
+# (fastembed bge-small: related 0.63-0.75, unrelated 0.44), but cosine scales differ by model:
+# arctic and minilm score the same related lessons 0.33-0.56 and unrelated text under 0.1, and hosted
+# embedders sit lower still. COMMONTRACE_HOOK_MIN_COSINE overrides it when another embedder is used.
+HOOK_MIN_COSINE = 0.6
+
+
+def min_cosine() -> float:
+    raw = _configuration_getenv("COMMONTRACE_HOOK_MIN_COSINE")
+    try:
+        value = float(raw) if raw else HOOK_MIN_COSINE
+    except ValueError:
+        return HOOK_MIN_COSINE
+    return value if math.isfinite(value) and -1.0 <= value <= 1.0 else HOOK_MIN_COSINE
+
 
 def bootstrap_priority(record: MemoryRecord) -> float:
     """Weak offline Beta prior orders evaluation; it never grants relevance or promotion."""
@@ -228,10 +243,11 @@ class HookKit:
                     lex_rank, dense_rank = (
                         {i: rank + 1 for rank, i in enumerate(order)} for order in (lexical_order, dense_order)
                     )
+                    gate = min_cosine()
                     scores = {
                         i: 1 / (60 + lex_rank[i]) + 1 / (60 + dense_rank[i])
                         for i in range(len(candidates))
-                        if sparse[i] > 0 and dense[i] >= 0.6 and informative_overlap[i]
+                        if sparse[i] > 0 and dense[i] >= gate and informative_overlap[i]
                     }
                     top = max(scores.values(), default=0)
                     for i in sorted(

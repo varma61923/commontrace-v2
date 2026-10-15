@@ -29,6 +29,7 @@ import json
 import math
 import os
 import re
+import statistics
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -41,7 +42,14 @@ DEFAULT_WEIGHTS = {"lessons": 1.0, "facts": 0.8, "graph": 0.6, "conversations": 
 DEFAULT_BUDGET = 1500
 FLOOR_SHARE = 0.12
 RRF_K = 60
-DENSE_RELATIVE_FLOOR = 0.5  # dense fact hits below half the best cosine are dropped
+# A dense-only fact must stay within DENSE_BAND of the best cosine and, once the pool is large enough
+# to say what "ordinary" looks like, stand DENSE_OUTLIER_SIGMA robust deviations above its median.
+# Cosine baselines differ by model (about 0.1 for arctic, 0.45 for bge-small), so no fixed cutoff
+# is right; a floor relative to half the best score admitted every fact for bge-small.
+DENSE_BAND = 0.12
+DENSE_OUTLIER_SIGMA = 4.0
+DENSE_MIN_POOL = 8
+DENSE_MIN_SPREAD = 0.02
 DENSE_ONLY_SCALE = 0.5  # a fact found only by embedding scores half its cosine (see _hybrid)
 MMR_LAMBDA = 0.75
 MIN_CUT_FRACTION = 0.4
@@ -239,6 +247,26 @@ def _lessons(root: str, question: str, as_of: str | None, k: int, scope: str = "
     return out
 
 
+def _dense_select(scored: list, k: int) -> dict:
+    """{fact id: (fact, cosine)} for the dense hits that stand out from the pool, best first.
+
+    Cosines are not comparable across embedding models, so relevance is judged against the pool
+    itself: within DENSE_BAND of the best match and, for pools of DENSE_MIN_POOL or more, above the
+    pool median by DENSE_OUTLIER_SIGMA robust deviations. When nothing stands out (the best score is
+    just the largest of a noisy pool) nothing is returned, so an unrelated question injects no facts.
+    """
+    ranked = sorted(scored, key=lambda pair: (-pair[1], pair[0].id))
+    if not ranked or ranked[0][1] <= 0:
+        return {}
+    values = [cosine for _fact, cosine in ranked]
+    floor = values[0] - DENSE_BAND
+    if len(values) >= DENSE_MIN_POOL:
+        median = statistics.median(values)
+        spread = 1.4826 * statistics.median(abs(value - median) for value in values)
+        floor = max(floor, median + DENSE_OUTLIER_SIGMA * max(spread, DENSE_MIN_SPREAD))
+    return {fact.id: (fact, cosine) for fact, cosine in ranked[:k] if cosine > 0 and cosine >= floor}
+
+
 def _dense_facts(root: str, question: str, as_of: str | None, k: int, scope: str) -> dict:
     """{fact id: (fact, cosine)} for the `k` facts nearest the question, or {} without a fact embedder.
 
@@ -313,12 +341,7 @@ def _dense_facts(root: str, question: str, as_of: str | None, k: int, scope: str
                         if fact.evidence_bound and not resolver.assess(fact.id).eligible:
                             continue
                         ranked.append((fact, cosine))
-                best = max((cosine for _, cosine in ranked), default=0.0)
-                return {
-                    fact.id: (fact, cosine)
-                    for fact, cosine in sorted(ranked, key=lambda pair: (-pair[1], pair[0].id))[:k]
-                    if cosine > 0 and cosine >= DENSE_RELATIVE_FLOOR * best
-                }
+                return _dense_select(ranked, k)
             except (ImportError, RuntimeError, ValueError, OSError):
                 # Optional/index failures retain the established exact fallback.
                 pass
@@ -331,10 +354,7 @@ def _dense_facts(root: str, question: str, as_of: str | None, k: int, scope: str
     except (ImportError, RuntimeError, ValueError, OSError):
         # A cache-only optional dense default must never suppress fact recall.
         scores = {}
-    ranked = sorted(((f, scores.get(f.id, 0.0)) for f in facts), key=lambda pair: (-pair[1], pair[0].id))
-    best = ranked[0][1] if ranked else 0.0
-    # Cosines are not calibrated across models; a relative floor drops the tail that only shares noise.
-    return {f.id: (f, cosine) for f, cosine in ranked[:k] if cosine > 0 and cosine >= DENSE_RELATIVE_FLOOR * best}
+    return _dense_select([(f, scores.get(f.id, 0.0)) for f in facts], k)
 
 
 def _hybrid(lexical: list, dense: dict, k: int) -> list:
@@ -356,6 +376,12 @@ def _hybrid(lexical: list, dense: dict, k: int) -> list:
         by_id.setdefault(fid, (fact, cosine * DENSE_ONLY_SCALE))
     order = sorted(fused, key=lambda fid: (-fused[fid], -dense.get(fid, (None, 0.0))[1], fid))[:k]
     return [by_id[fid] for fid in order]
+
+
+def _function_words() -> frozenset:
+    from commontrace.conversation.profile import STOPWORDS
+
+    return frozenset(STOPWORDS)
 
 
 def _facts(
@@ -380,8 +406,10 @@ def _facts(
                 or not resolver._fact_live(current) \
                 or scope and current.scopes and scope not in current.scopes:
             continue
-        provenance = {"search": {"scorer": fact_scorer,
-                                  "matched_terms": fact_index.matched_terms(question, fact.statement, fact_scorer)}}
+        matched = fact_index.matched_terms(question, fact.statement, fact_scorer)
+        if fact.id not in dense and matched and not set(matched) - _function_words():
+            continue  # overlap on "the"/"is" alone is not relevance, and would inject unrelated facts
+        provenance = {"search": {"scorer": fact_scorer, "matched_terms": matched}}
         if fact.id in dense:
             provenance["search"]["dense_cosine"] = round(dense[fact.id][1], 4)
         text = fact.statement
