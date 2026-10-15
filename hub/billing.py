@@ -154,8 +154,13 @@ async def apply_webhook_event(session: AsyncSession, settings: StripeSettings, e
 
 async def _apply_webhook_event_once(session: AsyncSession, settings: StripeSettings, event: dict) -> str:
     event_type = str(event.get("type") or "")
-    obj = ((event.get("data") or {}).get("object")) or {}
+    data = event.get("data") or {}
+    obj = (data.get("object") if isinstance(data, dict) else None) or {}
     if not isinstance(obj, dict):
+        return f"ignored {event_type}: malformed event object"
+    # A malformed nested field would otherwise raise, return 500, and make
+    # Stripe redeliver the same event for days.
+    if not isinstance(obj.get("metadata") or {}, dict) or not isinstance(obj.get("items") or {}, dict):
         return f"ignored {event_type}: malformed event object"
 
     if event_type == "checkout.session.completed":
@@ -204,7 +209,9 @@ async def _apply_webhook_event_once(session: AsyncSession, settings: StripeSetti
 
         status = str(obj.get("status") or "")
         items = ((obj.get("items") or {}).get("data")) or []
-        price_id = (items[0].get("price") or {}).get("id") if items else None
+        first = items[0] if isinstance(items, list) and items and isinstance(items[0], dict) else {}
+        price = first.get("price") or {}
+        price_id = price.get("id") if isinstance(price, dict) else None
         resolved_plan = settings.plan_for_price(price_id) if price_id else None
 
         if status in ("active", "trialing") and resolved_plan:
