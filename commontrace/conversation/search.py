@@ -22,6 +22,7 @@ from itertools import chain
 
 from commontrace import injection_guard
 from commontrace._lexical import WORD_RE, has_cjk, segment_cjk
+from commontrace.conversation import graph_walk as _graph_walk
 from commontrace.conversation import profile, timeparse, unicode_index
 from commontrace.conversation.store import (  # noqa: F401 - re-exported (canonical home: store)
     ConversationError,
@@ -67,6 +68,9 @@ class Options:
     since: str | None = None
     until: str | None = None
     graph_hops: int | None = None  # None: adapt to relational clauses; 0 disables; maximum 2
+    # Personalized PageRank over the turn-entity graph (graph_walk.py), added to every
+    # turn's score as weight x top score x normalised walk probability; 0 disables.
+    graph_walk: float | None = None
     adaptive_budget: bool = False  # True: scale `budget` by question shape (see budget_for), up to max_budget
     max_budget: int = 12_000
     context_strategy: str = "legacy"  # coverage-v1 prioritizes marginal excerpt facets per quoted token
@@ -217,6 +221,39 @@ def _graph_candidates(store: Store, question: str, ranked: list[int], allowed: s
             break
     safe = set(candidates)
     return candidates, [p for p in paths if p["turn"] in safe]
+
+
+GRAPH_WALK_WEIGHT = float(os.environ.get("COMMONTRACE_GRAPH_WALK", "0") or 0)
+GRAPH_WALK_SEEDS = 8
+
+
+def _apply_graph_walk(store: Store, question: str, scores: dict[int, float], allowed: set[int] | None,
+                      weight: float, explain: dict) -> None:
+    """Spread relevance from the best matches and the question's entities along shared
+    entities, and add it to every turn's score; turns it discovers join the ranking
+    only if they pass the injection screen."""
+    top = max(scores.values())
+    if top <= 0:
+        return
+    seeds = {t: scores[t] / top for t in heapq.nlargest(GRAPH_WALK_SEEDS, scores, key=lambda t: (scores[t], -t))}
+    walk = _graph_walk.personalized_pagerank(store, seeds, profile.entities(question), allowed=allowed)
+    if not walk:
+        return
+    peak = max(walk.values())
+    discovered = [t for t in walk if t not in scores]
+    if discovered:
+        fetched = store.turns(discovered)
+        blocked = {t for t in discovered if t not in fetched or _flagged(fetched[t])}
+    else:
+        blocked = set()
+    added = 0
+    for turn, value in walk.items():
+        if turn in blocked:
+            continue
+        if turn not in scores:
+            added += 1
+        scores[turn] = scores.get(turn, 0.0) + weight * top * value / peak
+    explain["graph_walk"] = {"turns": len(walk), "discovered": added}
 
 
 def asks_current(question: str) -> bool:
@@ -703,6 +740,7 @@ def _recall_key(store: Store, question: str, now, opts: Options,
         opts.rerank_depth, opts.rerank_blend, opts.profile_facts, opts.instructions,
         opts.broad, opts.recency_boost, opts.primary_hits, opts.embedder, model_binding,
         opts.summaries, opts.sessions, opts.speakers, opts.since, opts.until, opts.graph_hops,
+        GRAPH_WALK_WEIGHT if opts.graph_walk is None else opts.graph_walk,
         opts.context_strategy, opts.second_pass, tuple(extra_queries), stamp,
     )
 
@@ -960,6 +998,9 @@ def _recall(store: Store, question: str, *, now=None, options: Options | None = 
             # proportional: a dated turn rises among its peers instead of jumping irrelevant ones
             scores[turn] += 0.4 * scores[turn]
         explain["asks_when"] = True
+    walk_weight = GRAPH_WALK_WEIGHT if opts.graph_walk is None else opts.graph_walk
+    if walk_weight and scores:
+        _apply_graph_walk(store, question, scores, allowed, walk_weight, explain)
     ranked = sorted(scores, key=lambda t: (-scores[t], t))
     ranked, n_self = filter_self_turns(store, question, ranked)
     if n_self:

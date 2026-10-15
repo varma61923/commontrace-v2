@@ -213,6 +213,14 @@ def _invoke_hooks(root: str) -> dict:
     except Exception as exc:  # noqa: BLE001
         results["graph"] = f"error: {exc}"
     try:
+        from commontrace.conversation import anticipate
+
+        indexed = anticipate.run_if_enabled(root)
+        if indexed is not None:
+            results["anticipate"] = indexed
+    except Exception as exc:  # noqa: BLE001
+        results["anticipate"] = f"error: {exc}"
+    try:
         from commontrace import jobs
 
         if os.path.exists(jobs.db_path(root)):

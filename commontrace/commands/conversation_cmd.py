@@ -108,6 +108,15 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     x.add_argument("--dest", default=None)
     x.set_defaults(func=run_extract)
 
+    an = sub.add_parser("anticipate", help="Index the questions each message answers, written by the configured "
+                                           "model (sleep-time indexing; generated text is never shown as evidence).")
+    an.add_argument("space", help=SPACE_HELP)
+    an.add_argument("--limit", type=int, default=None, help="at most this many pending messages")
+    an.add_argument("--workers", type=int, default=4, help="concurrent model calls (default 4)")
+    an.add_argument("--json", action="store_true")
+    an.add_argument("--dest", default=None)
+    an.set_defaults(func=run_anticipate)
+
     e = sub.add_parser("export", help="Write a space as JSONL (one session per line).")
     e.add_argument("space", help=SPACE_HELP)
     e.add_argument("--out", default="-", help="file to write, - for stdout (default)")
@@ -376,6 +385,30 @@ def run_extract(args) -> int:
         return 2
     note = f", {out['refused']} refused by the injection screen" if out["refused"] else ""
     print(f"[commontrace] {out['memories']} memory(ies) from {out['calls']} model call(s){note}.")
+    return 0
+
+
+def run_anticipate(args) -> int:
+    from commontrace import llm
+    from commontrace.conversation import ConversationError, anticipate
+
+    if args.limit is not None and args.limit < 0 or args.workers < 1:
+        print("[commontrace] --limit must be >= 0 and --workers >= 1", file=sys.stderr)
+        return 2
+    try:
+        llm.load_config()
+        with _store(args, create=False) as store:
+            out = anticipate.expand(store, llm.complete, limit=args.limit, workers=args.workers)
+            out["pending"] = len(anticipate.pending(store))
+    except (ConversationError, llm.LLMUnavailable, ValueError) as exc:
+        print(f"[commontrace] {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(out, sort_keys=True))
+    else:
+        print(f"[commontrace] indexed {out['indexed']} message(s), {out['empty']} without content, "
+              f"{out['rejected']} refused by the injection screen, {out['failed_batches']} batch(es) left "
+              f"for the next pass; {out['pending']} pending.")
     return 0
 
 

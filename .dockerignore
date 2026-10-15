@@ -81,6 +81,8 @@ commontrace/connectors/*
 !commontrace/conversation/
 commontrace/conversation/*
 !commontrace/conversation/__init__.py
+!commontrace/conversation/anticipate.py
+!commontrace/conversation/graph_walk.py
 !commontrace/conversation/async_store.py
 !commontrace/conversation/context_selection.py
 !commontrace/conversation/coverage.py
