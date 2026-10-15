@@ -126,17 +126,102 @@ def _robots_allowed(url: str, user_agent: str, timeout: float) -> bool:
     return bool(parser.can_fetch(user_agent or "*", url))
 
 
+# Pages are untrusted and up to MAX_PAGE_BYTES long. The previous regex
+# conversion (`<(script|...)[^>]*>.*?</\1>`, `<!--.*?-->`, `<[^>]+>`) rescanned
+# to the end of the page from every unclosed opener, so a page of repeated
+# `<script>` or `<!--` took minutes. This scanner visits each character a
+# bounded number of times. `[^<>]*` stops at the next `<`, and each closing
+# tag is searched for at most once per position (see _Closers).
+_TAG_RE = re.compile(r"<(/?)([A-Za-z][A-Za-z0-9]*)[^<>]*>")
+# <!DOCTYPE>, <?xml?>, and malformed closers such as `</ h1>`: markup, not text.
+_DECLARATION_RE = re.compile(r"<[!?/][^<>]*>")
+# ASCII-only lowering keeps every offset aligned with the original text;
+# str.lower() can change the length (e.g. "\u0130" lowers to two code points).
+_ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+_DROPPED_ELEMENTS = frozenset({"script", "style", "noscript"})
+_HEADINGS = {"h1": 1, "h2": 2, "h3": 3}
+_BLOCK_TAGS = frozenset({"p", "div", "section", "article", "br", "li", "tr"})
+
+
+class _Closers:
+    """Where `</name` next occurs, found with one forward search per element.
+
+    Lookups only ever move forward, so a cached hit ahead of the cursor is
+    reused and a miss is final: no position is searched twice per element.
+    """
+
+    def __init__(self, lowered: str) -> None:
+        self._lowered = lowered
+        self._next: dict[str, int] = {}
+
+    def find(self, name: str, start: int) -> int:
+        cached = self._next.get(name)
+        if cached is not None and (cached < 0 or cached >= start):
+            return cached
+        found = self._lowered.find("</" + name, start)
+        self._next[name] = found
+        return found
+
+
+def _convert(text: str, closers: _Closers, start: int, end: int, *, outer: bool) -> list[str]:
+    out: list[str] = []
+    pos = start
+    while pos < end:
+        lt = text.find("<", pos, end)
+        if lt < 0:
+            out.append(text[pos:end])
+            break
+        out.append(text[pos:lt])
+        if text.startswith("<!--", lt):
+            close = text.find("-->", lt + 4, end)
+            pos = end if close < 0 else close + 3
+            continue
+        match = _TAG_RE.match(text, lt, end)
+        if match is None:
+            declaration = _DECLARATION_RE.match(text, lt, end)
+            if declaration is not None:
+                pos = declaration.end()
+            else:
+                out.append("<")
+                pos = lt + 1
+            continue
+        closing, name = match.group(1), match.group(2).lower()
+        pos = match.end()
+        if closing:
+            continue
+        if name in _DROPPED_ELEMENTS:
+            # An unclosed script/style runs to the end of the document, as in a browser.
+            close = closers.find(name, pos)
+            if close < 0 or close >= end:
+                pos = end
+            else:
+                gt = text.find(">", close, end)
+                pos = end if gt < 0 else gt + 1
+            if outer:
+                out.append("\n")
+            continue
+        level = _HEADINGS.get(name)
+        if outer and level is not None:
+            close = closers.find(name, pos)
+            if 0 <= close < end:
+                inner = "".join(_convert(text, closers, pos, close, outer=False)).strip()
+                out.append("\n%s %s\n" % ("#" * level, inner))
+                gt = text.find(">", close, end)
+                pos = end if gt < 0 else gt + 1
+            continue
+        if outer and name in _BLOCK_TAGS:
+            out.append("\n")
+    return out
+
+
 def _strip_tags(fragment: str) -> str:
-    return re.sub(r"<[^>]+>", "", fragment)
+    closers = _Closers(fragment.translate(_ASCII_LOWER))
+    return "".join(_convert(fragment, closers, 0, len(fragment), outer=False))
 
 
 def _html_to_markdown_text(html_text: str) -> str:
-    text = re.sub(r"(?is)<(script|style|noscript)[^>]*>.*?</\1\s*>", "\n", html_text)
-    text = re.sub(r"(?is)<!--.*?-->", "", text)
-    text = re.sub(r"(?is)<\s*h([1-3])[^>]*>(.*?)</\s*h\1\s*>",
-                  lambda m: "\n%s %s\n" % ("#" * int(m.group(1)), _strip_tags(m.group(2)).strip()), text)
-    text = re.sub(r"(?i)<\s*(p|div|section|article|br|li|tr)[^>]*>", "\n", text)
-    text = _html.unescape(_strip_tags(text))
+    closers = _Closers(html_text.translate(_ASCII_LOWER))
+    text = _html.unescape("".join(_convert(html_text, closers, 0, len(html_text), outer=True)))
     text = re.sub(r"[ \t]+", " ", text)
     return re.sub(r"\n\s*\n\s*\n+", "\n\n", text).strip()
 
