@@ -36,7 +36,7 @@ def test_each_commit_runs_once_and_the_suite_runs_in_parallel():
     triggers = workflow.get(True, workflow.get("on"))
     assert triggers["push"] == {"branches": ["main"]}  # branch commits run through their PR only
     jobs = workflow["jobs"]
-    for name in ("test-core", "test-dev"):
+    for name in ("test-core", "test-dev", "test-hub"):
         steps = " ".join(str(step.get("run", "")) for step in jobs[name]["steps"])
         assert "-n auto" in steps
     assert "--cov-fail-under=80" in " ".join(str(s.get("run", "")) for s in jobs["test-dev"]["steps"])

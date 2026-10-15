@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from datetime import datetime, timedelta, timezone
 
@@ -12,6 +13,40 @@ from hub import commons
 from hub.config import HubConfig
 from hub.db import make_engine, make_session_factory, session_scope
 from hub.models import Base, Organization
+
+
+def _per_worker_database() -> None:
+    """Under pytest-xdist each worker gets its own database (`<name>_gw0`, ...), created
+    on first use, so parallel workers never truncate each other's tables. Runs at import,
+    before any test module reads HUB_TEST_DATABASE_URL; without xdist nothing changes."""
+    worker = os.environ.get("PYTEST_XDIST_WORKER", "")
+    url = os.environ.get("HUB_TEST_DATABASE_URL", "")
+    if not worker or not url or not worker.isalnum() or os.environ.get("HUB_TEST_DATABASE_WORKER") == worker:
+        return
+    base, sep, query = url.partition("?")
+    head, _, name = base.rpartition("/")
+    target = f"{name}_{worker}"
+    os.environ["HUB_TEST_DATABASE_URL"] = f"{head}/{target}{sep}{query}"
+    os.environ["HUB_TEST_DATABASE_WORKER"] = worker
+
+    async def create() -> None:
+        engine = create_async_engine(url, isolation_level="AUTOCOMMIT", connect_args={"timeout": 3})
+        try:
+            async with engine.connect() as conn:
+                exists = await conn.scalar(text("SELECT 1 FROM pg_database WHERE datname = :name"),
+                                           {"name": target})
+                if not exists:
+                    await conn.execute(text(f'CREATE DATABASE "{target}"'))
+        finally:
+            await engine.dispose()
+
+    try:
+        asyncio.run(create())
+    except Exception:  # noqa: BLE001 - an unreachable server skips the tests as before
+        pass
+
+
+_per_worker_database()
 
 TEST_DATABASE_URL = os.environ.get(
     "HUB_TEST_DATABASE_URL",

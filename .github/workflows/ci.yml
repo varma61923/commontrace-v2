@@ -384,7 +384,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install Hub server dependencies and the client package
-        run: python -m pip install -e . -r hub/requirements.txt pytest pytest-asyncio
+        run: python -m pip install -e . -r hub/requirements.txt pytest pytest-asyncio pytest-xdist
 
       - name: Verify migrations apply from scratch
         env:
@@ -420,7 +420,9 @@ jobs:
         run: python scripts/export_hub_openapi.py --check
 
       - name: Run Hub tests (including test_tenant_isolation.py)
-        run: python -m pytest hub/tests/ -q
+        # Each worker gets its own database (hub/tests/conftest.py); one file stays on one
+        # worker, so a file's cluster-wide test roles are never created concurrently.
+        run: python -m pytest hub/tests/ -q -n auto --dist loadfile
 
       - name: Run Hub end-to-end scenarios
         run: python -m pytest e2e_tests/ -q -k hub
