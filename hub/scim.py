@@ -12,7 +12,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from hub import audit, auth, rbac, scopes
-from hub.abuse import RateLimiter, rate_limit_key
+from hub.abuse import RateLimiter, rate_limit_key, reject_unstorable_text
 from hub.crud import _is_uuid
 from hub.db import session_scope
 from hub.models import Organization, ScimGroup, ScimGroupMembership, User
@@ -29,6 +29,15 @@ DEFAULT_PROVISIONED_ROLE = rbac.ROLE_VIEWER
 
 DEFAULT_PAGE_SIZE = 100
 MAX_PAGE_SIZE = 200
+# OFFSET is a Postgres bigint: an unclamped startIndex like 10**20 used to
+# reach the database and fail there as an unhandled 500. No org has this
+# many users or groups, so a clamped index just returns an empty page.
+MAX_START_INDEX = 2**31 - 1
+
+# Column sizes in hub/models.py (User.email/display_name, ScimGroup.display_name/external_id).
+_MAX_USER_NAME_CHARS = 320
+_MAX_DISPLAY_NAME_CHARS = 200
+_MAX_EXTERNAL_ID_CHARS = 255
 
 _FILTER_RE = re.compile(r'^\s*userName\s+eq\s+"(.*)"\s*$', re.IGNORECASE)
 _GROUP_FILTER_RE = re.compile(r'^\s*displayName\s+eq\s+"(.*)"\s*$', re.IGNORECASE)
@@ -49,6 +58,23 @@ class ScimError(Exception):
         return body
 
 
+def _scim_text(value: object, field: str, limit: int) -> str:
+    """`value` as stored text, or a 400 ScimError rather than a database error.
+
+    An over-long value, an embedded NUL or an unpaired surrogate each make
+    Postgres refuse the write, which used to surface as an unhandled 500 and
+    make the identity provider retry the same provisioning call forever.
+    """
+    text = str(value or "").strip()
+    if len(text) > limit:
+        raise ScimError(f"{field} exceeds {limit} characters", scim_type="invalidValue")
+    try:
+        reject_unstorable_text(text, field)
+    except ValueError as exc:
+        raise ScimError(str(exc), scim_type="invalidValue") from None
+    return text
+
+
 def user_to_scim(user: User) -> dict:
     return {
         "schemas": [SCIM_USER_SCHEMA],
@@ -61,7 +87,7 @@ def user_to_scim(user: User) -> dict:
 
 
 async def create_user(session: AsyncSession, org_id: str, body: dict, *, actor: str) -> User:
-    user_name = str(body.get("userName") or "").strip()
+    user_name = _scim_text(body.get("userName"), "userName", _MAX_USER_NAME_CHARS)
     if not user_name:
         raise ScimError("userName is required", scim_type="invalidValue")
     org = await session.get(Organization, org_id)
@@ -69,7 +95,8 @@ async def create_user(session: AsyncSession, org_id: str, body: dict, *, actor: 
         raise ScimError(f"no such organization: {org_id}", status=404)
     user = User(
         org_id=org_id, email=user_name, role=DEFAULT_PROVISIONED_ROLE,
-        display_name=str(body.get("displayName") or ""), created_by=actor,
+        display_name=_scim_text(body.get("displayName"), "displayName", _MAX_DISPLAY_NAME_CHARS),
+        created_by=actor,
     )
     if body.get("active") is False:
         user.disabled_at = datetime.now(timezone.utc)
@@ -102,7 +129,7 @@ async def list_users(
     session: AsyncSession, org_id: str, *, user_name: str | None = None,
     start_index: int = 1, count: int = DEFAULT_PAGE_SIZE,
 ) -> tuple[int, list[User]]:
-    start_index = max(1, start_index)
+    start_index = max(1, min(start_index, MAX_START_INDEX))
     count = max(0, min(count, MAX_PAGE_SIZE))
     query = select(User).where(User.org_id == org_id)
     if user_name is not None:
@@ -156,7 +183,7 @@ async def replace_user(session: AsyncSession, org_id: str, user_id: str, body: d
     if user is None:
         return None
     if "displayName" in body:
-        user.display_name = str(body.get("displayName") or "")
+        user.display_name = _scim_text(body.get("displayName"), "displayName", _MAX_DISPLAY_NAME_CHARS)
     active = _coerce_active(body.get("active"))
     if active is not None and _apply_active(user, active):
         await _record_active_change(session, org_id, user_id, active, actor=actor)
@@ -296,7 +323,7 @@ def _member_values(raw) -> set[str]:
 
 
 async def create_group(session: AsyncSession, org_id: str, body: dict, *, actor: str) -> ScimGroup:
-    display_name = str(body.get("displayName") or "").strip()
+    display_name = _scim_text(body.get("displayName"), "displayName", _MAX_DISPLAY_NAME_CHARS)
     if not display_name:
         raise ScimError("displayName is required", scim_type="invalidValue")
     org = await session.get(Organization, org_id)
@@ -304,7 +331,7 @@ async def create_group(session: AsyncSession, org_id: str, body: dict, *, actor:
         raise ScimError(f"no such organization: {org_id}", status=404)
     group = ScimGroup(
         org_id=org_id, display_name=display_name,
-        external_id=str(body.get("externalId") or ""),
+        external_id=_scim_text(body.get("externalId"), "externalId", _MAX_EXTERNAL_ID_CHARS),
     )
     session.add(group)
     try:
@@ -339,7 +366,7 @@ async def list_groups(
     session: AsyncSession, org_id: str, *, display_name: str | None = None,
     start_index: int = 1, count: int = DEFAULT_PAGE_SIZE,
 ) -> tuple[int, list[ScimGroup]]:
-    start_index = max(1, start_index)
+    start_index = max(1, min(start_index, MAX_START_INDEX))
     count = max(0, min(count, MAX_PAGE_SIZE))
     query = select(ScimGroup).where(ScimGroup.org_id == org_id)
     if display_name is not None:
@@ -360,7 +387,7 @@ async def replace_group(
     if group is None:
         return None
     if "displayName" in body:
-        new_name = str(body.get("displayName") or "").strip()
+        new_name = _scim_text(body.get("displayName"), "displayName", _MAX_DISPLAY_NAME_CHARS)
         if new_name:
             group.display_name = new_name
     if "members" in body:
@@ -389,7 +416,7 @@ async def patch_group(session: AsyncSession, org_id: str, group_id: str, body: d
         value = op.get("value")
 
         if verb in ("replace", "add") and path.lower() == "displayname":
-            new_name = str(value or "").strip()
+            new_name = _scim_text(value, "displayName", _MAX_DISPLAY_NAME_CHARS)
             if new_name and new_name != group.display_name:
                 group.display_name = new_name
                 changed = True
@@ -591,6 +618,10 @@ def add_scim_routes(
                     scim_type="invalidFilter",
                 )
             user_name = match.group(1)
+            try:
+                reject_unstorable_text(user_name, "filter")
+            except ValueError as exc:
+                return _scim_error_response(str(exc), scim_type="invalidFilter")
         try:
             start_index = int(query.get("startIndex", "1"))
             count = int(query.get("count", str(DEFAULT_PAGE_SIZE)))
@@ -604,7 +635,7 @@ def add_scim_routes(
         return _response({
             "schemas": [SCIM_LIST_RESPONSE_SCHEMA],
             "totalResults": total,
-            "startIndex": max(1, start_index),
+            "startIndex": max(1, min(start_index, MAX_START_INDEX)),
             "itemsPerPage": len(resources),
             "Resources": resources,
         })
@@ -638,10 +669,14 @@ def add_scim_routes(
             return _scim_error_response("request body must be a JSON object")
 
         async with session_scope(session_factory) as session:
-            if request.method == "PUT":
-                user = await replace_user(session, org_id, user_id, body, actor=actor)
-            else:
-                user = await patch_user(session, org_id, user_id, body, actor=actor)
+            try:
+                if request.method == "PUT":
+                    user = await replace_user(session, org_id, user_id, body, actor=actor)
+                else:
+                    user = await patch_user(session, org_id, user_id, body, actor=actor)
+            except ScimError as exc:
+                await session.rollback()
+                return _response(exc.to_body(), exc.status)
             if user is None:
                 return _scim_error_response(f"no such user: {user_id}", status=404)
             scim_user = user_to_scim(user)
@@ -679,6 +714,10 @@ def add_scim_routes(
                     scim_type="invalidFilter",
                 )
             display_name = match.group(1)
+            try:
+                reject_unstorable_text(display_name, "filter")
+            except ValueError as exc:
+                return _scim_error_response(str(exc), scim_type="invalidFilter")
         try:
             start_index = int(query.get("startIndex", "1"))
             count = int(query.get("count", str(DEFAULT_PAGE_SIZE)))
@@ -692,7 +731,7 @@ def add_scim_routes(
         return _response({
             "schemas": [SCIM_LIST_RESPONSE_SCHEMA],
             "totalResults": total,
-            "startIndex": max(1, start_index),
+            "startIndex": max(1, min(start_index, MAX_START_INDEX)),
             "itemsPerPage": len(resources),
             "Resources": resources,
         })
@@ -727,10 +766,14 @@ def add_scim_routes(
             return _scim_error_response("request body must be a JSON object")
 
         async with session_scope(session_factory) as session:
-            if request.method == "PUT":
-                group = await replace_group(session, org_id, group_id, body, actor=actor)
-            else:
-                group = await patch_group(session, org_id, group_id, body, actor=actor)
+            try:
+                if request.method == "PUT":
+                    group = await replace_group(session, org_id, group_id, body, actor=actor)
+                else:
+                    group = await patch_group(session, org_id, group_id, body, actor=actor)
+            except ScimError as exc:
+                await session.rollback()
+                return _response(exc.to_body(), exc.status)
             if group is None:
                 return _scim_error_response(f"no such group: {group_id}", status=404)
             scim_group = await group_to_scim(session, group)
