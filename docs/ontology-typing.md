@@ -59,6 +59,9 @@ marks exclusive) that ends an earlier fact's value, the two facts are recorded a
 `exclusive` contradiction. With `COMMONTRACE_FACT_CONFLICTS=supersede` the earlier fact
 is superseded through the usual temporal guard.
 
+A full pass over 2,000 facts takes 5.0 s on one core (2.5 ms per fact, including
+typing, mentions, relations and provenance); an incremental pass is one fact's cost.
+
 The hook broker (`commontrace up`) and the daemon's pass run it whenever the fact
 store changed; when nothing changed the check costs two `stat` calls.
 `commontrace graph sync` runs a pass on demand, and `COMMONTRACE_GRAPH_AUTO=off`

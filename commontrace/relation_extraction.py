@@ -385,17 +385,26 @@ def _compatible(onto, a: str, b: str) -> bool:
 
 
 def _node_index(txn) -> dict[str, list[str]]:
-    """slug -> ids of live nodes by local id, name and aliases, for reusing known entities."""
+    """slug -> ids of live nodes by local id, name and aliases, for reusing known entities.
+
+    Kept on the transaction and extended with nodes added since the last call, so a
+    batch writing triples for many facts indexes each node once, not once per fact."""
+    import itertools
+
     from commontrace.entities import slug
 
-    index: dict[str, list[str]] = {}
-    for node in txn.nodes.values():
+    index: dict[str, list[str]] = getattr(txn, "_rx_node_index", None) or {}
+    seen = getattr(txn, "_rx_node_count", 0)
+    for node in itertools.islice(txn.nodes.values(), seen, None):
         if node.is_forgotten or (node.properties or {}).get("merged_into"):
             continue
         forms = {slug(node.id.split(":", 1)[-1].replace("_", " ")), slug(node.name),
                  *(slug(a) for a in (node.properties or {}).get("aliases", [])[:20] if isinstance(a, str))}
         for form in forms - {""}:
-            index.setdefault(form, []).append(node.id)
+            ids = index.setdefault(form, [])
+            if node.id not in ids:
+                ids.append(node.id)
+    txn._rx_node_index, txn._rx_node_count = index, len(txn.nodes)
     return index
 
 

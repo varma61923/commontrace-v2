@@ -191,18 +191,62 @@ def candidate_types(onto, allowed=None) -> list[str]:
                   and (wanted is None or set(onto.ancestors(name)) & wanted))
 
 
+_ONTO_CACHE: dict[int, tuple[object, dict]] = {}
+_ONTO_CACHE_LOCK = threading.Lock()
+
+
+def _per_onto(onto) -> dict:
+    """Derived data for one ontology object (vocabularies, hypernyms), computed once.
+    Keyed by identity and checked with `is`, so a new or reloaded ontology starts fresh."""
+    with _ONTO_CACHE_LOCK:
+        cached = _ONTO_CACHE.get(id(onto))
+        if cached is not None and cached[0] is onto:
+            return cached[1]
+        if len(_ONTO_CACHE) >= 16:
+            _ONTO_CACHE.pop(next(iter(_ONTO_CACHE)))
+        data: dict = {"vocabulary": {}, "hypernyms": {}}
+        _ONTO_CACHE[id(onto)] = (onto, data)
+        return data
+
+
 def _vocabulary(onto, type_name: str) -> set[tuple[str, ...]]:
     """Word sequences that name `type_name`: its name (and plural) and its keywords."""
-    base = type_name.replace("_", " ")
-    forms = {base, base + "s", *onto.entity_types[type_name].keywords}
-    return {tuple(_words(f)) for f in forms if _words(f)}
+    cache = _per_onto(onto)["vocabulary"]
+    found = cache.get(type_name)
+    if found is None:
+        base = type_name.replace("_", " ")
+        forms = {base, base + "s", *onto.entity_types[type_name].keywords}
+        found = cache[type_name] = frozenset(tuple(_words(f)) for f in forms if _words(f))
+    return found
 
 
 def _hypernyms(onto, type_name: str) -> frozenset[str]:
     """Nouns that state the type in a sentence ("a city", "our largest customer"):
     the type's name and keywords, and the built-in hypernyms of a built-in type."""
-    words = {" ".join(w) for w in _vocabulary(onto, type_name)}
-    return frozenset(words | ontology_lexicon.HYPERNYMS.get(type_name, frozenset()))
+    cache = _per_onto(onto)["hypernyms"]
+    found = cache.get(type_name)
+    if found is None:
+        words = {" ".join(w) for w in _vocabulary(onto, type_name)}
+        found = cache[type_name] = frozenset(words | ontology_lexicon.HYPERNYMS.get(type_name, frozenset()))
+    return found
+
+
+def _keyword_index(onto, types: list[str]) -> dict[str, list[tuple[str, tuple[str, ...]]]]:
+    """word -> (type, phrase) for every vocabulary phrase containing the word, so a
+    mention is checked only against phrases that share a word with it."""
+    cache = _per_onto(onto).setdefault("keyword_index", {})
+    key = tuple(types)
+    found = cache.get(key)
+    if found is None:
+        found = {}
+        for type_name in types:
+            for phrase in _vocabulary(onto, type_name):
+                for word in set(phrase):
+                    found.setdefault(word, []).append((type_name, phrase))
+        if len(cache) >= 16:
+            cache.pop(next(iter(cache)))
+        cache[key] = found
+    return found
 
 
 def _ends_with(words: list[str], phrase: tuple[str, ...]) -> bool:
@@ -269,17 +313,21 @@ def by_keywords(name: str, context: str, onto, types: list[str]) -> tuple[str | 
         return aliased, SCORES["alias"], "alias", {aliased: SCORES["alias"]}
     (words, split), beside = _name_words(name), _neighbours(name, context)
     scores: dict[str, float] = {}
-    for type_name in types:
-        for phrase in _vocabulary(onto, type_name):
-            if _ends_with(words, phrase) and len(words) > len(phrase):
-                score = CAMEL_HEAD if split and len(_words(name)) == 1 else SCORES["head"]
-            elif _contains(words, phrase) and len(words) > len(phrase):
-                score = SCORES["word"]
-            elif len(phrase) == 1 and phrase[0] in beside:
-                score = SCORES["context"]
-            else:
-                continue
-            scores[type_name] = max(scores.get(type_name, 0.0), score)
+    index = _keyword_index(onto, types)
+    candidates: set[tuple[str, tuple[str, ...]]] = set()
+    for word in {*words, *beside}:
+        candidates.update(index.get(word, ()))
+    camel_only = split and len(_words(name)) == 1
+    for type_name, phrase in sorted(candidates):
+        if _ends_with(words, phrase) and len(words) > len(phrase):
+            score = CAMEL_HEAD if camel_only else SCORES["head"]
+        elif _contains(words, phrase) and len(words) > len(phrase):
+            score = SCORES["word"]
+        elif len(phrase) == 1 and phrase[0] in beside:
+            score = SCORES["context"]
+        else:
+            continue
+        scores[type_name] = max(scores.get(type_name, 0.0), score)
     best, score = _best(onto, scores)
     return best, score, "keyword", scores
 
