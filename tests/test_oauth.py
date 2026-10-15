@@ -42,7 +42,10 @@ class Keys:
         raw = self.ed.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
         return {"keys": [
             {"kty": "RSA", "kid": self.prefix + "rsa-1", "use": "sig", "n": b64int(rn.n), "e": b64int(rn.e)},
-            {"kty": "EC", "kid": self.prefix + "ec-1", "crv": "P-256", "x": b64int(en.x).rjust(43, "A"), "y": b64int(en.y).rjust(43, "A")},
+            # Fixed-width coordinates: padding the base64 text with "A" corrupts a coordinate
+            # whose top byte is zero (about one key in 128), which made this test flaky.
+            {"kty": "EC", "kid": self.prefix + "ec-1", "crv": "P-256", "x": b64(en.x.to_bytes(32, "big")),
+             "y": b64(en.y.to_bytes(32, "big"))},
             {"kty": "OKP", "kid": self.prefix + "ed-1", "crv": "Ed25519", "x": b64(raw)},
         ]}
 
