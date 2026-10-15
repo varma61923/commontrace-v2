@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import httpx
 import pytest
 from sqlalchemy import select
@@ -89,6 +91,15 @@ class TestAuthentication:
 
 
 class TestIngest:
+    async def test_a_valid_key_does_not_spend_the_failed_attempt_budget(self, session_factory, config):
+        tight = replace(config, auth_attempts_per_minute=1, auth_attempts_burst=2)
+        _org_id, raw_key = await _org_with_key(session_factory)
+        async with _client(_app(session_factory, tight)) as client:
+            for i in range(5):
+                response = await client.post(
+                    otlp.OTLP_TRACES_PATH, json=_otlp_body(_span(f"{i:016x}")), headers=_key(raw_key))
+                assert response.status_code == 200
+
     async def test_a_well_formed_span_becomes_a_trace(self, session_factory, config):
         org_id, raw_key = await _org_with_key(session_factory)
         async with _client(_app(session_factory, config)) as client:

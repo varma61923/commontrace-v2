@@ -58,9 +58,8 @@ def add_otlp_routes(
     )
 
     async def ingest(request: Request) -> Response:
-        allowed, retry_after = await auth_limiter.check(
-            rate_limit_key(request, trusted_proxy_hops)
-        )
+        client_key = rate_limit_key(request, trusted_proxy_hops)
+        allowed, retry_after = await auth_limiter.check(client_key)
         if not allowed:
             return JSONResponse(
                 {"error": "rate_limited", "detail": "too many requests"},
@@ -74,6 +73,8 @@ def add_otlp_routes(
             authenticated = await auth.verify_api_key(session, raw_key)
         if authenticated is None:
             return _json_error(401, "unauthorized", "that key was not accepted")
+        # The limiter bounds failed guesses; exporters flushing with a valid key must not spend it.
+        auth_limiter.refund(client_key)
         if not scopes.satisfies(authenticated.scopes, scopes.SCOPE_WRITE):
             return _json_error(403, "forbidden", "this key does not carry the 'write' scope")
 

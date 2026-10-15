@@ -5,12 +5,12 @@ from datetime import datetime, timezone
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
-from hub import commons, crud, plans
+from hub import audit, commons, crud, plans
 from hub.abuse import make_rate_limiter
 from hub.db import session_scope
-from hub.models import Organization, Trace, Vote
+from hub.models import AuditLogEntry, Organization, Trace, Vote
 
 pytestmark = pytest.mark.asyncio
 
@@ -529,3 +529,36 @@ class TestSubmitKbEntryIdempotency:
         assert not exceptions, f"unexpected exceptions: {exceptions}"
         assert ids == {rows[0].id}, "every concurrent retry must resolve to the same single submission id"
         assert len(rows) == 1
+
+
+class TestIdempotencyRaceInsideABatch:
+    async def test_losing_the_race_keeps_earlier_writes_and_the_tenant_binding(
+        self, session_factory, config, org
+    ):
+        real = make_rate_limiter(config)
+
+        class RacingLimiter:
+            # Another delivery commits the same span id between our existence check and
+            # our insert; the rate-limit check sits exactly in that window.
+            async def check(self, key):
+                async with session_scope(session_factory) as other:
+                    other.add(Trace(
+                        org_id=org, title="t", context_text="c", solution_text="s",
+                        tags=[], agent_type="code", idempotency_key="span-1",
+                        request_hash=crud._contribute_request_hash("t", "c", "s", [], "code", {}, ""),
+                    ))
+                return await real.check(key)
+
+        async with session_scope(session_factory, org_id=org) as session:
+            # An earlier write in the same batch transaction (an OTLP occasion outcome, say).
+            await audit.record(session, actor="batch", action="earlier_write", org_id=org)
+            replayed = await crud.contribute_trace(
+                session, org, config, RacingLimiter(), title="t", context_text="c", solution_text="s",
+                agent_type="code", idempotency_key="span-1")
+            bound = (await session.execute(text("SELECT current_setting('app.org_id', true)"))).scalar()
+        assert replayed["id"]
+        assert bound == org, "the tenant binding must survive the lost race"
+        async with session_scope(session_factory) as session:
+            earlier = (await session.execute(select(func.count()).select_from(AuditLogEntry).where(
+                AuditLogEntry.org_id == org, AuditLogEntry.action == "earlier_write"))).scalar()
+        assert earlier == 1, "the earlier write in the batch was rolled back"
