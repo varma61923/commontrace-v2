@@ -140,6 +140,7 @@ commontrace/ingest/*
 !commontrace/memory_control.py
 !commontrace/memory_git.py
 !commontrace/memory_journal.py
+!commontrace/multihop.py
 !commontrace/observations.py
 !commontrace/offline.py
 !commontrace/ontology.py
@@ -155,6 +156,7 @@ commontrace/ingest/*
 !commontrace/provenance.py
 !commontrace/providers.py
 !commontrace/provider_config.py
+!commontrace/query_expansion.py
 !commontrace/ui_commands.py
 !commontrace/query_plan.py
 !commontrace/recall.py
