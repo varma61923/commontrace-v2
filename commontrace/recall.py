@@ -537,8 +537,9 @@ def pack(items: list[Item], budget: int) -> list[Item]:
     """Fill the budget: a floor share first for each channel's best item, then fused
     order; an item that does not fit is cut when at least MIN_CUT_FRACTION of it (or a
     quarter of the budget) fits."""
-    chosen: list[Item] = []
-    used = 0
+    chosen: list[Item] = [item for item in items if item.provenance.get("hazard")]
+    used = sum(tokens(item.text) for item in chosen)
+    items = [item for item in items if not item.provenance.get("hazard")]
     channels = list(dict.fromkeys(i.channel for i in items))
     floor = int(budget * FLOOR_SHARE)
     seen: set[str] = set()
@@ -751,6 +752,19 @@ def recall(root: str, question: str, *, budget: int | None = None, agent: str | 
         elif unavailable:
             result.explain["rerank"] = {"reranker": name, "items": 0, "latency_ms": 0.0, "error": unavailable}
         candidates = diversify(fused)
+        from commontrace import conformal_gate, safety
+
+        hazards = safety.protected(root)
+        for item in candidates:
+            if item.id in hazards:
+                item.provenance["hazard"] = True
+
+        harm_budget = conformal_gate.current(root)
+        if harm_budget.get("enabled"):
+            candidates = [item for item in candidates if conformal_gate.admit(
+                harm_budget, conformal_gate.score(item.score), context=agent or "",
+                hazard=bool(item.provenance.get("hazard")))]
+            result.explain["harm_budget"] = harm_budget
         result.items = pack(candidates, total)
         result.assessment = _assess_retrieval(question, result.items, result.errors)
         if decision is not None:

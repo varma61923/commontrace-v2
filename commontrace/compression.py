@@ -9,10 +9,88 @@ import hashlib
 import math
 import os
 import uuid
+from typing import Any, Protocol, Sequence
 
 from commontrace import _jsonl, approval, memory_authority, memory_control, paths, policy
 
 LEVELS = ("trace", "episode", "observation", "lesson", "skill", "directive")
+
+
+class KVReuse(Protocol):
+    """Optional self-hosted KV adapter; implementations live in provider extras."""
+
+    def prepare(self, version: str, text: str) -> str: ...
+    def invalidate(self, version: str) -> None: ...
+
+
+def cache_prefix(items: Sequence[dict[str, Any]], *, pricing: dict[str, float] | None = None,
+                 max_churn: int = 2, minimum_value: float = .01) -> dict[str, Any]:
+    """Deterministic approved, positive-value prefix before a provider breakpoint.
+
+    Cache prices and latency rates are supplied by the deployment, never baked
+    into the package. Dollar/latency numbers are estimates, not measured savings.
+    Callers must pass already-governed candidates; this function does not retrieve.
+    """
+    from commontrace import frontier_protocol as fp
+
+    fp.count(len(items), 0, 256)
+    fp.count(max_churn, 0, 1000)
+    fp.number(minimum_value, 0, 1)
+    accepted = []
+    for item in items:
+        fp.text(item["id"])
+        fp.text(item["text"], "prefix memory", 64_000)
+        value = fp.number(item.get("value", 0), -1, 1)
+        churn = fp.count(item.get("churn", 0), 0, 100_000)
+        if item.get("approved") is True and value >= minimum_value and churn <= max_churn:
+            accepted.append({"id": item["id"], "text": item["text"]})
+    accepted.sort(key=lambda item: item["id"])
+    content = "\n\n".join("[" + item["id"] + "]\n" + item["text"].strip() for item in accepted)
+    version = fp.digest(accepted)
+    tokens = (len(content) + 3) // 4
+    bill = {"estimated_tokens": tokens, "tokenizer": "four-character estimate", "savings_usd": None,
+            "latency_savings_ms": None, "kind": "configuration-based estimate"}
+    if pricing is not None:
+        for name in ("uncached_per_million", "cached_per_million", "uncached_ms_per_token", "cached_ms_per_token"):
+            fp.number(pricing[name], 0, 1e6, name)
+        bill["savings_usd"] = tokens * (pricing["uncached_per_million"] - pricing["cached_per_million"]) / 1e6
+        bill["latency_savings_ms"] = tokens * (pricing["uncached_ms_per_token"] - pricing["cached_ms_per_token"])
+    return {"version": version, "text": content, "ids": [item["id"] for item in accepted],
+            "placement": "before-provider-cache-breakpoint", "context_bill": bill}
+
+
+def proven_prefix(root: str, admitted: Sequence[dict[str, Any]], *, pricing: dict[str, float] | None = None) -> dict:
+    """Build a prefix only from freshly approved, evidence-positive delivered lessons."""
+    from commontrace import evidence, frontmatter, lesson_admission, lesson_io
+
+    positive = evidence.graduated(root)
+    from commontrace import frontier_protocol as fp
+
+    history = fp.rows(lesson_io.revisions_log_path(root))
+    rows = []
+    for item in admitted:
+        identity = item.get("slug", "")
+        path = lesson_io.lesson_path(root, identity)
+        if identity not in positive or path is None:
+            continue
+        fm, body = frontmatter.read(path)
+        if (body == item.get("body") and fm.get("approval_receipt")
+                and lesson_admission.eligible(root, path, fm, body)):
+            changes = sum(lesson_io.canonical_slug(row["lesson"]) == identity for row in history)
+            rows.append({"id": identity, "text": body, "value": positive[identity]["effect"],
+                         "approved": True, "churn": changes})
+    prefix = cache_prefix(rows, pricing=pricing)
+    from commontrace import frontier_protocol as fp
+
+    prefix["namespace"] = fp.digest({"store": os.path.realpath(root)})
+    prefix["version"] = fp.digest({"namespace": prefix["namespace"], "content": prefix["version"]})
+    if prefix["ids"]:
+        from commontrace import lineage
+
+        record = {"id": "prefix-" + prefix["version"], "version": prefix["version"], "text": prefix["text"]}
+        if record["id"] not in lineage.records(root):
+            lineage.attest(root, record, fp.sign(root, record), inputs=prefix["ids"], operation="cache-prefix")
+    return prefix
 
 
 def _file(root):
@@ -49,6 +127,9 @@ def _source(root, source_id):
 
 def propose(root: str, text: str, *, level: str, sources: list[str], parent: str = "", actor: str,
             applies_when: str, do_not_apply_when: str, deny_tools: list[str] | None = None) -> dict:
+    from commontrace import safety
+
+    safety.assert_mutable(root, sources)
     if level not in LEVELS[1:] or not sources or not actor or not applies_when or not do_not_apply_when:
         raise ValueError("level, live sources, author and applicability bounds required")
     raw = [_source(root, sid) for sid in sorted(set(sources))]

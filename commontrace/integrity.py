@@ -776,6 +776,7 @@ def audit(
     unit: str = UNIT_LESSON,
     now: datetime.datetime | None = None,
     schedules: list | None = None,
+    cluster_comparison: dict | None = None,
 ) -> IntegrityReport:
     """Every check, plus the projection, over one experiment's assignments."""
     conflicts = check_inconsistent_arms(rows, unit)
@@ -794,6 +795,15 @@ def audit(
         check_marginal_eligibility(unique),
         check_assignment_concentration(unique),
     ]
+    if cluster_comparison is not None:
+        from commontrace import interference
+
+        result = interference.symbiosis_bias(**cluster_comparison)
+        findings.append(Finding("symbiosis_bias", SEVERITY_WEAKENS if result["flagged"] else SEVERITY_OK,
+                                "Task and cluster estimates disagree" if result["flagged"] else
+                                "Task and cluster estimates are compatible",
+                                "Diagnostic only; investigate write-back contamination and cluster boundaries.",
+                                result))
     worst = max((_SEVERITY_RANK[f.severity] for f in findings), default=0)
     return IntegrityReport(
         verdict=_VERDICT_FOR[worst],

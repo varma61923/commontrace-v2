@@ -55,6 +55,37 @@ class PostgresJournal:
         self.factory, self.org_id, self.vector_index = session_factory, org_id, vector_index
         self.projection_factory = projection_factory
 
+    async def put_targeted(self, record: MemoryRecord, policy: dict, *, context: str, features: dict,
+                           environment: str, verify_policy) -> MemoryRecord:
+        """Promote into a measured fleet class only; ownership still comes from org_id.
+
+        Trusted coordinator code supplies the pinned policy verifier. This is a
+        server-side SDK operation, not a client-controlled verification callback.
+        Ordinary record writes do not constitute fleet promotion.
+        """
+        from commontrace import frontier_protocol as fp
+
+        if not verify_policy(policy):
+            raise PermissionError("fleet transfer requires an authenticated uplift policy")
+        row = policy["record"]
+        if (row.get("type") != "validated-uplift-policy-v1"
+                or fp.number(row["rate_lower"], -100, 100) <= 0
+                or row.get("environment") != environment
+                or row.get("classes", {}).get(context) != features):
+            raise PermissionError("fleet class has no validated positive effect in this environment")
+        if row.get("lesson") != record.id:
+            raise PermissionError("targeting policy belongs to a different memory")
+        if not features or len(features) > 7:
+            raise ValueError("bounded pre-treatment fleet features required")
+        labels = list(record.scope.get("labels", []))
+        for key, value in features.items():
+            fp.text(key, "feature", 64)
+            fp.text(value, "class", 64)
+            labels.append(key + ":" + value)
+        governed = replace(record, scope={**record.scope, "labels": sorted(set(labels))},
+            provenance={**record.provenance, "uplift_policy_digest": policy["digest"], "uplift_context": context})
+        return await self.put(governed)
+
     async def put(self, record: MemoryRecord) -> MemoryRecord:
         if record.scope.get("tenant", self.org_id) != self.org_id:
             raise ValueError("record tenant cannot override authenticated organization")
@@ -132,6 +163,13 @@ class PostgresJournal:
                       "record": record.to_dict(), "scope": record.scope},
             )
         )
+        from commontrace import frontier_protocol as fp
+        from hub import audit
+
+        if session.info.get("transparency_key"):
+            await audit.record(session, actor="memory-runtime", action="memory_record.put", org_id=self.org_id,
+                               target_type="memory_record", target_id=record.id,
+                               summary=f"version={record.version};digest={fp.digest(record.to_dict())}")
 
     async def _refresh_facet(self, session, record):
         entity, facet = record.payload.get("entity"), record.payload.get("facet")
@@ -574,6 +612,10 @@ class PostgresJournal:
             raise ValueError("expected version must be a positive integer")
         async with session_scope(self.factory, org_id=self.org_id) as session:
             await self._lock_owner(session)
+            from hub import retention
+
+            if await retention.active_holds(session, self.org_id):
+                raise PermissionError("an active legal hold blocks record erasure; release it explicitly")
             if expected_version is not None:
                 current = await session.get(
                     MemoryRecordProjection,

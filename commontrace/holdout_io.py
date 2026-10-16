@@ -156,9 +156,19 @@ def plan_assignments(
     family). A causal-gate schedule may set a different rate per context; the label
     is logged so every rate can be re-checked against the schedule that set it.
     """
-    from commontrace import allocation
+    from commontrace import allocation, safety
+    from commontrace import frontier_protocol as fp
+
+    fp.count(len(slugs), 0, 256, "assignment batch")
+    for slug in slugs:
+        fp.text(slug, "lesson")
+    fp.text(occasion_id, "occasion")
+    fp.number(rate, 0, 1, "holdout rate")
 
     context = context_label(context)
+    # Hazards are not experimental units; do not log a fictitious propensity.
+    hazards = safety.protected(root)
+    slugs = [slug for slug in slugs if slug not in hazards]
     moment = datetime.datetime.now(datetime.timezone.utc)
     schedule = allocation.active(root, salt, moment)
     rates = {s: (schedule.rate_for(s, context) if schedule is not None else rate) for s in slugs}
@@ -217,6 +227,12 @@ def assign_and_log(
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with frontmatter.locked(path):
         _append_lines(path, [json.dumps(row) for row in rows], durable)
+    if rows:
+        from commontrace import frontier_protocol as fp
+        from commontrace import transparency_log
+
+        transparency_log.append(root, "holdout-assignment", {"occasion_id": occasion_id,
+                                "assignments": {row["lesson"]: fp.digest(row) for row in rows}}, durable=durable)
     return withheld
 
 
@@ -304,6 +320,9 @@ def record_outcome(root: str, occasion_id: str, succeeded: bool, durable: bool =
     """Record whether the task on `occasion_id` succeeded."""
     if not isinstance(occasion_id, str) or not occasion_id.strip():
         raise ValueError("occasion_id must be a non-empty string")
+    from commontrace import frontier_protocol as fp
+
+    fp.text(occasion_id, "occasion")
     if not isinstance(succeeded, bool):
         raise TypeError(f"succeeded must be a bool, got {type(succeeded).__name__}")
     path = outcomes_log_path(root)
@@ -322,6 +341,10 @@ def record_outcome(root: str, occasion_id: str, succeeded: bool, durable: bool =
             path, [json.dumps({"occasion_id": occasion_id, "succeeded": succeeded, "at": now})],
             durable,
         )
+    from commontrace import transparency_log
+
+    transparency_log.append(root, "holdout-outcome", {"occasion_id": occasion_id, "succeeded": succeeded},
+                            durable=durable)
     return True
 
 

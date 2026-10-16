@@ -11,6 +11,9 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         "retrieval",
         help="Show or set how this store ranks lessons (scorer, floor, arm fusion, budget).",
     )
+    p.add_argument("--harm-budget", type=float, help="Opt in to conservative conformal discretionary harm control.")
+    p.add_argument("--per-context", action="store_true", help="Calibrate independently within pre-task contexts.")
+    p.add_argument("--value-per-token", action="store_true", help="Snapshot causal priors and enable knapsack packing.")
     p.add_argument(
         "--floor", type=float, default=None,
         help="Minimum relevance (0-1) a lesson must reach to be retrieved. Raising it "
@@ -112,6 +115,21 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
 
 def run(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
+    if args.value_per_token:
+        import json
+
+        from commontrace import dosage
+
+        print(json.dumps(dosage.configure_value_packing(root), indent=2))
+        return 0
+    if args.harm_budget is not None:
+        import json
+
+        from commontrace import conformal_gate
+
+        configured = conformal_gate.configure(root, alpha=args.harm_budget, per_context=args.per_context)
+        print(json.dumps(configured, indent=2))
+        return 0
 
     setting = (
         args.floor, args.scorer, args.fusion, args.max_lessons, args.max_chars,

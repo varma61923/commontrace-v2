@@ -626,7 +626,7 @@ def _detect_conflicts(facts: dict[str, AtomicFact], index: _StatementIndex, fact
     `later` holds ids written after `fact` in the same batch: a fact is only
     ever compared with what came before it.
     """
-    from commontrace import fact_conflicts
+    from commontrace import fact_conflicts, safety
 
     mode = fact_conflicts.mode()
     if mode == "off":
@@ -678,7 +678,8 @@ def _detect_conflicts(facts: dict[str, AtomicFact], index: _StatementIndex, fact
     now = _now()
     for fid, (older, kind) in sorted(found.items()):
         action = "flagged"
-        if may_supersede and mode == "supersede" and kind in ("negation", "judged"):
+        if may_supersede and mode == "supersede" and kind in ("negation", "judged") \
+                and (not root or fid not in safety.protected(root)):
             try:
                 _supersede_locked(facts, older.id, fact.id, contradiction=True)
                 action = "superseded"
@@ -1018,6 +1019,9 @@ def update_fact(
     tenant's memory into another's view. To change scope, supersede the fact
     with explicit new scopes instead — the old scope stays on record.
     """
+    from commontrace import safety
+
+    safety.assert_mutable(root, [fact_id])
     new_until = _moment(valid_until, "valid_until") if valid_until is not None else None
     new_expiry = _normalize_expires_at(expires_at) if expires_at is not _UNSET else None
     if statement is not None and len(statement.strip()) > MAX_STATEMENT_CHARS:
@@ -1059,9 +1063,16 @@ def supersede_fact(
     as_of: str | None = None,
 ) -> tuple[AtomicFact, AtomicFact]:
     """End an active fact's validity and point it at its replacement."""
+    from commontrace import safety
+
+    safety.assert_mutable(root, [old_fact_id])
     with mutate_facts(root) as facts:
-        return _supersede_locked(facts, old_fact_id, new_fact_id_or_statement,
-                                 scopes=scopes, category=category, as_of=as_of)
+        result = _supersede_locked(facts, old_fact_id, new_fact_id_or_statement,
+                                  scopes=scopes, category=category, as_of=as_of)
+        from commontrace import lineage
+
+        lineage.invalidate(root, old_fact_id)
+        return result
 
 
 def _supersede_locked(
@@ -1207,6 +1218,9 @@ def resolve_contradiction(
     refuses instead of expiring a fact that was true in a different window.
     Guard validation and both state changes share one locked transaction.
     """
+    from commontrace import safety
+
+    safety.assert_mutable(root, [old_fact_id])
     with mutate_facts(root) as facts:
         return _supersede_locked(
             facts, old_fact_id, new_fact_id_or_statement, scopes=scopes,
@@ -1243,6 +1257,9 @@ def invalidate_fact(root: str, fact_id: str, at: str | None = None) -> AtomicFac
     still returns it, which is what makes "what was true in March" answerable.
     An end in the future only schedules the close; the fact stays active until then.
     """
+    from commontrace import safety
+
+    safety.assert_mutable(root, [fact_id])
     end = _moment(at, "at") or _now()
     with mutate_facts(root) as facts:
         if fact_id not in facts:
@@ -1265,6 +1282,9 @@ def invalidate_fact(root: str, fact_id: str, at: str | None = None) -> AtomicFac
 
 def delete_fact(root: str, fact_id: str) -> bool:
     """Soft-delete a fact: its validity ends now and it leaves default listings."""
+    from commontrace import safety
+
+    safety.assert_mutable(root, [fact_id])
     with mutate_facts(root) as facts:
         fact = facts.get(fact_id)
         if fact is None:
@@ -1287,12 +1307,17 @@ def retire_source(root: str, source_id: str, keep: set[str], *, scopes: list[str
     """
     if not source_id:
         return 0
+    from commontrace import safety
+
+    hazards = safety.protected(root)
     ended = 0
     ended_ids: list[str] = []
     required_scopes = _clean_scopes(scopes) if scopes is not None else None
     with mutate_facts(root) as facts:
         now_iso = _now()
         for fact in facts.values():
+            if fact.id in hazards:
+                continue
             if required_scopes is not None and sorted(set(fact.scopes)) != required_scopes:
                 continue
             if fact.id in keep or fact.status != "active" or source_id not in fact.source_traces:

@@ -634,6 +634,8 @@ _HEADERS = {
 }
 
 _TAGS = [
+    ("Transparency", "Tenant-scoped signed Merkle checkpoints, inclusion and consistency proofs."),
+    ("Incidents", "Legal holds, frozen evidence and signed regulator-evidence exports."),
     ("Memory", "Versioned, tenant-scoped memory records and erasure."),
     (
         "MCP",
@@ -808,6 +810,41 @@ def _operations() -> dict[tuple[str, str], dict]:
         "429": _response_ref("RateLimited"),
     }
     ops = {
+        **{(method, path): _op(
+            operation, "Incidents", summary, security=API_KEY,
+            body=(_json_body(_object({"id": _string(maxLength=128), "valid_time": _string(format="date-time")},
+                                      ("id", "valid_time"))) if method == "POST" else None),
+            responses={"201" if method == "POST" else "200":
+                       (_html("Authenticated incident workflow.") if operation == "incidentConsole" else
+                        _json("Signed, tenant-scoped evidence and Merkle anchor.",
+                              _free_object("Snapshot, hold identifier, control mappings and transparency receipt."))),
+                       "400": _error("Malformed, oversized or duplicate incident request."),
+                       "401": _error("Authentication required."), "403": _error("Insufficient scope."),
+                       "404": _error("No incident in this organization."), "429": _error("Rate limited."),
+                       "503": _error("Incident signing key is not configured.")}
+        ) for method, path, operation, summary in (
+            ("POST", "/v1/incidents", "incidentFreeze", "Freeze tenant evidence under legal hold"),
+            ("GET", "/v1/incidents/{incident_id}/timeline", "incidentTimeline", "Read a frozen incident timeline"),
+            ("GET", "/v1/incidents/{incident_id}/pack", "incidentPack", "Export a signed incident pack"),
+            ("GET", "/v1/incidents/console", "incidentConsole", "Open incident workflow instructions"),
+        )},
+        **{("GET", "/v1/log/" + operation): _op(
+            "transparency" + operation.title(), "Transparency", "Export tenant Merkle " + operation,
+            security=API_KEY,
+            parameters=(() if operation == "head" else
+                        (_query("leaf", _integer(minimum=0), "Zero-based leaf index.", required=True),)
+                        if operation == "proof" else
+                        (_query("from", _integer(minimum=0), "Pinned old tree size.", required=True),
+                         _query("to", _integer(minimum=0), "New tree size; defaults to latest."))),
+            responses={"200": _json("Signed checkpoint or Merkle proof.",
+                                    _free_object("RFC 6962 proof with store-pinned signature envelope.")),
+                       "400": _error("Invalid bounded tree position or corrupt history."),
+                       "401": _error("Missing or rejected credential."),
+                       "403": _error("Read scope required."),
+                       "429": _error("Rate limited."),
+                       "503": _error("Hub ledger signer is not configured.")},
+            description="Pin or witness heads to detect forks. HMAC signatures require a shared verifier secret."
+        ) for operation in ("head", "proof", "consistency")},
         # --- MCP -----------------------------------------------------------
         ("POST", "/mcp"): _op(
             "mcpPost", "MCP", "Send one JSON-RPC 2.0 message",
@@ -1310,6 +1347,28 @@ def _operations() -> dict[tuple[str, str], dict]:
             "consoleAudit", "Audit log",
             parameters=(_query("offset", _integer(minimum=0, maximum=100_000, default=0), "Clamped to 0..100000."),),
         ),
+
+        ("GET", "/app/incidents"): _console_page(
+            "consoleIncidents", "Freeze and export organization incident evidence"),
+        ("POST", "/app/incidents/freeze"): _op(
+            "consoleIncidentFreeze", "Console", "Freeze evidence and place a legal hold (admin keys)",
+            security=CONSOLE,
+            body=_form_body({"id": _string(maxLength=128, pattern="^[A-Za-z0-9_-]+$"),
+                             "valid_time": _string("ISO 8601 event time with timezone", maxLength=64)},
+                            ("id", "valid_time")),
+            responses={"303": _see_other("To the incident list or sign-in."),
+                       "400": _error("Malformed or duplicate incident."),
+                       "403": _error("Admin or origin check refused."),
+                       "503": _error("Incident signer is not configured.")}),
+        ("GET", "/app/incidents/{incident_id}/pack"): _op(
+            "consoleIncidentPack", "Console", "Download an organization's signed evidence pack",
+            security=CONSOLE,
+            parameters=(_query("regime", _string(default="eu-ai-act"), "Evidence control mapping."),),
+            responses={"200": _json("Signed manifest, snapshot files and inclusion receipt.",
+                                       _free_object("Signed incident evidence pack")),
+                       "303": _response_ref("SignInRedirect"), "400": _error("Unknown evidence regime."),
+                       "404": _error("Incident does not belong to this organization."),
+                       "503": _error("Incident signer is not configured.")}),
 
         # --- Admin -----------------------------------------------------------
         ("GET", "/admin"): _admin_page("adminOverview", "Operator overview", _FLASH_PARAMS),

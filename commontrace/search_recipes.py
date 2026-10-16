@@ -488,7 +488,7 @@ def recipe_manifest() -> dict:
 
 
 def _eligible_fact(root, fact, moment, as_of, context, action_class, resolver, known=None):
-    from commontrace import memory_authority, memory_control
+    from commontrace import interference, memory_authority, memory_control
 
     return (fact is not None and hierarchical._valid_at(fact, moment)
             and (as_of or known is not None or fact.status == "active") and not fact.forgotten
@@ -496,6 +496,7 @@ def _eligible_fact(root, fact, moment, as_of, context, action_class, resolver, k
             and not hierarchical._is_expired(fact, moment)
             and memory_control.matches(fact.scopes, context or [])
             and memory_authority.permits(root, fact, action_class=action_class)
+            and interference.read_allowed(root, fact.id)
             and (not fact.evidence_bound or resolver.assess(fact.id).eligible))
 
 
@@ -613,10 +614,20 @@ def _current_results(root, rows, revisions, *, context, as_of, known_at, action_
     with manager as canonical:
         candidates = _load_candidate_facts(canonical, (row["id"] for row in rows)) if indexed else canonical
         resolver = EvidenceResolver(root, canonical, as_of=as_of)
-        return [row for row in rows if _eligible_fact(
+        result = [row for row in rows if _eligible_fact(
             root, candidates.get(row["id"]), moment, as_of, context, action_class, resolver, known
         ) and candidates[row["id"]].revision == revisions[row["id"]]
                 and candidates[row["id"]].statement == row["text"]]
+        from commontrace import lineage
+
+        for row in result:
+            row.update(lineage.labels(root, row["id"]))
+            from commontrace import memory_ifc
+
+            row.update(memory_ifc.label(root, row))
+            if row["review_required"]:
+                row["score"] *= 0.5
+        return result
 
 
 def indexed_search(

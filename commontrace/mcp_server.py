@@ -334,6 +334,7 @@ def _apply_dosage(matched, active, config, quarantined=None, *, scope="", as_of=
             slug=item.get("slug", ""),
             text=item.get("body") or "",
             core=bool(item.get("core", False)),
+            relevance=float(item.get("_relevance", 0)),
             importance=int(item.get("importance") or 0),
             revision=str(item.get("revision", "")),
             compare_text=redundancy.comparable_text(item, item.get("body") or ""),
@@ -347,6 +348,8 @@ def _apply_dosage(matched, active, config, quarantined=None, *, scope="", as_of=
             max_chars=config.max_chars,
             redundancy_threshold=config.redundancy_threshold,
         ),
+        root=os.path.dirname(os.path.dirname(os.path.dirname(active[0][0]))) if active else None,
+        context=agent_type,
     )
     admitted = [by_slug[c.slug] for c in dose.admitted if c.slug in by_slug]
     kept_core = [item for item in admitted if item.get("core")]
@@ -887,6 +890,8 @@ def build_server(root: str, *, allow_approval: bool = True):
 
         result = {
             "lessons": injected,
+            "harm_budget": dose.harm_budget,
+            "context_packing": dose.packing,
             "n_active": len(active),
             "occasion_id": occasion_id or None,
             "budget": dose.gauge(),
@@ -948,6 +953,24 @@ def build_server(root: str, *, allow_approval: bool = True):
                 evidence_mod.attach(root, result, "lessons", "withheld", "withdrawn")
         except Exception as exc:  # noqa: BLE001
             result["evidence_error"] = f"{type(exc).__name__}: {exc}"
+
+        from commontrace import lineage
+
+        for item in result["lessons"]:
+            item.update(lineage.labels(root, item["slug"]))
+            from commontrace import memory_ifc
+
+            try:
+                item.update(memory_ifc.label(root, item))
+            except (ValueError, OSError, PermissionError) as exc:
+                return _err(f"memory label admission failed: {exc}")
+        if dose.packing:
+            from commontrace import compression
+
+            try:
+                result["cache_prefix"] = compression.proven_prefix(root, result["lessons"])
+            except (ValueError, OSError, PermissionError) as exc:
+                result["cache_prefix"] = {"available": False, "reason": str(exc)}
 
         if occasion_id:
             try:
@@ -1388,6 +1411,118 @@ def build_server(root: str, *, allow_approval: bool = True):
             except Exception as exc:  # noqa: BLE001
                 return _err(f"could not reject {slug!r}: {type(exc).__name__}: {exc}")
             return _ok(slug=slug, status="archived")
+
+    @mcp.tool()
+    def spatial_where(object_id: str, context: dict, when: str = "") -> dict:
+        """Locate an object at event time under authenticated tenant/site scope.
+
+        Returns a planner summary, pose/frame and content-addressed keyframe/media
+        references. Dense geometry stays on the robot. Context requires tenant
+        and site, with an optional robot restriction.
+        """
+        from commontrace import spatial
+        try:
+            row = spatial.where_is(root, object_id, context=context, when=when or None)
+            return _ok(object=None if row is None else {**row["delta"], "text": row["text"],
+                       "integrity": row["integrity"], "lineage_digest": row["lineage_digest"]})
+        except (ValueError, KeyError, TypeError, OSError, PermissionError) as exc:
+            return _err(str(exc))
+
+    @mcp.tool()
+    def spatial_history(object_id: str, context: dict, since: str = "") -> dict:
+        """Inspect object moves and corrections with distinct event and record times.
+
+        Applies tenant/site permissions before matching objects. Returns bounded
+        object deltas and keyframe/media references; never raw geometry.
+        """
+        from commontrace import spatial
+        try:
+            return _ok(history=spatial.history(root, object_id, context=context, since=since or None))
+        except (ValueError, KeyError, TypeError, OSError, PermissionError) as exc:
+            return _err(str(exc))
+
+    @mcp.tool()
+    def spatial_believed(robot: str, time: str, context: dict) -> dict:
+        """Replay the object map a robot knew at a specified record time.
+
+        Later corrections remain absent from that historical belief. Context
+        requires tenant/site ownership and every result retains provenance.
+        """
+        from commontrace import spatial
+        try:
+            return _ok(objects=spatial.believed_at(root, robot, time, context=context))
+        except (ValueError, KeyError, TypeError, OSError, PermissionError) as exc:
+            return _err(str(exc))
+
+    @mcp.tool()
+    def recall_recovery(signature: dict, context: dict) -> dict:
+        """Recall recoveries measured for the same failure, site, robot and embodiment.
+
+        Context must include site, robot, embodiment and environment (sim or real).
+        Returns randomized effect estimates, intervals and sample counts; harmful
+        recoveries are withdrawn and protected hazards remain available.
+        """
+        from commontrace import recovery
+
+        try:
+            return _ok(**recovery.recall(root, signature, context))
+        except (ValueError, KeyError, TypeError, OSError, PermissionError) as exc:
+            return _err(str(exc))
+
+    @mcp.tool()
+    def safety_context(site: str = "", robot: str = "") -> dict:
+        """Retrieve reviewed hazard context for a site and robot before planning.
+
+        Hazard memories are exempt from randomized holdouts and unattended
+        compression or eviction. Treat this as governed context: fresh sensors,
+        robot interlocks and human escalation remain necessary for safe motion.
+        """
+        from commontrace import safety
+
+        try:
+            return _ok(**safety.context(root, site, robot))
+        except (ValueError, OSError, PermissionError) as exc:
+            return _err(str(exc))
+
+    @mcp.tool()
+    def incident_timeline(incident_id: str) -> dict:
+        """Inspect a frozen incident's actual retrieval receipts and later corrections.
+
+        This reads pinned valid-time and record-time evidence. Holds remain
+        active until explicitly released by an operator; a pack is evidence,
+        not a certification that a legal or safety requirement is satisfied.
+        """
+        from commontrace import incident
+
+        try:
+            return _ok(**incident.timeline(root, incident_id))
+        except (ValueError, OSError, PermissionError) as exc:
+            return _err(str(exc))
+
+    @mcp.tool()
+    def log_verify(receipt: dict) -> dict:
+        """Verify a transparency receipt against this store's pinned signing key.
+
+        Valid membership does not prove a statement true. Retain signed heads
+        and compare consistency proofs, or witness heads, to detect forks.
+        """
+        from commontrace import transparency_log
+
+        return _ok(valid=transparency_log.verify(root, receipt))
+
+    @mcp.tool()
+    def lineage_explain(id: str) -> dict:
+        """Explain authenticated ancestors, integrity and review flags for a memory id.
+
+        Use this before relying on derived content. Unknown integrity is not a
+        review approval; tainted descendants require a fresh operator review.
+        """
+        from commontrace import lineage
+
+        try:
+            return _ok(**lineage.explain(root, id))
+        except (ValueError, OSError, PermissionError) as exc:
+            return _err(str(exc))
 
     @mcp.tool()
     def causal_gate_report(floor: float = 0.05, practical: float = 0.10) -> dict:

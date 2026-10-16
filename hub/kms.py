@@ -2,10 +2,29 @@
 from __future__ import annotations
 
 import base64
+from typing import Protocol
 
 from hub.encryption import EncryptionError
 
 CONTEXT = {"purpose": "commontrace-hub-encryption-key"}
+
+
+class SubjectKeyService(Protocol):
+    """Deployment-owned subject-key destruction boundary, separate from backups.
+
+    A production KMS adapter must attest destruction across replicas and refuse
+    old unwraps. The existing global envelope key alone cannot erase backups.
+    """
+
+    def destroy(self, subject: str) -> dict: ...
+    def reference(self, subject: str) -> str: ...
+
+
+def reference_subject_vault(store_root: str, directory: str):
+    """Filesystem reference for isolated deployments; production KMS may replace it."""
+    from commontrace.certified_erasure import SubjectVault
+
+    return SubjectVault(store_root, directory)
 
 
 def _client(region: str | None):

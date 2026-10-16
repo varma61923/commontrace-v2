@@ -462,6 +462,7 @@ class CausalEffect:
     min_detectable_effect: float | None
     verdict: str
     note: str = ""
+    e_value: float | None = None
 
 
 VERDICT_HELPS = "HELPS"
@@ -699,6 +700,40 @@ def analyze(
             )
         )
 
+    # Shared tasks induce arbitrary cross-memory dependence. Their decision
+    # family uses e-BH; legacy BH remains a descriptive fixed-horizon reading.
+    from commontrace import eprocess
+
+    e_values = eprocess.report(observations)
+    occasions: dict[str, set[str]] = {}
+    for observation in observations:
+        occasions.setdefault(observation.occasion_id, set()).add(observation.lesson_slug)
+    shared = any(len(slugs) > 1 for slugs in occasions.values())
+    if shared and not use_fixed:
+        # Treat both directions as hypotheses. A two-sided e-value is not
+        # valid for a helpfulness null when the memory is actually harmful.
+        # Downward censoring preserves e-validity while retaining legacy
+        # interval/sample-size admission as an additional conservative gate.
+        family = []
+        for effect in out:
+            ev = e_values.get(effect.lesson_slug, {})
+            family.extend([ev.get("helps", 0.0) if effect.significant and effect.effect > 0 else 0.0,
+                           ev.get("hurts", 0.0) if effect.significant and effect.effect < 0 else 0.0])
+        directional = eprocess.ebh(family, alpha)
+        rejected = [directional[2 * i] if effect.effect > 0 else directional[2 * i + 1]
+                    for i, effect in enumerate(out)]
+    else:
+        rejected = [effect.significant for effect in out]
+    for effect, reject in zip(out, rejected):
+        evidence = e_values.get(effect.lesson_slug)
+        if evidence is not None:
+            effect.e_value = evidence["helps" if effect.effect > 0 else "hurts"]
+        if shared and not use_fixed and not reject and effect.significant:
+            effect.significant = False
+            effect.verdict = VERDICT_UNDERPOWERED
+            effect.note = "Shared-task e-BH evidence is insufficient; marginal intervals and BH are display only."
+        if shared and use_fixed:
+            effect.note += " Legacy fixed-horizon BH display; not dependence-robust release evidence."
     order = {VERDICT_HURTS: 0, VERDICT_HELPS: 1, VERDICT_NO_EFFECT: 2, VERDICT_UNDERPOWERED: 3}
     out.sort(key=lambda e: (order[e.verdict], -abs(e.effect)))
     return out

@@ -16,6 +16,13 @@ from commontrace.memory_journal import Journal, now
 
 
 def purge_fact(root: str, identity: str, *, reason: str) -> dict:
+    from commontrace import incident
+
+    with incident.protect(root):
+        return _purge_fact(root, identity, reason=reason)
+
+
+def _purge_fact(root: str, identity: str, *, reason: str) -> dict:
     if not isinstance(reason, str) or not reason.strip():
         raise ValueError("hard erasure requires a reason")
     facts = hierarchical.load_facts(root)
@@ -28,6 +35,10 @@ def purge_fact(root: str, identity: str, *, reason: str) -> dict:
         if derived <= deleted:
             break
         deleted |= derived
+    for key in deleted:
+        from commontrace import incident
+
+        incident.assert_unpinned(root, [key])
     for key in deleted:
         memory_authority.record_forgetting(root, key, forgotten=True)
     digests = {hashlib.sha256(facts[key].statement.encode()).hexdigest() for key in deleted}

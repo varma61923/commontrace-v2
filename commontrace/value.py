@@ -318,6 +318,33 @@ def verify_ledger(entries: list[LedgerEntry]) -> int | None:
     return None
 
 
+def record_evidence(root: str, assignments) -> list[dict]:
+    """Add per-era e-values to a separate signed extension of the value ledger.
+
+    The legacy billing ledger bytes and hash chain are unchanged. Re-reading
+    an era replaces its snapshot logically; never multiply overlapping looks.
+    """
+    from collections import defaultdict
+
+    from commontrace import eprocess
+    from commontrace import frontier_protocol as fp
+
+    eras = defaultdict(list)
+    for row in assignments:
+        eras[(row.salt, str(row.schedule or "unscheduled"))].append(row)
+    existing = fp.journal(root, "value-evidence.jsonl")
+    for (salt, era), rows in sorted(eras.items()):
+        evidence = eprocess.report(rows)
+        snapshot = fp.digest({"salt": salt, "era": era, "evidence": evidence})
+        if any(entry.get("snapshot") == snapshot for entry in existing):
+            continue
+        signed = fp.append(root, "value-evidence.jsonl",
+                           {"kind": "e-process-era", "salt": salt, "era": era,
+                            "evidence": evidence, "snapshot": snapshot})
+        existing.append(signed["record"])
+    return existing
+
+
 _SIGNATURE_DOMAIN = b"commontrace-value-ledger-signature-v1"
 
 

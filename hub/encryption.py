@@ -80,6 +80,19 @@ class EnvelopeCipher:
         ciphertext = AESGCM(self.current).encrypt(nonce, plaintext.encode("utf-8"), None)
         return _PREFIX + base64.urlsafe_b64encode(nonce + ciphertext).decode("ascii")
 
+    def encrypt_subject(self, vault, subject: str, record_id: str, plaintext: str) -> dict:
+        """Wrap a subject data key under both the envelope cipher and external vault.
+
+        Subject wrapping keys must stay outside content backups. Destroying only
+        a database copy of a wrapped key is not crypto-shredding of its backups.
+        """
+        if not self.enabled:
+            raise EncryptionError("subject envelopes require configured Hub envelope encryption")
+        return vault.seal(subject, record_id, plaintext, key_wrapper=self.encrypt)
+
+    def decrypt_subject(self, vault, subject: str, envelope: dict) -> str:
+        return vault.open(subject, envelope, key_unwrapper=self.decrypt)
+
     def decrypt(self, value: str) -> str:
         if not value.startswith(_PREFIX):
             return value

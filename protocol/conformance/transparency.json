@@ -1,0 +1,10 @@
+{
+  "statement": {
+    "actor": "operator",
+    "event": "write",
+    "id": "memory-α",
+    "version": 1
+  },
+  "leaf_hash": "b69d14c238daec52c6ac88898c6d87d92091d4edb366610175748c40b2e89c0e",
+  "node_hash": "b093f3fa42f2753df090e37d3300e24934e70495f02fe2c3f43f6654de4f6d5f"
+}

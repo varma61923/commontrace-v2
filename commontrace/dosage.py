@@ -52,6 +52,7 @@ class Candidate:
     importance: int = 0
     revision: str = ""
     compare_text: str = ""
+    hazard: bool = False
 
     @property
     def cost(self) -> int:
@@ -80,6 +81,8 @@ class Dose:
     noted: tuple[Dropped, ...] = field(default_factory=tuple)
     chars_used: int = 0
     budget: Budget = field(default_factory=Budget)
+    harm_budget: dict = field(default_factory=dict)
+    packing: dict = field(default_factory=dict)
 
     @property
     def core_admitted(self) -> tuple[Candidate, ...]:
@@ -119,19 +122,66 @@ class Dose:
         return line
 
 
-def select(candidates, budget: Budget | None = None) -> Dose:
+def select(candidates, budget: Budget | None = None, *, root: str | None = None, context: str = "") -> Dose:
     """Admit as much as the budget allows: core first, then by rank."""
     budget = budget or Budget()
     items = list(candidates)
+    if root is not None:
+        from dataclasses import replace
+
+        from commontrace import safety
+
+        hazards = safety.protected(root)
+        items = [replace(item, hazard=True) if item.slug in hazards else item for item in items]
+    packing = {}
+    harm_budget = {}
+    gate_dropped = []
+    if root is not None:
+        from commontrace import conformal_gate
+
+        harm_budget = conformal_gate.current(root)
+        if harm_budget.get("enabled"):
+            kept = []
+            for candidate in items:
+                if conformal_gate.admit(harm_budget, conformal_gate.score(candidate.relevance), context=context,
+                                        hazard=getattr(candidate, "hazard", False)):
+                    kept.append(candidate)
+                else:
+                    gate_dropped.append(Dropped(candidate.slug, "harm-budget gate", candidate.core))
+            items = kept
+    if root is not None:
+        import json
+
+        from commontrace import frontier_protocol as fp
+
+        try:
+            with open(fp.filename(root, "context-packing.json"), "rb") as stream:
+                raw = stream.read(fp.MAX_BYTES + 1)
+            if len(raw) > fp.MAX_BYTES:
+                raise ValueError("packing configuration exceeds 1 MiB")
+            options = json.loads(raw)
+        except FileNotFoundError:
+            options = {}
+        if options.get("enabled"):
+            for item in items:
+                fp.number(item.relevance, -1e6, 1e6, "relevance")
+            values = {item.slug: options.get("contexts", {}).get(context, {}).get(item.slug,
+                       options.get("lessons", {}).get(item.slug, 0)) * max(0, min(1, item.relevance)) for item in items}
+            selected, packing = value_pack(items, values, max_tokens=budget.max_chars // 4,
+                                            max_items=budget.max_lessons)
+            picked = {item.slug for item in selected}
+            gate_dropped.extend(Dropped(item.slug, "causal value-per-token packing", item.core)
+                                for item in items if item.slug not in picked)
+            items = selected
 
     core = sorted(
-        (c for c in items if c.core),
+        (c for c in items if c.core or c.hazard),
         key=lambda c: (-int(c.importance or 0), c.slug),
     )
-    matched = [c for c in items if not c.core]
+    matched = [c for c in items if not c.core and not c.hazard]
 
     admitted: list[Candidate] = []
-    dropped: list[Dropped] = []
+    dropped: list[Dropped] = gate_dropped
     noted: list[Dropped] = []
     used = 0
 
@@ -144,6 +194,10 @@ def select(candidates, budget: Budget | None = None) -> Dose:
 
     for group in (core, matched):
         for candidate in group:
+            if candidate.hazard:
+                admitted.append(candidate)
+                used += candidate.cost
+                continue
             if len(admitted) >= budget.max_lessons:
                 dropped.append(Dropped(candidate.slug, REASON_COUNT, candidate.core))
                 continue
@@ -182,6 +236,8 @@ def select(candidates, budget: Budget | None = None) -> Dose:
         noted=tuple(noted),
         chars_used=used,
         budget=budget,
+        harm_budget=harm_budget,
+        packing=packing,
     )
 
 
@@ -191,3 +247,75 @@ def is_core(fm: dict) -> bool:
     if isinstance(raw, str):
         return raw.strip().lower() in ("true", "yes", "1", "on")
     return bool(raw)
+
+
+def value_pack(candidates: list[Candidate], values: dict[str, float], *, max_tokens: int,
+               max_items: int = 10, duplicate_penalty: float = .5) -> tuple[list[Candidate], dict]:
+    """Bounded knapsack with a relevance-baseline fallback and mandatory hazards.
+
+    Values are posterior uplift times relevance, hence estimates, not guarantees
+    of realized task improvement. Four-character token estimates are labelled.
+    Duplicate adjustment is a fixed additive surrogate; baseline dominance is
+    with respect to exactly that same declared objective.
+    """
+    from commontrace import frontier_protocol as fp
+    from commontrace.redundancy import jaccard, token_set
+
+    fp.count(len(candidates), 0, 256)
+    fp.count(max_tokens, 0, 250_000)
+    fp.count(max_items, 0, 256)
+    fp.number(duplicate_penalty, 0, 1)
+    mandatory = [item for item in candidates if item.hazard or item.core]
+    optional = [item for item in candidates if not item.hazard and not item.core]
+    def weight(item: Candidate) -> int:
+        return max(1, (len(item.text) + 3) // 4)
+    capacity = max(0, max_tokens - sum(weight(item) for item in mandatory))
+    slots = max(0, max_items - len(mandatory))
+    utilities, prior_terms = {}, []
+    for item in optional:
+        value = fp.number(values.get(item.slug, 0), -1, 1, "posterior uplift times relevance")
+        terms = token_set(item.comparable[:4096])
+        duplicate = max((jaccard(terms, before) for before in prior_terms), default=0)
+        utilities[item.slug] = value * (1 - duplicate_penalty * duplicate)
+        prior_terms.append(terms)
+    baseline, spent = [], 0
+    for item in optional:
+        if len(baseline) < slots and spent + weight(item) <= capacity:
+            baseline.append(item)
+            spent += weight(item)
+    states: dict[tuple[int, int], tuple[float, tuple[int, ...]]] = {(0, 0): (0, ())}
+    operations, capped = 0, False
+    for index, item in enumerate(optional):
+        for (used, count), (utility, picked) in list(states.items()):
+            operations += 1
+            if operations > 500_000 or len(states) > 30_000:
+                capped = True
+                break
+            key = (used + weight(item), count + 1)
+            candidate_value = utility + utilities[item.slug]
+            if key[0] <= capacity and key[1] <= slots and candidate_value > states.get(key, (-1, ()))[0]:
+                states[key] = candidate_value, (*picked, index)
+        if capped:
+            break
+    best_value, picked = max(states.values(), key=lambda state: (state[0], -len(state[1])))
+    baseline_value = sum(utilities[item.slug] for item in baseline)
+    chosen = baseline if baseline_value >= best_value else [optional[i] for i in picked]
+    return [*mandatory, *chosen], {"method": "bounded knapsack with baseline dominance", "capped": capped,
+                                  "estimated_value": max(best_value, baseline_value),
+                                  "baseline_value": baseline_value, "tokenizer": "four-character estimate"}
+
+
+def configure_value_packing(root: str) -> dict:
+    """Snapshot causal-gate priors off the retrieval hot path; refresh explicitly."""
+    from commontrace import _jsonl, causal_gate
+    from commontrace import frontier_protocol as fp
+
+    rows = causal_gate.current_rows(root)
+    model = causal_gate.fit(rows, causal_gate.sources_for(root, {row.lesson for row in rows}))
+    contexts: dict[str, dict[str, float]] = {}
+    for (lesson, context), posterior in model.contexts.items():
+        contexts.setdefault(context, {})[lesson] = posterior.mean
+    body = {"enabled": True, "lessons": {lesson: posterior.mean for lesson, posterior in model.lessons.items()},
+            "contexts": contexts, "calibrated_at": fp.now()}
+    _jsonl.write_json(fp.filename(root, "context-packing.json"), body)
+    return body

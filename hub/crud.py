@@ -1369,6 +1369,11 @@ async def delete_trace(session: AsyncSession, org_id: str, trace_id: str, actor:
     if trace is None or trace.org_id != org_id:
         return False
 
+    from hub import retention
+
+    if await retention.active_holds(session, org_id):
+        raise PermissionError("an active legal hold blocks trace erasure; release it explicitly")
+
     chain_ids = await amendment_chain(session, trace_id)
     own_chain_ids = {
         row[0]

@@ -9,6 +9,7 @@ import hmac
 import json
 import logging
 import math
+import re
 import time
 from collections.abc import Mapping
 from datetime import datetime, timezone
@@ -17,7 +18,7 @@ from urllib.parse import quote as _url_quote
 
 from sqlalchemy import or_, select
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, RedirectResponse, Response
+from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from commontrace import raw_export
 from hub import alerts, audit, auth, commons, crud, events, manage, plans, rbac, scopes, ui_kit
@@ -161,6 +162,7 @@ _NAV_GROUPS = (
         ("/alerts", "Alerts", "Alerts", "alerts", "g l"),
         ("/webhooks", "Webhooks", "Webhooks", "webhooks", "g w"),
         ("/audit", "Audit log", "Audit log", "audit", "g t"),
+        ("/incidents", "Incidents", "Incidents", "audit", "g i"),
     )),
 )
 _NAV = tuple((path, label, title) for _group, items in _NAV_GROUPS for path, label, title, *_rest in items)
@@ -2458,6 +2460,77 @@ def add_console_routes(
             )
         return RedirectResponse(f"{CONSOLE_PATH}/webhooks", status_code=303)
 
+    async def incidents_page(request: Request) -> Response:
+        claims = await _claims(request)
+        if claims is None:
+            return _redirect_to_signin()
+        from hub.models import IncidentSnapshot
+        org_id = str(claims["org"])
+        async with session_scope(session_factory, org_id=org_id) as session:
+            rows = list((await session.execute(select(IncidentSnapshot).where(IncidentSnapshot.org_id == org_id)
+                .order_by(IncidentSnapshot.known_at.desc()).limit(100))).scalars())
+        controls = ""
+        if _is_admin(claims) and signing_key:
+            controls = (f'<form method="post" action="{CONSOLE_PATH}/incidents/freeze">'
+                '<label for="incident-id">Incident ID</label>'
+                '<input id="incident-id" name="id" required maxlength="128" pattern="[A-Za-z0-9_-]+">'
+                '<label for="incident-time">Event time (ISO 8601 with timezone)</label>'
+                '<input id="incident-time" name="valid_time" required maxlength="64" '
+                f'value="{h(datetime.now(timezone.utc).isoformat())}">'
+                '<button type="submit">Freeze evidence and place legal hold</button></form>')
+        records = "".join('<tr><td>' + h(row.id) + '</td><td>' + h(row.known_at.isoformat()) +
+            '</td><td><a href="' + CONSOLE_PATH + '/incidents/' + _url_quote(row.id, safe="") +
+            '/pack">Download signed evidence pack</a></td></tr>' for row in rows)
+        return _page("Incidents", '<h1>Incident evidence</h1><p>Preserve the recorded decision state before '
+            'investigating corrections. Freeze places a legal hold; erasure requires its explicit release. '
+            'Verify control mappings against the Official Journal.</p>' + controls +
+            '<table><thead><tr><th>Incident</th><th>Frozen at</th><th>Evidence</th></tr></thead><tbody>' +
+            records + '</tbody></table>')
+
+    async def incidents_freeze(request: Request) -> Response:
+        claims = await _claims(request)
+        if claims is None:
+            return _redirect_to_signin()
+        if not _is_admin(claims):
+            return JSONResponse({"error": "administrator access required"}, status_code=403)
+        if not signing_key:
+            return JSONResponse({"error": "incident_signer_not_configured"}, status_code=503)
+        if len(await request.body()) > 4096:
+            return JSONResponse({"error": "incident request exceeds 4 KiB"}, status_code=400)
+        from hub import incidents
+        form = await request.form()
+        try:
+            async with session_scope(session_factory, org_id=str(claims["org"])) as session:
+                await incidents.freeze(session, str(claims["org"]), str(form.get("id", "")),
+                    str(form.get("valid_time", "")), actor=audit.actor_for_api_key(str(claims.get("key", ""))),
+                    secret=signing_key, algorithm=config.transparency_algorithm if config else "hmac-sha256")
+        except (ValueError, KeyError, TypeError) as exc:
+            return JSONResponse({"error": "invalid_incident_request", "detail": str(exc)}, status_code=400)
+        return RedirectResponse(f"{CONSOLE_PATH}/incidents", status_code=303)
+
+    async def incidents_download(request: Request) -> Response:
+        claims = await _claims(request)
+        if claims is None:
+            return _redirect_to_signin()
+        if not signing_key:
+            return JSONResponse({"error": "incident_signer_not_configured"}, status_code=503)
+        identity = request.path_params["incident_id"]
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", identity):
+            return JSONResponse({"error": "invalid_incident_identifier"}, status_code=400)
+        from hub import incidents
+        from hub.models import IncidentSnapshot
+        regime = request.query_params.get("regime", "eu-ai-act")
+        try:
+            async with session_scope(session_factory, org_id=str(claims["org"])) as session:
+                row = await session.get(IncidentSnapshot, (str(claims["org"]), identity))
+                if row is None:
+                    return JSONResponse({"error": "incident_not_found"}, status_code=404)
+                pack = await incidents.evidence_pack(session, row, regime, secret=signing_key,
+                    algorithm=config.transparency_algorithm if config else "hmac-sha256")
+            return JSONResponse(pack, headers={"Content-Disposition": 'attachment; filename="incident-evidence.json"'})
+        except (ValueError, KeyError, TypeError) as exc:
+            return JSONResponse({"error": "invalid_incident_request", "detail": str(exc)}, status_code=400)
+
     async def audit_page(request: Request) -> Response:
         claims = await _claims(request)
         if claims is None:
@@ -2524,6 +2597,10 @@ def add_console_routes(
     app.add_route(
         f"{CONSOLE_PATH}/webhooks/{{endpoint_id}}/disable", refuse_cross_origin(webhooks_disable), methods=["POST"])
     app.add_route(f"{CONSOLE_PATH}/audit", audit_page, methods=["GET"])
+    app.add_route(f"{CONSOLE_PATH}/incidents", incidents_page, methods=["GET"])
+    app.add_route(f"{CONSOLE_PATH}/incidents/freeze", refuse_cross_origin(incidents_freeze), methods=["POST"])
+    app.add_route(f"{CONSOLE_PATH}/incidents/{{incident_id}}/pack", incidents_download, methods=["GET"])
+
 
 
 __all__ = ["CONSOLE_PATH", "add_console_routes", "issue_session", "read_session"]

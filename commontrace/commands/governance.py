@@ -259,6 +259,9 @@ def defense_add_parser(subparsers: argparse._SubParsersAction) -> None:
         description="Inspect and redact sensitive data using 40+ regex patterns and checksums.",
     )
     sub = parser.add_subparsers(dest="defense_op", required=True)
+    red = sub.add_parser("redteam", help="Run seeded synthetic poisoning exercises on an isolated shadow store.")
+    red.add_argument("--seed", type=int, default=0)
+    red.add_argument("--occasions", type=int, default=128)
 
     # screen
     p_screen = sub.add_parser("screen", help="Screen text or file for sensitive patterns.")
@@ -277,6 +280,11 @@ def defense_run(args: argparse.Namespace) -> int:
     from commontrace import defense
 
     op = args.defense_op
+    if op == "redteam":
+        from commontrace import redteam
+
+        print(json.dumps(redteam.run(seed=args.seed, occasions=args.occasions), indent=2))
+        return 0
     if op == "screen":
         content = ""
         if args.file:
@@ -446,6 +454,8 @@ def allocate_add_parser(subparsers: argparse._SubParsersAction) -> None:
 
     pl = sub.add_parser("plan", help="Publish the next era's rates from every outcome so far.")
     pl.add_argument("--if-due", action="store_true", help="Only when the current era has run its occasions.")
+    pl.add_argument("--require-certificate", action="store_true",
+                    help="Refuse a Thompson schedule without a matching, unrevoked promotion certificate.")
     pl.set_defaults(func=allocate_run_plan)
 
     sh = sub.add_parser("show", help="The schedule in force and its rates.")
@@ -507,10 +517,11 @@ def allocate__describe(s: allocation.Schedule) -> str:
 def allocate_run_gate(args, root) -> int:
     import json
 
-    from commontrace import causal_gate
+    from commontrace import causal_gate, conformal_gate
 
     out = causal_gate.report(root, alpha=args.alpha, min_arm=args.min_arm, practical=args.practical,
                              floor=args.floor)
+    out["harm_budget"] = conformal_gate.current(root)
     if args.json:
         print(json.dumps(out, indent=2, sort_keys=True))
         return 0
@@ -535,7 +546,7 @@ def allocate_run_plan(args, root) -> int:
     if args.if_due and not allocation.due(root, config.salt):
         print("[commontrace] the current era has not run its occasions yet; nothing published")
         return 0
-    schedule = allocation.plan(root)
+    schedule = allocation.plan(root, require_certificate=args.require_certificate)
     print(allocate__describe(schedule))
     return 0
 

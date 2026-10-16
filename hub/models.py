@@ -78,6 +78,36 @@ class Organization(Base):
     api_keys: Mapped[list[ApiKey]] = relationship(back_populates="organization", cascade="all, delete-orphan")
 
 
+class TransparencyHead(Base):
+    __tablename__ = "transparency_heads"
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True)
+    tree_size: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    root_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    signed_head: Mapped[dict] = mapped_column(JSONB, nullable=False)
+
+
+class TransparencyEntry(Base):
+    __tablename__ = "transparency_entries"
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True)
+    leaf_index: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    leaf_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    statement: Mapped[dict] = mapped_column(JSONB, nullable=False)
+
+
+class IncidentSnapshot(Base):
+    __tablename__ = "incident_snapshots"
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True)
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    valid_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    known_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    hold_id: Mapped[str] = mapped_column(UUID(as_uuid=False), ForeignKey("legal_holds.id"), nullable=False)
+    snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    anchor: Mapped[dict] = mapped_column(JSONB, nullable=False)
+
+
 class ApiKey(Base):
     __tablename__ = "api_keys"
 

@@ -28,8 +28,22 @@ jobs:
           python scripts/graphify_audit.py
           --graph "$RUNNER_TEMP/architecture/graphify-out/graph.json"
           --output "$RUNNER_TEMP/architecture/audit.json"
-          --source-root . --max-modules 315 --max-unreachable 318
+          --source-root . --max-modules 346 --max-unreachable 318
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
           name: graphify-audit
           path: ${{ runner.temp }}/architecture
+
+# Added modules: frontier_protocol, lineage, commands/lineage_cmd (+3).
+# Added modules: transparency_log, commands/log_cmd (+2).
+# Added module: interference (+1), early symbiosis-bias diagnostic.
+# Added module: eprocess (+1).
+# Added module: conformal_gate (+1).
+# Added modules: incident, commands/incident_cmd (+2).
+# Added modules: promotion, commands/promote_cmd (+2).
+# Added modules: safety, commands/safety_cmd (+2).
+# Added modules: retention (+1).
+# Added modules: certified_erasure (+1).
+# Added modules: memory_ifc, redteam (+2).
+
+# Remaining modules: attribution, cleanroom, commands/frontier_cmd, compile_memory, outcomes, recovery, robotics/__init__, robotics/bridge, robotics/edge, robotics/ingest, spatial, uplift, valuation.
