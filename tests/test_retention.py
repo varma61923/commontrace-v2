@@ -58,3 +58,33 @@ def test_causal_dream_cli(tmp_path):
     out = cli("dream", "--causal", "--dest", str(tmp_path))
     assert out.returncode == 0, out.stderr
     assert json.loads(out.stdout)["changes"] == []
+
+
+def test_retrieve_randomizes_reviewed_rewrites_and_replay_recovers_them(tmp_path):
+    pytest.importorskip("mcp")
+    from commontrace import frontier_protocol as fp
+    from commontrace import incident
+    from commontrace.mcp_server import build_server
+    from tests.test_mcp_server import _write_lesson, call
+
+    root = str(tmp_path)
+    original = "Verify the account owner before resetting a password."
+    _write_lesson(root, "reset", body=original)
+    holdout_io.configure(root, rate=.01, salt="rewrites")
+    rewrite = "Before any password reset, confirm the account owner's identity with two factors."
+    proposal = retention.propose(root, "reset", rewrite, author="dreamer")
+    server = build_server(root)
+    first = call(server, "retrieve", task="password reset account owner", occasion_id="pre-review")
+    assert all(item["body"].strip() == original for item in first["lessons"])  # unreviewed: never served
+    retention.review(root, proposal["record"]["id"], reviewer="operator")
+    arms = {}
+    for i in range(40):
+        result = call(server, "retrieve", task="password reset account owner", occasion_id=f"o{i}")
+        for item in result["lessons"]:
+            arms[f"o{i}"] = item.get("rewrite", {}).get("arm", "original")
+            assert item["body"].strip() == (rewrite if arms[f"o{i}"] == "rewrite" else original)
+    assert set(arms.values()) == {"original", "rewrite"}
+    served = next(occasion for occasion, arm in arms.items() if arm == "rewrite")
+    incident.freeze(root, "rewrite-incident", fp.now())
+    replay = incident.replay(root, "rewrite-incident", served)
+    assert [row["body"] for row in replay["injected"]] == [rewrite]

@@ -547,6 +547,8 @@ def pack(items: list[Item], budget: int) -> list[Item]:
     """Fill the budget: a floor share first for each channel's best item, then fused
     order; an item that does not fit is cut when at least MIN_CUT_FRACTION of it (or a
     quarter of the budget) fits."""
+    # Reviewed hazards are always delivered, ahead of and outside the budget.
+    order = {i.id: n for n, i in enumerate(items)}
     chosen: list[Item] = [item for item in items if item.provenance.get("hazard")]
     used = sum(tokens(item.text) for item in chosen)
     items = [item for item in items if not item.provenance.get("hazard")]
@@ -575,7 +577,6 @@ def pack(items: list[Item], budget: int) -> list[Item]:
         if item.id in seen or used >= budget:
             continue
         take(item, budget - used)
-    order = {i.id: n for n, i in enumerate(items)}
     return sorted(chosen, key=lambda i: order[i.id])
 
 

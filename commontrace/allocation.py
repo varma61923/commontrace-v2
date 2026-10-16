@@ -227,13 +227,16 @@ def plan(root: str, *, now: datetime.datetime | None = None, alpha: float = 0.05
             from commontrace import frontier_protocol as fp
             from commontrace import promotion
 
-            candidate = {"default": 1 - policy.explore, **{lesson: 1 - rate for lesson, rate in rates.items()},
-                         **{lesson + "|" + context: 1 - rate for lesson, by in context_rates.items()
-                            for context, rate in by.items()}}
-            certificates = fp.journal(root, "promotion-certificates.jsonl")
-            if not certificates or not promotion.verify(root, certificates[-1], policy_hash=fp.digest(candidate)):
-                raise ValueError("the proposed Thompson policy requires a matching, unrevoked promotion certificate")
-            basis["promotion_certificate"] = fp.digest(certificates[-1]["certificate"])
+            # The certified change is the Thompson gate itself (its configuration),
+            # trialled against the incumbent before this plan; per-era rates are
+            # its outputs and cannot be certified before they are computed.
+            gate = policy_hash(policy)
+            found = next((row for row in reversed(fp.journal(root, "promotion-certificates.jsonl"))
+                          if promotion.verify(root, row, artifact_hash=gate)), None)
+            if found is None:
+                raise ValueError("the Thompson gate requires an unrevoked promotion certificate for policy "
+                                 f"{gate}: register a change plan with this artifact_hash, trial it, certify it")
+            basis["promotion_certificate"] = fp.digest(found["certificate"])
         return _publish(root, salt=config.salt, default_rate=policy.explore, rates=rates, policy=policy,
                         basis=basis, now=now, context_rates=context_rates)
     rows, _rate, _corrupt = experiment_cmd._load(root)
@@ -245,6 +248,13 @@ def plan(root: str, *, now: datetime.datetime | None = None, alpha: float = 0.05
              "verdicts": {e.lesson_slug: e.verdict for e in effects}, "previous_version": current.version}
     return _publish(root, salt=config.salt, default_rate=policy.explore, rates=rates, policy=policy,
                     basis=basis, now=now)
+
+
+def policy_hash(policy: Policy) -> str:
+    """The commitment a promotion certificate binds when it certifies an allocation policy."""
+    from commontrace import frontier_protocol as fp
+
+    return fp.digest({"allocation_policy": asdict(policy)})
 
 
 def due(root: str, salt: str) -> bool:

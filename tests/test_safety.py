@@ -67,3 +67,55 @@ def test_review_forgery_and_context_surface(tmp_path):
     review["record"]["id"] = "other"
     with pytest.raises(PermissionError):
         safety.mark(root, fact.id, "zone", review)
+
+
+def test_property_hazards_survive_every_withholding_path(tmp_path):
+    """Random experiment, gate, packing and budget configurations never withhold a hazard."""
+    from commontrace import conformal_gate, fact_consolidation, measure, recall, retention
+
+    root = str(tmp_path)
+    fact = protected_fact(root)
+    hierarchical.add_fact(root, "Stop near the human work zone during maintenance")  # near-duplicates
+    hierarchical.add_fact(root, "Stop near the human work zone at night")
+    rng = random.Random(1234)
+    holdout_io.configure(root, rate=.5, salt="property")
+    memory = measure.CausalMemory(lambda query: [{"id": fact.id, "text": fact.statement},
+                                                 {"id": "ordinary", "text": "Ordinary note"}], root=root)
+    for i in range(60):
+        rate = rng.choice([.05, .5, .95])
+        holdout_io.configure(root, rate=rate, salt=f"property-{i % 3}")
+        if rng.random() < .5:
+            conformal_gate.configure(root, alpha=rng.choice([.001, .02, .5]), per_context=rng.random() < .5)
+        else:
+            conformal_gate.disable(root)
+        if rng.random() < .5:
+            dosage.configure_value_packing(root)
+        # Assignment (direct and through a wrapped provider) never randomizes a hazard.
+        withheld = holdout_io.assign_and_log(root, [fact.id, "ordinary"], occasion_id=f"a{i}", rate=rate,
+                                             salt=f"property-{i % 3}", context=rng.choice(["", "robot"]))
+        assert fact.id not in withheld
+        items = memory.recall("work zone", occasion_id=f"m{i}", context=rng.choice(["", "robot"]))
+        assert fact.id in [item["id"] for item in items]
+        # Dosage under any budget, gate and packing configuration.
+        budget = dosage.Budget(max_chars=rng.randrange(0, 40), max_lessons=rng.randrange(0, 3))
+        candidates = [dosage.Candidate(fact.id, fact.statement, relevance=rng.random()),
+                      dosage.Candidate("ordinary", "Ordinary note", relevance=rng.random())]
+        assert fact.id in [c.slug for c in dosage.select(candidates, budget, root=root,
+                                                         context=rng.choice(["", "robot"])).admitted]
+        # Recall packing under a tiny budget keeps flagged hazards.
+        packed = recall.pack([recall.Item("facts", "fact:" + fact.id, fact.statement * 20, .1,
+                                          provenance={"hazard": True}),
+                              recall.Item("facts", "fact:other", "other", .9)], rng.randrange(1, 8))
+        assert "fact:" + fact.id in [item.id for item in packed]
+    # Lifecycle paths: eviction, dreaming budget and consolidation skip hazards.
+    with pytest.raises(PermissionError):
+        retention.propose(root, fact.id, "rewritten hazard", author="dreamer")
+    model = retention.UtilityModel((1.0,), 1.0, -1.0, 100)
+    result = retention.evict(root, model, [{"id": fact.id, "tokens": 10, "future_retrieval": 0, "features": [-1]}],
+                             token_budget=0)
+    assert result["evicted"] == [] and fact.id in result["kept"]
+    assert fact.id not in {row["id"] for row in retention.dream_budget(
+        [{"id": fact.id, "effect": -1, "future_retrieval": 1, "tokens": 1}], tokens=10,
+        protected=set(safety.protected(root)))["changes"]}
+    clusters = fact_consolidation.cluster_facts(root, threshold=.1)["clusters"]
+    assert clusters and all(fact.id not in str(cluster) for cluster in clusters)

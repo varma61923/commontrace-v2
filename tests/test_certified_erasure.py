@@ -65,3 +65,40 @@ def test_vault_location_and_nonfinite_probe_refused(tmp_path):
         erase.SubjectVault(str(tmp_path), str(tmp_path / "keys"))
     with pytest.raises(ValueError):
         erase.probe(lambda q: [], ["query"], forbidden=["token"], threshold=float("nan"))
+
+
+def test_cli_erasure_reaches_derived_lessons_rewrites_and_live_recall(tmp_path):
+    pytest.importorskip("mcp")
+    import json
+    import os
+
+    from commontrace import holdout_io, lesson_io, recall, retention
+    from tests.test_mcp_server import _write_lesson, cli
+
+    root = str(tmp_path / "store")
+    vault_dir = str(tmp_path / "vault")
+    vault = erase.SubjectVault(root, vault_dir)
+    fact, _ = hierarchical.add_fact(root, "Zelda prefers the quiet loading dock entrance")
+    vault.seal("zelda", fact.id, fact.statement)
+    _write_lesson(root, "zelda-dock", body="Route Zelda deliveries through the quiet loading dock entrance.",
+                  source_traces=[fact.id])
+    holdout_io.configure(root, rate=.5, salt="erase")
+    proposal = retention.propose(root, "zelda-dock", "Always use the quiet dock entrance for Zelda.", author="dreamer")
+    blob = retention._blob_path(root, proposal["record"]["body_digest"])
+    assert os.path.exists(blob)
+    assert any("Zelda" in item.text for item in recall.recall(root, "Zelda loading dock").items)
+    request = tmp_path / "erase.json"
+    request.write_text(json.dumps({"subject": "zelda", "identities": [fact.id],  # the lesson is found by lineage
+                                   "vault_directory": vault_dir, "reason": "data subject request",
+                                   "probe": {"queries": ["Zelda loading dock", "quiet dock entrance"],
+                                             "forbidden": ["Zelda"]}}))
+    out = cli("frontier", "certified-erase", str(request), "--dest", root)
+    assert out.returncode == 0, out.stderr
+    certificate = json.loads(out.stdout)
+    assert certificate["certificate"]["record"]["probe"]["passed"]
+    assert not any("Zelda" in item.text for item in recall.recall(root, "Zelda loading dock").items)
+    assert lesson_io.lesson_path(root, "zelda-dock") is None and not os.path.exists(blob)
+    verify = tmp_path / "verify.json"
+    verify.write_text(json.dumps({"certificate": certificate}))
+    out = cli("frontier", "certified-verify", str(verify), "--dest", root)
+    assert out.returncode == 0 and json.loads(out.stdout)["valid"]

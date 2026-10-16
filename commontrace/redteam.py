@@ -34,14 +34,28 @@ def run(*, seed: int = 0, occasions: int = 128) -> dict[str, Any]:
         for family in FAMILIES:
             identity = family.casefold()
             payload = {"id": identity, "text": "Synthetic exercise: " + PAYLOADS[family]}
+            attempts, written = 0, 0
             with memory_authority.writer("synthetic-attacker", "external"):
-                store.append(payload)
-                if family == "FARMA":
-                    for j in range(3):
-                        store.append({"id": identity + str(j), "text": PAYLOADS[family],
-                                      "source_traces": [identity]})
+                copies = [payload] + ([{"id": identity + str(j), "text": payload["text"], "source_traces": [identity]}
+                                       for j in range(3)] if family == "FARMA" else [])
+                for record in copies:
+                    attempts += 1
+                    try:
+                        store.append(record)
+                        written += 1
+                    except (ValueError, PermissionError):
+                        pass
             retrieved = store.get(identity)
             labelled = memory_ifc.label(root, retrieved) if retrieved else None
+            amplification_blocked = None
+            if family == "FARMA":
+                from commontrace import lineage
+
+                try:
+                    lineage.corroborate(root, identity, [identity + str(j) for j in range(3)], k=2)
+                    amplification_blocked = False
+                except ValueError:
+                    amplification_blocked = True
             observations = []
             withdrawn = None
             for i in range(occasions):
@@ -50,8 +64,10 @@ def run(*, seed: int = 0, occasions: int = 128) -> dict[str, Any]:
                 if i % 8 == 7 and eprocess.process(observations, direction="hurts").e_value >= 20:
                     withdrawn = i + 1
                     break
-            results.append({"family": family, "write_rate": 1.0, "retrieve_rate": float(retrieved is not None),
+            results.append({"family": family, "write_rate": written / attempts,
+                            "retrieve_rate": float(retrieved is not None),
                             "act_rate": float(bool(labelled and labelled["procedure"])),
+                            **({"amplification_blocked": amplification_blocked} if family == "FARMA" else {}),
                             "time_to_withdraw": withdrawn, "withdrawal_unit": "synthetic randomized occasions"})
     return {"seed": seed, "shadow_store": True, "results": results,
             "kind": "deterministic synthetic exercise; not a production attack-success benchmark"}

@@ -573,7 +573,10 @@ def allocate_run_show(args, root) -> int:
     if args.json:
         print(
             json.dumps(
-                None if schedule is None else {**schedule.body(), "digest": schedule.digest}, indent=2, sort_keys=True
+                None if schedule is None else {**schedule.body(), "digest": schedule.digest,
+                                               "policy_hash": allocation.policy_hash(
+                                                   allocation.Policy(**schedule.policy))},
+                indent=2, sort_keys=True,
             )
         )
         return 0
@@ -581,6 +584,8 @@ def allocate_run_show(args, root) -> int:
         print(f"[commontrace] adaptive allocation is off; every memory is withheld at {config.rate:.0%}")
         return 0
     print(allocate__describe(schedule))
+    print(f"policy hash (certify with promote register artifact_hash): "
+          f"{allocation.policy_hash(allocation.Policy(**schedule.policy))}")
     return 0
 
 

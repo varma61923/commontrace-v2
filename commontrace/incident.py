@@ -156,6 +156,16 @@ def freeze(root: str, incident_id: str, valid_time: str) -> dict[str, Any]:
         if corrupt:
             raise ValueError("cannot freeze corrupt lesson revision history")
         retrieved = [r.to_dict() for r in receipts.read_all(root) if fp.moment(r.at) <= valid_time]
+        from commontrace import retention
+
+        rewrites = {}
+        for slug, proposals in retention.trials(root).items():
+            for proposal in proposals:
+                try:
+                    rewrites["rewrite:" + proposal["id"]] = {"body": retention._text(root, proposal, "body"),
+                                                             "slug": slug}
+                except ValueError:
+                    continue  # erased rewrite text cannot be pinned
         identities = sorted({str(f["id"]) for f in [*believed, *known]}
                             | {str(lesson["id"]) for lesson in lesson_records})
         from commontrace import allocation, evidence, holdout_io, integrity, retrieval_io
@@ -164,6 +174,7 @@ def freeze(root: str, incident_id: str, valid_time: str) -> dict[str, Any]:
         parts: dict[str, Any] = {
             "facts.json": known, "facts_believed.json": believed, "lessons.json": lesson_records,
             "lesson_history.json": history, "retrievals.json": retrieved, "held_ids.json": identities,
+            "rewrites.json": rewrites,
             "lineage.json": {identity: lineage.explain(root, identity) for identity in identities},
             "technical_documentation.json": {
                 "retrieval": asdict(retrieval_io.load_config(root)),
@@ -283,6 +294,10 @@ def replay(root: str, identity: str, occasion_id: str) -> dict[str, Any]:
     for event in frozen["lesson_history"]:
         if "before_body" in event:
             revisions[event["from"]] = {"body": event["before_body"], "frontmatter": event["before_frontmatter"]}
+    lessons = {row["id"]: row for row in frozen["lessons"]}
+    for key, rewrite in frozen.get("rewrites", {}).items():
+        revisions[key] = {"body": rewrite["body"],
+                          "frontmatter": lessons.get(rewrite["slug"], {}).get("frontmatter", {})}
     delivered = []
     for row in decisions[0]["admitted"]:
         if row["revision"] not in revisions:

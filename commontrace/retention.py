@@ -87,6 +87,75 @@ def dream_budget(items: Sequence[dict[str, Any]], *, tokens: int, protected: set
             "kind": "utility heuristic; changes remain itemized and require randomized rewrite evidence"}
 
 
+REWRITES = "dream-rewrites.jsonl"
+
+
+def _blob_path(root: str, digest: str) -> str:
+    import os
+
+    from commontrace import paths
+
+    if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+        raise ValueError("invalid rewrite content digest")
+    path = os.path.join(paths.memory_dir(root), "dream-rewrites", digest + ".txt")
+    paths.enforce_boundary(root, path)
+    return path
+
+
+def _put_blob(root: str, text: str) -> str:
+    """Content-addressed rewrite text, kept outside the signed journal so erasure can delete it."""
+    import hashlib
+    import os
+
+    data = text.encode("utf-8")
+    digest = hashlib.sha256(data).hexdigest()
+    path = _blob_path(root, digest)
+    if not os.path.exists(path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        staging = path + ".partial"
+        with open(staging, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(staging, path)
+    return digest
+
+
+def _text(root: str, row: dict[str, Any], field: str) -> str:
+    """A proposal's text; legacy rows carried it inline, current rows by digest."""
+    import hashlib
+
+    if field in row:
+        return str(row[field])
+    try:
+        with open(_blob_path(root, row[field + "_digest"]), "rb") as stream:
+            data = stream.read(256_001)
+    except FileNotFoundError:
+        raise ValueError("rewrite text was erased") from None
+    if len(data) > 256_000 or hashlib.sha256(data).hexdigest() != row[field + "_digest"]:
+        raise ValueError("rewrite text does not match its recorded digest")
+    return data.decode("utf-8")
+
+
+def erase_rewrites(root: str, slugs: set[str]) -> list[str]:
+    """Delete rewrite texts of erased lessons; journal rows keep only hash tombstones."""
+    import os
+
+    removed = []
+    for row in fp.journal(root, REWRITES):
+        if row["kind"] != "proposal" or row["slug"] not in slugs:
+            continue
+        for field in ("original_digest", "body_digest"):
+            if field in row:
+                try:
+                    os.unlink(_blob_path(root, row[field]))
+                    removed.append(row[field])
+                except FileNotFoundError:
+                    pass
+    _TRIALS.clear()
+    return removed
+
+
 def propose(root: str, slug: str, body: str, *, author: str) -> dict[str, Any]:
     safety.assert_mutable(root, [slug])
     fp.text(body, "rewrite", 64_000)
@@ -100,12 +169,13 @@ def propose(root: str, slug: str, body: str, *, author: str) -> dict[str, Any]:
         raise ValueError("rewrite original must pass current governed admission")
     revision = lesson_io.current_revision(path)
     identity = "rewrite-" + fp.digest({"slug": slug, "revision": revision, "body": body})[:24]
-    if any(row.get("id") == identity for row in fp.journal(root, "dream-rewrites.jsonl")):
+    if any(row.get("id") == identity for row in fp.journal(root, REWRITES)):
         raise ValueError("rewrite proposal already exists")
     record = {"kind": "proposal", "id": identity, "slug": slug, "original_revision": revision,
-              "original": original, "body": body, "author": fp.text(author), "sources": [slug]}
+              "original_digest": _put_blob(root, original), "body_digest": _put_blob(root, body),
+              "author": fp.text(author), "sources": [slug]}
     lineage.attest(root, record, fp.sign(root, record), inputs=[slug], operation="causal-dream-rewrite")
-    return fp.append(root, "dream-rewrites.jsonl", record)
+    return fp.append(root, REWRITES, record)
 
 
 def review(root: str, identity: str, *, reviewer: str) -> dict[str, Any]:
@@ -113,15 +183,15 @@ def review(root: str, identity: str, *, reviewer: str) -> dict[str, Any]:
 
     if memory_authority.WRITER.get()[1] != "operator":
         raise PermissionError("rewrite review requires an operator")
-    proposals = [row for row in fp.journal(root, "dream-rewrites.jsonl")
+    proposals = [row for row in fp.journal(root, REWRITES)
                  if row["kind"] == "proposal" and row["id"] == identity]
     if len(proposals) != 1 or proposals[0]["author"] == reviewer:
         raise ValueError("an independent reviewer must approve an existing rewrite")
-    return fp.append(root, "dream-rewrites.jsonl", {"kind": "review", "id": identity, "reviewer": fp.text(reviewer)})
+    return fp.append(root, REWRITES, {"kind": "review", "id": identity, "reviewer": fp.text(reviewer)})
 
 
 def choose(root: str, identity: str, occasion: str) -> dict[str, Any]:
-    events = fp.journal(root, "dream-rewrites.jsonl")
+    events = fp.journal(root, REWRITES)
     proposals = [r for r in events if r["kind"] == "proposal" and r["id"] == identity]
     if len(proposals) != 1 or not any(r["kind"] == "review" and r["id"] == identity for r in events):
         raise ValueError("a reviewed rewrite proposal is required")
@@ -130,24 +200,79 @@ def choose(root: str, identity: str, occasion: str) -> dict[str, Any]:
     path = lesson_io.lesson_path(root, proposal["slug"])
     if path is None or lesson_io.current_revision(path) != proposal["original_revision"]:
         raise ValueError("rewrite original has changed; propose and test a fresh rewrite")
+    original_text, rewrite_text = _text(root, proposal, "original"), _text(root, proposal, "body")
     analysis = evidence.analyse(root)
     report = cast(integrity.IntegrityReport | None, analysis.report)
     effect = next((row for row in analysis.effects if row.lesson_slug == identity), None)
     if effect and effect.verdict == experiment.VERDICT_HURTS:
-        return {"id": identity, "body": proposal["original"], "arm": "original", "rollback": True,
+        return {"id": identity, "body": original_text, "arm": "original", "rollback": True,
                 "reason": "rewrite lost its randomized holdout"}
     config = holdout_io.load_config(root)
     if not config.running:
         raise ValueError("a configured randomized experiment is required for rewrite trials")
     withheld = holdout_io.assign_and_log(root, [identity], occasion_id=fp.text(occasion), rate=.5, salt=config.salt,
-                                        revisions={identity: fp.digest({"body": proposal["body"],
-                                                                       "original": proposal["original"]})})
+                                        revisions={identity: fp.digest({"body": rewrite_text,
+                                                                       "original": original_text})})
     original = identity in withheld
-    return {"id": identity, "body": proposal["original"] if original else proposal["body"],
+    return {"id": identity, "body": original_text if original else rewrite_text,
             "arm": "original" if original else "rewrite", "rollback": False,
             "promoted": bool(effect and report is not None and report.readable
                              and effect.verdict == experiment.VERDICT_HELPS),
             "note": "ongoing randomized comparison; report the task outcome under the same occasion id"}
+
+
+_TRIALS: dict[str, tuple[tuple[int, str], dict[str, list[dict[str, Any]]]]] = {}
+
+
+def trials(root: str) -> dict[str, list[dict[str, Any]]]:
+    """Reviewed rewrite proposals by lesson slug, newest first (cached per journal checkpoint)."""
+    import os
+
+    key = os.path.realpath(root)
+    checkpoint = fp.checkpoint(root, REWRITES)
+    cached = _TRIALS.get(key)
+    if cached is not None and cached[0] == checkpoint:
+        return cached[1]
+    events = fp.journal(root, REWRITES) if checkpoint[0] else []
+    reviewed = {r["id"] for r in events if r["kind"] == "review"}
+    result: dict[str, list[dict[str, Any]]] = {}
+    for row in reversed(events):
+        if row["kind"] == "proposal" and row["id"] in reviewed:
+            result.setdefault(row["slug"], []).append(row)
+    if len(_TRIALS) > 64:
+        _TRIALS.clear()
+    _TRIALS[key] = (checkpoint, result)
+    return result
+
+
+def overlay(root: str, slug: str, occasion: str | None) -> dict[str, Any] | None:
+    """The text to deliver for an injected lesson under a reviewed rewrite trial, or None.
+
+    A rewrite that won its randomized comparison (HELPS, readable audit) is
+    served; one that lost (HURTS) rolls back to the original; an undecided one
+    is randomized per occasion against the original. Without an occasion id or
+    a running experiment, the original is served: an untested rewrite is never
+    delivered unrandomized. Hazards are never rewritten.
+    """
+    candidates = trials(root).get(slug)
+    if not candidates or slug in safety.protected(root):
+        return None
+    path = lesson_io.lesson_path(root, slug)
+    if path is None:
+        return None
+    revision = lesson_io.current_revision(path)
+    proposal = next((row for row in candidates if row["original_revision"] == revision), None)
+    if proposal is None:
+        return None
+    winner = selected(root, slug)
+    if winner is not None:
+        return {"id": winner["id"], "body": winner["body"], "arm": "rewrite", "promoted": True}
+    if not occasion or not holdout_io.load_config(root).running:
+        return None
+    choice = choose(root, proposal["id"], occasion)
+    if choice["arm"] == "original":
+        return None
+    return {"id": proposal["id"], "body": choice["body"], "arm": "rewrite", "promoted": False}
 
 
 def report(root: str, *, tokens: int = 10_000) -> dict[str, Any]:
@@ -161,32 +286,36 @@ def report(root: str, *, tokens: int = 10_000) -> dict[str, Any]:
              for identity, posterior in model.lessons.items()]
     result = dream_budget(items, tokens=tokens, protected=set(safety.protected(root)))
     result["forecast"] = "historical retrieval share, not a calibrated forecast"
-    result["rewrite_trials"] = [r for r in fp.journal(root, "dream-rewrites.jsonl") if r["kind"] == "proposal"]
+    result["rewrite_trials"] = [{key: value for key, value in r.items() if key not in ("original", "body")}
+                                for r in fp.journal(root, REWRITES) if r["kind"] == "proposal"]
     return result
 
 
 def selected(root: str, slug: str) -> dict[str, Any] | None:
     """Production overlay, present only after the original-vs-rewrite trial wins.
 
-    Keep sampling `choose` on an explicit monitoring slice. As soon as the
-    evidence no longer supports HELPS, this returns None and preserves original.
+    As soon as the evidence no longer supports HELPS, this returns None and the
+    original is served again.
     """
     if slug in safety.protected(root):
         return None
+    candidates = trials(root).get(slug)
     path = lesson_io.lesson_path(root, slug)
-    if path is None:
+    if not candidates or path is None:
         return None
-    events = fp.journal(root, "dream-rewrites.jsonl")
-    reviewed = {r["id"] for r in events if r["kind"] == "review"}
     analysis = evidence.analyse(root)
     report = cast(integrity.IntegrityReport | None, analysis.report)
     if report is None or not report.readable:
         return None
     helps = {effect.lesson_slug for effect in analysis.effects if effect.verdict == experiment.VERDICT_HELPS}
-    for row in reversed(events):
-        if (row["kind"] == "proposal" and row["slug"] == slug and row["id"] in reviewed & helps
-                and lesson_io.current_revision(path) == row["original_revision"]):
-            return {"id": row["id"], "body": row["body"], "lineage": lineage.labels(root, row["id"])}
+    revision = lesson_io.current_revision(path)
+    for row in candidates:
+        if row["id"] in helps and row["original_revision"] == revision:
+            try:
+                body = _text(root, row, "body")
+            except ValueError:
+                continue
+            return {"id": row["id"], "body": body, "lineage": lineage.labels(root, row["id"])}
     return None
 
 

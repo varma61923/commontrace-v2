@@ -142,7 +142,9 @@ def _purge_fact(root: str, identity: str, *, reason: str) -> dict:
 
 def _purge_mirrors(root: str, deleted: set[str]) -> set[str]:
     """Remove structured descendants, including every historical control revision."""
-    from commontrace import frontmatter, graph, memory_control, observations
+    from commontrace import frontmatter, graph, memory_control, observations, retention
+
+    retention.erase_rewrites(root, deleted)
 
     derived = set(deleted)
     revisions = []

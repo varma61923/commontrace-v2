@@ -80,3 +80,31 @@ def test_preregistration_replay_forgery_and_surfaces(tmp_path):
 def test_nonfinite_and_invalid_probabilities(bad):
     with pytest.raises(ValueError):
         promotion.evaluate([], {"default": bad}, {"default": 0})
+
+
+def test_certified_thompson_gate_can_publish_and_other_policies_cannot(tmp_path):
+    from datetime import datetime, timedelta, timezone
+
+    root = str(tmp_path)
+    holdout_io.configure(root, rate=.5, salt="gate-trial")
+    gate = allocation.Policy(mode="thompson")
+    promotion.register(root, "thompson-gate", candidate={"default": 1}, incumbent={"default": 0},
+                       allowed_changes=["allocation-policy"], monitoring="monitor harm",
+                       rollback="disable adaptive allocation", propensity_floor=.5,
+                       artifact_hash=allocation.policy_hash(gate))
+    for i in range(1000):
+        assignment = promotion.assign(root, "thompson-gate", f"trial-{i}")
+        holdout_io.record_outcome(root, f"trial-{i}", assignment["injected"])
+    certificate = promotion.certify(root, "thompson-gate", propensity_floor=.5)
+    allocation.enable(root, gate)
+    later = datetime.now(timezone.utc) + timedelta(seconds=10)
+    schedule = allocation.plan(root, now=later, require_certificate=True)
+    assert schedule.basis["promotion_certificate"] == fp.digest(certificate["certificate"])
+    # A differently configured gate is a different, uncertified change.
+    allocation.enable(root, allocation.Policy(mode="thompson", monitor=.02), now=later)
+    with pytest.raises(ValueError, match="artifact_hash"):
+        allocation.plan(root, now=later + timedelta(seconds=10), require_certificate=True)
+    promotion.rollback(root, certificate, "revoked")
+    allocation.enable(root, gate, now=later + timedelta(seconds=20))
+    with pytest.raises(ValueError, match="certificate"):
+        allocation.plan(root, now=later + timedelta(seconds=30), require_certificate=True)

@@ -883,9 +883,24 @@ def build_server(root: str, *, allow_approval: bool = True):
                 )
 
         injected, held = [], []
+        from commontrace import retention
+
+        rewrite_trials = retention.trials(root)
         for item in admitted_items:
             item.pop("_relevance", None)
             if item.get("slug") not in withheld:
+                if item.get("slug") in rewrite_trials:
+                    # A reviewed causal-dream rewrite is randomized against its original.
+                    try:
+                        overlay = retention.overlay(root, item["slug"], occasion_id or None)
+                    except (ValueError, OSError, PermissionError) as exc:
+                        overlay = None
+                        item["rewrite_error"] = f"{type(exc).__name__}: {exc}"
+                    if overlay is not None:
+                        item["body"] = overlay["body"]
+                        item["revision"] = "rewrite:" + overlay["id"]
+                        item["rewrite"] = {"id": overlay["id"], "arm": overlay["arm"],
+                                           "promoted": overlay["promoted"]}
                 injected.append(item)
                 continue
             item.pop("body", None)
