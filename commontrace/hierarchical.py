@@ -1493,6 +1493,8 @@ def search_facts(
     return [(f, score) for f, score in ranked if f.id in believed][:limit]
 
 
+# Entity-candidate extraction below is adapted from Mem0's utils/entity_extraction.py
+# (Apache-2.0, Copyright 2023 Taranjeet Singh); see THIRD_PARTY_NOTICES.md.
 @dataclass(frozen=True)
 class _EntityCandidate:
     entity_type: str

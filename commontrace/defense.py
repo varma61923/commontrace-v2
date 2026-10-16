@@ -7,6 +7,9 @@ Adapted from Hindsight and Supermemory architecture:
 - Luhn-validated credit card detection with UUID-neighborhood suppression.
 - Flexible policy actions: ALLOW, REDACT, BLOCK.
 - Pluggable extension contract with audit-ready structured findings.
+
+Portions adapted from Hindsight's memory_defense extension (MIT, Copyright (c) 2025
+Vectorize AI, Inc.); see THIRD_PARTY_NOTICES.md for the license text.
 """
 from __future__ import annotations
 

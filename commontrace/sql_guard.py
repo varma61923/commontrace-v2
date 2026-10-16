@@ -5,6 +5,8 @@ Adapted from Cognee Text-to-SQL architecture:
 - Strips markdown fences, block comments, and trailing semicolons.
 - Automatically clamps or appends a LIMIT clause to prevent denial-of-service/OOM.
 - Provides read-only query execution with row caps and statement timeouts.
+
+Portions adapted from Cognee (Apache-2.0, Copyright 2024 Topoteretes UG); see THIRD_PARTY_NOTICES.md.
 """
 from __future__ import annotations
 
