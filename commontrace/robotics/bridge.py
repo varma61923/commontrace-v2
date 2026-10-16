@@ -52,9 +52,15 @@ class HTTPGateway:
 class RobotBridge:
     def __init__(self, transport: GatewayTransport, *, embodiment: str, site: str, skill: str, robot: str,
                  outcome_queue: Any = None) -> None:
+        from commontrace import holdout_io
+
         self.transport = transport
         self.robot = fp.text(robot, "robot", 64)
-        self.context = "/".join(fp.text(x, "context component", 16) for x in (embodiment, site, skill))
+        parts = [fp.text(x, "context component", 64) for x in (embodiment, site, skill)]
+        if any("/" in part for part in parts):
+            raise ValueError("embodiment, site and skill labels must not contain '/'")
+        # The gateway's occasion context label: normalized and at most 64 characters.
+        self.context = holdout_io.context_label("/".join(parts))
         self.queue = outcome_queue
 
     def start(self, occasion: str, query: str, *, items: list[dict[str, Any]] | None = None) -> dict[str, Any]:
@@ -108,6 +114,18 @@ def create_node(bridge: RobotBridge, *, topics: dict[str, str] | None = None, no
     node = node_factory("commontrace_memory")
     publisher = node.create_publisher(message_type, config["memories"], 10)
 
+    def guarded(handler: Callable[[Any], None]) -> Callable[[Any], None]:
+        # An exception escaping an rclpy callback stops the executor: one malformed
+        # or undeliverable message must not take the robot's memory node down.
+        def callback(message: Any) -> None:
+            try:
+                handler(message)
+            except Exception as exc:  # noqa: BLE001 - reported, never raised into the executor
+                logger = getattr(node, "get_logger", None)
+                if callable(logger):
+                    logger().error(f"commontrace memory callback rejected a message: {type(exc).__name__}")
+        return callback
+
     def decode(message: Any) -> dict[str, Any]:
         if not isinstance(message.data, str) or len(message.data.encode()) > 8192:
             raise ValueError("ROS envelope exceeds 8 KiB")
@@ -128,11 +146,11 @@ def create_node(bridge: RobotBridge, *, topics: dict[str, str] | None = None, no
         body = decode(message)
         bridge.finish(body["occasion_id"], body["succeeded"])
 
-    node.create_subscription(message_type, config["start"], start, 10)
-    node.create_subscription(message_type, config["end"], end, 10)
-    node.create_subscription(message_type, config["success"], end, 10)
+    node.create_subscription(message_type, config["start"], guarded(start), 10)
+    node.create_subscription(message_type, config["end"], guarded(end), 10)
+    node.create_subscription(message_type, config["success"], guarded(end), 10)
     if on_failure:
-        node.create_subscription(message_type, config["failure"], lambda msg: on_failure(decode(msg)), 10)
+        node.create_subscription(message_type, config["failure"], guarded(lambda msg: on_failure(decode(msg))), 10)
     if on_scene:
-        node.create_subscription(message_type, config["scene"], lambda msg: on_scene(decode(msg)), 10)
+        node.create_subscription(message_type, config["scene"], guarded(lambda msg: on_scene(decode(msg))), 10)
     return node

@@ -86,14 +86,19 @@ def royalties(offers: Sequence[dict[str, Any]], values: dict[str, float], budget
     clusters = []
     for group, weight in zip(groups, weights):
         reward = int(budget_cents * weight / denominator) if denominator else 0
-        sellers = sorted({item["seller"] for item in group})
-        share = reward // len(sellers)
-        for seller in sellers:
-            payouts[seller] = payouts.get(seller, 0) + share
+        # Within a cluster the reward is split by slashable stake, not per seller:
+        # copy-cat listings cannot dilute an originator without risking real capital.
+        stakes: dict[str, int] = {}
+        for item in group:
+            stake = fp.count(item.get("stake_cents", 1), 1, 100_000_000, "stake")
+            stakes[item["seller"]] = stakes.get(item["seller"], 0) + stake
+        total = sum(stakes.values())
+        for seller, stake in sorted(stakes.items()):
+            payouts[seller] = payouts.get(seller, 0) + reward * stake // total
         clusters.append({"listings": sorted({x["id"] for x in group}), "reward_cents": reward,
-                         "interventional_value": weight})
+                         "interventional_value": weight, "stakes": dict(sorted(stakes.items()))})
     return {"payouts": payouts, "clusters": clusters, "paid_cents": sum(payouts.values()),
-            "kind": "one reward per near-duplicate cluster, split among established sellers"}
+            "kind": "one reward per near-duplicate cluster, split by slashable stake"}
 
 
 def overlap_price(base_cents: int, seller_signature: list[int], buyer_signature: list[int]) -> int:

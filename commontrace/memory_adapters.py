@@ -271,8 +271,12 @@ class MeasuredMemory:
         fp.count(len(items), 0, 1000)
         admitted = []
         for item in items:
-            fp.text(item.id)
-            fp.text(item.text, "vendor memory", 64_000)
+            # One malformed or oversized vendor item is skipped, never fatal to the recall.
+            try:
+                fp.text(item.id)
+                fp.text(item.text, "vendor memory", 64_000)
+            except (ValueError, TypeError):
+                continue
             body = {"id": item.id, "text": item.text, "provider": self.adapter.name}
             prior = lineage.record(self.root, item.id)
             if not prior or prior.get("content_hash") != fp.digest({k: v for k, v in body.items() if k != "id"}):
@@ -282,7 +286,7 @@ class MeasuredMemory:
                 finally:
                     memory_authority.WRITER.reset(token)
             if not lineage.labels(self.root, item.id)["review_required"]:
-                label = memory_ifc.label(self.root, {"id": item.id, "text": item.text})
+                label = memory_ifc.safe_label(self.root, {"id": item.id, "text": item.text})
                 admitted.append(Item(item.id, item.text, {"vendor": item.raw, "ifc": label}))
         return admitted
 
@@ -390,7 +394,8 @@ class VendorReadAdapter:
             content = next((row[k] for k in ("memory", "text", "fact", "content", "summary", "value") if k in row), "")
             if isinstance(content, dict):
                 content = content.get("text", content.get("memory", ""))
-            fp.text(content, "memory text", 64_000)
+            if not isinstance(content, str) or not content or len(content.encode()) > 64_000 or "\x00" in content:
+                continue  # an empty, non-text or oversized vendor item is skipped, not fatal
             id_fields = ("id", "uuid", "uuid_", "name", "memoryRecordId", "key")
             remote_id = next((str(row[k]) for k in id_fields if k in row),
                              fp.digest(content))

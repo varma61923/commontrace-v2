@@ -86,7 +86,11 @@ def _state(root: str, name: str) -> _Journal:
     if _stamp(path) != stamp or _pins(root) != pins:
         raise ValueError("journal or signing identity changed during verification; retry")
     if cached is not None and len(signed_rows) < len(cached.signed):
-        raise ValueError("journal was truncated against a retained checkpoint")
+        link = signed_rows[0].get("record", {}) if signed_rows else {}
+        # A rotation restarts the chain with a signed link to the retired chain's
+        # length; anything else that shrinks a retained journal is truncation.
+        if link.get("kind") != "rotation" or link.get("previous_count", -1) < len(cached.signed):
+            raise ValueError("journal was truncated against a retained checkpoint")
     state = _Journal(stamp, pins, signed_rows, previous,
                      frontmatter._retained_size(signed_rows, set()))
     _remember(path, state)
@@ -241,6 +245,31 @@ def append(root: str, name: str, record: dict[str, Any], *, durable: bool = True
         state.weight += frontmatter._retained_size(signed, set()) + 64
         _remember(path, state)
     return copy.deepcopy(signed)
+
+
+def rotate(root: str, name: str, carry: list[dict[str, Any]], *, durable: bool = True) -> None:
+    """Retire a journal's chain and start a fresh one holding only ``carry`` rows.
+
+    For bounded operational journals (store-and-forward queues, edge caches)
+    whose live state is far smaller than their history. Row 0 of the new chain
+    is a signed ``rotation`` link naming the retired chain's tip and length, so
+    the retirement is itself authenticated and other processes' retained
+    checkpoints accept it; the replacement is atomic under the journal lock.
+    """
+    path = filename(root, name)
+    with _jsonl.locked(path), _GUARD:
+        state = _state(root, name)
+        rows_out: list[dict[str, Any]] = []
+        previous = ""
+        link = {"kind": "rotation", "previous_tip": state.tip, "previous_count": len(state.signed)}
+        for index, record in enumerate([link, *carry]):
+            signed = sign(root, {**record, "sequence": index, "previous": previous, "recorded_at": now()},
+                          durable=durable)
+            wire(signed)
+            rows_out.append(signed)
+            previous = digest(signed)
+        _jsonl.write_rows(path, rows_out)
+        _CACHE.pop(path, None)
 
 
 def journal(root: str, name: str) -> list[dict[str, Any]]:

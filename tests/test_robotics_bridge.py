@@ -133,3 +133,70 @@ def test_protected_lesson_can_be_provisioned_to_edge(tmp_path):
     cache = edge.EdgeCache(str(tmp_path / "edge"), root)
     cache.update(bundle)
     assert cache.recall()[0]["id"] == "hazard" and cache.recall()[0]["hazard"]
+
+
+def test_long_lived_edge_journals_compact_without_losing_hazards_or_outcomes(tmp_path, monkeypatch):
+    monkeypatch.setattr(edge, "COMPACT_AFTER", 3)
+    monkeypatch.setattr(edge, "ROTATE_OUTCOMES_AFTER", 8)
+    root = str(tmp_path / "origin")
+    hazard = protected_fact(root)
+    cache_root = str(tmp_path / "cache")
+    cache = edge.EdgeCache(cache_root, root)
+    bundle = edge.publish_update(root, [hazard.id])
+    cache.update(bundle)
+    for _ in range(7):  # later partial refreshes omit the hazard
+        size = bundle["anchor"]["head"]["record"]["tree_size"]
+        bundle = edge.publish_update(root, [], previous_size=size)
+        cache.update(bundle)
+    rows = fp.journal(cache_root, "edge-cache.jsonl")
+    assert len(rows) <= 4 and rows[0]["kind"] == "rotation"
+    assert [item["id"] for item in cache.recall()] == [hazard.id]
+    stale = edge.publish_update(root, [], previous_size=0)
+    stale["anchor"] = rows[1]["bundle"]["anchor"] if "bundle" in rows[1] else stale["anchor"]
+    with pytest.raises(PermissionError):
+        cache.update({**stale, "consistency": {"proof": ["00" * 32]}})
+    queue_root = str(tmp_path / "queue")
+    queue = edge.OutcomeQueue(queue_root)
+    other_process = edge.OutcomeQueue(queue_root)
+    for i in range(12):
+        queue.enqueue({"occasion_id": f"o{i}", "succeeded": True, "agent_id": "r7"})
+        if i != 11:
+            queue.acknowledge(f"o{i}")
+        # A second process with a retained checkpoint accepts the signed rotation.
+        assert [row["occasion_id"] for row in other_process.pending()] == [f"o{i}"] * (i == 11)
+    assert len(fp.journal(queue_root, "edge-outcomes.jsonl")) < 12
+    assert [row["occasion_id"] for row in queue.pending()] == ["o11"]
+
+
+def test_bridge_accepts_realistic_labels_and_contains_bad_ros_messages(tmp_path):
+    root = str(tmp_path)
+    holdout_io.configure(root, rate=.5, salt="labels")
+    robot = bridge.RobotBridge(LocalTransport(root), embodiment="franka-panda-parallel-jaw", site="depot-7",
+                               skill="pick-and-place", robot="r7")
+    assert robot.context == "franka-panda-parallel-jaw/depot-7/pick-and-place"
+    with pytest.raises(ValueError):
+        bridge.RobotBridge(LocalTransport(root), embodiment="x" * 40, site="y" * 40, skill="z", robot="r7")
+    errors = []
+
+    class Logger:
+        def error(self, message):
+            errors.append(message)
+
+    class Node:
+        def __init__(self, name):
+            self.callbacks = {}
+        def create_publisher(self, message_type, topic, qos):
+            return None
+        def create_subscription(self, message_type, topic, callback, qos):
+            self.callbacks[topic] = callback
+        def get_logger(self):
+            return Logger()
+
+    class Message:
+        def __init__(self, data=""):
+            self.data = data
+
+    node = bridge.create_node(robot, node_factory=Node, message_type=Message)
+    node.callbacks["/task/start"](Message("{not json"))
+    node.callbacks["/task/end"](Message(json.dumps({"occasion_id": "x", "succeeded": "yes"})))
+    assert len(errors) == 2

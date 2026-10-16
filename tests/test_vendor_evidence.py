@@ -69,3 +69,15 @@ def test_credential_bearing_transport_errors_are_sanitized():
     with pytest.raises(ValueError) as exc:
         adapter.search("object")
     assert "super-secret" not in str(exc.value)
+
+
+def test_one_bad_vendor_item_is_skipped_not_fatal(tmp_path):
+    data = {"results": [{"id": "huge", "memory": "x" * 70_000}, {"id": "empty", "memory": ""},
+                        {"id": "nested", "memory": {"unexpected": 1}}, {"id": "ok", "memory": "Verify the class"}]}
+    adapter = memory_adapters.VendorReadAdapter("mem0", endpoint="https://memory.example/retrieve",
+                                                scope={"tenant_id": "acme"}, client=Client(data))
+    assert [item.text for item in adapter.search("class")] == ["Verify the class"]
+    root = str(tmp_path)
+    holdout_io.configure(root, rate=.5, salt="foreign")
+    measured = memory_adapters.MeasuredMemory(adapter, root=root, check_every=1000)
+    assert measured.recall_detailed("class", occasion_id="one").items is not None

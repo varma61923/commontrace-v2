@@ -8,12 +8,14 @@ from commontrace import frontier_protocol as fp
 
 def test_sybils_share_one_reward_and_do_not_inflate_total():
     sig = overlap.minhash("check clearance before moving the robot arm")
-    offer = {"id": "a", "seller": "established", "minhash": sig}
+    offer = {"id": "a", "seller": "established", "minhash": sig, "stake_cents": 10_000}
     baseline = cleanroom.royalties([offer], {"a": .5}, 1000)
-    copies = [{**offer, "id": str(i), "seller": str(i)} for i in range(30)]
+    copies = [{**offer, "id": str(i), "seller": str(i), "stake_cents": 1} for i in range(30)]
     attacked = cleanroom.royalties([offer, *copies], {"a": .5, **{str(i): .5 for i in range(30)}}, 1000)
     assert attacked["paid_cents"] <= baseline["paid_cents"] == 1000
     assert len(attacked["clusters"]) == 1
+    # Thirty unstaked copies cannot divert the originator's royalty.
+    assert attacked["payouts"]["established"] >= 990
     assert cleanroom.overlap_price(1000, sig, sig) == 0
 
 

@@ -62,7 +62,7 @@ class EdgeCache:
                 if type(item["hazard"]) is not bool:
                     raise ValueError("binary hazard label required")
             with _jsonl.locked(fp.filename(self.root, "edge-cache.jsonl")):
-                previous = fp.journal(self.root, "edge-cache.jsonl")
+                previous = [row for row in fp.journal(self.root, "edge-cache.jsonl") if "bundle" in row]
                 head = anchor["head"]["record"]
                 if previous:
                     old = previous[-1]["bundle"]["anchor"]["head"]["record"]
@@ -77,21 +77,40 @@ class EdgeCache:
                         if fp.digest(manifest) != fp.digest(previous[-1]["bundle"]["manifest"]):
                             raise PermissionError("forked edge manifest at the same witnessed leaf")
                         return
-                fp.append(self.root, "edge-cache.jsonl", {"bundle": bundle})
+                if len(previous) >= COMPACT_AFTER:
+                    # Keep the live state, not the history: the latest verified bundle
+                    # plus every hazard any verified bundle ever delivered.
+                    hazards = _hazards(previous)
+                    fp.rotate(self.root, "edge-cache.jsonl", [{"bundle": bundle, "retained_hazards": hazards}])
+                else:
+                    fp.append(self.root, "edge-cache.jsonl", {"bundle": bundle})
         except (KeyError, TypeError, ValueError):
             raise PermissionError("invalid edge update envelope") from None
 
     def recall(self) -> list[dict[str, Any]]:
-        history = fp.journal(self.root, "edge-cache.jsonl")
+        history = [row for row in fp.journal(self.root, "edge-cache.jsonl") if "bundle" in row]
         if not history:
             return []
         # A partial refresh cannot evict a hazard. Decommissioning requires an
         # explicit reviewed cache reset outside this unattended update path.
-        hazards = {item["id"]: item for row in history for item in row["bundle"]["manifest"]["record"]["items"]
-                   if item["hazard"]}
         latest = {item["id"]: item for item in history[-1]["bundle"]["manifest"]["record"]["items"]}
-        latest.update(hazards)
+        latest.update({item["id"]: item for item in _hazards(history)})
         return sorted(latest.values(), key=lambda row: (not row["hazard"], row["id"]))
+
+
+COMPACT_AFTER = 32
+ROTATE_OUTCOMES_AFTER = 4096
+
+
+def _hazards(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    found: dict[str, dict[str, Any]] = {}
+    for row in history:
+        for item in row.get("retained_hazards", []):
+            found[item["id"]] = item
+        for item in row["bundle"]["manifest"]["record"]["items"]:
+            if item["hazard"]:
+                found[item["id"]] = item
+    return [found[identity] for identity in sorted(found)]
 
 
 class OutcomeQueue:
@@ -99,7 +118,7 @@ class OutcomeQueue:
         self.root = root
 
     def pending(self) -> list[dict[str, Any]]:
-        rows = fp.journal(self.root, "edge-outcomes.jsonl")
+        rows = [r for r in fp.journal(self.root, "edge-outcomes.jsonl") if r.get("kind") in ("enqueue", "ack")]
         acknowledged = {r["occasion_id"] for r in rows if r["kind"] == "ack"}
         return [r["body"] for r in rows if r["kind"] == "enqueue" and r["occasion_id"] not in acknowledged]
 
@@ -109,7 +128,7 @@ class OutcomeQueue:
             raise ValueError("outcome queue requires a bounded binary outcome")
         with _jsonl.locked(fp.filename(self.root, "edge-outcomes.jsonl")):
             rows = fp.journal(self.root, "edge-outcomes.jsonl")
-            prior = next((r for r in rows if r["kind"] == "enqueue" and r["occasion_id"] == identity), None)
+            prior = next((r for r in rows if r.get("kind") == "enqueue" and r["occasion_id"] == identity), None)
             if prior:
                 if prior["body"] != body:
                     raise ValueError("conflicting queued outcome")
@@ -119,8 +138,13 @@ class OutcomeQueue:
 
     def acknowledge(self, occasion: str) -> None:
         fp.text(occasion)
-        if any(r["occasion_id"] == occasion for r in self.pending()):
-            fp.append(self.root, "edge-outcomes.jsonl", {"kind": "ack", "occasion_id": occasion})
+        with _jsonl.locked(fp.filename(self.root, "edge-outcomes.jsonl")):
+            if any(r["occasion_id"] == occasion for r in self.pending()):
+                fp.append(self.root, "edge-outcomes.jsonl", {"kind": "ack", "occasion_id": occasion})
+            # Acknowledged outcomes live in the gateway; once nothing is pending the
+            # queue restarts so a long-lived robot never fills its bounded journal.
+            if not self.pending() and fp.checkpoint(self.root, "edge-outcomes.jsonl")[0] >= ROTATE_OUTCOMES_AFTER:
+                fp.rotate(self.root, "edge-outcomes.jsonl", [])
 
     def flush(self, post: Callable[[str, dict[str, Any]], Any]) -> int:
         sent = 0
