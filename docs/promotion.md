@@ -14,9 +14,16 @@ Repeated looks never move the training/evaluation boundary.
 
 `promote certify REQUEST.json` issues a signed certificate only when the lower
 bound exceeds the preregistered margin, and anchors it in the transparency log.
-`promote rollback REQUEST.json` records revocation. `allocation.plan` and
-`commontrace allocate plan --require-certificate` refuse a Thompson schedule
-without a matching unrevoked certificate for the actual proposed probabilities.
+`promote rollback REQUEST.json` records revocation.
+
+`commontrace allocate plan --require-certificate` (and `allocation.plan(...,
+require_certificate=True)`) refuses to publish a Thompson schedule unless an
+unrevoked certificate binds that gate's configuration. The certified change is the
+gate itself: its per-era rates are outputs computed at planning time and cannot be
+certified in advance. `commontrace allocate show` prints the gate's policy hash
+(`allocation.policy_hash`); register a change plan with that value as
+`artifact_hash`, run its randomized trial with `promotion.assign`, certify it, and
+then plan. A differently configured gate is a different, uncertified change.
 
 The finite-sample anytime claim assumes stationary task/context traffic, exact
 logged propensities above the declared floor, binary bounded outcomes, consistent

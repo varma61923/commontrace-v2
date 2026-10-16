@@ -180,6 +180,7 @@ hub/.env
 !commontrace/rerankers_hosted.py
 !commontrace/reranking.py
 !commontrace/retrieval.py
+!commontrace/retention.py
 !commontrace/retrieval_io.py
 !commontrace/retry.py
 !commontrace/revision.py

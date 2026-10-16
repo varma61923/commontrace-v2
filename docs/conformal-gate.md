@@ -1,10 +1,26 @@
 # Opt-in conformal harm budget
 
-Enable `commontrace retrieval --harm-budget 0.02 --per-context --dest STORE`.
-`commontrace allocate gate --json` reports calibration thresholds and observed
-IPW failure rates; MCP retrieval includes `harm_budget` metadata. Without this
-configuration, admission behavior is unchanged. An empty calibration set rejects
-optional memory rather than inventing a threshold.
+Enable `commontrace retrieval --harm-budget 0.02 --per-context --dest STORE`
+(optionally `--harm-method ltt` and `--propensity-floor P`); turn it off with
+`--disable-harm-budget`. `commontrace allocate gate` reports the calibrated
+threshold per stratum and the realized IPW injected-failure rate on occasions
+logged while the gate was on; MCP retrieval includes compact `harm_budget`
+metadata (the threshold in force for that context). Without this configuration,
+admission behavior is unchanged. An empty calibration set rejects optional memory
+rather than inventing a threshold.
+
+Calibration is computed once, when the budget is configured (rerun the command to
+recalibrate), and admission only reads that snapshot, so the gate adds no
+log-scanning work to retrieval. It uses randomized single-memory occasions logged
+while no gate was filtering: rows admitted under a gate only cover scores above its
+threshold, and would bias every lower threshold's estimated loss downward. The
+snapshot records the scorer label whose relevance scale it was fitted on; a
+retrieval scored by a different scorer abstains. Contexts are normalized exactly
+as the holdout log records them. Core (operator-pinned, never randomized) and
+reviewed hazard memories are outside the discretionary budget. In `recall`, the
+budget applies to the lessons channel, on its logged relevance scale; facts, graph
+and conversation channels are not randomized injections and are reported as
+outside its scope rather than gated on an incomparable fused score.
 
 Randomized parallel arms do not identify whether the same task would succeed
 without a memory and fail with it. The gate therefore bounds individual harm by

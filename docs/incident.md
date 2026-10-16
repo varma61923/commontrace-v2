@@ -1,8 +1,12 @@
 # Incident freeze and evidence packs
 
 Use `commontrace incident freeze CASE --valid-time ISO_TIME --dest STORE` to pin
-valid-time facts, record-time metadata, lesson bodies/revisions, retrieval receipts
-and authenticated lineage. Later corrections continue normally. A signed legal
+valid-time facts, record-time metadata, lesson bodies/revisions, retrieval receipts,
+delivered dream-rewrite texts and authenticated lineage. Facts are pinned twice: as
+believed at the incident (record time = valid time) and as known at the freeze,
+so the timeline separates what was believed then from what was corrected later.
+The evidence is written as content-addressed parts under one signed manifest; every
+part is digest-checked whenever the snapshot is read. Later corrections continue normally. A signed legal
 hold blocks forgetting and hard erasure of pinned records until `incident release
 CASE --reason REASON` is explicitly recorded.
 
@@ -27,10 +31,12 @@ erasure. Hub pack exports carry a manifest and inclusion receipt, verifiable by
 
 Mappings are evidence organization aids, not a compliance certification or legal
 opinion. Verify wording and applicability against the Official Journal and the
-published ISO/NIST standards. The snapshot has a 1 MiB signed-record bound and the
-Hub bounds each evidence type at 1000 rows. Unlogged historical retrieval content
-cannot be reconstructed. Archive scoped evidence before exceeding those bounds;
-errors are explicit rather than silently dropping records.
+published ISO/NIST standards. A local snapshot is bounded at 32 MiB per part and
+64 MiB in total; an oversized store is refused explicitly. The Hub snapshot keeps,
+per evidence type, the newest 1000 rows recorded at or before the valid time,
+flags `older_rows_omitted` when more exist, and pins bulky columns (record bodies,
+audit summaries) by digest; the organization legal hold preserves the complete
+tables. Unlogged historical retrieval content cannot be reconstructed.
 
 The signed-in Hub console includes **Incidents** at `/app/incidents`.
 Administrators can freeze the recorded state and place its legal hold through the

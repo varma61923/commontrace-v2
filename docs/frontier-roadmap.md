@@ -7,12 +7,12 @@ are distinguished from deployment integrations in the linked workflows.
 |---|---|---|
 | F11 Authenticated lineage | Signed derivations, origin quorum, minimum integrity and taint cascades | [Details](lineage.md) |
 | F12 Transparency log | Signed Merkle heads, inclusion/consistency proofs, tenant-isolated Hub history | [Details](transparency-log.md) |
-| F3 Sequential evidence | Predictable e-processes, directional shared-task e-BH, nonoverlapping evidence snapshots | [Details](e-processes.md) |
-| F1 Harm-budget admission | Opt-in conservative CRC/LTT gates and trajectory escalation | [Details](conformal-gate.md) |
+| F3 Sequential evidence | Predictable e-processes, shared-task e-BH for positive claims (harm withdrawal unweakened), nonoverlapping evidence snapshots | [Details](e-processes.md) |
+| F1 Harm-budget admission | Opt-in conservative CRC/LTT gates calibrated once from ungated evidence, and trajectory escalation | [Details](conformal-gate.md) |
 | F15 Incident evidence | Freeze, legal hold, two-clock replay and signed evidence packs; Hub routes | [Details](incident.md) |
 | F2 Change control | Preregistered canonical trials, frozen support, anytime certificates and rollback | [Details](promotion.md) |
 | F18 Safety evidence | Reviewed protected hazards, durable recorder and intervention SPI | [Details](safety.md) |
-| F8 Causal lifecycle | Randomized rewrite overlays, losing-rewrite rollback and learned utility budgets | [Details](causal-dreaming.md) |
+| F8 Causal lifecycle | Reviewed rewrites randomized against originals in retrieval, losing-rewrite rollback and learned utility budgets | [Details](causal-dreaming.md) |
 | F9 Context economics | Opt-in value knapsack and deterministic proven-memory cache prefixes | [Details](context-packing.md) |
 | F13 Subject-key erasure | Independent encrypted envelopes, key destruction, local cascade and conditional certificates | [Details](certified-erasure.md) |
 | F14 Pre-action defenses | Quoted low-integrity data, scoped derivation, sensor checks, canaries and shadow red teams | [Details](memory-defenses.md) |
@@ -23,7 +23,7 @@ are distinguished from deployment integrations in the linked workflows.
 | F17 Spatial objects | Bounded bitemporal deltas, corrections, historical beliefs and three planner MCP tools | [Details](spatial.md) |
 | F6 Targeting | Disjoint DR learning, conservative RATE admission, positive-class transfer and exploration | [Details](uplift.md) |
 | F7 Attribution | Budgeted randomized replay masks, sparse culprit diagnostics and restore audits | [Details](attribution.md) |
-| F20 Clean room | Sealed runner interface, attested escrow, duplicate-cluster royalties and Laplace budget accounting | [Details](cleanroom.md) |
+| F20 Clean room | Sealed runner interface, attested escrow, stake-weighted duplicate-cluster royalties and Laplace budget accounting | [Details](cleanroom.md) |
 | F10 Compilation | Open-weight trainer contract, CPU governance reference, source rollback and artifact-bound F2 trials | [Details](compile-memory.md) |
 | F21 Foreign stores | Pinned SDK/HTTP adapters, canonical measurement, lineage and redacted errors | [Details](vendor-evidence.md) |
 | F22 Physical-AI bridge | Lazy ROS node, MCAP/LeRobot metadata ingest, witnessed edge cache and durable outcomes | [Details](physical-ai.md) |

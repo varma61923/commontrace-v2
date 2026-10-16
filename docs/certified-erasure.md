@@ -12,7 +12,15 @@ step, revokes the supplied records and their registered lineage descendants,
 purges canonical facts/lesson histories and graph mirrors, and destroys the
 subject wrapping key. It returns a signed certificate with a transparency anchor,
 a hash tombstone, explicit live-probe status and backup scope. `verify` checks its
-bytes and anchor offline. Unrelated subjects retain their own keys.
+bytes and anchor offline. Unrelated subjects retain their own keys. Dream-rewrite
+texts derived from erased lessons are deleted too; their journal keeps only digests.
+
+From the CLI, `commontrace frontier certified-erase REQUEST.json --dest STORE`
+takes `{"subject", "identities", "vault_directory", "reason"}` and an optional
+`"probe": {"queries": [...], "forbidden": [...], "threshold": 0}` that runs the
+membership probe against live `recall` after the purge. `frontier certified-verify`
+takes `{"certificate": ...}` and prints `{"valid": true|false}`. Supplying a fact id
+is enough: the lineage cascade finds lessons and summaries derived from it.
 
 The backup claim covers only envelopes encrypted before backup, with subject
 wrapping keys excluded from those backups and destroyed across every live vault

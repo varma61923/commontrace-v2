@@ -11,9 +11,11 @@ randomized block, not one independent observation per step.
 
 Trusted coordinators wrap reads and derived writes in
 `interference.reader_scope(root, design, cluster, period=...)`. Lineage tags writes
-with experiment and arm. Holdout reads refuse treated-derived ancestors and
-post-design unclassified memories; baseline and holdout-derived content remain
-available. Hazard context is exempt. A caller that bypasses the governed store or
+with experiment and arm. A holdout reader is refused exactly the memories that are,
+or descend from, treated-arm derivations of that design (a summary of a treated
+workaround included); everything else, including memories written outside the
+design, stays visible to both arms, so diversion cannot itself create a contrast.
+A design records its lineage position, never an enumeration of store ids. Hazard context is exempt. A caller that bypasses the governed store or
 fails to establish the coordinator scope is outside this isolation boundary.
 
 `cluster_effect` targets the equal-cluster ATE using HT contrasts and a

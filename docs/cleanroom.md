@@ -9,9 +9,10 @@ interfaces alone cannot hide plaintext from a compromised host.
 
 Escrow settlement requires a ledger-attested valuation certificate, a positive
 lower bound and current directional e-process support in the buyer's canonical
-experiment. Near-duplicate MinHash clusters share one reward and split it across
-established sellers; adding duplicate identities cannot increase a cluster's
-reward. MinHash overlap discounts the price. Significant canonical harm permits
+experiment. Near-duplicate MinHash clusters share one reward, split in
+proportion to each seller's slashable stake: adding duplicate identities cannot
+increase a cluster's reward, and unstaked copy-cat listings cannot divert an
+originator's share without putting real capital at risk. MinHash overlap discounts the price. Significant canonical harm permits
 stake slashing. Operator-established seller identity and stake enforce the Sybil
 boundary; self-created accounts are insufficient.
 

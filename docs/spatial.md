@@ -8,7 +8,14 @@ content-addressed `media`. Supported relations are `located_in`, `on`, `near`,
 `seen_at`. Adapters translate Hydra/HOV-SG/ConceptGraphs/DynaMem summaries into
 this interchange; no dense geometry is transferred.
 
-Each delta is a bitemporal fact plus a signed immutable object event. Pass
+Each delta is a signed immutable object event backed by a bitemporal fact.
+Re-observing an object within 1 cm (frame units; `PLACEMENT_TOLERANCE`) of its last
+admissible placement reinforces that placement's fact rather than minting a new
+one, so facts grow with moves, not sightings; an invalidated placement is never
+reinforced. Fleet-rate spatial memory should use the SQLite fact store
+(`commontrace init` or `commontrace fact` migration): updates and `where_is` then
+stay roughly constant-time as history grows, whereas the JSONL fact backend
+rewrites its file on every new placement. Pass
 `correction_of` for a correction to the same owned object. `where_was` resolves
 event time; `believed_at(robot,time)` restricts the record-time horizon so later
 corrections cannot rewrite historical beliefs. `changes_since` uses record time.

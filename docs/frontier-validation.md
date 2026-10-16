@@ -1,42 +1,42 @@
 # Frontier validation record
 
 The roadmap is covered by seeded statistical tests, adversarial store tests,
-CLI/MCP/gateway contracts, and PostgreSQL-backed Hub tests. Commands below use
-Python 3.12 unless stated otherwise. Optional integrations use mocks or local
+CLI/MCP/gateway contracts, and PostgreSQL-backed Hub tests. Results below were
+produced on Python 3.13 unless stated otherwise. Optional integrations use mocks or local
 fixtures; no live vendor request, payment, enclave or robot actuation was tested.
 
 | Check | Result |
 |---|---|
-| Ruff and whitespace | Pass |
+| Ruff and `git diff --check` | Pass |
 | Configured strict mypy list | 65 modules pass |
 | Bandit `-ll` | No medium/high findings |
-| Added dependency requirements audit | No known vulnerabilities |
 | Both generated OpenAPI contracts | Current |
 | Hub image import allowlist | 11 tests pass |
-| Alembic | One head: `fa02b3c4d5e6` |
-| Graphify | 346 Python modules, 288 reachability candidates, no missing endpoints; within reviewed budgets |
-| Local-tier latency gate | 119.5 ms at 6,400 lessons, fitted total exponent 1.30; limits 500 ms / 1.5 |
-| Accumulated core/dev coverage | 85.27%, above the 80% gate |
-| Final core/dev regression and feature run | 191 pass, including all failed cases from the broad coverage run |
-| Core-only Python 3.10 repair run | 65 pass, 14 optional dependency skips |
-| Isolated Python 3.10 native hooks | 43 pass |
-| Hub console and incident workflow | 207 pass |
-| Final Hub API, tenant fuzz, incident and image contracts | 33 pass, 1 optional skip |
+| Alembic | Upgrade from scratch, `alembic check` clean, one head: `fb13c5d7e9a1`; downgrade/upgrade of the frontier column round-trips |
+| Graphify module budget | 346 Python modules under `commontrace/` (no modules added by the hardening round) |
+| Local-tier latency gate | 46.9 ms at 6,400 lessons, fitted total exponent 1.00; limits 500 ms / 1.5 |
+| Core/dev suite with coverage (Python 3.13) | 8,064 passed, 138 skipped, 0 failed; 85.27% coverage, above the 80% gate |
+| Core-only install (Python 3.10, no extras) | 7,452 passed, 345 skipped, 0 failed |
+| Hub suite (PostgreSQL 16) | 2,635 passed, 25 skipped, 0 failed |
 
-The broad core/dev sweep exercised 8,025 passing tests; its six failures were
-fixed and rerun in the final passing regression run. The broad Python 3.10 sweep
-exercised 7,367 passing tests; absent-extra guards and the reported regressions
-were repaired and retested. The broad PostgreSQL 16 sweep exercised 2,601 passing
-tests; its console/OpenAPI and tenant-fuzz failures were fixed and included in
-the final Hub contract run. The final tree has not had another complete fresh
-sweep; the PR's CI is the authority for that rerun. Native hooks have 20–25 ms
-deadlines and were additionally checked without competing bulk suites.
+The hardening round measured end-to-end MCP `retrieve` latency with a running
+holdout experiment and 200 lessons: the original roadmap commit took p50 26.4 ms
+against 18.1 ms before the roadmap (+46%), driven by per-occasion signed log heads
+and calibration recomputed on every call; after the fixes it measured p50 20.7 and
+22.9 ms against 19.5 and 19.6 ms in two runs on this shared machine. Lesson writes
+cost about 5 ms against 1.6 ms: two fsynced signed appends (lineage attestation,
+transparency leaf) are the price of durable provenance on every write. Spatial
+updates with the SQLite fact store stay near 5 ms after 1,200 updates. These are
+measurements of this environment, not deployment latency promises.
 
 Statistical mutation checks used isolated source copies. Removing gold-label
 inclusion weights, factorial contrast weights, cluster HT weights, the RATE
 validation condition, or the replay cost cap made the corresponding regression
 test fail. Earlier predictable-betting and conformal IPW mutations also failed
-their seeded tests. No mutated source is committed.
+their seeded tests. In the hardening round, the previous `experiment.analyze`
+fails the harm-withdrawal test, the previous `recall.pack` fails the hazard
+property test, and an unweighted cluster estimate misses the planted effect by
+more than 0.2 in an unequal design. No mutated source is committed.
 
 To reproduce the main gates:
 

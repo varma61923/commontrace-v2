@@ -258,12 +258,12 @@ CommonTrace is pre-1.0 software under active development.
 |---|---|
 | F11 Authenticated lineage | Signed derivations, origin quorum, minimum integrity and taint cascades; [workflow](docs/lineage.md). |
 | F12 Transparency log | Signed Merkle heads, inclusion/consistency proofs, tenant-isolated Hub history; [workflow](docs/transparency-log.md). |
-| F3 Sequential evidence | Predictable e-processes, directional shared-task e-BH, nonoverlapping evidence snapshots; [workflow](docs/e-processes.md). |
-| F1 Harm-budget admission | Opt-in conservative CRC/LTT gates and trajectory escalation; [workflow](docs/conformal-gate.md). |
+| F3 Sequential evidence | Predictable e-processes, shared-task e-BH for positive (HELPS) claims with harm withdrawal unweakened, nonoverlapping evidence snapshots; [workflow](docs/e-processes.md). |
+| F1 Harm-budget admission | Opt-in conservative CRC/LTT gates calibrated once from ungated randomized evidence, and trajectory escalation; [workflow](docs/conformal-gate.md). |
 | F15 Incident evidence | Freeze, legal hold, two-clock replay and signed evidence packs; Hub routes; [workflow](docs/incident.md). |
-| F2 Change control | Preregistered canonical trials, frozen support, anytime certificates and rollback; [workflow](docs/promotion.md). |
+| F2 Change control | Preregistered canonical trials, frozen support, anytime certificates (including for the Thompson gate configuration) and rollback; [workflow](docs/promotion.md). |
 | F18 Safety evidence | Reviewed protected hazards, durable recorder and intervention SPI; [workflow](docs/safety.md). |
-| F8 Causal lifecycle | Randomized rewrite overlays, losing-rewrite rollback and learned utility budgets; [workflow](docs/causal-dreaming.md). |
+| F8 Causal lifecycle | Reviewed rewrites randomized against their originals in retrieval, losing-rewrite rollback and learned utility budgets; [workflow](docs/causal-dreaming.md). |
 | F9 Context economics | Opt-in value knapsack and deterministic proven-memory cache prefixes; [workflow](docs/context-packing.md). |
 | F13 Subject-key erasure | Independent encrypted envelopes, key destruction, local cascade and conditional certificates; [workflow](docs/certified-erasure.md). |
 | F14 Pre-action defenses | Quoted low-integrity data, scoped derivation, sensor checks, canaries and shadow red teams; [workflow](docs/memory-defenses.md). |
@@ -274,7 +274,7 @@ CommonTrace is pre-1.0 software under active development.
 | F17 Spatial objects | Bounded bitemporal deltas, corrections, historical beliefs and three planner MCP tools; [workflow](docs/spatial.md). |
 | F6 Targeting | Disjoint DR learning, conservative RATE admission, positive-class transfer and exploration; [workflow](docs/uplift.md). |
 | F7 Attribution | Budgeted randomized replay masks, sparse culprit diagnostics and restore audits; [workflow](docs/attribution.md). |
-| F20 Clean room | Sealed runner interface, attested escrow, duplicate-cluster royalties and Laplace budget accounting; [workflow](docs/cleanroom.md). |
+| F20 Clean room | Sealed runner interface, attested escrow, stake-weighted duplicate-cluster royalties and Laplace budget accounting; [workflow](docs/cleanroom.md). |
 | F10 Compilation | Open-weight trainer contract, CPU governance reference, source rollback and artifact-bound F2 trials; [workflow](docs/compile-memory.md). |
 | F21 Foreign stores | Pinned SDK/HTTP adapters, canonical measurement, lineage and redacted errors; [workflow](docs/vendor-evidence.md). |
 | F22 Physical-AI bridge | Lazy ROS node, MCAP/LeRobot metadata ingest, witnessed edge cache and durable outcomes; [workflow](docs/physical-ai.md). |
