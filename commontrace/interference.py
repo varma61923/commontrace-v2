@@ -77,7 +77,7 @@ def switchback(lesson: str, cluster: str, period: int, *, salt: str, block_lengt
 
 def publish(root: str, identity: str, lesson: str, *, rate: float = .5,
             block_length: int | None = None, burn_in: int = 1) -> dict[str, Any]:
-    from commontrace import allocation, hierarchical, holdout_io, lineage
+    from commontrace import allocation, holdout_io, lineage
 
     fp.text(identity)
     fp.text(lesson)
@@ -93,10 +93,11 @@ def publish(root: str, identity: str, lesson: str, *, rate: float = .5,
     prior = fp.journal(root, "cluster-designs.jsonl")
     if any(row["id"] == identity for row in prior):
         raise ValueError("cluster design is immutable")
-    baseline = sorted(set(hierarchical.load_facts(root)) | set(lineage.records(root)))
-    fp.count(len(baseline), 0, 2000)
+    # The lineage position pins which derivations predate the design (an audit
+    # anchor, never an enumeration: a store of any size can publish a design).
     return fp.append(root, "cluster-designs.jsonl", {"id": identity, "lesson": lesson, "rate": rate,
-        "salt": config.salt, "baseline_ids": baseline, "block_length": block_length, "burn_in": burn_in})
+        "salt": config.salt, "lineage_position": fp.checkpoint(root, lineage.JOURNAL)[0],
+        "block_length": block_length, "burn_in": burn_in})
 
 
 def _design(root: str, identity: str) -> dict[str, Any]:
@@ -146,6 +147,13 @@ def active_context(root: str | None = None) -> tuple[str, str] | None:
 
 
 def read_allowed(root: str, identity: str) -> bool:
+    """Write-path diversion: a holdout-arm reader never sees treated-arm derivations.
+
+    A memory is hidden from a holdout reader of a design exactly when it, or
+    any authenticated ancestor, was derived inside that design's treated arm;
+    everything else (including memories written outside the design) stays
+    visible to both arms, so diversion itself cannot create a contrast.
+    """
     context = active_context(root)
     if context is None or context[1] == "treated":
         return True
@@ -153,15 +161,12 @@ def read_allowed(root: str, identity: str) -> bool:
 
     if identity in safety.protected(root):
         return True
-    design = _design(root, context[0])
-    family = [identity, *lineage.ancestors(root, identity)]
-    for source in family:
+    _design(root, context[0])
+    for source in (identity, *lineage.ancestors(root, identity)):
         row = lineage.record(root, source)
         if row.get("experiment") == context[0] and row.get("arm") == "treated":
             return False
-    row = lineage.record(root, identity)
-    return bool(identity in design["baseline_ids"] or
-                row.get("experiment") == context[0] and row.get("arm") == "holdout")
+    return True
 
 
 def symbiosis_bias(task_effect: float, cluster_effect: float, task_se: float, cluster_se: float,
