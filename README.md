@@ -1,8 +1,8 @@
-# CommonTrace
+# UniMem
 
-**Memory for AI agents that proves it helps.**
+**A referee for how agents and robots change themselves.**
 
-Agents with memory repeat fewer mistakes, until a memory goes stale. Then the agent acts confidently on something that is no longer true, and nothing tells you which memory caused it. CommonTrace is a governed memory system for agents that measures every memory. It withholds each memory from a small random share of tasks, compares outcomes, withdraws the memories that hurt, and learns where each memory helps.
+Agents with memory repeat fewer mistakes, until a memory goes stale. Then the agent acts confidently on something that is no longer true, and nothing tells you which memory caused it. UniMem is a governed memory system for agents that measures every memory. It withholds each memory from a small random share of tasks, compares outcomes, withdraws the memories that hurt, and learns where each memory helps. The Python package and executable remain `commontrace`.
 
 - **Causal, not correlational.** A randomized holdout per memory and per task gives a real cause-and-effect estimate for each memory, with integrity checks that catch a broken experiment before you quote it.
 - **Governed.** Lessons need review receipts, facts carry valid time and record time, every write is scoped to a tenant, and anything an agent cannot see can never leak into its answers.
@@ -258,10 +258,11 @@ legacy hashes and defaults.
 
 ## Project status
 
-CommonTrace is pre-1.0 software under active development.
+UniMem is pre-1.0 software under active development.
 
 | Area | Status |
 |---|---|
+| G29 Pooled evidence | Signed sufficient-statistics contributions, ownership-group random effects, modified Hartung–Knapp intervals, e-values and reference Gaussian privacy accounting; [workflow and limits](docs/pooled-evidence.md). |
 | F11 Authenticated lineage | Signed derivations, origin quorum, minimum integrity and taint cascades; [workflow](docs/lineage.md). |
 | F12 Transparency log | Signed Merkle heads, inclusion/consistency proofs, tenant-isolated Hub history; [workflow](docs/transparency-log.md). |
 | F3 Sequential evidence | Predictable e-processes, shared-task e-BH for positive (HELPS) claims with harm withdrawal unweakened, nonoverlapping evidence snapshots; [workflow](docs/e-processes.md). |

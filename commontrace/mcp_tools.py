@@ -5,7 +5,7 @@ from __future__ import annotations
 LOCAL_TOOLS = (
     "retrieve", "capture", "propose_lessons", "list_lessons", "get_lesson",
     "draft_lesson", "approve_lesson", "reject_lesson", "store_status",
-    "experiment_status", "causal_gate_report", "lineage_explain", "log_verify", "incident_timeline",
+    "experiment_status", "causal_gate_report", "pooled_effect", "lineage_explain", "log_verify", "incident_timeline",
     "safety_context",
     "recall_recovery", "spatial_where", "spatial_history", "spatial_believed",
     "memory_block_read", "memory_block_update", "memory_block_list", "memory_block_delete",

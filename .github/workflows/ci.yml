@@ -490,6 +490,7 @@ jobs:
             commontrace/memory_ifc.py commontrace/redteam.py \
             commontrace/certified_erasure.py \
             commontrace/retention.py \
+            commontrace/pooled_evidence.py commontrace/pooled_io.py commontrace/nextwave_store.py commontrace/commands/nextwave.py \
             commontrace/frontier_protocol.py commontrace/lineage.py commontrace/transparency_log.py commontrace/interference.py commontrace/eprocess.py commontrace/conformal_gate.py commontrace/incident.py commontrace/promotion.py commontrace/safety.py \
             commontrace/outcomes.py commontrace/recovery.py commontrace/valuation.py commontrace/spatial.py commontrace/uplift.py commontrace/attribution.py commontrace/cleanroom.py commontrace/compile_memory.py commontrace/robotics/__init__.py commontrace/robotics/bridge.py commontrace/robotics/edge.py commontrace/robotics/ingest.py \
             commontrace/retry.py commontrace/commands/integration_cmd.py \

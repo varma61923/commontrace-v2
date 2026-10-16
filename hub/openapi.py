@@ -635,6 +635,7 @@ _HEADERS = {
 
 _TAGS = [
     ("Transparency", "Tenant-scoped signed Merkle checkpoints, inclusion and consistency proofs."),
+    ("Evidence", "UniMem signed aggregate contributions and model-based pooled estimates."),
     ("Incidents", "Legal holds, frozen evidence and signed regulator-evidence exports."),
     ("Memory", "Versioned, tenant-scoped memory records and erasure."),
     (
@@ -810,6 +811,20 @@ def _operations() -> dict[tuple[str, str], dict]:
         "429": _response_ref("RateLimited"),
     }
     ops = {
+        ("POST", "/v1/evidence/pool/contributions"): _op(
+            "pooledContribution", "Evidence", "Accept a signed UniMem sufficient-statistics contribution",
+            security=API_KEY,
+            body=_json_body(_object({"signed": _free_object("Pinned Ed25519 contribution envelope.")}, ("signed",))),
+            description="Admin scope and an operator-provisioned contributor key are required. "
+                        "An identical release replay is idempotent; tenant identity comes from authentication.",
+            responses={"201": _json("Accepted and anchored.", _free_object("Acceptance and Merkle receipt.")),
+                       "200": _json("Identical replay.", _free_object("Original acceptance receipt.")),
+                       "400": _error("Malformed, oversized or non-finite contribution."),
+                       "401": _error("Authentication required."),
+                       "403": _error("Admin scope or registered contributor signature required."),
+                       "409": _error("Release identity is bound to different bytes."),
+                       "429": _error("Rate limited."),
+                       "503": _error("Signing key is not configured.")}),
         **{(method, path): _op(
             operation, "Incidents", summary, security=API_KEY,
             body=(_json_body(_object({"id": _string(maxLength=128), "valid_time": _string(format="date-time")},

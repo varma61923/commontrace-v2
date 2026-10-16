@@ -1536,6 +1536,23 @@ def build_server(root: str, *, allow_approval: bool = True):
             return _err(str(exc))
 
     @mcp.tool()
+    def pooled_effect(unit_hash: str, independent: bool = False, alpha: float = .05) -> dict:
+        """Read UniMem pooled evidence for a public content fingerprint.
+
+        Contributions need signatures from operator-pinned identities. Ownership
+        groups prevent account splitting from creating independent studies.
+        Returns a model-based interval, heterogeneity, power and influence;
+        pooling does not issue a canonical promotion certificate. Use a product
+        of e-values when the contributing ownership groups are independent.
+        """
+        from commontrace import pooled_io
+
+        try:
+            return _ok(**pooled_io.report(root, unit_hash, independent=independent, alpha=alpha))
+        except (ValueError, KeyError, TypeError, PermissionError, OSError) as exc:
+            return _err(str(exc))
+
+    @mcp.tool()
     def causal_gate_report(floor: float = 0.05, practical: float = 0.10) -> dict:
         """Where does each memory help, and should it be injected there?
 

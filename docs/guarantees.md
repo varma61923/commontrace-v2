@@ -31,6 +31,15 @@ cache-price/latency estimates and poisoning alarms are explicitly estimates or
 heuristics. None establishes regulatory compliance, universal deletion,
 semantic truth, insurance coverage or safe robot actuation.
 
+UniMem [pooled evidence](pooled-evidence.md) reports model-based random-effects
+estimates, not a new promotion guarantee. Its combined e-value tests a joint
+directional null; independent products require independent ownership groups.
+Operator-established ownership prevents account splitting from adding studies.
+Gaussian calibration assumes fixed public counts, frozen public nuisances and
+one bounded-score replacement; finite-precision sampling is a reference, not an
+audited exact-arithmetic DP implementation. Few, highly unequal studies can
+under-cover, and the interval must not authorize a release.
+
 Validation includes seeded tests for predictable betting, conformal conservatism,
 promotion, write-back contamination, detector debiasing, factorial interactions,
 uplift rejection/power and culprit recovery. Adversarial tests cover tampering,

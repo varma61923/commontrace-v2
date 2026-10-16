@@ -334,6 +334,10 @@ def add_rest_routes(
 
     incidents.add_routes(app, session_factory, authenticate=_authenticate,
                          require_scope=_require_scope, config=config)
+    from hub import pooled
+
+    pooled.add_routes(app, session_factory, authenticate=_authenticate,
+                      require_scope=_require_scope, config=config)
     app.add_route(f"{API_PREFIX}/traces", contribute, methods=["POST"])
     app.add_route(f"{API_PREFIX}/traces/search", search, methods=["POST"])
     for beacon in ("install", "ping", "triggers"):

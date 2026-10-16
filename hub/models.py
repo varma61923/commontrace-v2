@@ -111,6 +111,20 @@ class IncidentSnapshot(Base):
     anchor: Mapped[dict] = mapped_column(JSONB, nullable=False)
 
 
+class PooledContribution(Base):
+    """UniMem signed sufficient statistics, isolated by their authenticated owner."""
+
+    __tablename__ = "pooled_contributions"
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True)
+    release_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    unit_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    contribution: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    anchor: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+    __table_args__ = (Index("ix_pooled_contributions_unit", "org_id", "unit_hash"),)
+
+
 class ApiKey(Base):
     __tablename__ = "api_keys"
 

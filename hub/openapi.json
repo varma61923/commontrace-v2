@@ -9125,6 +9125,137 @@
         ]
       }
     },
+    "/v1/evidence/pool/contributions": {
+      "post": {
+        "description": "Admin scope and an operator-provisioned contributor key are required. An identical release replay is idempotent; tenant identity comes from authentication.",
+        "operationId": "pooledContribution",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "signed": {
+                    "additionalProperties": true,
+                    "description": "Pinned Ed25519 contribution envelope.",
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "signed"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "description": "Original acceptance receipt.",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Identical replay."
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "description": "Acceptance and Merkle receipt.",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Accepted and anchored."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Malformed, oversized or non-finite contribution."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authentication required."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Admin scope or registered contributor signature required."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Release identity is bound to different bytes."
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Rate limited."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Signing key is not configured."
+          },
+          "504": {
+            "$ref": "#/components/responses/Timeout"
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "userBearer": []
+          }
+        ],
+        "summary": "Accept a signed UniMem sufficient-statistics contribution",
+        "tags": [
+          "Evidence"
+        ]
+      }
+    },
     "/v1/incidents": {
       "post": {
         "operationId": "incidentFreeze",
@@ -10019,6 +10150,10 @@
     {
       "description": "Tenant-scoped signed Merkle checkpoints, inclusion and consistency proofs.",
       "name": "Transparency"
+    },
+    {
+      "description": "UniMem signed aggregate contributions and model-based pooled estimates.",
+      "name": "Evidence"
     },
     {
       "description": "Legal holds, frozen evidence and signed regulator-evidence exports.",

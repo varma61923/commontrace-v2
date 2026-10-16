@@ -107,6 +107,10 @@ hub/.env
 !commontrace/fact_vector_projection.py
 !commontrace/fingerprints.py
 !commontrace/frontier_protocol.py
+!commontrace/pooled_evidence.py
+!commontrace/pooled_io.py
+!commontrace/nextwave_store.py
+!commontrace/commands/nextwave.py
 !commontrace/frontmatter.py
 !commontrace/graph.py
 !commontrace/harm.py

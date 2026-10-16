@@ -128,6 +128,10 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument("--dest", default=None)
     p.set_defaults(func=run)
 
+    from commontrace.commands.nextwave import add_experiment
+
+    add_experiment(p)
+
 
 def _outcomes_by_occasion(root: str) -> dict[str, bool]:
     out: dict[str, bool] = dict(holdout_io.read_outcomes(root))

@@ -28,7 +28,7 @@ jobs:
           python scripts/graphify_audit.py
           --graph "$RUNNER_TEMP/architecture/graphify-out/graph.json"
           --output "$RUNNER_TEMP/architecture/audit.json"
-          --source-root . --max-modules 346 --max-unreachable 318
+          --source-root . --max-modules 350 --max-unreachable 318
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
           name: graphify-audit
@@ -47,3 +47,4 @@ jobs:
 # Added modules: memory_ifc, redteam (+2).
 
 # Remaining modules: attribution, cleanroom, commands/frontier_cmd, compile_memory, outcomes, recovery, robotics/__init__, robotics/bridge, robotics/edge, robotics/ingest, spatial, uplift, valuation.
+# Added modules (+4): pooled_evidence, pooled_io, nextwave_store, commands/nextwave.
