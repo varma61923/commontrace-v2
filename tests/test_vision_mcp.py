@@ -362,3 +362,33 @@ class TestGraphVizMcpTool:
             out = vision.describe_image(str(path), enabled=True,
                                         config=_vision_config())
         assert out == "a red door"
+
+
+class TestImageTypeSniffing:
+    # imghdr was removed in Python 3.13; the import failed silently there and
+    # every extensionless image except PNG/GIF was reported as octet-stream.
+    @pytest.mark.parametrize("blob,mime", [
+        (b"\x89PNG\r\n\x1a\n" + b"\0" * 8, "image/png"),
+        (b"\xff\xd8\xff\xe0" + b"\0" * 8, "image/jpeg"),
+        (b"GIF89a" + b"\0" * 8, "image/gif"),
+        (b"GIF87a" + b"\0" * 8, "image/gif"),
+        (b"RIFF\x24\0\0\0WEBPVP8 ", "image/webp"),
+        (b"BM" + b"\0" * 12, "image/bmp"),
+        (b"II*\x00" + b"\0" * 8, "image/tiff"),
+        (b"MM\x00*" + b"\0" * 8, "image/tiff"),
+    ])
+    def test_an_extensionless_image_is_identified_by_its_bytes(self, blob, mime):
+        from commontrace import vision
+
+        assert vision._mime_for("upload", blob) == mime
+
+    @pytest.mark.parametrize("blob", [b"", b"GIF", b"RIFF\0\0\0\0WAVE", b"not an image at all"])
+    def test_unknown_bytes_are_octet_stream_not_a_guess(self, blob):
+        from commontrace import vision
+
+        assert vision._mime_for("upload", blob) == "application/octet-stream"
+
+    def test_an_image_extension_still_wins(self):
+        from commontrace import vision
+
+        assert vision._mime_for("photo.jpg", b"\x89PNG\r\n\x1a\n") == "image/jpeg"

@@ -113,6 +113,12 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Identifier for this decision, used to join the holdout assignment to its "
         "outcome later. Must match the episode `name` or trace `id` you record afterwards.",
     )
+    p.add_argument(
+        "--context", default="",
+        help="Short label for the kind of occasion (task family, agent type). With a causal-gate "
+        "allocation schedule (`commontrace allocate enable --mode thompson`), each lesson is "
+        "withheld at the rate the gate set for this context.",
+    )
     p.add_argument("--holdout-rate", type=_holdout_rate, default=None)
     p.add_argument("--experiment-salt", default=None)
     p.add_argument(
@@ -474,7 +480,7 @@ def _apply_holdout(
     rate, salt = _effective_holdout(args, root)
     return holdout_io.assign_and_log(
         root, slugs, occasion_id=args.occasion_id, rate=rate, salt=salt,
-        relevance=relevance, scorer=scorer, floor=floor,
+        relevance=relevance, scorer=scorer, floor=floor, context=getattr(args, "context", "") or "",
     )
 
 

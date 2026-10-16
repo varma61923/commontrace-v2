@@ -51,6 +51,7 @@ class Assignment:
     scorer: str | None = None
     floor: float | None = None
     schedule: str | None = None  # digest prefix of the allocation schedule that set `rate`
+    context: str | None = None  # pre-treatment label (e.g. agent type) a contextual rate was chosen for
 
 
 @dataclass(frozen=True)

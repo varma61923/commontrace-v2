@@ -379,6 +379,27 @@ class TestSubscriptionLifecycle:
             outcome = await billing.apply_webhook_event(session, settings, event)
         assert "no org for customer" in outcome
 
+    @pytest.mark.parametrize("event", [
+        {"id": "evt_bad_data", "type": "checkout.session.completed", "data": ["not", "an", "object"]},
+        {"id": "evt_bad_meta", "type": "checkout.session.completed",
+         "data": {"object": {"metadata": "plan=team"}}},
+        {"id": "evt_bad_items", "type": "customer.subscription.updated",
+         "data": {"object": {"customer": "cus_x", "items": ["price_t"]}}},
+        {"id": "evt_bad_item", "type": "customer.subscription.updated",
+         "data": {"object": {"customer": "cus_x", "status": "active", "items": {"data": ["price_t"]}}}},
+    ])
+    async def test_a_malformed_signed_event_is_ignored_not_a_500(self, session_factory, org, event):
+        settings = StripeSettings(secret_key="sk", price_team="price_t")
+        async with session_scope(session_factory) as session:
+            o = await session.get(Organization, org)
+            o.plan = "team"
+            o.stripe_customer_id = "cus_x"
+        async with session_scope(session_factory) as session:
+            outcome = await billing.apply_webhook_event(session, settings, event)
+        assert "ignored" in outcome
+        async with session_scope(session_factory) as session:
+            assert (await session.get(Organization, org)).plan == "team"
+
     async def test_an_unhandled_event_type_never_raises(self, session_factory):
         settings = StripeSettings(secret_key="sk")
         event = _event("payment_intent.succeeded", {"id": "pi_1"})

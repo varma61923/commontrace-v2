@@ -434,6 +434,14 @@ def allocate_add_parser(subparsers: argparse._SubParsersAction) -> None:
         default=allocation.ERA_OCCASIONS,
         help="Occasions per era before the next plan (default 250).",
     )
+    en.add_argument(
+        "--mode",
+        choices=allocation.MODES,
+        default="verdict",
+        help="verdict: explore/monitor rates from each memory's verdict (default). "
+        "thompson: the causal gate injects each memory, per occasion context, with the "
+        "posterior probability that it helps there.",
+    )
     en.set_defaults(func=allocate_run_enable)
 
     pl = sub.add_parser("plan", help="Publish the next era's rates from every outcome so far.")
@@ -450,7 +458,21 @@ def allocate_add_parser(subparsers: argparse._SubParsersAction) -> None:
     di = sub.add_parser("disable", help="Return to the experiment's fixed rate from the next assignment on.")
     di.set_defaults(func=allocate_run_disable)
 
-    for parser in (en, pl, sh, ve, di):
+    ga = sub.add_parser(
+        "gate",
+        help="Causal gate: where each memory helps (per context), source reputations, effect drift, "
+        "and an off-policy check of the gate on later occasions.",
+    )
+    ga.add_argument("--json", action="store_true")
+    ga.add_argument("--floor", type=float, default=allocation.MONITOR_RATE,
+                    help="Least withholding probability the gate may set (default 0.05).")
+    ga.add_argument("--alpha", type=float, default=0.05, help="False-discovery rate for drift (default 0.05).")
+    ga.add_argument("--min-arm", type=int, default=10, help="Least assignments per arm in a drift window.")
+    ga.add_argument("--practical", type=float, default=0.10,
+                    help="Smallest change in effect worth calling drift (default 0.10).")
+    ga.set_defaults(func=allocate_run_gate)
+
+    for parser in (en, pl, sh, ve, di, ga):
         parser.add_argument("--dest", default=None)
 
 
@@ -476,14 +498,31 @@ def allocate__describe(s: allocation.Schedule) -> str:
         f"  unlisted memories: {s.default_rate:.0%} withheld",
     ]
     lines += [f"  {lesson}: {rate:.0%} withheld" for lesson, rate in s.rates.items()]
+    for lesson, by_context in s.context_rates.items():
+        lines += [f"    {lesson} in {context!r}: {rate:.0%} withheld" for context, rate in by_context.items()]
     return "\n".join(lines)
+
+
+@allocate__guarded
+def allocate_run_gate(args, root) -> int:
+    import json
+
+    from commontrace import causal_gate
+
+    out = causal_gate.report(root, alpha=args.alpha, min_arm=args.min_arm, practical=args.practical,
+                             floor=args.floor)
+    if args.json:
+        print(json.dumps(out, indent=2, sort_keys=True))
+        return 0
+    print(causal_gate.render(out))
+    return 0
 
 
 @allocate__guarded
 def allocate_run_enable(args, root) -> int:
     from commontrace import allocation
 
-    schedule = allocation.enable(root, allocation.Policy(args.explore, args.monitor, args.era))
+    schedule = allocation.enable(root, allocation.Policy(args.explore, args.monitor, args.era, args.mode))
     print(allocate__describe(schedule))
     return 0
 

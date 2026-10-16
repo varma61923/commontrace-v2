@@ -22,8 +22,10 @@ def build_server_app():
 
     @contextlib.asynccontextmanager
     async def lifespan(_app):
-        yield
-        await engine.dispose()
+        try:
+            yield
+        finally:
+            await engine.dispose()
 
     previous_lifespan = app.router.lifespan_context
 

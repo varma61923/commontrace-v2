@@ -27,14 +27,23 @@ class Schedule:
     previous: str
     created_at: str
     enabled: bool = True
+    # Per-context rates (lesson -> context label -> rate), set by the causal gate.
+    # Omitted from the hashed body when empty, so schedules written before it hash unchanged.
+    context_rates: dict[str, dict[str, float]] = field(default_factory=dict)
     digest: str = field(default="", compare=False)
 
     def body(self) -> dict:
         out = asdict(self)
         out.pop("digest")
+        if not out["context_rates"]:
+            out.pop("context_rates")
         return out
 
-    def rate_for(self, lesson: str) -> float:
+    def rate_for(self, lesson: str, context: str = "") -> float:
+        if context:
+            by_context = self.context_rates.get(lesson)
+            if by_context and context in by_context:
+                return by_context[context]
         return self.rates.get(lesson, self.default_rate)
 
     def effective_at(self) -> datetime.datetime:
@@ -66,6 +75,7 @@ def unscheduled(rows: list, schedules: list[Schedule]) -> list:
             out.append(r)
             continue
         governing = in_force(schedules, r.salt, r.at)
-        if governing is not None and abs(governing.rate_for(r.lesson) - r.rate) > 1e-9:
+        context = getattr(r, "context", None) or ""
+        if governing is not None and abs(governing.rate_for(r.lesson, context) - r.rate) > 1e-9:
             out.append(r)
     return out

@@ -82,6 +82,21 @@ class TestPolicies:
             with pytest.raises(retention.RetentionError, match="positive"):
                 await retention.set_policy(session, org, "trace", 0)
 
+    @pytest.mark.parametrize("days", [36_501, 1_000_000, 2**31, 10**12])
+    async def test_an_age_beyond_the_ceiling_is_refused(self, session_factory, org, days):
+        # 1,000,000 days used to be stored, after which every plan() for the
+        # org overflowed datetime arithmetic and retention could never run.
+        async with session_scope(session_factory) as session:
+            with pytest.raises(retention.RetentionError, match="at most"):
+                await retention.set_policy(session, org, "trace", days)
+
+    async def test_the_ceiling_itself_still_plans(self, session_factory, org):
+        async with session_scope(session_factory) as session:
+            await retention.set_policy(session, org, "trace", retention.MAX_RETENTION_DAYS)
+        async with session_scope(session_factory) as session:
+            plan = await retention.plan(session, org, now=NOW)
+        assert plan.n_doomed == 0
+
     async def test_setting_the_same_policy_twice_updates_rather_than_duplicates(
         self, session_factory, org
     ):

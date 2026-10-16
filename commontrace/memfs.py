@@ -213,9 +213,14 @@ def commit(root: str, message: str, *, verify: bool = True) -> dict:
     return {"ok": True, "committed": True, "commit": memory_git.head_hash(root)}
 
 
+# A revision name for git's argv. It may not start with "-": git would read
+# "--ext-diff" or "--no-index" as an option rather than a revision (CWE-88).
+_REVISION = re.compile(r"(?!-)[A-Za-z0-9._/~^-]{1,80}")
+
+
 def diff(root: str, rev: str | None = None) -> str:
     require_repo(root)
-    if rev and not re.fullmatch(r"[A-Za-z0-9._/~^-]{1,80}", rev):
+    if rev and not _REVISION.fullmatch(rev):
         raise MemfsError(f"not a revision: {rev!r}")
     return _git(root, "diff", "--stat", "--patch", *( [rev] if rev else []), "--", "memory")
 
@@ -223,7 +228,7 @@ def diff(root: str, rev: str | None = None) -> str:
 def restore(root: str, rev: str) -> dict:
     """Put memory/ back to how it was at `rev`, as a new commit; history is kept."""
     require_repo(root)
-    if not re.fullmatch(r"[A-Za-z0-9._/~^-]{1,80}", rev or ""):
+    if not _REVISION.fullmatch(rev or ""):
         raise MemfsError(f"not a revision: {rev!r}")
     full = _git(root, "rev-parse", "--verify", f"{rev}^{{commit}}").strip()
     _git(root, "restore", "--source", full, "--staged", "--worktree", "--", "memory")

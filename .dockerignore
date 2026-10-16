@@ -36,6 +36,7 @@ commontrace/**
 !commontrace/market_listing.py
 !commontrace/allocation_schedule.py
 !commontrace/aipw.py
+!commontrace/causal_gate.py
 !commontrace/origin.py
 !commontrace/telemetry.py
 !commontrace/commons_integrity.py
@@ -140,6 +141,7 @@ commontrace/ingest/*
 !commontrace/memory_control.py
 !commontrace/memory_git.py
 !commontrace/memory_journal.py
+!commontrace/multihop.py
 !commontrace/observations.py
 !commontrace/offline.py
 !commontrace/ontology.py
@@ -155,6 +157,7 @@ commontrace/ingest/*
 !commontrace/provenance.py
 !commontrace/providers.py
 !commontrace/provider_config.py
+!commontrace/query_expansion.py
 !commontrace/ui_commands.py
 !commontrace/query_plan.py
 !commontrace/recall.py

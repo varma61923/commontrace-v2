@@ -30,14 +30,20 @@ def _json_error(status: int, error: str, detail: str = "") -> JSONResponse:
     return JSONResponse(body, status_code=status)
 
 
+def _list_of(value: object) -> list:
+    # OTLP/JSON nests arrays; anything else at those keys is malformed input,
+    # not a reason to raise TypeError out of the route as a 500.
+    return value if isinstance(value, list) else []
+
+
 def _iter_spans(payload: dict):
-    for resource_span in payload.get("resourceSpans") or []:
+    for resource_span in _list_of(payload.get("resourceSpans")):
         if not isinstance(resource_span, dict):
             continue
-        for scope_span in resource_span.get("scopeSpans") or []:
+        for scope_span in _list_of(resource_span.get("scopeSpans")):
             if not isinstance(scope_span, dict):
                 continue
-            for span in scope_span.get("spans") or []:
+            for span in _list_of(scope_span.get("spans")):
                 if isinstance(span, dict):
                     yield span
 
@@ -138,6 +144,11 @@ def add_otlp_routes(
                 except TraceRejected as exc:
                     errors.append({"span_id": span_id, "error": str(exc)})
                 except crud.IdempotencyKeyConflict as exc:
+                    errors.append({"span_id": span_id, "error": str(exc)})
+                except ValueError as exc:
+                    # Unstorable text (an embedded NUL, a lone surrogate) is
+                    # refused before anything is written; it must cost this
+                    # span only, not 500 the request and roll back the batch.
                     errors.append({"span_id": span_id, "error": str(exc)})
                 except EntitlementExceeded as exc:
                     errors.append({"span_id": span_id, "error": str(exc)})

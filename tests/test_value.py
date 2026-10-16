@@ -161,3 +161,24 @@ class TestEdges:
         item = report.memories[0]
         assert not item.counted
         assert "a result rather than an omission" in item.why_not
+
+
+class TestNonFiniteInputsAreRefused:
+    # NaN compares False against every bound, so it used to pass both the
+    # negative-share check and the shares-sum-to-one check and price a
+    # (possibly signed) ledger as NaN.
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+    def test_a_rate_card_tier_must_be_finite(self, bad):
+        with pytest.raises(ValueError, match="non-finite"):
+            value.RateCard(tiers=(value.Tier("L1", bad, 1.0),))
+        with pytest.raises(ValueError, match="non-finite"):
+            value.RateCard(tiers=(value.Tier("L1", 1.0, bad),))
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf"), -1.0])
+    def test_a_per_occasion_value_must_be_finite_and_non_negative(self, bad):
+        with pytest.raises(ValueError, match="value_per_occasion"):
+            value.compute([], sound(), value_per_occasion=bad)
+
+    def test_a_finite_per_occasion_value_is_accepted(self):
+        report = value.compute([], sound(), value_per_occasion=12.5)
+        assert report.value_per_occasion == 12.5

@@ -272,6 +272,14 @@ def _agent(req: dict) -> str:
     return value
 
 
+def _context(req: dict) -> str:
+    """The optional occasion context label a causal-gate schedule may set rates for."""
+    try:
+        return holdout_io.context_label(req.get("context"))
+    except ValueError as exc:
+        raise _bad(str(exc)) from None
+
+
 def _items(value) -> list[dict]:
     if not isinstance(value, list):
         raise _bad("items must be a list")
@@ -475,6 +483,8 @@ class Gateway:
             "query": "optional string; ranks this store's lessons when `items` is absent",
             "top_k": "optional integer for store mode",
             "agent_id": "optional string: which agent or robot",
+            "context": "optional string: a short label for the kind of occasion (task family, agent type); "
+                       "the causal gate learns where each memory helps per context",
             "env": "optional string: must equal the store's environment if it has one",
         }, summary="Which memories to deliver on this occasion, which to withhold, which are withdrawn.")
         self._route("POST", "/v1/outcome", self._outcome, request={
@@ -1618,6 +1628,7 @@ class Gateway:
     def _recall(self, req: dict, _query) -> dict:
         occasion = _ident(req.get("occasion_id"), "occasion_id")
         agent = _agent(req)
+        context = _context(req)
         self._check_env(req)
         mode = "items" if req.get("items") is not None else "store"
         scope = self._request_scope()
@@ -1642,7 +1653,7 @@ class Gateway:
                 lambda _q, **_kw: clean, root=self.root, key=lambda i: i["id"],
                 text=lambda i: i["text"] or None, pinned=protected, scorer=f"gateway:{mode}",
                 harm_watch=self._watch, durable=self.durable)
-            result = memory.recall_detailed("", occasion_id=occasion)
+            result = memory.recall_detailed("", occasion_id=occasion, context=context)
             delivered = [dict(i) for i in result.items]
             withdrawn = result.withdrawn
         else:

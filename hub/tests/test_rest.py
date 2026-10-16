@@ -263,6 +263,13 @@ class TestKeyProvisioning:
         assert response.headers["cache-control"] == "no-store"
 
 
+class TestKeyProvisioningRefusesUnstorableNames:
+    async def test_a_nul_in_the_name_is_a_400_not_a_500(self, session_factory, config):
+        async with _client(_app(session_factory, config)) as client:
+            response = await client.post("/api/v1/keys", json={"display_name": "Agent\x00Co"})
+        assert response.status_code == 400
+
+
 class TestAuthentication:
     async def test_a_missing_key_is_refused_before_any_work(self, session_factory, config):
         async with _client(_app(session_factory, config)) as client:
@@ -309,6 +316,33 @@ class TestAuthAttemptBudget:
             refused = await client.post(
                 "/api/v1/traces/search", json={"q": "x"}, headers=_key("ct_live_wrong"))
         assert refused.status_code == 429
+
+
+class TestPerOrgRequestBudget:
+    async def test_a_valid_key_cannot_drive_unmetered_search(self, session_factory, config):
+        tight = replace(config, read_rate_limit_per_minute=1, read_rate_limit_burst=3)
+        _org_id, raw_key = await _org_with_key(session_factory)
+        async with _client(_app(session_factory, tight)) as client:
+            for _ in range(3):
+                response = await client.post(
+                    "/api/v1/traces/search", json={"q": "anything"}, headers=_key(raw_key))
+                assert response.status_code == 200
+            refused = await client.post(
+                "/api/v1/traces/search", json={"q": "anything"}, headers=_key(raw_key))
+        assert refused.status_code == 429
+        assert int(refused.headers["Retry-After"]) >= 1
+
+    async def test_one_orgs_budget_does_not_spend_anothers(self, session_factory, config):
+        tight = replace(config, read_rate_limit_per_minute=1, read_rate_limit_burst=1)
+        _a, key_a = await _org_with_key(session_factory, name="A")
+        _b, key_b = await _org_with_key(session_factory, name="B")
+        async with _client(_app(session_factory, tight)) as client:
+            assert (await client.post(
+                "/api/v1/traces/search", json={"q": "x"}, headers=_key(key_a))).status_code == 200
+            assert (await client.post(
+                "/api/v1/traces/search", json={"q": "x"}, headers=_key(key_a))).status_code == 429
+            assert (await client.post(
+                "/api/v1/traces/search", json={"q": "x"}, headers=_key(key_b))).status_code == 200
 
 
 class TestScopes:

@@ -223,9 +223,14 @@ def _post_json(url: str, headers: dict, payload: dict, *, timeout: float | None 
                 f"Provider returned HTTP {error.code}") from error
         raise LLMUnavailable("Provider request failed") from error
     try:
-        return json.loads(raw)
+        data = json.loads(raw)
     except ValueError as exc:
         raise LLMUnavailable(f"{url} returned a non-JSON response") from exc
+    # Every caller reads fields off an object; an array or scalar would raise
+    # AttributeError past the LLMUnavailable handlers instead of degrading.
+    if not isinstance(data, dict):
+        raise LLMUnavailable(f"{url} returned JSON that is not an object")
+    return data
 
 
 def _call_anthropic(config: Config, prompt: str) -> tuple[str, dict]:

@@ -527,6 +527,26 @@ class IpAllowlistMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+async def _join_background_tasks(tasks: list[asyncio.Task], grace_seconds: float) -> None:
+    """Wait for stopped background loops, cancelling any still running after the grace period.
+
+    The loops exit at their next stop_event check, but one may be mid-sweep --
+    a webhook POST to a slow receiver, a connector call -- and an unbounded
+    join would hold shutdown open past the orchestrator's own kill deadline.
+    A loop that already died with an exception is logged rather than raised,
+    so it cannot abort the rest of the lifespan teardown (engine disposal).
+    """
+    if not tasks:
+        return
+    _done, pending = await asyncio.wait(tasks, timeout=grace_seconds if grace_seconds > 0 else None)
+    for task in pending:
+        logger.warning("background task %s did not stop within %ss; cancelling it", task.get_name(), grace_seconds)
+        task.cancel()
+    for result in await asyncio.gather(*tasks, return_exceptions=True):
+        if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
+            logger.error("background task failed before shutdown", exc_info=result)
+
+
 def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rate_limiter: RateLimiter):
     from mcp.server.mcpserver import MCPServer
 
@@ -1454,8 +1474,8 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
     async def list_my_notifications(unread_only: bool = False) -> dict:
         """Your own inbox: 'you were assigned a trace' / 'someone commented
         on a trace assigned to you'. Requires a signed-in PERSON -- there
-        is no per-person inbox for a shared API key. Mark one read with
-        `mark_notification_read`."""
+        is no per-person inbox for a shared API key. Newest first, at most
+        the 200 most recent. Mark one read with `mark_notification_read`."""
         try:
             org_id = auth.get_current_org_id()
             person = auth.get_current_user()
@@ -1707,7 +1727,7 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
                 yield
             finally:
                 stop_event.set()
-                await asyncio.gather(*tasks)
+                await _join_background_tasks(tasks, config.graceful_shutdown_seconds)
 
     inner_app.router.lifespan_context = _lifespan_with_scheduler
     inner_app.add_middleware(

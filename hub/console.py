@@ -8,6 +8,7 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import time
 from collections.abc import Mapping
 from datetime import datetime, timezone
@@ -45,8 +46,7 @@ SESSION_COOKIE = "ct_console"
 
 SESSION_TTL_SECONDS = 8 * 60 * 60
 
-# Far enough out for any real rotation policy, and well inside datetime's range.
-MAX_KEY_EXPIRY_DAYS = 3650
+MAX_KEY_EXPIRY_DAYS = auth.MAX_KEY_EXPIRY_DAYS
 
 MAX_EMAIL_CHARS = 320
 MAX_DISPLAY_NAME_CHARS = 200
@@ -1766,6 +1766,9 @@ def add_console_routes(
         try:
             rate = float(request.query_params.get("per_occasion") or 0) or None
         except ValueError:
+            rate = None
+        # float() accepts "nan"/"inf"; neither prices an occasion.
+        if rate is not None and not (math.isfinite(rate) and rate > 0):
             rate = None
         async with session_scope(session_factory) as session:
             outcomes = await crud.fleet_outcomes(session, org_id)

@@ -801,7 +801,7 @@ def _render_org(d: dict, admin_token: str, flash: str = "", fresh_key: str = "")
         f'<fieldset style="border:0;padding:0;display:contents"><legend class="sr-only">Scopes'
         f'</legend>{key_scope_options}</fieldset>'
         '<label class="sr-only" for="issue-key-expires">Expires in N days</label>'
-        '<input type="number" id="issue-key-expires" name="expires_days" min="1" '
+        f'<input type="number" id="issue-key-expires" name="expires_days" min="1" max="{auth.MAX_KEY_EXPIRY_DAYS}" '
         'placeholder="expires in N days (blank = never)">'
         '<button type="submit" class="btn warn">Issue a key</button></form>'
         '<p class="empty" style="margin-top:.4rem">Needed once, at onboarding: a brand-new '
@@ -1833,10 +1833,25 @@ def add_admin_routes(
         if not chosen_scopes:
             return await _org_view(org_id, admin_token, flash="Select at least one scope.")
         raw_days = str(form.get("expires_days", "")).strip()
+        expires_days = None
+        if raw_days:
+            # As on the customer console: a value that does not parse must not
+            # silently become a key that never expires.
+            try:
+                expires_days = int(raw_days)
+            except ValueError:
+                expires_days = 0
+            if not 1 <= expires_days <= auth.MAX_KEY_EXPIRY_DAYS:
+                return await _org_view(org_id, admin_token, flash=(
+                    f"Expiry must be a whole number of days from 1 to {auth.MAX_KEY_EXPIRY_DAYS}, "
+                    "or blank for a key that never expires."))
         try:
-            expires_days = int(raw_days) if raw_days else None
-        except ValueError:
-            expires_days = None
+            issued = await _issue_key_with_audit(org_id, expires_days, chosen_scopes)
+        except ValueError as exc:  # ScopeError included: an unknown scope name
+            return await _org_view(org_id, admin_token, flash=f"Could not issue a key: {exc}")
+        return await _org_view(org_id, admin_token, fresh_key=issued.raw_key)
+
+    async def _issue_key_with_audit(org_id: str, expires_days: int | None, chosen_scopes: list):
         async with session_scope(session_factory) as session:
             issued = await auth.issue_api_key(
                 session, org_id, expires_days=expires_days, scopes=chosen_scopes)
@@ -1845,7 +1860,7 @@ def add_admin_routes(
                 org_id=org_id, target_type="api_key", target_id=issued.key_id,
                 summary=f"prefix={issued.key_prefix} scopes={','.join(issued.scopes)}",
             )
-        return await _org_view(org_id, admin_token, fresh_key=issued.raw_key)
+        return issued
 
     async def keys_rotate(request: Request) -> Response:
         form, key_id, denied = await _moderate(request, "key_id", action_of="rotate_key")

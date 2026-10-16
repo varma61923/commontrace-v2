@@ -10,7 +10,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from hub import audit, auth, crud, scopes
-from hub.abuse import RateLimited, TraceRejected, make_named_limiter, rate_limit_key
+from hub.abuse import RateLimited, TraceRejected, make_named_limiter, rate_limit_key, reject_unstorable_text
 from hub.config import HubConfig
 from hub.db import session_scope
 from hub.market import add_market_routes
@@ -94,6 +94,25 @@ def add_rest_routes(
 
         jwks_cache = JWKSCache(fetch_jwks)
     signup_limiter = make_named_limiter(config, 1, 2, "signup")
+    # Per-org ceiling on authenticated calls, the REST twin of the MCP
+    # middleware's read limiter: the auth limiter above is refunded for a
+    # valid key, so without this one a single key could drive unmetered
+    # ranked search and memory queries through /api/v1.
+    org_limiter = make_named_limiter(
+        config, config.read_rate_limit_per_minute, config.read_rate_limit_burst, "rest_read"
+    )
+
+    async def _admit(request: Request, authenticated):
+        if request.method == "DELETE":
+            return authenticated, None
+        allowed, retry_after = await org_limiter.check(authenticated.org_id)
+        if allowed:
+            return authenticated, None
+        return None, JSONResponse(
+            {"error": "rate_limited", "detail": "too many requests"},
+            status_code=429,
+            headers={"Retry-After": str(max(1, math.ceil(retry_after)))},
+        )
 
     async def _authenticate(request: Request):
         client_key = rate_limit_key(request, trusted_proxy_hops)
@@ -119,9 +138,9 @@ def add_rest_routes(
                     from hub import rbac
 
                     auth_limiter.refund(client_key)
-                    return auth.AuthenticatedKey(
+                    return await _admit(request, auth.AuthenticatedKey(
                         person.org_id, f"user:{person.id}", rbac.scopes_of(person.role),
-                    ), None
+                    ))
             return None, _json_error(401, "unauthorized", "OIDC bearer token was rejected or is not linked")
         if not raw_key:
             return None, _json_error(401, "unauthorized", "X-API-Key or linked OIDC bearer token is required")
@@ -131,7 +150,7 @@ def add_rest_routes(
             return None, _json_error(401, "unauthorized", "that key was not accepted")
         # The limiter bounds failed guesses; a valid key must not spend the budget.
         auth_limiter.refund(client_key)
-        return authenticated, None
+        return await _admit(request, authenticated)
 
     def _require_scope(authenticated, required: str) -> Response | None:
         if not scopes.satisfies(authenticated.scopes, required):
@@ -165,6 +184,10 @@ def add_rest_routes(
             return _json_error(
                 400, "bad_request", "one of display_name or email is required"
             )
+        try:
+            reject_unstorable_text(org_name, "display_name")
+        except ValueError as exc:
+            return _json_error(400, "bad_request", str(exc))
 
         async with session_scope(session_factory) as session:
             org = Organization(name=org_name)

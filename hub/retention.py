@@ -27,6 +27,12 @@ _FIELD_SEP = "\x1f"
 
 STATUS_ANY = "any"
 
+# A century. Far beyond any real retention schedule, and well inside both the
+# Integer column and datetime arithmetic: an age past ~739,000 days made
+# `now - timedelta(days=age)` overflow, so every later plan() for the org
+# raised and its retention could never run again.
+MAX_RETENTION_DAYS = 36_500
+
 BLOCKED_EXPERIMENT_RUNNING = (
     "the org's randomized holdout is running -- deleting arm assignments "
     "mid-experiment is differential attrition, not data hygiene"
@@ -190,6 +196,11 @@ async def set_policy(
             "a retention age must be a positive number of days; to delete "
             "everything of a type, purge it explicitly rather than "
             "configuring an age of zero"
+        )
+    if max_age_days > MAX_RETENTION_DAYS:
+        raise RetentionError(
+            f"a retention age may be at most {MAX_RETENTION_DAYS} days (asked for "
+            f"{max_age_days}); to keep {kind.name} indefinitely, clear the policy instead"
         )
     if max_age_days < kind.floor_days:
         raise RetentionError(

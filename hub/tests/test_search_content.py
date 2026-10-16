@@ -57,6 +57,21 @@ class TestLiteralMatch:
         assert len(results) == 1
         assert results[0]["matched_field"] == "solution_text"
 
+    @pytest.mark.parametrize("pattern,lookalike", [
+        ("a_b@example.com", "aXb@example.com"),
+        ("100%", "1000 requests"),
+        ("_", "no underscore anywhere"),
+        ("C:\\temp", "C:temp"),
+    ])
+    async def test_like_wildcards_in_the_pattern_match_only_themselves(
+        self, session_factory, org, pattern, lookalike,
+    ):
+        await _trace(session_factory, org, context=f"seen in {lookalike}")
+        exact = await _trace(session_factory, org, context=f"seen in {pattern}")
+        async with session_scope(session_factory) as session:
+            results = await crud.search_trace_content(session, org, pattern)
+        assert [r["id"] for r in results] == [exact]
+
     async def test_no_match_returns_empty_not_an_error(self, session_factory, org):
         await _trace(session_factory, org, context="nothing relevant here")
         async with session_scope(session_factory) as session:

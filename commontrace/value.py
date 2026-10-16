@@ -36,6 +36,11 @@ class RateCard:
         if not self.tiers:
             raise ValueError("a rate card needs at least one tier")
         for tier in self.tiers:
+            # NaN compares False against everything, so without this check a
+            # NaN share or cost would slip past every guard below (including
+            # the sum-to-one test) and price the ledger as NaN.
+            if not (math.isfinite(tier.share) and math.isfinite(tier.cost_per_occasion)):
+                raise ValueError(f"tier {tier.name!r} has a non-finite share or cost per occasion")
             if tier.share < 0:
                 raise ValueError(f"tier {tier.name!r} has a negative share")
             if tier.cost_per_occasion < 0:
@@ -383,6 +388,13 @@ def compute(
     now=None,
 ) -> ValueReport:
     """Causal value delivered, or a refusal to state one."""
+    if value_per_occasion is not None and not (
+        isinstance(value_per_occasion, (int, float))
+        and math.isfinite(value_per_occasion) and value_per_occasion >= 0
+    ):
+        raise ValueError(
+            f"value_per_occasion must be a finite, non-negative number, got {value_per_occasion!r}"
+        )
     policy = policy_effect(assignments) if assignments is not None else None
     if assignments is not None and overlap is None:
         overlap = overlap_from_assignments(assignments)

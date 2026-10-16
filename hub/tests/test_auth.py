@@ -141,6 +141,17 @@ async def test_expires_days_must_be_positive(session_factory, config):
             await auth.issue_api_key(session, org_id, expires_days=-5)
 
 
+async def test_expires_days_has_a_ceiling(session_factory, config):
+    # 10**7 days used to overflow datetime arithmetic as an unhandled error.
+    org_id = await _make_org(session_factory)
+    async with session_scope(session_factory) as session:
+        for days in (auth.MAX_KEY_EXPIRY_DAYS + 1, 10**7):
+            with pytest.raises(ValueError, match="at most"):
+                await auth.issue_api_key(session, org_id, expires_days=days)
+        issued = await auth.issue_api_key(session, org_id, expires_days=auth.MAX_KEY_EXPIRY_DAYS)
+    assert issued.key_id
+
+
 async def test_non_expiring_key_by_default(session_factory, config):
     org_id = await _make_org(session_factory)
     async with session_scope(session_factory) as session:

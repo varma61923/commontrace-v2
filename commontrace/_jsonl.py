@@ -112,6 +112,14 @@ def append_row(path: str, row: dict[str, Any]) -> None:
     data = (json.dumps(row, ensure_ascii=False) + "\n").encode("utf-8")
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     try:
-        os.write(fd, data)
+        # os.write may write fewer bytes than asked (a signal, a nearly full
+        # disk, some network filesystems). A dropped tail leaves a truncated
+        # line that read_rows silently skips, so keep writing until done.
+        view = memoryview(data)
+        while view:
+            written = os.write(fd, view)
+            if written <= 0:
+                raise OSError(f"could not append to {path}: write made no progress")
+            view = view[written:]
     finally:
         os.close(fd)

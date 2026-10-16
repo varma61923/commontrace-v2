@@ -346,3 +346,70 @@ class TestAuthLimiterChargesOnlyFailedCredentials:
         allowed = [await limiter.allow("9.9.9.9") for _ in range(20)]
         assert allowed[:5] == [True] * 5
         assert False in allowed[5:]
+
+
+class TestRateLimiterEvictionIsLeastRecentlyUsed:
+    @pytest.mark.asyncio
+    async def test_the_least_recently_used_key_is_evicted_first(self, monkeypatch):
+        monkeypatch.setattr(RateLimiter, "_MAX_TRACKED_KEYS", 3)
+        limiter = RateLimiter(per_minute=600, burst=10)
+        for key in ("a", "b", "c"):
+            await limiter.allow(key)
+        await limiter.allow("a")  # "b" is now the least recently used
+        await limiter.allow("d")
+        assert set(limiter._buckets) == {"a", "c", "d"}
+
+    @pytest.mark.asyncio
+    async def test_a_full_table_does_not_cost_a_scan_per_new_key(self, monkeypatch):
+        # The eviction used to min() over every tracked bucket for each new
+        # key once full: rotating source addresses forced an O(N) scan under
+        # the lock per request. Here that was ~10^8 key comparisons.
+        import time as _time
+
+        monkeypatch.setattr(RateLimiter, "_MAX_TRACKED_KEYS", 20_000)
+        limiter = RateLimiter(per_minute=600, burst=10)
+        for i in range(20_000):
+            await limiter.allow(f"fill-{i}")
+        started = _time.perf_counter()
+        for i in range(5_000):
+            await limiter.allow(f"attacker-{i}")
+        assert _time.perf_counter() - started < 5.0
+        assert len(limiter._buckets) <= 20_000
+
+
+class TestBackgroundTasksJoinWithinTheGracePeriod:
+    @pytest.mark.asyncio
+    async def test_a_task_that_will_not_stop_is_cancelled(self):
+        import asyncio
+
+        from hub.server import _join_background_tasks
+
+        cancelled = asyncio.Event()
+
+        async def stuck():
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        task = asyncio.create_task(stuck())
+        await asyncio.sleep(0)
+        await asyncio.wait_for(_join_background_tasks([task], 0.05), timeout=5)
+        assert cancelled.is_set()
+
+    @pytest.mark.asyncio
+    async def test_a_crashed_task_does_not_abort_shutdown(self):
+        import asyncio
+
+        from hub.server import _join_background_tasks
+
+        async def crash():
+            raise RuntimeError("loop died")
+
+        async def finishes():
+            return "ok"
+
+        tasks = [asyncio.create_task(crash()), asyncio.create_task(finishes())]
+        await _join_background_tasks(tasks, 1)
+        assert tasks[1].result() == "ok"

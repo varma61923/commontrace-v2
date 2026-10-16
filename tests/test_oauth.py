@@ -108,6 +108,11 @@ def test_each_supported_algorithm_verifies(server, keys, alg):
     (lambda k: k.sign(claims(), header={"crit": ["exp"]}), "critical"),
     (lambda k: k.sign(claims())[:-6] + "AAAAAA", "signature"),
     (lambda k: "not.a.jwt!", "base64url"),
+    # json.dumps writes NaN/Infinity and json.loads reads them back; NaN fails
+    # every comparison, so a NaN expiry used to be treated as never expiring.
+    (lambda k: k.sign(claims(exp=float("nan"))), "expired"),
+    (lambda k: k.sign(claims(exp=float("inf"))), "expired"),
+    (lambda k: k.sign(claims(nbf=float("nan"))), "nbf"),
 ])
 def test_bad_tokens_are_refused(server, keys, mutate, reason):
     with pytest.raises(oauth.InvalidToken, match=reason):

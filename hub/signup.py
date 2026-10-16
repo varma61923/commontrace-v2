@@ -6,7 +6,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, Response
 
 from hub import audit
-from hub.abuse import make_named_limiter, rate_limit_key
+from hub.abuse import make_named_limiter, rate_limit_key, reject_unstorable_text
 from hub.admin import _CSS, _FORM_GUARD_SCRIPT, h, html_headers, refuse_cross_origin, secret_field
 from hub.auth import issue_api_key
 from hub.db import session_scope
@@ -104,6 +104,10 @@ def add_signup_routes(
                 error='<p class="err" role="alert">Something went wrong. Please try again.</p>',
             ))
         org_name = str(form.get("org_name") or "").strip()
+        try:
+            reject_unstorable_text(org_name, "org_name")
+        except ValueError:
+            org_name = ""  # an embedded NUL or lone surrogate: refuse like any invalid name
         if not (MIN_NAME_CHARS <= len(org_name) <= MAX_NAME_CHARS):
             return _page("Create account", _FORM.format(
                 path=SIGNUP_PATH,

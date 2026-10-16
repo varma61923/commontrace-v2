@@ -87,6 +87,24 @@ class TestCreateRule:
                     10.0, cooldown_minutes=0,
                 )
 
+    @pytest.mark.parametrize("cooldown", [alerts.MAX_COOLDOWN_MINUTES + 1, 2**31])
+    async def test_an_oversized_cooldown_is_refused_not_a_database_error(self, session_factory, org, cooldown):
+        async with session_scope(session_factory) as session:
+            with pytest.raises(alerts.AlertError, match="at most"):
+                await alerts.create_rule(
+                    session, org, alerts.METRIC_QUARANTINE_RATE, alerts.COMPARATOR_GT,
+                    10.0, cooldown_minutes=cooldown,
+                )
+
+    @pytest.mark.parametrize("threshold", [float("nan"), float("inf"), float("-inf")])
+    async def test_a_non_finite_threshold_is_refused(self, session_factory, org, threshold):
+        # A NaN threshold fails every comparison: the rule could never fire.
+        async with session_scope(session_factory) as session:
+            with pytest.raises(alerts.AlertError, match="finite"):
+                await alerts.create_rule(
+                    session, org, alerts.METRIC_QUARANTINE_RATE, alerts.COMPARATOR_GT, threshold,
+                )
+
     async def test_an_unknown_org_is_refused(self, session_factory):
         async with session_scope(session_factory) as session:
             with pytest.raises(alerts.AlertError, match="no such organization"):

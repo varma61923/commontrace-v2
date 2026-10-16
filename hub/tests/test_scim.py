@@ -665,3 +665,57 @@ class TestGroupsRoutesEndToEnd:
             )
             assert removed.status_code == 200
             assert removed.json()["members"] == []
+
+
+class TestHostileInputIsA400NotA500:
+    """Values Postgres refuses must be rejected before the database sees them;
+    an unhandled 500 makes the identity provider retry the same call forever."""
+
+    @pytest.mark.parametrize("body", [
+        {"userName": "x" * 321 + "@example.com"},
+        {"userName": "nul\x00@example.com"},
+        {"userName": "ok@example.com", "displayName": "d" * 201},
+    ])
+    async def test_an_unstorable_user_is_refused(self, session_factory, org, body):
+        headers = _auth(await _issue(session_factory, org, ["scim"]))
+        async with _client(_app(session_factory)) as client:
+            resp = await client.post("/scim/v2/Users", headers=headers, json=body)
+        assert resp.status_code == 400
+        assert resp.json()["scimType"] == "invalidValue"
+
+    async def test_an_unstorable_display_name_on_put_is_refused(self, session_factory, org):
+        headers = _auth(await _issue(session_factory, org, ["scim"]))
+        async with _client(_app(session_factory)) as client:
+            created = await client.post("/scim/v2/Users", headers=headers, json={"userName": "p@example.com"})
+            resp = await client.put(
+                f"/scim/v2/Users/{created.json()['id']}", headers=headers, json={"displayName": "d" * 201},
+            )
+        assert resp.status_code == 400
+
+    async def test_a_rejected_group_patch_applies_none_of_its_operations(self, session_factory, org):
+        headers = _auth(await _issue(session_factory, org, ["scim"]))
+        async with _client(_app(session_factory)) as client:
+            user = (await client.post("/scim/v2/Users", headers=headers, json={"userName": "m@example.com"})).json()
+            group = (await client.post("/scim/v2/Groups", headers=headers, json={"displayName": "eng"})).json()
+            resp = await client.patch(f"/scim/v2/Groups/{group['id']}", headers=headers, json={"Operations": [
+                {"op": "add", "path": "members", "value": [{"value": user["id"]}]},
+                {"op": "replace", "path": "displayName", "value": "n" * 201},
+            ]})
+            assert resp.status_code == 400
+            after = await client.get(f"/scim/v2/Groups/{group['id']}", headers=headers)
+        assert after.json()["displayName"] == "eng"
+        assert after.json()["members"] == []
+
+    @pytest.mark.parametrize("path", ["/scim/v2/Users", "/scim/v2/Groups"])
+    async def test_a_huge_start_index_is_an_empty_page(self, session_factory, org, path):
+        headers = _auth(await _issue(session_factory, org, ["scim"]))
+        async with _client(_app(session_factory)) as client:
+            resp = await client.get(path, headers=headers, params={"startIndex": str(10**20)})
+        assert resp.status_code == 200
+        assert resp.json()["Resources"] == []
+
+    async def test_a_nul_in_a_filter_is_refused(self, session_factory, org):
+        headers = _auth(await _issue(session_factory, org, ["scim"]))
+        async with _client(_app(session_factory)) as client:
+            resp = await client.get("/scim/v2/Users", headers=headers, params={"filter": 'userName eq "a\x00b"'})
+        assert resp.status_code == 400

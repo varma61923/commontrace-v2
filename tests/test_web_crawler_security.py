@@ -105,3 +105,44 @@ def test_oversized_robots_fails_closed(monkeypatch):
 
     monkeypatch.setattr(web_crawler, "_get", oversized)
     assert not web_crawler._robots_allowed("https://example.com/private", "bot", 1)
+
+
+class TestHtmlConversionIsLinear:
+    """Hostile pages must not turn the converter quadratic: the regex version
+    rescanned to the end of the page from every unclosed opener and needed
+    minutes for one 512 KB page of `<script>` or `<!--`."""
+
+    @pytest.mark.parametrize("unit", ["<script>", "<!--", "<h1>", "<", "<!x", "<style a='"])
+    def test_a_maximum_size_hostile_page_converts_quickly(self, unit):
+        import time
+
+        from commontrace.connectors.web_crawler import MAX_PAGE_BYTES, _html_to_markdown_text
+
+        page = unit * (MAX_PAGE_BYTES // len(unit))
+        started = time.perf_counter()
+        _html_to_markdown_text(page)
+        assert time.perf_counter() - started < 5.0
+
+    def test_the_markdown_shape_is_unchanged(self):
+        from commontrace.connectors.web_crawler import _html_to_markdown_text
+
+        page = (
+            "<!DOCTYPE html><head><style>b{}</style><script>var a='<p>x</p>'</script></head>"
+            "<h1 class='t'>Main <b>Title</b></h1><p>Fish &amp; chips</p><!-- gone -->"
+            "<div>Block<br>line</div><H2>Sub</H2><noscript>js</noscript>tail"
+        )
+        # Byte-for-byte what the previous regex implementation produced.
+        assert _html_to_markdown_text(page) == "# Main Title\n\nFish & chips\nBlock\nline\n## Sub\n\ntail"
+
+    def test_an_unclosed_script_hides_the_rest_of_the_page_like_a_browser(self):
+        from commontrace.connectors.web_crawler import _html_to_markdown_text
+
+        assert _html_to_markdown_text("before<script>steal(document.cookie) never closed") == "before"
+
+    def test_offsets_survive_text_whose_lowercase_changes_length(self):
+        from commontrace.connectors.web_crawler import _html_to_markdown_text
+
+        # "İ".lower() is two code points; offsets from a str.lower() copy
+        # would drift and cut the page in the wrong places.
+        page = "İ" * 50 + "<script>hidden</script><h1>Kept</h1>"
+        assert _html_to_markdown_text(page) == "İ" * 50 + "\n\n# Kept"

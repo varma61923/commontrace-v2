@@ -133,8 +133,13 @@ class CausalMemory:
     def recall(self, query: Any, *, occasion_id: str, **kwargs: Any) -> list[Any]:
         return self.recall_detailed(query, occasion_id=occasion_id, **kwargs).items
 
-    def recall_detailed(self, query: Any, *, occasion_id: str, record: bool = True, **kwargs: Any) -> Recall:
-        """`recall`, plus which memories were withdrawn for measured harm."""
+    def recall_detailed(self, query: Any, *, occasion_id: str, record: bool = True, context: str = "",
+                        **kwargs: Any) -> Recall:
+        """`recall`, plus which memories were withdrawn for measured harm.
+
+        `context` labels the kind of occasion (a task family, an agent type) so a
+        causal-gate schedule can inject each memory where it measurably helps.
+        """
         if not isinstance(occasion_id, str) or not occasion_id.strip():
             raise ValueError("occasion_id must be a non-empty string")
         items = list(self._retrieve(query, **kwargs))
@@ -182,11 +187,11 @@ class CausalMemory:
             if record:
                 withheld = holdout_io.assign_and_log(self._root, ids, occasion_id=occasion_id,
                     rate=config.rate, salt=config.salt, scorer=self._scorer,
-                    revisions=revisions, durable=self._durable)
+                    revisions=revisions, durable=self._durable, context=context)
             else:
                 withheld, assignments = holdout_io.plan_assignments(self._root, ids, occasion_id=occasion_id,
                     rate=config.rate, salt=config.salt, scorer=self._scorer,
-                    revisions=revisions, durable=self._durable)
+                    revisions=revisions, durable=self._durable, context=context)
         return Recall(
             items=[item for item_id, item in keyed if item_id not in withheld], withdrawn=removed,
             assignments=assignments,

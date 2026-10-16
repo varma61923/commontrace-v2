@@ -72,3 +72,22 @@ def test_invalid_observations_do_not_poison_scrapes(value):
     telemetry.count('injected\n# TYPE hacked counter')
     telemetry.count('requests', **{'bad-label': 'x'})
     assert telemetry.metrics() == {'counters': [], 'histograms': []}
+
+
+@pytest.mark.parametrize("budget", [0, -3])
+def test_a_non_positive_retry_budget_still_makes_one_attempt(budget):
+    calls = []
+
+    def succeed():
+        calls.append(1)
+        return "done"
+
+    assert retry.call_with_retries(succeed, max_retries=budget, sleep=lambda _: None) == ("done", None)
+
+    def fail():
+        calls.append(1)
+        raise urllib.error.HTTPError("http://x", 400, "bad", {}, None)
+
+    value, error = retry.call_with_retries(fail, max_retries=budget, sleep=lambda _: None)
+    assert value is None and isinstance(error, urllib.error.HTTPError)
+    assert len(calls) == 2

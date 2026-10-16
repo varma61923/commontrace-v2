@@ -124,7 +124,7 @@ def test_query_entities_seed_two_hop_evidence_without_lexical_overlap(root):
 
 
 @pytest.mark.parametrize("prefix", ["", "memory:"])
-@pytest.mark.parametrize("retriever", ["hybrid", "planned", "graph-completion"])
+@pytest.mark.parametrize("retriever", ["hybrid", "planned", "graph-completion", "multi-hop", "ppr", "expanded", "hyde"])
 def test_a_private_fact_cannot_bridge_to_otherwise_visible_evidence(root, prefix, retriever):
     private = add(root, "a private relationship", scopes=["agent:other"])
     target = add(root, "a hidden route to public evidence", scopes=["agent:reader"])
