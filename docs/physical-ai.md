@@ -57,6 +57,7 @@ content has the age of its last signed update: enforce freshness/sensor checks
 before high-consequence planning. The first head needs a trusted provisioning
 channel; an unwitnessed complete-history replacement is not detectable.
 
-Use `docs/recovery.md`, `docs/spatial.md` and `docs/safety.md` for recovery trials,
-two-clock object maps and retained safety evidence. LeRobot/RECAP-style value
-metadata exports are described in `docs/valuation.md`.
+Use the [recovery](recovery.md), [spatial memory](spatial.md) and
+[safety](safety.md) workflows for recovery trials, two-clock object maps and
+retained safety evidence. LeRobot/RECAP-style value metadata exports are described
+in [valuation](valuation.md).

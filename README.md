@@ -244,11 +244,17 @@ release evidence, harm-budget admission, incident freezes, protected safety
 memory, utility retention, context economics, scoped recovery/spatial memory,
 valuation, targeting and optional robot/vendor integrations.
 
-Start with the [feature-by-feature tracker](docs/frontier-roadmap.md),
+Start with the [feature status and workflow links](#project-status),
 [guarantees and assumptions](docs/guarantees.md), and
 [physical-AI quickstart](docs/physical-ai.md). Production model training, secured
 seller sandboxes and vendor authentication are pluggable deployment interfaces;
 the CPU trainer, mock robot loop and metadata ingest do not claim to replace them.
+
+The `frontier` CLI accepts a bounded JSON request and `--dest STORE`. Run
+`commontrace frontier --help` for the operation list. Dedicated `lineage`, `log`,
+`incident`, `promote`, `safety`, `experiment`, `allocate`, `dream`, `retrieval` and
+`defense` workflows remain available. Existing stores retain their canonical
+legacy hashes and defaults.
 
 ## Project status
 
@@ -296,7 +302,22 @@ make test        # tests and e2e_tests
 make coverage    # with the 80% gate
 ```
 
-CI also runs strict type checks on the core modules, bandit, pip-audit, CodeQL, a latency gate, the SDK builds, Docker and Compose smoke tests, and an architecture audit.
+To check the Hub and generated API contracts:
+
+```bash
+python scripts/dev.py test --hub -q  # requires HUB_TEST_DATABASE_URL: disposable PostgreSQL 16
+python scripts/export_openapi.py --check
+python scripts/export_hub_openapi.py --check
+```
+
+CI also runs strict type checks on the core modules, bandit, pip-audit, CodeQL,
+a latency gate, the SDK builds, Docker and Compose smoke tests, and an architecture
+audit. The exact gates are defined in [CI](.github/workflows/ci.yml),
+[security checks](.github/workflows/security.yml), and the
+[architecture audit](.github/workflows/graphify.yml). See the branch's
+[Actions runs](https://github.com/varma61923/commontrace-v2/actions) for current
+results. Optional integrations use mocks or local fixtures; CI does not exercise
+live vendor requests, payments, enclaves or robot actuation.
 
 ## License
 

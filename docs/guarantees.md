@@ -35,5 +35,6 @@ Validation includes seeded tests for predictable betting, conformal conservatism
 promotion, write-back contamination, detector debiasing, factorial interactions,
 uplift rejection/power and culprit recovery. Adversarial tests cover tampering,
 forgery, cross-owner reads, lineage laundering, over-budget queries and unsigned
-or forked edge updates. See the PR validation record for actual commands and
-results; optional vendor/cloud/ROS hardware deployments are not exercised by CI.
+or forked edge updates. See [development](../README.md#development) for
+validation commands and CI results; optional vendor/cloud/ROS hardware
+deployments are not exercised by CI.
