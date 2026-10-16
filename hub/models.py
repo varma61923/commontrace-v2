@@ -85,6 +85,9 @@ class TransparencyHead(Base):
     tree_size: Mapped[int] = mapped_column(BigInteger, nullable=False)
     root_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     signed_head: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    # Merkle frontier (one perfect-subtree root per set bit of tree_size); NULL
+    # on heads written before it existed, rebuilt from leaf hashes on next append.
+    frontier: Mapped[list | None] = mapped_column(JSONB, nullable=True)
 
 
 class TransparencyEntry(Base):

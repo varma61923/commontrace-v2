@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 
 CORE_FIELD = "core"
@@ -122,53 +123,57 @@ class Dose:
         return line
 
 
-def select(candidates, budget: Budget | None = None, *, root: str | None = None, context: str = "") -> Dose:
-    """Admit as much as the budget allows: core first, then by rank."""
+def select(candidates, budget: Budget | None = None, *, root: str | None = None, context: str = "",
+           scorer: str | None = None) -> Dose:
+    """Admit as much as the budget allows: core first, then by rank.
+
+    With a store ``root``, reviewed hazards are flagged and always admitted, an
+    operator-enabled harm budget (`conformal_gate`) filters discretionary
+    memories, and opt-in value-per-token packing replaces rank order. ``context``
+    is the occasion context exactly as the holdout log records it, and
+    ``scorer`` the eligibility label whose relevance scale the candidates use.
+    """
     budget = budget or Budget()
     items = list(candidates)
+    packing: dict = {}
+    harm_budget: dict = {}
+    gate_dropped: list[Dropped] = []
     if root is not None:
         from dataclasses import replace
 
-        from commontrace import safety
+        from commontrace import conformal_gate, holdout_io, safety
 
+        try:
+            context = holdout_io.context_label(context)
+        except ValueError:
+            context = ""
         hazards = safety.protected(root)
         items = [replace(item, hazard=True) if item.slug in hazards else item for item in items]
-    packing = {}
-    harm_budget = {}
-    gate_dropped = []
-    if root is not None:
-        from commontrace import conformal_gate
-
-        harm_budget = conformal_gate.current(root)
-        if harm_budget.get("enabled"):
+        gate = conformal_gate.current(root)
+        harm_budget = conformal_gate.summary(gate, context)
+        if gate.get("enabled"):
             kept = []
             for candidate in items:
-                if conformal_gate.admit(harm_budget, conformal_gate.score(candidate.relevance), context=context,
-                                        hazard=getattr(candidate, "hazard", False)):
+                # Core memories are operator-pinned and never randomized, so no
+                # calibration covers them; the budget governs discretionary memory.
+                if candidate.core or conformal_gate.admit(
+                        gate, conformal_gate.score(candidate.relevance), context=context,
+                        hazard=candidate.hazard, scorer=scorer):
                     kept.append(candidate)
                 else:
                     gate_dropped.append(Dropped(candidate.slug, "harm-budget gate", candidate.core))
             items = kept
-    if root is not None:
-        import json
-
-        from commontrace import frontier_protocol as fp
-
-        try:
-            with open(fp.filename(root, "context-packing.json"), "rb") as stream:
-                raw = stream.read(fp.MAX_BYTES + 1)
-            if len(raw) > fp.MAX_BYTES:
-                raise ValueError("packing configuration exceeds 1 MiB")
-            options = json.loads(raw)
-        except FileNotFoundError:
-            options = {}
+        options = _packing_options(root)
         if options.get("enabled"):
+            from commontrace import frontier_protocol as fp
+
             for item in items:
                 fp.number(item.relevance, -1e6, 1e6, "relevance")
-            values = {item.slug: options.get("contexts", {}).get(context, {}).get(item.slug,
-                       options.get("lessons", {}).get(item.slug, 0)) * max(0, min(1, item.relevance)) for item in items}
+            priors = options.get("contexts", {}).get(context, {})
+            values = {item.slug: priors.get(item.slug, options.get("lessons", {}).get(item.slug, 0))
+                      * max(0, min(1, item.relevance)) for item in items}
             selected, packing = value_pack(items, values, max_tokens=budget.max_chars // 4,
-                                            max_items=budget.max_lessons)
+                                           max_items=budget.max_lessons)
             picked = {item.slug for item in selected}
             gate_dropped.extend(Dropped(item.slug, "causal value-per-token packing", item.core)
                                 for item in items if item.slug not in picked)
@@ -303,6 +308,37 @@ def value_pack(candidates: list[Candidate], values: dict[str, float], *, max_tok
     return [*mandatory, *chosen], {"method": "bounded knapsack with baseline dominance", "capped": capped,
                                   "estimated_value": max(best_value, baseline_value),
                                   "baseline_value": baseline_value, "tokenizer": "four-character estimate"}
+
+
+_PACKING: dict[str, tuple[tuple[int, int, int], dict]] = {}
+
+
+def _packing_options(root: str) -> dict:
+    """The packing snapshot, re-read only when its file changes (no hot-path parse)."""
+    import json
+
+    from commontrace import frontier_protocol as fp
+
+    path = fp.filename(root, "context-packing.json")
+    try:
+        info = os.stat(path)
+    except FileNotFoundError:
+        return {}
+    stamp = (info.st_ino, info.st_mtime_ns, info.st_size)
+    cached = _PACKING.get(path)
+    if cached is not None and cached[0] == stamp:
+        return cached[1]
+    with open(path, "rb") as stream:
+        raw = stream.read(fp.MAX_BYTES + 1)
+    if len(raw) > fp.MAX_BYTES:
+        raise ValueError("packing configuration exceeds 1 MiB")
+    options = json.loads(raw)
+    if not isinstance(options, dict):
+        raise ValueError("packing configuration must be an object")
+    if len(_PACKING) > 64:
+        _PACKING.clear()
+    _PACKING[path] = (stamp, options)
+    return options
 
 
 def configure_value_packing(root: str) -> dict:

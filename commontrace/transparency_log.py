@@ -97,25 +97,68 @@ def tree_hash(hashes: Sequence[str]) -> str:
     return node_hash(tree_hash(hashes[:split]), tree_hash(hashes[split:]))
 
 
+def frontier_append(frontier: Sequence[str | None], leaf: str) -> list[str | None]:
+    """Add one leaf to a Merkle frontier (one perfect-subtree root per set bit of the size).
+
+    ``frontier[level]`` holds the root of the 2**level-leaf subtree, or None.
+    Appending is a binary increment: O(log n) hashes, independent of history.
+    """
+    result = list(frontier)
+    value, level = leaf, 0
+    while level < len(result) and result[level] is not None:
+        value = node_hash(str(result[level]), value)
+        result[level] = None
+        level += 1
+    if level == len(result):
+        result.append(value)
+    else:
+        result[level] = value
+    return result
+
+
+def frontier_append_with_proof(frontier: Sequence[str | None], leaf: str) -> tuple[list[str | None], list[str]]:
+    """`frontier_append` plus the new (rightmost) leaf's RFC 6962 inclusion proof, in O(log n).
+
+    The subtrees merged by the carry are the leaf's left siblings, bottom-up;
+    above its subtree, the remaining smaller-to-larger frontier roots complete the path.
+    """
+    result = list(frontier)
+    siblings: list[str] = []
+    value, level = leaf, 0
+    while level < len(result) and result[level] is not None:
+        sibling = str(result[level])
+        siblings.append(sibling)
+        value = node_hash(sibling, value)
+        result[level] = None
+        level += 1
+    if level == len(result):
+        result.append(value)
+    else:
+        result[level] = value
+    siblings.extend(str(subtree) for subtree in result[level + 1:] if subtree is not None)
+    return result, siblings
+
+
+def frontier_root(frontier: Sequence[str | None]) -> str:
+    """RFC 6962 root of the tree a frontier summarizes (smaller subtrees sit to the right)."""
+    accumulator = ""
+    for subtree in frontier:
+        if subtree is not None:
+            accumulator = node_hash(subtree, accumulator) if accumulator else subtree
+    return accumulator or EMPTY
+
+
+def frontier_size(frontier: Sequence[str | None]) -> int:
+    return sum(1 << level for level, subtree in enumerate(frontier) if subtree is not None)
+
+
 def prefix_roots(hashes: Sequence[str]) -> list[str]:
     """All checkpoint roots in O(n log n), with an O(log n) Merkle frontier."""
     frontier: list[str | None] = []
     roots = [EMPTY]
     for leaf in hashes:
-        value, level = leaf, 0
-        while level < len(frontier) and frontier[level] is not None:
-            value = node_hash(str(frontier[level]), value)
-            frontier[level] = None
-            level += 1
-        if level == len(frontier):
-            frontier.append(value)
-        else:
-            frontier[level] = value
-        accumulator = ""
-        for subtree in frontier:
-            if subtree is not None:
-                accumulator = node_hash(subtree, accumulator) if accumulator else subtree
-        roots.append(accumulator)
+        frontier = frontier_append(frontier, leaf)
+        roots.append(frontier_root(frontier))
     return roots
 
 
@@ -239,11 +282,22 @@ def head(root: str, *, durable: bool = True) -> dict[str, Any]:
                                         "log_id": "local-store", "signature_kind": "store-pinned"}, durable=durable)
         state.head_tip = fp.checkpoint(root, HEADS)
         _remember(os.path.realpath(root), state)
+        # The node cache is disposable: verification always recomputes from leaves.
+        _jsonl.write_json(fp.filename(root, "transparency-nodes.json"),
+                          {"tree_size": len(state.hashes), "root_hash": state.roots[-1]})
         return signed
 
 
-def append(root: str, event: str, statement: dict[str, Any], *, durable: bool = True) -> dict[str, Any]:
-    """Commit a signed leaf and checkpoint before returning an inclusion receipt."""
+def append(root: str, event: str, statement: dict[str, Any], *, durable: bool = True,
+           receipt: bool = True) -> dict[str, Any]:
+    """Commit a signed leaf; with ``receipt`` also sign a head and return an inclusion proof.
+
+    Hot paths (holdout assignments, outcomes, ordinary writes) pass
+    ``receipt=False``: the leaf is committed and covered by the next signed head,
+    which `head`, `prove` or any receipt-bearing append publishes on demand.
+    Skipping the per-leaf head saves a signed, fsynced checkpoint per write
+    without weakening tamper evidence: heads are always recomputed from leaves.
+    """
     fp.text(event, "event", 128)
     with _jsonl.locked(fp.filename(root, LEAVES)), fp._GUARD:
         state = _tree(root)
@@ -253,11 +307,9 @@ def append(root: str, event: str, statement: dict[str, Any], *, durable: bool = 
         state.roots.append(_range(state, 0, len(state.hashes)))
         state.leaf_tip = fp.checkpoint(root, LEAVES)
         _remember(os.path.realpath(root), state)
+        if not receipt:
+            return {"leaf": len(state.hashes) - 1, "statement": signed}
         checkpoint = head(root, durable=durable)
-        # The cache is disposable: verification always uses canonical leaves.
-        if durable:
-            _jsonl.write_json(fp.filename(root, "transparency-nodes.json"),
-                              {"tree_size": len(state.hashes), "root_hash": state.roots[-1]})
         return {"leaf": len(state.hashes) - 1, "statement": signed, "head": checkpoint,
                 "proof": _proof(state, len(state.hashes) - 1)}
 

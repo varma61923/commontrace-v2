@@ -8,6 +8,7 @@ Hazards are never eligible for randomized removal or unattended lifecycle edits.
 """
 from __future__ import annotations
 
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Sequence
 
@@ -16,6 +17,7 @@ from commontrace import frontmatter, hierarchical, lesson_admission, lesson_io, 
 from commontrace import transparency_log as log
 
 CLASSES = {"zone", "object", "condition", "human-proximity"}
+REGISTRY = "safety-registry.jsonl"
 
 
 def _content(root: str, identity: str) -> dict[str, Any]:
@@ -66,22 +68,40 @@ def mark(root: str, identity: str, hazard_class: str, receipt: dict[str, Any], *
         fact = hierarchical.load_facts(root)[identity]
         if fact.expires_at or fact.valid_until or fact.status != "active":
             raise ValueError("hazard fact must be active without an automatic expiry or closed validity window")
-    result = fp.append(root, "safety-registry.jsonl", {"kind": "mark", "id": identity,
+    result = fp.append(root, REGISTRY, {"kind": "mark", "id": identity,
                        "hazard_class": hazard_class, "review": receipt, "site": site, "robot": robot})
     log.append(root, "hazard-protected", {"id": identity, "review_digest": fp.digest(receipt)})
     return result
 
 
+_PROTECTED: dict[str, tuple[tuple[int, str], dict[str, dict[str, Any]]]] = {}
+
+
 def protected(root: str) -> dict[str, dict[str, Any]]:
+    """Active hazard registrations, keyed by memory id.
+
+    Every retrieval, assignment and write consults this, so the verified
+    registry is cached against the journal's signed checkpoint (its row count
+    and chain tip): an unchanged registry costs one stat, any append or edit
+    re-verifies every review receipt.
+    """
+    key = os.path.realpath(root)
+    checkpoint = fp.checkpoint(root, REGISTRY)
+    cached = _PROTECTED.get(key)
+    if cached is not None and cached[0] == checkpoint:
+        return dict(cached[1])
     active: dict[str, dict[str, Any]] = {}
-    for row in fp.journal(root, "safety-registry.jsonl"):
+    for row in fp.journal(root, REGISTRY):
         if row["kind"] == "mark":
             if not fp.verify(root, row["review"]):
                 raise ValueError("invalid hazard review")
             active[row["id"]] = row
         elif row["kind"] == "release":
             active.pop(row["id"], None)
-    return active
+    if len(_PROTECTED) > 64:
+        _PROTECTED.clear()
+    _PROTECTED[key] = (checkpoint, active)
+    return dict(active)
 
 
 def assert_mutable(root: str, identities: Sequence[str]) -> None:
@@ -96,7 +116,7 @@ def release(root: str, identity: str, receipt: dict[str, Any]) -> None:
     if body.get("kind") != "hazard-review" or body.get("id") != identity \
             or body.get("content_hash") != fp.digest(_content(root, identity)):
         raise PermissionError("stale or unrelated hazard review")
-    fp.append(root, "safety-registry.jsonl", {"kind": "release", "id": identity, "review": receipt})
+    fp.append(root, REGISTRY, {"kind": "release", "id": identity, "review": receipt})
     log.append(root, "hazard-review-release", {"id": identity, "review_digest": fp.digest(receipt)})
 
 

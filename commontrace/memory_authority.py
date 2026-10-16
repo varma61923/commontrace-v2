@@ -179,7 +179,7 @@ def bind(root: str, record: dict, *, sources: list[str] | None = None) -> dict:
         lineage.attest(root, record, signed, inputs=sources or source_ids(record), operation=record_class(record))
         from commontrace import transparency_log
 
-        transparency_log.append(root, "write", {"id": record["id"], "content_hash": signed["digest"]})
+        transparency_log.append(root, "write", {"id": record["id"], "content_hash": signed["digest"]}, receipt=False)
     return signed
 
 

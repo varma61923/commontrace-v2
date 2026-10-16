@@ -28,6 +28,7 @@ class _Lineage:
     up: dict[str, set[str]] = field(default_factory=dict)
     down: dict[str, set[str]] = field(default_factory=dict)
     taints: list[dict[str, Any]] = field(default_factory=list)
+    tainted: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
 
 
 _STATES: OrderedDict[str, _Lineage] = OrderedDict()
@@ -62,6 +63,7 @@ def _snapshot_locked(root: str) -> _Lineage:
             cached.objects[identity]["integrity"] = "reviewed"
         elif row["kind"] == "taint":
             cached.taints.append(row)
+            cached.tainted.setdefault(identity, []).append(row)
     cached.count, cached.tip = count, tip
     _STATES[root] = cached
     _STATES.move_to_end(root)
@@ -162,8 +164,8 @@ def descendants(root: str, identity: str) -> list[str]:
 
 def taint(root: str, identity: str, reason: str) -> dict[str, Any]:
     fp.text(identity)
-    for event in reversed(_snapshot(root).taints):
-        if event["id"] == identity and event["kind"] == "taint" and event["reason"] == reason:
+    for event in reversed(_snapshot(root).tainted.get(identity, [])):
+        if event["reason"] == reason:
             return dict(event)
     signed = fp.append(root, JOURNAL, {"kind": "taint", "id": identity, "reason": fp.text(reason, maximum=2048)})
     from commontrace import transparency_log
@@ -179,8 +181,8 @@ def invalidate(root: str, fact_id: str) -> dict[str, Any]:
 def labels(root: str, identity: str) -> dict[str, Any]:
     state = _snapshot(root)
     row = state.objects.get(identity, {})
-    family = set(ancestors(root, identity)) | {identity}
-    taints = [event for event in state.taints if event["id"] in family]
+    family = sorted(set(ancestors(root, identity)) | {identity}) if state.tainted else [identity]
+    taints = [event for member in family for event in state.tainted.get(member, [])]
     level = row.get("integrity", "unknown")
     return {"integrity": "external" if taints else level, "lineage_digest": row.get("lineage_digest", ""),
             "review_required": bool(taints), "taints": [{"id": r["id"], "reason": r["reason"]} for r in taints]}

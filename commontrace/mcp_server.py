@@ -282,7 +282,8 @@ def _fresh_lesson_eligible(path: str, fm: dict, slug: str, *,
     )
 
 
-def _apply_dosage(matched, active, config, quarantined=None, *, scope="", as_of="", agent_type=""):
+def _apply_dosage(matched, active, config, quarantined=None, *, scope="", as_of="", agent_type="",
+                  root=None, scorer=None):
     """Admit core lessons and enforce the budget, returning the wire items.
 
     Core lessons are loaded from the whole active set rather than from the
@@ -348,8 +349,10 @@ def _apply_dosage(matched, active, config, quarantined=None, *, scope="", as_of=
             max_chars=config.max_chars,
             redundancy_threshold=config.redundancy_threshold,
         ),
-        root=os.path.dirname(os.path.dirname(os.path.dirname(active[0][0]))) if active else None,
-        context=agent_type,
+        root=root if root is not None else (
+            os.path.dirname(os.path.dirname(os.path.dirname(active[0][0]))) if active else None),
+        context=agent_type or "",
+        scorer=scorer,
     )
     admitted = [by_slug[c.slug] for c in dose.admitted if c.slug in by_slug]
     kept_core = [item for item in admitted if item.get("core")]
@@ -848,7 +851,7 @@ def build_server(root: str, *, allow_approval: bool = True):
 
         admitted_items, core_items, dose = _apply_dosage(
             matched_items, active, retrieval_config, quarantined,
-            scope=scope, as_of=as_of, agent_type=agent_type,
+            scope=scope, as_of=as_of, agent_type=agent_type, root=root, scorer=eligibility_label,
         )
 
         withheld: set[str] = set()
@@ -954,16 +957,9 @@ def build_server(root: str, *, allow_approval: bool = True):
         except Exception as exc:  # noqa: BLE001
             result["evidence_error"] = f"{type(exc).__name__}: {exc}"
 
-        from commontrace import lineage
+        from commontrace import memory_ifc
 
-        for item in result["lessons"]:
-            item.update(lineage.labels(root, item["slug"]))
-            from commontrace import memory_ifc
-
-            try:
-                item.update(memory_ifc.label(root, item))
-            except (ValueError, OSError, PermissionError) as exc:
-                return _err(f"memory label admission failed: {exc}")
+        result["lessons"] = [memory_ifc.safe_label(root, item, identity=item["slug"]) for item in result["lessons"]]
         if dose.packing:
             from commontrace import compression
 

@@ -47,3 +47,47 @@ def test_incident_surfaces_and_old_store(tmp_path):
 def test_path_forgery_refused(tmp_path, identity):
     with pytest.raises(ValueError):
         incident.freeze(str(tmp_path), identity, fp.now())
+
+
+def test_replay_returns_delivered_bytes_after_later_correction(tmp_path):
+    pytest.importorskip("mcp")
+    from commontrace.mcp_server import build_server
+    from tests.test_mcp_server import _write_lesson, call
+
+    root = str(tmp_path)
+    path = _write_lesson(root, "arm-zone", body="Keep the arm inside bay A during calibration.")
+    server = build_server(root)
+    delivered = call(server, "retrieve", task="arm calibration bay", occasion_id="incident-task")
+    assert [item["slug"] for item in delivered["lessons"]] == ["arm-zone"]
+    valid_time = fp.now()
+    from commontrace import frontmatter, lesson_io
+
+    fm, _ = frontmatter.read(path)
+    lesson_io.write_lesson(path, fm, "Keep the arm inside bay B during calibration.", root=root,
+                           actor="test", reason="correction after the incident")
+    incident.freeze(root, "arm-incident", valid_time)
+    replayed = incident.replay(root, "arm-incident", "incident-task")
+    assert [row["body"] for row in replayed["injected"]] == [delivered["lessons"][0]["body"]]
+
+
+def test_large_store_freezes_and_tampered_part_is_refused(tmp_path):
+    pytest.importorskip("mcp")
+    from tests.test_mcp_server import _write_lesson
+
+    root = str(tmp_path)
+    for i in range(12):  # 12 x 120 KB: well above the former single-record 1 MiB bound
+        _write_lesson(root, f"manual-{i}", body=f"Cell {i} calibration manual. " + "step " * 24_000)
+    old, _ = hierarchical.add_fact(root, "Gripper torque limit is 5 Nm", valid_from="2026-01-01T00:00:00Z")
+    frozen = incident.freeze(root, "large", fp.now())
+    assert len(frozen["held_ids"]) == 13
+    hierarchical.supersede_fact(root, old.id, "Gripper torque limit is 4 Nm", as_of=fp.now())
+    row = next(r for r in incident.timeline(root, "large")["corrections"] if r["id"] == old.id)
+    assert row["believed_at_incident"] and row["then"] == "Gripper torque limit is 5 Nm"
+    assert row["current_status"] != "active"
+    assert old.id in incident.held(root)["large"]
+    part = tmp_path / ".commontrace" / "incidents" / "large" / "facts.json"
+    if not part.exists():
+        part = next(tmp_path.rglob("incidents/large/facts.json"))
+    part.write_text(part.read_text().replace("Gripper torque limit is 5 Nm", "Gripper torque limit is 9 Nm"))
+    with pytest.raises(ValueError, match="does not match"):
+        incident.snapshot(root, "large")

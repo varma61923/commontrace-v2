@@ -5,7 +5,7 @@ import json
 import re
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import DateTime, case, cast, select
 from starlette.responses import HTMLResponse, JSONResponse
 
 from commontrace import frontier_protocol as fp
@@ -13,6 +13,50 @@ from commontrace import incident, origin
 from hub import retention, transparency
 from hub.db import session_scope
 from hub.models import AuditLogEntry, HoldoutObservation, IncidentSnapshot, MemoryRecordEvent
+
+# Timestamps the Python writer validated as ISO 8601 with an explicit offset;
+# only these are cast in SQL, so a stray value can never raise inside the query.
+_ISO_WITH_OFFSET = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$"
+EVIDENCE_ROWS = 1000
+
+
+# Bulky columns are pinned by digest: the legal hold keeps the bytes in place,
+# and the signed snapshot stays bounded however large individual rows are.
+_DIGESTED = {"record", "summary"}
+
+
+def _row(model, row) -> dict:
+    result = {}
+    for column in model.__table__.columns:
+        if column.name == "org_id":
+            continue
+        value = getattr(row, column.name)
+        if column.name in _DIGESTED:
+            result[column.name + "_digest"] = fp.digest(value)
+        else:
+            result[column.name] = value.isoformat() if isinstance(value, datetime) else value
+    return result
+
+
+async def _evidence(session, org_id: str, when: datetime) -> tuple[dict, dict]:
+    """The newest bounded evidence rows recorded at or before the incident's valid time.
+
+    A large tenant never makes a freeze fail: each evidence type keeps its newest
+    EVIDENCE_ROWS rows and says when older rows exist. The org-wide legal hold
+    placed by the freeze preserves the complete tables for later export.
+    """
+    created = MemoryRecordEvent.record["created_at"].astext
+    record_time = case((created.op("~")(_ISO_WITH_OFFSET), cast(created, DateTime(timezone=True))), else_=None)
+    collected, window = {}, {}
+    for label, model, moment in (("record_events", MemoryRecordEvent, record_time),
+                                 ("holdouts", HoldoutObservation, HoldoutObservation.created_at),
+                                 ("audit", AuditLogEntry, AuditLogEntry.created_at)):
+        found = list((await session.execute(
+            select(model).where(model.org_id == org_id, moment.is_not(None), moment <= when)
+            .order_by(moment.desc()).limit(EVIDENCE_ROWS + 1))).scalars())
+        collected[label] = [_row(model, row) for row in found[:EVIDENCE_ROWS]]
+        window[label] = {"rows": len(collected[label]), "older_rows_omitted": len(found) > EVIDENCE_ROWS}
+    return collected, window
 
 
 async def freeze(session, org_id: str, identity: str, valid_time: str, *, actor: str, secret: str,
@@ -22,17 +66,9 @@ async def freeze(session, org_id: str, identity: str, valid_time: str, *, actor:
     when = datetime.fromisoformat(fp.moment(valid_time))
     if await session.get(IncidentSnapshot, (org_id, identity)):
         raise ValueError("incident is already frozen")
-    collected = {}
-    for label, model in (("record_events", MemoryRecordEvent), ("holdouts", HoldoutObservation),
-                         ("audit", AuditLogEntry)):
-        found = list((await session.execute(select(model).where(model.org_id == org_id).limit(1001))).scalars())
-        if len(found) > 1000:
-            raise ValueError("incident exceeds 1000 rows per evidence type; narrow the evidence window")
-        collected[label] = [{column.name: (value.isoformat() if isinstance(value, datetime) else value)
-                             for column in model.__table__.columns if column.name != "org_id"
-                             for value in [getattr(row, column.name)]} for row in found]
+    collected, window = await _evidence(session, org_id, when)
     payload = {"org_id": org_id, "id": identity, "valid_time": when.isoformat(),
-               "known_at": fp.now(), "evidence": collected,
+               "known_at": fp.now(), "evidence": collected, "evidence_window": window,
                "control_mapping": incident.CONTROLS, "legal_note": "Verify against the Official Journal",
                "replay_limit": "Historical content is limited to recorded versions; no unlogged bytes inferred."}
     signed = origin.bind(payload, transparency.signer(org_id, secret, algorithm))

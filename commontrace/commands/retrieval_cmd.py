@@ -11,8 +11,15 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         "retrieval",
         help="Show or set how this store ranks lessons (scorer, floor, arm fusion, budget).",
     )
-    p.add_argument("--harm-budget", type=float, help="Opt in to conservative conformal discretionary harm control.")
+    p.add_argument("--harm-budget", type=float,
+                   help="Opt in to conservative conformal harm control at this alpha (e.g. 0.02); rerun to "
+                        "recalibrate from randomized evidence logged while no gate was filtering.")
     p.add_argument("--per-context", action="store_true", help="Calibrate independently within pre-task contexts.")
+    p.add_argument("--harm-method", choices=("crc", "ltt"), default="crc",
+                   help="crc: expected-loss control (default); ltt: high-probability Learn-then-Test bound.")
+    p.add_argument("--propensity-floor", type=float, default=.01,
+                   help="Declared minimum injection probability of the trial design (bounds the IPW loss).")
+    p.add_argument("--disable-harm-budget", action="store_true", help="Turn the harm-budget gate off.")
     p.add_argument("--value-per-token", action="store_true", help="Snapshot causal priors and enable knapsack packing.")
     p.add_argument(
         "--floor", type=float, default=None,
@@ -122,12 +129,16 @@ def run(args: argparse.Namespace) -> int:
 
         print(json.dumps(dosage.configure_value_packing(root), indent=2))
         return 0
-    if args.harm_budget is not None:
+    if args.harm_budget is not None or args.disable_harm_budget:
         import json
 
         from commontrace import conformal_gate
 
-        configured = conformal_gate.configure(root, alpha=args.harm_budget, per_context=args.per_context)
+        if args.disable_harm_budget:
+            configured = conformal_gate.disable(root)
+        else:
+            configured = conformal_gate.configure(root, alpha=args.harm_budget, per_context=args.per_context,
+                                                  method=args.harm_method, propensity_floor=args.propensity_floor)
         print(json.dumps(configured, indent=2))
         return 0
 

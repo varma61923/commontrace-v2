@@ -521,11 +521,22 @@ def allocate_run_gate(args, root) -> int:
 
     out = causal_gate.report(root, alpha=args.alpha, min_arm=args.min_arm, practical=args.practical,
                              floor=args.floor)
-    out["harm_budget"] = conformal_gate.current(root)
+    out["harm_budget"] = conformal_gate.report(root)
     if args.json:
         print(json.dumps(out, indent=2, sort_keys=True))
         return 0
     print(causal_gate.render(out))
+    budget = out["harm_budget"]
+    if budget.get("enabled"):
+        print(f"\nHarm budget (alpha={budget.get('alpha')}, {budget.get('kind')}):")
+        for stratum, row in sorted(budget.get("strata", {}).items()):
+            threshold = row.get("threshold", 1.01)
+            print(f"  {stratum or '(all contexts)'}: lambda = "
+                  + ("abstain (no admissible threshold)" if threshold > 1 else f"{threshold:.2f}"))
+        realized = budget.get("realized", {})
+        rate = realized.get("ipw_injected_failure")
+        print("  realized IPW injected-failure rate since gating: "
+              + ("n/a" if rate is None else f"{rate:.4f}") + f" over {realized.get('n', 0)} occasion(s)")
     return 0
 
 

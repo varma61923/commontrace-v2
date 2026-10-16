@@ -232,7 +232,8 @@ def assign_and_log(
         from commontrace import transparency_log
 
         transparency_log.append(root, "holdout-assignment", {"occasion_id": occasion_id,
-                                "assignments": {row["lesson"]: fp.digest(row) for row in rows}}, durable=durable)
+                                "assignments": {row["lesson"]: fp.digest(row) for row in rows}}, durable=durable,
+                                receipt=False)
     return withheld
 
 
@@ -344,7 +345,7 @@ def record_outcome(root: str, occasion_id: str, succeeded: bool, durable: bool =
     from commontrace import transparency_log
 
     transparency_log.append(root, "holdout-outcome", {"occasion_id": occasion_id, "succeeded": succeeded},
-                            durable=durable)
+                            durable=durable, receipt=False)
     return True
 
 

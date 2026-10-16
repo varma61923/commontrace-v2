@@ -100,3 +100,67 @@ async def test_console_incident_freeze_download_and_scope_checks(session_factory
         assert (await client.get("/app/incidents/incident/pack")).status_code == 404
         denied = await client.post("/app/incidents/freeze", data={"id": "no", "valid_time": fp.now()})
         assert denied.status_code == 403
+
+
+async def test_frontier_appends_rebuild_and_detect_tampering(session_factory, config):
+    from sqlalchemy import update
+
+    from hub.models import TransparencyEntry, TransparencyHead
+
+    org, key = await _org_with_key(session_factory)
+    config = replace(config, ledger_signing_key="test-signing-key-" + "y" * 32)
+    secret = config.ledger_signing_key
+    principal = transparency.signer(org, secret)
+    receipts = []
+    for i in range(37):
+        async with session_scope(session_factory, org_id=org) as session:
+            receipts.append(await transparency.append(session, org, {"event": "write", "n": i}, secret=secret))
+    for receipt in receipts:
+        head = receipt["head"]["record"]
+        assert origin.verify(receipt["head"], {principal.id: principal})
+        assert merkle.verify_inclusion(merkle.leaf_hash(receipt["statement"]), receipt["leaf"], head["tree_size"],
+                                       receipt["proof"], head["root_hash"])
+    # A head written before the frontier column existed is rebuilt from leaf hashes once.
+    async with session_scope(session_factory, org_id=org) as session:
+        await session.execute(update(TransparencyHead).where(TransparencyHead.org_id == org).values(frontier=None))
+    async with session_scope(session_factory, org_id=org) as session:
+        receipt = await transparency.append(session, org, {"event": "after-rebuild"}, secret=secret)
+    assert receipt["leaf"] == 37 and merkle.verify_inclusion(
+        merkle.leaf_hash(receipt["statement"]), 37, 38, receipt["proof"], receipt["head"]["record"]["root_hash"])
+    old = receipts[9]["head"]["record"]
+    async with _client(_app(session_factory, config)) as client:
+        proof = (await client.get("/v1/log/consistency?from=10&to=38", headers=_key(key))).json()
+        assert merkle.verify_consistency(10, 38, old["root_hash"], receipt["head"]["record"]["root_hash"],
+                                         proof["proof"])
+        assert (await client.get("/v1/log/proof?leaf=5", headers=_key(key))).status_code == 200
+        async with session_scope(session_factory, org_id=org) as session:
+            await session.execute(update(TransparencyEntry).where(
+                TransparencyEntry.org_id == org, TransparencyEntry.leaf_index == 5).values(leaf_hash="00" * 32))
+        tampered = await client.get("/v1/log/proof?leaf=5", headers=_key(key))
+        assert tampered.status_code == 503
+        assert tampered.json()["error"] == "transparency_history_unverifiable"
+
+
+async def test_incident_freeze_pins_evidence_as_of_valid_time(session_factory, config):
+    from datetime import datetime, timedelta, timezone
+
+    from hub import audit, incidents
+
+    org, _ = await _org_with_key(session_factory)
+    secret = "test-signing-key-" + "z" * 32
+    async with session_scope(session_factory, org_id=org) as session:
+        await audit.record(session, actor="test", action="before", org_id=org)
+    cutoff = datetime.now(timezone.utc)
+    async with session_scope(session_factory, org_id=org) as session:
+        await audit.record(session, actor="test", action="after", org_id=org)
+    async with session_scope(session_factory, org_id=org) as session:
+        frozen = await incidents.freeze(session, org, "windowed", cutoff.isoformat(), actor="test", secret=secret)
+    record = frozen["snapshot"]["record"]
+    actions = [row["action"] for row in record["evidence"]["audit"]]
+    assert "before" in actions and "after" not in actions
+    assert record["evidence_window"]["audit"]["older_rows_omitted"] is False
+    assert all("summary" not in row and "summary_digest" in row for row in record["evidence"]["audit"])
+    async with session_scope(session_factory, org_id=org) as session:
+        earlier = await incidents.freeze(session, org, "earlier", (cutoff - timedelta(days=1)).isoformat(),
+                                         actor="test", secret=secret)
+    assert earlier["snapshot"]["record"]["evidence"]["audit"] == []

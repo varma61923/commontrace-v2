@@ -15,6 +15,33 @@ def test_rfc_golden_vectors():
     vector = json.loads(open("protocol/conformance/transparency.json").read())
     assert log.leaf_hash(vector["statement"]) == vector["leaf_hash"]
     assert log.node_hash(vector["leaf_hash"], vector["leaf_hash"]) == vector["node_hash"]
+    # Interoperability with the RFC 6962 reference tree (raw-byte leaves).
+    reference = vector["rfc6962"]
+    hashes = [hashlib.sha256(b"\x00" + bytes.fromhex(leaf)).hexdigest() for leaf in reference["leaves_hex"]]
+    assert log.prefix_roots(hashes)[1:] == reference["roots"]
+    assert reference["roots"][-1] == "5dc9da79a70659a9ad559cb701ded9a2ab9d823aad2f4960cfe370eff4604328"
+    for case in reference["inclusion"]:
+        root = reference["roots"][case["size"] - 1]
+        assert log.inclusion(hashes[:case["size"]], case["index"]) == case["proof"]
+        assert log.verify_inclusion(hashes[case["index"]], case["index"], case["size"], case["proof"], root)
+    for case in reference["consistency"]:
+        old, new = reference["roots"][case["from"] - 1], reference["roots"][case["to"] - 1]
+        assert log.verify_consistency(case["from"], case["to"], old, new, case["proof"])
+    frontier: list = []
+    for index, leaf in enumerate(hashes):
+        frontier, proof = log.frontier_append_with_proof(frontier, leaf)
+        assert proof == log.inclusion(hashes[:index + 1], index)
+        assert log.frontier_root(frontier) == reference["roots"][index]
+
+
+def test_leaf_only_appends_are_covered_by_the_next_head(tmp_path):
+    root = str(tmp_path)
+    leaves = [log.append(root, "holdout-outcome", {"n": i}, receipt=False) for i in range(5)]
+    assert all("head" not in leaf for leaf in leaves)
+    assert not fp.journal(root, log.HEADS)  # no signed checkpoint per hot-path leaf
+    for leaf in leaves:
+        receipt = log.prove(root, leaf["leaf"])
+        assert receipt["head"]["record"]["tree_size"] == 5 and log.verify(root, receipt)
 
 
 def test_all_proof_shapes_and_tampering():

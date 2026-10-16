@@ -2006,7 +2006,7 @@ async def holdout_assignments(session: AsyncSession, org_id: str) -> list:
             ).where(
                 HoldoutObservation.org_id == org_id,
                 HoldoutObservation.salt == (org.holdout_salt if org else ""),
-            )
+            ).order_by(HoldoutObservation.created_at, HoldoutObservation.id)
         )
     ).all()
 
@@ -2057,7 +2057,7 @@ async def causal_effects(session: AsyncSession, org_id: str, alpha: float = 0.05
     observations = [
         experiment.HoldoutObservation(
             lesson_slug=r.lesson, occasion_id=r.occasion_id, injected=r.injected,
-            succeeded=bool(r.succeeded),
+            succeeded=bool(r.succeeded), rate=r.rate,
         )
         for r in unique if r.succeeded is not None
     ]

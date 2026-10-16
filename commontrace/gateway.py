@@ -1663,7 +1663,7 @@ class Gateway:
         out_ids = {i["id"] for i in delivered}
         from commontrace import memory_ifc
 
-        delivered = [memory_ifc.label(self.root, item) for item in delivered]
+        delivered = [memory_ifc.safe_label(self.root, item) for item in delivered]
         withheld = [i["id"] for i in clean if i["id"] not in out_ids and i["id"] not in withdrawn]
         response = {
             "occasion_id": occasion, "mode": mode, "deliver": delivered, "withheld": withheld,

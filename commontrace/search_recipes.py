@@ -618,13 +618,10 @@ def _current_results(root, rows, revisions, *, context, as_of, known_at, action_
             root, candidates.get(row["id"]), moment, as_of, context, action_class, resolver, known
         ) and candidates[row["id"]].revision == revisions[row["id"]]
                 and candidates[row["id"]].statement == row["text"]]
-        from commontrace import lineage
+        from commontrace import memory_ifc
 
         for row in result:
-            row.update(lineage.labels(root, row["id"]))
-            from commontrace import memory_ifc
-
-            row.update(memory_ifc.label(root, row))
+            row.update(memory_ifc.safe_label(root, row, identity=row["id"]))
             if row["review_required"]:
                 row["score"] *= 0.5
         return result

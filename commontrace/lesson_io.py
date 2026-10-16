@@ -96,7 +96,7 @@ def write_lesson(
                        operation="lesson", model_id=str(fm.get("model_id") or "unspecified"))
         from commontrace import transparency_log
 
-        transparency_log.append(root, "lesson-write", {"id": identity, "revision": after})
+        transparency_log.append(root, "lesson-write", {"id": identity, "revision": after}, receipt=False)
 
     if after != before:
         basename = os.path.basename(path)

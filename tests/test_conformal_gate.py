@@ -88,3 +88,74 @@ def test_default_unchanged_and_opt_in_dosage(tmp_path):
 def test_malformed_calibration_refused(number):
     with pytest.raises(ValueError):
         gate.calibrate([], alpha=number)
+
+
+def _log_trial(root, rng, n, *, start=0, scorer="lexical", context="Support"):
+    from commontrace import holdout_io
+
+    for i in range(start, start + n):
+        relevance = rng.random()
+        occasion = f"occ-{i}"
+        holdout_io.assign_and_log(root, [f"m{i}"], occasion_id=occasion, rate=.3, salt="gate",
+                                  relevance={f"m{i}": relevance}, scorer=scorer, context=context)
+        # Low-relevance memories are the harmful ones in this synthetic trial.
+        holdout_io.record_outcome(root, occasion, relevance > .3 or rng.random() < .1)
+
+
+def test_gate_snapshot_excludes_gated_rows_and_is_cached(tmp_path, monkeypatch):
+    from commontrace import holdout_io
+
+    root = str(tmp_path)
+    holdout_io.configure(root, rate=.3, salt="gate")
+    rng = random.Random(3)
+    _log_trial(root, rng, 400)
+    configured = gate.configure(root, alpha=.05, propensity_floor=.7, per_context=True)
+    assert configured["enabled"] and configured["calibration_n"] == 400
+    assert configured["scorers"] == ["lexical"]
+    threshold = configured["strata"]["support"]["threshold"]
+    assert gate.score(.2) < threshold <= gate.score(.35)
+    # Admission reads the snapshot: no assignment log is parsed on the hot path.
+    import commontrace.commands.experiment_cmd as experiment_cmd
+
+    monkeypatch.setattr(experiment_cmd, "_load", lambda root: (_ for _ in ()).throw(AssertionError("hot path")))
+    candidate = dosage.Candidate("memory", "text", relevance=.9)
+    dose = dosage.select([candidate], root=root, context="  SUPPORT ", scorer="lexical")
+    assert dose.admitted and dose.harm_budget["threshold"] == threshold
+    assert not dosage.select([candidate], root=root, context="support", scorer="dense").admitted
+    monkeypatch.undo()
+    # Rows logged while gated are excluded from recalibration (they only cover admitted scores).
+    _log_trial(root, rng, 200, start=400)
+    assert gate.configure(root, alpha=.05, propensity_floor=.7, per_context=True)["calibration_n"] == 400
+    realized = gate.report(root)["realized"]
+    assert realized["n"] == 200 and realized["ipw_injected_failure"] is not None
+    assert gate.disable(root)["enabled"] is False
+    assert dosage.select([dosage.Candidate("memory", "text", relevance=.01)], root=root).admitted
+
+
+def test_core_and_hazard_memories_bypass_the_budget(tmp_path):
+    root = str(tmp_path)
+    gate.configure(root, alpha=.02)
+    core = dosage.Candidate("pinned", "operator rule", core=True, relevance=0)
+    optional = dosage.Candidate("optional", "memory", relevance=1)
+    dose = dosage.select([core, optional], root=root)
+    assert [c.slug for c in dose.admitted] == ["pinned"]
+    assert dose.harm_budget["abstains"]
+
+
+def test_recall_gates_only_the_calibrated_lessons_channel(tmp_path):
+    pytest.importorskip("mcp")
+    from commontrace import hierarchical, recall
+    from tests.test_mcp_server import _write_lesson
+
+    root = str(tmp_path)
+    _write_lesson(root, "torque", body="Limit gripper torque to five newton metres on glass.")
+    hierarchical.add_fact(root, "Gripper torque on glass is limited to five newton metres")
+    before = recall.recall(root, "gripper torque glass")
+    assert {item.channel for item in before.items} >= {"lessons", "facts"}
+    gate.configure(root, alpha=.02)  # no ungated calibration rows: lessons must abstain
+    after = recall.recall(root, "gripper torque glass")
+    assert "lessons" not in {item.channel for item in after.items}
+    assert "facts" in {item.channel for item in after.items}
+    assert after.explain["harm_budget"]["scope"].startswith("lessons channel")
+    assert recall._memory_id("lesson:torque") == "torque" and recall._memory_id("fact:f1") == "f1"
+    assert recall._memory_id("edge:a->b:rel") == "edge:a->b:rel"

@@ -50,12 +50,18 @@ def ebh(values: Sequence[float], alpha: float = 0.05) -> list[bool]:
     return [i in rejected for i in range(len(values))]
 
 
-def process(observations: list[aipw.Observation], *, delta: float = 0.0,
-            direction: str = "helps", prior_success: Sequence[float] | None = None) -> Evidence:
-    fp.number(delta, -1, 1, "null margin")
+def _adjusted(observations: list[aipw.Observation],
+              prior_success: Sequence[float] | None) -> tuple[list[float], list[float]]:
+    """Predictable AIPW scores and their design bounds, optionally regression-adjusted.
+
+    Context labels enter through ``Observation.stratum``: the AIPW arm means are
+    estimated per stratum from strictly preceding outcomes. A pre-treatment prior
+    success rate enters as a control variate whose slope is the least-squares
+    slope of outcome on prior over *preceding* rows only, clipped to [-1, 1]. Its
+    multiplier has conditional mean zero under the logged propensity, so the
+    adjusted score stays conditionally unbiased for every predictable slope.
+    """
     fp.count(len(observations), 0, fp.MAX_ROWS)
-    if direction not in ("helps", "hurts"):
-        raise ValueError("direction must be helps or hurts")
     if prior_success is not None and len(prior_success) != len(observations):
         raise ValueError("one pre-treatment prior required per observation")
     usable = []
@@ -71,15 +77,28 @@ def process(observations: list[aipw.Observation], *, delta: float = 0.0,
             baseline.append(fp.number(prior_success[i], 0, 1, "pre-treatment prior"))
     # Existing AIPW nuisance means are estimated on strictly preceding outcomes.
     scores = aipw.aipw_scores(usable)
-    total, squares, log_e, peak = 0.0, 1.0, 0.0, 1.0
+    bounds = []
+    n = sb = sy = sbb = sby = 0.0
     for i, (row, score) in enumerate(zip(usable, scores)):
         p = 1 - row.rate
-        bound = 1 / min(p, row.rate) + abs(delta)
+        bound = 1 / min(p, row.rate)
         if prior_success is not None:
-            # Predictable control variate has conditional expectation zero.
-            correction = (int(row.injected) / p - int(not row.injected) / row.rate) * (baseline[i] - .5)
-            score -= correction
+            b, y = baseline[i], float(row.succeeded)
+            variance = sbb - sb * sb / n if n else 0.0
+            slope = (sby - sb * sy / n) / variance if n >= 10 and variance > 1e-9 else 0.0
+            slope = max(-1.0, min(1.0, slope))
+            # Predictable control variate: conditional expectation zero.
+            scores[i] = score - slope * (int(row.injected) / p - int(not row.injected) / row.rate) * (b - .5)
             bound += .5 / min(p, row.rate)
+            n, sb, sy, sbb, sby = n + 1, sb + b, sy + y, sbb + b * b, sby + b * y
+        bounds.append(bound)
+    return scores, bounds
+
+
+def _wealth(scores: Sequence[float], bounds: Sequence[float], *, delta: float, direction: str) -> Evidence:
+    total, squares, log_e, peak = 0.0, 1.0, 0.0, 1.0
+    for score, design_bound in zip(scores, bounds):
+        bound = design_bound + abs(delta)
         value = (score if direction == "helps" else -score) - delta
         # All ingredients are measured before the current outcome is inspected.
         bet = min(.5 / bound, max(.02 / bound, total / squares))
@@ -90,7 +109,16 @@ def process(observations: list[aipw.Observation], *, delta: float = 0.0,
         total += value
         squares += value * value
         peak = max(peak, math.exp(min(log_e, 690)))
-    return Evidence(math.exp(min(log_e, 690)), log_e, peak, len(usable), direction, delta)
+    return Evidence(math.exp(min(log_e, 690)), log_e, peak, len(scores), direction, delta)
+
+
+def process(observations: list[aipw.Observation], *, delta: float = 0.0,
+            direction: str = "helps", prior_success: Sequence[float] | None = None) -> Evidence:
+    fp.number(delta, -1, 1, "null margin")
+    if direction not in ("helps", "hurts"):
+        raise ValueError("direction must be helps or hurts")
+    scores, bounds = _adjusted(observations, prior_success)
+    return _wealth(scores, bounds, delta=delta, direction=direction)
 
 
 def combine(values: Sequence[float], *, independent: bool = False) -> float:
@@ -145,9 +173,18 @@ def interval(scores: Sequence[float], *, bound: float, alpha: float = .05) -> tu
     return math.fsum(scores) / len(scores), lower(scores), -lower([-value for value in scores])
 
 
-def report(assignments: Iterable[Any]) -> dict[str, dict[str, Any]]:
+def report(assignments: Iterable[Any], *, strict: bool = True) -> dict[str, dict[str, Any]]:
+    """Per-memory directional e-values from logged assignments, in log order.
+
+    ``strict`` refuses duplicate (memory, occasion) rows. The evidence of record
+    (`experiment.analyze`) passes ``strict=False``: a duplicate is then dropped
+    (the first row is kept, which never adds evidence) and counted, so a dirty
+    log is reported rather than taking the whole analysis down. Rows without a
+    logged propensity cannot carry this guarantee and are skipped.
+    """
     grouped: dict[str, list[aipw.Observation]] = defaultdict(list)
     seen: set[tuple[str, str]] = set()
+    duplicates: dict[str, int] = defaultdict(int)
     for i, row in enumerate(assignments):
         fp.count(i, 0, fp.MAX_ROWS - 1)
         if row.succeeded is None:
@@ -155,17 +192,27 @@ def report(assignments: Iterable[Any]) -> dict[str, dict[str, Any]]:
         lesson = str(getattr(row, "lesson", getattr(row, "lesson_slug", "")))
         key = (lesson, row.occasion_id)
         if key in seen:
-            raise ValueError("duplicate occasion in e-process evidence")
+            if strict:
+                raise ValueError("duplicate occasion in e-process evidence")
+            duplicates[lesson] += 1
+            continue
         seen.add(key)
         rate = getattr(row, "rate", None)
         if rate is None:
             continue  # Historical records without propensities cannot carry this guarantee.
-        grouped[lesson].append(aipw.Observation(row.injected, row.succeeded, rate, getattr(row, "context", "")))
+        injected, succeeded = row.injected, row.succeeded
+        if not strict and injected in (0, 1) and succeeded in (0, 1):
+            injected, succeeded = bool(injected), bool(succeeded)
+        grouped[lesson].append(aipw.Observation(injected, succeeded, rate, getattr(row, "context", "") or ""))
     result = {}
     for lesson, observations in sorted(grouped.items()):
-        helps, hurts = process(observations), process(observations, direction="hurts")
+        scores, bounds = _adjusted(observations, None)
+        helps = _wealth(scores, bounds, delta=0.0, direction="helps")
+        hurts = _wealth(scores, bounds, delta=0.0, direction="hurts")
         result[lesson] = {"e_value": (helps.e_value + hurts.e_value) / 2,
                           "helps": helps.e_value, "hurts": hurts.e_value, "n": helps.n,
                           "assumptions": helps.kind,
                           "e_value_null": "effect equals zero; helps/hurts fields have separate directional nulls"}
+        if duplicates.get(lesson):
+            result[lesson]["duplicates_dropped"] = duplicates[lesson]
     return result

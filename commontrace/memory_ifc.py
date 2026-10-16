@@ -21,18 +21,42 @@ from commontrace import frontier_protocol as fp
 from commontrace import lineage
 from commontrace import transparency_log as log
 
+QUOTE_LIMIT = 131_072
+
 
 def label(root: str, item: dict[str, Any], *, identity: str | None = None) -> dict[str, Any]:
     identity = identity or str(item.get("id") or item.get("slug") or "")
     labels = lineage.labels(root, fp.text(identity))
     level = labels["integrity"]
     trusted = lineage.LEVELS.get(level, -1) >= lineage.LEVELS["user"] and not labels["review_required"]
-    content = str(item.get("text", item.get("body", "")))
-    fp.text(content or " ", "memory content", 131_072)
     record = lineage.record(root, identity)
-    return {**item, **labels, "confidentiality": record.get("confidentiality", "unspecified"),
-            "procedure": trusted, "presentation": "procedure" if trusted else "quoted-data",
-            **({"quoted_text": "\n".join("> " + line for line in content.splitlines())} if not trusted else {})}
+    result = {**item, **labels, "confidentiality": record.get("confidentiality", "unspecified"),
+              "procedure": trusted, "presentation": "procedure" if trusted else "quoted-data"}
+    if not trusted:
+        # Labelling is presentation, never admission: an oversized memory is
+        # quoted in bounded form instead of failing the whole retrieval.
+        content = str(item.get("text", item.get("body", "")))
+        clipped = content[:QUOTE_LIMIT].replace("\x00", "")
+        quoted = "\n".join("> " + line for line in clipped.splitlines())
+        result["quoted_text"] = quoted + ("\n> [truncated]" if len(content) > QUOTE_LIMIT else "")
+    return result
+
+
+def safe_label(root: str, item: dict[str, Any], *, identity: str | None = None) -> dict[str, Any]:
+    """`label` for retrieval paths: an unreadable lineage fails closed, not loudly.
+
+    If the lineage journal cannot be verified the memory is still returned, but
+    as untrusted quoted data with the error named, so an integrity fault never
+    upgrades trust and never takes retrieval down with it.
+    """
+    try:
+        return label(root, item, identity=identity)
+    except (ValueError, OSError, PermissionError, KeyError, TypeError) as exc:
+        content = str(item.get("text", item.get("body", "")))[:QUOTE_LIMIT]
+        return {**item, "integrity": "unknown", "lineage_digest": "", "review_required": True, "taints": [],
+                "confidentiality": "unspecified", "procedure": False, "presentation": "quoted-data",
+                "quoted_text": "\n".join("> " + line for line in content.splitlines()),
+                "label_error": f"{type(exc).__name__}: {exc}"[:300]}
 
 
 def aggregate(root: str, identities: Sequence[str], answer: Callable[[Sequence[dict[str, Any]]], str], *,

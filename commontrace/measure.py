@@ -180,7 +180,8 @@ class CausalMemory:
                 item_id = str(self._key(item))
                 # Provider rankings use incomparable score scales. A fixed score
                 # calibrates the provider policy as a whole without inventing relevance.
-                if conformal_gate.admit(calibration, .5, context=context, hazard=item_id in hazards):
+                if conformal_gate.admit(calibration, .5, context=holdout_io.context_label(context),
+                                        hazard=item_id in hazards, scorer=self._scorer):
                     relevance[item_id] = .5
                     kept.append(item)
                 else:
