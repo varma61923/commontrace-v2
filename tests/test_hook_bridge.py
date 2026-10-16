@@ -330,6 +330,8 @@ def test_invalid_input_fails_closed_without_creating_capture(tmp_path, payload):
 
 
 def test_unrelated_directory_and_pythonpath_cannot_supply_transport_imports(tmp_path, tmp_path_factory):
+    from tests.test_hook_service import functional_command
+
     unrelated = tmp_path / "unrelated directory"
     unrelated.mkdir()
     for name in ("json.py", "socket.py", "argparse.py", "sitecustomize.py"):
@@ -343,7 +345,13 @@ def test_unrelated_directory_and_pythonpath_cannot_supply_transport_imports(tmp_
         client.sendall(b'{"context":"isolated","injected":[]}\n')
 
     with peer(root, handler):
-        result = run(root, cwd=unrelated, env={**os.environ, "PYTHONPATH": str(unrelated)})
+        # This asserts isolated imports, with the same -I -S interpreter flags.
+        # Scheduling deadlines are exercised by the dedicated timeout tests.
+        result = subprocess.run(
+            functional_command(command(root)), input='{"session_id":"s","prompt":"code"}',
+            text=True, capture_output=True, timeout=SPAWN_TIMEOUT, check=True,
+            cwd=unrelated, env={**os.environ, "PYTHONPATH": str(unrelated)},
+        )
     assert json.loads(result.stdout)["context"] == "isolated"
     assert not result.stderr
 
