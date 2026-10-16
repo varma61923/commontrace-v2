@@ -237,12 +237,53 @@ flowchart LR
     Agent -->|"succeeded?"| Outcomes
 ```
 
+## Frontier roadmap
+
+The 22-feature roadmap adds authenticated lineage and transparency, sequential
+release evidence, harm-budget admission, incident freezes, protected safety
+memory, utility retention, context economics, scoped recovery/spatial memory,
+valuation, targeting and optional robot/vendor integrations.
+
+Start with the [feature status and workflow links](#project-status),
+[guarantees and assumptions](docs/guarantees.md), and
+[physical-AI quickstart](docs/physical-ai.md). Production model training, secured
+seller sandboxes and vendor authentication are pluggable deployment interfaces;
+the CPU trainer, mock robot loop and metadata ingest do not claim to replace them.
+
+The `frontier` CLI accepts a bounded JSON request and `--dest STORE`. Run
+`commontrace frontier --help` for the operation list. Dedicated `lineage`, `log`,
+`incident`, `promote`, `safety`, `experiment`, `allocate`, `dream`, `retrieval` and
+`defense` workflows remain available. Existing stores retain their canonical
+legacy hashes and defaults.
+
 ## Project status
 
 CommonTrace is pre-1.0 software under active development.
 
 | Area | Status |
 |---|---|
+| F11 Authenticated lineage | Signed derivations, origin quorum, minimum integrity and taint cascades; [workflow](docs/lineage.md). |
+| F12 Transparency log | Signed Merkle heads, inclusion/consistency proofs, tenant-isolated Hub history; [workflow](docs/transparency-log.md). |
+| F3 Sequential evidence | Predictable e-processes, shared-task e-BH for positive (HELPS) claims with harm withdrawal unweakened, nonoverlapping evidence snapshots; [workflow](docs/e-processes.md). |
+| F1 Harm-budget admission | Opt-in conservative CRC/LTT gates calibrated once from ungated randomized evidence, and trajectory escalation; [workflow](docs/conformal-gate.md). |
+| F15 Incident evidence | Freeze, legal hold, two-clock replay and signed evidence packs; Hub routes; [workflow](docs/incident.md). |
+| F2 Change control | Preregistered canonical trials, frozen support, anytime certificates (including for the Thompson gate configuration) and rollback; [workflow](docs/promotion.md). |
+| F18 Safety evidence | Reviewed protected hazards, durable recorder and intervention SPI; [workflow](docs/safety.md). |
+| F8 Causal lifecycle | Reviewed rewrites randomized against their originals in retrieval, losing-rewrite rollback and learned utility budgets; [workflow](docs/causal-dreaming.md). |
+| F9 Context economics | Opt-in value knapsack and deterministic proven-memory cache prefixes; [workflow](docs/context-packing.md). |
+| F13 Subject-key erasure | Independent encrypted envelopes, key destruction, local cascade and conditional certificates; [workflow](docs/certified-erasure.md). |
+| F14 Pre-action defenses | Quoted low-integrity data, scoped derivation, sensor checks, canaries and shadow red teams; [workflow](docs/memory-defenses.md). |
+| F5 Outcome engine | Held-out surrogate agreement, active-gold residual correction and separate sim/real discrepancies; [workflow](docs/outcomes.md). |
+| F16 Recovery registry | Calibrated signatures, exact fleet context, randomized lift ranking and withdrawal; [workflow](docs/recovery.md). |
+| F4 Fleet interference | Cluster design, lineage write diversion, switchback burn-in and HT monitoring; [workflow](docs/interference.md). |
+| F19 Valuation | Factorial value certificates, capped warranty ledger and underwriting/training metadata exports; [workflow](docs/valuation.md). |
+| F17 Spatial objects | Bounded bitemporal deltas, corrections, historical beliefs and three planner MCP tools; [workflow](docs/spatial.md). |
+| F6 Targeting | Disjoint DR learning, conservative RATE admission, positive-class transfer and exploration; [workflow](docs/uplift.md). |
+| F7 Attribution | Budgeted randomized replay masks, sparse culprit diagnostics and restore audits; [workflow](docs/attribution.md). |
+| F20 Clean room | Sealed runner interface, attested escrow, stake-weighted duplicate-cluster royalties and Laplace budget accounting; [workflow](docs/cleanroom.md). |
+| F10 Compilation | Open-weight trainer contract, CPU governance reference, source rollback and artifact-bound F2 trials; [workflow](docs/compile-memory.md). |
+| F21 Foreign stores | Pinned SDK/HTTP adapters, canonical measurement, lineage and redacted errors; [workflow](docs/vendor-evidence.md). |
+| F22 Physical-AI bridge | Lazy ROS node, MCAP/LeRobot metadata ingest, witnessed edge cache and durable outcomes; [workflow](docs/physical-ai.md). |
 | Local store, retrieval, MCP server, gateway, holdout experiment | Stable; covered by about 8,000 tests in CI on Python 3.10 and 3.12 |
 | Hub server | Feature-complete; tested against real PostgreSQL in CI |
 | Causal gate | New. Runs on the local store and the gateway; the Hub does not yet record per-assignment rates or contexts |
@@ -261,7 +302,22 @@ make test        # tests and e2e_tests
 make coverage    # with the 80% gate
 ```
 
-CI also runs strict type checks on the core modules, bandit, pip-audit, CodeQL, a latency gate, the SDK builds, Docker and Compose smoke tests, and an architecture audit.
+To check the Hub and generated API contracts:
+
+```bash
+python scripts/dev.py test --hub -q  # requires HUB_TEST_DATABASE_URL: disposable PostgreSQL 16
+python scripts/export_openapi.py --check
+python scripts/export_hub_openapi.py --check
+```
+
+CI also runs strict type checks on the core modules, bandit, pip-audit, CodeQL,
+a latency gate, the SDK builds, Docker and Compose smoke tests, and an architecture
+audit. The exact gates are defined in [CI](.github/workflows/ci.yml),
+[security checks](.github/workflows/security.yml), and the
+[architecture audit](.github/workflows/graphify.yml). See the branch's
+[Actions runs](https://github.com/varma61923/commontrace-v2/actions) for current
+results. Optional integrations use mocks or local fixtures; CI does not exercise
+live vendor requests, payments, enclaves or robot actuation.
 
 ## License
 

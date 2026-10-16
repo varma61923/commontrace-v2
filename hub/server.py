@@ -1551,6 +1551,9 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
 
 
 def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlette:
+    if config.ledger_signing_key:
+        session_factory.configure(info={"transparency_key": config.ledger_signing_key,
+                                        "transparency_algorithm": config.transparency_algorithm})
     auth.configure_region(config.data_region)
     auth.configure_auth_cache(config.auth_cache_seconds, require_listener=True)
     rate_limiter = make_rate_limiter(config)

@@ -267,7 +267,12 @@ def cluster_facts(
         pool = [fact for fact in hierarchical.list_facts(root, status="active", scope=scope)
                 if hierarchical._valid_at(fact, moment)]
     groups: dict[tuple[str, ...], list[hierarchical.AtomicFact]] = defaultdict(list)
+    from commontrace import safety
+
+    hazards = safety.protected(root)
     for fact in sorted(pool, key=lambda f: f.id):
+        if fact.id in hazards:
+            continue
         groups[tuple(sorted(fact.scopes))].append(fact)
     notes: list[str] = []
     clusters: list[FactCluster] = []
@@ -355,12 +360,13 @@ def apply_clusters(root: str, report: dict[str, Any], *, actor: str = "consolida
     alone; one a reviewer rejected (archived) is not proposed again unless its
     membership changed (which changes the cluster id).
     """
-    from commontrace import memory_control
+    from commontrace import memory_control, safety
 
     existing = {r["id"]: r for r in memory_control.records(root, "proposal")}
     written, unchanged, rejected = [], [], []
     for cluster in report.get("clusters", []):
         sources = list(cluster["member_ids"])
+        safety.assert_mutable(root, sources)
         previous = existing.get(cluster["id"])
         if previous is not None:
             status = (previous.get("data") or {}).get("status")

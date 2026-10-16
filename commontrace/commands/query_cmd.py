@@ -465,6 +465,8 @@ def _apply_dosage(
             max_chars=config.max_chars,
             redundancy_threshold=config.redundancy_threshold,
         ),
+        root=os.path.dirname(os.path.dirname(os.path.dirname(active[0][0]))) if active else None,
+        context=agent_type or "",
     )
     return considered, dose
 

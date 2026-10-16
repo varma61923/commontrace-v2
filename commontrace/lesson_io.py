@@ -85,6 +85,20 @@ def write_lesson(
     after = revision.revision_of(fm, body)
 
     if after != before:
+        from commontrace import frontier_protocol as fp
+        from commontrace import lineage, safety
+
+        identity = canonical_slug(os.path.basename(path))
+        safety.assert_mutable(root, [identity])
+        # Attestation lives beside the legacy lesson, preserving revision bytes.
+        content = {"id": identity, "text": body, "scopes": fm.get("scopes", [])}
+        lineage.attest(root, content, fp.sign(root, content), inputs=fm.get("source_traces", []),
+                       operation="lesson", model_id=str(fm.get("model_id") or "unspecified"))
+        from commontrace import transparency_log
+
+        transparency_log.append(root, "lesson-write", {"id": identity, "revision": after}, receipt=False)
+
+    if after != before:
         basename = os.path.basename(path)
         if basename.endswith(".md"):
             basename = basename[: -len(".md")]
@@ -102,6 +116,11 @@ def write_lesson(
             record["before_body"] = before_body
         _journal(root, record)
     frontmatter.write(path, fm, body)
+    if after != before and fm.get("approval_receipt"):
+        from commontrace import lesson_admission, lineage
+
+        if lesson_admission.eligible(root, path, fm, body):
+            lineage.review(root, canonical_slug(os.path.basename(path)), fm["approval_receipt"])
     return after
 
 

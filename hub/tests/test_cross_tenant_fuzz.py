@@ -8,14 +8,16 @@ import pytest
 import pytest_asyncio
 from starlette.applications import Starlette
 
+from commontrace import frontier_protocol as fp
 from hub import alerts as alerts_module
-from hub import auth, console, events, rbac
+from hub import auth, console, events, incidents, rbac
 from hub.db import session_scope
-from hub.models import AlertRule, ApiKey, Organization, User, WebhookEndpoint
+from hub.models import AlertRule, ApiKey, IncidentSnapshot, LegalHold, Organization, User, WebhookEndpoint
 
 pytestmark = pytest.mark.asyncio
 
 SECRET = "fuzz-console-secret"
+SIGNING_KEY = "fuzz-signing-" + "x" * 32
 B_EMAIL = "victim-b@example.org"
 B_WEBHOOK = "https://hooks.org-b.example.org/secret-path"
 
@@ -44,7 +46,7 @@ def _public_dns(monkeypatch):
 def _app(session_factory, config) -> Starlette:
     app = Starlette()
     console.add_console_routes(
-        app, session_factory, console_secret=SECRET, signing_key="fuzz-signing", config=config,
+        app, session_factory, console_secret=SECRET, signing_key=SIGNING_KEY, config=config,
     )
     return app
 
@@ -62,13 +64,14 @@ async def tenants(session_factory):
         rule = await alerts_module.create_rule(
             session, b.id, alerts_module.METRIC_QUARANTINE_RATE, alerts_module.COMPARATOR_GT, 0.5,
         )
-        endpoint, _secret = await events.add_endpoint(session, b.id, B_WEBHOOK, signing_key="fuzz-signing")
+        endpoint, _secret = await events.add_endpoint(session, b.id, B_WEBHOOK, signing_key=SIGNING_KEY)
         await session.flush()
+        await incidents.freeze(session, b.id, "victim-incident", fp.now(), actor="fixture", secret=SIGNING_KEY)
         return {
             "a_raw_key": a_key.raw_key, "b_org": b.id,
             "ids": {
                 "user_id": user.id, "key_id": b_key.key_id,
-                "rule_id": rule.id, "endpoint_id": endpoint.id,
+                "rule_id": rule.id, "endpoint_id": endpoint.id, "incident_id": "victim-incident",
             },
         }
 
@@ -80,12 +83,15 @@ async def _snapshot(session_factory, tenants) -> dict:
         key = await session.get(ApiKey, ids["key_id"])
         rule = await session.get(AlertRule, ids["rule_id"])
         endpoint = await session.get(WebhookEndpoint, ids["endpoint_id"])
+        incident = await session.get(IncidentSnapshot, (org, ids["incident_id"]))
+        hold = await session.get(LegalHold, incident.hold_id)
         return {
             "user": (user.role, user.disabled_at),
             "key": (key.revoked_at, key.key_hash if hasattr(key, "key_hash") else None),
             "rule": rule is not None and (rule.threshold, rule.org_id),
             "endpoint": (endpoint.enabled, endpoint.key_version, endpoint.url),
             "org": org,
+            "incident": (fp.digest(incident.snapshot), incident.hold_id, hold.released_at),
         }
 
 
@@ -102,7 +108,7 @@ def _param_routes(app: Starlette) -> list[tuple[str, str, list[str]]]:
 
 
 async def test_every_console_route_with_an_id_is_mapped(session_factory, config):
-    mapped = {"user_id", "key_id", "rule_id", "endpoint_id", "token"}
+    mapped = {"user_id", "key_id", "rule_id", "endpoint_id", "token", "incident_id"}
     unmapped = {
         (m, p) for m, p, params in _param_routes(_app(session_factory, config))
         if set(params) - mapped

@@ -27,7 +27,8 @@ _COMMANDS = (
     "block", "fact", "graph", "ingest", "agent", "watch", "daemon", "viz", "conversation", "memory", "recall", "jobs",
     "ontology", "community", "observation", "saga", "page", "session_ledger",
     "procedural", "sql_query", "defense", "evolve", "policy", "assurance", "compression", "up", "connect", "migrate",
-    "codegraph", "market", "allocate", "integration", "providers", "help", "setup",
+    "codegraph", "market", "allocate", "integration", "providers", "help", "setup", "lineage", "log", "incident",
+    "promote", "safety", "frontier",
 )
 
 ALIASES = {

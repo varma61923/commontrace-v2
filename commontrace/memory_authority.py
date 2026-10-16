@@ -29,11 +29,11 @@ def writer(principal: str, authority: str):
         WRITER.reset(token)
 
 
-def _key(root: str, *, create: bool = False, algorithm: str = "hmac-sha256") -> bytes | None:
+def _key(root: str, *, create: bool = False, algorithm: str = "hmac-sha256", durable: bool = True) -> bytes | None:
     filename = os.path.join(paths.memory_dir(root),
                             ".origin-ed25519-key" if algorithm == "ed25519" else ".origin-key")
     paths.enforce_boundary(root, filename)
-    if create:
+    if create and not os.path.lexists(filename):
         paths.safe_prepare_output_path(filename)
         with _jsonl.locked(filename):
             try:
@@ -44,7 +44,8 @@ def _key(root: str, *, create: bool = False, algorithm: str = "hmac-sha256") -> 
                 with os.fdopen(fd, "wb") as fh:
                     fh.write(secrets.token_bytes(32))
                     fh.flush()
-                    os.fsync(fh.fileno())
+                    if durable:
+                        os.fsync(fh.fileno())
     try:
         if os.path.islink(filename):
             raise ValueError("origin key must not be a symlink")
@@ -137,6 +138,10 @@ def verify(root: str, receipt: dict, record: dict | None = None) -> bool:
 
 
 def bind(root: str, record: dict, *, sources: list[str] | None = None) -> dict:
+    from commontrace import safety
+
+    if record.get("id"):
+        safety.assert_mutable(root, [record["id"]])
     principal_id, authority = WRITER.get()
     algorithm = signing_config(root)["algorithm"]
     config = signing_config(root)
@@ -160,13 +165,42 @@ def bind(root: str, record: dict, *, sources: list[str] | None = None) -> dict:
         if before:
             authority = min((authority, before["authority"]), key=lambda name: TRUST[name])
         inherited = [prior.get(source) for source in sources or []]
+        if record_class(record) != "journal":
+            _check_source_scopes(record.get("scopes", []), [r["record"].get("scopes", []) for r in inherited if r])
         if inherited:
             ranks = [TRUST[r["authority"]] if r else 0 for r in inherited]
             minimum = min(TRUST[authority], *ranks)
             authority = next(name for name in ("external", "agent", "user", "operator") if TRUST[name] == minimum)
         signed = origin.bind(record, origin.Principal(principal_id, "local-store", authority, key, algorithm))
         _jsonl.append_row(ledger, signed)
+    if record.get("id"):
+        from commontrace import lineage
+
+        lineage.attest(root, record, signed, inputs=sources or source_ids(record), operation=record_class(record))
+        from commontrace import transparency_log
+
+        transparency_log.append(root, "write", {"id": record["id"], "content_hash": signed["digest"]}, receipt=False)
     return signed
+
+
+def _check_source_scopes(derived: list[str], sources: list[list[str]]) -> None:
+    """A derivation may narrow visibility, never broaden an authenticated owner scope."""
+    def dimensions(labels):
+        if not isinstance(labels, list) or len(labels) > 128:
+            raise ValueError("scope labels must be a bounded list")
+        groups = {}
+        for label in labels:
+            if not isinstance(label, str) or not 1 <= len(label) <= 256:
+                raise ValueError("invalid scope label")
+            dimension, _, value = label.partition(":")
+            groups.setdefault(dimension, set()).add(value)
+        return groups
+
+    wanted = dimensions(derived)
+    for source in sources:
+        for dimension, owners in dimensions(source).items():
+            if wanted.get(dimension) != owners:
+                raise PermissionError("derived memory must preserve every authenticated source owner scope")
 
 
 def permits(root: str, fact, *, action_class: str = "") -> bool:
@@ -174,6 +208,10 @@ def permits(root: str, fact, *, action_class: str = "") -> bool:
 
 
 def permits_record(root: str, receipt: dict, record: dict, *, action_class: str = "") -> bool:
+    from commontrace import interference
+
+    if not interference.read_allowed(root, record.get("id", "")):
+        return False
     if lineage_blocked(root, record.get("id", "")):
         return False
     if not receipt and previously_bound(root, record.get("id", "")):
@@ -234,6 +272,11 @@ def lineage_blocked(root: str, record_id: str) -> bool:
 
 
 def record_forgetting(root: str, record_id: str, *, forgotten: bool):
+    if forgotten:
+        from commontrace import incident, safety
+
+        incident.assert_unpinned(root, [record_id])
+        safety.assert_mutable(root, [record_id])
     path = os.path.join(paths.memory_dir(root), "forgetting.jsonl")
     with _jsonl.locked(path):
         sequence = len(_jsonl.read_rows(path))

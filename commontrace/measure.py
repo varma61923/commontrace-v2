@@ -169,6 +169,25 @@ class CausalMemory:
                     kept.append(item)
             items = kept
 
+        from commontrace import conformal_gate, safety
+
+        calibration = conformal_gate.current(self._root)
+        relevance: dict[str, float] = {}
+        if calibration.get("enabled"):
+            kept = []
+            hazards = safety.protected(self._root)
+            for item in items:
+                item_id = str(self._key(item))
+                # Provider rankings use incomparable score scales. A fixed score
+                # calibrates the provider policy as a whole without inventing relevance.
+                if conformal_gate.admit(calibration, .5, context=holdout_io.context_label(context),
+                                        hazard=item_id in hazards, scorer=self._scorer):
+                    relevance[item_id] = .5
+                    kept.append(item)
+                else:
+                    quarantined[item_id] = "harm-budget gate abstained"
+            items = kept
+
         ids: list[str] = []
         revisions: dict[str, str | None] = {}
         keyed: list[tuple[str, Any]] = []
@@ -187,11 +206,11 @@ class CausalMemory:
             if record:
                 withheld = holdout_io.assign_and_log(self._root, ids, occasion_id=occasion_id,
                     rate=config.rate, salt=config.salt, scorer=self._scorer,
-                    revisions=revisions, durable=self._durable, context=context)
+                    revisions=revisions, durable=self._durable, context=context, relevance=relevance or None)
             else:
                 withheld, assignments = holdout_io.plan_assignments(self._root, ids, occasion_id=occasion_id,
                     rate=config.rate, salt=config.salt, scorer=self._scorer,
-                    revisions=revisions, durable=self._durable, context=context)
+                    revisions=revisions, durable=self._durable, context=context, relevance=relevance or None)
         return Recall(
             items=[item for item_id, item in keyed if item_id not in withheld], withdrawn=removed,
             assignments=assignments,

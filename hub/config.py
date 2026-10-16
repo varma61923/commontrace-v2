@@ -136,6 +136,7 @@ class HubConfig:
     stripe_price_scale: str = ""
 
     ledger_signing_key: str = ""
+    transparency_algorithm: str = "hmac-sha256"
 
     auth_cache_seconds: float = 0.0
     encryption_key: str = ""
@@ -293,6 +294,7 @@ class HubConfig:
             stripe_price_team=_configuration_getenv("HUB_STRIPE_PRICE_TEAM", ""),
             stripe_price_scale=_configuration_getenv("HUB_STRIPE_PRICE_SCALE", ""),
             ledger_signing_key=env_secret("HUB_LEDGER_SIGNING_KEY"),
+            transparency_algorithm=_configuration_getenv("HUB_TRANSPARENCY_ALGORITHM", "hmac-sha256"),
             oidc_issuer=_configuration_getenv("HUB_OIDC_ISSUER", ""),
             oidc_audience=_configuration_getenv("HUB_OIDC_AUDIENCE", ""),
             oidc_jwks=_configuration_getenv("HUB_OIDC_JWKS", ""),

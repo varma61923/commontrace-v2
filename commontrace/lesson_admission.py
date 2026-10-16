@@ -240,7 +240,12 @@ def _record_state(root: str, path: str, *, action: str, digest: str, actor: str)
 
 def _record(root: str, path: str, *, action: str, digest: str, actor: str) -> dict[str, Any]:
     try:
-        return _record_state(root, path, action=action, digest=digest, actor=actor)
+        result = _record_state(root, path, action=action, digest=digest, actor=actor)
+        from commontrace import transparency_log
+
+        transparency_log.append(root, "lesson-" + action,
+                                {"id": _subject(root, path), "digest": digest, "actor": actor, "receipt": result})
+        return result
     except (OSError, sqlite3.Error):
         raise AdmissionError("lesson admission state could not be committed") from None
 

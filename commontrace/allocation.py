@@ -179,6 +179,10 @@ def _publish(root: str, *, salt: str, default_rate: float, rates: dict[str, floa
         holdout_io._append_lines(path, [json.dumps({**schedule.body(), "digest": schedule.digest},
                                                    sort_keys=True, ensure_ascii=False)])
     _CACHE.pop(path, None)
+    from commontrace import transparency_log
+
+    transparency_log.append(root, "schedule-publication", {"digest": schedule.digest,
+                                                          "effective_from": schedule.effective_from})
     return schedule
 
 
@@ -203,7 +207,8 @@ def disable(root: str, *, now: datetime.datetime | None = None) -> Schedule:
                     basis={"reason": "disabled"}, enabled=False, now=now)
 
 
-def plan(root: str, *, now: datetime.datetime | None = None, alpha: float = 0.05) -> Schedule:
+def plan(root: str, *, now: datetime.datetime | None = None, alpha: float = 0.05,
+         require_certificate: bool = False) -> Schedule:
     """Publish the next era's rates from every outcome recorded so far."""
     from commontrace import holdout_io
     from commontrace.commands import experiment_cmd
@@ -218,6 +223,20 @@ def plan(root: str, *, now: datetime.datetime | None = None, alpha: float = 0.05
 
         rates, context_rates, basis = causal_gate.plan_rates(root, policy.monitor)
         basis["previous_version"] = current.version
+        if require_certificate:
+            from commontrace import frontier_protocol as fp
+            from commontrace import promotion
+
+            # The certified change is the Thompson gate itself (its configuration),
+            # trialled against the incumbent before this plan; per-era rates are
+            # its outputs and cannot be certified before they are computed.
+            gate = policy_hash(policy)
+            found = next((row for row in reversed(fp.journal(root, "promotion-certificates.jsonl"))
+                          if promotion.verify(root, row, artifact_hash=gate)), None)
+            if found is None:
+                raise ValueError("the Thompson gate requires an unrevoked promotion certificate for policy "
+                                 f"{gate}: register a change plan with this artifact_hash, trial it, certify it")
+            basis["promotion_certificate"] = fp.digest(found["certificate"])
         return _publish(root, salt=config.salt, default_rate=policy.explore, rates=rates, policy=policy,
                         basis=basis, now=now, context_rates=context_rates)
     rows, _rate, _corrupt = experiment_cmd._load(root)
@@ -229,6 +248,13 @@ def plan(root: str, *, now: datetime.datetime | None = None, alpha: float = 0.05
              "verdicts": {e.lesson_slug: e.verdict for e in effects}, "previous_version": current.version}
     return _publish(root, salt=config.salt, default_rate=policy.explore, rates=rates, policy=policy,
                     basis=basis, now=now)
+
+
+def policy_hash(policy: Policy) -> str:
+    """The commitment a promotion certificate binds when it certifies an allocation policy."""
+    from commontrace import frontier_protocol as fp
+
+    return fp.digest({"allocation_policy": asdict(policy)})
 
 
 def due(root: str, salt: str) -> bool:

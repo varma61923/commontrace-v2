@@ -168,4 +168,10 @@ def withdrawn(root: str, policy: str) -> dict[str, dict]:
         return {}
     if not evidence.get("available"):
         return {}
-    return harm.hurts(evidence.get("by_lesson", {}))
+    withdrawn_lessons = harm.hurts(evidence.get("by_lesson", {}))
+    if withdrawn_lessons:
+        from commontrace import lineage
+
+        for slug in withdrawn_lessons:
+            lineage.taint(root, slug, "randomized evidence: harm withdrawal")
+    return withdrawn_lessons

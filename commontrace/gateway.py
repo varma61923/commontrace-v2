@@ -1392,7 +1392,9 @@ class Gateway:
                            "simulation and reality are never pooled")
 
     def _protected(self, item: dict) -> bool:
-        return bool(item.get("protected")) or any(
+        from commontrace import safety
+
+        return item["id"] in safety.protected(self.root) or bool(item.get("protected")) or any(
             item["id"].startswith(prefix) for prefix in self.config.protected_prefixes)
 
     def _store_candidates(self, req: dict, *, scope: str = "") -> list[dict]:
@@ -1659,6 +1661,9 @@ class Gateway:
         else:
             delivered, withdrawn = [dict(i) for i in clean], {}
         out_ids = {i["id"] for i in delivered}
+        from commontrace import memory_ifc
+
+        delivered = [memory_ifc.safe_label(self.root, item) for item in delivered]
         withheld = [i["id"] for i in clean if i["id"] not in out_ids and i["id"] not in withdrawn]
         response = {
             "occasion_id": occasion, "mode": mode, "deliver": delivered, "withheld": withheld,

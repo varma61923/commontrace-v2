@@ -48,3 +48,18 @@ async def report_value_line(settings: billing.StripeSettings, *, org_id: str, pl
     return await billing._post("billing/meter_events", settings.secret_key, {
         "event_name": event_name, "identifier": identifier_for(line, org_id),
         "payload[stripe_customer_id]": customer_id, "payload[value]": str(minor)})
+
+
+def warranty_line(root: str, certificate: dict, *, contract: str, memory: str,
+                  minimum_lift: float, paid_cents: int) -> dict:
+    """Prepare a verified, capped credit line; sending a refund remains explicit.
+
+    Existing positive usage meter events and their canonical hashes stay intact.
+    A refund consumer uses the stable ledger id as its provider idempotency key.
+    """
+    from commontrace import valuation
+
+    credit = valuation.warranty_credit(root, certificate, contract=contract, memory=memory,
+                                      minimum_lift=minimum_lift, paid_cents=paid_cents)
+    return {"kind": "warranty-credit", "amount": -credit["credit_cents"] / 100,
+            "currency": "USD", "idempotency_key": credit["id"], "evidence": credit}
