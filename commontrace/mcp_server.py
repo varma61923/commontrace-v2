@@ -1773,6 +1773,71 @@ def build_server(root: str, *, allow_approval: bool = True):
         return _ok(results=results, count=len(results))
 
     @mcp.tool()
+    async def memory_reason(question: str, context: list[str] | None = None, limit: int = 10,
+                            max_hops: int = 3, as_of: str | None = None, known_at: str | None = None,
+                            graph_hops: int = 2, use_model: bool = False, action_class: str = "",
+                            ctx: Any = None) -> dict:
+        """Answer-oriented multi-hop retrieval: facts plus the evidence chains that connect them.
+
+        For questions whose answer spans facts that share no words with the
+        question ("who founded the company that acquired GitHub?"). Combines
+        compositional decomposition, a Personalized PageRank walk over the
+        fact-entity graph and bridge-entity chaining. `chains` lists each
+        evidence path (fact --[entity]--> fact) with a score. Deterministic and
+        model-free unless `use_model` is true, which lets the configured model
+        propose sub-questions and follow-up queries under the store's LLM budget.
+        Every fact walked through or returned passes the same scope, time,
+        authority and evidence checks as memory_search.
+        """
+        from commontrace import multihop
+
+        try:
+            await _progress(ctx, 0, "Decomposing and walking the fact graph")
+
+            def run() -> dict:
+                options: dict[str, Any] = {"context": context or [], "as_of": as_of, "known_at": known_at,
+                                           "graph_hops": graph_hops, "action_class": action_class}
+                if not use_model:
+                    return multihop.reason(root, question, max_hops=max_hops, limit=limit, **options)
+                import hashlib
+
+                from commontrace import llm
+                from commontrace.llm_runtime import LLMRuntime
+
+                runtime = LLMRuntime(root, "reason-" + hashlib.sha256(question.encode()).hexdigest()[:24])
+                with runtime.scope():
+                    return multihop.reason(root, question, complete=llm.complete, max_hops=max_hops,
+                                           limit=limit, **options)
+
+            out = await STORE_WORKERS.run(run)
+        except (ValueError, OSError, RuntimeError, TypeError) as exc:
+            return _err(f"could not reason over memory: {type(exc).__name__}: {exc}")
+        await _progress(ctx, 1, "Multi-hop retrieval complete")
+        return _ok(**out, count=len(out["results"]))
+
+    @mcp.tool()
+    async def graph_triplet_search(query: str, top_k: int = 10, context: list[str] | None = None,
+                                   as_of: str | None = None, known_at: str | None = None,
+                                   relations: list[str] | None = None, action_class: str = "") -> dict:
+        """Rank knowledge-graph relations (subject, relation, object) against a query as whole units.
+
+        A triplet must match the query on more than one of its three parts to
+        rank well. Relations learned from facts the caller cannot see are never
+        returned. Uses the configured graph embedder when there is one, else a
+        local lexical similarity; no model or network call otherwise.
+        """
+        from commontrace import triplet_search
+
+        try:
+            triplets = await STORE_WORKERS.run(
+                lambda: triplet_search.search(root, query, top_k=top_k, context=context or [], as_of=as_of,
+                                              known_at=known_at, relations=relations,
+                                              action_class=action_class))
+        except (ValueError, OSError, RuntimeError, TypeError) as exc:
+            return _err(f"could not search triplets: {type(exc).__name__}: {exc}")
+        return _ok(triplets=triplets, count=len(triplets))
+
+    @mcp.tool()
     def query_facts(
         query: str,
         scope: str = "",

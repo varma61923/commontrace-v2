@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from typing import Any
 
 from commontrace import additive_extract, agent_registry, memory_control, onboarding, paths
 from commontrace.search_recipes import REGISTRY, recipe_manifest
@@ -35,14 +36,32 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     runtime.add_argument("--expires-at")
     runtime.add_argument("--source-agent", choices=("claude", "codex", "cursor", "gemini"))
     runtime.set_defaults(func=run_runtime)
-    for name in ("add", "search", "reflect", "profile", "directive", "question", "foresight", "propose",
+    for name in ("add", "search", "reason", "triplets", "reflect", "profile", "directive", "question",
+                 "foresight", "propose",
                  "models", "proposals", "directives", "offline", "recipes", "install", "heartbeat", "distill-session",
                  "skills", "skill-review", "skill-publish", "foresight-review", "hook"):
         q = sub.add_parser(name)
         q.add_argument("--dest", default=None)
         q.add_argument("--context", action="append", default=[], help="Orthogonal scope label; repeatable.")
-        if name in ("add", "search", "reflect", "profile", "directive", "question", "foresight", "propose"):
+        if name in ("add", "search", "reason", "triplets", "reflect", "profile", "directive", "question",
+                    "foresight", "propose"):
             q.add_argument("text", nargs="?", default="")
+        if name == "reason":
+            q.add_argument("--max-hops", type=int, choices=range(1, 4), default=3,
+                           help="bridge-entity hops to chain (default: 3)")
+            q.add_argument("--limit", type=int, default=10)
+            q.add_argument("--as-of", help="ISO valid-time snapshot.")
+            q.add_argument("--known-at", help="ISO snapshot of when the store learned the evidence.")
+            q.add_argument("--graph-hops", type=int, choices=range(5), default=2,
+                           help="knowledge-graph depth folded into the walk; 0 uses the entity index only")
+            q.add_argument("--model", action="store_true",
+                           help="let the configured model propose sub-questions and follow-up queries")
+        if name == "triplets":
+            q.add_argument("--top-k", type=int, default=10)
+            q.add_argument("--as-of", help="ISO valid-time snapshot.")
+            q.add_argument("--known-at", help="ISO snapshot of when the store learned the evidence.")
+            q.add_argument("--relation", action="append", default=None,
+                           help="restrict to this relation; repeatable")
         if name == "add":
             q.add_argument("--model", action="store_true",
                            help="One-pass model extraction; default explicit assertion.")
@@ -110,6 +129,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
 def run(args) -> int:
     root, op = paths.resolve_root(args.dest), args.operation
     context = args.context
+    result: Any
     try:
         if op == "hook":
             from commontrace import agent_hooks
@@ -123,6 +143,28 @@ def run(args) -> int:
             result = REGISTRY.retrieve(args.retriever, root, args.text, recipe=args.recipe,
                                        context=context, center=args.center, as_of=args.as_of,
                                        known_at=args.known_at, graph_hops=args.graph_hops, **extra)
+        elif op == "reason":
+            from commontrace import multihop
+
+            options: dict[str, Any] = {"context": context, "as_of": args.as_of, "known_at": args.known_at,
+                                       "graph_hops": args.graph_hops}
+            if args.model:
+                import hashlib
+
+                from commontrace import llm
+                from commontrace.llm_runtime import LLMRuntime
+
+                runtime = LLMRuntime(root, "reason-" + hashlib.sha256(args.text.encode()).hexdigest()[:24])
+                with runtime.scope():
+                    result = multihop.reason(root, args.text, complete=llm.complete, max_hops=args.max_hops,
+                                             limit=args.limit, **options)
+            else:
+                result = multihop.reason(root, args.text, max_hops=args.max_hops, limit=args.limit, **options)
+        elif op == "triplets":
+            from commontrace import triplet_search
+
+            result = triplet_search.search(root, args.text, top_k=args.top_k, context=context,
+                                           as_of=args.as_of, known_at=args.known_at, relations=args.relation)
         elif op == "reflect":
             result = memory_control.reflect(root, args.text, context=context, budget=args.budget,
                                              exploration_slots=args.exploration_slots,

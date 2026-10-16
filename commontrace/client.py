@@ -134,6 +134,35 @@ class MemoryClient:
                                  known_at=known_at, graph_hops=graph_hops, reranker=reranker, **local_options)
 
     @configured
+    def reason(self, question: str, *, max_hops: int = 3, limit: int = 10, complete=None,
+               as_of: str | None = None, known_at: str | None = None, action_class: str = "",
+               graph_hops: int = 2, **local_options) -> dict:
+        """Multi-hop retrieval with evidence chains (`commontrace.multihop.reason`).
+
+        Local stores only; a remote store offers the same ranking as
+        ``search(..., retriever="multi-hop")``, without the chains.
+        """
+        if self.url:
+            raise ValueError("reason() needs a local store; use search(retriever='multi-hop') remotely")
+        from commontrace import multihop
+
+        return multihop.reason(self.root, question, complete=complete, max_hops=max_hops, limit=limit,
+                               context=self.context, as_of=as_of, known_at=known_at,
+                               action_class=action_class, graph_hops=graph_hops, **local_options)
+
+    @configured
+    def triplets(self, query: str, *, top_k: int = 10, as_of: str | None = None, known_at: str | None = None,
+                 relations: list[str] | None = None, action_class: str = "", embedder=None) -> list[dict]:
+        """Knowledge-graph relations ranked as whole triplets (`commontrace.triplet_search.search`)."""
+        if self.url:
+            raise ValueError("triplets() needs a local store")
+        from commontrace import triplet_search
+
+        return triplet_search.search(self.root, query, top_k=top_k, context=self.context, as_of=as_of,
+                                     known_at=known_at, relations=relations, action_class=action_class,
+                                     embedder=embedder)
+
+    @configured
     def batch(self, items: list[dict]) -> dict:
         if self.url:
             return self._request("batch", {"items": items, "context": self.context})
