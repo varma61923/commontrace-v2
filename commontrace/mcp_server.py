@@ -856,6 +856,10 @@ def build_server(root: str, *, allow_approval: bool = True):
         ]
         if occasion_id and eligible and config.running:
             try:
+                try:
+                    occasion_context = holdout_io.context_label(agent_type)
+                except ValueError:
+                    occasion_context = ""
                 withheld = holdout_io.assign_and_log(
                     root, eligible,
                     occasion_id=occasion_id,
@@ -864,6 +868,7 @@ def build_server(root: str, *, allow_approval: bool = True):
                     relevance=relevance_by_slug,
                     scorer=eligibility_label,
                     floor=retrieval_config.floor,
+                    context=occasion_context,
                 )
             except Exception as exc:  # noqa: BLE001
                 return _err(
@@ -1383,6 +1388,36 @@ def build_server(root: str, *, allow_approval: bool = True):
             except Exception as exc:  # noqa: BLE001
                 return _err(f"could not reject {slug!r}: {type(exc).__name__}: {exc}")
             return _ok(slug=slug, status="archived")
+
+    @mcp.tool()
+    def causal_gate_report(floor: float = 0.05, practical: float = 0.10) -> dict:
+        """Where does each memory help, and should it be injected there?
+
+        Beyond the average effect `experiment_status` reports, the causal gate
+        estimates each memory's effect per occasion context (the `agent_type`
+        you pass to `retrieve`), shrinks every estimate toward its lesson and
+        its source by empirical Bayes, and proposes withholding rates: the
+        posterior probability that the memory does not help there, clipped to
+        [floor, 1 - floor]. It also reports each source's causal reputation,
+        memories whose effect drifted over time, and an off-policy check that
+        fits the gate on earlier occasions and scores it on later ones.
+
+        These are allocation weights, not proofs: `experiment_status` stays the
+        evidence of record. To act on them, enable `commontrace allocate enable
+        --mode thompson` and publish eras with `commontrace allocate plan`.
+        """
+        from commontrace import causal_gate
+
+        if not (isinstance(floor, (int, float)) and 0.0 < float(floor) < 0.5):
+            return _err("floor must be a number in (0, 0.5)")
+        if not (isinstance(practical, (int, float)) and 0.0 <= float(practical) <= 1.0):
+            return _err("practical must be a number in [0, 1]")
+        try:
+            with _quiet():
+                out = causal_gate.report(root, floor=float(floor), practical=float(practical))
+        except Exception as exc:  # noqa: BLE001
+            return _err(f"could not build the causal gate report: {type(exc).__name__}: {exc}")
+        return _ok(**out)
 
     @mcp.tool()
     def experiment_status() -> dict:

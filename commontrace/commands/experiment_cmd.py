@@ -181,6 +181,7 @@ def _load(root: str) -> tuple[list[integrity.Assignment], float, int]:
             scorer=rec.scorer,
             floor=rec.floor,
             schedule=rec.schedule,
+            context=rec.context,
         )
         for rec in records
     ]

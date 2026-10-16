@@ -115,6 +115,27 @@ def _append_lines(path: str, lines: list[str], durable: bool = True) -> None:
             os.fsync(fh.fileno())
 
 
+MAX_CONTEXT_CHARS = 64
+
+
+def context_label(value: object) -> str:
+    """A normalized occasion context label: trimmed, casefolded, printable, at most 64 characters.
+
+    Empty means "no context". A label is a stratum, not free text, so anything longer
+    or containing control characters is refused rather than silently truncated.
+    """
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ValueError("context must be a string")
+    label = " ".join(value.split()).casefold()
+    if len(label) > MAX_CONTEXT_CHARS:
+        raise ValueError(f"context must be at most {MAX_CONTEXT_CHARS} characters")
+    if any(not ch.isprintable() for ch in label):
+        raise ValueError("context must not contain control characters")
+    return label
+
+
 def plan_assignments(
     root: str,
     slugs: list[str],
@@ -127,13 +148,20 @@ def plan_assignments(
     floor: float | None = None,
     revisions: dict[str, str | None] | None = None,
     durable: bool = True,
+    context: str = "",
 ) -> tuple[set[str], list[dict]]:
-    """Freeze deterministic arms and schedule metadata without claiming delivery."""
+    """Freeze deterministic arms and schedule metadata without claiming delivery.
+
+    `context` is a short pre-treatment label for the occasion (an agent type, a task
+    family). A causal-gate schedule may set a different rate per context; the label
+    is logged so every rate can be re-checked against the schedule that set it.
+    """
     from commontrace import allocation
 
+    context = context_label(context)
     moment = datetime.datetime.now(datetime.timezone.utc)
     schedule = allocation.active(root, salt, moment)
-    rates = {s: (schedule.rate_for(s) if schedule is not None else rate) for s in slugs}
+    rates = {s: (schedule.rate_for(s, context) if schedule is not None else rate) for s in slugs}
     withheld = {s for s in slugs if experiment.is_held_out(s, occasion_id, rates[s], salt)}
     now = moment.isoformat()
 
@@ -161,6 +189,8 @@ def plan_assignments(
             row["floor"] = float(floor)
         if schedule is not None:
             row["schedule"] = schedule.digest[:16]
+        if context:
+            row["context"] = context
         rows.append(row)
     return withheld, rows
 
@@ -177,10 +207,12 @@ def assign_and_log(
     floor: float | None = None,
     revisions: dict[str, str | None] | None = None,
     durable: bool = True,
+    context: str = "",
 ) -> set[str]:
     """Decide and persist assignments; all legacy callers keep their existing behavior."""
     withheld, rows = plan_assignments(root, slugs, occasion_id=occasion_id, rate=rate, salt=salt,
-        relevance=relevance, scorer=scorer, floor=floor, revisions=revisions, durable=durable)
+        relevance=relevance, scorer=scorer, floor=floor, revisions=revisions, durable=durable,
+        context=context)
     path = holdout_log_path(root)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with frontmatter.locked(path):
@@ -307,6 +339,7 @@ class LogRecord:
     scorer: str | None = None
     floor: float | None = None
     schedule: str | None = None
+    context: str | None = None
 
 
 def _parse_log_line(line: str) -> LogRecord | None:
@@ -337,6 +370,7 @@ def _parse_log_line(line: str) -> LogRecord | None:
         scorer=(str(raw["scorer"]) if raw.get("scorer") else None),
         floor=_opt_float(raw.get("floor")),
         schedule=(str(raw["schedule"]) if raw.get("schedule") else None),
+        context=(str(raw["context"]) if raw.get("context") else None),
     )
 
 

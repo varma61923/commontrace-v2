@@ -76,17 +76,34 @@ SCHEDULES_NAME = "schedules.jsonl"
 # -- policy and schedules --------------------------------------------------------------------------
 
 
+MODES = ("verdict", "thompson")
+
+
 @dataclass(frozen=True)
 class Policy:
+    """How each era's rates are chosen.
+
+    ``verdict`` (the default) moves a memory between the explore and monitor rates on
+    its sequential verdict. ``thompson`` hands the rates to `causal_gate`: each
+    memory, and each memory within each occasion context, is injected with the
+    posterior probability that it helps there, never withheld less than `monitor`
+    nor more than ``1 - monitor`` of the time.
+    """
+
     explore: float = EXPLORE_RATE
     monitor: float = MONITOR_RATE
     era_occasions: int = ERA_OCCASIONS
+    mode: str = "verdict"
 
     def __post_init__(self):
         if not 0.0 < self.monitor < self.explore < 1.0:
             raise ValueError("rates must satisfy 0 < monitor < explore < 1")
         if self.era_occasions < 1:
             raise ValueError("an era needs at least one occasion")
+        if self.mode not in MODES:
+            raise ValueError(f"mode must be one of {', '.join(MODES)}")
+        if self.mode == "thompson" and not self.monitor < 0.5:
+            raise ValueError("thompson allocation needs a monitor rate below 50%")
 
 
 def next_rate(verdict: str, policy: Policy) -> float:
@@ -143,7 +160,8 @@ def active(root: str, salt: str, now: datetime.datetime | None = None) -> Schedu
 
 
 def _publish(root: str, *, salt: str, default_rate: float, rates: dict[str, float], policy: Policy,
-             basis: dict, enabled: bool = True, now: datetime.datetime | None = None) -> Schedule:
+             basis: dict, enabled: bool = True, now: datetime.datetime | None = None,
+             context_rates: dict[str, dict[str, float]] | None = None) -> Schedule:
     from commontrace import frontmatter, holdout_io
 
     now = now or datetime.datetime.now(datetime.timezone.utc)
@@ -155,7 +173,8 @@ def _publish(root: str, *, salt: str, default_rate: float, rates: dict[str, floa
             version=len(past), salt=salt,
             effective_from=(now + datetime.timedelta(seconds=EFFECTIVE_DELAY_S)).isoformat(),
             default_rate=default_rate, rates=dict(sorted(rates.items())), policy=asdict(policy), basis=basis,
-            previous=past[-1].digest if past else "", created_at=now.isoformat(), enabled=enabled)
+            previous=past[-1].digest if past else "", created_at=now.isoformat(), enabled=enabled,
+            context_rates={lesson: dict(sorted(by.items())) for lesson, by in sorted((context_rates or {}).items())})
         schedule.digest = schedule_digest(schedule.body())
         holdout_io._append_lines(path, [json.dumps({**schedule.body(), "digest": schedule.digest},
                                                    sort_keys=True, ensure_ascii=False)])
@@ -194,6 +213,13 @@ def plan(root: str, *, now: datetime.datetime | None = None, alpha: float = 0.05
     if current is None:
         raise ValueError("adaptive allocation is not enabled for this experiment (commontrace allocate enable)")
     policy = Policy(**current.policy)
+    if policy.mode == "thompson":
+        from commontrace import causal_gate
+
+        rates, context_rates, basis = causal_gate.plan_rates(root, policy.monitor)
+        basis["previous_version"] = current.version
+        return _publish(root, salt=config.salt, default_rate=policy.explore, rates=rates, policy=policy,
+                        basis=basis, now=now, context_rates=context_rates)
     rows, _rate, _corrupt = experiment_cmd._load(root)
     rows, _salt, _other = experiment_cmd.scope_to_current_salt(root, rows)
     effects = experiment.analyze(experiment_cmd._observations(rows), sequential=True, alpha=alpha)

@@ -21,13 +21,14 @@ jobs:
       # Seven console history callbacks are dynamically dispatched and verified
       # by Chromium contracts; they are reviewed reachability candidates.
       # Module budget 311 -> 314: multihop, query_expansion and triplet_search
-      # (multi-hop reasoning, query expansion and semantic triplet retrieval).
+      # (multi-hop reasoning, query expansion and semantic triplet retrieval);
+      # 314 -> 315: causal_gate (contextual Thompson allocation over the holdout).
       - name: Enforce graph integrity and reviewed surface budgets
         run: >-
           python scripts/graphify_audit.py
           --graph "$RUNNER_TEMP/architecture/graphify-out/graph.json"
           --output "$RUNNER_TEMP/architecture/audit.json"
-          --source-root . --max-modules 314 --max-unreachable 318
+          --source-root . --max-modules 315 --max-unreachable 318
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
           name: graphify-audit
