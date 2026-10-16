@@ -406,8 +406,18 @@ class RetrieverRegistry:
 
 
 def decomposition(root: str, query: str, **options) -> list[dict]:
+    """Search each part of a compositional question and keep every part's best evidence.
+
+    Parts come from `multihop.decompose`: coordinated questions, relative clauses
+    ("the company *that acquired GitHub*") and nested "X of Y" phrases each become
+    their own query, so evidence for an inner clause is not crowded out by the
+    whole question's dominant terms. The plain "and"/"then"/";" split this used to
+    be is still one of its rules.
+    """
+    from commontrace import multihop
+
     hits: dict[str, dict] = {}
-    for part in re.split(r"\s+(?:and|then)\s+|[;?]", query)[:8]:
+    for part in multihop.decompose(query) or [query]:
         for row in search(root, part, **options):
             if row["id"] not in hits or row["score"] > hits[row["id"]]["score"]:
                 hits[row["id"]] = row
@@ -437,10 +447,39 @@ def nl_query(root: str, query: str, **options) -> list[dict]:
     return rows
 
 
+def multi_hop(root: str, query: str, **options) -> list[dict]:
+    """Associative walk plus bridge-entity chaining (`commontrace.multihop.retrieve`)."""
+    from commontrace import multihop
+
+    return multihop.retrieve(root, query, **options)
+
+
+def personalized_pagerank(root: str, query: str, **options) -> list[dict]:
+    """Hybrid search fused with a Personalized PageRank walk, no chaining (`multihop.ppr_search`)."""
+    from commontrace import multihop
+
+    return multihop.ppr_search(root, query, **options)
+
+
+def expanded(root: str, query: str, **options) -> list[dict]:
+    """Pseudo-relevance-feedback query expansion (`commontrace.query_expansion.expanded`)."""
+    from commontrace import query_expansion
+
+    return query_expansion.expanded(root, query, **options)
+
+
+def hyde(root: str, query: str, **options) -> list[dict]:
+    """Hypothetical-answer search (`commontrace.query_expansion.hyde`)."""
+    from commontrace import query_expansion
+
+    return query_expansion.hyde(root, query, **options)
+
+
 REGISTRY = RetrieverRegistry()
 for _name, _retriever in (("hybrid", search), ("decomposition", decomposition),
                          ("graph-completion", graph_completion), ("nl-query", nl_query),
-                         ("planned", planned_retrieval)):
+                         ("planned", planned_retrieval), ("multi-hop", multi_hop),
+                         ("ppr", personalized_pagerank), ("expanded", expanded), ("hyde", hyde)):
     REGISTRY.register(_name, _retriever)
 
 
@@ -486,6 +525,76 @@ def _load_candidate_facts(canonical, identities):
         for identity, payload in rows:
             candidates[identity] = _coerce_fact(json.loads(payload))
     return candidates
+
+
+def admit(root: str, identities, *, context=None, as_of: str | None = None, known_at: str | None = None,
+          action_class: str = "", existing: set[str] | None = None) -> dict[str, Any]:
+    """The facts among `identities` this caller may see, under `search`'s own admission rules.
+
+    Scope, valid and record time, expiry, forgetting, authority and evidence
+    binding are checked exactly as for every ranked result, so a retriever that
+    discovers facts by walking a graph cannot see, return or route through a fact
+    that ordinary search would withhold. Ids that are not facts are absent from
+    the result; when `existing` is given it receives every id that names a
+    canonical fact, admitted or not, so a caller can tell an inadmissible fact
+    (never traversable) from a node that is not a fact at all.
+    """
+    from contextlib import nullcontext
+
+    from commontrace import fact_store
+    from commontrace.fact_evidence import EvidenceResolver
+
+    ids = list(dict.fromkeys(str(identity) for identity in identities if identity))
+    if not ids:
+        return {}
+    indexed = fact_store.enabled(root)
+    manager = fact_store.transaction(root) if indexed else nullcontext(hierarchical.load_facts(root))
+    moment = lesson_cache.parse_moment(as_of or hierarchical._now())
+    known = lesson_cache.parse_moment(known_at) if known_at else None
+    with manager as canonical:
+        if indexed:
+            candidates = _load_candidate_facts(canonical, ids)
+            removed: set[str] = canonical.removed  # type: ignore[union-attr]
+            present = {identity for identity in ids
+                       if candidates.get(identity) is not None or identity in removed}
+        else:
+            candidates = canonical
+            present = {identity for identity in ids if identity in canonical}
+        if existing is not None:
+            existing.update(present)
+        resolver = EvidenceResolver(root, canonical, as_of=as_of)
+        return {identity: candidates[identity] for identity in ids
+                if identity in present and _eligible_fact(
+                    root, candidates.get(identity), moment, as_of, context or [], action_class, resolver, known)}
+
+
+def fact_row(fact, score: float, **signals: float) -> dict[str, Any]:
+    """A result row for an admitted fact found outside the ranked search, in search's row shape."""
+    return {"id": fact.id, "text": fact.statement, "score": float(score), "signals": dict(signals),
+            "source_traces": fact.source_traces, "valid_from": fact.valid_from,
+            "recorded_at": fact.created_at, "stability": fact.stability, "distance": 999}
+
+
+def fuse_blocks(blocks: Sequence[tuple[str, Sequence[dict], float]], *, k: int = 60) -> tuple[dict, dict]:
+    """Weighted reciprocal-rank fusion of named result blocks.
+
+    Returns ``(scores, rows)``: each id's fused score, and the first row seen for
+    it (blocks earlier in the sequence win, so put the most trusted first). Every
+    row is annotated with the blocks that found it under ``channels``.
+    """
+    scores: dict[str, float] = {}
+    rows: dict[str, dict] = {}
+    for name, block, weight in blocks:
+        if not math.isfinite(weight) or weight <= 0:
+            continue
+        for rank, row in enumerate(block, 1):
+            identity = row["id"]
+            if identity not in rows:
+                rows[identity] = {**row, "signals": dict(row.get("signals") or {}), "channels": []}
+            if name not in rows[identity]["channels"]:
+                rows[identity]["channels"].append(name)
+                scores[identity] = scores.get(identity, 0.0) + weight / (k + rank)
+    return scores, rows
 
 
 def _current_results(root, rows, revisions, *, context, as_of, known_at, action_class):
