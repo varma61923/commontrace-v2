@@ -11,9 +11,11 @@ from commontrace.configuration import configured
 
 class MemoryClient:
     def __init__(self, root: str = ".", *, url: str | None = None, token: str = "", agent_id: str = "",
-                 context: dict[str, str] | None = None):
+                 context: dict[str, str] | None = None, prewarm: Callable[[str], object] | None = None):
         self.root, self.url, self.token, self.agent_id = root, url, token, agent_id
         self.context = memory_control.scopes({**(context or {}), **({"agent": agent_id} if agent_id else {})})
+        if prewarm is not None:
+            prewarm("session-start")
 
     def _occasion(self, occasion_id: str | None) -> str | None:
         if not self.agent_id and occasion_id is None:
@@ -81,17 +83,50 @@ class MemoryClient:
         return turn(self.root, session_id, query, text=text, budget=budget, context=self.context,
                     event=event, payload=capture_payload)
 
+    @staticmethod
+    def _team_payload(read_set, team_space: str, lease: dict | None, merge: bool) -> dict:
+        body = {}
+        if read_set is not None:
+            body["read_set"] = read_set
+        if team_space != "default":
+            body["team_space"] = team_space
+        if lease is not None:
+            if not isinstance(lease, dict) or not {"work_item", "fencing_token", "lease_id"} <= set(lease):
+                raise ValueError("UniMem lease requires work_item, fencing_token and lease_id")
+            body.update({key: lease[key] for key in ("work_item", "fencing_token", "lease_id")})
+        if type(merge) is not bool:
+            raise ValueError("UniMem merge flag must be boolean")
+        if merge:
+            body["merge"] = merge
+        return body
+
+    @configured
+    def team_read(self, identities: list[str], *, team_space: str = "default") -> dict:
+        """Fetch authorized facts and their coherent point-read version set."""
+        if self.url:
+            return self._request("team-read", {"identities": identities, "team_space": team_space,
+                                                "context": self.context})
+        from commontrace import team_io
+
+        return team_io.fetch(self.root, identities=identities, space=team_space, context=self.context)
+
     @configured
     def add(self, text: str, *, local: bool = True, complete=None, memory_type: str = "general",
-            entity_model=None, entity_model_path: str | None = None) -> dict:
+            entity_model=None, entity_model_path: str | None = None,
+            read_set: list[dict] | None = None, team_space: str = "default",
+            lease: dict | None = None, merge: bool = False) -> dict:
+        from commontrace import team_io
+
+        team = self._team_payload(read_set, team_space, lease, merge)
         if self.url:
             if entity_model is not None or entity_model_path:
                 raise ValueError("local extraction adapters must be configured on the gateway host")
             return self._request("add", {"text": text, "local": local, "context": self.context,
-                                         "memory_type": memory_type})
+                                         "memory_type": memory_type, **team})
         from commontrace import memory_authority
 
-        with memory_authority.restricted_writer(self.agent_id or "local", "agent" if self.agent_id else "operator"):
+        with memory_authority.restricted_writer(self.agent_id or "local", "agent" if self.agent_id else "operator"), \
+                team_io.gateway_request(self.root, team, self.context):
             return additive_extract.extract(self.root, text, local=local, complete=complete,
                                              scopes=self.context, memory_type=memory_type,
                                              entity_model=entity_model, entity_model_path=entity_model_path)
@@ -163,12 +198,15 @@ class MemoryClient:
                                      embedder=embedder)
 
     @configured
-    def batch(self, items: list[dict]) -> dict:
-        if self.url:
-            return self._request("batch", {"items": items, "context": self.context})
-        from commontrace import ingestion_contract, memory_authority
+    def batch(self, items: list[dict], *, read_set: list[dict] | None = None, team_space: str = "default",
+              lease: dict | None = None, merge: bool = False) -> dict:
+        from commontrace import ingestion_contract, memory_authority, team_io
 
-        with memory_authority.restricted_writer(self.agent_id or "local", "agent" if self.agent_id else "operator"):
+        team = self._team_payload(read_set, team_space, lease, merge)
+        if self.url:
+            return self._request("batch", {"items": items, "context": self.context, **team})
+        with memory_authority.restricted_writer(self.agent_id or "local", "agent" if self.agent_id else "operator"), \
+                team_io.gateway_request(self.root, team, self.context):
             return ingestion_contract.batch(self.root, items, context=self.context)
 
     def propose(self, text: str, *, sources: list[str]) -> dict:
@@ -246,17 +284,25 @@ class MemoryClient:
         assurance.record_recall(self.root, result["occasion_id"], [*combined, *rules], result["context"], self.context)
         return result
 
-    def outcome(self, occasion_id: str, succeeded: bool) -> bool:
+    def outcome(self, occasion_id: str, succeeded: bool, *, secondary_metrics: dict | None = None) -> bool:
         occasion_id = self._occasion(occasion_id)
         if self.url:
-            return self._request("outcome", {"occasion_id": occasion_id, "succeeded": succeeded})["recorded"]
+            body = {"occasion_id": occasion_id, "succeeded": succeeded}
+            if secondary_metrics is not None:
+                body["secondary_metrics"] = secondary_metrics
+            return self._request("outcome", body)["recorded"]
         from commontrace import causal_policy, holdout_io, policy
 
         if not isinstance(succeeded, bool):
             raise ValueError("succeeded must be boolean")
+        if secondary_metrics is not None:
+            from commontrace import sycophancy_io
+
+            sycophancy_io.record_metrics(self.root, occasion_id, secondary_metrics)
         policy.outcome(self.root, occasion_id, float(succeeded))
         exploration = causal_policy.record_outcome(self.root, occasion_id, float(succeeded))
-        return holdout_io.record_outcome(self.root, occasion_id, succeeded) or exploration
+        return holdout_io.record_outcome(self.root, occasion_id, succeeded,
+                                         secondary_metrics=secondary_metrics) or exploration
 
     def check_action(self, tool: str, *, tags: list[str] | None = None) -> None:
         if self.url:

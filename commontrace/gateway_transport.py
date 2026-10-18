@@ -84,13 +84,28 @@ def make_http_server(gateway: Gateway, host: str, port: int, *, tls: tuple[str, 
         def _send(self, response: Response) -> None:
             self.send_response(response.status)
             self.send_header("Content-Type", response.content_type)
-            self.send_header("Content-Length", str(len(response.body)))
+            if response.stream is None:
+                self.send_header("Content-Length", str(len(response.body)))
+            else:
+                self.send_header("Transfer-Encoding", "chunked")
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
             for key, value in response.headers.items():
                 self.send_header(key, value)
             self.end_headers()
-            self.wfile.write(response.body)
+            if response.stream is None:
+                self.wfile.write(response.body)
+                return
+            try:
+                for chunk in response.stream:
+                    if chunk:
+                        self.wfile.write(f"{len(chunk):x}\r\n".encode() + chunk + b"\r\n")
+                        self.wfile.flush()
+                self.wfile.write(b"0\r\n\r\n")
+            except (BrokenPipeError, ConnectionResetError, OSError, ValueError, PermissionError):
+                # Once headers are sent, aborting the transfer is safer than
+                # emitting a fabricated successful completion after erasure.
+                self.close_connection = True
 
         def _fail(self, status: int, code: str, message: str) -> None:
             self._send(_json(status, {"error": {"code": code, "message": message}}))
@@ -230,7 +245,12 @@ def serve_stdio(gateway: Gateway, stdin: TextIO, stdout: TextIO) -> int:
             response = gateway.handle(
                 method, path, body=json.dumps(body).encode("utf-8") if method == "POST" else None,
                 trusted=True)
-            reply = {"id": request_id, "status": response.status, "body": json.loads(response.body)}
+            if response.stream is None:
+                response_body = json.loads(response.body)
+            else:
+                response_body = {"content_type": response.content_type,
+                                 "data": b"".join(response.stream).decode("utf-8"), "headers": response.headers}
+            reply = {"id": request_id, "status": response.status, "body": response_body}
         except (ValueError, KeyError, RecursionError) as exc:
             reply = {"id": request_id, "status": 400,
                      "body": {"error": {"code": "bad_request", "message": str(exc)}}}

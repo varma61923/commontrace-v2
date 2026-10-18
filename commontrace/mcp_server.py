@@ -1466,6 +1466,29 @@ def build_server(root: str, *, allow_approval: bool = True):
             return _err(str(exc))
 
     @mcp.tool()
+    def household_scope(person_id: str) -> dict:
+        """Resolve a person's active household-memory consent and permitted robot uses.
+
+        The response is scoped to the configured household store; absent, expired,
+        or revoked consent fails closed and authorizes no durable memory access.
+        """
+        from commontrace import household
+        try:
+            return _ok(person_id=person_id, scope=household.scope_for(root, person_id))
+        except (ValueError, KeyError, TypeError, OSError, PermissionError) as exc:
+            return _err(str(exc))
+
+    @mcp.tool()
+    def signature_check(sample: dict, skill: str, embodiment: str, site: str, scopes: list[str] | None = None) -> dict:
+        """Compare bounded robot force/current/tactile/temperature values to the matched profile."""
+        from commontrace.robotics import signatures
+        try:
+            return _ok(**signatures.check(root, sample, skill=skill, embodiment=embodiment,
+                                          site=site, scopes=scopes or []))
+        except (ValueError, KeyError, TypeError, OSError, PermissionError) as exc:
+            return _err(str(exc))
+
+    @mcp.tool()
     def recall_recovery(signature: dict, context: dict) -> dict:
         """Recall recoveries measured for the same failure, site, robot and embodiment.
 
@@ -1478,6 +1501,22 @@ def build_server(root: str, *, allow_approval: bool = True):
         try:
             return _ok(**recovery.recall(root, signature, context))
         except (ValueError, KeyError, TypeError, OSError, PermissionError) as exc:
+            return _err(str(exc))
+
+    @mcp.tool()
+    def should_ask(context: str, question_type: str, occasion: str) -> dict:
+        """Choose a governed asking action within an operator-enrolled low-risk trial.
+
+        Uses the authenticated planner principal and shared fleet time budget.
+        Safety, unknown-risk and disabled contexts never randomize. The caller
+        must follow the returned action; the ledger does not attest execution.
+        Repeating the same occasion returns the same reserved decision.
+        """
+        from commontrace import human_help
+
+        try:
+            return _ok(**human_help.should_ask(root, context, question_type, occasion))
+        except (ValueError, PermissionError, OSError, KeyError, TypeError, RuntimeError) as exc:
             return _err(str(exc))
 
     @mcp.tool()
@@ -1533,6 +1572,215 @@ def build_server(root: str, *, allow_approval: bool = True):
         try:
             return _ok(**lineage.explain(root, id))
         except (ValueError, OSError, PermissionError) as exc:
+            return _err(str(exc))
+
+    @mcp.tool()
+    def skill_catalog(occasion: str, context: list[str] | None = None, segment: str = "default",
+                      identities: list[str] | None = None) -> dict:
+        """Read the UniMem skill catalog this occasion may actually see.
+
+        Honor the returned catalog as the delivered treatment and report the
+        occasion outcome. Hidden arms return no skill text. Protected sources
+        cannot enter a skill trial; scope, source freshness and harm admission
+        are checked before exposure. Trials require operator preregistration.
+        """
+        from commontrace import skill_io
+
+        try:
+            return _ok(**skill_io.catalog(root, occasion, context=context or [], segment=segment,
+                                         identities=identities or []))
+        except (ValueError, PermissionError, OSError, KeyError, TypeError) as exc:
+            return _err(str(exc))
+
+    @mcp.tool()
+    def skill_evidence(identity: str, context: list[str] | None = None) -> dict:
+        """Verify UniMem promotion evidence for a skill visible in your scope.
+
+        Returns the signed effect interval, harm accounting, certificate and
+        transparency proof. Refuses expired, revoked or stale-source evidence.
+        """
+        from commontrace import skill_io
+
+        try:
+            return _ok(**skill_io.evidence(root, identity, context=context or []))
+        except (ValueError, PermissionError, OSError, KeyError, TypeError) as exc:
+            return _err(str(exc))
+
+    belief_watchers: dict[str, Any] = {}
+
+    def start_belief_watch(identity, connection, cursor, context):
+        import asyncio
+
+        from commontrace import change_stream
+
+        if connection is None:
+            return False
+        if identity not in belief_watchers and len(belief_watchers) >= 32:
+            raise ValueError("UniMem MCP subscription lease limit reached")
+        old = belief_watchers.get(identity)
+        if old is not None:
+            old.cancel()
+
+        async def watch():
+            try:
+                await change_stream.watch(root, identity, connection, cursor=cursor, context=context)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # A disconnected or expired subscription closes its bounded lease.
+                telemetry.count("unimem_stream_watch_closed")
+            finally:
+                if belief_watchers.get(identity) is asyncio.current_task():
+                    belief_watchers.pop(identity, None)
+
+        belief_watchers[identity] = asyncio.create_task(watch())
+        return True
+
+    @mcp.tool()
+    async def subscribe_beliefs(identity: str, context: list[str] | None = None, namespace: str = "",
+                                entity: str = "", predicate: str = "", cursor: str = "",
+                                ack_seconds: int = 3600, ctx: Any = None) -> dict:
+        """Subscribe to UniMem source-admitted diffs with a resumable cursor.
+
+        The resource body carries the diff; standard resources/updated
+        notifications carry only its URI. Leases last 60 seconds and must be
+        renewed. Commit a returned cursor after consuming a complete diff.
+        Erasure acknowledgements are separate and remain required offline.
+        """
+        from commontrace import change_stream
+        from commontrace import nextwave_store as store
+
+        try:
+            labels = context or []
+            change_stream.subscribe(root, identity, context=labels, namespace=namespace, entity=entity,
+                                    predicate=predicate, ack_seconds=ack_seconds)
+            result = change_stream.poll(root, identity, cursor=cursor, context=labels)
+            store.put(root, "stream-views", identity, {"cursor": cursor}, scopes=labels,
+                      sources=[store.reference("stream-subscriptions", identity)])
+            try:
+                connection = getattr(ctx, "connection", None) or getattr(ctx, "session", None)
+            except (RuntimeError, ValueError):
+                connection = None  # Direct SDK calls have no live request transport.
+            watching = start_belief_watch(identity, connection, cursor, labels)
+            return _ok(**result, uri=change_stream.resource_uri(identity),
+                       notifications_available=watching, lease_seconds=60 if watching else 0)
+        except (ValueError, PermissionError, OSError, KeyError, TypeError, RuntimeError) as exc:
+            return _err(str(exc))
+
+    @mcp.tool()
+    def explain_memory_about_me(subject: str, context: list[str] | None = None) -> dict:
+        """Explain explicitly enrolled memories about a subject and their consent purposes.
+
+        Includes both direct and inferred memories, consent expiry and processing
+        operations. Requires an undelegated owner context and preserves scope
+        admission. This view does not authorize another agent to use the memory.
+        """
+        from commontrace import purpose
+
+        try:
+            return _ok(**purpose.explain(root, subject, context=context or []))
+        except (ValueError, PermissionError, OSError, KeyError, TypeError, RuntimeError) as exc:
+            return _err(str(exc))
+
+    @mcp.tool()
+    def credential_challenge(audience: str) -> dict:
+        """Create a fresh single-use nonce for verifying a holder-bound memory credential.
+
+        The audience identifies this verifier. Give the nonce and audience to the
+        holder, who signs a presentation containing only their selected claims.
+        Verification authenticates assertions; it grants no memory access.
+        """
+        from commontrace import person_io
+
+        try:
+            return _ok(**person_io.challenge(root, audience))
+        except (ValueError, PermissionError, OSError, KeyError, TypeError, RuntimeError, ImportError) as exc:
+            return _err(str(exc))
+
+    @mcp.tool()
+    def verify_credential(presentation: str, audience: str, nonce: str, status_token: str | None = None) -> dict:
+        """Verify a VC 2.0 SD-JWT memory presentation against an explicitly pinned issuer.
+
+        Use a fresh credential_challenge nonce and the exact verifier audience.
+        Issuer and holder signatures, expiry, selective disclosure binding and
+        checked revocation status must pass. Foreign issuers need an explicit
+        fresh signed status quote bound to this challenge. Only disclosed claims are returned; factual
+        truth and permission to access other memory are not attested.
+        """
+        from commontrace import person_io
+
+        try:
+            return _ok(**person_io.verify_credential(root, presentation, audience, nonce, status_token=status_token))
+        except (ValueError, PermissionError, OSError, KeyError, TypeError, RuntimeError, ImportError) as exc:
+            return _err(str(exc))
+
+    @mcp.tool()
+    def submit_candidate(proposal: dict, format: str = "generic", context: list[str] | None = None,
+                         source_ids: list[str] | None = None, alpha: float = .05, rate: float = .5,
+                         training_size: int = 100, minimum_support: int = 10,
+                         segments: list[str] | None = None, harm_score: float = 1,
+                         harm_scorer: str = "unimem-delta") -> dict:
+        """Preregister an unverified UniMem optimizer edit for a randomized trial.
+
+        Configure the experiment and freeze matched pilot harm calibration first.
+        Pass generic JSON or a documented optimizer export envelope; check its
+        returned format status and verified subset. Claimed validation scores never
+        authorize promotion. No proposed code is executed by this tool.
+        """
+        from commontrace import optimizer_io
+
+        try:
+            return _ok(**optimizer_io.intake(root, proposal, format=format, context=context or [],
+                source_ids=source_ids or [], alpha=alpha, rate=rate, training_size=training_size,
+                minimum_support=minimum_support, segments=segments or ["default"],
+                harm_score=harm_score, harm_scorer=harm_scorer))
+        except (ValueError, PermissionError, OSError, KeyError, TypeError) as exc:
+            return _err(str(exc))
+
+    @mcp.tool()
+    def handoff_bundle(identities: list[str], recipient: str, context: list[str] | None = None,
+                       seconds: int = 300) -> dict:
+        """Create a recipient-key-bound UniMem handoff from admitted memories.
+
+        Supply a registered recipient and the caller's authenticated scope.
+        The short-lived bundle applies recipient clearance and redaction;
+        redemption requires its holder proof and preserves sticky labels.
+        """
+        from commontrace import capability_io
+
+        try:
+            return _ok(**capability_io.handoff(root, identities, recipient, context=context or [], seconds=seconds))
+        except (ValueError, PermissionError, OSError, KeyError, TypeError) as exc:
+            return _err(str(exc))
+
+    @mcp.tool()
+    def contagion_radius(identity: str, context: list[str] | None = None, max_depth: int = 16,
+                         max_nodes: int = 2000) -> dict:
+        """Inspect UniMem's admitted, bounded read/write dependency radius.
+
+        Reports observed agents, episodes, outputs and managed derivatives.
+        Invisible nodes are omitted; truncation is explicit. Uninstrumented
+        reads are outside this diagnostic boundary.
+        """
+        from commontrace import contagion
+
+        try:
+            return _ok(**contagion.radius(root, identity, context=context or [],
+                                         max_depth=max_depth, max_nodes=max_nodes))
+        except (ValueError, PermissionError, OSError, KeyError, TypeError) as exc:
+            return _err(str(exc))
+
+    @mcp.tool()
+    def writer_reliability(writer: str, prior_strength: float = 20) -> dict:
+        """Read UniMem's randomized writer-contribution estimate for operator-approved routing.
+
+        Reliability is a shrinkage prior, not semantic truth or increased writer
+        authority. The writer must have a preregistered parent holdout trial.
+        """
+        from commontrace import writer_holdout
+
+        try:
+            return _ok(**writer_holdout.reliability(root, writer, prior_strength=prior_strength))
+        except (ValueError, PermissionError, OSError, KeyError, TypeError) as exc:
             return _err(str(exc))
 
     @mcp.tool()
@@ -2833,6 +3081,61 @@ def build_server(root: str, *, allow_approval: bool = True):
 
 
     if hasattr(mcp, "resource"):
+
+        @mcp.resource("unimem://beliefs/{identity}")
+        def belief_diff(identity: str) -> str:
+            """Current admitted diff for the registered subscription cursor."""
+            from commontrace import change_stream
+            from commontrace import nextwave_store as store
+
+            metadata = store.latest(root, "stream-views").get(identity)
+            if metadata is None:
+                raise ValueError("UniMem subscribe_beliefs must register the resource view first")
+            labels = metadata["scopes"]
+            view = store.get(root, "stream-views", identity, context=labels)
+            return json.dumps(change_stream.poll(root, identity, cursor=view["cursor"], context=labels),
+                              allow_nan=False, separators=(",", ":"))
+
+        lowlevel = getattr(mcp, "_lowlevel_server", None) or getattr(mcp, "_mcp_server", None)
+        if lowlevel is not None and hasattr(lowlevel, "add_request_handler"):
+            import mcp_types
+
+            def subscribed_identity(uri):
+                from urllib.parse import unquote
+
+                from commontrace import change_stream
+                from commontrace import nextwave_store as store
+
+                uri = str(uri)
+                if not uri.startswith("unimem://beliefs/"):
+                    raise ValueError("UniMem unknown standing-query resource")
+                identity = unquote(uri.removeprefix("unimem://beliefs/"))
+                if change_stream.resource_uri(identity) != uri:
+                    raise ValueError("UniMem noncanonical standing-query URI")
+                metadata = store.latest(root, "stream-views").get(identity)
+                if metadata is None:
+                    raise ValueError("UniMem subscription view is not registered")
+                view = store.get(root, "stream-views", identity, context=metadata["scopes"])
+                change_stream.poll(root, identity, cursor=view["cursor"], context=metadata["scopes"],
+                                   record_delivery=False)
+                return identity, metadata["scopes"], view["cursor"]
+
+            async def native_belief_subscribe(ctx, params):
+                identity, labels, cursor = subscribed_identity(params.uri)
+                start_belief_watch(identity, ctx.session, cursor, labels)
+                return mcp_types.EmptyResult()
+
+            async def native_belief_unsubscribe(ctx, params):
+                identity, _labels, _cursor = subscribed_identity(params.uri)
+                task = belief_watchers.pop(identity, None)
+                if task is not None:
+                    task.cancel()
+                return mcp_types.EmptyResult()
+
+            lowlevel.add_request_handler("resources/subscribe", mcp_types.SubscribeRequestParams,
+                                         native_belief_subscribe)
+            lowlevel.add_request_handler("resources/unsubscribe", mcp_types.UnsubscribeRequestParams,
+                                         native_belief_unsubscribe)
 
         @mcp.resource("commontrace://profile")
         def active_space_profile() -> str:

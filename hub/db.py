@@ -64,6 +64,11 @@ async def session_scope(
             except BaseException:
                 await session.rollback()
                 raise
+            pending = session.info.pop("capability_outbox", None)
+        if pending:
+            from hub.delegation import after_commit
+
+            await after_commit(session_factory, *pending)
     finally:
         if token is not None:
             auth.current_org_id.reset(token)

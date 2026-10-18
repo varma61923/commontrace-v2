@@ -61,6 +61,17 @@ def test_an_undocumented_route_refuses_to_build(tmp_path):
         gw._openapi({}, {})
 
 
+def test_team_read_is_an_operation_and_never_a_write_field(tmp_path):
+    from commontrace import api_schema
+
+    document = _doc(str(tmp_path))
+    for operation in ("add", "batch"):
+        properties = api_schema.request_schema(operation)["properties"]
+        assert "team-read" not in properties
+        assert all(isinstance(schema, dict) for schema in properties.values())
+    assert "/v1/memory/team-read" in document["paths"]
+
+
 def test_the_document_is_valid_openapi(tmp_path):
     validator = pytest.importorskip("openapi_spec_validator")
     validator.validate(_doc(str(tmp_path)))
@@ -94,7 +105,7 @@ def test_live_responses_match_the_declared_schemas(tmp_path):
         checked.add((method, path))
         if not response.content_type.startswith("application/json"):
             assert any(response.content_type.startswith(kind) for kind in content), (path, response.content_type)
-            return response.body
+            return b"".join(response.stream) if response.stream is not None else response.body
         value = json.loads(response.body)
         schema = _json_schema(content["application/json"]["schema"])
         jsonschema.Draft4Validator({**schema, **components}).validate(value)
@@ -111,6 +122,7 @@ def test_live_responses_match_the_declared_schemas(tmp_path):
         "payload": {"text": "expired contract record", "forget_after": "2000-01-01T00:00:00Z",
                     "forget_reason": "contract retention"}}})
     call("POST", "/v1/memory/record-reap-due", {"limit": 1})
+    call("POST", "/v1/memory/team-read", {"identities": []})
     call("POST", "/v1/memory/record-forget", {"id": "api-fact", "reason": "contract test erasure"})
     call("POST", "/v1/agent/signup", {"agent_id": "bot-1", "scopes": ["team"]})
     enrolled = call("POST", "/v1/agent/enroll", {})
@@ -183,6 +195,33 @@ def test_live_responses_match_the_declared_schemas(tmp_path):
     call("POST", "/v1/connectors/github/push", {"zen": "hi"}, status=404)
 
     call("POST", "/v1/memory/turn", {"session_id": "turn-1", "query": "pytest", "text": "I prefer pytest."})
+
+    from commontrace import hierarchical, holdout_io, rl_io
+
+    unit, _ = hierarchical.add_fact(root, "UniMem RL contract signature check.")
+    config = holdout_io.configure(root, rate=.5, salt="rl-contract")
+    for i in range(16):
+        occasion = "rl-contract-" + str(i)
+        arm = holdout_io.assign_and_log(root, [unit.id], occasion_id=occasion, rate=.5, salt=config.salt,
+                                       revisions={unit.id: unit.revision})
+        holdout_io.record_outcome(root, occasion, unit.id not in arm)
+        rl_io.capture(root, occasion, unit.id, "contract", "Check signature.", "Checked.")
+    wire = call("POST", "/v1/experiment/export-rl", {"units": [unit.id], "format": "advantage"})
+    assert len(wire.splitlines()) == 16
+    assert all(json.loads(line)["meta"]["unit"] == unit.id for line in wire.splitlines())
+
+    from commontrace import change_stream
+
+    change_stream.subscribe(root, "contract-observer")
+    change_stream.publish(root, "assert", unit.id)
+    diff = call("GET", "/v1/stream?identity=contract-observer")
+    assert b"event: beliefs\ndata: " in diff
+
+    call("POST", "/v1/tier", {"operation": "residency", "request": {"namespace": "contract-tier",
+        "region": "eu", "allowed_regions": ["eu"], "cold_region": "eu"}})
+    call("POST", "/v1/tier", {"operation": "status", "request": {"namespace": "contract-tier", "region": "eu"}})
+    call("POST", "/v1/tier", {"operation": "status", "request": {"namespace": "contract-tier", "region": "us"}},
+         status=403)
 
     routes = set(gw.routes)
     assert routes - checked == set(), sorted(routes - checked)

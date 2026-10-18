@@ -267,7 +267,9 @@ def cluster_facts(
         pool = [fact for fact in hierarchical.list_facts(root, status="active", scope=scope)
                 if hierarchical._valid_at(fact, moment)]
     groups: dict[tuple[str, ...], list[hierarchical.AtomicFact]] = defaultdict(list)
-    from commontrace import safety
+    from commontrace import safety, sentinel_io
+
+    sentinel_io.assert_generalize(root, [fact.id for fact in pool], context=[scope] if scope else [])
 
     hazards = safety.protected(root)
     for fact in sorted(pool, key=lambda f: f.id):

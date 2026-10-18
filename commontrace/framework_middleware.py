@@ -16,21 +16,7 @@ from commontrace.configuration import configured
 from commontrace.hook_kit import HookKit
 from commontrace.memory_journal import Journal, moment, now
 from commontrace.memory_record import MemoryRecord, rerank_profile_results
-
-
-def scope_from_labels(labels: list[str]) -> dict:
-    result, extra = {}, []
-    for label in labels:
-        key, _, value = label.partition(":")
-        if key in ("tenant", "user", "agent", "session", "repo") and value:
-            if key in result and result[key] != value:
-                raise ValueError("ambiguous memory scope dimension: " + key)
-            result[key] = value
-        else:
-            extra.append(label)
-    if extra:
-        result["labels"] = sorted(extra)
-    return result
+from commontrace.record_visibility import scope_from_labels
 
 
 def maintain_preferences(journal: Journal, text: str, scope: dict, *, source_ids=None):

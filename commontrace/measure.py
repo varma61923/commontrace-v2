@@ -142,7 +142,13 @@ class CausalMemory:
         """
         if not isinstance(occasion_id, str) or not occasion_id.strip():
             raise ValueError("occasion_id must be a non-empty string")
-        items = list(self._retrieve(query, **kwargs))
+        from commontrace import policy_io
+
+        with policy_io.authorization("recall"):
+            items = list(self._retrieve(query, **kwargs))
+        from commontrace import writer_holdout
+
+        items = [item for item in items if writer_holdout.read_allowed(self._root, str(self._key(item)))]
 
         harmful, helping = self._watch.snapshot()
         removed: dict[str, dict] = {}
@@ -219,5 +225,7 @@ class CausalMemory:
                        if item_id in helping and item_id not in self._pinned},
         )
 
-    def record_outcome(self, occasion_id: str, *, succeeded: bool) -> bool:
-        return holdout_io.record_outcome(self._root, occasion_id, succeeded, self._durable)
+    def record_outcome(self, occasion_id: str, *, succeeded: bool,
+                       secondary_metrics: dict[str, float | bool] | None = None) -> bool:
+        return holdout_io.record_outcome(self._root, occasion_id, succeeded, self._durable,
+                                         secondary_metrics=secondary_metrics)

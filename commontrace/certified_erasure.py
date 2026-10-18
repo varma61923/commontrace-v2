@@ -188,6 +188,9 @@ def erase(root: str, subject: str, identities: Sequence[str], vault: SubjectVaul
             _jsonl.write_rows(history_path, [row for row in history
                               if lesson_io.canonical_slug(str(row.get("lesson", ""))) not in deleted])
         privacy_erasure._purge_mirrors(root, deleted)
+        from commontrace import nextwave_store
+
+        managed_deleted = nextwave_store.erase(root, sorted(deleted))
         destruction = vault.destroy(subject)
         result = retrieval_probe() if retrieval_probe else {"passed": False, "status": "not_run"}
         body = {"subject_tombstone": vault.reference(subject), "deleted_ids": sorted(deleted),
@@ -195,6 +198,8 @@ def erase(root: str, subject: str, identities: Sequence[str], vault: SubjectVaul
                 "backup_scope": "pre-encrypted subject envelopes; vault keys and plaintext backups excluded",
                 "remote_erasure": False, "reason_hash": fp.digest(fp.text(reason)),
                 "kind": "conditional crypto-erasure certificate; probe status is explicit"}
+        if managed_deleted:
+            body["deleted_managed_artifacts"] = managed_deleted
         signed = fp.sign(root, body)
         anchor = log.append(root, "certified-erasure", {"certificate_digest": fp.digest(signed)})
         fp.append(root, "deletion-certificates.jsonl", {"certificate": signed, "anchor": anchor})
@@ -208,3 +213,18 @@ def verify(root: str, certificate: dict[str, Any]) -> bool:
                 == fp.digest(certificate["certificate"]))
     except (ValueError, KeyError, TypeError):
         return False
+
+
+def verify_bytes(
+    root: str, identities: Sequence[str], *, strings: Sequence[str], embeddings: Sequence[str] = (),
+    ngram: int = 32, vacuum: bool = True,
+) -> dict[str, Any]:
+    """Issue a separate conditional byte receipt after canonical erasure.
+
+    Existing erasure certificate bodies remain unchanged. The byte verifier
+    requires automatic local-store inventory and all tracked downstream ACKs;
+    opaque stores and uninspected remote replicas remain unverified.
+    """
+    from commontrace import erasure_verify
+
+    return erasure_verify.verify(root, identities, strings=strings, embeddings=embeddings, ngram=ngram, vacuum=vacuum)

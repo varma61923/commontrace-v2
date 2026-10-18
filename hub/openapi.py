@@ -811,6 +811,37 @@ def _operations() -> dict[tuple[str, str], dict]:
         "429": _response_ref("RateLimited"),
     }
     ops = {
+        ("POST", "/v1/attestation/{operation}"): _op(
+            "attestedKeyOperation", "Admin", "Enroll audited builds and release tenant keys to attested workers",
+            security=API_KEY,
+            parameters=[{"name": "operation", "in": "path", "required": True, "schema": {"type": "string",
+                "enum": ["measurements-register", "measurements-list", "challenge", "key-release"]}}],
+            body=_json_body(_free_object("Build profile, challenge parameters or issued request and signed evidence.")),
+            description="Admin scope and a tenant log signer are required. Key release additionally requires a "
+                        "deployment-provisioned tenant KMS provider and pinned hardware appraisers. A fresh one-use "
+                        "quote binds the authenticated tenant, measured build, worker X25519 key and payload digest. "
+                        "Production configuration forbids simulated evidence; returned keys are encrypted to the "
+                        "worker.",
+            responses={"200": _json("Enrollment, challenge or encrypted worker key.",
+                                    _free_object("Measurement receipt, challenge or authenticated key envelope.")),
+                       "400": _error("Malformed or oversized attestation request."),
+                       "401": _error("Authentication required."), "403": _error("Quote, measurement or nonce denied."),
+                       "404": _error("Unknown attestation operation."), "429": _error("Rate or challenge limit."),
+                       "503": _error("Attestation, signer or tenant key provider unavailable.")}),
+        ("POST", "/v1/policy/{operation}"): _op(
+            "finitePolicyOperation", "Admin", "Diff, certify, review and activate finite memory permissions",
+            security=API_KEY,
+            parameters=[{"name": "operation", "in": "path", "required": True,
+                         "schema": {"type": "string", "enum": ["current", "diff", "certify", "review", "activate"]}}],
+            body=_json_body(_free_object("Versioned native policy, or certificate and content-bound review receipt.")),
+            description="Admin scope and a configured tenant signer are required. Widening activation requires "
+                        "a review bound to the exact certificate and current generation. Proofs cover only the "
+                        "closed declared domain of at most 65536 tuples; external relation state is excluded.",
+            responses={"200": _json("Policy operation result.", _free_object("Policy, finite diff or signed receipt.")),
+                       "400": _error("Malformed, oversized or unsupported finite policy."),
+                       "401": _error("Authentication required."), "403": _error("Admin scope or review required."),
+                       "404": _error("Unknown policy operation."), "409": _error("Stale policy generation."),
+                       "429": _error("Rate limited."), "503": _error("Signer or optional Cedar extra unavailable.")}),
         ("POST", "/v1/evidence/pool/contributions"): _op(
             "pooledContribution", "Evidence", "Accept a signed UniMem sufficient-statistics contribution",
             security=API_KEY,
@@ -925,6 +956,30 @@ def _operations() -> dict[tuple[str, str], dict]:
             body=_json_body(_schema_ref("SearchTracesRequest")),
             ok={"200": _json("Brief hits, best first.", _schema_ref("SearchTracesResponse"))},
             errors=("400", "401", "403", "429"),
+        ),
+        ("POST", "/api/v1/oblivious/pir"): _api(
+            "obliviousPirShare", "REST", "Answer one replica's XOR-PIR query share",
+            description="The authenticated key determines its label ceiling. Each independently operated replica "
+                        "must receive one random query share; replicas must not collude. See oblivious recall docs.",
+            body=_json_body({"type": "object", "required": ["cluster"], "properties": {
+                "cluster": {"type": "string", "maxLength": 96},
+                "share": {"type": "string", "contentEncoding": "base64"},
+                "shares": {"type": "array", "maxItems": 1024, "items": {"type": "string",
+                                                                          "contentEncoding": "base64"}},
+            }}),
+            ok={"200": _json("Fixed-size metadata or XOR response share.", {"oneOf": [
+                {"type": "object", "required": ["count", "block_bytes"], "properties": {
+                    "count": {"type": "integer", "minimum": 0},
+                    "block_bytes": {"type": "integer", "minimum": 1},
+                }},
+                {"type": "object", "required": ["answer"], "properties": {
+                    "answer": {"type": "string", "contentEncoding": "base64"},
+                }},
+                {"type": "object", "required": ["answers"], "properties": {
+                    "answers": {"type": "array", "items": {"type": "string", "contentEncoding": "base64"}},
+                }},
+            ]})},
+            errors=("400", "401", "403", "429", "503"),
         ),
         ("POST", "/api/v1/keys"): _api(
             "createAccountKey", "Signup", "Create an organization and its first API key",
@@ -1666,11 +1721,19 @@ def document(app=None) -> dict:
         operation = dict(declared[(method, path)])
         names = path_parameters(path)
         if names:
+            declared_parameters = list(operation.get("parameters", ()))
+            explicit = {parameter["name"] for parameter in declared_parameters if parameter["in"] == "path"}
             operation["parameters"] = [
                 {"name": name, "in": "path", "required": True,
                  "description": _PATH_PARAMS.get(name, ""), "schema": {"type": "string"}}
-                for name in names
-            ] + list(operation.get("parameters", ()))
+                for name in names if name not in explicit
+            ] + declared_parameters
+        if path in {"/mcp", "/api/v1/traces", "/api/v1/traces/search", "/v1/memory/record-put",
+                    "/v1/memory/record-search", "/v1/memory/record-forget",
+                    "/api/v1/memory/records/{operation}"}:
+            from commontrace import capabilities
+
+            operation["parameters"] = list(operation.get("parameters", ())) + capabilities.header_parameters()
         responses = dict(operation["responses"])
         if method in _BODY_METHODS:
             responses.setdefault("413", _response_ref("PayloadTooLarge"))

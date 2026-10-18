@@ -1,0 +1,36 @@
+{
+  "defaults": {
+    "demo_seed": 20261018,
+    "disabled_features": [],
+    "network_features_enabled": true,
+    "report_format": "markdown"
+  },
+  "demo": {
+    "baseline_success_probability": 0.7,
+    "harm_probability": 0.02,
+    "treatment_success_probability": 0.75,
+    "units_per_arm": 200
+  },
+  "features": [
+    "G3",
+    "G5",
+    "G16",
+    "G20",
+    "G22"
+  ],
+  "name": "support-outcome",
+  "report_template": "# {name} synthetic buyer report\n\nSeed: {seed} \u00b7 randomized units: {n}\n\n- Estimated outcome difference: {effect:.3f} (95% Wald interval {lower:.3f} to {upper:.3f})\n- Observed harm budget spent: {harm:.3f}\n- Guarantee: the local demo is deterministic for its seed and makes no network calls.\n- Estimate: effect and interval describe this synthetic seeded sample only.\n\nFeatures configured: {features}\n\nThis run does not establish production efficacy or certification.",
+  "rules": [
+    {
+      "id": "review-before-production",
+      "requirement": "Review this pack against local policy and validate each external integration before production.",
+      "severity": "high"
+    },
+    {
+      "id": "preserve-human-oversight",
+      "requirement": "Retain a named operator for consequential decisions.",
+      "severity": "high"
+    }
+  ],
+  "version": "1.0.0"
+}

@@ -26,9 +26,10 @@ _COMMANDS = (
     "dream", "bill", "conformance", "gate", "prove", "taxonomy", "impact", "pilot", "sync", "redact", "doctor",
     "block", "fact", "graph", "ingest", "agent", "watch", "daemon", "viz", "conversation", "memory", "recall", "jobs",
     "ontology", "community", "observation", "saga", "page", "session_ledger",
-    "procedural", "sql_query", "defense", "evolve", "policy", "assurance", "compression", "up", "connect", "migrate",
+    "procedural", "sql_query", "defense", "evolve", "policy", "assurance", "compression", "up", "connect",
+    "migrate", "pack",
     "codegraph", "market", "allocate", "integration", "providers", "help", "setup", "lineage", "log", "incident",
-    "promote", "safety", "frontier",
+    "promote", "safety", "frontier", "skill", "team", "stream", "erasure", "tier", "sentinel", "person",
 )
 
 ALIASES = {
@@ -41,6 +42,13 @@ ALIASES = {
 
 
 _COMMAND_GROUPS = {
+    'person': 'nextwave',
+    'sentinel': 'nextwave',
+    'skill': 'nextwave',
+    'team': 'nextwave',
+    'stream': 'nextwave',
+    'erasure': 'nextwave',
+    'tier': 'nextwave',
     'providers': 'platform',
     'codegraph': 'platform',
     'migrate': 'platform',

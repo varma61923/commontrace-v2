@@ -20,7 +20,7 @@ from commontrace.search_recipes import search, terms
 KINDS = ("directive", "mental-model", "proposal", "foresight", "watermark", "compression", "wiki")
 _PROFILE_ORDER = RuntimeCache(max_entries=128, max_bytes=4*1024*1024, ttl=30,
                              weigh=lambda key, value: len(repr(key).encode())+sum(len(v)+64 for v in value))
-DIMENSIONS = ("tenant", "user", "agent", "app", "project", "session", "repo")
+DIMENSIONS = ("tenant", "user", "agent", "app", "project", "session", "repo", "domain")
 REQUIRED_PRINCIPAL_SCOPE: ContextVar[str] = ContextVar("commontrace_required_principal_scope", default="")
 
 
@@ -195,6 +195,9 @@ def reflect(root: str, query: str, *, context: list[str] | None = None, budget: 
     candidates were left out for lack of room. ``budget`` in the result is the
     budget used; ``budget_decision`` says how it was reached.
     """
+    from commontrace import sentinel_io
+
+    sentinel_io.assert_generalize(root, context=context or [])
     if not isinstance(budget, int) or isinstance(budget, bool) or not 0 <= budget <= 100000:
         raise ValueError("budget must be an integer in 0..100000")
     if not isinstance(adaptive_budget, bool):

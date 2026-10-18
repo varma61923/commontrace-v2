@@ -154,6 +154,10 @@ def read_allowed(root: str, identity: str) -> bool:
     everything else (including memories written outside the design) stays
     visible to both arms, so diversion itself cannot create a contrast.
     """
+    from commontrace import writer_holdout
+
+    if not writer_holdout.read_allowed(root, identity):
+        return False
     context = active_context(root)
     if context is None or context[1] == "treated":
         return True

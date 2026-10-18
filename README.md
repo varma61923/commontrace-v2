@@ -262,7 +262,19 @@ UniMem is pre-1.0 software under active development.
 
 | Area | Status |
 |---|---|
+| Delegated capabilities | Pinned holders, monotone HMAC/Ed25519 chains, request proofs, scoped retrieval, recipient handoffs and revocation quarantine; [workflow and limits](docs/capabilities.md). |
+| G7 Team isolation | Scoped point-read snapshots, commit-time stale-generation guards, fenced work leases and reviewable semantic merges; [guarantees and limits](docs/team-isolation.md). |
 | G29 Pooled evidence | Signed sufficient-statistics contributions, ownership-group random effects, modified Hartung–Knapp intervals, e-values and reference Gaussian privacy accounting; [workflow and limits](docs/pooled-evidence.md). |
+| G1 Causal Skill Foundry | Authenticated trajectory induction, verifier screens, nested catalog trials, canonical promotion, signed Agent Skills evidence and decay retirement; [workflow and assumptions](docs/skill-foundry.md). |
+| G3 Optimizer proposals | Typed edit and bullet trials, negative feedback, canonical promotion and estimated segment frontiers; [formats and guarantees](docs/optimizer-intake.md). |
+| G4 Transfer and forgetting sentinel | Prospective cross-segment quarantine, canonical factorial canaries and update non-regression gates; [assumptions and use](docs/sentinel.md). |
+| G5 Personalization audit | Separate outcome, accuracy and agreement trials, domain scope and factual evidence rules; [audit and benchmark adapters](docs/personalization-audit.md). |
+| G2 Governed RL export | Complete authenticated cohorts, matched-arm preferences, DR advantage labels, replay priorities, sampled KL checks and erasure-aware streaming JSONL; [schema and limits](docs/rl-export.md). |
+| G9 Writer contribution trials | Parent writer/role masks, unbiased inner eligibility, estimated reliability priors and MAST incident tags; [integration and assumptions](docs/writer-holdouts.md). |
+| G8 Contagion and source diversity | Scoped read/write dependency radius, incident freeze, root concentration and admitted re-retrieval; [graph limits and integration](docs/contagion.md). |
+| G10 Memory telemetry | Opt-in standard GenAI memory spans, admitted causal metadata and canonical outcome slices; [configuration and privacy](docs/otel.md). |
+| G20 Change streams and byte verification | Admission-filtered SSE/MCP diffs, governed Kafka forwarding, downstream deletion ACKs and conditional local byte receipts; [scope and examples](docs/change-streams.md). |
+| G21 Governed payload tiers | Residency checks, verified hot/cold migration, lifecycle pre-warm, native ACL filtering and measured embedding cutover; [deployment boundary](docs/tiering.md). |
 | F11 Authenticated lineage | Signed derivations, origin quorum, minimum integrity and taint cascades; [workflow](docs/lineage.md). |
 | F12 Transparency log | Signed Merkle heads, inclusion/consistency proofs, tenant-isolated Hub history; [workflow](docs/transparency-log.md). |
 | F3 Sequential evidence | Predictable e-processes, shared-task e-BH for positive (HELPS) claims with harm withdrawal unweakened, nonoverlapping evidence snapshots; [workflow](docs/e-processes.md). |
@@ -285,6 +297,9 @@ UniMem is pre-1.0 software under active development.
 | F10 Compilation | Open-weight trainer contract, CPU governance reference, source rollback and artifact-bound F2 trials; [workflow](docs/compile-memory.md). |
 | F21 Foreign stores | Pinned SDK/HTTP adapters, canonical measurement, lineage and redacted errors; [workflow](docs/vendor-evidence.md). |
 | F22 Physical-AI bridge | Lazy ROS node, MCAP/LeRobot metadata ingest, witnessed edge cache and durable outcomes; [workflow](docs/physical-ai.md). |
+| G17–G28 Robot fleet governance | Household consent, governed KV capsules, world-model trust, robust signatures, bounded working memory, signed site mesh, living safety cases and bounded STL monitor; [workflow](docs/physical-ai.md). |
+| G13 Privacy-preserving recall | Two-server XOR-PIR reference with per-clearance blocks and local reranking; [limits](docs/oblivious-recall.md). |
+| G30 Vertical packs | Eight offline-installable configuration bundles with seeded buyer reports; [catalog](docs/vertical-packs.md). |
 | Local store, retrieval, MCP server, gateway, holdout experiment | Stable; covered by about 8,000 tests in CI on Python 3.10 and 3.12 |
 | Hub server | Feature-complete; tested against real PostgreSQL in CI |
 | Causal gate | New. Runs on the local store and the gateway; the Hub does not yet record per-assignment rates or contexts |
@@ -315,7 +330,8 @@ CI also runs strict type checks on the core modules, bandit, pip-audit, CodeQL,
 a latency gate, the SDK builds, Docker and Compose smoke tests, and an architecture
 audit. The exact gates are defined in [CI](.github/workflows/ci.yml),
 [security checks](.github/workflows/security.yml), and the
-[architecture audit](.github/workflows/graphify.yml). See the branch's
+[architecture audit](.github/workflows/graphify.yml). Use the [Graphify exploration guide](docs/architecture-exploration.md)
+for local dependency queries and impact analysis. See the branch's
 [Actions runs](https://github.com/varma61923/commontrace-v2/actions) for current
 results. Optional integrations use mocks or local fixtures; CI does not exercise
 live vendor requests, payments, enclaves or robot actuation.
@@ -332,3 +348,51 @@ Some components are adapted from permissively licensed projects (Apache-2.0 and 
 - The causal gate: Thompson (1933) for probability matching, and DerSimonian & Laird (1986) for between-unit variance in empirical-Bayes shrinkage.
 - Retrieval: HippoRAG (Gutiérrez et al., 2024), IRCoT (Trivedi et al., 2023), RM3 (Lavrenko & Croft, 2001), and HyDE (Gao et al., 2023).
 - Memory poisoning: AgentPoison (Chen et al., 2024) and MemoryGraft (2025).
+
+Finite read, write, recall and export permissions support exhaustive change checks and reviewed activation. See [memory policy](docs/memory-policy.md) for the bounded guarantee, native Cedar adapter and optional relationship prefilter.
+
+[Owned memory passports](docs/memory-passport.md) preserve signed source snapshots through review-only imports. Holder-bound VC 2.0/SD-JWT credentials disclose selected fact fields with fresh nonce and revocation checks.
+
+[Purpose-bound consent](docs/purpose-consent.md) restricts retrieval by verified
+agent purpose, explains direct and inferred personal memories, and expires
+consent through governed erasure.
+
+[Regulated-subject write policies](docs/subject-write-policy.md) hold unknown
+modalities for review, quarantine prohibited biometric emotion inferences, and
+schedule child-data retention before canonical persistence.
+
+[Human-help governance](docs/human-help.md) links correction quality to canonical
+outcomes, holds unreviewed data before RL exports, and measures low-risk asking
+under a shared fleet-time budget.
+
+[Committed effect proofs](docs/effect-proofs.md) bind complete prospective
+cohorts to verifier challenges and audit effect arithmetic, with optional real
+RISC Zero receipt verification and private proving.
+
+[Attested tenant key release](docs/attested-key-release.md) checks logged CPU/GPU
+builds, fresh quote bindings and shared replay state before encrypting tenant
+keys to approved workers.
+
+[Household memory scopes](docs/household-memory.md) require consent for every
+recognized person, keep unknown and bystander scenes ephemeral, and enforce
+no-memory room rules before spatial persistence.
+
+[Governed KV capsules](docs/kv-capsules.md) bind opaque model KV to a tenant,
+source memory and model fingerprint, then evict each registered tier when the
+memory is withdrawn or erased.
+
+[World-model trust](docs/world-model-trust.md) checks action sensitivity and
+tracks task-specific agreement with an anytime interval; simulation can veto or
+hold a memory for real trials, never release it by itself.
+
+[Proprioceptive signatures](docs/robot-signatures.md) compare force, tactile,
+joint-current and temperature samples against phase- and payload-conditioned
+robust bands, and link anomalies to their episode and recovery record.
+
+[In-loop working memory](docs/robot-working-memory.md) offers a local keyframe
+cache with a 5 ms default retrieval target, protected safety entries, and
+audited predictive-keyframe consolidation.
+
+[Collective site memory](docs/site-memory.md) validates a VDA 5050 3.0 subset,
+merges vendor-neutral robot layers, estimates review-only zone rules and syncs
+signed operations while preserving semantic conflicts and safety memories.

@@ -105,3 +105,10 @@ def interventions_per_hour(episodes: Sequence[dict[str, Any]]) -> dict[str, Any]
     interventions = sum(row["interventions"] for row in report["series"])
     return {"interventions": interventions, "hours": hours,
             "interventions_per_hour": interventions / hours if hours else None, "series": report["series"]}
+
+
+def intervention_ledger(root: str, *, context: Sequence[str] = ()) -> dict[str, Any]:
+    """Expose governed correction windows and reported intervention costs."""
+    from commontrace import human_help
+
+    return human_help.interventions(root, context=context)

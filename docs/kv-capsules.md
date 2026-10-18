@@ -1,0 +1,9 @@
+# Governed model KV capsules (G19)
+
+A capsule stores opaque key/value bytes for one admitted memory and one exact model fingerprint. Its key is HMAC-SHA256 over the memory-content digest and model digest using the local store's tenant identity key. Separate tenant stores produce unrelated capsule keys. Building requires the source to pass ordinary memory admission and a caller-supplied promotion score to meet the configured threshold; this threshold is a product policy input, not a statistical certificate.
+
+The reference tiers are process memory and owner-only local disk. `PoolAdapter` and `Compressor` are injection points for deployment-owned LMCache, Dynamo KVBM, Mooncake or compression implementations; `commontrace[kv]` installs no inference engine or network client. Pool adapters must implement the same tenant isolation, digest integrity and deletion behavior expected by this contract. CacheBlend-style partial recompute is also adapter-owned and is not implemented by the core.
+
+`commontrace tier capsules build|status|evict` manages capsules. Retrieval verifies that the source is still admitted, the model fingerprint matches exactly and the stored compressed digest is intact. A stale or erased memory cannot be served. Retraction, quarantine, supersession and canonical erasure evict every registered tier and append a G20 change event. Canonical erasure receipts include the tiers attempted, removed and any failed deletion. A failed tier remains visible as an eviction failure; source admission blocks serving after canonical erasure, but external adapter residue still requires operator remediation.
+
+Capsules are an optimization for open-weight serving paths with an adapter that exposes KV. Closed model APIs do not expose their internal KV and are outside this feature's scope. The local disk reference backend relies on store filesystem permissions and does not claim encryption at rest.

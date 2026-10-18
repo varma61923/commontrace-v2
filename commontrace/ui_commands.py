@@ -41,13 +41,18 @@ _GROUPS: dict[str, tuple[str, ...]] = {
         "redact", "session_ledger", "sql_query", "viz", "codegraph", "help",
     ),
     "Govern": ("policy", "assurance", "compression", "allocate", "lineage", "log", "incident",
-               "promote", "safety", "frontier"),
-    "Operate": ("account", "commons", "release", "sync", "migrate", "connect", "providers", "market"),
+               "promote", "safety", "frontier", "skill", "team", "stream", "erasure", "sentinel", "person"),
+    "Operate": ("account", "commons", "release", "sync", "migrate", "connect", "providers", "market", "tier", "pack"),
     "Setup": ("init", "install", "setup", "up", "integration"),
     "Runtime": tuple(sorted(_TERMINAL_ONLY)),
 }
 
 _DESCRIPTIONS = {
+    "tier": "Control UniMem namespace residency, hot/cold payloads and measured embedding generations.",
+    "stream": "Subscribe to admitted UniMem memory changes and track downstream erasure acknowledgements.",
+    "erasure": "Scan local stores for content residue before issuing a conditional verification receipt.",
+    "team": "Measure UniMem writer contributions, nested holdouts and team incident tags.",
+    "skill": "Induce, screen, measure and publish UniMem skills with signed causal evidence.",
     "help": "Find commands by topic, category and common-operation shortcuts.",
     "setup": "Guide runtime initialization, document ingestion or competitor-data migration.",
     "providers": "Discover LLM, embedding, vector and reranking providers and validate strict configurations.",
@@ -55,6 +60,7 @@ _DESCRIPTIONS = {
     "migrate": "Import scoped competitor memories or migrate legacy configuration with a dry-run preview.",
     "connect": "Synchronize knowledge sources into an explicit memory scope.",
     "integration": "Configure adapters, connectors and marketplace clients.",
+    "pack": "Install versioned vertical configuration bundles and run seeded offline buyer demos.",
     "codegraph": "Explore code dependencies and symbol relationships.",
     "memory": "Version, validate, commit and restore a git-backed memory store.",
     "evolve": "Use scoped memory recipes, standing questions, hard rules and coding-agent onboarding.",
@@ -82,6 +88,11 @@ _DESCRIPTIONS = {
 }
 
 _EXAMPLES = {
+    "stream": ["acks"],
+    "erasure": ["verify", "--help"],
+    "tier": ["status", "--help"],
+    "team": ["writers"],
+    "skill": ["--help"],
     "query": ["describe the task you are about to do", "--top-k", "5"],
     "recall": ["What should I know before this task?", "--budget", "1500"],
     "fact": ["search", "deployment rule"],
@@ -178,6 +189,13 @@ def _authorize(command: str, parsed: argparse.Namespace, *, allow_approval: bool
         raise UICommandError("force overrides are terminal-only", status=409, code="command_unavailable")
     if command == "lesson" and handler in _LESSON_REVIEW_HANDLERS:
         raise UICommandError("lesson review actions require the revision-checked review endpoints or a terminal",
+                             status=409, code="command_unavailable")
+    if command == "prove" and getattr(parsed, "prove_cmd", "") in {"effect", "verify", "measurements"}:
+        raise UICommandError("private proof witnesses and native verifier enrollment require an operator terminal",
+                             status=409, code="command_unavailable")
+    if command == "person" and (getattr(parsed, "unimem_person", "") in {"present", "holder-key", "consent"}
+                                or getattr(parsed, "file", None)):
+        raise UICommandError("holder keys, consent enrollment and local summary files require an operator terminal",
                              status=409, code="command_unavailable")
     # CLI scopes/spaces are caller-controlled routing parameters. They cannot
     # inherit the gateway's container namespace safely through an arbitrary CLI.

@@ -92,3 +92,14 @@ def gate_adjustment(root: str, memory: str) -> dict[str, Any]:
     estimate = sum(signals) / len(signals) if signals else 0
     return {"memory": memory, "diagnostic_score": estimate, "n": len(signals),
             "review_suggested": estimate < -.05, "automatic_causal_verdict": False}
+
+
+def writer_contributions(root: str, writers: Sequence[str]) -> dict[str, Any]:
+    """Canonical parent-holdout estimates, distinct from replay diagnostics."""
+    from commontrace import nextwave_store as store
+    from commontrace import writer_holdout
+
+    store.operator()
+    fp.count(len(writers), 1, 128)
+    return {"writers": [writer_holdout.reliability(root, fp.text(w)) for w in writers],
+            "classification": "randomized downstream contribution estimates; no semantic-truth guarantee"}

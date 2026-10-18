@@ -572,6 +572,9 @@ def plan_rates(root: str, floor: float) -> tuple[dict[str, float], dict[str, dic
     from commontrace import uplift
 
     context_rates = uplift.apply_rates(root, context_rates, floor, lesson_rates=lesson_rates)
+    from commontrace import sycophancy_io
+
+    lesson_rates, context_rates = sycophancy_io.downweight(root, lesson_rates, context_rates, floor)
     basis = {
         "mode": "thompson",
         "resolved": len(rows),

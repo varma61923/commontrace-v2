@@ -161,6 +161,8 @@ class HubConfig:
     # marketplace accepts: ((principal_id, organization, base64 Ed25519 key), ...).
     market_referees: tuple[tuple[str, str, str], ...] = ()
     pool_contributors: tuple[dict, ...] = ()
+    capability_directory: str = ""
+    attestation_config: str = ""
 
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""
@@ -322,6 +324,8 @@ class HubConfig:
             commons_signing_key_id=_configuration_getenv("HUB_COMMONS_SIGNING_KEY_ID", "default"),
             market_referees=_market_referees(_configuration_getenv("HUB_MARKET_REFEREES_FILE", "")),
             pool_contributors=_pool_contributors(_configuration_getenv("HUB_POOL_CONTRIBUTORS_FILE", "")),
+            capability_directory=_configuration_getenv("HUB_CAPABILITY_DIRECTORY", ""),
+            attestation_config=_configuration_getenv("HUB_ATTESTATION_CONFIG", ""),
             stripe_secret_key=env_secret("HUB_STRIPE_SECRET_KEY"),
             stripe_webhook_secret=env_secret("HUB_STRIPE_WEBHOOK_SECRET"),
             stripe_price_team=_configuration_getenv("HUB_STRIPE_PRICE_TEAM", ""),

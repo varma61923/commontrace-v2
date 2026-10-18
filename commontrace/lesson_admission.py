@@ -278,6 +278,23 @@ def eligible(root: str, path: str, fm: Mapping[str, Any], body: str, *, as_of: s
         # Unsigned compatibility permits existing documents, never external
         # file reads or symlink aliases of a different lesson identity.
         subject = _subject(root, path)
+        from commontrace import capabilities, lesson_io, memory_authority, policy_io
+
+        identity = lesson_io.canonical_slug(os.path.basename(path))
+        if not policy_io.permits(root, {"id": identity, "memory_type": "lesson", "scopes": fm.get("scopes", [])}):
+            return False
+        from commontrace import policy_relations
+
+        if identity not in policy_relations.authorized_ids(root, [identity], "lessons"):
+            return False
+        if memory_authority.lineage_blocked(root, identity):
+            return False
+        if capabilities.CURRENT.get() is not None:
+            from commontrace import capability_io
+
+            if not capability_io.permits(root, {"id": identity, "text": body, "scopes": fm.get("scopes", [])},
+                                         namespace="lessons"):
+                return False
         strict = approval.load_policy(root).require_integrity
         if fm.get("status", "active") != "active":
             return False

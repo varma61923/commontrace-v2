@@ -349,3 +349,75 @@ def evict(root: str, model: UtilityModel, items: Sequence[dict[str, Any]], *, to
             evicted.append(identity)
     return {"kept": kept, "evicted": evicted, "tokens": used, "kind": "learned utility heuristic",
             "protected_over_budget": used > token_budget}
+
+
+def expire_consent(root: str, receipt: dict[str, Any]) -> dict[str, Any]:
+    """Purge expired enrolled sources; report crypto-erasure as conditional evidence."""
+    import os
+    from pathlib import Path
+
+    from commontrace import certified_erasure, incident, memory_authority, nextwave_store, privacy_erasure, purpose
+
+    nextwave_store.operator()
+    if purpose.live(receipt):
+        raise PermissionError("UniMem live consent cannot be expired by retention")
+    identity = receipt["id"]
+    prior = nextwave_store.latest(root, "consent-cleanup").get(identity)
+    if prior and prior["status"] == "complete":
+        return {"receipt_id": identity, "status": "complete", "certificate": prior.get("certificate")}
+    if prior and prior.get("local_purge"):
+        return {"receipt_id": identity, "status": "pending", "local_purge": True,
+                "reason": "subject vault not configured", "certificate": None}
+    ids = sorted(receipt["sources"])
+    try:
+        incident.assert_unpinned(root, ids)
+        safety.assert_mutable(root, ids)
+        from commontrace import person_io
+        from commontrace.memory_journal import Journal
+        from commontrace.record_visibility import scope_from_labels
+
+        for key, source in receipt["sources"].items():
+            if source["namespace"] == "facts":
+                if person_io._fact(root, key) is not None:
+                    privacy_erasure.purge_fact(root, key, reason="Purpose consent ended.")
+            elif source["namespace"] == "records":
+                journal = Journal(root)
+                with journal.connect() as db:
+                    row = db.execute("SELECT id FROM resource_refs WHERE ref=?", (key,)).fetchone()
+                native_id = row[0] if row is not None else source.get("native_id")
+                if native_id is not None:
+                    journal.forget(native_id, reason="Purpose consent ended.",
+                                   scope=scope_from_labels(source["scopes"]))
+            elif source["namespace"] == "lessons":
+                path = lesson_io.lesson_path(root, key)
+                if path:
+                    from commontrace import lesson_admission
+
+                    lesson_admission.revoke(root, path, actor="consent-expiry")
+                    os.unlink(path)
+                erase_rewrites(root, {key})
+                privacy_erasure._purge_mirrors(root, {key})
+            elif source["namespace"] == "controls":
+                privacy_erasure._purge_mirrors(root, {key})
+            elif source["namespace"] == "traces":
+                from commontrace import paths, trace_io
+
+                for trace_path in Path(paths.traces_dir(root)).glob("*.md"):
+                    if trace_path.name != "README.md" and trace_io.read(str(trace_path))[0].get("id") == key:
+                        paths.enforce_boundary(root, str(trace_path))
+                        os.unlink(trace_path)
+                privacy_erasure._purge_mirrors(root, {key})
+            memory_authority.record_forgetting(root, key, forgotten=True)
+        nextwave_store.erase(root, ids)
+        if not receipt["vault_directory"]:
+            # Local plaintext deletion is real; a missing vault cannot establish
+            # destruction of subject wrapping keys or historical backup bytes.
+            nextwave_store.event(root, "consent-cleanup", identity, {"status": "pending", "local_purge": True})
+            return {"receipt_id": identity, "status": "pending", "local_purge": True,
+                    "reason": "subject vault not configured", "certificate": None}
+        vault = certified_erasure.SubjectVault(root, receipt["vault_directory"])
+        certificate = certified_erasure.erase(root, "consent:"+identity, ids, vault, reason="Purpose consent ended.")
+        nextwave_store.event(root, "consent-cleanup", identity, {"status": "complete", "certificate": certificate})
+        return {"receipt_id": identity, "status": "complete", "certificate": certificate}
+    except (PermissionError, ValueError, OSError, RuntimeError) as error:
+        return {"receipt_id": identity, "status": "pending", "reason": type(error).__name__, "certificate": None}

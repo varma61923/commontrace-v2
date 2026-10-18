@@ -210,7 +210,7 @@ def sign(root: str, record: dict[str, Any], *, durable: bool = True) -> dict[str
     key = memory_authority._key(root, create=algorithm == "hmac-sha256", algorithm=algorithm, durable=durable)
     if key is None:
         raise PermissionError("store signing key is unavailable")
-    principal, authority = memory_authority.WRITER.get()
+    principal, authority = memory_authority.bound_writer()
     return origin.bind(_json_copy(record), origin.Principal(principal, "local-store", authority, key, algorithm),
                        _detached=True)
 

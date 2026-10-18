@@ -4800,6 +4800,39 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "Base64url UniMem attenuating token. Enrolled delegates must supply all three UniMem headers in addition to primary authentication; an unconfigured server rejects delegated requests.",
+            "in": "header",
+            "name": "X-UniMem-Capability",
+            "required": false,
+            "schema": {
+              "maxLength": 98304,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Base64url holder signature bound to the token, tenant, exact method/target/body, purpose and fresh nonce. Regenerate for every HTTP request; proofs expire after at most 30 seconds.",
+            "in": "header",
+            "name": "X-UniMem-Capability-Proof",
+            "required": false,
+            "schema": {
+              "maxLength": 8192,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Declared purpose, authorized by the leaf capability and signed by the holder.",
+            "in": "header",
+            "name": "X-UniMem-Purpose",
+            "required": false,
+            "schema": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -4866,6 +4899,147 @@
         "summary": "Versioned scoped records: put, search, hard forget or reap due expirations",
         "tags": [
           "Memory"
+        ]
+      }
+    },
+    "/api/v1/oblivious/pir": {
+      "post": {
+        "description": "The authenticated key determines its label ceiling. Each independently operated replica must receive one random query share; replicas must not collude. See oblivious recall docs.",
+        "operationId": "obliviousPirShare",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "cluster": {
+                    "maxLength": 96,
+                    "type": "string"
+                  },
+                  "share": {
+                    "contentEncoding": "base64",
+                    "type": "string"
+                  },
+                  "shares": {
+                    "items": {
+                      "contentEncoding": "base64",
+                      "type": "string"
+                    },
+                    "maxItems": 1024,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "cluster"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "properties": {
+                        "block_bytes": {
+                          "minimum": 1,
+                          "type": "integer"
+                        },
+                        "count": {
+                          "minimum": 0,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "count",
+                        "block_bytes"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "properties": {
+                        "answer": {
+                          "contentEncoding": "base64",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "answer"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "properties": {
+                        "answers": {
+                          "items": {
+                            "contentEncoding": "base64",
+                            "type": "string"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "answers"
+                      ],
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Fixed-size metadata or XOR response share."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Malformed body or invalid field."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The marketplace trusts no referee on this Hub."
+          },
+          "504": {
+            "$ref": "#/components/responses/Timeout"
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "userBearer": []
+          }
+        ],
+        "summary": "Answer one replica's XOR-PIR query share",
+        "tags": [
+          "REST"
         ]
       }
     },
@@ -5016,6 +5190,41 @@
       "post": {
         "description": "Needs the `write` scope. Suspicious content is stored quarantined, not refused.",
         "operationId": "contributeTrace",
+        "parameters": [
+          {
+            "description": "Base64url UniMem attenuating token. Enrolled delegates must supply all three UniMem headers in addition to primary authentication; an unconfigured server rejects delegated requests.",
+            "in": "header",
+            "name": "X-UniMem-Capability",
+            "required": false,
+            "schema": {
+              "maxLength": 98304,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Base64url holder signature bound to the token, tenant, exact method/target/body, purpose and fresh nonce. Regenerate for every HTTP request; proofs expire after at most 30 seconds.",
+            "in": "header",
+            "name": "X-UniMem-Capability-Proof",
+            "required": false,
+            "schema": {
+              "maxLength": 8192,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Declared purpose, authorized by the leaf capability and signed by the holder.",
+            "in": "header",
+            "name": "X-UniMem-Purpose",
+            "required": false,
+            "schema": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -5104,6 +5313,41 @@
       "post": {
         "description": "Needs the `read` scope. Quarantined and superseded traces are never returned.",
         "operationId": "searchTraces",
+        "parameters": [
+          {
+            "description": "Base64url UniMem attenuating token. Enrolled delegates must supply all three UniMem headers in addition to primary authentication; an unconfigured server rejects delegated requests.",
+            "in": "header",
+            "name": "X-UniMem-Capability",
+            "required": false,
+            "schema": {
+              "maxLength": 98304,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Base64url holder signature bound to the token, tenant, exact method/target/body, purpose and fresh nonce. Regenerate for every HTTP request; proofs expire after at most 30 seconds.",
+            "in": "header",
+            "name": "X-UniMem-Capability-Proof",
+            "required": false,
+            "schema": {
+              "maxLength": 8192,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Declared purpose, authorized by the leaf capability and signed by the holder.",
+            "in": "header",
+            "name": "X-UniMem-Purpose",
+            "required": false,
+            "schema": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -7692,6 +7936,39 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "Base64url UniMem attenuating token. Enrolled delegates must supply all three UniMem headers in addition to primary authentication; an unconfigured server rejects delegated requests.",
+            "in": "header",
+            "name": "X-UniMem-Capability",
+            "required": false,
+            "schema": {
+              "maxLength": 98304,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Base64url holder signature bound to the token, tenant, exact method/target/body, purpose and fresh nonce. Regenerate for every HTTP request; proofs expire after at most 30 seconds.",
+            "in": "header",
+            "name": "X-UniMem-Capability-Proof",
+            "required": false,
+            "schema": {
+              "maxLength": 8192,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Declared purpose, authorized by the leaf capability and signed by the holder.",
+            "in": "header",
+            "name": "X-UniMem-Purpose",
+            "required": false,
+            "schema": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -7814,6 +8091,39 @@
             "name": "Last-Event-ID",
             "required": false,
             "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Base64url UniMem attenuating token. Enrolled delegates must supply all three UniMem headers in addition to primary authentication; an unconfigured server rejects delegated requests.",
+            "in": "header",
+            "name": "X-UniMem-Capability",
+            "required": false,
+            "schema": {
+              "maxLength": 98304,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Base64url holder signature bound to the token, tenant, exact method/target/body, purpose and fresh nonce. Regenerate for every HTTP request; proofs expire after at most 30 seconds.",
+            "in": "header",
+            "name": "X-UniMem-Capability-Proof",
+            "required": false,
+            "schema": {
+              "maxLength": 8192,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Declared purpose, authorized by the leaf capability and signed by the holder.",
+            "in": "header",
+            "name": "X-UniMem-Purpose",
+            "required": false,
+            "schema": {
+              "maxLength": 256,
+              "minLength": 1,
               "type": "string"
             }
           }
@@ -7947,6 +8257,39 @@
             "name": "MCP-Protocol-Version",
             "required": false,
             "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Base64url UniMem attenuating token. Enrolled delegates must supply all three UniMem headers in addition to primary authentication; an unconfigured server rejects delegated requests.",
+            "in": "header",
+            "name": "X-UniMem-Capability",
+            "required": false,
+            "schema": {
+              "maxLength": 98304,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Base64url holder signature bound to the token, tenant, exact method/target/body, purpose and fresh nonce. Regenerate for every HTTP request; proofs expire after at most 30 seconds.",
+            "in": "header",
+            "name": "X-UniMem-Capability-Proof",
+            "required": false,
+            "schema": {
+              "maxLength": 8192,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Declared purpose, authorized by the leaf capability and signed by the holder.",
+            "in": "header",
+            "name": "X-UniMem-Purpose",
+            "required": false,
+            "schema": {
+              "maxLength": 256,
+              "minLength": 1,
               "type": "string"
             }
           }
@@ -9125,6 +9468,132 @@
         ]
       }
     },
+    "/v1/attestation/{operation}": {
+      "post": {
+        "description": "Admin scope and a tenant log signer are required. Key release additionally requires a deployment-provisioned tenant KMS provider and pinned hardware appraisers. A fresh one-use quote binds the authenticated tenant, measured build, worker X25519 key and payload digest. Production configuration forbids simulated evidence; returned keys are encrypted to the worker.",
+        "operationId": "attestedKeyOperation",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "operation",
+            "required": true,
+            "schema": {
+              "enum": [
+                "measurements-register",
+                "measurements-list",
+                "challenge",
+                "key-release"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "description": "Build profile, challenge parameters or issued request and signed evidence.",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "description": "Measurement receipt, challenge or authenticated key envelope.",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Enrollment, challenge or encrypted worker key."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Malformed or oversized attestation request."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authentication required."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Quote, measurement or nonce denied."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unknown attestation operation."
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Rate or challenge limit."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Attestation, signer or tenant key provider unavailable."
+          },
+          "504": {
+            "$ref": "#/components/responses/Timeout"
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "userBearer": []
+          }
+        ],
+        "summary": "Enroll audited builds and release tenant keys to attested workers",
+        "tags": [
+          "Admin"
+        ]
+      }
+    },
     "/v1/evidence/pool/contributions": {
       "post": {
         "description": "Admin scope and an operator-provisioned contributor key are required. An identical release replay is idempotent; tenant identity comes from authentication.",
@@ -10047,6 +10516,143 @@
         "summary": "Local SDK record-put, record-search, record-forget and record-reap-due wire parity",
         "tags": [
           "Memory"
+        ]
+      }
+    },
+    "/v1/policy/{operation}": {
+      "post": {
+        "description": "Admin scope and a configured tenant signer are required. Widening activation requires a review bound to the exact certificate and current generation. Proofs cover only the closed declared domain of at most 65536 tuples; external relation state is excluded.",
+        "operationId": "finitePolicyOperation",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "operation",
+            "required": true,
+            "schema": {
+              "enum": [
+                "current",
+                "diff",
+                "certify",
+                "review",
+                "activate"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "description": "Versioned native policy, or certificate and content-bound review receipt.",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "description": "Policy, finite diff or signed receipt.",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Policy operation result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Malformed, oversized or unsupported finite policy."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authentication required."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Admin scope or review required."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unknown policy operation."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Stale policy generation."
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Rate limited."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Signer or optional Cedar extra unavailable."
+          },
+          "504": {
+            "$ref": "#/components/responses/Timeout"
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "userBearer": []
+          }
+        ],
+        "summary": "Diff, certify, review and activate finite memory permissions",
+        "tags": [
+          "Admin"
         ]
       }
     },

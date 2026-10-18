@@ -1,0 +1,9 @@
+# World-model trust ledger (G23)
+
+`world_model_trust.register` records an immutable SHA-256 model digest, supported embodiment/task pairs and the runtime adapter name. Deployment code installs the matching adapter in the process with `register_adapter`. The registry does not inspect a model file; the integrator must ensure the configured adapter actually loads the registered digest.
+
+Before a memory reaches a real robot, call `gate` with its canonical memory ID, stored real failure state, proposed action and one or more action perturbations. The runtime adapter returns bounded JSON rollouts including a boolean `safe` verdict. An action-insensitive model is vetoed. An unsafe predicted rollout is vetoed. A safe rollout with insufficient real agreement is held. After the preregistered number of real episodes and a lower confidence bound above the configured agreement threshold, a safe rollout becomes eligible for a real trial. It is never promoted directly.
+
+`record_outcome` binds one real episode to a model digest, embodiment and task. `trust` reports the anytime confidence sequence over agreement scores. Changing the model digest or embodiment starts a separate evidence ledger. `prioritize_real_trials` returns the predicted best and worst candidates first, preserving limited physical trials for the endpoints.
+
+The interval is an estimate under the e-process assumptions: correctly logged unique episodes, bounded binary agreement scores, honest predicted labels and stationary trial generation. It is not a safety certificate. Action-following perturbation detects only insensitivity to the supplied perturbations. World-model digital twins can be wrong or poorly calibrated; real robot interlocks and safety cases remain independent requirements. CLI: `commontrace fleet worldmodel register|trust|gate`. A runtime adapter must be installed for `gate`; a CLI without that adapter fails closed.

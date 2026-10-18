@@ -164,10 +164,17 @@ def trust(root: str, entry: dict, *, role: str) -> dict:
 
 def portable_lesson(root: str, slug: str) -> dict:
     """The shareable part of an active lesson: its text, never its local history."""
+    from commontrace import sentinel_io
+
+    sentinel_io.assert_generalize(root, [slug])
     path = lesson_io.lesson_path(root, slug)
     if path is None or not os.path.exists(path):
         raise MarketError(f"no lesson named {slug!r}")
     fm, body = frontmatter.read(path)
+    from commontrace import policy_io
+
+    if not policy_io.permits(root, {"memory_type": "lesson", "scopes": fm.get("scopes", [])}, action="export"):
+        raise PermissionError("UniMem active finite policy denies this lesson export")
     if fm.get("status") != "active":
         raise MarketError(f"{slug} is {fm.get('status')!r}; only an approved, active lesson can be listed")
     return {"frontmatter": {k: fm[k] for k in PORTABLE_KEYS if k in fm}, "body": body}

@@ -105,6 +105,9 @@ def _run_pass(args: argparse.Namespace) -> int:
 
     root = paths.resolve_root(args.dest)
     started = time.monotonic()
+    from commontrace import sentinel_io
+
+    sentinel_io.assert_generalize(root)
     max_seconds = getattr(args, "max_seconds", 120)
     draft = not args.no_draft and _llm_configured()
     now = datetime.datetime.now(datetime.timezone.utc)

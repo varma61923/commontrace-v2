@@ -80,9 +80,17 @@ def _same_placement(before: dict[str, Any], after: dict[str, Any]) -> bool:
 
 def update(root: str, delta: dict[str, Any], *, context: dict[str, str],
            correction_of: str | None = None) -> dict[str, Any]:
+    from commontrace.household import assert_spatial_persistable
+
+    assert_spatial_persistable(root, delta, context)
+    # Household identity proof is an admission token, not scene content. Never
+    # duplicate it into the spatial journal after the pre-write gate succeeds.
+    delta = {key: value for key, value in delta.items()
+             if key not in {"household_gate", "contains_person", "room_id"}}
     scopes = _context(context)
     required = {"object_id", "class", "pose", "frame", "robot_id", "timestamp", "confidence"}
-    allowed = required | {"embedding_ref", "relations", "keyframe", "media"}
+    allowed = required | {"embedding_ref", "relations", "keyframe", "media", "room_id",
+                          "contains_person", "household_gate"}
     if not required <= set(delta) or not set(delta) <= allowed:
         raise ValueError("spatial delta requires bounded object, class, pose/frame, robot, timestamp and confidence")
     for key in ("object_id", "class", "frame", "robot_id"):

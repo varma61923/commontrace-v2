@@ -1,0 +1,7 @@
+# Context is bound by the bridge to its enrolled embodiment/site/skill.
+string occasion
+string question_type
+---
+bool ok
+string decision_json
+string error

@@ -42,6 +42,9 @@ def build(root: str, name: str, sources: Sequence[str], *, target: str, model: s
         raise ValueError("unsupported compilation target")
     ids = sorted(set(fp.text(x) for x in sources))
     fp.count(len(ids), 1, 128)
+    from commontrace import sentinel_io
+
+    sentinel_io.assert_generalize(root, ids)
     if any(r["name"] == name for r in fp.journal(root, "compiled-artifacts.jsonl")):
         raise ValueError("compiled artifact names are immutable")
     if set(safety.protected(root)) & set(ids):
@@ -84,6 +87,9 @@ def _artifact(root: str, name: str) -> dict[str, Any]:
 
 def stale(root: str, name: str) -> bool:
     row = _artifact(root, name)
+    from commontrace import sentinel_io
+
+    sentinel_io.assert_generalize(root, list(row["sources"]))
     if lineage.labels(root, row["id"])["review_required"]:
         return True
     positive = evidence.graduated(root)
@@ -112,6 +118,9 @@ def assign(root: str, name: str, occasion: str) -> dict[str, Any]:
 
 def serve(root: str, name: str, certificate: dict[str, Any]) -> dict[str, Any]:
     row = _artifact(root, name)
+    from commontrace import sentinel_io
+
+    sentinel_io.require_update(root, row["policy_hash"])
     if stale(root, name) or not promotion.verify(root, certificate, artifact_hash=row["policy_hash"]):
         raise PermissionError("serving requires fresh sources and an F2 certificate for this artifact policy")
     return row

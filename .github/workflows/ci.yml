@@ -116,7 +116,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install commontrace with the dev extra
-        run: python -m pip install -e ".[dev,code]" "pytest-cov>=7.0,<8.0"
+        run: python -m pip install -e ".[dev,code,crdt]" "pytest-cov>=7.0,<8.0"
 
       - name: Run tests with the 80 percent coverage gate
         run: >-
@@ -428,6 +428,61 @@ jobs:
           HUB_DATABASE_URL="$HUB_TEST_DATABASE_URL" python -m alembic -c hub/alembic.ini upgrade head
           python -m pytest e2e_tests/ -q -k hub
 
+  test-optional-memory-security:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.10', '3.12']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python -m pip install -e '.[dev,policy-cedar,security]'
+      - run: python -m pytest tests/test_policy_proof.py tests/test_policy_cedar.py tests/test_policy_io.py tests/test_credentials.py tests/test_passport.py tests/test_person_io.py -q
+      - name: Compile optional ROS 2 asking interface when the native toolchain exists
+        run: |
+          if command -v colcon >/dev/null 2>&1 && [ -n "${ROS_DISTRO:-}" ]; then
+            colcon --log-base "$RUNNER_TEMP/commontrace-ros-log" build --base-paths ros2 \
+              --build-base "$RUNNER_TEMP/commontrace-ros-build" \
+              --install-base "$RUNNER_TEMP/commontrace-ros-install" --packages-select commontrace_interfaces
+            source "$RUNNER_TEMP/commontrace-ros-install/setup.bash"
+            python -m pytest tests/test_human_help.py -q
+          else
+            echo "ROS 2 interface compilation skipped: colcon and an initialized ROS_DISTRO are required."
+          fi
+
+  test-effect-proof-native:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -e '.[dev,zk]'
+      - name: Test actual arithmetic and RISC Zero receipt verification
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/effect-target
+        run: |
+          cargo test --manifest-path zk/Cargo.toml --locked -p unimem-effect-core -p unimem-effect-host
+          cargo build --manifest-path zk/Cargo.toml --locked -p unimem-effect-core -p unimem-effect-host
+          cargo fmt --manifest-path zk/Cargo.toml --all -- --check
+          cargo clippy --manifest-path zk/Cargo.toml --locked -p unimem-effect-core -p unimem-effect-host --all-targets -- -D warnings
+          export UNIMEM_EFFECT_CORE="$CARGO_TARGET_DIR/debug/unimem-effect-core"
+          export UNIMEM_EFFECT_HOST="$CARGO_TARGET_DIR/debug/unimem-effect-host"
+          python -m pytest tests/test_zk_effect.py tests/test_zk_effect_io.py tests/test_zk_effect_native.py -q
+      - name: Build and test the real guest when its toolchain exists
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/effect-target
+        run: |
+          if rustup toolchain list | grep -q '^risc0'; then
+            cargo build --manifest-path zk/Cargo.toml --locked -p unimem-effect-host --features prove
+            export UNIMEM_EFFECT_HOST="$CARGO_TARGET_DIR/debug/unimem-effect-host"
+            python -m pytest tests/test_zk_effect_native.py -q -k real_zkvm
+          else
+            echo "Guest proving skipped: the custom RISC Zero Rust toolchain is absent."
+          fi
+
   security-scan:
     name: security scan (bandit, pip-audit, mypy)
     runs-on: ubuntu-latest
@@ -491,8 +546,25 @@ jobs:
             commontrace/certified_erasure.py \
             commontrace/retention.py \
             commontrace/pooled_evidence.py commontrace/pooled_io.py commontrace/nextwave_store.py commontrace/commands/nextwave.py \
+            commontrace/unit_trials.py commontrace/skill_foundry.py commontrace/skill_io.py \
+            commontrace/capabilities.py commontrace/capability_io.py \
+            commontrace/team_isolation.py commontrace/team_io.py \
+            commontrace/optimizer_intake.py commontrace/optimizer_io.py \
+            commontrace/sentinel.py commontrace/sentinel_io.py \
+            commontrace/sycophancy.py commontrace/sycophancy_io.py \
+            commontrace/policy_proof.py commontrace/policy_cedar.py \
+            commontrace/policy_io.py commontrace/policy_relations.py \
+            commontrace/zk_effect.py commontrace/zk_effect_io.py commontrace/attested_keys.py \
+            commontrace/passport.py commontrace/credentials.py commontrace/person_io.py commontrace/purpose.py commontrace/subject_policy.py commontrace/human_help.py \
+            commontrace/rl_export.py commontrace/rl_io.py commontrace/writer_holdout.py commontrace/contagion.py commontrace/otel_memory.py commontrace/change_stream.py commontrace/erasure_verify.py commontrace/tiering.py \
             commontrace/frontier_protocol.py commontrace/lineage.py commontrace/transparency_log.py commontrace/interference.py commontrace/eprocess.py commontrace/conformal_gate.py commontrace/incident.py commontrace/promotion.py commontrace/safety.py \
-            commontrace/outcomes.py commontrace/recovery.py commontrace/valuation.py commontrace/spatial.py commontrace/uplift.py commontrace/attribution.py commontrace/cleanroom.py commontrace/compile_memory.py commontrace/robotics/__init__.py commontrace/robotics/bridge.py commontrace/robotics/edge.py commontrace/robotics/ingest.py \
+            commontrace/outcomes.py commontrace/recovery.py commontrace/valuation.py commontrace/spatial.py commontrace/household.py commontrace/kv_capsules.py commontrace/uplift.py commontrace/attribution.py commontrace/cleanroom.py commontrace/compile_memory.py commontrace/robotics/__init__.py commontrace/robotics/bridge.py commontrace/robotics/edge.py commontrace/robotics/ingest.py hub/attestation.py \
+            commontrace/world_model_trust.py \
+            commontrace/robotics/signatures.py \
+            commontrace/robotics/working_memory.py \
+            commontrace/mesh_crdt.py commontrace/robotics/vda5050.py commontrace/robotics/site_memory.py \
+            commontrace/safety_case.py commontrace/robotics/shield.py \
+            commontrace/oblivious.py commontrace/packs.py \
             commontrace/retry.py commontrace/commands/integration_cmd.py \
             commontrace/fact_evidence.py commontrace/vector_snapshots.py \
             commontrace/sqlite_vector_snapshots.py commontrace/postgres_vector_snapshots.py \

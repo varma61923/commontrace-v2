@@ -185,6 +185,10 @@ def freeze(root: str, incident_id: str, valid_time: str) -> dict[str, Any]:
                 "integrity": json.loads(json.dumps(asdict(cast(integrity.IntegrityReport, analysis.report)),
                                                    default=str)) if analysis.report else None},
         }
+        from commontrace import sycophancy_io
+
+        if sycophancy_io.enabled(root):
+            parts["personalization_audit.json"] = sycophancy_io.evidence(root)
         encoded = {name: _canonical(value) for name, value in parts.items()}
         if sum(map(len, encoded.values())) > MAX_SNAPSHOT_BYTES:
             raise ValueError("incident evidence exceeds 64 MiB; freeze a narrower store")
@@ -331,3 +335,10 @@ def verify_pack(root: str, bundle: dict[str, Any]) -> bool:
                         for name, digest in signed["record"]["files"].items()))
     except (ValueError, KeyError, TypeError):
         return False
+
+
+def mast_tags(root: str, incident_id: str, narrative: str) -> dict[str, Any]:
+    """Attach bounded, heuristic MAST tags to existing frozen incident evidence."""
+    from commontrace import writer_holdout
+
+    return writer_holdout.tag_mast(root, incident_id, narrative)

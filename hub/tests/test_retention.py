@@ -502,13 +502,18 @@ class TestSchemaSafety:
         from hub.alembic.versions.f9c1a2b3d4e5_transparency_log import _TABLES as _LOG_TABLES
         from hub.alembic.versions.fa02b3c4d5e6_incident_snapshots import _TABLES as _INCIDENT_TABLES
         from hub.alembic.versions.fc14d6e8a0b2_pooled_contributions import _TABLES as _POOL_TABLES
+        from hub.alembic.versions.fd25e7f9a1c3_capability_nonce_and_lineage_outbox import (
+            _TABLES as _CAPABILITY_TABLES,
+        )
+        from hub.alembic.versions.fe36f8a0b2d4_memory_policy_state import _TABLES as _POLICY_TABLES
+        from hub.alembic.versions.ff47a9b1c3e5_attested_worker_keys import _TABLES as _ATTESTED_KEY_TABLES
         from hub.models import Base
 
         protected = {
             *_SCOPED_TABLES, *_RETENTION_TABLES, *_WEBHOOK_TABLES,
             *_USER_TABLES, *_COLLAB_TABLES, *_ALERT_TABLES, *_SCIM_GROUP_TABLES, *_CONNECTOR_TABLES,
             *_MARKET_TABLES, *_MEMORY_TABLES, *_VECTOR_STREAM_TABLES, *_LOG_TABLES, *_INCIDENT_TABLES,
-            *_POOL_TABLES, "traces",
+            *_POOL_TABLES, *_CAPABILITY_TABLES, *_POLICY_TABLES, *_ATTESTED_KEY_TABLES, "traces",
         }
         exempt = {
             "api_keys",

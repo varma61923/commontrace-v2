@@ -88,7 +88,7 @@ def attest(root: str, record: dict[str, Any], receipt: dict[str, Any], *, inputs
 
 
 def _attest(root: str, record: dict[str, Any], receipt: dict[str, Any], *, inputs: list[str],
-            operation: str, model_id: str, prompt_hash: str) -> dict[str, Any]:
+            operation: str, model_id: str, prompt_hash: str, publish: bool = True) -> dict[str, Any]:
     from commontrace import memory_authority
 
     if not memory_authority.verify(root, receipt, record):
@@ -127,6 +127,16 @@ def _attest(root: str, record: dict[str, Any], receipt: dict[str, Any], *, input
         memory_authority._check_source_scopes(scopes, inherited_scopes)
     statement["confidentiality"] = sorted({fp.text(scope, "scope", 256) for scope in scopes}
                                           | {scope for labels in inherited_scopes for scope in labels}) or "public"
+    from commontrace import capabilities
+
+    if capabilities.CURRENT.get() is not None:
+        from commontrace import capability_io
+
+        namespace = {"lesson": "lessons", "runtime-record": "records"}.get(operation, "")
+        statement.update(capability_io.delegation(root, record, namespace=namespace,
+                                                 operational=operation == "journal"))
+        if publish and operation != "journal":
+            capability_io.stamp(root, record, namespace=namespace)
     statement["lineage_digest"] = fp.digest(statement)
     from commontrace import interference
 
@@ -134,8 +144,43 @@ def _attest(root: str, record: dict[str, Any], receipt: dict[str, Any], *, input
     if context is not None:
         statement["experiment"], statement["arm"] = context
         statement["lineage_digest"] = fp.digest({k: v for k, v in statement.items() if k != "lineage_digest"})
-    fp.append(root, JOURNAL, statement)
+    if publish:
+        fp.append(root, JOURNAL, statement)
     return statement
+
+
+def prepare(root: str, record: dict[str, Any], receipt: dict[str, Any], *,
+            inputs: list[str], operation: str) -> dict[str, Any]:
+    """Prepare signed metadata inside the canonical store transaction without publishing it."""
+    with _jsonl.locked(fp.filename(root, JOURNAL)):
+        statement = _attest(root, record, receipt, inputs=inputs, operation=operation,
+                            model_id="unspecified", prompt_hash="", publish=False)
+        return fp.sign(root, statement)
+
+
+def commit_prepared(root: str, signed: dict[str, Any]) -> None:
+    """Publish a committed source's metadata idempotently, including crash recovery."""
+    if not fp.verify(root, signed):
+        raise PermissionError("UniMem lineage outbox signature rejected")
+    statement = signed["record"]
+    if statement.get("kind") != "attestation" or statement.get("lineage_digest") != fp.digest(
+            {key: value for key, value in statement.items() if key != "lineage_digest"}):
+        raise ValueError("UniMem lineage outbox commitment rejected")
+    with _jsonl.locked(fp.filename(root, JOURNAL)):
+        delegation = statement.get("delegation")
+        if delegation:
+            from commontrace import nextwave_store as store
+
+            identity = fp.digest([statement["id"], statement["content_hash"], delegation["chain_digest"]])
+            if identity not in store.latest(root, "capability-writes"):
+                store.event(root, "capability-writes", identity, {
+                    "target": statement["id"], "content_hash": statement["content_hash"],
+                    "chain": delegation["chain"], "chain_ids": delegation["chain_ids"],
+                    "scopes": statement["confidentiality"] if isinstance(statement["confidentiality"], list) else [],
+                    "purpose": delegation["purpose"], "at": statement["created_at"],
+                })
+        if not any(row.get("lineage_digest") == statement["lineage_digest"] for row in fp.journal(root, JOURNAL)):
+            fp.append(root, JOURNAL, statement)
 
 
 def walk(root: str, identity: str, *, down: bool = False) -> list[str]:

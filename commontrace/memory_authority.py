@@ -12,16 +12,33 @@ import secrets
 from contextlib import contextmanager
 from contextvars import ContextVar
 
-from commontrace import _jsonl, origin, paths
+from commontrace import _jsonl, capabilities, origin, paths
 
 TRUST = {"external": 0, "tool": 1, "agent": 1, "user": 2, "operator": 3}
 WRITER: ContextVar[tuple[str, str]] = ContextVar("commontrace_memory_writer", default=("local", "operator"))
+
+
+def bound_writer() -> tuple[str, str]:
+    principal, authority = WRITER.get()
+    value = capabilities.CURRENT.get()
+    if value is None:
+        return principal, authority
+    from commontrace import capability_io
+
+    capability_io.current(value["root"])
+    rank = min(TRUST[authority], TRUST[value["authority"]], value["verified"]["caveats"]["ceiling"])
+    bounded = next(name for name in ("external", "agent", "user", "operator") if TRUST[name] == rank)
+    return value["principal"], bounded
 
 
 @contextmanager
 def writer(principal: str, authority: str):
     if authority not in TRUST or not isinstance(principal, str) or not principal:
         raise ValueError("invalid authenticated writer")
+    if capabilities.CURRENT.get() is not None:
+        actual_principal, actual_authority = bound_writer()
+        principal = actual_principal
+        authority = min((authority, actual_authority), key=lambda name: TRUST[name])
     token = WRITER.set((principal, authority))
     try:
         yield
@@ -140,9 +157,19 @@ def verify(root: str, receipt: dict, record: dict | None = None) -> bool:
 def bind(root: str, record: dict, *, sources: list[str] | None = None) -> dict:
     from commontrace import safety
 
+    if record_class(record) != "journal":
+        from commontrace import policy_io
+
+        policy_io.assert_write(root, record)
     if record.get("id"):
         safety.assert_mutable(root, [record["id"]])
-    principal_id, authority = WRITER.get()
+    principal_id, authority = bound_writer()
+    if capabilities.CURRENT.get() is not None and record_class(record) != "journal":
+        from commontrace import capability_io
+
+        effective = capability_io.before_write(root, record)
+        if effective:
+            principal_id, authority = effective
     algorithm = signing_config(root)["algorithm"]
     config = signing_config(root)
     key = _key(root, create=algorithm != "ed25519" or "public_key" not in config, algorithm=algorithm)
@@ -210,6 +237,11 @@ def permits(root: str, fact, *, action_class: str = "") -> bool:
 def permits_record(root: str, receipt: dict, record: dict, *, action_class: str = "") -> bool:
     from commontrace import interference
 
+    if capabilities.CURRENT.get() is not None:
+        from commontrace import capability_io
+
+        if not capability_io.permits(root, record):
+            return False
     if not interference.read_allowed(root, record.get("id", "")):
         return False
     if lineage_blocked(root, record.get("id", "")):
@@ -217,6 +249,17 @@ def permits_record(root: str, receipt: dict, record: dict, *, action_class: str 
     if not receipt and previously_bound(root, record.get("id", "")):
         return False  # Removing a receipt is not a migration back to unsigned legacy data.
     if receipt and not verify(root, receipt, record):
+        return False
+    from commontrace import policy_io, sycophancy_io
+
+    if not policy_io.permits(root, record):
+        return False
+    from commontrace import policy_relations
+
+    namespace = {"fact": "facts", "trace": "traces"}.get(record_class(record))
+    if namespace and record.get("id") not in policy_relations.authorized_ids(root, [record.get("id", "")], namespace):
+        return False
+    if not sycophancy_io.read_allowed(root, record, action_class):
         return False
     if not action_class:
         return True
@@ -245,7 +288,17 @@ def source_ids(record: dict) -> list[str]:
     return sorted(set([*record.get("source_traces", []), *record.get("data", {}).get("sources", [])]))
 
 
-def lineage_blocked(root: str, record_id: str) -> bool:
+def lineage_blocked(root: str, record_id: str, *, canonical_only: bool = False) -> bool:
+    if not canonical_only:
+        from commontrace import sentinel_io
+
+        if sentinel_io.blocked(root, record_id):
+            return True
+    if not canonical_only and os.path.isfile(os.path.join(paths.memory_dir(root), "capabilities.json")):
+        from commontrace import capability_io
+
+        if capability_io.quarantined(root, record_id):
+            return True
     filename = os.path.join(paths.memory_dir(root), "forgetting.jsonl")
     if not os.path.isfile(filename):
         return False
@@ -272,6 +325,12 @@ def lineage_blocked(root: str, record_id: str) -> bool:
 
 
 def record_forgetting(root: str, record_id: str, *, forgotten: bool):
+    if capabilities.CURRENT.get() is not None:
+        from commontrace import capability_io
+
+        delegated = capability_io.current(root)
+        if delegated["operation"] != ("forget" if forgotten else "write"):
+            raise PermissionError("UniMem capability cannot change canonical forgetting authority")
     if forgotten:
         from commontrace import incident, safety
 

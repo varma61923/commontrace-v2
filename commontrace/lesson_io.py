@@ -7,7 +7,7 @@ import json
 import os
 import re
 
-from commontrace import frontmatter, paths, revision
+from commontrace import change_stream, frontmatter, paths, revision
 
 SLUG_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
@@ -56,6 +56,23 @@ def current_revision(path: str) -> str | None:
     return revision.revision_of(fm, body)
 
 
+def prepare_delegated(root: str, path: str, fm: dict, body: str) -> dict:
+    from commontrace import capabilities
+
+    if capabilities.CURRENT.get() is None:
+        return fm
+    from commontrace import capability_io, memory_authority
+
+    labels = capability_io.inherit_labels(root, fm.get("scopes", []))
+    content = {"id": canonical_slug(os.path.basename(path)), "text": body, "scopes": labels}
+    effective = capability_io.before_write(root, content, namespace="lessons")
+    result = {**fm, "scopes": labels}
+    if effective and memory_authority.TRUST[effective[1]] < memory_authority.TRUST["user"]:
+        result = {**result, "status": "review"}
+    return result
+
+
+@change_stream.lesson_writes
 def write_lesson(
     path: str,
     fm: dict,
@@ -66,6 +83,10 @@ def write_lesson(
     reason: str = "",
 ) -> str:
     """Write one lesson, journaling the change if the content moved."""
+    from commontrace import policy_io
+
+    policy_io.assert_write(root, {"id": canonical_slug(os.path.basename(path)),
+                                "memory_type": "lesson", "scopes": fm.get("scopes", [])})
     before_fm: dict | None = None
     before_body: str | None = None
     before: str | None = None

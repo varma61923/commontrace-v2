@@ -60,6 +60,29 @@ def trial(root: str, offer: dict[str, Any], runner: SealedRunner, occasion: str,
             "content_exposed": False, "listing": body["id"]}
 
 
+def attested_trial(root: str, offer: dict[str, Any], runner: SealedRunner, occasion: str, *,
+                   verify_offer: Callable[[dict[str, Any]], bool],
+                   verify_attestation: Callable[[dict[str, Any]], bool], tenant: str, measurement: str,
+                   worker_key: str, result_quote: Callable[[dict[str, Any]], dict[str, Any]],
+                   verifier: Any, allow_simulated: bool = False) -> dict[str, Any]:
+    """Ordinary sealed trial plus a fresh quote bound to its exact result bytes.
+
+    The deployment-controlled worker supplies result_quote using its actual
+    hardware report-data API. No Python wrapper can create hardware evidence.
+    Failure withholds the attested result; the real canonical outcome remains.
+    """
+    from commontrace import attested_keys
+
+    attested_keys.admitted(root, measurement)
+    result = trial(root, offer, runner, occasion, verify_offer=verify_offer,
+                   verify_attestation=verify_attestation)
+    challenge = attested_keys.issue(root, tenant, measurement, worker_key,
+        operation="sealed-trial", payload_digest=fp.digest(result))
+    evidence = result_quote(challenge)
+    appraisal = attested_keys.accept_result(root, challenge, evidence, verifier, allow_simulated=allow_simulated)
+    return {"result": result, "result_digest": fp.digest(result), **appraisal}
+
+
 def royalties(offers: Sequence[dict[str, Any]], values: dict[str, float], budget_cents: int, *,
               duplicate_threshold: float = .8) -> dict[str, Any]:
     fp.count(len(offers), 0, 256)

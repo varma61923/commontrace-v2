@@ -10,6 +10,9 @@ from commontrace import transparency_log as log
 
 def publish_update(root: str, identities: list[str], *, previous_size: int = 0,
                    context: Sequence[str] = ()) -> dict[str, Any]:
+    from commontrace import sentinel_io
+
+    sentinel_io.assert_generalize(root, identities, context=context)
     fp.count(len(identities), 0, 256)
     hazards = safety.protected(root)
     positive = evidence.graduated(root)
@@ -23,6 +26,10 @@ def publish_update(root: str, identities: list[str], *, previous_size: int = 0,
             raise PermissionError("edge cache accepts only governed hazards or proven positive facts")
         if identity in admitted:
             text, revision = admitted[identity].statement, admitted[identity].revision
+            from commontrace import memory_authority, policy_io
+
+            if not policy_io.permits(root, memory_authority.fact_record(admitted[identity]), action="export"):
+                raise PermissionError("UniMem active finite policy denies this edge export")
         else:
             from commontrace import frontmatter, lesson_admission, lesson_io, memory_authority
 
@@ -30,6 +37,10 @@ def publish_update(root: str, identities: list[str], *, previous_size: int = 0,
             if path is None:
                 raise PermissionError("edge memory is not governed or visible")
             fm, text = frontmatter.read(path)
+            from commontrace import policy_io
+
+            if not policy_io.permits(root, {"memory_type": "lesson", "scopes": fm.get("scopes", [])}, action="export"):
+                raise PermissionError("UniMem active finite policy denies this edge lesson export")
             if (not fm.get("approval_receipt") or not lesson_admission.eligible(root, path, fm, text)
                     or memory_authority.lineage_blocked(root, identity)
                     or not set(fm.get("scopes", [])) <= set(context)):

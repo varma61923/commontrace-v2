@@ -3,14 +3,15 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from commontrace import episodes
 from commontrace import frontier_protocol as fp
 
 
 def ingest_records(root: str, records: Iterable[dict[str, Any]], *, format: str,
-                   environment: str, robot: str) -> list[dict[str, Any]]:
+                   environment: str, robot: str,
+                   on_record: Callable[[dict[str, Any]], Any] | None = None) -> list[dict[str, Any]]:
     if format not in ("mcap", "lerobot") or environment not in ("sim", "real"):
         raise ValueError("declare MCAP/LeRobot format and sim/real environment")
     fp.text(robot, "robot", 64)
@@ -22,6 +23,8 @@ def ingest_records(root: str, records: Iterable[dict[str, Any]], *, format: str,
         total += size
         if size > 8192 or total > 8 * fp.MAX_BYTES:
             raise ValueError("robot metadata ingest exceeds bounded record or batch size")
+        if on_record is not None:
+            on_record(dict(row))
         occasion = fp.text(str(row.get("occasion_id", row.get("episode_index", ""))))
         summary = fp.text(row.get("summary", "Robot episode " + occasion), "episode summary", 4096)
         success = row.get("success", row.get("next.success"))
@@ -54,7 +57,8 @@ def lerobot_jsonl(root: str, path: str, *, environment: str, robot: str) -> list
 
 
 def mcap_file(root: str, path: str, *, environment: str, robot: str,
-              topics: tuple[str, ...] = ("/commontrace/episode",)) -> list[dict[str, Any]]:
+              topics: tuple[str, ...] = ("/commontrace/episode",),
+              on_record: Callable[[dict[str, Any]], Any] | None = None) -> list[dict[str, Any]]:
     try:
         from mcap.records import Channel, Chunk, Message
         from mcap.stream_reader import StreamReader, breakup_chunk
@@ -109,4 +113,5 @@ def mcap_file(root: str, path: str, *, environment: str, robot: str,
                         if channel.message_encoding != "json" or len(item.data) > 8192:
                             raise ValueError("MCAP episode channels require bounded JSON metadata")
                         yield json.loads(item.data)
-        return ingest_records(root, records(), format="mcap", environment=environment, robot=robot)
+        return ingest_records(root, records(), format="mcap", environment=environment, robot=robot,
+                              on_record=on_record)

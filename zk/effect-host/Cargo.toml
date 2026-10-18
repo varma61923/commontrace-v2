@@ -1,0 +1,17 @@
+[package]
+name = "unimem-effect-host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+prove = ["risc0-zkvm/prove", "dep:unimem-effect-methods"]
+
+[dependencies]
+unimem-effect-core = { path = "../effect-core" }
+unimem-effect-methods = { path = "../methods", optional = true }
+risc0-zkvm = { version = "=3.0.6", default-features = false, features = ["std", "disable-dev-mode"] }
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true

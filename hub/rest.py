@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import binascii
 import json
 import logging
 import math
@@ -71,9 +72,14 @@ def add_rest_routes(
     rate_limiter,
     trusted_proxy_hops: int = 0,
     signup_enabled: bool = False,
+    oblivious_replica_resolver=None,
+    oblivious_clearance_resolver=None,
 ) -> None:
     """Register the `/api/v1/*` routes. Call only when the REST API is enabled."""
 
+    from hub import delegation
+
+    delegation.install(app, config)
     auth_limiter = make_named_limiter(
         config, config.auth_attempts_per_minute, config.auth_attempts_burst, "rest_auth"
     )
@@ -103,11 +109,15 @@ def add_rest_routes(
     )
 
     async def _admit(request: Request, authenticated):
+        async def delegated():
+            denied = await delegation.admit_request(request, authenticated, config, session_factory)
+            return (None, denied) if denied is not None else (authenticated, None)
+
         if request.method == "DELETE":
-            return authenticated, None
+            return await delegated()
         allowed, retry_after = await org_limiter.check(authenticated.org_id)
         if allowed:
-            return authenticated, None
+            return await delegated()
         return None, JSONResponse(
             {"error": "rate_limited", "detail": "too many requests"},
             status_code=429,
@@ -318,6 +328,51 @@ def add_rest_routes(
             return denied
         return Response(status_code=204)
 
+    async def oblivious_pir(request: Request) -> Response:
+        """One replica of the two-server XOR-PIR protocol; clearance is key-derived."""
+        import base64
+
+        if oblivious_replica_resolver is None or oblivious_clearance_resolver is None:
+            return _json_error(503, "unavailable", "oblivious recall is not configured on this Hub replica")
+        authenticated, denied = await _authenticate(request)
+        if denied is not None:
+            return denied
+        denied = _require_scope(authenticated, scopes.SCOPE_READ)
+        if denied is not None:
+            return denied
+        try:
+            from commontrace import oblivious
+
+            ceiling = oblivious_clearance_resolver(authenticated)
+            replica = oblivious_replica_resolver(authenticated.org_id, ceiling)
+            if (not callable(getattr(replica, "handle", None))
+                    or not callable(getattr(replica, "handle_many", None))):
+                raise TypeError("oblivious resolver must return a two-server PIR endpoint adapter")
+            payload = await _read_json(request)
+            if payload is None:
+                raise ValueError("body must be a JSON object")
+            cluster = _text(payload.get("cluster"), 96)
+            if not cluster:
+                raise ValueError("cluster is required")
+            encoded_many = payload.get("shares")
+            encoded = payload.get("share")
+            if encoded_many is not None:
+                if (not isinstance(encoded_many, list)
+                        or len(encoded_many) > oblivious.MAX_BLOCKS_PER_CLUSTER):
+                    raise ValueError("PIR shares must be a bounded array")
+                shares = [base64.b64decode(_text(item, 4096), validate=True) for item in encoded_many]
+                result = replica.handle_many(cluster, shares)
+            else:
+                share = None if encoded is None else base64.b64decode(_text(encoded, 4096), validate=True)
+                result = replica.handle(cluster, share)
+            if isinstance(result, bytes):
+                return JSONResponse({"answer": base64.b64encode(result).decode("ascii")})
+            if isinstance(result, list):
+                return JSONResponse({"answers": [base64.b64encode(item).decode("ascii") for item in result]})
+            return JSONResponse(result)
+        except (ValueError, KeyError, TypeError, binascii.Error) as exc:
+            return _json_error(400, "bad_request", str(exc))
+
     from hub.memory_embedding import ProjectionFactory
     from hub.memory_records import add_memory_routes
 
@@ -338,8 +393,17 @@ def add_rest_routes(
 
     pooled.add_routes(app, session_factory, authenticate=_authenticate,
                       require_scope=_require_scope, config=config)
+    from hub import policies
+
+    policies.add_routes(app, session_factory, authenticate=_authenticate,
+                        require_scope=_require_scope, config=config)
+    from hub import attestation
+
+    attestation.add_routes(app, session_factory, authenticate=_authenticate,
+                          require_scope=_require_scope, config=config)
     app.add_route(f"{API_PREFIX}/traces", contribute, methods=["POST"])
     app.add_route(f"{API_PREFIX}/traces/search", search, methods=["POST"])
+    app.add_route(f"{API_PREFIX}/oblivious/pir", oblivious_pir, methods=["POST"])
     for beacon in ("install", "ping", "triggers"):
         app.add_route(f"{API_PREFIX}/telemetry/{beacon}", telemetry, methods=["POST"])
     if signup_enabled:

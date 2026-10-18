@@ -187,7 +187,8 @@ class HostedProjection:
             legacy = await self.index.delete(keys)
             return versions + legacy
 
-    async def candidates(self, query: str, *, top_k: int = 100) -> tuple[int, list[VectorHit]]:
+    async def candidates(self, query: str, *, top_k: int = 100,
+                         allowed_ids: set[str] | None = None) -> tuple[int, list[VectorHit]]:
         _limit(top_k)
         lease = None
         try:
@@ -204,7 +205,10 @@ class HostedProjection:
                 # fall back to legacy upserts for a missing requested generation.
                 lease = await self.index.snapshots.pin(generation, lease_seconds=300)
             vector = _vector(await self.embedder.encode_query(query), self.identity.dimension)
-            hits = await self.index.snapshots.search(lease, vector, top_k=top_k)
+            if allowed_ids is None:
+                hits = await self.index.snapshots.search(lease, vector, top_k=top_k)
+            else:
+                hits = await self.index.snapshots.search(lease, vector, top_k=top_k, allowed_ids=allowed_ids)
             return cursor, hits
         finally:
             if lease is not None:

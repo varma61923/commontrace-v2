@@ -46,6 +46,27 @@ def test_simulated_robot_loop_and_offline_store_forward(tmp_path):
         restarted.enqueue({"occasion_id": "offline", "succeeded": False, "agent_id": "r7"})
 
 
+def test_robot_bridge_fails_closed_without_memory_linked_shield_verdict():
+    class Transport:
+        def post(self, path, body):
+            return {"deliver": [{"id": "clearance-rule", "text": "keep clearance"}]}
+
+    robot = bridge.RobotBridge(Transport(), embodiment="arm", site="site", skill="pick", robot="r9")
+    robot.start("episode-9", "pick")
+    held = robot.authorize_action("episode-9", {"grasp": "close"}, spec_id="clearance", trace=[], monitor=None)
+    assert held["allowed"] is False
+    seen = {}
+
+    def monitor(body):
+        seen.update(body)
+        return {"verdict": "safe", "action": "continue", "lineage_id": "verdict-1"}
+
+    allowed = robot.authorize_action("episode-9", {"grasp": "close"}, spec_id="clearance",
+                                     trace=[{"t": 0, "distance": 1}], monitor=monitor)
+    assert allowed["allowed"] and seen["source_memory_ids"] == ["clearance-rule"]
+    assert allowed["lineage_id"] == "verdict-1"
+
+
 def test_ros_node_mock_drives_gateway_callbacks(tmp_path):
     root = str(tmp_path)
     holdout_io.configure(root, rate=.5, salt="ros")
@@ -200,3 +221,48 @@ def test_bridge_accepts_realistic_labels_and_contains_bad_ros_messages(tmp_path)
     node.callbacks["/task/start"](Message("{not json"))
     node.callbacks["/task/end"](Message(json.dumps({"occasion_id": "x", "succeeded": "yes"})))
     assert len(errors) == 2
+
+
+def test_ros_stl_service_blocks_violating_action_and_contains_malformed_input(tmp_path):
+    from types import SimpleNamespace
+
+    from commontrace.robotics import shield
+
+    root = str(tmp_path)
+    shield.register(root, "clearance", memory_id="stop-memory", embodiment="arm",
+                    description="maintain clearance", formula={
+                        "op": "always", "from": 0, "to": 1,
+                        "arg": {"op": "predicate", "signal": "distance", "cmp": ">=", "value": 0.5},
+                    })
+    errors, services = [], {}
+
+    class Logger:
+        def error(self, message):
+            errors.append(message)
+
+    class Node:
+        def __init__(self, name):
+            pass
+        def create_publisher(self, message_type, topic, qos):
+            return None
+        def create_subscription(self, message_type, topic, callback, qos):
+            pass
+        def create_service(self, service_type, topic, callback):
+            services[topic] = callback
+        def get_logger(self):
+            return Logger()
+
+    class Message:
+        def __init__(self, data=""):
+            self.data = data
+
+    robot = bridge.RobotBridge(LocalTransport(root), embodiment="arm", site="site", skill="grasp", robot="r7")
+    bridge.create_node(robot, node_factory=Node, message_type=Message, on_shield=bridge.shield_service_handler(root),
+                       shield_service_type=object)
+    request = SimpleNamespace(request_json=json.dumps({"spec_id": "clearance", "action": {"grasp": True},
+        "source_memory_ids": ["stop-memory"], "trace": [{"t": 0, "distance": 0.8}, {"t": 1, "distance": 0.2}]}))
+    response = services[f"/commontrace/robot_{fp.digest('r7')[:16]}/shield"](request, SimpleNamespace())
+    assert not response.allowed and json.loads(response.verdict_json)["verdict"] == "violated"
+    malformed = services[f"/commontrace/robot_{fp.digest('r7')[:16]}/shield"](
+        SimpleNamespace(request_json="not-json"), SimpleNamespace())
+    assert not malformed.allowed and malformed.error == "JSONDecodeError" and errors

@@ -162,3 +162,15 @@ def simulation_weight(root: str, condition: str, *, as_of: str | None = None) ->
     weight = sum(1 - abs(r["simulated"] - r["observed"]) for r in rows) / (n + 5)
     return {"condition": condition, "trust_weight": weight, "paired_n": n, "as_of": cutoff,
             "kind": "empirical discrepancy shrinkage heuristic; environments remain separate"}
+
+
+def intervention_advantage(succeeded: bool, baseline: float, *, outcome_digest: str) -> dict[str, Any]:
+    """Label a correction using an authoritative outcome and a frozen prediction.
+
+    A residual is descriptive correction quality, not a causal treatment effect.
+    """
+    if type(succeeded) is not bool:
+        raise ValueError("intervention outcome must be a resolved canonical boolean")
+    return {"outcome": succeeded, "baseline": fp.number(baseline, 0, 1),
+            "advantage": float(succeeded)-baseline, "outcome_digest": fp.text(outcome_digest),
+            "kind": "pre-outcome prediction residual; not a causal operator effect"}

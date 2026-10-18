@@ -255,6 +255,18 @@ def collect_store(root: str, kinds: list[str] | tuple[str, ...] | None = None,
                 out.append(rec)
     if KIND_BLOCK in want:
         out.extend(_block_records(root))
+    from commontrace import policy_io
+
+    def permitted(row):
+        data = row["data"]
+        kind = row["kind"]
+        metadata = data.get("frontmatter", data)
+        memory_class = ("lesson" if kind == KIND_LESSON else data.get("memory_type", "general")
+                        if kind == KIND_FACT else kind)
+        return policy_io.permits(root, {"memory_type": memory_class,
+                                       "scopes": metadata.get("scopes", [])}, action="export")
+
+    out = [row for row in out if permitted(row)]
     return out
 
 

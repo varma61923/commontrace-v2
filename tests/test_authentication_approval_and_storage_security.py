@@ -207,6 +207,7 @@ class TestHubPepperRotationAndTenantIsolation:
             from sqlalchemy.sql.dml import Update
 
             session = AsyncMock()
+            session.get.return_value = None  # No managed memory policy is enrolled in this fixture.
             org_id = str(uuid.uuid4())
             trace_id = str(uuid.uuid4())
 
@@ -253,6 +254,7 @@ class TestHubPepperRotationAndTenantIsolation:
             from sqlalchemy.sql.dml import Update
 
             session = AsyncMock()
+            session.get.return_value = None  # No managed memory policy is enrolled in this fixture.
             org_id = str(uuid.uuid4())
             trace_id = str(uuid.uuid4())
 

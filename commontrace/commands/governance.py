@@ -952,6 +952,181 @@ def fleet_add_parser(subparsers: argparse._SubParsersAction) -> None:
     mg.add_argument("--json", action="store_true")
     mg.set_defaults(func=fleet_run_merge)
 
+    for operation in ("interventions", "operators", "ask-policy"):
+        child = sub.add_parser(operation, help="Governed human corrections and bounded asking trials.")
+        child.add_argument("request", nargs="?", default="{}")
+        child.add_argument("--dest")
+        child.set_defaults(func=fleet_run_human_help)
+
+    world = sub.add_parser("worldmodel", help="Register, trust and sim-gate a robot world model.")
+    actions = world.add_subparsers(dest="worldmodel_action", required=True)
+    for action in ("register", "trust", "gate"):
+        child = actions.add_parser(action)
+        child.add_argument("request", nargs="?", default="{}")
+        child.add_argument("--dest")
+        child.set_defaults(func=fleet_run_worldmodel)
+
+    signatures = sub.add_parser("signatures", help="Build, check and query force/proprioception profiles.")
+    signature_actions = signatures.add_subparsers(dest="signature_action", required=True)
+    for action in ("build", "check", "drift"):
+        child = signature_actions.add_parser(action)
+        child.add_argument("request", nargs="?", default="{}")
+        child.add_argument("--dest")
+        child.set_defaults(func=fleet_run_signatures)
+
+    site = sub.add_parser("site", help="Ingest vendor-neutral robot site state and signed peer mesh operations.")
+    site_actions = site.add_subparsers(dest="site_action", required=True)
+    for action in ("ingest", "merge", "rules", "mesh"):
+        child = site_actions.add_parser(action)
+        child.add_argument("request", nargs="?", default="{}")
+        child.add_argument("--dest")
+        child.set_defaults(func=fleet_run_site)
+
+    safety = sub.add_parser("safetycase", help="Build a living safety evidence graph and export scenarios.")
+    safety_actions = safety.add_subparsers(dest="safetycase_action", required=True)
+    for action in ("build", "claim", "argument", "evidence", "stale", "coverage", "export"):
+        child = safety_actions.add_parser(action)
+        child.add_argument("request", nargs="?", default="{}")
+        child.add_argument("--dest")
+        child.set_defaults(func=fleet_run_safetycase)
+
+    shield = sub.add_parser("shield", help="Evaluate bounded STL monitors against a robot telemetry trace.")
+    shield_actions = shield.add_subparsers(dest="shield_action", required=True)
+    for action in ("spec", "check"):
+        child = shield_actions.add_parser(action)
+        child.add_argument("request", nargs="?", default="{}")
+        child.add_argument("--dest")
+        child.set_defaults(func=fleet_run_shield)
+
+
+def fleet_run_worldmodel(args: argparse.Namespace) -> int:
+    import json
+
+    from commontrace import paths, world_model_trust
+
+    body = json.loads(args.request)
+    if not isinstance(body, dict):
+        raise ValueError("world-model request must be an object")
+    operations = {"register": world_model_trust.register, "trust": world_model_trust.trust,
+                  "gate": world_model_trust.gate}
+    try:
+        result = operations[args.worldmodel_action](paths.resolve_root(args.dest), **body)
+    except TypeError as exc:
+        raise ValueError("world-model request fields do not match the operation") from exc
+    print(json.dumps(result, indent=2, allow_nan=False))
+    return 0
+
+
+def fleet_run_signatures(args: argparse.Namespace) -> int:
+    import json
+
+    from commontrace import paths
+    from commontrace.robotics import signatures
+
+    body = json.loads(args.request)
+    if not isinstance(body, dict):
+        raise ValueError("signature request must be a JSON object")
+    operations = {"build": signatures.build, "check": signatures.check, "drift": signatures.drift}
+    try:
+        result = operations[args.signature_action](paths.resolve_root(args.dest), **body)
+    except TypeError as exc:
+        raise ValueError("signature request fields do not match the operation") from exc
+    print(json.dumps(result, indent=2, allow_nan=False))
+    return 0
+
+
+def fleet_run_site(args: argparse.Namespace) -> int:
+    import json
+
+    from commontrace import mesh_crdt, paths
+    from commontrace.robotics import site_memory
+
+    body = json.loads(args.request)
+    if not isinstance(body, dict):
+        raise ValueError("site-memory request must be a JSON object")
+    root = paths.resolve_root(args.dest)
+    if args.site_action == "ingest":
+        result = site_memory.ingest_vda_state(root, **body)
+    elif args.site_action == "merge":
+        result = {"scene": site_memory.scene_graph(root, site=body["site"], context=body.get("context", [])),
+                  "mesh": mesh_crdt.merge(root)}
+    elif args.site_action == "rules":
+        result = site_memory.rules(root, **body)
+        if body.get("record_suggestion", False):
+            result = {"rules": result, "suggestion": site_memory.suggest(root, site=body["site"], ruleset=result)}
+    else:
+        result = mesh_crdt.apply(root, body["operations"])
+        result["view"] = mesh_crdt.merge(root)
+    print(json.dumps(result, indent=2, allow_nan=False))
+    return 0
+
+
+def fleet_run_safetycase(args: argparse.Namespace) -> int:
+    import json
+
+    from commontrace import paths, safety_case
+
+    body = json.loads(args.request)
+    if not isinstance(body, dict):
+        raise ValueError("safety-case request must be a JSON object")
+    root = paths.resolve_root(args.dest)
+    operations = {
+        "build": safety_case.build, "claim": safety_case.add_claim, "argument": safety_case.add_argument,
+        "evidence": safety_case.add_evidence, "stale": safety_case.mark_changed,
+        "coverage": safety_case.coverage, "export": safety_case.export_scenario,
+    }
+    try:
+        if args.safetycase_action == "export":
+            result = operations[args.safetycase_action](root, body["scenario_id"])
+        else:
+            result = operations[args.safetycase_action](root, **body)
+    except TypeError as exc:
+        raise ValueError("safety-case request fields do not match the operation") from exc
+    print(json.dumps(result, indent=2, allow_nan=False))
+    return 0
+
+
+def fleet_run_shield(args: argparse.Namespace) -> int:
+    import json
+
+    from commontrace import paths
+    from commontrace.robotics import shield
+
+    body = json.loads(args.request)
+    if not isinstance(body, dict):
+        raise ValueError("shield request must be a JSON object")
+    operation = shield.register if args.shield_action == "spec" else shield.check
+    try:
+        result = operation(paths.resolve_root(args.dest), **body)
+    except TypeError as exc:
+        raise ValueError("shield request fields do not match the operation") from exc
+    print(json.dumps(result, indent=2, allow_nan=False))
+    return 0
+
+
+def fleet_run_human_help(args: argparse.Namespace) -> int:
+    import json
+
+    from commontrace import human_help, paths
+    from commontrace.commands.nextwave import request
+
+    body = request(args.request)
+    action = body.pop("action", "report")
+    operations = {
+        "interventions": {"report": human_help.interventions, "record": human_help.intervention},
+        "operators": {"register": human_help.register_operator, "report": human_help.operator_quality,
+                      "appeal": human_help.appeal, "review": human_help.review},
+        "ask-policy": {"configure": human_help.configure_asking, "decide": human_help.should_ask,
+                       "report": human_help.asking_report, "cost": human_help.record_asking_cost}}
+    if args.fleet_cmd == "ask-policy" and action == "plan":
+        result = human_help.plan(**body)
+    else:
+        if action not in operations[args.fleet_cmd]:
+            raise ValueError("UniMem unsupported human-help action")
+        result = operations[args.fleet_cmd][action](paths.resolve_root(args.dest), **body)
+    print(json.dumps(result, indent=2, allow_nan=False))
+    return 0
+
 
 def _value_error_guard(fn):
     import sys

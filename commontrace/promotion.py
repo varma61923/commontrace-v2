@@ -77,7 +77,8 @@ def evaluate(rows: Sequence[dict[str, Any]], candidate: dict[str, float], incumb
 def register(root: str, name: str, *, candidate: dict[str, float], incumbent: dict[str, float],
              allowed_changes: list[str], monitoring: str, rollback: str, margin: float = 0,
              alpha: float = .05, minimum_support: int = 10, propensity_floor: float = .05,
-             training_size: int = 100, artifact_hash: str = "") -> dict[str, Any]:
+             training_size: int = 100, artifact_hash: str = "", trial_unit: str = "",
+             trial_rate: float | None = None) -> dict[str, Any]:
     fp.text(name)
     fp.count(len(allowed_changes), 1, 128)
     for change in allowed_changes:
@@ -104,6 +105,13 @@ def register(root: str, name: str, *, candidate: dict[str, float], incumbent: di
             "salt": config.salt, "trial_rate": config.rate, "trial_lesson": "promotion-" + fp.digest(name)[:24]}
     if artifact_hash:
         body["artifact_hash"] = artifact_hash
+    if trial_unit:
+        from commontrace import unit_trials
+
+        body["trial_lesson"] = unit_trials.key(trial_unit)
+        body["trial_rate"] = fp.number(config.rate if trial_rate is None else trial_rate, .05, .95)
+    elif trial_rate is not None:
+        raise ValueError("UniMem typed trial rate requires a typed unit")
     return fp.append(root, "change-plans.jsonl", {**body, "design_hash": fp.digest(body)})
 
 
@@ -144,6 +152,11 @@ def certify(root: str, plan: str, rows: Sequence[dict[str, Any]] | None = None, 
         raise ValueError("an immutable preregistered change plan is required")
     design = designs[0]
     canonical = logged_rows(root, plan)
+    if design["trial_lesson"].startswith(("update:", "delta:", "skill:", "bundle:")) or any(
+            row.get("artifact") in design["allowed_changes"] for row in fp.journal(root, "compiled-trials.jsonl")):
+        from commontrace import sentinel_io
+
+        sentinel_io.require_update(root, design.get("artifact_hash", ""))
     if rows is not None and list(rows) != canonical:
         raise ValueError("certificate data must equal canonical logged trial rows in assignment order")
     rows = canonical
@@ -197,6 +210,14 @@ def verify(root: str, certificate: dict[str, Any], *, policy_hash: str = "", art
     try:
         signed = certificate["certificate"]
         body = signed["record"]
+        from commontrace import sentinel_io
+
+        digest = body.get("artifact_hash", "")
+        if sentinel_io.enabled(root):
+            from commontrace import nextwave_store
+
+            if "update:"+digest in nextwave_store.latest(root, sentinel_io.UPDATES):
+                sentinel_io.require_update(root, digest)
         revoked = {r["certificate_digest"] for r in fp.journal(root, "promotion-rollbacks.jsonl")}
         return (fp.verify(root, signed) and log.verify(root, certificate["anchor"])
                 and certificate["anchor"]["statement"]["record"]["statement"]["certificate_digest"] == fp.digest(signed)
@@ -204,7 +225,7 @@ def verify(root: str, certificate: dict[str, Any], *, policy_hash: str = "", art
                 and (not policy_hash or body["policy_hash"] == policy_hash)
                 and (not artifact_hash or body.get("artifact_hash") == artifact_hash)
                 and fp.digest(signed) not in revoked)
-    except (ValueError, KeyError, TypeError):
+    except (ValueError, KeyError, TypeError, PermissionError):
         return False
 
 
