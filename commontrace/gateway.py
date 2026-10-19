@@ -205,30 +205,58 @@ def config_path(root: str) -> str:
     return os.path.join(paths.memory_dir(root), CONFIG_NAME)
 
 
+def _validate_config_values(env, prefixes) -> None:
+    if env is not None and (not isinstance(env, str)
+                            or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,31}", env)):
+        raise ValueError("gateway configuration contains an invalid environment slug")
+    if (not isinstance(prefixes, (list, tuple))
+            or any(not isinstance(prefix, str) or not prefix or len(prefix) > 512 or _CONTROL.search(prefix)
+                   for prefix in prefixes)):
+        raise ValueError("gateway configuration contains invalid protected prefixes")
+
+
 def load_config(root: str) -> GatewayConfig:
+    path = config_path(root)
+    if not os.path.lexists(path):
+        return GatewayConfig()
+    paths.enforce_boundary(root, path)
+    if os.path.islink(path):
+        raise ValueError("gateway configuration must not be a symlink")
     try:
-        with open(config_path(root), encoding="utf-8") as fh:
-            raw = json.load(fh)
-    except (OSError, ValueError):
-        return GatewayConfig()
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(fd, "rb") as fh:
+            encoded = fh.read(MAX_BODY_BYTES + 1)
+    except OSError as exc:
+        raise ValueError("gateway configuration cannot be read safely") from exc
+    if len(encoded) > MAX_BODY_BYTES:
+        raise ValueError("gateway configuration exceeds 1 MiB")
+    from commontrace import frontier_protocol as fp
+
+    raw = fp.loads(encoded)
     if not isinstance(raw, dict):
-        return GatewayConfig()
+        raise ValueError("gateway configuration must be an object")
     env = raw.get("env")
     prefixes = raw.get("protected_prefixes")
+    if prefixes is None:
+        prefixes = ()
+    _validate_config_values(env, prefixes)
     return GatewayConfig(
         env=env if isinstance(env, str) and env else None,
-        protected_prefixes=tuple(p for p in prefixes if isinstance(p, str) and p)
-        if isinstance(prefixes, list) else (),
+        protected_prefixes=tuple(dict.fromkeys(prefixes or ())),
     )
 
 
 def save_config(root: str, config: GatewayConfig) -> None:
-    os.makedirs(paths.memory_dir(root), exist_ok=True)
-    tmp = config_path(root) + ".tmp"
-    with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
-        json.dump({"env": config.env, "protected_prefixes": list(config.protected_prefixes)}, fh, indent=2)
-        fh.write("\n")
-    os.replace(tmp, config_path(root))
+    from commontrace import _jsonl
+
+    if not isinstance(config, GatewayConfig):
+        raise ValueError("gateway configuration has an invalid type")
+    _validate_config_values(config.env, config.protected_prefixes)
+    path = paths.safe_prepare_output_path(config_path(root))
+    _jsonl.write_json(path, {
+        "env": config.env,
+        "protected_prefixes": list(config.protected_prefixes),
+    })
 
 
 def merge_config(root: str, *, env: str | None, protect: list[str]) -> GatewayConfig:
@@ -241,6 +269,7 @@ def merge_config(root: str, *, env: str | None, protect: list[str]) -> GatewayCo
                 f"this store measures {current.env!r}; refusing to start it as {env!r}. "
                 "Use a separate store (--dest) for each environment so they are never pooled.")
     prefixes = tuple(dict.fromkeys((*current.protected_prefixes, *protect)))
+    _validate_config_values(env or current.env, prefixes)
     merged = GatewayConfig(env=env or current.env, protected_prefixes=prefixes)
     if merged != current:
         save_config(root, merged)

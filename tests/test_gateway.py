@@ -392,6 +392,34 @@ def test_an_environment_once_set_cannot_be_changed_and_prefixes_accumulate(root)
         gateway.merge_config(str(root) + "2", env="Not A Slug", protect=[])
 
 
+def test_gateway_config_rejects_malformed_and_oversized_files(root):
+    path = gateway.config_path(root)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    for content in (b'{"env":"sim","env":"real"}', b"{" + b" " * (gateway.MAX_BODY_BYTES + 1)):
+        with open(path, "wb") as config:
+            config.write(content)
+        with pytest.raises(ValueError):
+            gateway.load_config(root)
+    with pytest.raises(ValueError, match="protected prefixes"):
+        gateway.save_config(root, gateway.GatewayConfig(protected_prefixes=("",)))
+
+
+def test_gateway_config_refuses_symlink_reads_and_safe_replaces_symlink_writes(root, tmp_path):
+    path = gateway.config_path(root)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    protected_file = tmp_path / "outside.json"
+    protected_file.write_text('{"untouched":true}', encoding="utf-8")
+    os.symlink(protected_file, path)
+    with pytest.raises(ValueError, match="symlink|path traversal"):
+        gateway.load_config(root)
+
+    expected = gateway.GatewayConfig(env="sim", protected_prefixes=("safety/",))
+    gateway.save_config(root, expected)
+    assert protected_file.read_text(encoding="utf-8") == '{"untouched":true}'
+    assert not os.path.islink(path)
+    assert gateway.load_config(root) == expected
+
+
 def test_the_token_is_created_private_and_stable(root):
     first = gateway.load_or_create_token(root)
     assert len(first) >= 32 and gateway.load_or_create_token(root) == first
