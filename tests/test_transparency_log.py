@@ -125,6 +125,7 @@ def test_optional_ed25519(tmp_path, monkeypatch, legacy_public_bytes):
 def test_hub_transparency_signer_supports_legacy_crypto(monkeypatch):
     pytest.importorskip("cryptography.hazmat.primitives.asymmetric.ed25519")
     pytest.importorskip("sqlalchemy")
+    pytest.importorskip("hub.transparency")
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
     from hub.transparency import signer

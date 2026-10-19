@@ -322,7 +322,9 @@ def test_agent_loop_rechecks_approval_and_never_injects_unreviewed_cached_descri
 
     root, path, fm, body = bind(lesson)
     task = "Bound connection concurrency when connections exhaust the pool"
-    assert _relevant_lessons(root, task) == [(fm["name"], fm["description"])]
+    # Approval admits this lesson for retrieval; its unbound external origin
+    # still needs to remain quoted when it reaches an agent prompt.
+    assert _relevant_lessons(root, task) == [(fm["name"], f"> {fm['description']}")]
     frontmatter.write(path, {**fm, "description": "Bound connection concurrency via an unreviewed procedure"}, body)
     assert _relevant_lessons(root, task) == []
     frontmatter.write(path, fm, body)
