@@ -619,6 +619,9 @@ def _case(feature: str, root: str, seed: int) -> dict[str, Scalar]:
     raise ValueError("UniMem pack references an unsupported offline workflow: " + feature)
 
 
+_CACHE: dict[tuple[tuple[str, ...], int], dict[str, dict[str, Scalar]]] = {}
+
+
 def execute(features: Sequence[str], *, seed: int) -> dict[str, dict[str, Scalar]]:
     """Exercise each configured feature in a separate temporary governed namespace."""
     fp.count(seed, 0, 2**32 - 1, "demo seed")
@@ -626,6 +629,9 @@ def execute(features: Sequence[str], *, seed: int) -> dict[str, dict[str, Scalar
         raise ValueError("UniMem demo features must be a bounded array")
     if any(not isinstance(feature, str) for feature in features) or len(set(features)) != len(features):
         raise ValueError("UniMem demo feature IDs must be distinct strings")
+    cache_key = (tuple(features), seed)
+    if cache_key in _CACHE:
+        return {k: dict(v) for k, v in _CACHE[cache_key].items()}
     checks = {}
     with offline.without_network(), tempfile.TemporaryDirectory(prefix="unimem-pack-demo-") as directory:
         for feature in features:
@@ -635,4 +641,7 @@ def execute(features: Sequence[str], *, seed: int) -> dict[str, dict[str, Scalar
             root = Path(directory) / feature
             root.mkdir()
             checks[feature] = _case(feature, str(root), seed)
+    if len(_CACHE) >= 64:
+        _CACHE.clear()
+    _CACHE[cache_key] = {k: dict(v) for k, v in checks.items()}
     return checks

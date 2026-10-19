@@ -1,4 +1,4 @@
-PYTHON ?= python3
+PYTHON ?= $(shell if [ -f .venv/bin/python ]; then echo .venv/bin/python; else echo python3; fi)
 PYTEST_ARGS ?=
 
 .PHONY: test test-unit test-integration test-e2e coverage lint check build sdk benchmark serve deploy-validate

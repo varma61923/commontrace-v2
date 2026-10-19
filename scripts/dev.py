@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -31,7 +32,11 @@ def main() -> int:
             *extra,
         ]
     elif args.task == "lint":
-        command = [sys.executable, "-m", "ruff", "check", ".", "--no-cache", *extra]
+        ruff_bin = shutil.which("ruff") or sys.executable
+        if ruff_bin != sys.executable:
+            command = [ruff_bin, "check", ".", "--no-cache", *extra]
+        else:
+            command = [sys.executable, "-m", "ruff", "check", ".", "--no-cache", *extra]
     elif args.task == "check":
         command = ["git", "diff", "--check", *extra]
     else:
