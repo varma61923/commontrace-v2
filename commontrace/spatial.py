@@ -204,9 +204,22 @@ def where_was(root: str, object_id: str, when: str, *, context: dict[str, str]) 
 
 def believed_at(root: str, robot: str, time: str, *, context: dict[str, str]) -> list[dict[str, Any]]:
     context = {**context, "robot": fp.text(robot, "robot", 64)}
-    rows = history(root, context=context, known_at=time)
-    return [result for identity in sorted({r["delta"]["object_id"] for r in rows})
-            if (result := where_is(root, identity, context=context, when=time, known_at=time)) is not None]
+    at = fp.moment(time)
+    # Admit the historical snapshot once. Re-running history/where_is for every
+    # object repeats the full journal scan and source admission quadratically.
+    rows = history(root, context=context, known_at=at, as_of=at)
+    corrected = {row["correction_of"] for row in rows if row.get("correction_of")}
+    latest: dict[str, dict[str, Any]] = {}
+    positions: dict[str, tuple[str, int]] = {}
+    for row in rows:
+        observed = fp.moment(row["delta"]["timestamp"])
+        if row["id"] in corrected or observed > at:
+            continue
+        identity = row["delta"]["object_id"]
+        position = observed, row["sequence"]
+        if identity not in positions or position > positions[identity]:
+            positions[identity], latest[identity] = position, row
+    return [latest[identity] for identity in sorted(latest)]
 
 
 def changes_since(root: str, time: str, *, context: dict[str, str]) -> list[dict[str, Any]]:

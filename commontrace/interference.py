@@ -90,14 +90,16 @@ def publish(root: str, identity: str, lesson: str, *, rate: float = .5,
     if block_length is not None:
         fp.count(block_length, 2, 100_000)
         fp.count(burn_in, 0, block_length - 1)
-    prior = fp.journal(root, "cluster-designs.jsonl")
-    if any(row["id"] == identity for row in prior):
-        raise ValueError("cluster design is immutable")
+    from commontrace import _jsonl
+
     # The lineage position pins which derivations predate the design (an audit
     # anchor, never an enumeration: a store of any size can publish a design).
-    return fp.append(root, "cluster-designs.jsonl", {"id": identity, "lesson": lesson, "rate": rate,
-        "salt": config.salt, "lineage_position": fp.checkpoint(root, lineage.JOURNAL)[0],
-        "block_length": block_length, "burn_in": burn_in})
+    with _jsonl.locked(fp.filename(root, "cluster-designs.jsonl")):
+        if any(row["id"] == identity for row in fp.journal(root, "cluster-designs.jsonl")):
+            raise ValueError("cluster design is immutable")
+        return fp.append(root, "cluster-designs.jsonl", {"id": identity, "lesson": lesson, "rate": rate,
+            "salt": config.salt, "lineage_position": fp.checkpoint(root, lineage.JOURNAL)[0],
+            "block_length": block_length, "burn_in": burn_in})
 
 
 def _design(root: str, identity: str) -> dict[str, Any]:

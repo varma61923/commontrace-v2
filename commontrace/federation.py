@@ -198,7 +198,7 @@ def randomized_response(root: str, outcomes: list[bool], *, public_cohort_id: st
     """
     from commontrace import memory_authority
 
-    if memory_authority.WRITER.get()[1] != "operator":
+    if not memory_authority.is_operator():
         raise PermissionError("protected releases require an operator")
     if (not isinstance(public_cohort_id, str) or not 1 <= len(public_cohort_id) <= 128
             or isinstance(public_cohort_size, bool) or not isinstance(public_cohort_size, int)

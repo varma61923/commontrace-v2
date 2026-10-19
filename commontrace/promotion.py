@@ -96,8 +96,6 @@ def register(root: str, name: str, *, candidate: dict[str, float], incumbent: di
     config = holdout_io.load_config(root)
     if not config.running:
         raise ValueError("configure a randomized experiment before registering a change plan")
-    if any(row.get("name") == name for row in fp.journal(root, "change-plans.jsonl")):
-        raise ValueError("change plan is immutable; register a new name")
     body = {"name": name, "candidate": candidate, "incumbent": incumbent,
             "allowed_changes": allowed_changes, "monitoring": monitoring, "rollback": rollback,
             "margin": margin, "alpha": alpha, "minimum_support": minimum_support,
@@ -112,7 +110,12 @@ def register(root: str, name: str, *, candidate: dict[str, float], incumbent: di
         body["trial_rate"] = fp.number(config.rate if trial_rate is None else trial_rate, .05, .95)
     elif trial_rate is not None:
         raise ValueError("UniMem typed trial rate requires a typed unit")
-    return fp.append(root, "change-plans.jsonl", {**body, "design_hash": fp.digest(body)})
+    from commontrace import _jsonl
+
+    with _jsonl.locked(fp.filename(root, "change-plans.jsonl")):
+        if any(row.get("name") == name for row in fp.journal(root, "change-plans.jsonl")):
+            raise ValueError("change plan is immutable; register a new name")
+        return fp.append(root, "change-plans.jsonl", {**body, "design_hash": fp.digest(body)})
 
 
 def assign(root: str, plan: str, occasion_id: str, *, context: str = "default") -> dict[str, Any]:
@@ -143,6 +146,7 @@ def logged_rows(root: str, plan: str) -> list[dict[str, Any]]:
     return [{"occasion_id": row.occasion_id, "injected": row.injected, "outcome": int(row.succeeded),
              "rate": row.rate, "context": row.context or "default", "at": row.at.isoformat()}
             for row in rows if row.lesson == design["trial_lesson"] and row.salt == design["salt"]
+            and row.revision == design["design_hash"]
             and row.succeeded is not None and row.at is not None]
 
 
@@ -169,7 +173,8 @@ def certify(root: str, plan: str, rows: Sequence[dict[str, Any]] | None = None, 
     from commontrace.commands.experiment_cmd import _load, _observations
 
     evidence_rows = [row for row in _load(root)[0]
-                     if row.lesson == design["trial_lesson"] and row.salt == design["salt"]]
+                     if row.lesson == design["trial_lesson"] and row.salt == design["salt"]
+                     and row.revision == design["design_hash"]]
     if any(row.succeeded is None for row in evidence_rows):
         raise ValueError("resolve every assigned trial outcome before certification; selective completion is unsafe")
     audit = integrity.audit(evidence_rows, schedules=allocation.history(root))
@@ -188,7 +193,8 @@ def certify(root: str, plan: str, rows: Sequence[dict[str, Any]] | None = None, 
         elif event["event"] == "holdout-outcome":
             outcomes.add((event["statement"]["occasion_id"], event["statement"]["succeeded"]))
     raw = [row for row in fp.rows(holdout_io.holdout_log_path(root))
-           if row["lesson"] == design["trial_lesson"] and row["salt"] == design["salt"]]
+           if row["lesson"] == design["trial_lesson"] and row["salt"] == design["salt"]
+           and row.get("revision") == design["design_hash"]]
     if any(fp.digest(row) not in assignment_hashes for row in raw) \
             or any((row["occasion_id"], bool(row["outcome"])) not in outcomes for row in rows):
         raise ValueError("trial assignments/outcomes are not anchored in the transparency history")

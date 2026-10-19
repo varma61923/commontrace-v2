@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Sequence
@@ -21,6 +22,14 @@ from commontrace import frontier_protocol as fp
 LEAVES = "transparency-leaves.jsonl"
 HEADS = "transparency-heads.jsonl"
 EMPTY = hashlib.sha256(b"").hexdigest()
+MAX_TREE_LEAVES = 1_000_000
+_HASH = re.compile(r"[0-9a-f]{64}\Z")
+
+
+def _hash(value: str) -> str:
+    if not isinstance(value, str) or _HASH.fullmatch(value) is None:
+        raise ValueError("Merkle hashes must be canonical 32-byte lowercase hex")
+    return value
 
 
 @dataclass
@@ -78,8 +87,8 @@ def leaf_hash(statement: dict[str, Any]) -> str:
 
 
 def node_hash(left: str, right: str) -> str:
-    if len(left) != 64 or len(right) != 64:
-        raise ValueError("Merkle hashes must be 32 bytes")
+    _hash(left)
+    _hash(right)
     return hashlib.sha256(b"\x01" + bytes.fromhex(left) + bytes.fromhex(right)).hexdigest()
 
 
@@ -88,11 +97,11 @@ def _split(size: int) -> int:
 
 
 def tree_hash(hashes: Sequence[str]) -> str:
-    fp.count(len(hashes), 0, fp.MAX_ROWS)
+    fp.count(len(hashes), 0, MAX_TREE_LEAVES)
     if not hashes:
         return EMPTY
     if len(hashes) == 1:
-        return hashes[0]
+        return _hash(hashes[0])
     split = _split(len(hashes))
     return node_hash(tree_hash(hashes[:split]), tree_hash(hashes[split:]))
 
@@ -174,9 +183,15 @@ def inclusion(hashes: Sequence[str], index: int) -> list[str]:
 
 def verify_inclusion(leaf: str, index: int, size: int, proof: list[str], root_hash: str) -> bool:
     try:
-        fp.count(size, 1, fp.MAX_ROWS)
+        fp.count(size, 1, MAX_TREE_LEAVES)
         fp.count(index, 0, size - 1)
+        _hash(leaf)
+        _hash(root_hash)
+        if not isinstance(proof, list):
+            return False
         fp.count(len(proof), 0, 32)
+        for sibling in proof:
+            _hash(sibling)
         def fold(start: int, length: int, offset: int) -> tuple[str, int]:
             if length == 1:
                 return leaf, offset
@@ -210,11 +225,17 @@ def consistency(hashes: Sequence[str], old_size: int) -> list[str]:
 
 def verify_consistency(old_size: int, size: int, old_root: str, root_hash: str, proof: list[str]) -> bool:
     try:
-        fp.count(size, 0, fp.MAX_ROWS)
+        fp.count(size, 0, MAX_TREE_LEAVES)
         fp.count(old_size, 0, size)
+        _hash(old_root)
+        _hash(root_hash)
+        if not isinstance(proof, list):
+            return False
         fp.count(len(proof), 0, 64)
+        for sibling in proof:
+            _hash(sibling)
         if old_size == 0:
-            return old_root == EMPTY and not proof
+            return old_root == EMPTY and not proof and (size != 0 or root_hash == EMPTY)
         if old_size == size:
             return old_root == root_hash and not proof
         first, second = old_size - 1, size - 1

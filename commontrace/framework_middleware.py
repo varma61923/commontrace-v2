@@ -80,7 +80,10 @@ def turn(
     if text:
         captured = kit.journal.capture(run, "UserMessage", {"text": text, "author": "user"}, scope=scope)
         maintain_preferences(kit.journal, text, scope, source_ids=[captured["id"], event_payload["event_id"]])
-    result = kit.handle(event or "UserPromptSubmit", event_payload)
+    # Framework turns are request/response operations, not the 50 ms native
+    # editor hook. Allow bounded cold-store initialization and governed reads
+    # to complete before discarding the entire context as a hook timeout.
+    result = kit.handle(event or "UserPromptSubmit", event_payload, deadline_ms=1000)
     profile = {"static": [], "dynamic": [], "custom": []}
     preference_rankers = []
     for record in kit.journal.search("", scope=scope, kinds=("profile",), limit=30):

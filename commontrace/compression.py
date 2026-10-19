@@ -184,7 +184,7 @@ def active(root: str, *, context: list[str] | None = None) -> list[dict]:
 
 
 def register(root: str, proposal_id: str, *, trials: int = 300, seed: str | None = None) -> dict:
-    if memory_authority.WRITER.get()[1] != "operator":
+    if not memory_authority.is_operator():
         raise PermissionError("compression preregistration requires an operator")
     if isinstance(trials, bool) or not isinstance(trials, int) or not 90 <= trials <= 100000:
         raise ValueError("fixed horizon must be 90-100000 occasions")
@@ -271,7 +271,7 @@ def evaluate(root: str, experiment_id: str) -> dict:
 
 
 def review(root: str, proposal_id: str, experiment_id: str, *, actor: str, expected_revision: str) -> dict:
-    if memory_authority.WRITER.get()[1] != "operator":
+    if not memory_authority.is_operator():
         raise PermissionError("compression admission requires an operator")
     with _jsonl.locked(_file(root)):
         row = next((r for r in memory_control.records(root, "compression") if r["id"] == proposal_id), None)

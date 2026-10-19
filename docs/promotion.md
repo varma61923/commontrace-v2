@@ -38,6 +38,10 @@ For issuance, configure the experiment before registration, then use
 `promotion.assign(root, plan, occasion, context=...)` for each actual shadow-trial
 action. Supplied certification rows must exactly equal canonical trial rows;
 assignments and outcomes must have transparency anchors after registration.
+Every included assignment must carry the exact registered design hash as its
+revision. Rows for a different design cannot contribute to this plan, even if
+they reuse its typed unit and experiment salt. Plan names are registered under
+the journal's shared writer lock.
 Compilation plans additionally bind `artifact_hash`; this field is omitted for
 ordinary policies, preserving their existing canonical shape.
 

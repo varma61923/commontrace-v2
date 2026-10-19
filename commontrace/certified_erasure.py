@@ -138,6 +138,9 @@ class SubjectVault:
 
 def probe(retrieve: Callable[[str], Sequence[dict[str, Any]]], queries: Sequence[str], *,
           forbidden: Sequence[str], threshold: float = 0) -> dict[str, Any]:
+    if (not isinstance(queries, Sequence) or isinstance(queries, (str, bytes))
+            or not isinstance(forbidden, Sequence) or isinstance(forbidden, (str, bytes))):
+        raise ValueError("probe queries and forbidden tokens must be sequences of strings")
     fp.count(len(queries), 1, 128)
     fp.count(len(forbidden), 1, 256)
     fp.number(threshold, 0, 1)
@@ -161,8 +164,14 @@ def erase(root: str, subject: str, identities: Sequence[str], vault: SubjectVaul
     """
     from commontrace import hierarchical, lesson_admission, lesson_io, privacy_erasure
 
-    if memory_authority.WRITER.get()[1] != "operator":
+    if not memory_authority.is_operator():
         raise PermissionError("certified erasure requires an operator")
+    fp.text(reason, "erasure reason")
+    fp.text(subject, "subject", 1024)
+    if vault.root != os.path.realpath(root):
+        raise ValueError("subject-key vault is bound to a different content store")
+    if not isinstance(identities, Sequence) or isinstance(identities, (str, bytes)):
+        raise ValueError("erasure identities must be a sequence of memory identifiers")
     fp.count(len(identities), 1, 256)
     deleted = {fp.text(identity) for identity in identities}
     for identity in identities:

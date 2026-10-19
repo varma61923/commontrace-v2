@@ -221,7 +221,10 @@ def rows(path: str) -> list[dict[str, Any]]:
                 raise ValueError("journal exceeds 64 MiB; rotate it")
             if len(result) >= MAX_ROWS or len(line) > MAX_BYTES + 1 or not line.endswith(b"\n"):
                 raise ValueError("journal is truncated or exceeds its size limit; rotate it")
-            value = json.loads(line)
+            try:
+                value = json.loads(line)
+            except (ValueError, UnicodeError, RecursionError) as exc:
+                raise ValueError("journal contains invalid or excessively nested JSON") from exc
             if not isinstance(value, dict):
                 raise ValueError("journal row must be an object")
             wire(value)
@@ -292,16 +295,24 @@ def rotate(root: str, name: str, carry: list[dict[str, Any]], *, durable: bool =
     the retirement is itself authenticated and other processes' retained
     checkpoints accept it; the replacement is atomic under the journal lock.
     """
+    count(len(carry), 0, MAX_ROWS - 1, "rotation carry rows")
     path = filename(root, name)
     with _jsonl.locked(path), _GUARD:
         state = _state(root, name)
         rows_out: list[dict[str, Any]] = []
         previous = ""
+        total = 0
         link = {"kind": "rotation", "previous_tip": state.tip, "previous_count": len(state.signed)}
         for index, record in enumerate([link, *carry]):
             signed = sign(root, {**record, "sequence": index, "previous": previous, "recorded_at": now()},
                           durable=durable)
             wire(signed)
+            size = len(json.dumps(signed, ensure_ascii=False, allow_nan=False).encode("utf-8"))
+            if size > MAX_BYTES:
+                raise ValueError("serialized journal record exceeds 1 MiB")
+            total += size + 1
+            if total > 64 * MAX_BYTES:
+                raise ValueError("journal exceeds 64 MiB; reduce rotation carry rows")
             rows_out.append(signed)
             previous = digest(signed)
         _jsonl.write_rows(path, rows_out)

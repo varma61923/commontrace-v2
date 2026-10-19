@@ -30,9 +30,7 @@ def register_erasure_hook(kind: str, hook: Callable[[str, set[str]], None]) -> N
 
 
 def operator() -> None:
-    from commontrace import capabilities
-
-    if capabilities.CURRENT.get() is not None or memory_authority.bound_writer()[1] != "operator":
+    if not memory_authority.is_operator():
         raise PermissionError("UniMem operation requires an undelegated operator context")
 
 

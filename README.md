@@ -326,6 +326,14 @@ python scripts/export_openapi.py --check
 python scripts/export_hub_openapi.py --check
 ```
 
+Run the focused governance boundary regressions with
+`python -m pytest tests/test_governance_audit_regressions.py -q`. They cover
+delegated administrative authority, immutable trial registration, design-bound
+evidence, journal rotation limits, forked writer locks, cache isolation, extreme
+propensities, Merkle proofs and erasure preflight. Framework memory turns allow
+one second for bounded retrieval, including cold-store initialization; native
+editor hooks retain their 50 ms deadline.
+
 CI also runs strict type checks on the core modules, bandit, pip-audit, CodeQL,
 a latency gate, the SDK builds, Docker and Compose smoke tests, and an architecture
 audit. The exact gates are defined in [CI](.github/workflows/ci.yml),

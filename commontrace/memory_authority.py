@@ -18,6 +18,15 @@ TRUST = {"external": 0, "tool": 1, "agent": 1, "user": 2, "operator": 3}
 WRITER: ContextVar[tuple[str, str]] = ContextVar("commontrace_memory_writer", default=("local", "operator"))
 
 
+def is_operator() -> bool:
+    """Administrative authority belongs to the undelegated store operator.
+
+    A capability narrows primary authentication even when the enclosing service
+    writer is an operator or its leaf has the highest integrity ceiling.
+    """
+    return capabilities.CURRENT.get() is None and WRITER.get()[1] == "operator"
+
+
 def bound_writer() -> tuple[str, str]:
     principal, authority = WRITER.get()
     value = capabilities.CURRENT.get()
@@ -111,7 +120,7 @@ def signing_config(root: str) -> dict:
 
 
 def configure_signing(root: str, *, algorithm: str = "ed25519") -> dict:
-    if WRITER.get()[1] != "operator":
+    if not is_operator():
         raise PermissionError("only an operator can configure store signing")
     if algorithm not in ("ed25519", "hmac-sha256"):
         raise ValueError("unsupported signing algorithm")

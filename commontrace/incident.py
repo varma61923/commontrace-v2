@@ -37,7 +37,7 @@ MAX_SNAPSHOT_BYTES = 64 * fp.MAX_BYTES
 
 
 def _operator() -> None:
-    if memory_authority.WRITER.get()[1] != "operator":
+    if not memory_authority.is_operator():
         raise PermissionError("incident evidence and legal holds require an operator")
 
 

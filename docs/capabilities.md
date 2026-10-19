@@ -6,6 +6,11 @@ ceiling, an audience key, authorized delegate keys and an expiry. Unknown
 caveats, wildcards and widening fail closed. A ceiling limits the authenticated
 writer's role; it cannot turn an agent into a user or operator.
 
+Administrative operations require an undelegated operator context. An active
+capability cannot change store signing, approve or release hazards, alter legal
+holds, certify erasure, approve rewrites, or install lifecycle policies by
+inheriting the enclosing service's operator writer.
+
 This is UniMem's encoding inspired by
 [draft-niyikiza-oauth-attenuating-agent-tokens-01](https://www.ietf.org/archive/id/draft-niyikiza-oauth-attenuating-agent-tokens-01.html),
 published 15 June 2026 and expiring 17 December 2026. It is not JWT/AAT wire

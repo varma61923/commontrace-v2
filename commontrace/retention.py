@@ -181,7 +181,7 @@ def propose(root: str, slug: str, body: str, *, author: str) -> dict[str, Any]:
 def review(root: str, identity: str, *, reviewer: str) -> dict[str, Any]:
     from commontrace import memory_authority
 
-    if memory_authority.WRITER.get()[1] != "operator":
+    if not memory_authority.is_operator():
         raise PermissionError("rewrite review requires an operator")
     proposals = [row for row in fp.journal(root, REWRITES)
                  if row["kind"] == "proposal" and row["id"] == identity]
@@ -327,7 +327,7 @@ def evict(root: str, model: UtilityModel, items: Sequence[dict[str, Any]], *, to
     """
     from commontrace import hierarchical, incident, memory_authority
 
-    if memory_authority.WRITER.get()[1] != "operator":
+    if not memory_authority.is_operator():
         raise PermissionError("utility eviction requires an operator")
     fp.count(token_budget, 0, 1_000_000)
     fp.count(len(items), 0, 4096)

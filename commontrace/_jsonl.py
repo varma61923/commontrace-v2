@@ -15,6 +15,17 @@ from commontrace import frontmatter
 _held = threading.local()
 
 
+def _after_fork() -> None:
+    # A child inherits thread-local bookkeeping, but not ownership of the
+    # parent's critical section. It must acquire its own inter-process lock.
+    global _held
+    _held = threading.local()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_after_fork)
+
+
 @contextlib.contextmanager
 def locked(path: str) -> Iterator[None]:
     """Exclusive inter-process lock for *path*, reentrant within a thread."""

@@ -26,7 +26,7 @@ from commontrace import transparency_log as merkle
 from hub.models import TransparencyEntry, TransparencyHead
 
 # Proof and consistency exports hold one 64-character hash per leaf in memory.
-MAX_PROOF_LEAVES = 1_000_000
+MAX_PROOF_LEAVES = merkle.MAX_TREE_LEAVES
 
 
 class TransparencyIntegrityError(ValueError):

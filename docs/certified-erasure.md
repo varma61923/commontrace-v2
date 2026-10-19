@@ -15,6 +15,10 @@ a hash tombstone, explicit live-probe status and backup scope. `verify` checks i
 bytes and anchor offline. Unrelated subjects retain their own keys. Dream-rewrite
 texts derived from erased lessons are deleted too; their journal keeps only digests.
 
+The vault must be bound to the same store being erased. The reason, subject,
+request fields and optional probe configuration are validated before deletion;
+invalid requests preserve both source content and subject keys.
+
 From the CLI, `commontrace frontier certified-erase REQUEST.json --dest STORE`
 takes `{"subject", "identities", "vault_directory", "reason"}` and an optional
 `"probe": {"queries": [...], "forbidden": [...], "threshold": 0}` that runs the

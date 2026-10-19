@@ -229,7 +229,7 @@ def train(root: str, *, minimum_cases: int = 30) -> dict:
 
 
 def install(root: str, candidate: dict, *, minimum_samples: int = 30) -> dict:
-    if memory_authority.WRITER.get()[1] != "operator":
+    if not memory_authority.is_operator():
         raise PermissionError("policy changes require an operator")
     for probability in [candidate.get("default_probability", .5), *candidate.get("probabilities", {}).values()]:
         if not 0 < _probability(probability) < 1:
@@ -258,7 +258,7 @@ def delivery_probabilities(root: str) -> dict:
 
 
 def preregister(root: str, candidate: dict, *, evaluation_samples: int = 300, alpha: float = .05) -> dict:
-    if memory_authority.WRITER.get()[1] != "operator":
+    if not memory_authority.is_operator():
         raise PermissionError("policy preregistration requires an operator")
     if (isinstance(evaluation_samples, bool) or not isinstance(evaluation_samples, int)
             or not 30 <= evaluation_samples <= 1000000 or not 0 < alpha < 1):

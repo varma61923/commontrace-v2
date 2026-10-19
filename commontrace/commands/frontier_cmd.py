@@ -86,20 +86,30 @@ def run(args: argparse.Namespace) -> int:
     elif args.operation == "certified-erase":
         from commontrace import certified_erasure
 
-        vault = certified_erasure.SubjectVault(root, fp.text(body.pop("vault_directory"), "vault directory", 4096))
-        probe = body.pop("probe", None)
+        required = {"vault_directory", "subject", "identities", "reason"}
+        if set(body) - required - {"probe"} or not required <= set(body):
+            raise ValueError("certified-erase requires vault_directory, subject, identities and reason; "
+                             "only probe is optional")
+        probe = body.get("probe")
         retrieval_probe = None
         if probe is not None:
             from commontrace import recall
 
+            if (not isinstance(probe, dict) or set(probe) - {"queries", "forbidden", "threshold"}
+                    or not {"queries", "forbidden"} <= set(probe)
+                    or not isinstance(probe["queries"], list) or not isinstance(probe["forbidden"], list)):
+                raise ValueError("erasure probe requires query and forbidden-token lists and optional threshold")
+            # Validate every probe field before constructing a vault or deleting
+            # content; the real retrieval diagnostic still runs after erasure.
+            certified_erasure.probe(lambda query: [], probe["queries"], forbidden=probe["forbidden"],
+                                    threshold=probe.get("threshold", 0))
             def retrieval_probe() -> dict:
                 return certified_erasure.probe(
                     lambda query: [{"text": item.text} for item in recall.recall(root, query).items],
                     probe["queries"], forbidden=probe["forbidden"], threshold=probe.get("threshold", 0))
-        result = certified_erasure.erase(root, body.pop("subject"), body.pop("identities"), vault,
-                                         reason=body.pop("reason"), retrieval_probe=retrieval_probe)
-        if body:
-            raise ValueError("unknown certified-erase fields: " + ", ".join(sorted(body)))
+        vault = certified_erasure.SubjectVault(root, fp.text(body["vault_directory"], "vault directory", 4096))
+        result = certified_erasure.erase(root, body["subject"], body["identities"], vault,
+                                         reason=body["reason"], retrieval_probe=retrieval_probe)
     elif args.operation == "cluster-effect":
         result = interference.cluster_effect([interference.Cluster(**row) for row in body.pop("rows")], **body)
     else:

@@ -8,6 +8,7 @@ Hazards are never eligible for randomized removal or unattended lifecycle edits.
 """
 from __future__ import annotations
 
+import copy
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Sequence
@@ -32,7 +33,7 @@ def _content(root: str, identity: str) -> dict[str, Any]:
 
 
 def review(root: str, identity: str, *, reviewer: str, reason: str) -> dict[str, Any]:
-    if memory_authority.WRITER.get()[1] != "operator":
+    if not memory_authority.is_operator():
         raise PermissionError("hazard review requires operator authority")
     return fp.sign(root, {"kind": "hazard-review", "id": fp.text(identity), "reviewer": fp.text(reviewer),
                           "reason": fp.text(reason), "content_hash": fp.digest(_content(root, identity)),
@@ -41,7 +42,7 @@ def review(root: str, identity: str, *, reviewer: str, reason: str) -> dict[str,
 
 def mark(root: str, identity: str, hazard_class: str, receipt: dict[str, Any], *,
          site: str = "", robot: str = "") -> dict[str, Any]:
-    if memory_authority.WRITER.get()[1] != "operator":
+    if not memory_authority.is_operator():
         raise PermissionError("only an operator can protect a hazard")
     if hazard_class not in CLASSES:
         raise ValueError("unknown hazard class")
@@ -89,7 +90,7 @@ def protected(root: str) -> dict[str, dict[str, Any]]:
     checkpoint = fp.checkpoint(root, REGISTRY)
     cached = _PROTECTED.get(key)
     if cached is not None and cached[0] == checkpoint:
-        return dict(cached[1])
+        return copy.deepcopy(cached[1])
     active: dict[str, dict[str, Any]] = {}
     for row in fp.journal(root, REGISTRY):
         if row["kind"] == "mark":
@@ -101,7 +102,7 @@ def protected(root: str) -> dict[str, dict[str, Any]]:
     if len(_PROTECTED) > 64:
         _PROTECTED.clear()
     _PROTECTED[key] = (checkpoint, active)
-    return dict(active)
+    return copy.deepcopy(active)
 
 
 def assert_mutable(root: str, identities: Sequence[str]) -> None:
@@ -110,7 +111,7 @@ def assert_mutable(root: str, identities: Sequence[str]) -> None:
 
 
 def release(root: str, identity: str, receipt: dict[str, Any]) -> None:
-    if memory_authority.WRITER.get()[1] != "operator" or not fp.verify(root, receipt):
+    if not memory_authority.is_operator() or not fp.verify(root, receipt):
         raise PermissionError("operator review receipt required to release hazard protection")
     body = receipt["record"]
     if body.get("kind") != "hazard-review" or body.get("id") != identity \

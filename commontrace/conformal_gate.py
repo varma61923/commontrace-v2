@@ -17,6 +17,7 @@ Protected hazards bypass this discretionary-memory budget.
 """
 from __future__ import annotations
 
+import copy
 import math
 import os
 from dataclasses import dataclass
@@ -300,7 +301,7 @@ def current(root: str) -> dict[str, Any]:
     key = os.path.realpath(root)
     cached = _CURRENT.get(key)
     if cached is not None and cached[0] == stamp:
-        return dict(cached[1])
+        return copy.deepcopy(cached[1])
     config = _load(root) or {}
     if not config.get("enabled"):
         result: dict[str, Any] = {"enabled": False}
@@ -314,7 +315,7 @@ def current(root: str) -> dict[str, Any]:
     if len(_CURRENT) > 64:
         _CURRENT.clear()
     _CURRENT[key] = (stamp, result)
-    return dict(result)
+    return copy.deepcopy(result)
 
 
 def summary(gate: dict[str, Any], context: str = "") -> dict[str, Any]:
