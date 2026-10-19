@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import copy
 import os
+from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from typing import Any, Sequence
 
@@ -75,7 +76,15 @@ def mark(root: str, identity: str, hazard_class: str, receipt: dict[str, Any], *
     return result
 
 
-_PROTECTED: dict[str, tuple[tuple[int, str], dict[str, dict[str, Any]]]] = {}
+_PROTECTED: OrderedDict[str, tuple[tuple[int, str], dict[str, dict[str, Any]]]] = OrderedDict()
+
+
+def _after_fork() -> None:
+    _PROTECTED.clear()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_after_fork)
 
 
 def protected(root: str) -> dict[str, dict[str, Any]]:
@@ -87,22 +96,25 @@ def protected(root: str) -> dict[str, dict[str, Any]]:
     re-verifies every review receipt.
     """
     key = os.path.realpath(root)
-    checkpoint = fp.checkpoint(root, REGISTRY)
-    cached = _PROTECTED.get(key)
-    if cached is not None and cached[0] == checkpoint:
-        return copy.deepcopy(cached[1])
-    active: dict[str, dict[str, Any]] = {}
-    for row in fp.journal(root, REGISTRY):
-        if row["kind"] == "mark":
-            if not fp.verify(root, row["review"]):
-                raise ValueError("invalid hazard review")
-            active[row["id"]] = row
-        elif row["kind"] == "release":
-            active.pop(row["id"], None)
-    if len(_PROTECTED) > 64:
-        _PROTECTED.clear()
-    _PROTECTED[key] = (checkpoint, active)
-    return copy.deepcopy(active)
+    with fp._GUARD:
+        checkpoint = fp.checkpoint(root, REGISTRY)
+        cached = _PROTECTED.get(key)
+        if cached is not None and cached[0] == checkpoint:
+            _PROTECTED.move_to_end(key)
+            return copy.deepcopy(cached[1])
+        active: dict[str, dict[str, Any]] = {}
+        for row in fp.journal(root, REGISTRY):
+            if row["kind"] == "mark":
+                if not fp.verify(root, row["review"]):
+                    raise ValueError("invalid hazard review")
+                active[row["id"]] = row
+            elif row["kind"] == "release":
+                active.pop(row["id"], None)
+        _PROTECTED[key] = (checkpoint, active)
+        _PROTECTED.move_to_end(key)
+        while len(_PROTECTED) > 64:
+            _PROTECTED.popitem(last=False)
+        return copy.deepcopy(active)
 
 
 def assert_mutable(root: str, identities: Sequence[str]) -> None:

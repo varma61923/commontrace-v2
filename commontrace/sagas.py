@@ -138,8 +138,7 @@ def create_saga(
             events=[],
         )
 
-        with open(saga_path, "w", encoding="utf-8") as f:
-            json.dump(saga.to_dict(), f, indent=2)
+        _jsonl.write_json(saga_path, saga.to_dict())
 
         _update_index_locked(root, saga)
         return saga
@@ -236,8 +235,7 @@ def append_saga_event(
         elif watermark:
             saga.watermark = watermark
 
-        with open(saga_path, "w", encoding="utf-8") as f:
-            json.dump(saga.to_dict(), f, indent=2)
+        _jsonl.write_json(saga_path, saga.to_dict())
 
         _update_index_locked(root, saga)
         return saga
@@ -262,8 +260,7 @@ def update_running_brief(
         saga.watermark = str(watermark).strip()
         saga.updated_at = _now()
 
-        with open(saga_path, "w", encoding="utf-8") as f:
-            json.dump(saga.to_dict(), f, indent=2)
+        _jsonl.write_json(saga_path, saga.to_dict())
 
         _update_index_locked(root, saga)
         return saga
@@ -285,8 +282,7 @@ def resolve_saga(root: str, saga_id: str, final_brief: str = "") -> Saga:
             saga.watermarked_running_brief = final_brief.strip()
             saga.watermark = saga.updated_at
 
-        with open(saga_path, "w", encoding="utf-8") as f:
-            json.dump(saga.to_dict(), f, indent=2)
+        _jsonl.write_json(saga_path, saga.to_dict())
 
         _update_index_locked(root, saga)
         return saga

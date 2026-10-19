@@ -19,6 +19,22 @@ def test_sybils_share_one_reward_and_do_not_inflate_total():
     assert cleanroom.overlap_price(1000, sig, sig) == 0
 
 
+def test_hamilton_royalties_distribute_every_cent_deterministically():
+    signatures = [[value] * 16 for value in range(3)]
+    offers = [{"id": identity, "seller": identity, "minhash": signature, "stake_cents": 10}
+              for identity, signature in zip(("a", "b", "c"), signatures)]
+    equal_clusters = cleanroom.royalties(offers, {identity: .5 for identity in ("a", "b", "c")}, 100)
+    assert equal_clusters["paid_cents"] == 100
+    assert equal_clusters["payouts"] == {"a": 34, "b": 33, "c": 33}
+    assert cleanroom.royalties(offers[::-1], {identity: .5 for identity in ("a", "b", "c")},
+                               100) == equal_clusters
+
+    shared = [{**offer, "minhash": signatures[0]} for offer in offers]
+    equal_sellers = cleanroom.royalties(shared, {identity: .5 for identity in ("a", "b", "c")}, 100)
+    assert equal_sellers["paid_cents"] == 100
+    assert equal_sellers["payouts"] == {"a": 34, "b": 33, "c": 33}
+
+
 def test_dp_accountant_refuses_overspend_and_budget_reset(tmp_path):
     root = str(tmp_path)
     first = cleanroom.private_effect(root, "buyer", "query1", [.2] * 100, epsilon=.6, total_budget=1)

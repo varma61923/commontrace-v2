@@ -126,12 +126,10 @@ def configure_signing(root: str, *, algorithm: str = "ed25519") -> dict:
         raise ValueError("unsupported signing algorithm")
     config = {**signing_config(root), "algorithm": algorithm}
     if algorithm == "ed25519":
-        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-
         key = _key(root, create="public_key" not in config, algorithm=algorithm)
         if key is None:
             raise PermissionError("configured Ed25519 private key is missing")
-        config["public_key"] = Ed25519PrivateKey.from_private_bytes(key).public_key().public_bytes_raw().hex()
+        config["public_key"] = origin.ed25519_public_bytes(key).hex()
     _jsonl.write_json(os.path.join(paths.memory_dir(root), "origin-signing.json"), config)
     return config
 
@@ -185,9 +183,7 @@ def bind(root: str, record: dict, *, sources: list[str] | None = None) -> dict:
     if key is None:
         raise PermissionError("this public-verifier store has no signing key")
     if algorithm == "ed25519":
-        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-
-        public = Ed25519PrivateKey.from_private_bytes(key).public_key().public_bytes_raw().hex()
+        public = origin.ed25519_public_bytes(key).hex()
         if config.get("public_key") != public:
             raise PermissionError("private signing key differs from the pinned public key")
     ledger = os.path.join(paths.memory_dir(root), "origins.jsonl")

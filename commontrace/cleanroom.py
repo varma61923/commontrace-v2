@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import math
 import random
+from fractions import Fraction
 from typing import Any, Callable, Protocol, Sequence, cast
 
 from commontrace import _jsonl, evidence, holdout_io, overlap, valuation
@@ -103,12 +104,23 @@ def royalties(offers: Sequence[dict[str, Any]], values: dict[str, float], budget
             merged.extend(group)
             groups.remove(group)
         groups.append(merged)
+    groups.sort(key=lambda group: tuple(sorted(item["id"] for item in group)))
     weights = [max(0, max(values.get(item["id"], 0) for item in group)) for group in groups]
-    denominator = sum(weights)
+    denominator = math.fsum(weights)
+    rewards = [0] * len(groups)
+    if denominator > 0 and budget_cents > 0:
+        exact_weights = [Fraction(weight) for weight in weights]
+        exact_total = sum(exact_weights, Fraction())
+        quotas = [Fraction(budget_cents) * weight / exact_total for weight in exact_weights]
+        rewards = [quota.numerator // quota.denominator for quota in quotas]
+        leftover = budget_cents - sum(rewards)
+        order = sorted(range(len(groups)), key=lambda index: (
+            -(quotas[index] - rewards[index]), tuple(sorted(item["id"] for item in groups[index]))))
+        for index in order[:leftover]:
+            rewards[index] += 1
     payouts: dict[str, int] = {}
     clusters = []
-    for group, weight in zip(groups, weights):
-        reward = int(budget_cents * weight / denominator) if denominator else 0
+    for group, weight, reward in zip(groups, weights, rewards):
         # Within a cluster the reward is split by slashable stake, not per seller:
         # copy-cat listings cannot dilute an originator without risking real capital.
         stakes: dict[str, int] = {}
@@ -116,8 +128,17 @@ def royalties(offers: Sequence[dict[str, Any]], values: dict[str, float], budget
             stake = fp.count(item.get("stake_cents", 1), 1, 100_000_000, "stake")
             stakes[item["seller"]] = stakes.get(item["seller"], 0) + stake
         total = sum(stakes.values())
-        for seller, stake in sorted(stakes.items()):
-            payouts[seller] = payouts.get(seller, 0) + reward * stake // total
+        if reward:
+            seller_quotas = {seller: Fraction(reward * stakes[seller], total) for seller in sorted(stakes)}
+            seller_rewards = {seller: quota.numerator // quota.denominator
+                              for seller, quota in seller_quotas.items()}
+            leftover = reward - sum(seller_rewards.values())
+            order = sorted(stakes, key=lambda seller: (
+                -(seller_quotas[seller] - seller_rewards[seller]), -stakes[seller], seller))
+            for seller in order[:leftover]:
+                seller_rewards[seller] += 1
+            for seller, amount in sorted(seller_rewards.items()):
+                payouts[seller] = payouts.get(seller, 0) + amount
         clusters.append({"listings": sorted({x["id"] for x in group}), "reward_cents": reward,
                          "interventional_value": weight, "stakes": dict(sorted(stakes.items()))})
     return {"payouts": payouts, "clusters": clusters, "paid_cents": sum(payouts.values()),

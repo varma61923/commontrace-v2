@@ -85,12 +85,20 @@ def _state(root: str, name: str) -> _Journal:
         previous = digest(signed)
     if _stamp(path) != stamp or _pins(root) != pins:
         raise ValueError("journal or signing identity changed during verification; retry")
-    if cached is not None and len(signed_rows) < len(cached.signed):
+    if cached is not None and cached.signed:
         link = signed_rows[0].get("record", {}) if signed_rows else {}
-        # A rotation restarts the chain with a signed link to the retired chain's
-        # length; anything else that shrinks a retained journal is truncation.
-        if link.get("kind") != "rotation" or link.get("previous_count", -1) < len(cached.signed):
-            raise ValueError("journal was truncated against a retained checkpoint")
+        rotation_accepted = (
+            bool(signed_rows)
+            and link.get("kind") == "rotation"
+            and type(link.get("previous_count")) is int
+            and link["previous_count"] >= len(cached.signed)
+            and isinstance(link.get("previous_tip"), str)
+            and bool(link["previous_tip"])
+        )
+        anchored = (len(signed_rows) >= len(cached.signed)
+                    and digest(signed_rows[len(cached.signed) - 1]) == cached.tip)
+        if not rotation_accepted and not anchored:
+            raise ValueError("journal was truncated or rewritten against a retained checkpoint")
     state = _Journal(stamp, pins, signed_rows, previous,
                      frontmatter._retained_size(signed_rows, set()))
     _remember(path, state)
@@ -332,7 +340,12 @@ def rotate(root: str, name: str, carry: list[dict[str, Any]], *, durable: bool =
         rows_out: list[dict[str, Any]] = []
         previous = ""
         total = 0
-        link = {"kind": "rotation", "previous_tip": state.tip, "previous_count": len(state.signed)}
+        previous_count = len(state.signed)
+        if state.signed:
+            prior_link = state.signed[0].get("record", {})
+            if prior_link.get("kind") == "rotation" and type(prior_link.get("previous_count")) is int:
+                previous_count += prior_link["previous_count"]
+        link = {"kind": "rotation", "previous_tip": state.tip, "previous_count": previous_count}
         for index, record in enumerate([link, *carry]):
             signed = sign(root, {**record, "sequence": index, "previous": previous, "recorded_at": now()},
                           durable=durable)

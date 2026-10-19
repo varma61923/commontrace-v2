@@ -105,14 +105,71 @@ def test_log_cli_and_mcp(tmp_path):
     assert call(build_server(root), "log_verify", receipt=receipt)["valid"]
 
 
-def test_optional_ed25519(tmp_path):
+@pytest.mark.parametrize("legacy_public_bytes", [False, True])
+def test_optional_ed25519(tmp_path, monkeypatch, legacy_public_bytes):
     pytest.importorskip("cryptography.hazmat.primitives.asymmetric.ed25519")
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
     from commontrace import memory_authority
+    if legacy_public_bytes:
+        monkeypatch.delattr(Ed25519PublicKey, "public_bytes_raw", raising=False)
     root = str(tmp_path)
     memory_authority.configure_signing(root)
+    bound = memory_authority.bind(root, {"id": "bound-origin", "text": "ed25519 compatibility"})
+    assert memory_authority.verify(root, bound)
     receipt = log.append(root, "write", {"id": "public"})
     assert receipt["head"]["algorithm"] == "ed25519"
     assert log.verify(root, receipt)
+
+
+def test_hub_transparency_signer_supports_legacy_crypto(monkeypatch):
+    pytest.importorskip("cryptography.hazmat.primitives.asymmetric.ed25519")
+    pytest.importorskip("sqlalchemy")
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+    from hub.transparency import signer
+
+    monkeypatch.delattr(Ed25519PublicKey, "public_bytes_raw", raising=False)
+    assert len(signer("org", "x" * 32, "ed25519").public_key) == 32
+
+
+def test_rotations_preserve_old_logical_checkpoints_and_rewrites_fail(tmp_path):
+    import copy
+
+    from commontrace import _jsonl
+
+    root, name = str(tmp_path), "rotation-regression.jsonl"
+    for index in range(10):
+        fp.append(root, name, {"value": index})
+    path = fp.filename(root, name)
+    with fp._GUARD:
+        original = copy.deepcopy(fp._CACHE[path])
+    fp.rotate(root, name, [{"carry": 1}])
+    fp.rotate(root, name, [{"carry": 2}])
+    original.stamp = None
+    with fp._GUARD:
+        fp._CACHE[path] = original
+    assert len(fp.journal(root, name)) == 2
+
+    rewrite_root, rewrite_name = str(tmp_path / "rewrite"), "rewrite-regression.jsonl"
+    for index in range(5):
+        fp.append(rewrite_root, rewrite_name, {"value": index})
+    rewrite_path = fp.filename(rewrite_root, rewrite_name)
+    with fp._GUARD:
+        cached = copy.deepcopy(fp._CACHE[rewrite_path])
+    previous = ""
+    replacement = []
+    for index in range(5):
+        signed = fp.sign(rewrite_root, {"value": f"replacement-{index}", "sequence": index,
+                                        "previous": previous, "recorded_at": fp.now()})
+        replacement.append(signed)
+        previous = fp.digest(signed)
+    _jsonl.write_rows(rewrite_path, replacement)
+    cached.stamp = None
+    with fp._GUARD:
+        fp._CACHE[rewrite_path] = cached
+    with pytest.raises(ValueError, match="truncated or rewritten"):
+        fp.journal(rewrite_root, rewrite_name)
 
 
 def test_verified_cache_detects_edits_and_has_bounded_append_work(tmp_path, monkeypatch):

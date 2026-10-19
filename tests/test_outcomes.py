@@ -34,6 +34,15 @@ def test_active_gold_sampling_requires_propensity_weights():
     assert naive_gold > .9
 
 
+def test_deterministic_gold_sampling_has_no_gold_noise_radius():
+    complete = outcomes.prediction_powered([.2, .8], {0: .1, 1: .9}, [1.0, 1.0])
+    assert complete["interval"] == [complete["estimate"], complete["estimate"]]
+    sampled = outcomes.prediction_powered([.2, .8], {0: .1}, [.5, .5])
+    assert sampled["interval"][0] < sampled["estimate"] < sampled["interval"][1]
+    with pytest.raises(ValueError, match="deterministic gold"):
+        outcomes.prediction_powered([.2], {}, [1.0])
+
+
 def test_surrogate_validation_and_degraded_agreement_fallback():
     rows = [{"experiment_id": "training" if i < 80 else "validation", "signals": [1, (-1 if i % 2 else 1)],
              "final": i % 2 == 0, "environment": "real"} for i in range(120)]

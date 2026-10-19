@@ -8,7 +8,10 @@ reviewed overlay is trialled, so harmful or stale rewrites fall back immediately
 """
 from __future__ import annotations
 
+import copy
 import math
+import os
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Sequence, cast
 
@@ -139,8 +142,6 @@ def _text(root: str, row: dict[str, Any], field: str) -> str:
 
 def erase_rewrites(root: str, slugs: set[str]) -> list[str]:
     """Delete rewrite texts of erased lessons; journal rows keep only hash tombstones."""
-    import os
-
     removed = []
     for row in fp.journal(root, REWRITES):
         if row["kind"] != "proposal" or row["slug"] not in slugs:
@@ -152,7 +153,8 @@ def erase_rewrites(root: str, slugs: set[str]) -> list[str]:
                     removed.append(row[field])
                 except FileNotFoundError:
                     pass
-    _TRIALS.clear()
+    with fp._GUARD:
+        _TRIALS.pop(os.path.realpath(root), None)
     return removed
 
 
@@ -221,28 +223,37 @@ def choose(root: str, identity: str, occasion: str) -> dict[str, Any]:
             "note": "ongoing randomized comparison; report the task outcome under the same occasion id"}
 
 
-_TRIALS: dict[str, tuple[tuple[int, str], dict[str, list[dict[str, Any]]]]] = {}
+_TRIALS: OrderedDict[str, tuple[tuple[int, str], dict[str, list[dict[str, Any]]]]] = OrderedDict()
+
+
+def _after_fork() -> None:
+    _TRIALS.clear()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_after_fork)
 
 
 def trials(root: str) -> dict[str, list[dict[str, Any]]]:
     """Reviewed rewrite proposals by lesson slug, newest first (cached per journal checkpoint)."""
-    import os
-
     key = os.path.realpath(root)
-    checkpoint = fp.checkpoint(root, REWRITES)
-    cached = _TRIALS.get(key)
-    if cached is not None and cached[0] == checkpoint:
-        return cached[1]
-    events = fp.journal(root, REWRITES) if checkpoint[0] else []
-    reviewed = {r["id"] for r in events if r["kind"] == "review"}
-    result: dict[str, list[dict[str, Any]]] = {}
-    for row in reversed(events):
-        if row["kind"] == "proposal" and row["id"] in reviewed:
-            result.setdefault(row["slug"], []).append(row)
-    if len(_TRIALS) > 64:
-        _TRIALS.clear()
-    _TRIALS[key] = (checkpoint, result)
-    return result
+    with fp._GUARD:
+        checkpoint = fp.checkpoint(root, REWRITES)
+        cached = _TRIALS.get(key)
+        if cached is not None and cached[0] == checkpoint:
+            _TRIALS.move_to_end(key)
+            return copy.deepcopy(cached[1])
+        events = fp.journal(root, REWRITES) if checkpoint[0] else []
+        reviewed = {r["id"] for r in events if r["kind"] == "review"}
+        result: dict[str, list[dict[str, Any]]] = {}
+        for row in reversed(events):
+            if row["kind"] == "proposal" and row["id"] in reviewed:
+                result.setdefault(row["slug"], []).append(row)
+        _TRIALS[key] = (checkpoint, result)
+        _TRIALS.move_to_end(key)
+        while len(_TRIALS) > 64:
+            _TRIALS.popitem(last=False)
+        return copy.deepcopy(result)
 
 
 def overlay(root: str, slug: str, occasion: str | None) -> dict[str, Any] | None:

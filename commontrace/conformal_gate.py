@@ -20,6 +20,7 @@ from __future__ import annotations
 import copy
 import math
 import os
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Sequence
 
@@ -269,7 +270,8 @@ def configure(root: str, *, alpha: float, per_context: bool = False, propensity_
                   "propensity_floor": propensity_floor, "gated_windows": windows, "calibrated_at": fp.now(),
                   "calibration_n": len(rows), "scorers": scorers, "calibration": calibration}
         _jsonl.write_json(fp.filename(root, GATE), config)
-    _CURRENT.pop(os.path.realpath(root), None)
+    with fp._GUARD:
+        _CURRENT.pop(os.path.realpath(root), None)
     return current(root)
 
 
@@ -283,11 +285,20 @@ def disable(root: str) -> dict[str, Any]:
         if windows and windows[-1][1] is None:
             windows[-1][1] = fp.now()
         _jsonl.write_json(fp.filename(root, GATE), {"enabled": False, "gated_windows": windows})
-    _CURRENT.pop(os.path.realpath(root), None)
+    with fp._GUARD:
+        _CURRENT.pop(os.path.realpath(root), None)
     return {"enabled": False, "gated_windows": windows}
 
 
-_CURRENT: dict[str, tuple[Any, dict[str, Any]]] = {}
+_CURRENT: OrderedDict[str, tuple[Any, dict[str, Any]]] = OrderedDict()
+
+
+def _after_fork() -> None:
+    _CURRENT.clear()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_after_fork)
 
 
 def current(root: str) -> dict[str, Any]:
@@ -299,23 +310,26 @@ def current(root: str) -> dict[str, Any]:
         return {"enabled": False}
     stamp = (info.st_ino, info.st_mtime_ns, info.st_size)
     key = os.path.realpath(root)
-    cached = _CURRENT.get(key)
-    if cached is not None and cached[0] == stamp:
-        return copy.deepcopy(cached[1])
-    config = _load(root) or {}
-    if not config.get("enabled"):
-        result: dict[str, Any] = {"enabled": False}
-    elif "calibration" not in config:
-        # A pre-snapshot configuration: refuse to guess a threshold on the hot path.
-        result = {"enabled": True, "per_context": bool(config.get("per_context")), "strata": {},
-                  "alpha": config.get("alpha"), "note": "recalibrate with `commontrace retrieval --harm-budget`"}
-    else:
-        result = {"enabled": True, **config["calibration"], "scorers": config.get("scorers", []),
-                  "calibrated_at": config.get("calibrated_at"), "calibration_n": config.get("calibration_n", 0)}
-    if len(_CURRENT) > 64:
-        _CURRENT.clear()
-    _CURRENT[key] = (stamp, result)
-    return copy.deepcopy(result)
+    with fp._GUARD:
+        cached = _CURRENT.get(key)
+        if cached is not None and cached[0] == stamp:
+            _CURRENT.move_to_end(key)
+            return copy.deepcopy(cached[1])
+        config = _load(root) or {}
+        if not config.get("enabled"):
+            result: dict[str, Any] = {"enabled": False}
+        elif "calibration" not in config:
+            # A pre-snapshot configuration: refuse to guess a threshold on the hot path.
+            result = {"enabled": True, "per_context": bool(config.get("per_context")), "strata": {},
+                      "alpha": config.get("alpha"), "note": "recalibrate with `commontrace retrieval --harm-budget`"}
+        else:
+            result = {"enabled": True, **config["calibration"], "scorers": config.get("scorers", []),
+                      "calibrated_at": config.get("calibrated_at"), "calibration_n": config.get("calibration_n", 0)}
+        _CURRENT[key] = (stamp, result)
+        _CURRENT.move_to_end(key)
+        while len(_CURRENT) > 64:
+            _CURRENT.popitem(last=False)
+        return copy.deepcopy(result)
 
 
 def summary(gate: dict[str, Any], context: str = "") -> dict[str, Any]:

@@ -41,9 +41,7 @@ def signer(org_id: str, secret: str, algorithm: str = "hmac-sha256") -> origin.P
     key = hmac.new(secret.encode(), b"commontrace-transparency-v1\0" + org_id.encode(), hashlib.sha256).digest()
     public = b""
     if algorithm == "ed25519":
-        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-
-        public = Ed25519PrivateKey.from_private_bytes(key).public_key().public_bytes_raw()
+        public = origin.ed25519_public_bytes(key)
     return origin.Principal("hub-transparency", org_id, "operator", key, algorithm, public)
 
 

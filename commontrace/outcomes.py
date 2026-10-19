@@ -34,10 +34,13 @@ def prediction_powered(predictions: Sequence[float], gold: dict[int, float], pro
         fp.count(index, 0, n - 1, "gold index")
         fp.number(actual, low, high, "gold outcome")
         correction += (actual - predictions[index]) / probabilities[index]
+    if any(probability == 1.0 and index not in gold for index, probability in enumerate(probabilities)):
+        raise ValueError("every deterministic gold observation must include its gold outcome")
     naive = math.fsum(predictions) / n
     estimate = naive + correction / n
-    radius = (high - low) * math.sqrt(.5 * math.log(2 / alpha) *
-                                     math.fsum(1 / p**2 for p in probabilities)) / n
+    variance_terms = (0.0 if probability == 1.0 and index in gold else 1 / probability**2
+                      for index, probability in enumerate(probabilities))
+    radius = (high - low) * math.sqrt(.5 * math.log(2 / alpha) * math.fsum(variance_terms)) / n
     return {"estimate": estimate, "naive": naive, "gold_n": len(gold), "n": n,
             "interval": [max(low, estimate - radius), min(high, estimate + radius)],
             "kind": "unbiased finite-population estimate under exact independent Bernoulli gold sampling"}

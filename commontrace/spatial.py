@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import os
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, cast
@@ -44,32 +45,46 @@ class _Spatial:
     tip: str = ""
     rows: list[dict[str, Any]] = field(default_factory=list)
     by_id: dict[str, dict[str, Any]] = field(default_factory=dict)
-    latest: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
+    latest: dict[tuple[str, str, str], dict[str, Any]] = field(default_factory=dict)
 
 
-_STATES: dict[str, _Spatial] = {}
+_STATES: OrderedDict[str, _Spatial] = OrderedDict()
+
+
+def _after_fork() -> None:
+    _STATES.clear()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_after_fork)
 
 
 def _state(root: str) -> _Spatial:
     """Verified journal rows, indexed, extended incrementally per signed checkpoint."""
     key = os.path.realpath(root)
     count, tip = fp.checkpoint(root, JOURNAL)
-    cached = _STATES.get(key)
-    if cached is not None and cached.count == count and cached.tip == tip:
+    with fp._GUARD:
+        cached = _STATES.get(key)
+        if cached is not None and cached.count == count and cached.tip == tip:
+            _STATES.move_to_end(key)
+            return cached
+        if cached is None or count < cached.count or (cached.count and fp.digest(
+                fp.signed_at(root, JOURNAL, cached.count - 1)) != cached.tip):
+            cached = _Spatial()
+        count, tip, events = fp.event_snapshot(root, JOURNAL, cached.count)
+        for row in events:
+            cached.rows.append(row)
+            cached.by_id[row["id"]] = row
+            cache_key = (row["context"]["tenant"], row["context"]["site"], row["delta"]["object_id"])
+            prior = cached.latest.get(cache_key)
+            if prior is None or fp.moment(row["delta"]["timestamp"]) >= fp.moment(prior["delta"]["timestamp"]):
+                cached.latest[cache_key] = row
+        cached.count, cached.tip = count, tip
+        _STATES[key] = cached
+        _STATES.move_to_end(key)
+        while len(_STATES) > 16:
+            _STATES.popitem(last=False)
         return cached
-    if cached is None or count < cached.count or (cached.count and fp.digest(
-            fp.signed_at(root, JOURNAL, cached.count - 1)) != cached.tip):
-        cached = _Spatial()
-    count, tip, events = fp.event_snapshot(root, JOURNAL, cached.count)
-    for row in events:
-        cached.rows.append(row)
-        cached.by_id[row["id"]] = row
-        cached.latest[(fp.digest(row["context"]), row["delta"]["object_id"])] = row
-    cached.count, cached.tip = count, tip
-    if len(_STATES) > 16:
-        _STATES.clear()
-    _STATES[key] = cached
-    return cached
 
 
 def _same_placement(before: dict[str, Any], after: dict[str, Any]) -> bool:
@@ -128,24 +143,29 @@ def update(root: str, delta: dict[str, Any], *, context: dict[str, str],
     with _jsonl.locked(fp.filename(root, JOURNAL)):
         state = _state(root)
         if correction_of:
-            original = state.by_id.get(correction_of)
+            with fp._GUARD:
+                original = state.by_id.get(correction_of)
             if (original is None or original["context"] != context
                     or original["delta"]["object_id"] != delta["object_id"]):
                 raise PermissionError("correction must refer to the same authenticated object and owner")
         minute = datetime.fromisoformat(fp.now()) - timedelta(minutes=1)
-        recent = 0
-        for row in reversed(state.rows):  # rows are appended in record-time order
-            if datetime.fromisoformat(row["recorded_at"]) < minute:
-                break
-            if row["context"]["tenant"] == context["tenant"]:
-                recent += row["wire_bytes"]
+        with fp._GUARD:
+            recent = 0
+            for row in reversed(state.rows):  # rows are appended in record-time order
+                if datetime.fromisoformat(row["recorded_at"]) < minute:
+                    break
+                if row["context"]["tenant"] == context["tenant"]:
+                    recent += row["wire_bytes"]
         if recent + size > 64 * 1024:
             raise ValueError("tenant spatial update budget of 64 KiB per minute exceeded")
         identity = "spatial-" + fp.digest({"context": context, "delta": delta, "correction": correction_of})[:32]
-        prior = state.by_id.get(identity)
+        with fp._GUARD:
+            prior = state.by_id.get(identity)
         if prior:
             return copy.deepcopy(prior)
-        previous = state.latest.get((fp.digest(context), delta["object_id"]))
+        cache_key = (context["tenant"], context["site"], delta["object_id"])
+        with fp._GUARD:
+            previous = state.latest.get(cache_key)
         reused = None
         if previous is not None and not correction_of and _same_placement(previous["delta"], delta):
             # Reinforce only a placement fact that is still admissible now.
@@ -172,7 +192,9 @@ def history(root: str, object_id: str | None = None, *, context: dict[str, str],
         fp.text(object_id, "object id", 128)
     known = fp.moment(known_at) if known_at else fp.now()
     start = fp.moment(since) if since else None
-    candidates = [row for row in _state(root).rows if _visible(row, context) and row["recorded_at"] <= known
+    with fp._GUARD:
+        snapshot = list(_state(root).rows)
+    candidates = [row for row in snapshot if _visible(row, context) and row["recorded_at"] <= known
                   and (object_id is None or row["delta"]["object_id"] == object_id)
                   and (start is None or row["recorded_at"] > start)]
     admitted = search_recipes.admit(root, sorted({r["fact_id"] for r in candidates}),

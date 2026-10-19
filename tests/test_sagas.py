@@ -4,6 +4,8 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -99,3 +101,38 @@ def test_saga_cli_commands(store):
     res_list = cli("saga", "list", "--dest", store)
     assert res_list.returncode == 0
     assert "inc-99" in res_list.stdout
+
+
+def test_atomic_saga_updates_are_never_observed_as_partial_json(store):
+    sagas.create_saga(store, "concurrent", "Concurrent updates")
+    failures = []
+    stop = threading.Event()
+
+    def append_events():
+        for index in range(60):
+            sagas.append_saga_event(store, "concurrent", f"event-{index}")
+        stop.set()
+
+    def read_saga():
+        observed = -1
+        while not stop.is_set():
+            saga = sagas.get_saga(store, "concurrent")
+            if saga is None:
+                failures.append("missing or partial saga")
+                continue
+            if len(saga.events) < observed:
+                failures.append("event count moved backwards")
+            observed = len(saga.events)
+            if sagas.list_sagas(store, limit=10)[0].id != "concurrent":
+                failures.append("list read omitted the saga")
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        writer = pool.submit(append_events)
+        readers = [pool.submit(read_saga) for _ in range(3)]
+        writer.result()
+        for reader in readers:
+            reader.result()
+
+    final = sagas.get_saga(store, "concurrent")
+    assert final is not None and len(final.events) == 60
+    assert failures == []

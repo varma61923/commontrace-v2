@@ -1,7 +1,9 @@
+import hashlib
 import json
 
 import pytest
 
+from commontrace.hook_kit import HookKit
 from commontrace.memory_journal import Journal
 from commontrace.session_learning import learn, segment
 
@@ -15,6 +17,54 @@ def captured(root):
     ]:
         journal.capture("r", event, payload, scope={"agent": "a"})
     return journal
+
+
+@pytest.mark.parametrize("explicit_parent", [False, True])
+def test_subagent_start_namespaces_session_and_inherits_parent_claims(tmp_path, explicit_parent):
+    root = str(tmp_path)
+    agent, parent, child = "worker", "session-1", "subagent-1"
+    scope = {"agent": agent}
+    parent_run = hashlib.sha256(json.dumps([scope, parent], sort_keys=True).encode()).hexdigest()
+    journal = Journal(root)
+    journal.claim_injections(parent_run, ["injected-memory"])
+    with journal.connect(write=True) as db:
+        db.execute("INSERT INTO decisions VALUES(?,?)", (parent_run, "decision-memory"))
+    payload = {"session_id": parent, "agent_id": child}
+    if explicit_parent:
+        payload["parent_session_id"] = parent
+
+    HookKit(root, agent, embedder="none").handle("SubagentStart", payload, capture_only=True)
+
+    child_session = f"{parent}:{child}"
+    child_run = hashlib.sha256(json.dumps([scope, child_session], sort_keys=True).encode()).hexdigest()
+    assert journal.unclaimed(child_run, ["injected-memory", "decision-memory"]) == []
+    captured_rows = journal.buffer(child_run, scope=scope)
+    assert captured_rows and captured_rows[0]["payload"]["session_id"] == child_session
+    assert captured_rows[0]["payload"]["parent_session_id"] == parent
+
+
+def test_subagent_stop_records_causal_holdout_outcome_for_claimed_memory(tmp_path):
+    from commontrace import holdout_io
+
+    root = str(tmp_path)
+    agent, parent, child = "worker", "session-1", "subagent-1"
+    scope = {"agent": agent}
+    child_session = f"{parent}:{child}"
+    run_id = hashlib.sha256(json.dumps([scope, child_session], sort_keys=True).encode()).hexdigest()
+    occasion = f"{agent}:{run_id}"
+    holdout_io.configure(root, rate=.25, salt="subagent-outcome")
+    holdout_io.assign_and_log(root, ["newly-claimed-memory"], occasion_id=occasion, rate=.25,
+                              salt="subagent-outcome")
+    journal = Journal(root)
+    journal.claim_injections(run_id, ["newly-claimed-memory"])
+
+    HookKit(root, agent, embedder="none").handle(
+        "SubagentStop", {"session_id": parent, "parent_session_id": parent, "agent_id": child,
+                         "succeeded": True}, capture_only=True,
+    )
+
+    assert journal.unclaimed(run_id, ["newly-claimed-memory"]) == []
+    assert holdout_io.read_outcomes(root)[occasion] is True
 
 
 def model(prompt):

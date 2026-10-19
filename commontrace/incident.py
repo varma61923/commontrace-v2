@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+from collections import OrderedDict
 from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
@@ -227,30 +228,41 @@ def release(root: str, identity: str, reason: str) -> dict[str, Any]:
         return signed
 
 
-_HELD: dict[str, tuple[tuple[int, str], dict[str, list[str]]]] = {}
+_HELD: OrderedDict[str, tuple[tuple[int, str], dict[str, list[str]]]] = OrderedDict()
+
+
+def _after_fork() -> None:
+    _HELD.clear()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_after_fork)
 
 
 def held(root: str) -> dict[str, list[str]]:
     """Active legal holds: incident id -> pinned memory ids (verified against the manifest)."""
     key = os.path.realpath(root)
-    checkpoint = fp.checkpoint(root, JOURNAL)
-    cached = _HELD.get(key)
-    if cached is not None and cached[0] == checkpoint:
-        return {incident: list(ids) for incident, ids in cached[1].items()}
-    active: dict[str, list[str]] = {}
-    for event in fp.journal(root, JOURNAL):
-        if event["kind"] == "freeze":
-            if "held_ids" in event:  # Legacy journal rows carried the ids inline.
-                active[event["id"]] = event["held_ids"]
-            else:
-                active[event["id"]] = _read_part(_directory(root, event["id"]), "held_ids.json",
-                                                 event["held_ids_digest"])
-        elif event["kind"] == "release":
-            active.pop(event["id"], None)
-    if len(_HELD) > 64:
-        _HELD.clear()
-    _HELD[key] = (checkpoint, active)
-    return {incident: list(ids) for incident, ids in active.items()}
+    with fp._GUARD:
+        checkpoint = fp.checkpoint(root, JOURNAL)
+        cached = _HELD.get(key)
+        if cached is not None and cached[0] == checkpoint:
+            _HELD.move_to_end(key)
+            return {incident: list(ids) for incident, ids in cached[1].items()}
+        active: dict[str, list[str]] = {}
+        for event in fp.journal(root, JOURNAL):
+            if event["kind"] == "freeze":
+                if "held_ids" in event:  # Legacy journal rows carried the ids inline.
+                    active[event["id"]] = event["held_ids"]
+                else:
+                    active[event["id"]] = _read_part(_directory(root, event["id"]), "held_ids.json",
+                                                     event["held_ids_digest"])
+            elif event["kind"] == "release":
+                active.pop(event["id"], None)
+        _HELD[key] = (checkpoint, active)
+        _HELD.move_to_end(key)
+        while len(_HELD) > 64:
+            _HELD.popitem(last=False)
+        return {incident: list(ids) for incident, ids in active.items()}
 
 
 def assert_unpinned(root: str, identities: list[str]) -> None:

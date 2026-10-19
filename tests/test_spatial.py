@@ -71,6 +71,15 @@ def test_resightings_reinforce_placements_and_respect_invalidation(tmp_path):
     assert spatial.history(root, "crate", context=CONTEXT)[0]["delta"]["pose"][0] == 1
 
 
+def test_optional_robot_context_reuses_stationary_placement_fact(tmp_path):
+    root = str(tmp_path)
+    with_robot = {"tenant": "acme", "site": "depot", "robot": "r7"}
+    without_robot = {"tenant": "acme", "site": "depot"}
+    first = spatial.update(root, delta([1, 2, 3], "2026-01-01T00:00:00Z"), context=with_robot)
+    second = spatial.update(root, delta([1, 2, 3], "2026-01-01T00:05:00Z"), context=without_robot)
+    assert second["fact_id"] == first["fact_id"]
+
+
 @pytest.mark.parametrize("bad", [{"relations": {"near": "not-a-list"}}, {"media": "sha256:x"},
                                  {"pose": [1, 2, float("nan")]}, {"confidence": float("inf")}])
 def test_malformed_deltas_are_refused(tmp_path, bad):

@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import io
 import os
+import subprocess
+import sys
+from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 
 import pytest
 
@@ -106,3 +111,69 @@ class TestAgentLoop:
 
         assert len(result.turns) == 3
         assert turn_count["n"] == 3
+
+    def test_concurrent_dream_triggers_do_not_redirect_process_streams(self, store, monkeypatch):
+        import time
+
+        from commontrace import agent_loop
+
+        # The previous in-process dream call replaced sys.stdout/stderr while it
+        # ran. Keep the schedule concurrent and check every independent write.
+        output = io.StringIO()
+        monkeypatch.setattr(sys, "stdout", output)
+        calls = []
+
+        def isolated_run(args, **kwargs):
+            calls.append((args, kwargs))
+            assert kwargs["stdout"] == subprocess.DEVNULL
+            assert kwargs["stderr"] == subprocess.DEVNULL
+            time.sleep(.01)
+            return subprocess.CompletedProcess(args, 0)
+
+        monkeypatch.setattr(agent_loop.subprocess, "run", isolated_run)
+        loop = agent_loop.AgentLoop(store, dream_every=2)
+
+        def run_agent(index):
+            return loop.run(f"task {index}", tool_executor=lambda context, history: ("done", [{"done": True}]))
+
+        def write_output():
+            for index in range(80):
+                print(f"worker-output-{index}")
+
+        with ThreadPoolExecutor(max_workers=5) as pool:
+            writer = pool.submit(write_output)
+            list(pool.map(run_agent, range(4)))
+            writer.result()
+
+        lines = output.getvalue().splitlines()
+        assert lines == [f"worker-output-{index}" for index in range(80)]
+        assert loop._run_count == 4
+        assert len(calls) == 2
+
+    def test_recalled_facts_and_lessons_use_safe_quoted_labels(self, store, monkeypatch):
+        from commontrace import agent_loop, frontmatter, hierarchical, lesson_cache, memory_ifc, retrieval, retrieval_io
+
+        labels = []
+
+        def quote(root, item, *, identity=None):
+            labels.append(identity)
+            return {**item, "presentation": "quoted-data", "quoted_text": "> " + item["text"]}
+
+        monkeypatch.setattr(memory_ifc, "safe_label", quote)
+        lesson_path = os.path.join(store, "lesson.md")
+        ranked_lesson = SimpleNamespace(path=lesson_path, slug="external-lesson")
+        monkeypatch.setattr(lesson_cache, "load_active_with_terms", lambda *args, **kwargs: ([ranked_lesson], None))
+        monkeypatch.setattr(lesson_cache, "filter_eligible", lambda values: values)
+        monkeypatch.setattr(retrieval_io, "load_config", lambda _root: SimpleNamespace(floor=0, scorer=None))
+        monkeypatch.setattr(retrieval, "rank_lessons", lambda *args, **kwargs: [ranked_lesson])
+        monkeypatch.setattr(frontmatter, "read", lambda _path: ({"description": "lesson source data"}, "body"))
+        monkeypatch.setattr(lesson_cache, "fresh_eligible", lambda *args, **kwargs: True)
+        lessons = agent_loop._relevant_lessons(store, "lesson")
+        assert lessons == [("external-lesson", "> lesson source data")]
+
+        fact = SimpleNamespace(id="external-fact", statement="fact source data", scopes=[], confidence=.8)
+        monkeypatch.setattr(hierarchical, "search_facts", lambda *args, **kwargs: [(fact, 1.0)])
+        monkeypatch.setattr(agent_loop, "_relevant_lessons", lambda *args: [])
+        context = agent_loop._assemble_context(store, "fact")
+        assert "- > fact source data" in context
+        assert labels == ["external-lesson", "external-fact"]
