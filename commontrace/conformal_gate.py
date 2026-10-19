@@ -354,4 +354,3 @@ def report(root: str) -> dict[str, Any]:
     gate["realized"] = {"n": len(gated), "ipw_injected_failure": loss / len(gated) if gated else None,
                         "kind": "realized estimate on gated occasions; not a guarantee"}
     return gate
-

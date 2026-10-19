@@ -352,4 +352,3 @@ def verify_contribution(signed: dict[str, Any], *, card: dict[str, Any]) -> dict
     if body["tenant"] != card["tenant"]:
         raise PermissionError("UniMem contribution cannot impersonate another tenant")
     return body
-
