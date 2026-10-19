@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 from dataclasses import replace
@@ -27,6 +28,27 @@ from hub.tests.test_rest import _app, _org_with_key
 from tests.test_capabilities import A_KEY, policy
 
 pytestmark = pytest.mark.asyncio
+
+
+@pytest.mark.parametrize("encoded", [
+    b'{"record":{"kind":"narrow"},"record":{"kind":"wide"}}',
+    b'{"record":{"limit":NaN}}',
+    b'{"record":{"limit":Infinity}}',
+])
+async def test_capability_header_rejects_ambiguous_json(encoded):
+    with pytest.raises(ValueError):
+        delegation._decode(base64.urlsafe_b64encode(encoded).decode().rstrip("="), 8192)
+
+
+@pytest.mark.parametrize("raw", [
+    b'{"method":"tools/call","method":"tools/list","params":{"name":"delete_trace"}}',
+    b'{"method":"tools/call","params":{"name":"delete_trace"},"noise":NaN}',
+])
+async def test_delegated_mcp_operation_rejects_ambiguous_json(raw):
+    request = SimpleNamespace(url=SimpleNamespace(path="/mcp"), method="POST")
+    config = SimpleNamespace(streamable_http_path="/mcp")
+    with pytest.raises(ValueError):
+        delegation._operation(request, raw, config)
 
 
 async def setup(

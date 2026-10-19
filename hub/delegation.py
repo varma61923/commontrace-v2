@@ -22,6 +22,24 @@ from hub.db import session_scope
 ROOT = contextvars.ContextVar("unimem_hub_capability_root", default="")
 
 
+def _strict_json(raw):
+    """Parse bounded JSON without duplicate-key or non-finite ambiguity."""
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("UniMem JSON object contains a duplicate key")
+            result[key] = value
+        return result
+
+    def reject_constant(_value):
+        raise ValueError("UniMem JSON numbers must be finite")
+
+    value = json.loads(raw, object_pairs_hook=unique_object, parse_constant=reject_constant)
+    fp.validate_json_tree(value)
+    return value
+
+
 class Boundary:
     """Bound delegated contexts to one HTTP request, including deferred egress."""
     def __init__(self, app):
@@ -72,7 +90,9 @@ def _decode(encoded, bound):
     if not isinstance(encoded, str) or not encoded or len(encoded) > bound:
         raise ValueError("UniMem invalid capability header size")
     try:
-        result = json.loads(base64.b64decode(encoded + "=" * (-len(encoded) % 4), altchars=b"-_", validate=True))
+        result = _strict_json(base64.b64decode(
+            encoded + "=" * (-len(encoded) % 4), altchars=b"-_", validate=True,
+        ))
     except RecursionError:
         raise ValueError("UniMem capability header nesting exceeds its bound") from None
     if not isinstance(result, dict):
@@ -83,7 +103,7 @@ def _decode(encoded, bound):
 def _operation(request, raw, config):
     path, method = request.url.path, request.method
     if path == config.streamable_http_path and method == "POST":
-        payload = json.loads(raw)
+        payload = _strict_json(raw)
         if not isinstance(payload, dict):
             raise ValueError("UniMem delegated MCP requests must be single JSON-RPC objects")
         params = payload.get("params", {})
