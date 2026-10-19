@@ -137,6 +137,36 @@ def validate_json_tree(value: Any) -> None:
             raise ValueError("expected finite JSON data")
 
 
+def loads(raw: bytes | str) -> Any:
+    """Parse bounded JSON while rejecting duplicate keys and non-finite values."""
+    if isinstance(raw, bytes):
+        if len(raw) > MAX_BYTES:
+            raise ValueError("record exceeds 1 MiB")
+    elif isinstance(raw, str):
+        if len(raw) > MAX_BYTES or len(raw.encode("utf-8")) > MAX_BYTES:
+            raise ValueError("record exceeds 1 MiB")
+    else:
+        raise ValueError("JSON input must be bytes or text")
+
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("JSON object contains a duplicate key")
+            result[key] = value
+        return result
+
+    def reject_constant(_value):
+        raise ValueError("JSON numbers must be finite")
+
+    try:
+        value = json.loads(raw, object_pairs_hook=unique_object, parse_constant=reject_constant)
+        validate_json_tree(value)
+    except (ValueError, UnicodeError, RecursionError, TypeError) as exc:
+        raise ValueError("invalid bounded JSON") from exc
+    return value
+
+
 def wire(value: Any) -> bytes:
     validate_json_tree(value)
     try:
@@ -222,7 +252,7 @@ def rows(path: str) -> list[dict[str, Any]]:
             if len(result) >= MAX_ROWS or len(line) > MAX_BYTES + 1 or not line.endswith(b"\n"):
                 raise ValueError("journal is truncated or exceeds its size limit; rotate it")
             try:
-                value = json.loads(line)
+                value = loads(line)
             except (ValueError, UnicodeError, RecursionError) as exc:
                 raise ValueError("journal contains invalid or excessively nested JSON") from exc
             if not isinstance(value, dict):

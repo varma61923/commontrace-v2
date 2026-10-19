@@ -57,7 +57,7 @@ def _config(root: str) -> dict[str, Any]:
         raw = stream.read(1_048_577)
     if len(raw) > 1_048_576:
         raise ValueError("UniMem delegation configuration exceeds its bound")
-    signed = json.loads(raw)
+    signed = fp.loads(raw)
     body = signed["record"]
     expected = hmac.new(_root_key(root), b"unimem.capability.config.v1\x00" + fp.wire(body), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected, signed["signature"]):

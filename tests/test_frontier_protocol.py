@@ -26,6 +26,29 @@ def test_json_bounds_are_checked_before_serialization(monkeypatch):
             fp.wire(value)
 
 
+@pytest.mark.parametrize("raw", [
+    b'{"record":{"kind":"narrow"},"record":{"kind":"wide"}}',
+    b'{"record":{"kind":"safe","metadata":{"x":1,"x":2}}}',
+    b'{"score":NaN}',
+    b'{"score":Infinity}',
+    b'{"score":-Infinity}',
+])
+def test_bounded_json_parser_rejects_ambiguous_and_nonfinite_values(raw):
+    with pytest.raises(ValueError):
+        fp.loads(raw)
+
+
+@pytest.mark.parametrize("raw", [
+    b'{"record":{"kind":"safe"},"record":{"kind":"safe"}}\n',
+    b'{"record":{"score":NaN}}\n',
+])
+def test_signed_journal_reader_rejects_ambiguous_json_rows(tmp_path, raw):
+    journal = tmp_path / "journal.jsonl"
+    journal.write_bytes(raw)
+    with pytest.raises(ValueError, match="journal contains invalid"):
+        fp.rows(str(journal))
+
+
 def test_canonical_encoding_and_hashes_remain_compatible():
     value = {"unicode": "日本語", "values": [0, 1.5, None, {"label": "internal"}]}
     previous = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
