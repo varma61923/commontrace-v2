@@ -23,6 +23,15 @@ MAX_RECORD_NODES = 100_000
 MAX_RECORD_DEPTH = 64
 
 
+def _finite_number(value: Any) -> bool:
+    if type(value) not in (int, float):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
 @dataclass(frozen=True)
 class MemoryRecord:
     id: str
@@ -42,9 +51,6 @@ class MemoryRecord:
     evidence: list[dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        # Bound and type-check the complete envelope before field-specific
-        # numeric validation can coerce arbitrarily large caller-provided ints.
-        _validate_record_json(self.__dict__)
         if (
             not isinstance(self.id, str)
             or not self.id
@@ -63,11 +69,7 @@ class MemoryRecord:
             raise ValueError("record requires an id and a supported kind")
         if isinstance(self.version, bool) or not isinstance(self.version, int) or self.version < 1:
             raise ValueError("record version must be positive")
-        if (
-            type(self.confidence) not in (float, int)
-            or not math.isfinite(self.confidence)
-            or not 0 <= self.confidence <= 1
-        ):
+        if not _finite_number(self.confidence) or not 0 <= self.confidence <= 1:
             raise ValueError("record confidence must be finite in [0, 1]")
         if self.status not in ("proposed", "quarantined", "shadow", "active", "deprecated", "retired"):
             raise ValueError("unsupported memory status")
@@ -108,8 +110,11 @@ class MemoryRecord:
                     raise ValueError("profile observed_at must be ISO 8601") from exc
             for name, default in (("weight", 1), ("half_life_days", 90)):
                 value = self.payload.get(name, default)
-                if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
+                if not _finite_number(value) or value <= 0:
                     raise ValueError("profile weight and half-life must be finite and positive")
+        # Run generic structural checks after field-specific validation so
+        # callers retain precise errors for envelope fields such as confidence.
+        _validate_record_json(self.__dict__)
         if not isinstance(self.relations, dict) or not isinstance(self.scope, dict):
             raise ValueError("scope and relationships must be objects")
         if set(self.relations) - {"updates", "extends", "derives", "supersedes", "caused_by"}:
@@ -126,8 +131,8 @@ class MemoryRecord:
         labels = self.scope.get("labels", [])
         if not isinstance(labels, list) or any(not isinstance(v, str) or len(v) > 256 for v in labels):
             raise ValueError("scope labels must be bounded strings")
-        if len(labels) > 128 or any(not label for label in labels):
-            raise ValueError("scope labels must be nonempty and bounded")
+        if len(labels) > 128:
+            raise ValueError("scope labels must be bounded")
 
     def validate(self) -> None:
         """Recheck mutable nested fields before serialization or durable writes."""

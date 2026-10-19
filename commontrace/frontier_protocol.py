@@ -15,7 +15,7 @@ import threading
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, NoReturn
 
 from commontrace import _jsonl, frontmatter, memory_authority, origin, paths
 
@@ -148,7 +148,7 @@ def loads(raw: bytes | str) -> Any:
     else:
         raise ValueError("JSON input must be bytes or text")
 
-    def unique_object(pairs):
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
         result = {}
         for key, value in pairs:
             if key in result:
@@ -156,7 +156,7 @@ def loads(raw: bytes | str) -> Any:
             result[key] = value
         return result
 
-    def reject_constant(_value):
+    def reject_constant(_value: str) -> NoReturn:
         raise ValueError("JSON numbers must be finite")
 
     try:

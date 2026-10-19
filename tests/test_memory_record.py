@@ -36,7 +36,7 @@ def test_memory_envelopes_reject_non_finite_nested_numbers(value):
 
 def test_memory_envelope_rejects_oversized_integers_before_numeric_validation():
     with pytest.raises(ValueError, match="integer exceeds"):
-        MemoryRecord("oversized-integer", "fact", 1, {}, confidence=1 << 4096)
+        MemoryRecord("oversized-integer", "fact", 1, {"score": 1 << 4096})
 
 
 def test_memory_envelopes_reject_cycles_and_non_string_object_keys():
