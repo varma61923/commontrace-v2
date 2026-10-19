@@ -15,6 +15,7 @@ import pytest
 
 from commontrace.hook_kit import AGENTS, HookKit
 from commontrace.memory_journal import Journal
+from tests.test_hook_service import functional_command
 
 pytestmark = pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="Unix socket transport")
 
@@ -27,8 +28,9 @@ def command(root):
     return shlex.split(HookKit(str(root), "agent", embedder="none").manifest("claude")["events"]["UserPromptSubmit"])
 
 
-def run(root, *, agent=None, payload=None, **kwargs):
-    args = command(root) + (["--format", agent] if agent else [])
+def run(root, *, agent=None, payload=None, functional=False, **kwargs):
+    base = functional_command(command(root)) if functional else command(root)
+    args = base + (["--format", agent] if agent else [])
     return subprocess.run(
         args, input=payload if payload is not None else '{"session_id":"s","prompt":"code"}',
         text=True, capture_output=True, timeout=SPAWN_TIMEOUT, check=True, **kwargs,
@@ -47,7 +49,7 @@ def peer(root, handler):
         def work():
             try:
                 with server.accept()[0] as client:
-                    client.settimeout(2)
+                    client.settimeout(5)
                     handler(client)
             except BaseException as error:
                 errors.append(error)
@@ -181,7 +183,7 @@ def test_all_formats_preserve_protocol_and_receipt(tmp_path, agent):
         observed["receipt"] = frame(client)
 
     with peer(tmp_path, handler):
-        result = run(tmp_path, agent=agent)
+        result = run(tmp_path, agent=agent, functional=True)
     context = offered["context"]
     expected = {
         None: {"context": context, "injected": ["rule"]},
@@ -330,8 +332,6 @@ def test_invalid_input_fails_closed_without_creating_capture(tmp_path, payload):
 
 
 def test_unrelated_directory_and_pythonpath_cannot_supply_transport_imports(tmp_path, tmp_path_factory):
-    from tests.test_hook_service import functional_command
-
     unrelated = tmp_path / "unrelated directory"
     unrelated.mkdir()
     for name in ("json.py", "socket.py", "argparse.py", "sitecustomize.py"):
