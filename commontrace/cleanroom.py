@@ -114,9 +114,9 @@ def royalties(offers: Sequence[dict[str, Any]], values: dict[str, float], budget
         quotas = [Fraction(budget_cents) * weight / exact_total for weight in exact_weights]
         rewards = [quota.numerator // quota.denominator for quota in quotas]
         leftover = budget_cents - sum(rewards)
-        order = sorted(range(len(groups)), key=lambda index: (
+        cluster_order = sorted(range(len(groups)), key=lambda index: (
             -(quotas[index] - rewards[index]), tuple(sorted(item["id"] for item in groups[index]))))
-        for index in order[:leftover]:
+        for index in cluster_order[:leftover]:
             rewards[index] += 1
     payouts: dict[str, int] = {}
     clusters = []
@@ -133,9 +133,9 @@ def royalties(offers: Sequence[dict[str, Any]], values: dict[str, float], budget
             seller_rewards = {seller: quota.numerator // quota.denominator
                               for seller, quota in seller_quotas.items()}
             leftover = reward - sum(seller_rewards.values())
-            order = sorted(stakes, key=lambda seller: (
+            seller_order = sorted(stakes, key=lambda seller: (
                 -(seller_quotas[seller] - seller_rewards[seller]), -stakes[seller], seller))
-            for seller in order[:leftover]:
+            for seller in seller_order[:leftover]:
                 seller_rewards[seller] += 1
             for seller, amount in sorted(seller_rewards.items()):
                 payouts[seller] = payouts.get(seller, 0) + amount
