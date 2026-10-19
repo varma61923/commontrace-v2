@@ -880,8 +880,19 @@ class Gateway:
         if len(body) > MAX_BODY_BYTES:
             raise ApiError(413, "too_large", f"body is larger than {MAX_BODY_BYTES} bytes")
         try:
-            payload = json.loads(body)
-        except (ValueError, UnicodeDecodeError):
+            def unique_object(pairs):
+                result = {}
+                for key, value in pairs:
+                    if key in result:
+                        raise ValueError("duplicate JSON object key")
+                    result[key] = value
+                return result
+
+            def reject_constant(_value):
+                raise ValueError("non-finite JSON number")
+
+            payload = json.loads(body, object_pairs_hook=unique_object, parse_constant=reject_constant)
+        except (ValueError, UnicodeDecodeError, RecursionError):
             raise _bad("body is not valid JSON") from None
         if not isinstance(payload, dict):
             raise _bad("body must be a JSON object")

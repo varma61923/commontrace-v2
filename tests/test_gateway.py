@@ -147,7 +147,12 @@ def test_bad_recall_requests_are_400_with_the_reason(gw, body, message):
     assert status == 400 and message in r["error"]["message"], r
 
 
-@pytest.mark.parametrize("raw", [b"", b"nope", b"[1]", b"\xff\xfe", b'"s"'])
+@pytest.mark.parametrize("raw", [
+    b"", b"nope", b"[1]", b"\xff\xfe", b'"s"', b'{"x":NaN}', b'{"x":Infinity}',
+    b'{"occasion_id":"one","occasion_id":"two","items":[]}',
+    b'{"nested":{"x":1,"x":2}}',
+    b'{"x":' + b'[' * 2000 + b'0' + b']' * 2000 + b'}',
+])
 def test_non_object_or_non_json_bodies_are_400(gw, raw):
     assert gw.handle("POST", "/v1/recall", AUTH, raw).status == 400
 

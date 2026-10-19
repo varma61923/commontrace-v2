@@ -45,7 +45,22 @@ async def _read_json(request: Request) -> dict | None:
     try:
         from commontrace.frontier_protocol import validate_json_tree
 
-        payload = json.loads(await request.body())
+        def unique_object(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError("duplicate JSON object key")
+                result[key] = value
+            return result
+
+        def reject_constant(_value):
+            raise ValueError("non-finite JSON number")
+
+        payload = json.loads(
+            await request.body(),
+            object_pairs_hook=unique_object,
+            parse_constant=reject_constant,
+        )
         validate_json_tree(payload)
     except (json.JSONDecodeError, UnicodeDecodeError, ValueError, RecursionError):
         return None
