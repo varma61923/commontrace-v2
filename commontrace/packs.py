@@ -26,7 +26,7 @@ class PackInfo:
 
 
 def _load(name: str) -> tuple[dict[str, Any], str]:
-    if not NAME_RE.fullmatch(name):
+    if not isinstance(name, str) or not NAME_RE.fullmatch(name):
         raise ValueError("invalid vertical pack name")
     path = PACK_DIR / f"{name}.json"
     try:
@@ -71,6 +71,8 @@ def install(name: str, destination: str) -> dict[str, Any]:
         raise ValueError("vertical pack is missing its documentation page")
     root = Path(destination).expanduser().resolve()
     target = root / name
+    if target.is_symlink():
+        raise ValueError("vertical pack destination must not be a symlink")
     if target.exists() and not target.is_dir():
         raise ValueError("vertical pack destination must be a directory")
     _atomic_write(target / "pack.json", json.dumps(manifest, sort_keys=True, indent=2).encode() + b"\n")
@@ -80,8 +82,11 @@ def install(name: str, destination: str) -> dict[str, Any]:
 
 
 def demo(name: str, *, seed: int = 20261018) -> dict[str, Any]:
+    from commontrace import pack_demos
+
     manifest, _ = _load(name)
     seed = fp.count(seed, 0, 2**32 - 1)
+    checks = pack_demos.execute(manifest["features"], seed=seed)
     config = manifest["demo"]
     n = fp.count(config["units_per_arm"], 20, 100_000)
     p0 = fp.number(config["baseline_success_probability"], 0.001, 0.999)
@@ -99,7 +104,9 @@ def demo(name: str, *, seed: int = 20261018) -> dict[str, Any]:
     spent = (harms / n) / harm_budget
     report = manifest["report_template"].format(name=name, seed=seed, n=2 * n, effect=effect,
         lower=lower, upper=upper, harm=spent, features=", ".join(manifest["features"]))
+    report += "\nOffline feature checks (local fixtures, separate from synthetic estimates):\n"
+    report += "\n".join(f"- {feature}: {check['detail']}" for feature, check in checks.items())
     return {"name": name, "seed": seed, "units_per_arm": n, "control_successes": control,
             "treatment_successes": treatment, "harm_events": harms, "effect": effect,
             "interval_95": [lower, upper], "harm_budget_spent": spent, "report": report,
-            "network_calls": 0, "synthetic": True}
+            "network_calls": 0, "synthetic": True, "feature_checks": checks}

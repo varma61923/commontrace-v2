@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 from collections.abc import Mapping, Sequence
 from typing import Any
+
+from commontrace.validate import finite_number
 
 FORMATS = ("generic", "gepa", "ace", "training-free-grpo", "dspy", "code-diff")
 GEPA_SCHEMA_COMMIT = "f1cfdee2856e9dc4b5b4dc5cc2e391d0aa20d819"
@@ -58,8 +59,7 @@ def candidate(value: Mapping[str, Any]) -> dict[str, Any]:
     if parent is not None:
         _text(parent, "parent", 256)
     score = value["claimed_validation_score"]
-    if score is not None and (isinstance(score, bool) or not isinstance(score, (int, float))
-                              or not math.isfinite(score)):
+    if score is not None and not finite_number(score):
         raise ValueError("UniMem claimed validation score must be finite or null")
     body = {"base_artifact": base, "delta": delta, "optimizer": optimizer, "parent": parent}
     identity = "delta:" + _digest(body)
@@ -197,7 +197,7 @@ def pareto(points: Sequence[Mapping[str, Any]]) -> list[str]:
         identity = _text(point["id"], "frontier ID", 256)
         effect, harm = point["effect"], point["harm"]
         for number in (effect, harm):
-            if isinstance(number, bool) or not isinstance(number, (int, float)) or not math.isfinite(number):
+            if not finite_number(number):
                 raise ValueError("UniMem frontier coordinates must be finite")
         if not -1 <= effect <= 1 or not 0 <= harm <= 1:
             raise ValueError("UniMem frontier coordinates are outside their range")

@@ -11,6 +11,11 @@ the monitor resolves fallback memories through the scoped recovery registry and
 surfaces only reviewed hazard-protected candidates. The robot still holds for
 the controller to apply its own recovery policy.
 
+Each temporal operator requires samples covering its full time horizon, including
+nested horizons. An incomplete trace produces `incomplete-telemetry` and holds
+the action. Formulas have depth and node limits; bounded `until` evaluates its
+prefix in linear work rather than repeatedly scanning earlier samples.
+
 This monitor evaluates caller-provided traces and stores the verdict and digest.
 It does not control motors, sample sensors, certify a robot, or replace the
 robot's independent safety-rated controller, emergency stop, or risk assessment.

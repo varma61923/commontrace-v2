@@ -218,7 +218,10 @@ class JWKSCache:
                 raise InvalidToken("JWKS document is too large")
         else:
             raw = self._fetch(self._config.jwks_url)
-        document = json.loads(raw)
+        try:
+            document = json.loads(raw)
+        except RecursionError:
+            raise InvalidToken("JWKS document nesting is too deep") from None
         keys = document.get("keys") if isinstance(document, dict) else None
         if not isinstance(keys, list):
             raise InvalidToken("JWKS document has no keys")
@@ -237,7 +240,10 @@ class JWKSCache:
         except (OSError, ValueError, InvalidToken) as exc:  # URLError, timeouts and bad JSON included
             self._failures += 1
             first, maximum = JWKS_RETRY_SECONDS
-            delay = min(maximum, first * 2 ** (self._failures - 1))
+            # Saturate the exponent before multiplication. Otherwise a long
+            # issuer outage eventually overflows even though the delay is capped.
+            saturation = max(0, math.ceil(math.log2(maximum / first)))
+            delay = min(maximum, first * 2 ** min(self._failures - 1, saturation))
             self._next_attempt = now + delay
             if self._keys and now - self._loaded_at <= JWKS_MAX_STALE_SECONDS:
                 return
@@ -320,7 +326,7 @@ class ResourceServer:
         try:
             header = json.loads(_b64decode(header_b64))
             payload = json.loads(_b64decode(payload_b64))
-        except (ValueError, UnicodeDecodeError):
+        except (ValueError, UnicodeDecodeError, RecursionError):
             raise InvalidToken("token header or payload is not JSON") from None
         if not isinstance(header, dict) or not isinstance(payload, dict):
             raise InvalidToken("token header and payload must be objects")
@@ -374,7 +380,9 @@ class ResourceServer:
 
 
 def _numeric_date(value: object) -> TypeGuard[int | float]:
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+    from commontrace.validate import finite_number
+
+    return finite_number(value)
 
 
 def www_authenticate(metadata_url: str | None, *, error: str | None = None) -> str:
@@ -389,6 +397,17 @@ def www_authenticate(metadata_url: str | None, *, error: str | None = None) -> s
 
 _SERVERS: dict[tuple, ResourceServer] = {}
 _SERVERS_LOCK = threading.Lock()
+_MAX_SERVERS = 32
+
+
+def _after_fork() -> None:
+    global _SERVERS_LOCK
+    _SERVERS.clear()
+    _SERVERS_LOCK = threading.Lock()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_after_fork)
 
 
 def resource_server(root: str | None) -> ResourceServer | None:
@@ -397,9 +416,12 @@ def resource_server(root: str | None) -> ResourceServer | None:
     if config is None:
         return None
     with _SERVERS_LOCK:
-        server = _SERVERS.get((config,))
+        server = _SERVERS.pop((config,), None)
         if server is None:
-            server = _SERVERS[(config,)] = ResourceServer(config)
+            server = ResourceServer(config)
+        _SERVERS[(config,)] = server
+        while len(_SERVERS) > _MAX_SERVERS:
+            _SERVERS.pop(next(iter(_SERVERS)))
         return server
 
 

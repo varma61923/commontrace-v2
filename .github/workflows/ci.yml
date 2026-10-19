@@ -170,6 +170,9 @@ jobs:
       - name: Long-session summary preserves exact evidence and improves maintenance latency
         run: python -m benchmarks.session_summary --turns 1000 --trials 3 --check
 
+      - name: Robot retrieval and temporal monitor retain their wall-clock budgets
+        run: python -m benchmarks.robot_memory --check
+
       - name: Install focused coverage tooling
         run: python -m pip install "pytest>=9.0.3,<10.0" "pytest-cov>=7.0,<8.0"
 
@@ -208,7 +211,7 @@ jobs:
         env:
           REFERENCE_SHA: 973e59979f326559a863ed2dbcc02b187402dad4
         run: |
-          curl --fail --location --retry 3 \
+          curl --connect-timeout 10 --max-time 120 --fail --location --retry 3 \
             https://raw.githubusercontent.com/snap-research/locomo/cbfbc1dba6bc53d00625212a0f22d55ffee7c1fc/data/locomo10.json \
             --output "$RUNNER_TEMP/locomo10.json"
           python - <<'PY'
@@ -572,7 +575,7 @@ jobs:
             commontrace/fact_index.py commontrace/runtime_cache.py commontrace/sqlite_pool.py commontrace/_jsonl.py \
             benchmarks/memory_contracts.py benchmarks/vector_search.py \
             benchmarks/fact_search.py benchmarks/fact_retrieval.py benchmarks/fact_mutation.py \
-            benchmarks/conversation_retrieval.py
+            benchmarks/conversation_retrieval.py benchmarks/robot_memory.py commontrace/pack_demos.py
 
       - name: mypy (known findings, informational only)
         continue-on-error: true
@@ -586,10 +589,10 @@ jobs:
 
       - name: Install pinned helm and terraform
         run: |
-          curl -sSfL -o helm.tgz https://get.helm.sh/helm-v3.16.2-linux-amd64.tar.gz
+          curl --connect-timeout 10 --max-time 120 -sSfL -o helm.tgz https://get.helm.sh/helm-v3.16.2-linux-amd64.tar.gz
           echo "9318379b847e333460d33d291d4c088156299a26cd93d570a7f5d0c36e50b5bb  helm.tgz" | sha256sum -c -
           tar xzf helm.tgz && sudo mv linux-amd64/helm /usr/local/bin/helm
-          curl -sSfL -o tf.zip https://releases.hashicorp.com/terraform/1.9.8/terraform_1.9.8_linux_amd64.zip
+          curl --connect-timeout 10 --max-time 120 -sSfL -o tf.zip https://releases.hashicorp.com/terraform/1.9.8/terraform_1.9.8_linux_amd64.zip
           echo "186e0145f5e5f2eb97cbd785bc78f21bae4ef15119349f6ad4fa535b83b10df8  tf.zip" | sha256sum -c -
           unzip -q tf.zip && sudo mv terraform /usr/local/bin/terraform
 
@@ -608,6 +611,7 @@ jobs:
             terraform -chdir="$d" init -backend=false -input=false
             terraform -chdir="$d" validate
             terraform -chdir="$d" fmt -check
+            terraform -chdir="$d" test
           done
 
   docker-build:
@@ -638,14 +642,14 @@ jobs:
             -e HUB_ALLOW_INSECURE_HTTP=true \
             commontrace-hub:ci
           for i in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:8420/healthz; then echo "healthz OK"; exit 0; fi
+            if curl --connect-timeout 2 --max-time 5 -fsS http://127.0.0.1:8420/healthz; then echo "healthz OK"; exit 0; fi
             sleep 1
           done
           echo "--- container logs ---"; docker logs hub-ci; exit 1
 
       - name: Readiness reports unhealthy without a database
         run: |
-          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8420/readyz)
+          code=$(curl --connect-timeout 2 --max-time 5 -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8420/readyz)
           test "$code" = "503" || { echo "expected 503 from /readyz, got $code"; exit 1; }
           echo "readyz correctly reports 503 with no database"
 
@@ -664,7 +668,7 @@ jobs:
           docker run -d --name local-ci --read-only --tmpfs /tmp --cap-drop ALL \
             -p 127.0.0.1:8787:8787 commontrace-local:ci
           for i in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:8787/v1/health/ready; then echo " ready OK"; exit 0; fi
+            if curl --connect-timeout 2 --max-time 5 -fsS http://127.0.0.1:8787/v1/health/ready; then echo " ready OK"; exit 0; fi
             sleep 1
           done
           echo "--- container logs ---"; docker logs local-ci; exit 1
@@ -697,7 +701,7 @@ jobs:
       - name: Wait for readiness
         run: |
           for i in $(seq 1 60); do
-            if curl -fsS http://127.0.0.1:8420/readyz; then echo; echo "ready"; exit 0; fi
+            if curl --connect-timeout 2 --max-time 5 -fsS http://127.0.0.1:8420/readyz; then echo; echo "ready"; exit 0; fi
             sleep 2
           done
           echo "--- compose ps ---";      docker compose ps
@@ -729,7 +733,7 @@ jobs:
 
       - name: Unauthenticated requests are refused
         run: |
-          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8420/mcp \
+          code=$(curl --connect-timeout 2 --max-time 5 -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8420/mcp \
             -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
             -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"1"}}}')
           test "$code" = "401" || { echo "expected 401 without a key, got $code"; exit 1; }
@@ -739,28 +743,28 @@ jobs:
         run: |
           set -euo pipefail
 
-          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8420/signup)
+          code=$(curl --connect-timeout 2 --max-time 5 -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8420/signup)
           test "$code" = "200" || { echo "GET /signup: expected 200, got $code"; exit 1; }
 
-          body=$(curl -s -X POST http://127.0.0.1:8420/signup --data-urlencode "org_name=CI Signup Org")
+          body=$(curl --connect-timeout 2 --max-time 5 -s -X POST http://127.0.0.1:8420/signup --data-urlencode "org_name=CI Signup Org")
           raw_key=$(echo "$body" | grep -oE 'ct_live_[A-Za-z0-9_-]+' | head -1)
           test -n "$raw_key" || { echo "signup response carried no api key:"; echo "$body"; exit 1; }
           echo "::add-mask::$raw_key"
           echo "self-serve signup issued a key"
 
-          resp=$(curl -s -D - -o /dev/null http://127.0.0.1:8420/app)
+          resp=$(curl --connect-timeout 2 --max-time 5 -s -D - -o /dev/null http://127.0.0.1:8420/app)
           echo "$resp" | grep -qi '^HTTP/[0-9.]* 303' \
             || { echo "GET /app with no session: expected 303"; echo "$resp"; exit 1; }
           echo "$resp" | grep -qi '^location:.*/app/signin' \
             || { echo "GET /app with no session: expected a redirect to /app/signin"; echo "$resp"; exit 1; }
 
           cookie_jar=$(mktemp)
-          signin_code=$(curl -s -o /dev/null -w '%{http_code}' -c "$cookie_jar" \
+          signin_code=$(curl --connect-timeout 2 --max-time 5 -s -o /dev/null -w '%{http_code}' -c "$cookie_jar" \
             http://127.0.0.1:8420/app/signin -X POST --data-urlencode "api_key=$raw_key")
           test "$signin_code" = "303" || { echo "POST /app/signin: expected 303, got $signin_code"; exit 1; }
           grep -q ct_console "$cookie_jar" || { echo "sign-in set no session cookie"; exit 1; }
 
-          overview_code=$(curl -s -o /dev/null -w '%{http_code}' -b "$cookie_jar" http://127.0.0.1:8420/app)
+          overview_code=$(curl --connect-timeout 2 --max-time 5 -s -o /dev/null -w '%{http_code}' -b "$cookie_jar" http://127.0.0.1:8420/app)
           test "$overview_code" = "200" || { echo "GET /app with a session: expected 200, got $overview_code"; exit 1; }
           rm -f "$cookie_jar"
           echo "self-serve signup -> console sign-in works end to end, over real HTTP"
@@ -781,7 +785,7 @@ jobs:
         run: |
           before=$(docker compose exec -T db psql -U commontrace -d commontrace_hub -tAc 'SELECT count(*) FROM traces')
           docker compose restart hub
-          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8420/readyz >/dev/null && break; sleep 2; done
+          for i in $(seq 1 30); do curl --connect-timeout 2 --max-time 5 -fsS http://127.0.0.1:8420/readyz >/dev/null && break; sleep 2; done
           after=$(docker compose exec -T db psql -U commontrace -d commontrace_hub -tAc 'SELECT count(*) FROM traces')
           test "$before" = "$after" || { echo "trace count changed across restart: $before -> $after"; exit 1; }
           test "$after" -gt 0 || { echo "expected traces to exist after the --keep smoke run"; exit 1; }

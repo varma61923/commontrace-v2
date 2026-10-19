@@ -163,6 +163,10 @@ def spawn_background(
 # --- tracing ---------------------------------------------------------------------
 
 def otel_enabled() -> bool:
+    from commontrace import offline
+
+    if offline.enabled():
+        return False
     flag = _configuration_getenv("COMMONTRACE_OTEL", "").strip().lower()
     if flag in ("0", "false", "off", "no"):
         return False
@@ -171,14 +175,16 @@ def otel_enabled() -> bool:
 
 def _tracer():
     global _TRACER
+    if not otel_enabled():
+        return None
     if _TRACER_STATE["tried"]:
         return _TRACER
     with _LOCK:
         if _TRACER_STATE["tried"]:
             return _TRACER
-        _TRACER_STATE["tried"] = True
         if not otel_enabled():
             return None
+        _TRACER_STATE["tried"] = True
         try:
             from opentelemetry import trace
             from opentelemetry.sdk.resources import Resource
@@ -326,9 +332,12 @@ def observe(name: str, value: float, **labels: Any) -> None:
 
 def _valid_metric(name: str, value: float, labels: dict[str, Any]) -> bool:
     # Instrumentation must not break a request or create invalid scrape data.
-    return (isinstance(name, str) and _METRIC_NAME.fullmatch(name) is not None
-            and isinstance(value, (int, float)) and math.isfinite(value) and value >= 0
-            and len(labels) <= 16 and all(_LABEL_NAME.fullmatch(key) for key in labels))
+    from commontrace.validate import finite_number
+
+    return (isinstance(name, str) and len(name) <= 200 and _METRIC_NAME.fullmatch(name) is not None
+            and finite_number(value) and value >= 0
+            and len(labels) <= 16 and all(isinstance(key, str) and len(key) <= 200
+                                          and _LABEL_NAME.fullmatch(key) for key in labels))
 
 
 def reset() -> None:
@@ -480,7 +489,7 @@ def configure_logging(fmt: str | None = None, level: str | None = None, stream=N
 
 def status() -> dict:
     """For `commontrace doctor`."""
-    _tracer()
+    tracer = _tracer()
     try:
         import opentelemetry  # noqa: F401
 
@@ -488,6 +497,6 @@ def status() -> dict:
     except ImportError:
         otel_installed = False
     return {"otel_installed": otel_installed, "otel_enabled": otel_enabled(),
-            "tracing": _TRACER is not None, "note": _TRACER_STATE["error"],
+            "tracing": tracer is not None, "note": _TRACER_STATE["error"],
             "log_format": _configuration_getenv("COMMONTRACE_LOG_FORMAT", "") or "default",
             "endpoint": os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "")}

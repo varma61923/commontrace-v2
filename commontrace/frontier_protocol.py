@@ -97,20 +97,48 @@ def _state(root: str, name: str) -> _Journal:
     return state
 
 
-def wire(value: Any) -> bytes:
+def validate_json_tree(value: Any) -> None:
+    """Bound an already parsed JSON tree before recursive consumers see it."""
     pending = [(value, 0)]
     visited = 0
+    minimum_bytes = 0
     while pending:
         item, depth = pending.pop()
         visited += 1
+        # A cheap lower bound prevents allocating a giant encoded string from
+        # individually small values. JSON escaping adds at most a fixed factor.
+        minimum_bytes += 1
+        if isinstance(item, str):
+            minimum_bytes += len(item)
+        elif isinstance(item, int) and not isinstance(item, bool):
+            minimum_bytes += max(0, (item.bit_length() - 1) * 3 // 10)
+        if minimum_bytes > MAX_BYTES:
+            raise ValueError("record exceeds 1 MiB")
         if depth > 64 or visited > 200_000:
             raise ValueError("JSON exceeds depth/node bounds")
         if isinstance(item, dict):
+            if visited + len(pending) + len(item) > 200_000:
+                raise ValueError("JSON exceeds depth/node bounds")
             if any(not isinstance(key, str) for key in item):
                 raise ValueError("canonical JSON keys must be strings")
+            if any(len(key) > MAX_BYTES for key in item):
+                raise ValueError("record exceeds 1 MiB")
+            minimum_bytes += sum(len(key) for key in item)
+            if minimum_bytes > MAX_BYTES:
+                raise ValueError("record exceeds 1 MiB")
             pending.extend((child, depth + 1) for child in item.values())
         elif isinstance(item, (list, tuple)):
+            if visited + len(pending) + len(item) > 200_000:
+                raise ValueError("JSON exceeds depth/node bounds")
             pending.extend((child, depth + 1) for child in item)
+        elif isinstance(item, str) and len(item) > MAX_BYTES:
+            raise ValueError("record exceeds 1 MiB")
+        elif isinstance(item, float) and not math.isfinite(item):
+            raise ValueError("expected finite JSON data")
+
+
+def wire(value: Any) -> bytes:
+    validate_json_tree(value)
     try:
         encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
                              allow_nan=False).encode("utf-8")
@@ -126,17 +154,25 @@ def digest(value: Any) -> str:
 
 
 def text(value: str, label: str = "identifier", maximum: int = 512) -> str:
-    if not isinstance(value, str) or not value or len(value.encode()) > maximum or "\x00" in value:
+    if (not isinstance(value, str) or not value or len(value) > maximum
+            or len(value.encode()) > maximum or "\x00" in value):
         raise ValueError(f"invalid {label} (1..{maximum} bytes)")
     return value
 
 
 def number(value: float, low: float, high: float, label: str = "number") -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+    if (isinstance(value, bool) or not isinstance(value, (int, float))
+            or (isinstance(value, float) and not math.isfinite(value))):
         raise ValueError(f"{label} must be finite")
     if not low <= value <= high:
         raise ValueError(f"{label} must be in [{low}, {high}]")
-    return float(value)
+    try:
+        result = float(value)
+    except OverflowError:
+        raise ValueError(f"{label} must be finite") from None
+    if not math.isfinite(result):
+        raise ValueError(f"{label} must be finite")
+    return result
 
 
 def count(value: int, low: int, high: int, label: str = "count") -> int:

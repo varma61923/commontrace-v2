@@ -4,4 +4,10 @@
 
 Eviction uses `retention.dream_budget` with configured utility and expected retrieval, while safety keyframes stay protected even when their combined size exceeds capacity. At episode end, only predictive keyframes are written to canonical memory, with lineage and an append-only audit record. Values and utilities are local heuristics and are not safety guarantees.
 
-The 5 ms figure is a design target. CI measures local p99 retrieval with a generous 10x allowance on its host; robot integrators must benchmark their hardware and vector dimensions. ROS messages are bounded JSON envelopes. The node is a memory service, never a motion controller.
+The 5 ms figure is a design target. Unit tests measure process CPU service time;
+the separate `python -m benchmarks.robot_memory --check` gate measures wall-clock
+p50/p95/p99 on a quiet process with a generous 10x allowance. Robot integrators
+must benchmark their hardware and vector dimensions. Concurrent reads use a
+consistent snapshot, lock waits count against the wall-clock budget, and a
+protected keyframe cannot be demoted by replacing its ID. ROS messages are bounded
+JSON envelopes. The node is a memory service, never a motion controller.

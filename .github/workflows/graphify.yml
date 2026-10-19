@@ -5,7 +5,7 @@ on:
     branches: ['main']
     paths: ['commontrace/**', 'hub/**', 'scripts/graphify_audit.py', '.github/workflows/graphify.yml']
   pull_request:
-    paths: ['commontrace/**', 'hub/**', 'scripts/graphify_audit.py']
+    paths: ['commontrace/**', 'hub/**', 'scripts/graphify_audit.py', '.github/workflows/graphify.yml']
 permissions:
   contents: read
 jobs:
@@ -18,67 +18,14 @@ jobs:
           python-version: '3.12'
       - run: python -m pip install "graphifyy[terraform,sql] @ git+https://github.com/Graphify-Labs/graphify.git@86c57be8204673c2a1b9849a3292a7dd3ab373d8"
       - run: graphify extract . --code-only --max-workers 2 --out "$RUNNER_TEMP/architecture"
-      # Seven console history callbacks are dynamically dispatched and verified
-      # by Chromium contracts; they are reviewed reachability candidates.
-      # Module budget 311 -> 314: multihop, query_expansion and triplet_search
-      # (multi-hop reasoning, query expansion and semantic triplet retrieval);
-      # 314 -> 315: causal_gate (contextual Thompson allocation over the holdout).
-      # Current reviewed budget also covers G17 household, G19 KV capsules,
-      # G23-G26 world-model, signature, working-memory and site-mesh modules.
+      # pack_demos adds one reviewed runtime module; see architecture-exploration.md.
       - name: Enforce graph integrity and reviewed surface budgets
         run: >-
           python scripts/graphify_audit.py
           --graph "$RUNNER_TEMP/architecture/graphify-out/graph.json"
           --output "$RUNNER_TEMP/architecture/audit.json"
-          --source-root . --max-modules 397 --max-unreachable 318
+          --source-root . --max-modules 398 --max-unreachable 318
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
           name: graphify-audit
           path: ${{ runner.temp }}/architecture
-
-# Added modules: frontier_protocol, lineage, commands/lineage_cmd (+3).
-# Added modules: transparency_log, commands/log_cmd (+2).
-# Added module: interference (+1), early symbiosis-bias diagnostic.
-# Added module: eprocess (+1).
-# Added module: conformal_gate (+1).
-# Added modules: incident, commands/incident_cmd (+2).
-# Added modules: promotion, commands/promote_cmd (+2).
-# Added modules: safety, commands/safety_cmd (+2).
-# Added modules: retention (+1).
-# Added modules: certified_erasure (+1).
-# Added modules: memory_ifc, redteam (+2).
-
-# Remaining modules: attribution, cleanroom, commands/frontier_cmd, compile_memory, outcomes, recovery, robotics/__init__, robotics/bridge, robotics/edge, robotics/ingest, spatial, uplift, valuation.
-# Added modules (+4): pooled_evidence, pooled_io, nextwave_store, commands/nextwave.
-# Added modules (+3): unit_trials, skill_foundry, skill_io.
-# Added modules (+2): rl_export, rl_io.
-
-# Added module (+1): writer_holdout.
-
-# Added module (+1): contagion.
-
-# Added module (+1): otel_memory.
-
-# Added modules (+2): change_stream, erasure_verify.
-
-# Added module (+1): tiering.
-
-# Added modules (+2): capabilities, capability_io.
-
-# Added modules (+2): team_isolation, team_io.
-
-# Added modules (+2): optimizer_intake, optimizer_io.
-# Added modules (+2): sentinel, sentinel_io.
-# Added modules (+2): sycophancy, sycophancy_io.
-
-# Added modules (+4): policy_proof, policy_cedar, policy_io, policy_relations.
-
-# Added modules (+3): passport, credentials, person_io.
-
-# Purpose-bound consent adds purpose (+1 module).
-
-# Regulated write rule packs add subject_policy (+1 module).
-
-# Governed human intervention and asking add human_help (+1 module).
-
-# Attested CPU/GPU key release adds attested_keys and Hub attestation (+2 modules).

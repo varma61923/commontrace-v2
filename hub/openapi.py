@@ -963,14 +963,15 @@ def _operations() -> dict[tuple[str, str], dict]:
                         "must receive one random query share; replicas must not collude. See oblivious recall docs.",
             body=_json_body({"type": "object", "required": ["cluster"], "properties": {
                 "cluster": {"type": "string", "maxLength": 96},
-                "share": {"type": "string", "contentEncoding": "base64"},
+                "share": {"type": "string", "maxLength": 172, "contentEncoding": "base64"},
                 "shares": {"type": "array", "maxItems": 1024, "items": {"type": "string",
+                                                                          "maxLength": 172,
                                                                           "contentEncoding": "base64"}},
             }}),
             ok={"200": _json("Fixed-size metadata or XOR response share.", {"oneOf": [
                 {"type": "object", "required": ["count", "block_bytes"], "properties": {
-                    "count": {"type": "integer", "minimum": 0},
-                    "block_bytes": {"type": "integer", "minimum": 1},
+                    "count": {"type": "integer", "minimum": 1, "maximum": 1024},
+                    "block_bytes": {"type": "integer", "minimum": 1, "maximum": 16384},
                 }},
                 {"type": "object", "required": ["answer"], "properties": {
                     "answer": {"type": "string", "contentEncoding": "base64"},

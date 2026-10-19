@@ -15,6 +15,9 @@ from __future__ import annotations
 
 import ipaddress
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from urllib.parse import urlsplit
 
 from commontrace.configuration import getenv as _configuration_getenv
@@ -22,6 +25,7 @@ from commontrace.exceptions import CapabilityError
 
 ENV = "COMMONTRACE_OFFLINE"
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
+_BLOCK_NETWORK: ContextVar[bool] = ContextVar("commontrace_block_network", default=False)
 # Read by huggingface_hub / transformers / datasets: load only what is already cached.
 MODEL_HUB_SWITCHES = ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "HF_DATASETS_OFFLINE")
 
@@ -32,7 +36,21 @@ class OfflineError(CapabilityError):
 
 
 def enabled() -> bool:
-    return _configuration_getenv(ENV, "").strip().lower() in _TRUTHY
+    return _BLOCK_NETWORK.get() or _configuration_getenv(ENV, "").strip().lower() in _TRUTHY
+
+
+@contextmanager
+def without_network() -> Iterator[None]:
+    """Make checked clients refuse all network I/O in this task, including loopback.
+
+    Unlike enable(), this does not mutate the process environment or affect
+    unrelated threads/tasks. It is a client policy, not an operating-system sandbox.
+    """
+    token = _BLOCK_NETWORK.set(True)
+    try:
+        yield
+    finally:
+        _BLOCK_NETWORK.reset(token)
 
 
 def enable() -> None:
@@ -54,7 +72,7 @@ def enable_local() -> None:
 
 def apply_environment() -> None:
     """Propagate an inherited COMMONTRACE_OFFLINE to the model-hub switches."""
-    if enabled():
+    if _configuration_getenv(ENV, "").strip().lower() in _TRUTHY:
         enable()
 
 
@@ -70,6 +88,8 @@ def is_loopback(url: str) -> bool:
 
 def check_url(url: str, purpose: str) -> None:
     """Raise `OfflineError` when offline mode forbids reaching `url`."""
+    if _BLOCK_NETWORK.get():
+        raise OfflineError(f"offline workflow: {purpose} requires network access")
     if enabled() and not is_loopback(url):
         raise OfflineError(f"offline mode: {purpose} needs network access to a non-local host")
 

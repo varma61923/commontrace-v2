@@ -1,5 +1,7 @@
 from collections import Counter
 
+import pytest
+
 from commontrace import oblivious
 
 
@@ -40,7 +42,7 @@ def test_clustered_xor_pir_matches_plaintext_ranking_and_clearance():
                                      clusters_to_fetch=2, fetch_pair=fetch)
     assert [row["id"] for row in report["results"]] == ["best", "next", "far"]
     assert all(row["label"] != "restricted" for row in report["results"])
-    assert report["leakage"] == ["clusters_fetched", "cluster_count"]
+    assert report["leakage"] == ["selected_cluster_ids", "clusters_fetched", "cluster_count"]
 
 
 def test_direct_server_response_reconstructs_selected_fixed_block():
@@ -49,3 +51,65 @@ def test_direct_server_response_reconstructs_selected_fixed_block():
     answer = oblivious.reconstruct(oblivious.server_answer(blocks, q0, block_bytes=2),
                                    oblivious.server_answer(blocks, q1, block_bytes=2))
     assert answer == b"ef"
+
+
+@pytest.mark.parametrize("metadata", [None, {}, {"count": -1, "block_bytes": 256},
+    {"count": True, "block_bytes": 256}, {"count": 1, "block_bytes": 0},
+    {"count": "1", "block_bytes": 256}, {"count": 1024, "block_bytes": 16384}])
+def test_untrusted_metadata_is_rejected_before_fetching_blocks(metadata):
+    requests = []
+
+    def fetch(*args):
+        requests.append(args)
+        return metadata
+
+    with pytest.raises(ValueError):
+        oblivious.client_recall({"a": [0]}, [0], clearance="public", limit=1, fetch_pair=fetch)
+    assert len(requests) == 1
+
+
+@pytest.mark.parametrize("answers", [([], []), ([b"a" * 256], []),
+    ([b"a"], [b"b"]), ([None], [b"b" * 256]), ([b"a" * 256], [b"b" * 256], [])])
+def test_truncated_or_malformed_server_batches_never_become_partial_success(answers):
+    def fetch(cluster, first, second):
+        return {"count": 1, "block_bytes": 256} if first is None else answers
+
+    with pytest.raises(ValueError):
+        oblivious.client_recall({"a": [0]}, [0], clearance="public", limit=1, fetch_pair=fetch)
+
+
+def test_pir_batch_has_a_combined_work_bound(monkeypatch):
+    def unexpected_work(*args, **kwargs):
+        pytest.fail("oversized batch reached the XOR loop")
+
+    monkeypatch.setattr(oblivious, "server_answer", unexpected_work)
+    with pytest.raises(ValueError, match="work budget"):
+        oblivious.server_answer_many([b"a" * 256] * 1024, [bytes(128)] * 1024, block_bytes=256)
+
+
+@pytest.mark.parametrize("vector", [[float("nan")], [float("inf")], [True], [10**1000], [], [0] * 4097])
+def test_nonfinite_oversized_and_malformed_index_vectors_are_rejected(vector):
+    with pytest.raises(ValueError):
+        oblivious.cluster_records([{"id": "a", "label": "public", "vector": vector}],
+                                   {"a": [0]}, clearance="public", block_bytes=256)
+
+
+def test_replica_owns_its_fixed_size_database_snapshot():
+    blocks = {"a": [b"ab", b"cd"]}
+    replica = oblivious.XorPIRReplica(blocks, block_bytes=2)
+    blocks["a"].clear()
+    blocks.clear()
+    assert replica.handle("a", None) == {"count": 2, "block_bytes": 2}
+    assert replica.handle("a", b"\x01") == b"ab"
+
+
+def test_corrupt_or_deeply_nested_blocks_raise_validation_errors():
+    for block in (b"\xff", b"[" * 4000 + b"0" + b"]" * 4000):
+        with pytest.raises(ValueError):
+            oblivious._decode_block(block)
+
+
+def test_duplicate_memory_ids_cannot_enter_the_pir_index():
+    row = {"id": "same", "label": "public", "vector": [0]}
+    with pytest.raises(ValueError, match="unique"):
+        oblivious.cluster_records([row, row], {"a": [0]}, clearance="public", block_bytes=256)

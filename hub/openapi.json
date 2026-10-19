@@ -4917,11 +4917,13 @@
                   },
                   "share": {
                     "contentEncoding": "base64",
+                    "maxLength": 172,
                     "type": "string"
                   },
                   "shares": {
                     "items": {
                       "contentEncoding": "base64",
+                      "maxLength": 172,
                       "type": "string"
                     },
                     "maxItems": 1024,
@@ -4946,11 +4948,13 @@
                     {
                       "properties": {
                         "block_bytes": {
+                          "maximum": 16384,
                           "minimum": 1,
                           "type": "integer"
                         },
                         "count": {
-                          "minimum": 0,
+                          "maximum": 1024,
+                          "minimum": 1,
                           "type": "integer"
                         }
                       },

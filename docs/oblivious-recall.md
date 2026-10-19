@@ -25,3 +25,10 @@ ORAM-over-HNSW (Compass) or verifiable PIR; `ORAMOverHNSWBackend` and
 `VerifiablePIRBackend` are the typed adapter boundaries for those future
 backends. It is unsuitable for robot control loops; the reference deliberately
 fetches a full selected cluster and uses one network round trip per cluster.
+
+The reference limits a batch to 16,777,216 byte-level XOR positions, calculated
+as `blocks² × block_bytes`, before doing any XOR work. The default 64-block,
+4-KiB layout fits this bound. Larger blocks require a smaller public cluster
+capacity. Clients reject malformed metadata, missing response blocks, wrong
+block sizes, non-finite vectors, and unauthorized labels; truncated replies
+never become a successful partial result.

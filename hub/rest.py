@@ -7,6 +7,7 @@ import json
 import logging
 import math
 
+from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
@@ -42,8 +43,11 @@ def _json_error(status: int, error: str, detail: str = "") -> JSONResponse:
 
 async def _read_json(request: Request) -> dict | None:
     try:
+        from commontrace.frontier_protocol import validate_json_tree
+
         payload = json.loads(await request.body())
-    except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+        validate_json_tree(payload)
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError, RecursionError):
         return None
     return payload if isinstance(payload, dict) else None
 
@@ -351,20 +355,28 @@ def add_rest_routes(
             payload = await _read_json(request)
             if payload is None:
                 raise ValueError("body must be a JSON object")
-            cluster = _text(payload.get("cluster"), 96)
-            if not cluster:
-                raise ValueError("cluster is required")
+            cluster = payload.get("cluster")
+            if not isinstance(cluster, str) or not cluster or len(cluster.encode()) > 96:
+                raise ValueError("cluster must be a string of 1..96 bytes")
             encoded_many = payload.get("shares")
             encoded = payload.get("share")
+            if encoded_many is not None and encoded is not None:
+                raise ValueError("supply share or shares, never both")
+
+            def decode_share(value: object) -> bytes:
+                if not isinstance(value, str) or len(value) > 172:
+                    raise ValueError("PIR share must be a base64 string of at most 172 characters")
+                return base64.b64decode(value, validate=True)
+
             if encoded_many is not None:
                 if (not isinstance(encoded_many, list)
                         or len(encoded_many) > oblivious.MAX_BLOCKS_PER_CLUSTER):
                     raise ValueError("PIR shares must be a bounded array")
-                shares = [base64.b64decode(_text(item, 4096), validate=True) for item in encoded_many]
-                result = replica.handle_many(cluster, shares)
+                shares = [decode_share(item) for item in encoded_many]
+                result = await run_in_threadpool(replica.handle_many, cluster, shares)
             else:
-                share = None if encoded is None else base64.b64decode(_text(encoded, 4096), validate=True)
-                result = replica.handle(cluster, share)
+                share = None if encoded is None else decode_share(encoded)
+                result = await run_in_threadpool(replica.handle, cluster, share)
             if isinstance(result, bytes):
                 return JSONResponse({"answer": base64.b64encode(result).decode("ascii")})
             if isinstance(result, list):

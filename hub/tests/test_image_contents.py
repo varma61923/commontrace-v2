@@ -270,7 +270,7 @@ def test_image_telemetry_runs_with_no_optional_packages(tmp_path):
     package = tmp_path / "commontrace"
     package.mkdir()
     for name in ("__init__.py", "telemetry.py", "memory_guard.py", "paths.py",
-                 "configuration.py", "configuration.schema.json"):
+                 "configuration.py", "configuration.schema.json", "offline.py", "exceptions.py"):
         shutil.copyfile(REPO_ROOT / "commontrace" / name, package / name)
     code = ("from commontrace import telemetry; import logging; "
             "telemetry.configure_logging('json', 'INFO', log_file='private.jsonl'); "

@@ -55,15 +55,16 @@ Wait for extraction to complete before consuming its output:
 python scripts/graphify_audit.py \
   --graph ../unimem-architecture/graphify-out/graph.json \
   --output ../unimem-architecture/audit.json \
-  --source-root . --max-modules 397 --max-unreachable 318
+  --source-root . --max-modules 398 --max-unreachable 318
 
 graphify diagnose multigraph --json \
   --graph ../unimem-architecture/graphify-out/graph.json
 ```
 
-The 2026-10-18 extraction contains 397 Python modules and 294 unreachable
-candidates (zero missing edge endpoints), and the checked-in budget is set to
-those measured values. The workflow checks missing edge endpoints and reviewed
+The 2026-10-19 extraction contains 398 Python modules and 287 unreachable
+candidates (zero missing edge endpoints). The module budget includes the new
+offline pack workflows; the existing unreachable-candidate ceiling remains 318.
+The workflow checks missing edge endpoints and reviewed
 module and reachability budgets. Its unreachable candidates require inspection: callbacks, SDK exports,
 and generated entry points can be absent from a static call graph. Self-loops
 can reflect recursive calls or imperfect name resolution; inspect them before
