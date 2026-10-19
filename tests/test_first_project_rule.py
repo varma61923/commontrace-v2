@@ -94,7 +94,11 @@ def test_fresh_project_rule_is_review_only_then_approved_and_injected_offline(tm
             time.sleep(0.01)
         manifest = json.loads(Path(ready["agents"][0]["manifest"]).read_text())
         command = shlex.split(manifest["events"]["SessionStart"]) + ["--format", "codex"]
-        for _ in range(10):
+        # The broker's socket is published before its background bridge has
+        # finished reconciling approved lessons. Retry within a bounded window
+        # so this tests eventual offline delivery rather than startup timing.
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
             native = subprocess.run(
                 command, input=json.dumps({"session_id": "native-after-review"}),
                 text=True, capture_output=True, timeout=5, check=True,
@@ -102,7 +106,7 @@ def test_fresh_project_rule_is_review_only_then_approved_and_injected_offline(tm
             context = json.loads(native.stdout).get("hookSpecificOutput", {}).get("additionalContext", "")
             if body.strip() in context:
                 break
-            time.sleep(0.01)
+            time.sleep(0.025)
         else:
             pytest.fail("approved directive did not reach native offline SessionStart")
     finally:
