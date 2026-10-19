@@ -6,6 +6,7 @@ import socket
 import stat
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -418,6 +419,13 @@ def test_gateway_config_refuses_symlink_reads_and_safe_replaces_symlink_writes(r
     assert protected_file.read_text(encoding="utf-8") == '{"untouched":true}'
     assert not os.path.islink(path)
     assert gateway.load_config(root) == expected
+
+
+def test_concurrent_gateway_config_merges_keep_every_protected_prefix(root):
+    prefixes = [f"protected-{index}/" for index in range(8)]
+    with ThreadPoolExecutor(max_workers=len(prefixes)) as executor:
+        list(executor.map(lambda prefix: gateway.merge_config(root, env="sim", protect=[prefix]), prefixes))
+    assert set(gateway.load_config(root).protected_prefixes) == set(prefixes)
 
 
 def test_the_token_is_created_private_and_stable(root):

@@ -253,27 +253,32 @@ def save_config(root: str, config: GatewayConfig) -> None:
         raise ValueError("gateway configuration has an invalid type")
     _validate_config_values(config.env, config.protected_prefixes)
     path = paths.safe_prepare_output_path(config_path(root))
-    _jsonl.write_json(path, {
-        "env": config.env,
-        "protected_prefixes": list(config.protected_prefixes),
-    })
+    with _jsonl.locked(path):
+        _jsonl.write_json(path, {
+            "env": config.env,
+            "protected_prefixes": list(config.protected_prefixes),
+        })
 
 
 def merge_config(root: str, *, env: str | None, protect: list[str]) -> GatewayConfig:
-    current = load_config(root)
-    if env is not None:
-        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,31}", env):
-            raise ValueError("env must be a lowercase slug such as sim or real")
-        if current.env and current.env != env:
-            raise ValueError(
-                f"this store measures {current.env!r}; refusing to start it as {env!r}. "
-                "Use a separate store (--dest) for each environment so they are never pooled.")
-    prefixes = tuple(dict.fromkeys((*current.protected_prefixes, *protect)))
-    _validate_config_values(env or current.env, prefixes)
-    merged = GatewayConfig(env=env or current.env, protected_prefixes=prefixes)
-    if merged != current:
-        save_config(root, merged)
-    return merged
+    from commontrace import _jsonl
+
+    path = paths.safe_prepare_output_path(config_path(root), allow_unlink_leaf=False)
+    with _jsonl.locked(path):
+        current = load_config(root)
+        if env is not None:
+            if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,31}", env):
+                raise ValueError("env must be a lowercase slug such as sim or real")
+            if current.env and current.env != env:
+                raise ValueError(
+                    f"this store measures {current.env!r}; refusing to start it as {env!r}. "
+                    "Use a separate store (--dest) for each environment so they are never pooled.")
+        prefixes = tuple(dict.fromkeys((*current.protected_prefixes, *protect)))
+        _validate_config_values(env or current.env, prefixes)
+        merged = GatewayConfig(env=env or current.env, protected_prefixes=prefixes)
+        if merged != current:
+            save_config(root, merged)
+        return merged
 
 
 def _text(value, label: str, *, limit: int, required: bool = True) -> str:
