@@ -29,5 +29,5 @@ commontrace fleet safetycase coverage '{"required_hazards":["person_crossing"]}'
 ```
 
 Evidence registration is an assertion by the caller about an external artifact.
-CommonTrace binds the supplied digest; it does not independently attest a
+UniMem binds the supplied digest; it does not independently attest a
 certificate, test run, model build, or simulator result.

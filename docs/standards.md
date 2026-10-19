@@ -7,8 +7,8 @@ Additional next-wave mappings are recorded here as their implementations ship.
 |---|---|---|---|
 | Agent Skills | `agentskills/agentskills` commit `69ef37e9424c0a7ea9dd2293b559e43ec8176379` | ASCII name constraints, description bound, standard-only frontmatter, folder round-trip and signed companion evidence | Compatibility with every agent's skill loader; sandbox behavior and task semantics |
 | OpenTelemetry GenAI memory | semantic-conventions commit `f3c6d0c9bb66ebd474668a3a0be25c61226f02c2` | Authored names/types fixture, standard single-record ID type, admitted SDK span capture, opt-in content, absent-SDK behavior | Development convention; hosted exporter and Grafana/Datadog deployment mappings |
-| VDA 5050 | `3.0.0` | Authored state/order fixtures validate the consumed header, node, edge, zone and timestamp subset | Not a full conformance schema; state/zone/path production payload diversity is not covered |
-| Open-RMF | No protocol version pinned; injected adapter contract | Authored neutral state fixture covers timestamp, node/edge and zone mapping | Native RMF message schemas, transport and facility-level interoperability are unverified |
+| VDA 5050 | `3.0.0` | Authored state/zone/order fixtures validate the consumed headers, node, edge, zone, timestamp and order-route edge-reference subset | Not a full conformance schema; production payload diversity and vendor-specific path-sharing extensions are not covered |
+| Open-RMF | No protocol version pinned; injected adapter contract | Fixture adapter covers required timestamp/node/edge/zone fields, normalized identifiers, scope filtering and bounded rejection before writes | Native RMF message schemas, transport and facility-level interoperability are unverified |
 | ASAM OpenSCENARIO DSL | `2.1.0` template-subset target | Generated `scenario` templates receive a bounded indentation/construct check | Not the full ASAM grammar, semantic analysis, simulator validation, or conformance |
 | ISO 10218 robot safety | ISO 10218-1:2025 and ISO 10218-2:2025 are the referenced editions | No conformance claims; shield documentation requires independent safety-rated controls and local adoption review | This repository is not a functional-safety system and does not verify certification or jurisdictional adoption |
 | UL 4600 | Edition 3, 2023 (claim-argument-evidence safety-case framing) | Local safety-case claims link to digest-bound evidence and stale dependencies | Not a UL 4600 conformity assessment or complete safety-case process |
@@ -43,7 +43,7 @@ Credentials follow RFC 9901 (November 2025) object disclosures, mandatory KB-JWT
 
 ## Robot site synchronization
 
-The optional Automerge Python API is pinned to `0.2.0.dev4` on Python 3.12+ and used to merge peer operation-list documents before UniMem's policy reducer. Its development release, document history and cross-language wire compatibility remain unverified. Cryptographic robot signatures and the reference OR-set/value-register semantics are tested locally. Open-RMF remains an injected adapter rather than a pinned protocol, and its native fixture coverage is not present in this repository.
+The optional Automerge Python API is pinned to `0.2.0.dev4` on Python 3.12+ and used to merge peer operation-list documents before UniMem's policy reducer. Its development release, document history and cross-language wire compatibility remain unverified. Cryptographic robot signatures and the reference OR-set/value-register semantics are tested locally. Open-RMF remains an injected adapter rather than a pinned protocol. Its normalized adapter contract has fixture coverage, while native RMF message and transport interoperability remain unverified.
 
 Purpose and consent use a bounded [DPV 2.1](https://w3id.org/dpv/2.1) vocabulary
 profile and consent-record concepts from ISO/IEC TS 27560:2023. The

@@ -1,6 +1,6 @@
 # Physical-AI integration
 
-CommonTrace supplies planner context and evidence. Robot interlocks, fresh
+UniMem supplies planner context and evidence. Robot interlocks, fresh
 sensors, emergency stops and human escalation remain in the robot control stack.
 
 A minimal Python integration needs a running gateway and its bearer token:

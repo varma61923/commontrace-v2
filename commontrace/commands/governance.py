@@ -974,7 +974,10 @@ def fleet_add_parser(subparsers: argparse._SubParsersAction) -> None:
         child.add_argument("--dest")
         child.set_defaults(func=fleet_run_signatures)
 
-    site = sub.add_parser("site", help="Ingest vendor-neutral robot site state and signed peer mesh operations.")
+    site = sub.add_parser(
+        "site",
+        help="Ingest bounded VDA state/order paths, inspect site layers and sync signed peer operations.",
+    )
     site_actions = site.add_subparsers(dest="site_action", required=True)
     for action in ("ingest", "merge", "rules", "mesh"):
         child = site_actions.add_parser(action)
@@ -1046,7 +1049,15 @@ def fleet_run_site(args: argparse.Namespace) -> int:
         raise ValueError("site-memory request must be a JSON object")
     root = paths.resolve_root(args.dest)
     if args.site_action == "ingest":
-        result = site_memory.ingest_vda_state(root, **body)
+        message_type = body.pop("message_type", "state")
+        if message_type == "order":
+            result = site_memory.ingest_vda_order(root, **body)
+        elif message_type == "zone":
+            result = site_memory.ingest_vda_zone(root, **body)
+        elif message_type == "state":
+            result = site_memory.ingest_vda_state(root, **body)
+        else:
+            raise ValueError("site message_type must be state, zone or order")
     elif args.site_action == "merge":
         result = {"scene": site_memory.scene_graph(root, site=body["site"], context=body.get("context", [])),
                   "mesh": mesh_crdt.merge(root)}

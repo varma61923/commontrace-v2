@@ -2,7 +2,7 @@
 
 **A referee for how agents and robots change themselves.**
 
-Agents with memory repeat fewer mistakes, until a memory goes stale. Then the agent acts confidently on something that is no longer true, and nothing tells you which memory caused it. UniMem is a governed memory system for agents that measures every memory. It withholds each memory from a small random share of tasks, compares outcomes, withdraws the memories that hurt, and learns where each memory helps. The Python package and executable remain `commontrace`.
+Agents with memory repeat fewer mistakes, until a memory goes stale. Then the agent acts confidently on something that is no longer true, and nothing tells you which memory caused it. UniMem is the independent referee for how agents and robots change themselves: it measures memories, skills, writers and optimizer edits through randomized evidence; governs promotion and rollback; and carries verifiable evidence across trust boundaries. Its memory trials withhold eligible memories from a small random share of tasks, compare outcomes, withdraw harmful memories, and learn where each memory helps. The Python package and executable remain `commontrace`.
 
 - **Causal, not correlational.** A randomized holdout per memory and per task gives a real cause-and-effect estimate for each memory, with integrity checks that catch a broken experiment before you quote it.
 - **Governed.** Lessons need review receipts, facts carry valid time and record time, every write is scoped to a tenant, and anything an agent cannot see can never leak into its answers.
@@ -54,7 +54,7 @@ python scripts/first_recall_smoke.py
 
 ## Prove that memory helps
 
-Every memory system claims to make agents better. CommonTrace measures whether it does, one memory at a time, the way a clinical trial would:
+Every memory system claims to make agents better. UniMem measures whether it does, one memory at a time, the way a clinical trial would:
 
 1. On each task (an *occasion*), every eligible memory is either shown or withheld by a deterministic hash of the memory, the occasion and a salt. That makes the split random, reproducible, and stable when a task is retried.
 2. You report whether the task succeeded.
@@ -96,7 +96,7 @@ commontrace experiment --dest ./mem
 
 <sub>Output from a synthetic 400-occasion run. The real report also includes an integrity audit, power projections and the exact text revision each effect describes.</sub>
 
-The integrity audit runs before any effect is shown. It checks for differential attrition between the arms, arm-balance (sample-ratio) mismatch, a reshuffled randomization, scorer drift, a memory edited mid-run, and censoring. If the run is compromised, CommonTrace says so instead of printing a confident wrong number.
+The integrity audit runs before any effect is shown. It checks for differential attrition between the arms, arm-balance (sample-ratio) mismatch, a reshuffled randomization, scorer drift, a memory edited mid-run, and censoring. If the run is compromised, UniMem says so instead of printing a confident wrong number.
 
 To act on the evidence automatically:
 
@@ -107,7 +107,7 @@ commontrace retrieval --on-harm withdraw --dest ./mem   # stop delivering memori
 The other measurement tools:
 
 - **Adaptive allocation.** Uncertain memories are explored at a 50% holdout; proven ones drop to a 5% monitoring rate. Rates are set by hash-chained schedules, and effects are estimated by augmented inverse-propensity weighting (AIPW) with time-uniform confidence sequences.
-- **Interference detection.** The holdouts are independent per memory, so you get a factorial design for free. CommonTrace flags pairs of memories that hurt each other.
+- **Interference detection.** The holdouts are independent per memory, so you get a factorial design for free. UniMem flags pairs of memories that hurt each other.
 - **Value ledger.** Effects are converted into your own units (tickets resolved, dollars saved) in a SHA-256 hash-chained ledger. It can be HMAC-signed for reporting.
 - **Subgroup effects** by agent type or covariates, **survival analysis** for outcomes that arrive late, and **preregistration and proof packages** that a third party can verify.
 
@@ -119,7 +119,7 @@ An average can hide two opposite effects. A lesson about the test runner helps t
 - **Hierarchical shrinkage.** Estimates are pooled by empirical Bayes along *source → memory → context*, so sparse contexts borrow strength without being overwritten.
 - **Causal source reputation.** A new memory from a source whose memories have measurably hurt starts from a pessimistic prior. This blunts slow memory-poisoning and bad bulk imports.
 - **Thompson allocation.** Each memory is injected with the posterior probability that it helps in that context, clipped so both arms keep learning. The rates are published as hash-chained allocation schedules, so every contextual decision is audited exactly like the rest of the experiment.
-- **Drift detection.** CommonTrace flags a memory whose effect changed over time, for example after a tool upgrade or a codebase migration. With strong evidence of drift, the gate relearns that memory from the occasions after the change.
+- **Drift detection.** UniMem flags a memory whose effect changed over time, for example after a tool upgrade or a codebase migration. With strong evidence of drift, the gate relearns that memory from the occasions after the change.
 - **An honest off-policy check.** The gate is fitted on earlier occasions and scored on later ones by importance sampling over each occasion's full assignment, against what was actually delivered.
 
 ```bash
@@ -225,7 +225,7 @@ docker compose up    # set POSTGRES_PASSWORD and HUB_CONSOLE_SECRET for anything
 ```mermaid
 flowchart LR
     Agent["Agent or framework"] -->|"MCP · HTTP · Python"| Recall
-    subgraph CT["CommonTrace"]
+    subgraph CT["UniMem"]
         Recall["Retrieval<br/>hybrid · rerank · multi-hop"] --> Holdout["Holdout<br/>per memory, per occasion"]
         Holdout --> Deliver["Delivered context"]
         Outcomes["Outcomes"] --> Evidence["Evidence<br/>AIPW · integrity audit"]
@@ -237,12 +237,15 @@ flowchart LR
     Agent -->|"succeeded?"| Outcomes
 ```
 
-## Frontier roadmap
+## Roadmaps
 
-The 22-feature roadmap adds authenticated lineage and transparency, sequential
-release evidence, harm-budget admission, incident freezes, protected safety
-memory, utility retention, context economics, scoped recovery/spatial memory,
-valuation, targeting and optional robot/vendor integrations.
+The first roadmap (F1–F22) adds authenticated lineage and transparency,
+sequential release evidence, harm-budget admission, incident freezes, protected
+safety memory, utility retention, context economics, scoped recovery/spatial
+memory, valuation, targeting and optional robot/vendor integrations. The second
+roadmap (G1–G30) extends the same governance to skills, writers, optimizer edits,
+human help, team memory and robot fleets, and makes evidence portable across
+trust boundaries.
 
 Start with the [feature status and workflow links](#project-status),
 [guarantees and assumptions](docs/guarantees.md), and
@@ -262,7 +265,7 @@ UniMem is pre-1.0 software under active development.
 
 | Area | Status |
 |---|---|
-| Delegated capabilities | Pinned holders, monotone HMAC/Ed25519 chains, request proofs, scoped retrieval, recipient handoffs and revocation quarantine; [workflow and limits](docs/capabilities.md). |
+| G6 Delegated capabilities | Pinned holders, monotone HMAC/Ed25519 chains, request proofs, scoped retrieval, recipient handoffs and revocation quarantine; [workflow and limits](docs/capabilities.md). |
 | G7 Team isolation | Scoped point-read snapshots, commit-time stale-generation guards, fenced work leases and reviewable semantic merges; [guarantees and limits](docs/team-isolation.md). |
 | G29 Pooled evidence | Signed sufficient-statistics contributions, ownership-group random effects, modified Hartung–Knapp intervals, e-values and reference Gaussian privacy accounting; [workflow and limits](docs/pooled-evidence.md). |
 | G1 Causal Skill Foundry | Authenticated trajectory induction, verifier screens, nested catalog trials, canonical promotion, signed Agent Skills evidence and decay retirement; [workflow and assumptions](docs/skill-foundry.md). |
@@ -273,8 +276,24 @@ UniMem is pre-1.0 software under active development.
 | G9 Writer contribution trials | Parent writer/role masks, unbiased inner eligibility, estimated reliability priors and MAST incident tags; [integration and assumptions](docs/writer-holdouts.md). |
 | G8 Contagion and source diversity | Scoped read/write dependency radius, incident freeze, root concentration and admitted re-retrieval; [graph limits and integration](docs/contagion.md). |
 | G10 Memory telemetry | Opt-in standard GenAI memory spans, admitted causal metadata and canonical outcome slices; [configuration and privacy](docs/otel.md). |
+| G11 Effect proofs | Committed trial rows, transparent audited recomputation and optional zkVM adapter; [proof formats and limits](docs/effect-proofs.md). |
+| G12 Attested key release | Fresh tenant-bound worker measurements gate encrypted key release; hardware appraisal depends on configured verifiers; [deployment boundary](docs/attested-key-release.md). |
 | G20 Change streams and byte verification | Admission-filtered SSE/MCP diffs, governed Kafka forwarding, downstream deletion ACKs and conditional local byte receipts; [scope and examples](docs/change-streams.md). |
 | G21 Governed payload tiers | Residency checks, verified hot/cold migration, lifecycle pre-warm, native ACL filtering and measured embedding cutover; [deployment boundary](docs/tiering.md). |
+| G13 Privacy-preserving recall | Two-server XOR-PIR reference with per-clearance blocks and local reranking; [limits](docs/oblivious-recall.md). |
+| G14 Verified memory policy | Bounded exhaustive no-widening proofs, review-gated activation and optional Cedar/ReBAC adapters; [finite-domain limits](docs/memory-policy.md). |
+| G15 Signed memory passports | Content-addressed, signed exports, review-only imports and selectively disclosed memory credentials; [profile and boundaries](docs/memory-passport.md). |
+| G16 Purpose-bound consent | Purpose-filtered retrieval, expiry-aware retention and consent explanations; [workflow and limits](docs/purpose-consent.md). |
+| G17 Household scopes | Multi-party consent, ephemeral bystanders and no-memory rooms; [identity assumptions](docs/household-memory.md). |
+| G18 Regulated-subject policy | Write-time modality and context rules with reviewable decisions; aligned policy profiles, not compliance claims; [scope](docs/subject-write-policy.md). |
+| G19 Governed KV capsules | Tenant/model-bound local capsule references with source re-admission and configured-tier eviction; [adapter boundary](docs/kv-capsules.md). |
+| G22 Human-help ledger | Governed interventions, correction-quality estimates and low-risk ask-policy trials; [assumptions](docs/human-help.md). |
+| G23 World-model trust | Sim-gated replay with action-following checks, real-outcome calibration and veto-only low-trust policy; [assumptions](docs/world-model-trust.md). |
+| G24 Robot signatures | Phase-aware robust force/proprioception profiles with anomaly and firmware-boundary drift records; [workflow](docs/robot-signatures.md). |
+| G25 Robot working memory | Bounded local keyframe retrieval, protected safety entries and audited consolidation; [latency and API](docs/robot-working-memory.md). |
+| G26 Collective site memory | Bitemporal VDA/Open-RMF adapter ingress and signed conflict-preserving fleet mesh; [adapter limits](docs/site-memory.md). |
+| G27 Living safety cases | Digest-bound claim/evidence graph, staleness tracking, reproducible scenario mining and coverage view; [limits](docs/safety-case.md). |
+| G28 Memory-to-action shield | Bounded STL monitor blocks unproven or violating memory-derived actions; [safety boundary](docs/robot-shield.md). |
 | F11 Authenticated lineage | Signed derivations, origin quorum, minimum integrity and taint cascades; [workflow](docs/lineage.md). |
 | F12 Transparency log | Signed Merkle heads, inclusion/consistency proofs, tenant-isolated Hub history; [workflow](docs/transparency-log.md). |
 | F3 Sequential evidence | Predictable e-processes, shared-task e-BH for positive (HELPS) claims with harm withdrawal unweakened, nonoverlapping evidence snapshots; [workflow](docs/e-processes.md). |
@@ -297,8 +316,6 @@ UniMem is pre-1.0 software under active development.
 | F10 Compilation | Open-weight trainer contract, CPU governance reference, source rollback and artifact-bound F2 trials; [workflow](docs/compile-memory.md). |
 | F21 Foreign stores | Pinned SDK/HTTP adapters, canonical measurement, lineage and redacted errors; [workflow](docs/vendor-evidence.md). |
 | F22 Physical-AI bridge | Lazy ROS node, MCAP/LeRobot metadata ingest, witnessed edge cache and durable outcomes; [workflow](docs/physical-ai.md). |
-| G17–G28 Robot fleet governance | Household consent, governed KV capsules, world-model trust, robust signatures, bounded working memory, signed site mesh, living safety cases and bounded STL monitor; [workflow](docs/physical-ai.md). |
-| G13 Privacy-preserving recall | Two-server XOR-PIR reference with per-clearance blocks and local reranking; [limits](docs/oblivious-recall.md). |
 | G30 Vertical packs | Eight offline-installable configuration bundles with seeded buyer reports; [catalog](docs/vertical-packs.md). |
 | Local store, retrieval, MCP server, gateway, holdout experiment | Stable; covered by about 8,000 tests in CI on Python 3.10 and 3.12 |
 | Hub server | Feature-complete; tested against real PostgreSQL in CI |

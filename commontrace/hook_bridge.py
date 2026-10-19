@@ -19,7 +19,7 @@ EVENTS = (
 )
 AGENTS = ("claude", "codex", "cursor", "cline", "gemini", "kimi", "windsurf", "openhands")
 FRAME_LIMIT = 100000
-RESPONSE_SECONDS = 0.025
+RESPONSE_SECONDS = 0.050
 RECEIPT_SECONDS = 0.020
 
 
