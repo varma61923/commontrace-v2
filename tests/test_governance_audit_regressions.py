@@ -310,3 +310,38 @@ def test_spatial_beliefs_admit_one_snapshot_and_match_per_object_queries(tmp_pat
     assert spatial.believed_at(root, "robot", at, context=context) == expected
     assert len(calls) == 1
     assert calls[0]["as_of"] == calls[0]["known_at"] == fp.moment(at)
+
+
+@pytest.mark.parametrize("tiny", [1e-300, math.nextafter(0, 1)])
+def test_working_memory_normalizes_tiny_vectors_without_underflow(tiny):
+    from commontrace.robotics.working_memory import WorkingMemory
+
+    memory = WorkingMemory(capacity_tokens=10)
+    memory.add("tiny", [tiny, tiny], tokens=1, episode_id="episode")
+    result = memory.retrieve([tiny, tiny])
+    assert result["result"]["id"] == "tiny"
+    assert result["result"]["score"] == pytest.approx(1)
+
+
+def test_robot_signature_ingestion_bounds_ignored_records(tmp_path):
+    from commontrace.robotics import signatures
+
+    with pytest.raises(ValueError, match="sample count"):
+        signatures.ingest(str(tmp_path), ({} for _ in range(100_001)), skill="skill", embodiment="robot", site="site")
+    assert not os.path.exists(fp.filename(str(tmp_path), "robot-proprioceptive-samples.jsonl"))
+
+
+def test_concurrent_room_configuration_cannot_relax_no_memory(tmp_path):
+    from commontrace import household
+
+    root = str(tmp_path)
+
+    def configure(index):
+        try:
+            household.configure_room(root, "room", no_memory=index % 3 == 0, actor="owner")
+        except PermissionError:
+            pass  # A concurrent no-memory decision has already won.
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(configure, range(12)))
+    assert household.no_memory(root, "room")

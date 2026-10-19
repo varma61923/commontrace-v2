@@ -202,8 +202,8 @@ def drift(root: str, *, skill: str, embodiment: str, site: str, sensor: str,
 def ingest(root: str, records: Iterable[dict[str, Any]], *, skill: str, embodiment: str, site: str) -> int:
     """Ingest bounded sensor samples from ROS/MCAP record callbacks."""
     total = 0
-    for sample in records:
-        fp.count(total, 0, 99_999, "robot signature sample count")
+    for index, sample in enumerate(records):
+        fp.count(index, 0, 99_999, "robot signature sample count")
         signals = sample.get("proprioception")
         if signals is None:
             continue

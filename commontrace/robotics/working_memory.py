@@ -42,6 +42,15 @@ class WorkingMemory:
             raise ValueError("working-memory vector cannot be zero")
         return values
 
+    @staticmethod
+    def _unit(values: Sequence[float]) -> list[float]:
+        # Normalize after scaling, so squaring tiny finite components cannot
+        # underflow and a subnormal norm cannot distort cosine similarities.
+        scale = max(abs(value) for value in values)
+        scaled = [value / scale for value in values]
+        norm = math.hypot(*scaled)
+        return [value / norm for value in scaled]
+
     def add(self, identity: str, vector: Sequence[float], *, tokens: int, episode_id: str,
             predictive: bool = False, safety: bool = False, utility: float = 0,
             future_retrieval: float = 0) -> dict[str, Any]:
@@ -52,8 +61,7 @@ class WorkingMemory:
         if type(predictive) is not bool or type(safety) is not bool:
             raise ValueError("predictive and safety markers must be booleans")
         values = self._vector(vector)
-        norm = math.sqrt(math.fsum(value * value for value in values))
-        unit_vector = [value / norm for value in values]
+        unit_vector = self._unit(values)
         row = {"id": identity, "vector": values, "tokens": tokens,
             "unit_vector": unit_vector,
             "episode_id": episode_id, "predictive": predictive, "safety": safety,
@@ -103,8 +111,7 @@ class WorkingMemory:
     def retrieve(self, vector: Sequence[float], *, budget_ms: float | None = None) -> dict[str, Any]:
         started = time.perf_counter()
         values = self._vector(vector)
-        norm = math.sqrt(math.fsum(value * value for value in values))
-        query = [value / norm for value in values]
+        query = self._unit(values)
         limit = self.budget_ms if budget_ms is None else fp.number(budget_ms, .1, 100)
         best: tuple[float, dict[str, Any]] | None = None
         timed_out = False

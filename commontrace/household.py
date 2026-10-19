@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 from typing import Any, Callable
 
+from commontrace import _jsonl
 from commontrace import frontier_protocol as fp
 from commontrace import transparency_log as log
 
@@ -28,16 +29,17 @@ def _valid_signed(root: str, name: str) -> list[dict[str, Any]]:
 
 
 def configure_room(root: str, room_id: str, *, no_memory: bool, actor: str) -> dict[str, Any]:
-    """Set a signed, monotone no-memory room policy; only an operator can relax it."""
+    """Set a signed, monotone no-memory room policy; this interface never relaxes it."""
     room_id, actor = fp.text(room_id, "room id", 128), _actor(actor)
     if type(no_memory) is not bool:
         raise ValueError("no_memory must be a boolean")
-    rows = _valid_signed(root, ROOMS)
-    prior = [r["record"] for r in rows if r["record"].get("room_id") == room_id]
-    if prior and prior[-1]["no_memory"] and not no_memory:
-        raise PermissionError("no-memory room policy cannot be relaxed through this interface")
     body = {"room_id": room_id, "no_memory": no_memory, "actor": actor}
-    signed = fp.append(root, ROOMS, body)
+    with _jsonl.locked(fp.filename(root, ROOMS)):
+        rows = _valid_signed(root, ROOMS)
+        prior = [r["record"] for r in rows if r["record"].get("room_id") == room_id]
+        if prior and prior[-1]["no_memory"] and not no_memory:
+            raise PermissionError("no-memory room policy cannot be relaxed through this interface")
+        signed = fp.append(root, ROOMS, body)
     log.append(root, "household-room-policy", {"room_id": room_id, "no_memory": no_memory,
                                                 "digest": fp.digest(signed)}, receipt=False)
     return copy.deepcopy(signed["record"])
