@@ -49,6 +49,17 @@ class TestConfigRefusesNonsenseAtStartup:
         with pytest.raises(ValueError, match="HUB_PORT"):
             HubConfig.from_env()
 
+    @pytest.mark.parametrize("name", [
+        "HUB_REQUIRE_RLS",
+        "HUB_ALLOW_RLS_BYPASS",
+        "HUB_ALLOW_INSECURE_HTTP",
+    ])
+    def test_a_malformed_security_boolean_is_refused(self, monkeypatch, name):
+        monkeypatch.setenv("HUB_DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
+        monkeypatch.setenv(name, "tru")
+        with pytest.raises(ValueError, match=name):
+            HubConfig.from_env()
+
     def test_the_helper_accepts_its_own_bounds(self):
         assert _env_int_in_range("HUB_NOT_SET_ANYWHERE", 5, 1, 10) == 5
 
