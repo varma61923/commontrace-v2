@@ -175,8 +175,11 @@ async def test_hosted_reaper_uses_a_bounded_batch_and_version_checked_forget(mon
     store = PostgresJournal(object(), org)
     calls = []
 
-    async def forget(identity, *, reason, expected_version):
-        calls.append((identity, reason, expected_version))
+    async def forget(identity, *, reason, expected_version, _expected_digest):
+        from commontrace.frontier_protocol import digest
+
+        calls.append((identity, reason, expected_version, _expected_digest))
+        assert _expected_digest == digest(next(record.to_dict() for record in records if record.id == identity))
         if identity == "due-0":
             raise ValueError("expiration record version changed")
         return {"deleted": [identity]}
@@ -189,10 +192,57 @@ async def test_hosted_reaper_uses_a_bounded_batch_and_version_checked_forget(mon
     assert "memory_records.org_id" in statement
     assert "TIMESTAMP WITH TIME ZONE" in statement
     assert "ORDER BY" in statement and "LIMIT" in statement
-    assert calls == [("due-0", "reason 0", 3), ("due-1", "reason 1", 3)]
+    assert [call[:3] for call in calls] == [("due-0", "reason 0", 3), ("due-1", "reason 1", 3)]
     assert result == [{"deleted": ["due-1"]}]
     with pytest.raises(ValueError, match="expiration batch"):
         await store.reap_due(limit=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scope", [{}, {"agent": "new-owner"}])
+async def test_hosted_expiration_cannot_erase_a_reused_identity_at_the_same_version(
+    session_factory, monkeypatch, scope
+):
+    org = str(uuid.uuid4())
+    async with session_scope(session_factory) as session:
+        session.add(Organization(id=org, name=org))
+    store = PostgresJournal(session_factory, org)
+    await store.put(MemoryRecord("due", "observation", 1, {
+        "text": "Expired content.", "forget_after": "2000-01-01T00:00:00Z", "forget_reason": "expired",
+    }))
+    original = store.forget
+
+    async def reuse_before_expiration(identity, **kwargs):
+        await original(identity, reason="Concurrent owner erasure.")
+        await store.put(MemoryRecord(identity, "observation", 1, {"text": "Keep new content."}, scope=scope))
+        return await original(identity, **kwargs)
+
+    monkeypatch.setattr(store, "forget", reuse_before_expiration)
+    assert await store.reap_due() == []
+    assert [record.payload["text"] for record in await store.search("", scope=scope)] == ["Keep new content."]
+
+
+@pytest.mark.asyncio
+async def test_hosted_expiration_binds_stored_legacy_envelope_without_adding_defaults(session_factory):
+    from sqlalchemy import update
+
+    from hub.models import MemoryRecordProjection
+
+    org = str(uuid.uuid4())
+    async with session_scope(session_factory) as session:
+        session.add(Organization(id=org, name=org))
+    store = PostgresJournal(session_factory, org)
+    record = await store.put(MemoryRecord("due", "observation", 1, {
+        "text": "Expired legacy content.", "forget_after": "2000-01-01T00:00:00Z", "forget_reason": "expired",
+    }))
+    body = record.to_dict()
+    body.pop("created_at")
+    async with session_scope(session_factory, org_id=org) as session:
+        await session.execute(update(MemoryRecordProjection).where(
+            MemoryRecordProjection.org_id == org, MemoryRecordProjection.id == record.id).values(record=body))
+    assert (await store.reap_due())[0]["deleted"] == [record.id]
+    async with session_scope(session_factory, org_id=org) as session:
+        assert await session.get(MemoryRecordProjection, (org, record.id)) is None
 
 
 @pytest.mark.asyncio

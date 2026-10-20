@@ -29,8 +29,9 @@ claim, complete standards compliance, or production capacity.
 | H5 | P1 | A fact-only capability could cite an existing episode and erase it through the fact's privacy cascade. Require forget permission for each upstream episode before any erasure mutation. | Authenticated PostgreSQL tests in `hub/tests/test_delegation.py`: unauthorized cascade returns 403 and preserves both records; an authorized cascade succeeds. |
 | H6 | P2 | HTTP erasure checked ownership in a separate transaction. A concurrently reused ID could be erased in its new scope; a missing root could trigger an unowned forward-reference cascade. Recheck an existing root's scope under the tenant writer fence. | Deterministic committed interleaving and missing-root tests in `hub/tests/test_rest.py`. |
 | H7 | P2 | Hosted erasure rescanned all history once per dependency level. Index historical causal edges once and traverse the affected graph. | `hub/tests/test_memory_erasure_closure.py`: 32 seeded graph comparisons against the previous fixed-point semantics, shuffled input, and a 5,000-record chain requiring one history scan. |
+| H8 | P2 | Expiration checked only a version number that resets after erasure. Reusing an ID at version 1 between selection and deletion could erase new unexpired content. Bind expiration to both the version and canonical digest of the selected stored envelope, checked inside the erasure transaction. | Both stores failed same-scope and changed-scope reuse tests before repair. Legacy envelopes omitting optional fields still expire correctly. |
 
-Fixed findings: **P0: 0; P1: 3; P2: 4; P3: 0**. These counts describe verified
+Fixed findings: **P0: 0; P1: 3; P2: 5; P3: 0**. These counts describe verified
 findings from the examined paths, rather than a count of all possible defects.
 
 The policy documentation's promise that runtime reads obey active policy was

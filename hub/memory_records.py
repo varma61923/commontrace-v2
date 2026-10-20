@@ -682,6 +682,8 @@ class PostgresJournal:
 
     async def reap_due(self, *, limit: int = 16) -> list[dict]:
         """Erase a bounded batch of tenant-owned records whose forget_after has passed."""
+        from commontrace.frontier_protocol import digest
+
         if type(limit) is not int or not 1 <= limit <= 100:
             raise ValueError("expiration batch must be in 1..100")
         expires_at = cast(
@@ -717,7 +719,8 @@ class PostgresJournal:
                 raise ValueError("expiration requires a reason")
             try:
                 results.append(
-                    await self.forget(identity, reason=reason, expected_version=version)
+                    await self.forget(identity, reason=reason, expected_version=version,
+                                      _expected_digest=digest(body))
                 )
             except ValueError as exc:
                 if str(exc) != "expiration record version changed":
@@ -725,7 +728,8 @@ class PostgresJournal:
         return results
 
     async def forget(
-        self, identity: str, *, reason: str, expected_version: int | None = None, scope: dict | None = None
+        self, identity: str, *, reason: str, expected_version: int | None = None, scope: dict | None = None,
+        _expected_digest: str | None = None,
     ) -> dict:
         if not isinstance(reason, str) or not reason.strip():
             raise ValueError("erasure requires a reason")
@@ -753,13 +757,16 @@ class PostgresJournal:
                     capability_io.runtime_descriptor(MemoryRecord(**current.record)), namespace="records")
             if await retention.active_holds(session, self.org_id):
                 raise PermissionError("an active legal hold blocks record erasure; release it explicitly")
-            if expected_version is not None:
+            if expected_version is not None or _expected_digest is not None:
+                from commontrace.frontier_protocol import digest
+
                 current = await session.get(
                     MemoryRecordProjection,
                     (self.org_id, identity),
                     with_for_update=True,
                 )
-                if current is None or current.version != expected_version:
+                if (current is None or expected_version is not None and current.version != expected_version
+                        or _expected_digest is not None and digest(current.record) != _expected_digest):
                     raise ValueError("expiration record version changed")
             rows = (
                 (await session.execute(select(MemoryRecordEvent).where(MemoryRecordEvent.org_id == self.org_id)))

@@ -861,6 +861,8 @@ class Journal:
             return json.loads(row[0]) if row else None
 
     def reap_due(self, *, limit=16) -> list[dict]:
+        from commontrace.frontier_protocol import digest
+
         with self.connect() as db:
             rows = db.execute(
                 "SELECT body FROM records WHERE julianday(json_extract(body,'$.payload.forget_after'))"
@@ -869,25 +871,30 @@ class Journal:
             ).fetchall()
         result = []
         for (body,) in rows:
-            record = MemoryRecord(**json.loads(body))
+            body = json.loads(body)
+            record = MemoryRecord(**body)
             try:
                 result.append(
-                    self.forget(record.id, reason=record.payload["forget_reason"], expected_version=record.version)
+                    self.forget(record.id, reason=record.payload["forget_reason"], expected_version=record.version,
+                                _expected_digest=digest(body))
                 )
             except ValueError:
                 continue
         return result
 
     def forget(self, identity: str, *, reason: str, expected_version: int | None = None,
-               scope: dict | None = None, exact_scope: bool = False, _authorized_cascade: bool = False) -> dict:
+               scope: dict | None = None, exact_scope: bool = False, _authorized_cascade: bool = False,
+               _expected_digest: str | None = None) -> dict:
         from commontrace import incident
 
         with incident.protect(self.root):
             return self._forget(identity, reason=reason, expected_version=expected_version, scope=scope,
-                                exact_scope=exact_scope, _authorized_cascade=_authorized_cascade)
+                                exact_scope=exact_scope, _authorized_cascade=_authorized_cascade,
+                                _expected_digest=_expected_digest)
 
     def _forget(self, identity: str, *, reason: str, expected_version: int | None = None,
-               scope: dict | None = None, exact_scope: bool = False, _authorized_cascade: bool = False) -> dict:
+               scope: dict | None = None, exact_scope: bool = False, _authorized_cascade: bool = False,
+               _expected_digest: str | None = None) -> dict:
         if not reason.strip():
             raise ValueError("erasure requires a reason")
         with self.connect(write=True) as db:
@@ -913,9 +920,13 @@ class Journal:
                     return {"at": now(), "deleted": [], "unverified_cascade": [identity],
                             "reason": "no authenticated native mirror of the authorized canonical fact"}
             db.execute("PRAGMA secure_delete=ON")
-            if expected_version is not None:
+            if expected_version is not None or _expected_digest is not None:
+                from commontrace.frontier_protocol import digest
+
                 current = db.execute("SELECT body FROM records WHERE id=?", (identity,)).fetchone()
-                if current is None or json.loads(current[0])["version"] != expected_version:
+                body = json.loads(current[0]) if current else None
+                if (body is None or expected_version is not None and body["version"] != expected_version
+                        or _expected_digest is not None and digest(body) != _expected_digest):
                     raise ValueError("expiration record version changed")
             direct_capture = db.execute("SELECT scope FROM captures WHERE id=?", (identity,)).fetchone()
             pending, deleted = [identity], set()
