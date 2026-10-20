@@ -2,9 +2,36 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from commontrace.memory_record import MemoryRecord
+
+MAX_GROUNDING_DEPTH = 64
+MAX_GROUNDING_STEPS = 4096
+
+
+@dataclass
+class GroundingState:
+    """One request's bounded dependency walk; never retain across scopes or revisions.
+
+    Depth is part of the memo key: a source rejected near the depth limit can
+    still be valid for a shallower candidate in the same search. Every edge,
+    including a memo hit, consumes work so a wide graph cannot evade the limit.
+    """
+
+    remaining: int = MAX_GROUNDING_STEPS
+    results: dict[tuple[str, int], bool] = field(default_factory=dict)
+
+    def enter(self, identity: str, ancestors: frozenset[str]) -> bool | None:
+        if identity in ancestors or len(ancestors) >= MAX_GROUNDING_DEPTH or self.remaining <= 0:
+            return False
+        self.remaining -= 1
+        return self.results.get((identity, len(ancestors)))
+
+    def remember(self, identity: str, ancestors: frozenset[str], eligible: bool) -> bool:
+        self.results[identity, len(ancestors)] = eligible
+        return eligible
 
 
 def now() -> str:

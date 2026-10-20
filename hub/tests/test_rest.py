@@ -93,6 +93,50 @@ async def test_memory_runtime_turn_scopes_and_permission_requirements(session_fa
         assert response.status_code == 403
 
 
+async def test_memory_erasure_rechecks_scope_after_identifier_reuse(session_factory, config, monkeypatch):
+    from commontrace.memory_record import MemoryRecord
+    from hub.memory_records import PostgresJournal
+    from hub.models import MemoryRecordProjection
+
+    org, raw_key = await _org_with_key(session_factory)
+    journal = PostgresJournal(session_factory, org)
+    await journal.put(MemoryRecord("reused", "fact", 1, {"text": "Original."}, scope={"agent": "a"}))
+    original = PostgresJournal.forget
+
+    async def concurrent_reuse(self, identity, **kwargs):
+        # Deterministically interleave the two committed operations immediately
+        # before erasure obtains its tenant fence.
+        await original(self, identity, reason="Concurrent owner erasure.")
+        await self.put(MemoryRecord(identity, "fact", 1, {"text": "New owner."}, scope={"agent": "b"}))
+        return await original(self, identity, **kwargs)
+
+    monkeypatch.setattr(PostgresJournal, "forget", concurrent_reuse)
+    async with _client(_app(session_factory, config)) as client:
+        response = await client.post("/v1/memory/record-forget", headers=_key(raw_key), json={
+            "id": "reused", "reason": "Erase original.", "context": ["agent:a"]})
+        assert response.status_code == 403, response.text
+    async with session_scope(session_factory, org_id=org) as session:
+        row = await session.get(MemoryRecordProjection, (org, "reused"))
+        assert row is not None and row.scope["agent"] == "b"
+
+
+async def test_memory_erasure_cannot_cascade_from_an_unowned_missing_identifier(session_factory, config):
+    from commontrace.memory_record import MemoryRecord
+    from hub.memory_records import PostgresJournal
+    from hub.models import MemoryRecordProjection
+
+    org, raw_key = await _org_with_key(session_factory)
+    journal = PostgresJournal(session_factory, org)
+    await journal.put(MemoryRecord("orphan", "observation", 1, {"text": "Forward reference."},
+                                   scope={"agent": "b"}, relations={"derives": ["missing"]}))
+    async with _client(_app(session_factory, config)) as client:
+        response = await client.post("/v1/memory/record-forget", headers=_key(raw_key), json={
+            "id": "missing", "reason": "Unowned target.", "context": ["agent:a"]})
+        assert response.status_code == 400, response.text
+    async with session_scope(session_factory, org_id=org) as session:
+        assert await session.get(MemoryRecordProjection, (org, "orphan")) is not None
+
+
 async def test_record_expiration_reaper_requires_admin_and_stays_tenant_bound(session_factory, config):
     from commontrace.memory_record import MemoryRecord
     from hub import scopes

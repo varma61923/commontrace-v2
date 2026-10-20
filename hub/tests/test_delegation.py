@@ -300,6 +300,32 @@ async def test_native_dense_filter_excludes_private_classes_before_top_k(session
         delegation.ROOT.reset(root_token)
 
 
+@pytest.mark.parametrize("allow_episode_erasure", [False, True])
+async def test_fact_erasure_cannot_launder_permission_to_erase_source_episode(
+    session_factory, config, tmp_path, allow_episode_erasure
+):
+    classes = ["fact", "episode"] if allow_episode_erasure else ["fact"]
+    org, raw_key, _, token, configured, _ = await setup(session_factory, config, tmp_path, classes=classes)
+    scope = {"tenant": org, "labels": ["project:a"]}
+    journal = PostgresJournal(session_factory, org)
+    await journal.put(MemoryRecord("private-episode", "episode", 1, {"text": "Private source."}, scope=scope))
+    record = MemoryRecord("citing-fact", "fact", 1,
+                          {"text": "Derived content.", "source_message_ids": ["private-episode"]}, scope=scope)
+    async with client(_app(session_factory, configured)) as app:
+        target = "/v1/memory/record-put"
+        raw = json.dumps({"record": record.to_dict(), "context": ["project:a"]}).encode()
+        response = await app.post(target, headers=headers(raw_key, token, target, raw, "cite"), content=raw)
+        assert response.status_code == 200, response.text
+        target = "/v1/memory/record-forget"
+        raw = json.dumps({"id": record.id, "reason": "Erase my fact.", "context": ["project:a"]}).encode()
+        response = await app.post(target, headers=headers(raw_key, token, target, raw, "erase"), content=raw)
+        assert response.status_code == (200 if allow_episode_erasure else 403), response.text
+    async with session_scope(session_factory, org_id=org) as session:
+        for identity in ("private-episode", "citing-fact"):
+            row = await session.get(MemoryRecordProjection, (org, identity))
+            assert (row is None) == allow_episode_erasure
+
+
 async def test_native_mcp_http_handshake_and_tools_keep_primary_auth_and_leaf_scope(session_factory, config, tmp_path):
     from hub.server import build_app
 
