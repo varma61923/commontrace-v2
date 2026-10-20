@@ -101,6 +101,27 @@ def test_holder_binding_requires_correct_key_fresh_audience_nonce_and_exact_disc
         verify(pieces[0]+"~"+pieces[1]+"~"+pieces[1]+"~"+pieces[-1])
 
 
+def test_verifier_rejects_missing_audience_or_nonce_even_when_holder_signs_them():
+    import hashlib
+
+    issuer_token = issue().split("~", 1)[0]
+
+    def presentation(audience, nonce):
+        prefix = issuer_token + "~"
+        binding = {
+            "iat": NOW + 1,
+            "aud": audience,
+            "nonce": nonce,
+            "sd_hash": vc._b64(hashlib.sha256(prefix.encode("ascii")).digest()),
+        }
+        return prefix + vc._sign(binding, HOLDER, typ="kb+jwt")
+
+    with pytest.raises(ValueError, match="credential audience"):
+        verify(presentation("", "fresh-verifier-nonce"), audience="", nonce="fresh-verifier-nonce")
+    with pytest.raises(ValueError, match="verifier nonce"):
+        verify(presentation("https://verifier.example.test", ""), audience="https://verifier.example.test", nonce="")
+
+
 def test_expiry_revocation_unknown_status_and_wrong_status_list_are_denied():
     presentation = present(issue())
     with pytest.raises(PermissionError, match="time"):

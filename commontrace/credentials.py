@@ -239,6 +239,8 @@ def verify(presentation: str, *, issuer_keys: IssuerKeys, audience: str, nonce: 
            is_revoked: Callable[[dict[str, Any]], bool]) -> dict[str, Any]:
     """Verify a presentation; the caller must consume its own fresh verifier nonce."""
     fp.text(presentation, "credential presentation", MAX_TOKEN)
+    fp.text(audience, "credential audience", 512)
+    fp.text(nonce, "verifier nonce", 256)
     parts = presentation.split("~")
     if len(parts) < 2 or not parts[-1] or len(parts) > 18:
         raise PermissionError("UniMem a credential presentation requires holder key binding")
