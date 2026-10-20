@@ -88,3 +88,18 @@ def code_evidence_current(root: str, evidence: list[dict]) -> bool:
         if len(content) > 1000000 or hashlib.sha256(content).hexdigest() != citation.get("sha256"):
             return False
     return True
+
+
+def scope_from_labels(labels: list[str]) -> dict:
+    result, extra = {}, []
+    for label in labels:
+        key, _, value = label.partition(":")
+        if key in ("tenant", "user", "agent", "session", "repo") and value:
+            if key in result and result[key] != value:
+                raise ValueError("ambiguous memory scope dimension: " + key)
+            result[key] = value
+        else:
+            extra.append(label)
+    if extra:
+        result["labels"] = sorted(extra)
+    return result

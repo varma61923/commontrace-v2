@@ -116,7 +116,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install commontrace with the dev extra
-        run: python -m pip install -e ".[dev,code]" "pytest-cov>=7.0,<8.0"
+        run: python -m pip install -e ".[dev,code,crdt]" "pytest-cov>=7.0,<8.0"
 
       - name: Run tests with the 80 percent coverage gate
         run: >-
@@ -170,6 +170,9 @@ jobs:
       - name: Long-session summary preserves exact evidence and improves maintenance latency
         run: python -m benchmarks.session_summary --turns 1000 --trials 3 --check
 
+      - name: Robot retrieval and temporal monitor retain their wall-clock budgets
+        run: python -m benchmarks.robot_memory --check
+
       - name: Install focused coverage tooling
         run: python -m pip install "pytest>=9.0.3,<10.0" "pytest-cov>=7.0,<8.0"
 
@@ -208,7 +211,7 @@ jobs:
         env:
           REFERENCE_SHA: 973e59979f326559a863ed2dbcc02b187402dad4
         run: |
-          curl --fail --location --retry 3 \
+          curl --connect-timeout 10 --max-time 120 --fail --location --retry 3 \
             https://raw.githubusercontent.com/snap-research/locomo/cbfbc1dba6bc53d00625212a0f22d55ffee7c1fc/data/locomo10.json \
             --output "$RUNNER_TEMP/locomo10.json"
           python - <<'PY'
@@ -428,6 +431,61 @@ jobs:
           HUB_DATABASE_URL="$HUB_TEST_DATABASE_URL" python -m alembic -c hub/alembic.ini upgrade head
           python -m pytest e2e_tests/ -q -k hub
 
+  test-optional-memory-security:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.10', '3.12']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python -m pip install -e '.[dev,policy-cedar,security]'
+      - run: python -m pytest tests/test_policy_proof.py tests/test_policy_cedar.py tests/test_policy_io.py tests/test_credentials.py tests/test_passport.py tests/test_person_io.py -q
+      - name: Compile optional ROS 2 asking interface when the native toolchain exists
+        run: |
+          if command -v colcon >/dev/null 2>&1 && [ -n "${ROS_DISTRO:-}" ]; then
+            colcon --log-base "$RUNNER_TEMP/commontrace-ros-log" build --base-paths ros2 \
+              --build-base "$RUNNER_TEMP/commontrace-ros-build" \
+              --install-base "$RUNNER_TEMP/commontrace-ros-install" --packages-select commontrace_interfaces
+            source "$RUNNER_TEMP/commontrace-ros-install/setup.bash"
+            python -m pytest tests/test_human_help.py -q
+          else
+            echo "ROS 2 interface compilation skipped: colcon and an initialized ROS_DISTRO are required."
+          fi
+
+  test-effect-proof-native:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -e '.[dev,zk]'
+      - name: Test actual arithmetic and RISC Zero receipt verification
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/effect-target
+        run: |
+          cargo test --manifest-path zk/Cargo.toml --locked -p unimem-effect-core -p unimem-effect-host
+          cargo build --manifest-path zk/Cargo.toml --locked -p unimem-effect-core -p unimem-effect-host
+          cargo fmt --manifest-path zk/Cargo.toml --all -- --check
+          cargo clippy --manifest-path zk/Cargo.toml --locked -p unimem-effect-core -p unimem-effect-host --all-targets -- -D warnings
+          export UNIMEM_EFFECT_CORE="$CARGO_TARGET_DIR/debug/unimem-effect-core"
+          export UNIMEM_EFFECT_HOST="$CARGO_TARGET_DIR/debug/unimem-effect-host"
+          python -m pytest tests/test_zk_effect.py tests/test_zk_effect_io.py tests/test_zk_effect_native.py -q
+      - name: Build and test the real guest when its toolchain exists
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/effect-target
+        run: |
+          if rustup toolchain list | grep -q '^risc0'; then
+            cargo build --manifest-path zk/Cargo.toml --locked -p unimem-effect-host --features prove
+            export UNIMEM_EFFECT_HOST="$CARGO_TARGET_DIR/debug/unimem-effect-host"
+            python -m pytest tests/test_zk_effect_native.py -q -k real_zkvm
+          else
+            echo "Guest proving skipped: the custom RISC Zero Rust toolchain is absent."
+          fi
+
   security-scan:
     name: security scan (bandit, pip-audit, mypy)
     runs-on: ubuntu-latest
@@ -487,6 +545,29 @@ jobs:
             commontrace/conversation/coverage.py commontrace/conversation/context_selection.py \
             commontrace/conversation/unicode_index.py \
             commontrace/lesson_admission.py \
+            commontrace/memory_ifc.py commontrace/redteam.py \
+            commontrace/certified_erasure.py \
+            commontrace/retention.py \
+            commontrace/pooled_evidence.py commontrace/pooled_io.py commontrace/nextwave_store.py commontrace/commands/nextwave.py \
+            commontrace/unit_trials.py commontrace/skill_foundry.py commontrace/skill_io.py \
+            commontrace/capabilities.py commontrace/capability_io.py \
+            commontrace/team_isolation.py commontrace/team_io.py \
+            commontrace/optimizer_intake.py commontrace/optimizer_io.py \
+            commontrace/sentinel.py commontrace/sentinel_io.py \
+            commontrace/sycophancy.py commontrace/sycophancy_io.py \
+            commontrace/policy_proof.py commontrace/policy_cedar.py \
+            commontrace/policy_io.py commontrace/policy_relations.py \
+            commontrace/zk_effect.py commontrace/zk_effect_io.py commontrace/attested_keys.py \
+            commontrace/passport.py commontrace/credentials.py commontrace/person_io.py commontrace/purpose.py commontrace/subject_policy.py commontrace/human_help.py \
+            commontrace/rl_export.py commontrace/rl_io.py commontrace/writer_holdout.py commontrace/contagion.py commontrace/otel_memory.py commontrace/change_stream.py commontrace/erasure_verify.py commontrace/tiering.py \
+            commontrace/frontier_protocol.py commontrace/lineage.py commontrace/transparency_log.py commontrace/interference.py commontrace/eprocess.py commontrace/conformal_gate.py commontrace/incident.py commontrace/promotion.py commontrace/safety.py \
+            commontrace/outcomes.py commontrace/recovery.py commontrace/valuation.py commontrace/spatial.py commontrace/household.py commontrace/kv_capsules.py commontrace/uplift.py commontrace/attribution.py commontrace/cleanroom.py commontrace/compile_memory.py commontrace/robotics/__init__.py commontrace/robotics/bridge.py commontrace/robotics/edge.py commontrace/robotics/ingest.py hub/attestation.py \
+            commontrace/world_model_trust.py \
+            commontrace/robotics/signatures.py \
+            commontrace/robotics/working_memory.py \
+            commontrace/mesh_crdt.py commontrace/robotics/vda5050.py commontrace/robotics/site_memory.py \
+            commontrace/safety_case.py commontrace/robotics/shield.py \
+            commontrace/oblivious.py commontrace/packs.py \
             commontrace/retry.py commontrace/commands/integration_cmd.py \
             commontrace/fact_evidence.py commontrace/vector_snapshots.py \
             commontrace/sqlite_vector_snapshots.py commontrace/postgres_vector_snapshots.py \
@@ -494,7 +575,7 @@ jobs:
             commontrace/fact_index.py commontrace/runtime_cache.py commontrace/sqlite_pool.py commontrace/_jsonl.py \
             benchmarks/memory_contracts.py benchmarks/vector_search.py \
             benchmarks/fact_search.py benchmarks/fact_retrieval.py benchmarks/fact_mutation.py \
-            benchmarks/conversation_retrieval.py
+            benchmarks/conversation_retrieval.py benchmarks/robot_memory.py commontrace/pack_demos.py
 
       - name: mypy (known findings, informational only)
         continue-on-error: true
@@ -508,10 +589,10 @@ jobs:
 
       - name: Install pinned helm and terraform
         run: |
-          curl -sSfL -o helm.tgz https://get.helm.sh/helm-v3.16.2-linux-amd64.tar.gz
+          curl --connect-timeout 10 --max-time 120 -sSfL -o helm.tgz https://get.helm.sh/helm-v3.16.2-linux-amd64.tar.gz
           echo "9318379b847e333460d33d291d4c088156299a26cd93d570a7f5d0c36e50b5bb  helm.tgz" | sha256sum -c -
           tar xzf helm.tgz && sudo mv linux-amd64/helm /usr/local/bin/helm
-          curl -sSfL -o tf.zip https://releases.hashicorp.com/terraform/1.9.8/terraform_1.9.8_linux_amd64.zip
+          curl --connect-timeout 10 --max-time 120 -sSfL -o tf.zip https://releases.hashicorp.com/terraform/1.9.8/terraform_1.9.8_linux_amd64.zip
           echo "186e0145f5e5f2eb97cbd785bc78f21bae4ef15119349f6ad4fa535b83b10df8  tf.zip" | sha256sum -c -
           unzip -q tf.zip && sudo mv terraform /usr/local/bin/terraform
 
@@ -530,6 +611,7 @@ jobs:
             terraform -chdir="$d" init -backend=false -input=false
             terraform -chdir="$d" validate
             terraform -chdir="$d" fmt -check
+            terraform -chdir="$d" test
           done
 
   docker-build:
@@ -560,14 +642,14 @@ jobs:
             -e HUB_ALLOW_INSECURE_HTTP=true \
             commontrace-hub:ci
           for i in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:8420/healthz; then echo "healthz OK"; exit 0; fi
+            if curl --connect-timeout 2 --max-time 5 -fsS http://127.0.0.1:8420/healthz; then echo "healthz OK"; exit 0; fi
             sleep 1
           done
           echo "--- container logs ---"; docker logs hub-ci; exit 1
 
       - name: Readiness reports unhealthy without a database
         run: |
-          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8420/readyz)
+          code=$(curl --connect-timeout 2 --max-time 5 -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8420/readyz)
           test "$code" = "503" || { echo "expected 503 from /readyz, got $code"; exit 1; }
           echo "readyz correctly reports 503 with no database"
 
@@ -586,7 +668,7 @@ jobs:
           docker run -d --name local-ci --read-only --tmpfs /tmp --cap-drop ALL \
             -p 127.0.0.1:8787:8787 commontrace-local:ci
           for i in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:8787/v1/health/ready; then echo " ready OK"; exit 0; fi
+            if curl --connect-timeout 2 --max-time 5 -fsS http://127.0.0.1:8787/v1/health/ready; then echo " ready OK"; exit 0; fi
             sleep 1
           done
           echo "--- container logs ---"; docker logs local-ci; exit 1
@@ -619,7 +701,7 @@ jobs:
       - name: Wait for readiness
         run: |
           for i in $(seq 1 60); do
-            if curl -fsS http://127.0.0.1:8420/readyz; then echo; echo "ready"; exit 0; fi
+            if curl --connect-timeout 2 --max-time 5 -fsS http://127.0.0.1:8420/readyz; then echo; echo "ready"; exit 0; fi
             sleep 2
           done
           echo "--- compose ps ---";      docker compose ps
@@ -651,7 +733,7 @@ jobs:
 
       - name: Unauthenticated requests are refused
         run: |
-          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8420/mcp \
+          code=$(curl --connect-timeout 2 --max-time 5 -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8420/mcp \
             -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
             -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"1"}}}')
           test "$code" = "401" || { echo "expected 401 without a key, got $code"; exit 1; }
@@ -661,28 +743,28 @@ jobs:
         run: |
           set -euo pipefail
 
-          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8420/signup)
+          code=$(curl --connect-timeout 2 --max-time 5 -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8420/signup)
           test "$code" = "200" || { echo "GET /signup: expected 200, got $code"; exit 1; }
 
-          body=$(curl -s -X POST http://127.0.0.1:8420/signup --data-urlencode "org_name=CI Signup Org")
+          body=$(curl --connect-timeout 2 --max-time 5 -s -X POST http://127.0.0.1:8420/signup --data-urlencode "org_name=CI Signup Org")
           raw_key=$(echo "$body" | grep -oE 'ct_live_[A-Za-z0-9_-]+' | head -1)
           test -n "$raw_key" || { echo "signup response carried no api key:"; echo "$body"; exit 1; }
           echo "::add-mask::$raw_key"
           echo "self-serve signup issued a key"
 
-          resp=$(curl -s -D - -o /dev/null http://127.0.0.1:8420/app)
+          resp=$(curl --connect-timeout 2 --max-time 5 -s -D - -o /dev/null http://127.0.0.1:8420/app)
           echo "$resp" | grep -qi '^HTTP/[0-9.]* 303' \
             || { echo "GET /app with no session: expected 303"; echo "$resp"; exit 1; }
           echo "$resp" | grep -qi '^location:.*/app/signin' \
             || { echo "GET /app with no session: expected a redirect to /app/signin"; echo "$resp"; exit 1; }
 
           cookie_jar=$(mktemp)
-          signin_code=$(curl -s -o /dev/null -w '%{http_code}' -c "$cookie_jar" \
+          signin_code=$(curl --connect-timeout 2 --max-time 5 -s -o /dev/null -w '%{http_code}' -c "$cookie_jar" \
             http://127.0.0.1:8420/app/signin -X POST --data-urlencode "api_key=$raw_key")
           test "$signin_code" = "303" || { echo "POST /app/signin: expected 303, got $signin_code"; exit 1; }
           grep -q ct_console "$cookie_jar" || { echo "sign-in set no session cookie"; exit 1; }
 
-          overview_code=$(curl -s -o /dev/null -w '%{http_code}' -b "$cookie_jar" http://127.0.0.1:8420/app)
+          overview_code=$(curl --connect-timeout 2 --max-time 5 -s -o /dev/null -w '%{http_code}' -b "$cookie_jar" http://127.0.0.1:8420/app)
           test "$overview_code" = "200" || { echo "GET /app with a session: expected 200, got $overview_code"; exit 1; }
           rm -f "$cookie_jar"
           echo "self-serve signup -> console sign-in works end to end, over real HTTP"
@@ -703,7 +785,7 @@ jobs:
         run: |
           before=$(docker compose exec -T db psql -U commontrace -d commontrace_hub -tAc 'SELECT count(*) FROM traces')
           docker compose restart hub
-          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8420/readyz >/dev/null && break; sleep 2; done
+          for i in $(seq 1 30); do curl --connect-timeout 2 --max-time 5 -fsS http://127.0.0.1:8420/readyz >/dev/null && break; sleep 2; done
           after=$(docker compose exec -T db psql -U commontrace -d commontrace_hub -tAc 'SELECT count(*) FROM traces')
           test "$before" = "$after" || { echo "trace count changed across restart: $before -> $after"; exit 1; }
           test "$after" -gt 0 || { echo "expected traces to exist after the --keep smoke run"; exit 1; }

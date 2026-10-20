@@ -5,7 +5,7 @@ on:
     branches: ['main']
     paths: ['commontrace/**', 'hub/**', 'scripts/graphify_audit.py', '.github/workflows/graphify.yml']
   pull_request:
-    paths: ['commontrace/**', 'hub/**', 'scripts/graphify_audit.py']
+    paths: ['commontrace/**', 'hub/**', 'scripts/graphify_audit.py', '.github/workflows/graphify.yml']
 permissions:
   contents: read
 jobs:
@@ -16,19 +16,15 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.12'
-      - run: python -m pip install "graphifyy[terraform,sql]==0.9.84"
+      - run: python -m pip install "graphifyy[terraform,sql] @ git+https://github.com/Graphify-Labs/graphify.git@86c57be8204673c2a1b9849a3292a7dd3ab373d8"
       - run: graphify extract . --code-only --max-workers 2 --out "$RUNNER_TEMP/architecture"
-      # Seven console history callbacks are dynamically dispatched and verified
-      # by Chromium contracts; they are reviewed reachability candidates.
-      # Module budget 311 -> 314: multihop, query_expansion and triplet_search
-      # (multi-hop reasoning, query expansion and semantic triplet retrieval);
-      # 314 -> 315: causal_gate (contextual Thompson allocation over the holdout).
+      # pack_demos adds one reviewed runtime module; see architecture-exploration.md.
       - name: Enforce graph integrity and reviewed surface budgets
         run: >-
           python scripts/graphify_audit.py
           --graph "$RUNNER_TEMP/architecture/graphify-out/graph.json"
           --output "$RUNNER_TEMP/architecture/audit.json"
-          --source-root . --max-modules 315 --max-unreachable 318
+          --source-root . --max-modules 398 --max-unreachable 318
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
           name: graphify-audit

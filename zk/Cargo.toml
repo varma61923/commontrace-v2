@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+members = ["effect-core", "effect-host", "methods"]
+default-members = ["effect-core", "effect-host"]
+exclude = ["methods/guest"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+
+[workspace.dependencies]
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.145"
+sha2 = "=0.10.9"
+hex = "=0.4.3"
+num-bigint = "=0.4.6"
+num-traits = "=0.2.19"

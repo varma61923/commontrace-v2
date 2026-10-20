@@ -39,10 +39,24 @@ variable "kms_key_name" {
 variable "backup_retention_days" {
   type        = number
   default     = 14
-  description = "Point-in-time recovery keeps transaction logs for this many days (1 to 35)."
+  description = "Number of daily backups retained, independent of the transaction-log recovery window."
   validation {
     condition     = var.backup_retention_days >= 7 && var.backup_retention_days <= 35
-    error_message = "Use 7 to 35 days of log retention."
+    error_message = "Retain between 7 and 35 daily backups."
+  }
+}
+
+variable "transaction_log_retention_days" {
+  type        = number
+  default     = 7
+  description = "PITR transaction-log retention for the Enterprise edition (1 to 7 days)."
+  validation {
+    condition = (
+      var.transaction_log_retention_days >= 1 &&
+      var.transaction_log_retention_days <= 7 &&
+      floor(var.transaction_log_retention_days) == var.transaction_log_retention_days
+    )
+    error_message = "Enterprise edition transaction-log retention must be an integer from 1 to 7 days."
   }
 }
 

@@ -634,6 +634,9 @@ _HEADERS = {
 }
 
 _TAGS = [
+    ("Transparency", "Tenant-scoped signed Merkle checkpoints, inclusion and consistency proofs."),
+    ("Evidence", "UniMem signed aggregate contributions and model-based pooled estimates."),
+    ("Incidents", "Legal holds, frozen evidence and signed regulator-evidence exports."),
     ("Memory", "Versioned, tenant-scoped memory records and erasure."),
     (
         "MCP",
@@ -808,6 +811,86 @@ def _operations() -> dict[tuple[str, str], dict]:
         "429": _response_ref("RateLimited"),
     }
     ops = {
+        ("POST", "/v1/attestation/{operation}"): _op(
+            "attestedKeyOperation", "Admin", "Enroll audited builds and release tenant keys to attested workers",
+            security=API_KEY,
+            parameters=[{"name": "operation", "in": "path", "required": True, "schema": {"type": "string",
+                "enum": ["measurements-register", "measurements-list", "challenge", "key-release"]}}],
+            body=_json_body(_free_object("Build profile, challenge parameters or issued request and signed evidence.")),
+            description="Admin scope and a tenant log signer are required. Key release additionally requires a "
+                        "deployment-provisioned tenant KMS provider and pinned hardware appraisers. A fresh one-use "
+                        "quote binds the authenticated tenant, measured build, worker X25519 key and payload digest. "
+                        "Production configuration forbids simulated evidence; returned keys are encrypted to the "
+                        "worker.",
+            responses={"200": _json("Enrollment, challenge or encrypted worker key.",
+                                    _free_object("Measurement receipt, challenge or authenticated key envelope.")),
+                       "400": _error("Malformed or oversized attestation request."),
+                       "401": _error("Authentication required."), "403": _error("Quote, measurement or nonce denied."),
+                       "404": _error("Unknown attestation operation."), "429": _error("Rate or challenge limit."),
+                       "503": _error("Attestation, signer or tenant key provider unavailable.")}),
+        ("POST", "/v1/policy/{operation}"): _op(
+            "finitePolicyOperation", "Admin", "Diff, certify, review and activate finite memory permissions",
+            security=API_KEY,
+            parameters=[{"name": "operation", "in": "path", "required": True,
+                         "schema": {"type": "string", "enum": ["current", "diff", "certify", "review", "activate"]}}],
+            body=_json_body(_free_object("Versioned native policy, or certificate and content-bound review receipt.")),
+            description="Admin scope and a configured tenant signer are required. Widening activation requires "
+                        "a review bound to the exact certificate and current generation. Proofs cover only the "
+                        "closed declared domain of at most 65536 tuples; external relation state is excluded.",
+            responses={"200": _json("Policy operation result.", _free_object("Policy, finite diff or signed receipt.")),
+                       "400": _error("Malformed, oversized or unsupported finite policy."),
+                       "401": _error("Authentication required."), "403": _error("Admin scope or review required."),
+                       "404": _error("Unknown policy operation."), "409": _error("Stale policy generation."),
+                       "429": _error("Rate limited."), "503": _error("Signer or optional Cedar extra unavailable.")}),
+        ("POST", "/v1/evidence/pool/contributions"): _op(
+            "pooledContribution", "Evidence", "Accept a signed UniMem sufficient-statistics contribution",
+            security=API_KEY,
+            body=_json_body(_object({"signed": _free_object("Pinned Ed25519 contribution envelope.")}, ("signed",))),
+            description="Admin scope and an operator-provisioned contributor key are required. "
+                        "An identical release replay is idempotent; tenant identity comes from authentication.",
+            responses={"201": _json("Accepted and anchored.", _free_object("Acceptance and Merkle receipt.")),
+                       "200": _json("Identical replay.", _free_object("Original acceptance receipt.")),
+                       "400": _error("Malformed, oversized or non-finite contribution."),
+                       "401": _error("Authentication required."),
+                       "403": _error("Admin scope or registered contributor signature required."),
+                       "409": _error("Release identity is bound to different bytes."),
+                       "429": _error("Rate limited."),
+                       "503": _error("Signing key is not configured.")}),
+        **{(method, path): _op(
+            operation, "Incidents", summary, security=API_KEY,
+            body=(_json_body(_object({"id": _string(maxLength=128), "valid_time": _string(format="date-time")},
+                                      ("id", "valid_time"))) if method == "POST" else None),
+            responses={"201" if method == "POST" else "200":
+                       (_html("Authenticated incident workflow.") if operation == "incidentConsole" else
+                        _json("Signed, tenant-scoped evidence and Merkle anchor.",
+                              _free_object("Snapshot, hold identifier, control mappings and transparency receipt."))),
+                       "400": _error("Malformed, oversized or duplicate incident request."),
+                       "401": _error("Authentication required."), "403": _error("Insufficient scope."),
+                       "404": _error("No incident in this organization."), "429": _error("Rate limited."),
+                       "503": _error("Incident signing key is not configured.")}
+        ) for method, path, operation, summary in (
+            ("POST", "/v1/incidents", "incidentFreeze", "Freeze tenant evidence under legal hold"),
+            ("GET", "/v1/incidents/{incident_id}/timeline", "incidentTimeline", "Read a frozen incident timeline"),
+            ("GET", "/v1/incidents/{incident_id}/pack", "incidentPack", "Export a signed incident pack"),
+            ("GET", "/v1/incidents/console", "incidentConsole", "Open incident workflow instructions"),
+        )},
+        **{("GET", "/v1/log/" + operation): _op(
+            "transparency" + operation.title(), "Transparency", "Export tenant Merkle " + operation,
+            security=API_KEY,
+            parameters=(() if operation == "head" else
+                        (_query("leaf", _integer(minimum=0), "Zero-based leaf index.", required=True),)
+                        if operation == "proof" else
+                        (_query("from", _integer(minimum=0), "Pinned old tree size.", required=True),
+                         _query("to", _integer(minimum=0), "New tree size; defaults to latest."))),
+            responses={"200": _json("Signed checkpoint or Merkle proof.",
+                                    _free_object("RFC 6962 proof with store-pinned signature envelope.")),
+                       "400": _error("Invalid bounded tree position or corrupt history."),
+                       "401": _error("Missing or rejected credential."),
+                       "403": _error("Read scope required."),
+                       "429": _error("Rate limited."),
+                       "503": _error("Hub ledger signer is not configured.")},
+            description="Pin or witness heads to detect forks. HMAC signatures require a shared verifier secret."
+        ) for operation in ("head", "proof", "consistency")},
         # --- MCP -----------------------------------------------------------
         ("POST", "/mcp"): _op(
             "mcpPost", "MCP", "Send one JSON-RPC 2.0 message",
@@ -873,6 +956,31 @@ def _operations() -> dict[tuple[str, str], dict]:
             body=_json_body(_schema_ref("SearchTracesRequest")),
             ok={"200": _json("Brief hits, best first.", _schema_ref("SearchTracesResponse"))},
             errors=("400", "401", "403", "429"),
+        ),
+        ("POST", "/api/v1/oblivious/pir"): _api(
+            "obliviousPirShare", "REST", "Answer one replica's XOR-PIR query share",
+            description="The authenticated key determines its label ceiling. Each independently operated replica "
+                        "must receive one random query share; replicas must not collude. See oblivious recall docs.",
+            body=_json_body({"type": "object", "required": ["cluster"], "properties": {
+                "cluster": {"type": "string", "maxLength": 96},
+                "share": {"type": "string", "maxLength": 172, "contentEncoding": "base64"},
+                "shares": {"type": "array", "maxItems": 1024, "items": {"type": "string",
+                                                                          "maxLength": 172,
+                                                                          "contentEncoding": "base64"}},
+            }}),
+            ok={"200": _json("Fixed-size metadata or XOR response share.", {"oneOf": [
+                {"type": "object", "required": ["count", "block_bytes"], "properties": {
+                    "count": {"type": "integer", "minimum": 1, "maximum": 1024},
+                    "block_bytes": {"type": "integer", "minimum": 1, "maximum": 16384},
+                }},
+                {"type": "object", "required": ["answer"], "properties": {
+                    "answer": {"type": "string", "contentEncoding": "base64"},
+                }},
+                {"type": "object", "required": ["answers"], "properties": {
+                    "answers": {"type": "array", "items": {"type": "string", "contentEncoding": "base64"}},
+                }},
+            ]})},
+            errors=("400", "401", "403", "429", "503"),
         ),
         ("POST", "/api/v1/keys"): _api(
             "createAccountKey", "Signup", "Create an organization and its first API key",
@@ -1311,6 +1419,28 @@ def _operations() -> dict[tuple[str, str], dict]:
             parameters=(_query("offset", _integer(minimum=0, maximum=100_000, default=0), "Clamped to 0..100000."),),
         ),
 
+        ("GET", "/app/incidents"): _console_page(
+            "consoleIncidents", "Freeze and export organization incident evidence"),
+        ("POST", "/app/incidents/freeze"): _op(
+            "consoleIncidentFreeze", "Console", "Freeze evidence and place a legal hold (admin keys)",
+            security=CONSOLE,
+            body=_form_body({"id": _string(maxLength=128, pattern="^[A-Za-z0-9_-]+$"),
+                             "valid_time": _string("ISO 8601 event time with timezone", maxLength=64)},
+                            ("id", "valid_time")),
+            responses={"303": _see_other("To the incident list or sign-in."),
+                       "400": _error("Malformed or duplicate incident."),
+                       "403": _error("Admin or origin check refused."),
+                       "503": _error("Incident signer is not configured.")}),
+        ("GET", "/app/incidents/{incident_id}/pack"): _op(
+            "consoleIncidentPack", "Console", "Download an organization's signed evidence pack",
+            security=CONSOLE,
+            parameters=(_query("regime", _string(default="eu-ai-act"), "Evidence control mapping."),),
+            responses={"200": _json("Signed manifest, snapshot files and inclusion receipt.",
+                                       _free_object("Signed incident evidence pack")),
+                       "303": _response_ref("SignInRedirect"), "400": _error("Unknown evidence regime."),
+                       "404": _error("Incident does not belong to this organization."),
+                       "503": _error("Incident signer is not configured.")}),
+
         # --- Admin -----------------------------------------------------------
         ("GET", "/admin"): _admin_page("adminOverview", "Operator overview", _FLASH_PARAMS),
         ("POST", "/admin/create-org"): _admin_post(
@@ -1592,11 +1722,19 @@ def document(app=None) -> dict:
         operation = dict(declared[(method, path)])
         names = path_parameters(path)
         if names:
+            declared_parameters = list(operation.get("parameters", ()))
+            explicit = {parameter["name"] for parameter in declared_parameters if parameter["in"] == "path"}
             operation["parameters"] = [
                 {"name": name, "in": "path", "required": True,
                  "description": _PATH_PARAMS.get(name, ""), "schema": {"type": "string"}}
-                for name in names
-            ] + list(operation.get("parameters", ()))
+                for name in names if name not in explicit
+            ] + declared_parameters
+        if path in {"/mcp", "/api/v1/traces", "/api/v1/traces/search", "/v1/memory/record-put",
+                    "/v1/memory/record-search", "/v1/memory/record-forget",
+                    "/api/v1/memory/records/{operation}"}:
+            from commontrace import capabilities
+
+            operation["parameters"] = list(operation.get("parameters", ())) + capabilities.header_parameters()
         responses = dict(operation["responses"])
         if method in _BODY_METHODS:
             responses.setdefault("413", _response_ref("PayloadTooLarge"))

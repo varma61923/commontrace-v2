@@ -5,7 +5,7 @@ from __future__ import annotations
 import glob
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 NAME_MAX_LEN = 64
@@ -26,6 +26,8 @@ class Skill:
     source: str = SOURCE_PROJECT
     path: str = ""
     body: str = ""
+    governed_root: str = ""
+    governed_context: tuple[str, ...] = ()
 
     def index_line(self) -> str:
         """The one-line ``name: description`` form injected into context."""
@@ -170,12 +172,22 @@ def discover(
     *,
     user_dir: str | None = None,
     include_bundled: bool = True,
+    context: tuple[str, ...] | list[str] = (),
 ) -> list[Skill]:
     """All skills visible from *root*, project-overrides-bundled."""
     project = _discover_in_dir(project_skills_dir(root), SOURCE_PROJECT)
     udir = os.path.abspath(user_dir) if user_dir is not None else user_skills_dir()
     user = _discover_in_dir(udir, SOURCE_USER)
     bundled = _bundled_skills() if include_bundled else []
+
+    from commontrace import paths
+
+    if os.path.isfile(os.path.join(paths.memory_dir(root), "unimem-skill-exports.jsonl")):
+        from commontrace import skill_io
+
+        project = [replace(s, governed_root=root, governed_context=tuple(context)) for s in project
+                   if skill_io.visible_published(root, s.path, context=context)]
+        user = [s for s in user if skill_io.visible_published(root, s.path, context=context)]
 
     ordered: list[Skill] = []
     seen: set[str] = set()
@@ -197,6 +209,11 @@ def get_skill(root: str, name: str, **kwargs) -> Skill | None:
 
 def load_body(skill: Skill) -> str:
     """Full SKILL.md instructions for *skill*, read on demand."""
+    if skill.governed_root:
+        from commontrace import skill_io
+
+        if not skill_io.visible_published(skill.governed_root, skill.path, context=skill.governed_context):
+            return ""
     if skill.path and skill.path.endswith(".md"):
         try:
             from commontrace import frontmatter

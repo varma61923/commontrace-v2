@@ -5,6 +5,7 @@ factory functions here preserve existing CLI and embedding integrations.
 """
 from __future__ import annotations
 
+import contextvars
 import copy
 import dataclasses
 import datetime
@@ -20,7 +21,8 @@ import threading
 import time
 import weakref
 from collections import OrderedDict
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from http.server import ThreadingHTTPServer
 from typing import Any, TextIO
 from urllib.parse import parse_qs, urlsplit
@@ -149,9 +151,10 @@ def _cached_body(path: str, *, expected_identity: tuple | None = None) -> str:
 
 
 class ApiError(Exception):
-    def __init__(self, status: int, code: str, message: str) -> None:
+    def __init__(self, status: int, code: str, message: str, *, details: dict | None = None) -> None:
         super().__init__(message)
         self.status, self.code, self.message = status, code, message
+        self.details = details
 
 
 class TransientAuthError(Exception):
@@ -202,46 +205,80 @@ def config_path(root: str) -> str:
     return os.path.join(paths.memory_dir(root), CONFIG_NAME)
 
 
+def _validate_config_values(env, prefixes) -> None:
+    if env is not None and (not isinstance(env, str)
+                            or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,31}", env)):
+        raise ValueError("gateway configuration contains an invalid environment slug")
+    if (not isinstance(prefixes, (list, tuple))
+            or any(not isinstance(prefix, str) or not prefix or len(prefix) > 512 or _CONTROL.search(prefix)
+                   for prefix in prefixes)):
+        raise ValueError("gateway configuration contains invalid protected prefixes")
+
+
 def load_config(root: str) -> GatewayConfig:
+    path = config_path(root)
+    if not os.path.lexists(path):
+        return GatewayConfig()
+    paths.enforce_boundary(root, path)
+    if os.path.islink(path):
+        raise ValueError("gateway configuration must not be a symlink")
     try:
-        with open(config_path(root), encoding="utf-8") as fh:
-            raw = json.load(fh)
-    except (OSError, ValueError):
-        return GatewayConfig()
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(fd, "rb") as fh:
+            encoded = fh.read(MAX_BODY_BYTES + 1)
+    except OSError as exc:
+        raise ValueError("gateway configuration cannot be read safely") from exc
+    if len(encoded) > MAX_BODY_BYTES:
+        raise ValueError("gateway configuration exceeds 1 MiB")
+    from commontrace import frontier_protocol as fp
+
+    raw = fp.loads(encoded)
     if not isinstance(raw, dict):
-        return GatewayConfig()
+        raise ValueError("gateway configuration must be an object")
     env = raw.get("env")
     prefixes = raw.get("protected_prefixes")
+    if prefixes is None:
+        prefixes = ()
+    _validate_config_values(env, prefixes)
     return GatewayConfig(
         env=env if isinstance(env, str) and env else None,
-        protected_prefixes=tuple(p for p in prefixes if isinstance(p, str) and p)
-        if isinstance(prefixes, list) else (),
+        protected_prefixes=tuple(dict.fromkeys(prefixes or ())),
     )
 
 
 def save_config(root: str, config: GatewayConfig) -> None:
-    os.makedirs(paths.memory_dir(root), exist_ok=True)
-    tmp = config_path(root) + ".tmp"
-    with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
-        json.dump({"env": config.env, "protected_prefixes": list(config.protected_prefixes)}, fh, indent=2)
-        fh.write("\n")
-    os.replace(tmp, config_path(root))
+    from commontrace import _jsonl
+
+    if not isinstance(config, GatewayConfig):
+        raise ValueError("gateway configuration has an invalid type")
+    _validate_config_values(config.env, config.protected_prefixes)
+    path = paths.safe_prepare_output_path(config_path(root))
+    with _jsonl.locked(path):
+        _jsonl.write_json(path, {
+            "env": config.env,
+            "protected_prefixes": list(config.protected_prefixes),
+        })
 
 
 def merge_config(root: str, *, env: str | None, protect: list[str]) -> GatewayConfig:
-    current = load_config(root)
-    if env is not None:
-        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,31}", env):
-            raise ValueError("env must be a lowercase slug such as sim or real")
-        if current.env and current.env != env:
-            raise ValueError(
-                f"this store measures {current.env!r}; refusing to start it as {env!r}. "
-                "Use a separate store (--dest) for each environment so they are never pooled.")
-    prefixes = tuple(dict.fromkeys((*current.protected_prefixes, *protect)))
-    merged = GatewayConfig(env=env or current.env, protected_prefixes=prefixes)
-    if merged != current:
-        save_config(root, merged)
-    return merged
+    from commontrace import _jsonl
+
+    path = paths.safe_prepare_output_path(config_path(root), allow_unlink_leaf=False)
+    with _jsonl.locked(path):
+        current = load_config(root)
+        if env is not None:
+            if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,31}", env):
+                raise ValueError("env must be a lowercase slug such as sim or real")
+            if current.env and current.env != env:
+                raise ValueError(
+                    f"this store measures {current.env!r}; refusing to start it as {env!r}. "
+                    "Use a separate store (--dest) for each environment so they are never pooled.")
+        prefixes = tuple(dict.fromkeys((*current.protected_prefixes, *protect)))
+        _validate_config_values(env or current.env, prefixes)
+        merged = GatewayConfig(env=env or current.env, protected_prefixes=prefixes)
+        if merged != current:
+            save_config(root, merged)
+        return merged
 
 
 def _text(value, label: str, *, limit: int, required: bool = True) -> str:
@@ -371,6 +408,30 @@ class Response:
     body: bytes
     content_type: str = "application/json"
     headers: dict = dataclasses.field(default_factory=dict)
+    stream: Iterator[bytes] | None = None
+
+    @classmethod
+    def streaming(cls, status: int, chunks: Iterator[bytes], *, content_type: str,
+                  headers: dict | None = None) -> Response:
+        """Bind deferred egress to the authorization context that created it."""
+        context = contextvars.copy_context()
+
+        def bounded() -> Iterator[bytes]:
+            size = count = 0
+            while True:
+                try:
+                    chunk = context.run(next, chunks)
+                except StopIteration:
+                    return
+                count += 1
+                if not isinstance(chunk, bytes):
+                    raise ValueError("UniMem stream chunks must be bytes")
+                size += len(chunk)
+                if count > 4096 or len(chunk) > 256*1024 or size > 32*1024*1024:
+                    raise ValueError("UniMem stream exceeds its bounded transfer budget")
+                yield chunk
+
+        return cls(status, b"", content_type, headers or {}, bounded())
 
 
 def _json(status: int, payload) -> Response:
@@ -425,6 +486,7 @@ class Gateway:
             "record-search",
             "record-forget",
             "record-reap-due",
+            "team-read",
             "turn",
             "add",
             "batch",
@@ -478,6 +540,7 @@ class Gateway:
             "args": "optional array of command arguments; the gateway store root is implicit",
         }, summary="Run one store-scoped CommonTrace CLI command.")
         self._route("POST", "/v1/recall", self._recall, request={
+            "purpose": "optional exact purpose; must match the verified capability for an agent",
             "occasion_id": "string, your id for one episode/task/ticket",
             "items": "optional list of {id, text, protected?, meta?}: your candidate memories",
             "query": "optional string; ranks this store's lessons when `items` is absent",
@@ -493,6 +556,19 @@ class Gateway:
             "signals": "list of {detector, args} evaluated three-valued; with `combine`: all|any",
             "agent_id": "optional string",
         }, summary="How the occasion went. Records nothing while the signals are undecided.")
+        self._route("POST", "/v1/tier", self._tier, request={
+            "operation": "status|hibernate|warm|residency|reembed|rollback",
+            "request": "bounded operation fields including namespace, region and optional scope context",
+        }, summary="UniMem managed namespace residency and hot/cold tier operations.")
+        self._route("GET", "/v1/stream", self._stream, summary="UniMem admitted resumable belief changes as SSE.")
+        self._route("POST", "/v1/experiment/export-rl", self._export_rl, request={
+            "units": "list of admitted memory or skill unit IDs, at most 64",
+            "format": "dpo|advantage|replay; defaults to dpo",
+            "context": "list of caller scope labels; container header further narrows access",
+            "kl_budget": "optional finite sampled-token KL budget",
+            "alpha": "optional interval error budget", "exploitation": "optional replay weight",
+            "exploration": "optional replay weight", "connector": "generic|agent-lightning|grader",
+        }, summary="Stream UniMem governed randomized-arm training records as JSONL.")
         self._route("POST", "/v1/episode", self._episode, request={
             "occasion_id": "string", "summary": "what happened, in words",
             "sensors": "optional {name: number|boolean|short text}, at most 64",
@@ -708,10 +784,14 @@ class Gateway:
                 payload.pop("_principal", None)
                 if principal is not None:
                     payload["_principal"] = principal
+            if path == "/v1/stream":
+                payload["_stream_cursor"] = next((v for k, v in headers.items() if k.lower() == "last-event-id"), "")
             from commontrace import telemetry
 
-            with telemetry.bind(user_id=principal["id"] if principal else "operator" if spec["auth"] else "anonymous"):
-                result = handler(payload, parse_qs(split.query))
+            with self._delegated_request(method, target, path, headers, body or b"", principal, spec["auth"]):
+                with telemetry.bind(user_id=principal["id"] if principal else
+                                    "operator" if spec["auth"] else "anonymous"):
+                    result = handler(payload, parse_qs(split.query))
             if isinstance(result, Response):
                 return result
             return _json(200, result)
@@ -723,10 +803,69 @@ class Gateway:
                 response.headers["Retry-After"] = str(max(1, min(60, int(getattr(exc, "retry_after", 1)))))
             return response
         except ApiError as exc:
-            return _json(exc.status, {"error": {"code": exc.code, "message": exc.message}})
+            return _json(exc.status, {"error": {"code": exc.code, "message": exc.message,
+                                     **({"details": exc.details} if exc.details is not None else {})}})
         except Exception as exc:  # noqa: BLE001 - never leak a traceback to a client
             logger.error("Gateway %s request failed (%s)", method, type(exc).__name__)
             return _json(500, {"error": {"code": "internal", "message": f"{type(exc).__name__}"}})
+
+    @contextmanager
+    def _delegated_request(self, method, target, path, headers, raw, principal, authenticated):
+        if not authenticated:
+            yield
+            return
+        lowered = {key.lower(): value for key, value in headers.items()}
+        encoded = lowered.get("x-unimem-capability", "")
+        possession = lowered.get("x-unimem-capability-proof", "")
+        configured = os.path.isfile(os.path.join(paths.memory_dir(self.root), "capabilities.json"))
+        if not encoded and not possession and not configured:
+            yield
+            return
+        from commontrace import capabilities as cap
+        from commontrace import capability_io, memory_authority
+
+        try:
+            principal_id = principal["id"] if principal else "local"
+            if not encoded and not possession:
+                if capability_io.required(self.root, principal_id):
+                    raise PermissionError("UniMem enrolled delegate must supply capability and possession headers")
+                yield
+                return
+            operation = {("POST", "/v1/recall"): "read", ("POST", "/v1/memory/search"): "read",
+                         ("POST", "/v1/memory/team-read"): "read", ("POST", "/v1/memory/add"): "write",
+                         ("POST", "/v1/memory/batch"): "write", ("GET", "/v1/stream"): "read",
+                         ("POST", "/v1/memory/record-search"): "read",
+                         ("POST", "/v1/memory/record-put"): "write",
+                         ("POST", "/v1/memory/record-forget"): "forget"}.get((method, path))
+            if operation is None:
+                raise PermissionError("UniMem this gateway operation does not support delegated capabilities")
+            def decode(value, bound):
+                import base64
+
+                if not value or len(value) > bound:
+                    raise ValueError("UniMem invalid capability header size")
+                try:
+                    result = json.loads(base64.b64decode(value + "=" * (-len(value) % 4),
+                                                        altchars=b"-_", validate=True))
+                except RecursionError:
+                    raise ValueError("UniMem capability header nesting exceeds its bound") from None
+                if not isinstance(result, dict):
+                    raise ValueError("UniMem capability headers must encode objects")
+                return result
+            token, proof = decode(encoded, 96 * 1024), decode(possession, 8192)
+            purpose = lowered.get("x-unimem-purpose", "")
+            authorization = capability_io.authenticate(self.root, token, proof,
+                request_digest=cap.request_digest(method, target, raw, purpose=purpose), operation=operation,
+                purpose=purpose, principal=principal_id if principal is not None else "")
+            with capability_io.activate(authorization):
+                with memory_authority.writer(authorization["principal"], authorization["authority"]):
+                    yield
+        except PermissionError as exc:
+            raise ApiError(403, "capability_denied", str(exc)) from exc
+        except (ValueError, KeyError, TypeError) as exc:
+            raise ApiError(400, "invalid_capability", str(exc)) from exc
+        except (OSError, RuntimeError) as exc:
+            raise ApiError(503, "capability_unavailable", "delegation metadata is unavailable") from exc
 
     def _oauth_metadata(self, path: str) -> Response:
         from commontrace import oauth
@@ -775,8 +914,19 @@ class Gateway:
         if len(body) > MAX_BODY_BYTES:
             raise ApiError(413, "too_large", f"body is larger than {MAX_BODY_BYTES} bytes")
         try:
-            payload = json.loads(body)
-        except (ValueError, UnicodeDecodeError):
+            def unique_object(pairs):
+                result = {}
+                for key, value in pairs:
+                    if key in result:
+                        raise ValueError("duplicate JSON object key")
+                    result[key] = value
+                return result
+
+            def reject_constant(_value):
+                raise ValueError("non-finite JSON number")
+
+            payload = json.loads(body, object_pairs_hook=unique_object, parse_constant=reject_constant)
+        except (ValueError, UnicodeDecodeError, RecursionError):
             raise _bad("body is not valid JSON") from None
         if not isinstance(payload, dict):
             raise _bad("body must be a JSON object")
@@ -892,15 +1042,24 @@ class Gateway:
             raise _bad(str(exc)) from exc
 
     def _memory_operation(self, operation: str, body: dict) -> dict:
-        from commontrace import memory_authority, memory_control
+        from commontrace import memory_authority, memory_control, subject_policy, team_io, team_isolation
 
         principal = body.get("_principal")
-        with memory_authority.writer(principal["id"] if principal else "gateway-owner",
-                                     "agent" if principal else "operator"):
+        with (memory_authority.writer(principal["id"] if principal else "gateway-owner",
+                                      "agent" if principal else "operator"),
+              subject_policy.ingest(self.root, body.get("source"))):
             scope_token = memory_control.REQUIRED_PRINCIPAL_SCOPE.set(
                 "agent:" + principal["id"] if principal and principal.get("self_enrolled") else "")
             try:
+                if operation in ("add", "batch"):
+                    context = principal["scopes"] if principal else body.get("context", [])
+                    with team_io.gateway_request(self.root, body, context):
+                        return self._memory_operation_inner(operation, body)
                 return self._memory_operation_inner(operation, body)
+            except team_isolation.StaleGeneration as exc:
+                raise ApiError(409, "STALE_GENERATION", str(exc), details=exc.details) from exc
+            except (ValueError, TypeError) as exc:
+                raise _bad(str(exc)) from exc
             finally:
                 memory_control.REQUIRED_PRINCIPAL_SCOPE.reset(scope_token)
 
@@ -920,6 +1079,11 @@ class Gateway:
         if principal and (operation == "turn" or operation.startswith("record-")):
             context = [label for label in context if not label.startswith("agent:")] + ["agent:" + principal["id"]]
         try:
+            if operation == "team-read":
+                from commontrace import team_io
+
+                return team_io.fetch(self.root, identities=body["identities"],
+                                     space=body.get("team_space", "default"), context=context)
             if operation.startswith("record-"):
                 from commontrace.record_api import operate
 
@@ -992,9 +1156,14 @@ class Gateway:
                     raise _bad("succeeded must be boolean")
                 from commontrace import causal_policy, policy
 
+                if body.get("secondary_metrics") is not None:
+                    from commontrace import sycophancy_io
+
+                    sycophancy_io.record_metrics(self.root, occasion_id, body["secondary_metrics"])
                 policy.outcome(self.root, occasion_id, float(body["succeeded"]))
                 explored = causal_policy.record_outcome(self.root, occasion_id, float(body["succeeded"]))
-                return {"recorded": holdout_io.record_outcome(self.root, occasion_id, body["succeeded"]) or explored}
+                return {"recorded": holdout_io.record_outcome(self.root, occasion_id, body["succeeded"],
+                        secondary_metrics=body.get("secondary_metrics")) or explored}
             if operation == "search":
                 return {
                     "results": REGISTRY.retrieve(
@@ -1023,6 +1192,10 @@ class Gateway:
                     self.root, body.get("text", ""), sources=body.get("sources", []), context=context
                 )
         except (ValueError, TypeError) as exc:
+            from commontrace import team_isolation
+
+            if isinstance(exc, team_isolation.StaleGeneration):
+                raise
             raise _bad(str(exc)) from exc
         except PermissionError as exc:
             raise ApiError(403, "directive", str(exc)) from exc
@@ -1281,6 +1454,111 @@ class Gateway:
             "capabilities": capabilities,
         }
 
+    def _tier(self, body: dict, _query) -> dict:
+        from commontrace import frontier_protocol as fp
+        from commontrace import memory_authority, memory_control, tiering
+
+        if set(body) != {"operation", "request"} or not isinstance(body.get("request"), dict):
+            raise _bad("UniMem tier requires an operation and request object")
+        operations = {"status": tiering.status, "hibernate": tiering.hibernate, "warm": tiering.warm,
+                      "residency": tiering.configure, "reembed": tiering.reembed, "rollback": tiering.rollback}
+        try:
+            operation = body["operation"]
+            if operation not in operations:
+                raise ValueError("unknown operation")
+            request = dict(body["request"])
+            fp.wire(request)
+            if operation == "residency":
+                scope = self._request_scope()
+                labels = request.get("scopes", [])
+            else:
+                scope = self._request_scope()
+                labels = request.get("context", [])
+            if not isinstance(labels, list):
+                raise ValueError("scope labels must be a list")
+            fp.count(len(labels), 0, 128)
+            labels = [fp.text(label, "scope", 256) for label in labels]
+            if scope and scope not in labels:
+                labels.append(scope)
+            request["scopes" if operation == "residency" else "context"] = labels
+            token = memory_control.REQUIRED_PRINCIPAL_SCOPE.set(scope)
+            try:
+                with memory_authority.writer("local", "operator"):
+                    return operations[operation](self.root, **request)
+            finally:
+                memory_control.REQUIRED_PRINCIPAL_SCOPE.reset(token)
+        except PermissionError as exc:
+            raise ApiError(403, "unimem_residency_denied", str(exc)) from exc
+        except (ValueError, TypeError, KeyError, OSError) as exc:
+            raise _bad("UniMem tier request or configured backend is unavailable") from exc
+
+    def _stream(self, body: dict, query) -> Response:
+        from commontrace import change_stream, memory_authority, memory_control
+        from commontrace import frontier_protocol as fp
+
+        if set(query) - {"identity", "cursor", "context", "limit"}:
+            raise _bad("UniMem stream query contains unknown fields")
+        if any(len(query.get(key, [])) > 1 for key in ("identity", "cursor", "limit")):
+            raise _bad("UniMem stream scalar parameters cannot repeat")
+        identity = _ident((query.get("identity") or [None])[0], "subscription identity")
+        context = query.get("context", [])
+        if len(context) > 128:
+            raise _bad("UniMem stream scope context exceeds its bound")
+        scope = self._request_scope()
+        if scope and scope not in context:
+            context = [*context, scope]
+        try:
+            context = [fp.text(label, "stream scope", 256) for label in context]
+            cursor = (query.get("cursor") or [body.get("_stream_cursor", "")])[0]
+            limit = int((query.get("limit") or [100])[0])
+            token = memory_control.REQUIRED_PRINCIPAL_SCOPE.set(scope)
+            try:
+                # A root gateway credential and the local CLI name the same
+                # store owner; agent credentials are refused by primary auth.
+                with memory_authority.writer("local", "operator"):
+                    result = change_stream.poll(self.root, identity, cursor=cursor, context=context, limit=limit)
+                    chunks = change_stream.render_sse(self.root, identity, result, context=context)
+                    return Response.streaming(200, chunks,
+                        content_type="text/event-stream", headers={"Cache-Control": "no-store",
+                                                                  "X-UniMem-Subscription": identity})
+            finally:
+                memory_control.REQUIRED_PRINCIPAL_SCOPE.reset(token)
+        except PermissionError as exc:
+            raise ApiError(403, "unimem_stream_denied", str(exc)) from exc
+        except (ValueError, TypeError, KeyError, OSError, RuntimeError) as exc:
+            raise _bad("UniMem invalid subscription, cursor or unavailable canonical stream") from exc
+
+    def _export_rl(self, body: dict, _query) -> Response:
+        from commontrace import frontier_protocol as fp
+        from commontrace import memory_authority, memory_control, rl_io
+
+        allowed = {"units", "format", "context", "kl_budget", "alpha", "exploitation", "exploration", "connector"}
+        if set(body) - allowed or not isinstance(body.get("units"), list):
+            raise _bad("UniMem RL export requires a units list and documented request fields")
+        context = body.get("context", [])
+        if not isinstance(context, list):
+            raise _bad("UniMem RL context must be a list of scope labels")
+        try:
+            fp.count(len(context), 0, 128)
+            for label in context:
+                fp.text(label, "scope label", 256)
+            scope = self._request_scope()
+            if scope and scope not in context:
+                context = [*context, scope]
+            token = memory_control.REQUIRED_PRINCIPAL_SCOPE.set(scope)
+            try:
+                with memory_authority.writer("gateway-owner", "operator"):
+                    manifest = rl_io.prepare(self.root, **{**body, "context": context})
+                    return Response.streaming(200, rl_io.lines(self.root, manifest["id"], context=context),
+                        content_type="application/x-ndjson", headers={"X-UniMem-Manifest": manifest["manifest_digest"],
+                            "X-UniMem-Export-Id": manifest["id"]})
+            finally:
+                memory_control.REQUIRED_PRINCIPAL_SCOPE.reset(token)
+        except PermissionError as exc:
+            raise ApiError(403, "unimem_rl_denied", str(exc)) from exc
+        except (ValueError, TypeError, KeyError, OSError, RecursionError) as exc:
+            raise _bad("Invalid UniMem RL export request or unavailable canonical cohort") from exc
+
     def _health_live(self, _body, _query) -> dict:
         return {"ok": True, "status": "live", "version": __version__}
 
@@ -1392,7 +1670,9 @@ class Gateway:
                            "simulation and reality are never pooled")
 
     def _protected(self, item: dict) -> bool:
-        return bool(item.get("protected")) or any(
+        from commontrace import safety
+
+        return item["id"] in safety.protected(self.root) or bool(item.get("protected")) or any(
             item["id"].startswith(prefix) for prefix in self.config.protected_prefixes)
 
     def _store_candidates(self, req: dict, *, scope: str = "") -> list[dict]:
@@ -1626,6 +1906,31 @@ class Gateway:
         return {**out, "space": space}
 
     def _recall(self, req: dict, _query) -> dict:
+        from commontrace import capabilities, memory_authority, purpose
+
+        principal = req.get("_principal")
+        authority = memory_authority.bound_writer() if capabilities.CURRENT.get() is not None else (
+            (principal["id"], "agent") if principal else ("gateway-owner", "operator"))
+        try:
+            with memory_authority.writer(*authority), purpose.request(self.root, req.get("purpose")):
+                return self._recall_for_purpose(req, _query)
+        except PermissionError as exc:
+            raise ApiError(403, "purpose_denied", str(exc)) from exc
+        except (ValueError, TypeError) as exc:
+            raise _bad(str(exc)) from exc
+
+    def _recall_for_purpose(self, req: dict, _query) -> dict:
+        independence = req.get("independence", False)
+        if type(independence) is not bool:
+            raise _bad("UniMem independence flag must be boolean")
+        read_graph = req.get("read_graph")
+        if read_graph is not None:
+            if not isinstance(read_graph, dict) or set(read_graph) - {"output", "retention_days"}:
+                raise _bad("UniMem read_graph requires output and optional retention_days")
+            _ident(read_graph.get("output"), "read_graph output")
+            days = read_graph.get("retention_days", 7)
+            if type(days) is not int or not 1 <= days <= 30 or not _agent(req):
+                raise _bad("UniMem read_graph requires an agent_id and 1..30 retention_days")
         occasion = _ident(req.get("occasion_id"), "occasion_id")
         agent = _agent(req)
         context = _context(req)
@@ -1639,7 +1944,11 @@ class Gateway:
         )
 
         clean, quarantined = [], []
+        from commontrace import purpose
+
         for item in candidates:
+            if not purpose.permits(self.root, item):
+                continue
             labels = injection_guard.injection_labels({"body": item["text"]})
             (quarantined if labels else clean).append(
                 {"id": item["id"], "reason": "injection screen: " + ", ".join(labels)} if labels else item)
@@ -1659,6 +1968,9 @@ class Gateway:
         else:
             delivered, withdrawn = [dict(i) for i in clean], {}
         out_ids = {i["id"] for i in delivered}
+        from commontrace import memory_ifc
+
+        delivered = [memory_ifc.safe_label(self.root, item) for item in delivered]
         withheld = [i["id"] for i in clean if i["id"] not in out_ids and i["id"] not in withdrawn]
         response = {
             "occasion_id": occasion, "mode": mode, "deliver": delivered, "withheld": withheld,
@@ -1668,6 +1980,24 @@ class Gateway:
             "quarantined": quarantined,
             "holdout": {"running": started, "rate": config.rate if started else 0.0},
         }
+        if independence or read_graph is not None:
+            from commontrace import contagion
+            from commontrace import nextwave_store as store
+
+            labels = [scope] if scope else []
+            identities = [item["id"] for item in delivered]
+            try:
+                if independence:
+                    response["independence"] = contagion.independence(self.root, identities, context=labels)
+                if read_graph is not None:
+                    admitted = store.admit(self.root, identities, context=labels)
+                    response["read_graph"] = (contagion.record_read(self.root, list(admitted), agent, occasion,
+                        read_graph["output"], context=labels, retention_days=read_graph.get("retention_days", 7))
+                        if admitted else {"recorded": False, "reason": "no admitted canonical memories"})
+            except PermissionError as exc:
+                raise ApiError(403, "scope", str(exc)) from None
+            except (ValueError, TypeError, KeyError) as exc:
+                raise _bad(str(exc)) from None
         if self.config.env:
             response["env"] = self.config.env
         if not started:
@@ -1718,7 +2048,8 @@ class Gateway:
         else:
             raise _bad("give `succeeded` (a boolean) or `signals`")
         try:
-            written = holdout_io.record_outcome(self.root, occasion, succeeded, self.durable)
+            written = holdout_io.record_outcome(self.root, occasion, succeeded, self.durable,
+                                                secondary_metrics=req.get("secondary_metrics"))
         except holdout_io.ConflictingOutcome as exc:
             raise ApiError(409, "conflicting_outcome", str(exc)) from None
         self._log_event({"kind": "outcome", "occasion_id": occasion, "agent_id": agent,
@@ -2083,6 +2414,12 @@ class Gateway:
             op: dict = {"operationId": entry.operation_id, "tags": [entry.tag], "summary": spec["summary"],
                         "parameters": [{"$ref": "#/components/parameters/RequestId"},
                                        {"$ref": "#/components/parameters/ContainerTag"}]}
+            if path in {"/v1/memory/team-read", "/v1/memory/search", "/v1/memory/add", "/v1/memory/batch",
+                        "/v1/memory/record-put",
+                        "/v1/memory/record-search", "/v1/memory/record-forget", "/v1/stream"}:
+                from commontrace import capabilities
+
+                op["parameters"].extend(capabilities.header_parameters())
             if entry.description:
                 op["description"] = entry.description
             for name, schema, required, description in entry.query:

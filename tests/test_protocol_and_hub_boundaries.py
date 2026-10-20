@@ -199,6 +199,7 @@ class TestSearchTracesTenantIsolation:
             from hub.models import Trace
 
             session = AsyncMock()
+            session.get.return_value = None  # No managed memory policy is enrolled in this fixture.
             org_id = str(uuid.uuid4())
             trace_id = str(uuid.uuid4())
             mock_trace = Trace(
@@ -257,6 +258,7 @@ class TestAmendTraceProfileRetention:
             from hub.plans import DEFAULT_PLAN, get
 
             session = AsyncMock()
+            session.get.return_value = None  # No managed memory policy is enrolled in this fixture.
             session.add = MagicMock()
             org_id = str(uuid.uuid4())
             trace_id = str(uuid.uuid4())

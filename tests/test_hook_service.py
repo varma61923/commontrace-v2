@@ -145,9 +145,15 @@ def test_native_bridge_closes_malformed_or_stalled_receipt_peer(tmp_path, reply)
             with server.accept()[0] as client:
                 client.settimeout(5)
                 client.recv(100000)
-                client.sendall(reply)
-                # Deliberately leave the response side open after an ACK.
-                while client.recv(100000):
+                try:
+                    client.sendall(reply)
+                    # Deliberately leave the response side open after an ACK.
+                    while client.recv(100000):
+                        pass
+                except (BrokenPipeError, ConnectionResetError):
+                    # Under load the client's bounded deadline may close its
+                    # socket before this peer gets CPU to send the reply. That
+                    # is also an observed disconnect, rather than a live peer.
                     pass
                 disconnected.set()
 

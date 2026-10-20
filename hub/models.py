@@ -41,6 +41,42 @@ class Base(DeclarativeBase):
     pass
 
 
+class MemoryPolicyState(Base):
+    """One transactionally activated finite policy per tenant."""
+
+    __tablename__ = "memory_policy_states"
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True
+    )
+    generation: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0", nullable=False)
+    policy: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    activation: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    __table_args__ = (CheckConstraint("generation >= 0", name="ck_memory_policy_generation"),)
+
+
+class AttestedMeasurement(Base):
+    """Tenant-approved immutable build policy with monotone revocation."""
+    __tablename__ = "attested_measurements"
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True)
+    measurement: Mapped[str] = mapped_column(String(64), primary_key=True)
+    profile: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    revoked: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
+    receipt: Mapped[dict] = mapped_column(JSONB, nullable=False)
+
+
+class AttestationChallenge(Base):
+    """Shared one-use challenge state; process-local caches cannot authorize release."""
+    __tablename__ = "attestation_challenges"
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True)
+    nonce: Mapped[str] = mapped_column(String(64), primary_key=True)
+    request: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    consumed: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
+    __table_args__ = (Index("ix_attestation_challenges_expiry", "org_id", "expires_at"),)
+
+
 class Organization(Base):
     __tablename__ = "organizations"
 
@@ -76,6 +112,74 @@ class Organization(Base):
     stripe_subscription_id: Mapped[str | None] = mapped_column(String(255), nullable=True, unique=True, index=True)
 
     api_keys: Mapped[list[ApiKey]] = relationship(back_populates="organization", cascade="all, delete-orphan")
+
+
+class TransparencyHead(Base):
+    __tablename__ = "transparency_heads"
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True)
+    tree_size: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    root_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    signed_head: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    # Merkle frontier (one perfect-subtree root per set bit of tree_size); NULL
+    # on heads written before it existed, rebuilt from leaf hashes on next append.
+    frontier: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+
+
+class TransparencyEntry(Base):
+    __tablename__ = "transparency_entries"
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True)
+    leaf_index: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    leaf_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    statement: Mapped[dict] = mapped_column(JSONB, nullable=False)
+
+
+class IncidentSnapshot(Base):
+    __tablename__ = "incident_snapshots"
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True)
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    valid_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    known_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    hold_id: Mapped[str] = mapped_column(UUID(as_uuid=False), ForeignKey("legal_holds.id"), nullable=False)
+    snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    anchor: Mapped[dict] = mapped_column(JSONB, nullable=False)
+
+
+class PooledContribution(Base):
+    """UniMem signed sufficient statistics, isolated by their authenticated owner."""
+
+    __tablename__ = "pooled_contributions"
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True)
+    release_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    unit_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    contribution: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    anchor: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+    __table_args__ = (Index("ix_pooled_contributions_unit", "org_id", "unit_hash"),)
+
+
+class CapabilityNonce(Base):
+    """Shared per-tenant proof-of-possession replay fence across Hub replicas."""
+    __tablename__ = "capability_nonces"
+    org_id: Mapped[str] = mapped_column(UUID(as_uuid=False),
+        ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True)
+    nonce_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    __table_args__ = (Index("ix_capability_nonces_expiry", "org_id", "expires_at"),)
+
+
+class CapabilityAttestation(Base):
+    """Committed signed metadata waiting for durable lineage publication; no source bodies."""
+    __tablename__ = "capability_attestations"
+    org_id: Mapped[str] = mapped_column(UUID(as_uuid=False),
+        ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True)
+    event_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    body: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+
 
 
 class ApiKey(Base):

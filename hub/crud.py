@@ -47,7 +47,7 @@ from commontrace import (
 )
 from commontrace.fingerprints import amend_request_hash as _amend_request_hash
 from commontrace.fingerprints import contribute_request_hash as _contribute_request_hash
-from hub import audit, commons, commons_cache, outcomes, plans
+from hub import audit, commons, commons_cache, delegation, outcomes, plans
 from hub import search as hub_search
 from hub.abuse import (
     RateLimited,
@@ -113,20 +113,15 @@ async def _votes_by_trace(session: AsyncSession, trace_ids: list[str]) -> dict[s
 async def _related_by_trace(session: AsyncSession, trace_ids: list[str]) -> dict[str, list[dict]]:
     if not trace_ids:
         return {}
-    rows = (
-        await session.execute(
-            select(
-                TraceRelation.trace_id,
-                TraceRelation.relationship_type,
-                TraceRelation.related_trace_id,
-            ).where(TraceRelation.trace_id.in_(trace_ids))
-        )
-    ).all()
+    stmt = select(TraceRelation.trace_id, TraceRelation.relationship_type,
+                  TraceRelation.related_trace_id).where(TraceRelation.trace_id.in_(trace_ids))
+    if delegation.ROOT.get():
+        stmt = stmt.join(Trace, Trace.id == TraceRelation.related_trace_id).where(delegation.trace_predicate())
+    rows = (await session.execute(stmt)).all()
     out: dict[str, list[dict]] = {}
-    for r in rows:
-        out.setdefault(r.trace_id, []).append(
-            {"relationship": r.relationship_type, "trace_id": r.related_trace_id}
-        )
+    for row in rows:
+        out.setdefault(row.trace_id, []).append({"relationship": row.relationship_type,
+                                                "trace_id": row.related_trace_id})
     return out
 
 
@@ -511,8 +506,13 @@ async def search_traces(
     for tag in tags or []:
         reject_unstorable_text(tag, "tag")
 
+    from hub import policies
+
+    finite_policy = await policies.active(session, org_id)
+    finite_predicate = policies.trace_predicate(finite_policy)
     stmt = select(Trace).where(
-        Trace.org_id == org_id, Trace.quarantined.is_(False), Trace.superseded_at.is_(None)
+        Trace.org_id == org_id, Trace.quarantined.is_(False), Trace.superseded_at.is_(None),
+        delegation.trace_predicate(), finite_predicate,
     )
     scope = _clean_scope(scope) if scope else ""
     if scope:
@@ -525,7 +525,8 @@ async def search_traces(
     failed_outcome = case((Trace.outcome["resolved"].astext == "false", 1), else_=0)
     if query:
         frequencies = (
-            await session.execute(hub_search.term_frequency_stmt(org_id, query))
+            await session.execute(hub_search.term_frequency_stmt(
+                org_id, query, predicate=and_(delegation.trace_predicate(), finite_predicate)))
         ).all()
         chosen = hub_search.choose_terms([(row.lexeme, row.df) for row in frequencies])
         if chosen.used:
@@ -617,7 +618,7 @@ async def _withdraw_from_page(
         originals = list((await session.execute(
             select(Trace).where(
                 Trace.org_id == org_id, Trace.id.in_(list(harmful)),
-                Trace.quarantined.is_(False), Trace.superseded_at.is_(None),
+                Trace.quarantined.is_(False), Trace.superseded_at.is_(None), delegation.trace_predicate(),
             )
         )).scalars().all())
         page = await _hydrate(session, traces)
@@ -757,6 +758,7 @@ async def _possible_duplicates(
             Trace.superseded_at.is_(None),
             Trace.quarantined.is_(False),
             Trace.tags.overlap(tags),
+            delegation.trace_predicate(),
         )
         .order_by(Trace.created_at.desc())
         .limit(25)
@@ -803,6 +805,15 @@ async def contribute_trace(
     valid_from: str | datetime | None = None,
     valid_until: str | datetime | None = None,
 ) -> dict:
+    from commontrace import capabilities
+
+    idempotency_key = delegation.idempotency(idempotency_key)
+    if capabilities.CURRENT.get() is not None:
+        from commontrace import capability_io
+
+        scopes = capability_io.inherit_labels(delegation.ROOT.get(), scopes or [])
+        capability_io.before_write(delegation.ROOT.get(), {"scopes": scopes, "memory_type": "general"},
+                                   namespace="traces")
     tags = tags or []
     try:
         scopes = _clean_scopes(scopes)
@@ -812,6 +823,11 @@ async def contribute_trace(
         raise TraceRejected(str(exc)) from exc
     if valid_from_dt and valid_until_dt and valid_until_dt <= valid_from_dt:
         raise TraceRejected("valid_until must be after valid_from")
+    from hub import policies
+
+    if not policies.permits(await policies.active(session, org_id),
+                            {"memory_type": "trace", "scopes": scopes}, action="write"):
+        raise PermissionError("UniMem active finite policy denies this trace write")
 
     if idempotency_key is not None:
         reject_unstorable_text(idempotency_key, "idempotency_key")
@@ -883,6 +899,7 @@ async def contribute_trace(
             else None
         ),
     )
+    await delegation.stamp_trace(session, org_id, trace)
     try:
         # A savepoint, not a full rollback: losing an idempotency race must undo
         # only this row, not earlier writes in the same transaction (an OTLP batch)
@@ -1209,7 +1226,11 @@ def _is_uuid(value: str) -> bool:
 async def get_trace(session: AsyncSession, org_id: str, trace_id: str) -> dict | None:
     if not _is_uuid(trace_id):
         return None
-    stmt = select(Trace).where(Trace.id == trace_id, Trace.org_id == org_id)
+    from hub import policies
+
+    policy = await policies.active(session, org_id)
+    stmt = select(Trace).where(Trace.id == trace_id, Trace.org_id == org_id, delegation.trace_predicate(),
+                               policies.trace_predicate(policy))
     trace = (await session.execute(stmt)).scalar_one_or_none()
     if trace is None:
         return None
@@ -1365,9 +1386,15 @@ async def amendment_chain(session: AsyncSession, trace_id: str) -> set[str]:
 async def delete_trace(session: AsyncSession, org_id: str, trace_id: str, actor: str = AUDIT_ACTOR_UNKNOWN) -> bool:
     if not _is_uuid(trace_id):
         return False
-    trace = await session.get(Trace, trace_id)
+    trace = await session.scalar(select(Trace).where(Trace.id == trace_id, Trace.org_id == org_id,
+                                                      delegation.trace_predicate(operation="forget")))
     if trace is None or trace.org_id != org_id:
         return False
+
+    from hub import retention
+
+    if await retention.active_holds(session, org_id):
+        raise PermissionError("an active legal hold blocks trace erasure; release it explicitly")
 
     chain_ids = await amendment_chain(session, trace_id)
     own_chain_ids = {
@@ -1523,6 +1550,7 @@ async def amend_trace(
     actor: str = AUDIT_ACTOR_UNKNOWN,
     idempotency_key: str | None = None,
 ) -> dict | None:
+    idempotency_key = delegation.idempotency(idempotency_key)
     if not _is_uuid(trace_id):
         return None
 
@@ -1532,10 +1560,16 @@ async def amend_trace(
         raise TraceRejected(f"idempotency_key exceeds 128 chars ({len(idempotency_key)})")
     outcome = outcomes.validate_outcome(outcome)
 
-    stmt = select(Trace).where(Trace.id == trace_id, Trace.org_id == org_id)
+    stmt = select(Trace).where(Trace.id == trace_id, Trace.org_id == org_id,
+                               delegation.trace_predicate(operation="write"))
     original = (await session.execute(stmt)).scalar_one_or_none()
     if original is None:
         return None
+    from hub import policies
+
+    if not policies.permits(await policies.active(session, org_id),
+                            {"memory_type": "trace", "scopes": list(original.scopes or [])}, action="write"):
+        raise PermissionError("UniMem active finite policy denies this trace amendment")
 
     if idempotency_key is not None:
         existing = (
@@ -1611,6 +1645,7 @@ async def amend_trace(
         valid_until=original.valid_until,
         **_carry_commons_forward(original, resolved_title, resolved_context, resolved_tags),
     )
+    await delegation.stamp_trace(session, org_id, amended, parent=original.id)
     original.superseded_at = datetime.now(timezone.utc)
     original.superseded_by_trace_id = amended_id
 
@@ -1971,6 +2006,10 @@ async def causal_evidence(session: AsyncSession, org_id: str) -> dict:
 
 
 async def _attach_evidence(session: AsyncSession, org_id: str, result: dict) -> None:
+    from commontrace import capabilities
+
+    if capabilities.CURRENT.get() is not None:
+        return  # Fleet-wide nuisance estimates are not scoped evidence for a restricted leaf capability.
     evidence = await causal_evidence(session, org_id)
     if not evidence["available"] and evidence["reason"] == "no experiment data":
         return
@@ -2001,7 +2040,7 @@ async def holdout_assignments(session: AsyncSession, org_id: str) -> list:
             ).where(
                 HoldoutObservation.org_id == org_id,
                 HoldoutObservation.salt == (org.holdout_salt if org else ""),
-            )
+            ).order_by(HoldoutObservation.created_at, HoldoutObservation.id)
         )
     ).all()
 
@@ -2052,7 +2091,7 @@ async def causal_effects(session: AsyncSession, org_id: str, alpha: float = 0.05
     observations = [
         experiment.HoldoutObservation(
             lesson_slug=r.lesson, occasion_id=r.occasion_id, injected=r.injected,
-            succeeded=bool(r.succeeded),
+            succeeded=bool(r.succeeded), rate=r.rate,
         )
         for r in unique if r.succeeded is not None
     ]

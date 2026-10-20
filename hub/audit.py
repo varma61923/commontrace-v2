@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from hub.models import AuditLogEntry
@@ -35,6 +37,15 @@ async def record(
         summary=summary[:_MAX_SUMMARY],
     )
     session.add(entry)
+    info = session.info if isinstance(session.info, dict) else {}
+    key = info.get("transparency_key")
+    if org_id and isinstance(key, str) and key:
+        from hub import transparency
+
+        await transparency.append(session, org_id,
+            {"actor": actor[:128], "action": action[:64], "target_type": target_type[:32],
+             "target_id": str(target_id)[:64], "summary_hash": hashlib.sha256(summary.encode()).hexdigest()},
+            secret=key, algorithm=info.get("transparency_algorithm", "hmac-sha256"))
     return entry
 
 

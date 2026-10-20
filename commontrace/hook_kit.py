@@ -100,12 +100,23 @@ class HookKit:
                     if alias in payload:
                         payload[canonical] = payload[alias]
                         break
-        if event in ("SubagentStart", "SubagentStop") and not payload.get("parent_session_id"):
-            child = payload.get("agent_id")
-            if isinstance(session, str) and isinstance(child, str) and child:
-                payload["parent_session_id"] = session
-                session = session + ":" + child
+        child = payload.get("agent_id")
+        parent = payload.get("parent_session_id")
+        valid_child = isinstance(child, str) and bool(child) and len(child) <= 128
+        if valid_child and isinstance(session, str) and session:
+            if isinstance(parent, str) and parent and session == parent:
+                session = f"{parent}:{child}"
                 payload["session_id"] = session
+            elif event in ("SubagentStart", "SubagentStop"):
+                if not isinstance(parent, str) or not parent:
+                    if session.endswith(":" + child):
+                        parent = session[: -(len(child) + 1)]
+                    else:
+                        parent = session
+                if not session.endswith(":" + child):
+                    session = f"{parent}:{child}"
+                    payload["session_id"] = session
+                payload["parent_session_id"] = parent
         if not isinstance(session, str) or not session or len(session) > 256:
             return empty
         # An agent cannot spoof another principal, or inherit another agent's claims.
@@ -131,7 +142,7 @@ class HookKit:
         if event in ("Stop", "SessionEnd", "SubagentStop"):
             from commontrace import jobs
 
-            if event == "SessionEnd" and type(payload.get("succeeded")) is bool:
+            if event in ("SessionEnd", "SubagentStop") and type(payload.get("succeeded")) is bool:
                 from commontrace.client import MemoryClient
 
                 MemoryClient(self.root, agent_id=self.agent_id).outcome(self.agent_id + ":" + run, payload["succeeded"])

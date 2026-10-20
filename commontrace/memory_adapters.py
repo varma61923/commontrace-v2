@@ -264,7 +264,31 @@ class MeasuredMemory:
 
     def _eligible(self, query: str, **kwargs: Any) -> list[Item]:
         blocked = memory_sources.blocked_ids_for_key(self.root, self.source_key)
-        return [i for i in self.adapter.search(query, **kwargs) if i.id not in blocked]
+        from commontrace import frontier_protocol as fp
+        from commontrace import lineage, memory_authority, memory_ifc
+
+        items = [i for i in self.adapter.search(query, **kwargs) if i.id not in blocked]
+        fp.count(len(items), 0, 1000)
+        admitted = []
+        for item in items:
+            # One malformed or oversized vendor item is skipped, never fatal to the recall.
+            try:
+                fp.text(item.id)
+                fp.text(item.text, "vendor memory", 64_000)
+            except (ValueError, TypeError):
+                continue
+            body = {"id": item.id, "text": item.text, "provider": self.adapter.name}
+            prior = lineage.record(self.root, item.id)
+            if not prior or prior.get("content_hash") != fp.digest({k: v for k, v in body.items() if k != "id"}):
+                token = memory_authority.WRITER.set(("vendor:" + self.adapter.name, "external"))
+                try:
+                    lineage.attest(self.root, body, fp.sign(self.root, body), inputs=[], operation="vendor-read")
+                finally:
+                    memory_authority.WRITER.reset(token)
+            if not lineage.labels(self.root, item.id)["review_required"]:
+                label = memory_ifc.safe_label(self.root, {"id": item.id, "text": item.text})
+                admitted.append(Item(item.id, item.text, {"vendor": item.raw, "ifc": label}))
+        return admitted
 
     def recall(self, query: str = "", *, occasion_id: str, **kwargs: Any) -> list[Item]:
         return self.recall_detailed(query, occasion_id=occasion_id, **kwargs).items
@@ -292,3 +316,111 @@ class MeasuredMemory:
 
     def reinstate(self, item_id: str) -> bool:
         return memory_sources.reinstate_key(self.root, self.source_key, item_id)
+
+
+class VendorReadAdapter:
+    """Pinned, read-only HTTP evidence adapters with no eager vendor dependencies.
+
+    The endpoint is supplied by the deployment (regional/cloud APIs vary). OAuth,
+    AWS SigV4 and service-account refresh belong to the supplied HTTP transport;
+    raw tokens never enter item ids, provenance, error messages or reports.
+    Install the matching vendor extra for the default httpx transport. For SDK
+    clients, retain the typed Mem0/Zep/Letta/AgentCore adapters above.
+    """
+
+    can_delete = False
+    PROVIDERS = frozenset({"mem0", "zep", "graphiti", "letta", "agentcore", "vertex", "foundry", "anthropic"})
+
+    def __init__(self, provider: str, *, endpoint: str, scope: dict[str, str], client: Any = None,
+                 headers: dict[str, str] | None = None) -> None:
+        from urllib.parse import urlsplit
+
+        from commontrace import frontier_protocol as fp
+
+        if provider not in self.PROVIDERS:
+            raise ValueError("unsupported memory provider")
+        parsed = urlsplit(endpoint)
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.query:
+            raise ValueError("memory endpoint must be HTTPS without embedded credentials or query strings")
+        fp.text(endpoint, "endpoint", 2048)
+        if not scope or len(scope) > 8:
+            raise ValueError("pin an authenticated tenant/user/agent scope")
+        if set(scope) & {"query", "limit", "headers", "Authorization", "api_key", "token"}:
+            raise ValueError("scope may contain ownership/resource identifiers only")
+        for key, value in scope.items():
+            fp.text(key, "scope key", 64)
+            fp.text(value, "scope value", 256)
+        if client is None:
+            try:
+                import httpx
+            except ImportError:
+                raise RuntimeError(f"install commontrace[memory-{provider}] for the HTTP read adapter") from None
+            client = httpx.Client(timeout=10, follow_redirects=False)
+        self.client, self.name, self.endpoint = client, provider, endpoint
+        self.scope, self._headers = copy.deepcopy(scope), dict(headers or {})
+
+    def search(self, query: str, **kwargs: Any) -> list[Item]:
+        from commontrace import frontier_protocol as fp
+
+        fp.text(query, "query", 4096)
+        if set(kwargs) - {"limit"}:
+            raise ValueError("vendor read adapters permit only a bounded limit; scopes are pinned")
+        limit = fp.count(kwargs.get("limit", 20), 1, 100)
+        payload: dict[str, Any] = {"query": query, **self.scope, "limit": limit}
+        if self.name == "agentcore":
+            payload = {"searchCriteria": {"searchQuery": query, "topK": limit}, **self.scope}
+        elif self.name == "vertex":
+            payload = {"similaritySearchParams": {"searchQuery": query, "topK": limit}, **self.scope}
+        try:
+            response = self.client.post(self.endpoint, json=payload, headers=self._headers, timeout=10)
+            response.raise_for_status()
+            if len(response.content) > fp.MAX_BYTES:
+                raise ValueError("vendor memory response exceeds 1 MiB")
+            data = response.json()
+        except Exception:
+            # Exceptions from transports commonly echo URLs or authorization.
+            raise ValueError(f"{self.name} memory read failed; inspect the configured transport privately") from None
+        fp.wire(data)
+        if not isinstance(data, dict):
+            raise ValueError("vendor memory response must be an object")
+        rows = next((data[key] for key in ("results", "memories", "memoryRecordSummaries", "edges", "passages", "items")
+                     if key in data), [])
+        if not isinstance(rows, list) or len(rows) > 1000:
+            raise ValueError("vendor memory response has invalid result bounds")
+        result = []
+        for row in rows[:limit]:
+            if not isinstance(row, dict):
+                raise ValueError("vendor memory item must be an object")
+            content = next((row[k] for k in ("memory", "text", "fact", "content", "summary", "value") if k in row), "")
+            if isinstance(content, dict):
+                content = content.get("text", content.get("memory", ""))
+            if not isinstance(content, str) or not content or len(content.encode()) > 64_000 or "\x00" in content:
+                continue  # an empty, non-text or oversized vendor item is skipped, not fatal
+            id_fields = ("id", "uuid", "uuid_", "name", "memoryRecordId", "key")
+            remote_id = next((str(row[k]) for k in id_fields if k in row),
+                             fp.digest(content))
+            identity = self.name + "-" + fp.digest({"provider": self.name, "endpoint": self.endpoint,
+                                                    "scope": self.scope, "remote_id": remote_id})[:32]
+            result.append(Item(identity, content, {"provider": self.name, "remote_id_hash": fp.digest(remote_id)}))
+        return result
+
+    def delete(self, item_id: str) -> None:
+        raise NotImplementedError("read adapter; withdraw locally through MeasuredMemory")
+
+
+def comparative_report(root: str) -> dict[str, Any]:
+    from commontrace import evidence
+
+    analysis = evidence.analyse(root)
+    groups: dict[str, list[dict[str, Any]]] = {}
+    sources: dict[str, set[str]] = {}
+    for row in analysis.rows:
+        if row.scorer and row.scorer.startswith("adapter:"):
+            sources.setdefault(row.lesson, set()).add(row.scorer.removeprefix("adapter:"))
+    for effect in analysis.effects:
+        measured_sources = sources.get(effect.lesson_slug, set())
+        store = (next(iter(measured_sources)) if len(measured_sources) == 1 else
+                 "ambiguous-source" if measured_sources else "local-or-unattributed")
+        groups.setdefault(store, []).append({"memory": effect.lesson_slug, "effect": effect.effect,
+                                             "n": effect.n_injected + effect.n_withheld, "verdict": effect.verdict})
+    return {"stores": groups, "notice": "Randomized per-store memory effects; traffic populations can differ."}

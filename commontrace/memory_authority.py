@@ -12,16 +12,42 @@ import secrets
 from contextlib import contextmanager
 from contextvars import ContextVar
 
-from commontrace import _jsonl, origin, paths
+from commontrace import _jsonl, capabilities, origin, paths
 
 TRUST = {"external": 0, "tool": 1, "agent": 1, "user": 2, "operator": 3}
 WRITER: ContextVar[tuple[str, str]] = ContextVar("commontrace_memory_writer", default=("local", "operator"))
+
+
+def is_operator() -> bool:
+    """Administrative authority belongs to the undelegated store operator.
+
+    A capability narrows primary authentication even when the enclosing service
+    writer is an operator or its leaf has the highest integrity ceiling.
+    """
+    return capabilities.CURRENT.get() is None and WRITER.get()[1] == "operator"
+
+
+def bound_writer() -> tuple[str, str]:
+    principal, authority = WRITER.get()
+    value = capabilities.CURRENT.get()
+    if value is None:
+        return principal, authority
+    from commontrace import capability_io
+
+    capability_io.current(value["root"])
+    rank = min(TRUST[authority], TRUST[value["authority"]], value["verified"]["caveats"]["ceiling"])
+    bounded = next(name for name in ("external", "agent", "user", "operator") if TRUST[name] == rank)
+    return value["principal"], bounded
 
 
 @contextmanager
 def writer(principal: str, authority: str):
     if authority not in TRUST or not isinstance(principal, str) or not principal:
         raise ValueError("invalid authenticated writer")
+    if capabilities.CURRENT.get() is not None:
+        actual_principal, actual_authority = bound_writer()
+        principal = actual_principal
+        authority = min((authority, actual_authority), key=lambda name: TRUST[name])
     token = WRITER.set((principal, authority))
     try:
         yield
@@ -29,11 +55,11 @@ def writer(principal: str, authority: str):
         WRITER.reset(token)
 
 
-def _key(root: str, *, create: bool = False, algorithm: str = "hmac-sha256") -> bytes | None:
+def _key(root: str, *, create: bool = False, algorithm: str = "hmac-sha256", durable: bool = True) -> bytes | None:
     filename = os.path.join(paths.memory_dir(root),
                             ".origin-ed25519-key" if algorithm == "ed25519" else ".origin-key")
     paths.enforce_boundary(root, filename)
-    if create:
+    if create and not os.path.lexists(filename):
         paths.safe_prepare_output_path(filename)
         with _jsonl.locked(filename):
             try:
@@ -44,7 +70,8 @@ def _key(root: str, *, create: bool = False, algorithm: str = "hmac-sha256") -> 
                 with os.fdopen(fd, "wb") as fh:
                     fh.write(secrets.token_bytes(32))
                     fh.flush()
-                    os.fsync(fh.fileno())
+                    if durable:
+                        os.fsync(fh.fileno())
     try:
         if os.path.islink(filename):
             raise ValueError("origin key must not be a symlink")
@@ -93,18 +120,16 @@ def signing_config(root: str) -> dict:
 
 
 def configure_signing(root: str, *, algorithm: str = "ed25519") -> dict:
-    if WRITER.get()[1] != "operator":
+    if not is_operator():
         raise PermissionError("only an operator can configure store signing")
     if algorithm not in ("ed25519", "hmac-sha256"):
         raise ValueError("unsupported signing algorithm")
     config = {**signing_config(root), "algorithm": algorithm}
     if algorithm == "ed25519":
-        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-
         key = _key(root, create="public_key" not in config, algorithm=algorithm)
         if key is None:
             raise PermissionError("configured Ed25519 private key is missing")
-        config["public_key"] = Ed25519PrivateKey.from_private_bytes(key).public_key().public_bytes_raw().hex()
+        config["public_key"] = origin.ed25519_public_bytes(key).hex()
     _jsonl.write_json(os.path.join(paths.memory_dir(root), "origin-signing.json"), config)
     return config
 
@@ -137,16 +162,28 @@ def verify(root: str, receipt: dict, record: dict | None = None) -> bool:
 
 
 def bind(root: str, record: dict, *, sources: list[str] | None = None) -> dict:
-    principal_id, authority = WRITER.get()
+    from commontrace import safety
+
+    if record_class(record) != "journal":
+        from commontrace import policy_io
+
+        policy_io.assert_write(root, record)
+    if record.get("id"):
+        safety.assert_mutable(root, [record["id"]])
+    principal_id, authority = bound_writer()
+    if capabilities.CURRENT.get() is not None and record_class(record) != "journal":
+        from commontrace import capability_io
+
+        effective = capability_io.before_write(root, record)
+        if effective:
+            principal_id, authority = effective
     algorithm = signing_config(root)["algorithm"]
     config = signing_config(root)
     key = _key(root, create=algorithm != "ed25519" or "public_key" not in config, algorithm=algorithm)
     if key is None:
         raise PermissionError("this public-verifier store has no signing key")
     if algorithm == "ed25519":
-        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-
-        public = Ed25519PrivateKey.from_private_bytes(key).public_key().public_bytes_raw().hex()
+        public = origin.ed25519_public_bytes(key).hex()
         if config.get("public_key") != public:
             raise PermissionError("private signing key differs from the pinned public key")
     ledger = os.path.join(paths.memory_dir(root), "origins.jsonl")
@@ -160,13 +197,42 @@ def bind(root: str, record: dict, *, sources: list[str] | None = None) -> dict:
         if before:
             authority = min((authority, before["authority"]), key=lambda name: TRUST[name])
         inherited = [prior.get(source) for source in sources or []]
+        if record_class(record) != "journal":
+            _check_source_scopes(record.get("scopes", []), [r["record"].get("scopes", []) for r in inherited if r])
         if inherited:
             ranks = [TRUST[r["authority"]] if r else 0 for r in inherited]
             minimum = min(TRUST[authority], *ranks)
             authority = next(name for name in ("external", "agent", "user", "operator") if TRUST[name] == minimum)
         signed = origin.bind(record, origin.Principal(principal_id, "local-store", authority, key, algorithm))
         _jsonl.append_row(ledger, signed)
+    if record.get("id"):
+        from commontrace import lineage
+
+        lineage.attest(root, record, signed, inputs=sources or source_ids(record), operation=record_class(record))
+        from commontrace import transparency_log
+
+        transparency_log.append(root, "write", {"id": record["id"], "content_hash": signed["digest"]}, receipt=False)
     return signed
+
+
+def _check_source_scopes(derived: list[str], sources: list[list[str]]) -> None:
+    """A derivation may narrow visibility, never broaden an authenticated owner scope."""
+    def dimensions(labels):
+        if not isinstance(labels, list) or len(labels) > 128:
+            raise ValueError("scope labels must be a bounded list")
+        groups = {}
+        for label in labels:
+            if not isinstance(label, str) or not 1 <= len(label) <= 256:
+                raise ValueError("invalid scope label")
+            dimension, _, value = label.partition(":")
+            groups.setdefault(dimension, set()).add(value)
+        return groups
+
+    wanted = dimensions(derived)
+    for source in sources:
+        for dimension, owners in dimensions(source).items():
+            if wanted.get(dimension) != owners:
+                raise PermissionError("derived memory must preserve every authenticated source owner scope")
 
 
 def permits(root: str, fact, *, action_class: str = "") -> bool:
@@ -174,11 +240,31 @@ def permits(root: str, fact, *, action_class: str = "") -> bool:
 
 
 def permits_record(root: str, receipt: dict, record: dict, *, action_class: str = "") -> bool:
+    from commontrace import interference
+
+    if capabilities.CURRENT.get() is not None:
+        from commontrace import capability_io
+
+        if not capability_io.permits(root, record):
+            return False
+    if not interference.read_allowed(root, record.get("id", "")):
+        return False
     if lineage_blocked(root, record.get("id", "")):
         return False
     if not receipt and previously_bound(root, record.get("id", "")):
         return False  # Removing a receipt is not a migration back to unsigned legacy data.
     if receipt and not verify(root, receipt, record):
+        return False
+    from commontrace import policy_io, sycophancy_io
+
+    if not policy_io.permits(root, record):
+        return False
+    from commontrace import policy_relations
+
+    namespace = {"fact": "facts", "trace": "traces"}.get(record_class(record))
+    if namespace and record.get("id") not in policy_relations.authorized_ids(root, [record.get("id", "")], namespace):
+        return False
+    if not sycophancy_io.read_allowed(root, record, action_class):
         return False
     if not action_class:
         return True
@@ -207,7 +293,17 @@ def source_ids(record: dict) -> list[str]:
     return sorted(set([*record.get("source_traces", []), *record.get("data", {}).get("sources", [])]))
 
 
-def lineage_blocked(root: str, record_id: str) -> bool:
+def lineage_blocked(root: str, record_id: str, *, canonical_only: bool = False) -> bool:
+    if not canonical_only:
+        from commontrace import sentinel_io
+
+        if sentinel_io.blocked(root, record_id):
+            return True
+    if not canonical_only and os.path.isfile(os.path.join(paths.memory_dir(root), "capabilities.json")):
+        from commontrace import capability_io
+
+        if capability_io.quarantined(root, record_id):
+            return True
     filename = os.path.join(paths.memory_dir(root), "forgetting.jsonl")
     if not os.path.isfile(filename):
         return False
@@ -234,6 +330,17 @@ def lineage_blocked(root: str, record_id: str) -> bool:
 
 
 def record_forgetting(root: str, record_id: str, *, forgotten: bool):
+    if capabilities.CURRENT.get() is not None:
+        from commontrace import capability_io
+
+        delegated = capability_io.current(root)
+        if delegated["operation"] != ("forget" if forgotten else "write"):
+            raise PermissionError("UniMem capability cannot change canonical forgetting authority")
+    if forgotten:
+        from commontrace import incident, safety
+
+        incident.assert_unpinned(root, [record_id])
+        safety.assert_mutable(root, [record_id])
     path = os.path.join(paths.memory_dir(root), "forgetting.jsonl")
     with _jsonl.locked(path):
         sequence = len(_jsonl.read_rows(path))

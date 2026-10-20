@@ -86,6 +86,9 @@ def _iter_lesson_paths(root: str) -> Iterator[str]:
 
 
 def _load_traces(root: str, agent_type: str | None) -> list[distill.TraceCandidate]:
+    from commontrace import sentinel_io
+
+    sentinel_io.assert_generalize(root)
     out = []
     for path in _iter_trace_paths(root):
         try:

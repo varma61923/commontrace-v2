@@ -114,7 +114,7 @@ def drain(root: str, *, model="bge-small", limit=128) -> dict:
         return {"processed": len(events), "through": through, "model": model, "dimension": dimension}
 
 
-def search(root: str, query: str, *, model="bge-small", limit=200) -> list[tuple[str, float]]:
+def search(root: str, query: str, *, model="bge-small", limit=200, allowed_ids=None) -> list[tuple[str, float]]:
     backend = _backend(root)
     if model in ("none", "off") or not _exists(root, backend):
         return []
@@ -126,7 +126,8 @@ def search(root: str, query: str, *, model="bge-small", limit=200) -> list[tuple
     async def recall():
         index = await _index(root, model, len(vector), backend)
         try:
-            return [(hit.key, hit.score) for hit in await index.search(vector, top_k=limit)]
+            options = {"allowed_ids": allowed_ids} if allowed_ids is not None else {}
+            return [(hit.key, hit.score) for hit in await index.search(vector, top_k=limit, **options)]
         finally:
             await index.close()
 

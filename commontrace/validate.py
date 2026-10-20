@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import json
+import math
 import os
-from typing import Any
+from typing import Any, TypeGuard
 
 _TYPE_MAP = {
     "string": str,
@@ -14,6 +15,21 @@ _TYPE_MAP = {
     "object": dict,
     "null": type(None),
 }
+
+
+def finite_number(value: object) -> TypeGuard[int | float]:
+    """Recognize finite machine-representable JSON numbers without coercing text.
+
+    Python JSON integers can exceed the floating-point range. math.isfinite
+    raises OverflowError for those integers, so validators must fail closed
+    rather than turning a malformed numeric input into an internal error.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
 
 
 def load_schema(name: str) -> dict:
@@ -43,7 +59,8 @@ def _check_type(value: Any, expected: str | list) -> bool:
         py_type = _TYPE_MAP.get(et)
         if py_type is None:
             continue
-        if et in ("integer", "number") and isinstance(value, bool):
+        if et in ("integer", "number") and (isinstance(value, bool)
+                or isinstance(value, float) and not math.isfinite(value)):
             continue
         if isinstance(value, py_type):
             return True

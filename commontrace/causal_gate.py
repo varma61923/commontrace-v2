@@ -569,6 +569,12 @@ def plan_rates(root: str, floor: float) -> tuple[dict[str, float], dict[str, dic
     gated, resets = forget_before_drift(rows, drift(rows))
     model = fit(gated, sources_for(root, {r.lesson for r in rows}))
     lesson_rates, context_rates = rates(model, floor)
+    from commontrace import uplift
+
+    context_rates = uplift.apply_rates(root, context_rates, floor, lesson_rates=lesson_rates)
+    from commontrace import sycophancy_io
+
+    lesson_rates, context_rates = sycophancy_io.downweight(root, lesson_rates, context_rates, floor)
     basis = {
         "mode": "thompson",
         "resolved": len(rows),
@@ -584,12 +590,20 @@ def report(root: str, *, alpha: float = 0.05, min_arm: int = 10, practical: floa
            floor: float = DEFAULT_FLOOR) -> dict:
     """Everything the gate knows: posteriors, source reputations, proposed rates, drift and an off-policy check."""
     rows = current_rows(root)
+    from commontrace import eprocess
+    from commontrace.commands.experiment_cmd import _load
+
+    e_values = eprocess.report(_load(root)[0])
     sources = sources_for(root, {r.lesson for r in rows})
     findings = drift(rows, alpha=alpha, min_arm=min_arm, practical=practical)
     gated, resets = forget_before_drift(rows, findings)
     model = fit(gated, sources)
     lesson_rates, context_rates = rates(model, floor)
+    from commontrace import attribution
+
     return {
+        "counterfactual_diagnostics": [attribution.gate_adjustment(root, identity) for identity in model.lessons],
+        "e_value": e_values,
         "model": model.to_dict(),
         "proposed_rates": {"lessons": lesson_rates, "contexts": context_rates, "floor": floor,
                            "drift_resets": resets},

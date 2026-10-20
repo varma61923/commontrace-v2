@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import weakref
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -13,6 +14,7 @@ from hub import auth
 from hub.config import HubConfig
 
 logger = logging.getLogger("commontrace.hub")
+_SIGNERS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
 
 def make_engine(config: HubConfig) -> AsyncEngine:
@@ -22,7 +24,7 @@ def make_engine(config: HubConfig) -> AsyncEngine:
             "statement_timeout": str(config.db_statement_timeout_ms)
         }
 
-    return create_async_engine(
+    engine = create_async_engine(
         config.database_url,
         pool_pre_ping=True,
         connect_args=connect_args,
@@ -31,10 +33,14 @@ def make_engine(config: HubConfig) -> AsyncEngine:
         pool_timeout=config.db_pool_timeout,
         pool_recycle=config.db_pool_recycle,
     )
+    _SIGNERS[engine] = (config.ledger_signing_key, config.transparency_algorithm)
+    return engine
 
 
 def make_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
-    return async_sessionmaker(engine, expire_on_commit=False)
+    key, algorithm = _SIGNERS.get(engine, ("", "hmac-sha256"))
+    info = {"transparency_key": key, "transparency_algorithm": algorithm} if key else {}
+    return async_sessionmaker(engine, expire_on_commit=False, info=info)
 
 
 @asynccontextmanager
@@ -58,6 +64,11 @@ async def session_scope(
             except BaseException:
                 await session.rollback()
                 raise
+            pending = session.info.pop("capability_outbox", None)
+        if pending:
+            from hub.delegation import after_commit
+
+            await after_commit(session_factory, *pending)
     finally:
         if token is not None:
             auth.current_org_id.reset(token)

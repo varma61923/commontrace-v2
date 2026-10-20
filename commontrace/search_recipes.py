@@ -15,7 +15,7 @@ from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
-from commontrace import graph, hierarchical, lesson_cache
+from commontrace import graph, hierarchical, lesson_cache, otel_memory, policy_relations
 from commontrace.configuration import configured
 from commontrace.query_plan import retrieve as planned_retrieval
 
@@ -155,6 +155,8 @@ def _entity_boost(root, query, rows, cfg, explain):
 
 
 @configured
+@otel_memory.observed("search")
+@policy_relations.scoped("facts")
 def search(root: str, query: str, *, recipe: str = "balanced", scope: str = "", limit: int = 10,
            as_of: str | None = None, dense_scores: dict[str, float] | None = None,
            entity_ids: Sequence[str] | None = None, center: str = "", backend: GraphBackend | None = None,
@@ -488,7 +490,7 @@ def recipe_manifest() -> dict:
 
 
 def _eligible_fact(root, fact, moment, as_of, context, action_class, resolver, known=None):
-    from commontrace import memory_authority, memory_control
+    from commontrace import interference, memory_authority, memory_control
 
     return (fact is not None and hierarchical._valid_at(fact, moment)
             and (as_of or known is not None or fact.status == "active") and not fact.forgotten
@@ -496,6 +498,7 @@ def _eligible_fact(root, fact, moment, as_of, context, action_class, resolver, k
             and not hierarchical._is_expired(fact, moment)
             and memory_control.matches(fact.scopes, context or [])
             and memory_authority.permits(root, fact, action_class=action_class)
+            and interference.read_allowed(root, fact.id)
             and (not fact.evidence_bound or resolver.assess(fact.id).eligible))
 
 
@@ -527,6 +530,7 @@ def _load_candidate_facts(canonical, identities):
     return candidates
 
 
+@policy_relations.scoped("facts")
 def admit(root: str, identities, *, context=None, as_of: str | None = None, known_at: str | None = None,
           action_class: str = "", existing: set[str] | None = None) -> dict[str, Any]:
     """The facts among `identities` this caller may see, under `search`'s own admission rules.
@@ -613,12 +617,20 @@ def _current_results(root, rows, revisions, *, context, as_of, known_at, action_
     with manager as canonical:
         candidates = _load_candidate_facts(canonical, (row["id"] for row in rows)) if indexed else canonical
         resolver = EvidenceResolver(root, canonical, as_of=as_of)
-        return [row for row in rows if _eligible_fact(
+        result = [row for row in rows if _eligible_fact(
             root, candidates.get(row["id"]), moment, as_of, context, action_class, resolver, known
         ) and candidates[row["id"]].revision == revisions[row["id"]]
                 and candidates[row["id"]].statement == row["text"]]
+        from commontrace import memory_ifc
+
+        for row in result:
+            row.update(memory_ifc.safe_label(root, row, identity=row["id"]))
+            if row["review_required"]:
+                row["score"] *= 0.5
+        return result
 
 
+@policy_relations.scoped("facts")
 def indexed_search(
     root: str,
     query: str,
@@ -655,8 +667,11 @@ def indexed_search(
     known = lesson_cache.parse_moment(known_at) if known_at else None
     automatic_rerank = (reranker is None and embedder not in ("none", "off")
                         and vector_search is None and dense_scores is None)
+    provider_ids = policy_relations.pre_filter(root, "facts")
+    relation_ids = sorted(provider_ids) if provider_ids is not None else None
+    lexical_options = {"allowed_ids": relation_ids} if relation_ids is not None else {}
     lexical = fact_store.fts_candidates(root, query, context=context, limit=max(200, limit * 5),
-                                        as_of=as_of, known_at=known_at)
+                                        as_of=as_of, known_at=known_at, **lexical_options)
     facts = {fact.id: fact for fact, _ in lexical
              if memory_authority.permits(root, fact, action_class=action_class)}
     sparse_order = list(facts)
@@ -670,7 +685,7 @@ def indexed_search(
         "candidate_limit": max(200, limit * 5),
     }
     if vector_search:
-        dense.update(dict(vector_search(query, limit=max(200, limit * 5))))
+        dense.update(dict(vector_search(query, limit=max(200, limit * 5), **lexical_options)))
     if vector_search is None and not dense_scores and embedder not in ("none", "off"):
         from commontrace import fact_vector_projection
 
@@ -678,7 +693,7 @@ def indexed_search(
             dense.update(
                 dict(
                     fact_vector_projection.search(
-                        root, query, model=embedder or DEFAULT_LOCAL_TAG, limit=max(200, limit * 5),
+                        root, query, model=embedder or DEFAULT_LOCAL_TAG, limit=max(200, limit * 5), **lexical_options,
                     )
                 )
             )

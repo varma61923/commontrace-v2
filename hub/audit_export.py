@@ -61,3 +61,23 @@ def render(entry: Any, fmt: str) -> str:
     if fmt not in FORMATS:
         raise ValueError(f"format must be one of {', '.join(FORMATS)}, got {fmt!r}")
     return to_cef(entry) if fmt == "cef" else to_jsonl(entry)
+
+
+def verify_incident_pack(bundle: dict, principals: dict) -> bool:
+    """Verify exported bytes offline against independently pinned signer keys."""
+    from commontrace import frontier_protocol as fp
+    from commontrace import origin, transparency_log
+
+    try:
+        manifest, anchor = bundle["manifest"], bundle["anchor"]
+        head = anchor["head"]["record"]
+        return (origin.verify(manifest, principals) and origin.verify(anchor["head"], principals)
+                and origin.verify(anchor["statement"], principals)
+                and anchor["statement"]["record"]["statement"]["manifest_digest"] == fp.digest(manifest)
+                and transparency_log.verify_inclusion(transparency_log.leaf_hash(anchor["statement"]),
+                    anchor["leaf"], head["tree_size"], anchor["proof"], head["root_hash"])
+                and set(manifest["record"]["files"]) == set(bundle["files"])
+                and all(fp.digest(bundle["files"][name]) == digest
+                        for name, digest in manifest["record"]["files"].items()))
+    except (ValueError, KeyError, TypeError):
+        return False

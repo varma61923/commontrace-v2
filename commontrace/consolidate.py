@@ -82,7 +82,7 @@ def build_report(
     redundancy_threshold: float = redundancy.DEFAULT_THRESHOLD,
     activation_overlap: float = reliability.DEFAULT_ACTIVATION_OVERLAP,
 ) -> ConsolidationReport:
-    active = [fm for fm in lessons if str(fm.get("status", "")) == "active"]
+    active = [fm for fm in lessons if str(fm.get("status", "")) == "active" and fm.get("memory_class") != "hazard"]
 
     bundles: dict[str, _LessonSignatures] = {}
     items: list[tuple[str, str]] = []

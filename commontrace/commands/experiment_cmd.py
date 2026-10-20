@@ -30,6 +30,8 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Measure whether injecting lessons CAUSES better outcomes, via randomized holdout.",
     )
     p.add_argument("--min-arm", type=int, default=experiment.DEFAULT_MIN_ARM)
+    p.add_argument("--evidence", choices=("effects", "e-values"), default="effects",
+                   help="Export predictable AIPW e-values and signed per-era evidence ledger entries.")
     p.add_argument(
         "--detect", type=float, default=experiment.DEFAULT_PRACTICAL_EFFECT,
         help="The smallest effect worth calling a result (default 0.10). A null from a "
@@ -125,6 +127,10 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     p.add_argument("--dest", default=None)
     p.set_defaults(func=run)
+
+    from commontrace.commands.nextwave import add_experiment
+
+    add_experiment(p)
 
 
 def _outcomes_by_occasion(root: str) -> dict[str, bool]:
@@ -433,6 +439,15 @@ def run(args: argparse.Namespace) -> int:
         return _run_plan(args, root)
     all_rows, rate, n_corrupt = _load(root)
     rows, wanted_salt, other = scope_to_current_salt(root, all_rows, args.salt)
+    if args.evidence == "e-values":
+        from commontrace import eprocess
+
+        result = eprocess.report(rows)
+        value.record_evidence(root, rows)
+        print(json.dumps({"e_values": result, "e_bh": "arbitrary dependence at a joint stopping time",
+                          "assumptions": "exact logged propensities, predictable models, conditional directional null",
+                          "billing_evidence": "experiment.analyze and integrity.audit remain authoritative"}, indent=2))
+        return 0
     if all_rows and not rows:
         print(
             f"[commontrace] {len(all_rows)} assignment(s) recorded, but none under the "

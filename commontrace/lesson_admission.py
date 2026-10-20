@@ -240,7 +240,12 @@ def _record_state(root: str, path: str, *, action: str, digest: str, actor: str)
 
 def _record(root: str, path: str, *, action: str, digest: str, actor: str) -> dict[str, Any]:
     try:
-        return _record_state(root, path, action=action, digest=digest, actor=actor)
+        result = _record_state(root, path, action=action, digest=digest, actor=actor)
+        from commontrace import transparency_log
+
+        transparency_log.append(root, "lesson-" + action,
+                                {"id": _subject(root, path), "digest": digest, "actor": actor, "receipt": result})
+        return result
     except (OSError, sqlite3.Error):
         raise AdmissionError("lesson admission state could not be committed") from None
 
@@ -273,6 +278,23 @@ def eligible(root: str, path: str, fm: Mapping[str, Any], body: str, *, as_of: s
         # Unsigned compatibility permits existing documents, never external
         # file reads or symlink aliases of a different lesson identity.
         subject = _subject(root, path)
+        from commontrace import capabilities, lesson_io, memory_authority, policy_io
+
+        identity = lesson_io.canonical_slug(os.path.basename(path))
+        if not policy_io.permits(root, {"id": identity, "memory_type": "lesson", "scopes": fm.get("scopes", [])}):
+            return False
+        from commontrace import policy_relations
+
+        if identity not in policy_relations.authorized_ids(root, [identity], "lessons"):
+            return False
+        if memory_authority.lineage_blocked(root, identity):
+            return False
+        if capabilities.CURRENT.get() is not None:
+            from commontrace import capability_io
+
+            if not capability_io.permits(root, {"id": identity, "text": body, "scopes": fm.get("scopes", [])},
+                                         namespace="lessons"):
+                return False
         strict = approval.load_policy(root).require_integrity
         if fm.get("status", "active") != "active":
             return False

@@ -6,16 +6,30 @@ formats. Legacy payloads remain intact inside it.
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 if TYPE_CHECKING:
     from commontrace.hierarchical import AtomicFact
 
 MemoryKind = Literal["episode", "fact", "entity", "observation", "profile", "lesson", "directive"]
+
+MAX_RECORD_BYTES = 1_048_576
+MAX_RECORD_NODES = 100_000
+MAX_RECORD_DEPTH = 64
+
+
+def _finite_number(value: Any) -> bool:
+    if type(value) not in (int, float):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
 
 
 @dataclass(frozen=True)
@@ -55,11 +69,7 @@ class MemoryRecord:
             raise ValueError("record requires an id and a supported kind")
         if isinstance(self.version, bool) or not isinstance(self.version, int) or self.version < 1:
             raise ValueError("record version must be positive")
-        if (
-            type(self.confidence) not in (float, int)
-            or not math.isfinite(self.confidence)
-            or not 0 <= self.confidence <= 1
-        ):
+        if not _finite_number(self.confidence) or not 0 <= self.confidence <= 1:
             raise ValueError("record confidence must be finite in [0, 1]")
         if self.status not in ("proposed", "quarantined", "shadow", "active", "deprecated", "retired"):
             raise ValueError("unsupported memory status")
@@ -100,8 +110,11 @@ class MemoryRecord:
                     raise ValueError("profile observed_at must be ISO 8601") from exc
             for name, default in (("weight", 1), ("half_life_days", 90)):
                 value = self.payload.get(name, default)
-                if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
+                if not _finite_number(value) or value <= 0:
                     raise ValueError("profile weight and half-life must be finite and positive")
+        # Run generic structural checks after field-specific validation so
+        # callers retain precise errors for envelope fields such as confidence.
+        _validate_record_json(self.__dict__)
         if not isinstance(self.relations, dict) or not isinstance(self.scope, dict):
             raise ValueError("scope and relationships must be objects")
         if set(self.relations) - {"updates", "extends", "derives", "supersedes", "caused_by"}:
@@ -118,9 +131,74 @@ class MemoryRecord:
         labels = self.scope.get("labels", [])
         if not isinstance(labels, list) or any(not isinstance(v, str) or len(v) > 256 for v in labels):
             raise ValueError("scope labels must be bounded strings")
+        if len(labels) > 128:
+            raise ValueError("scope labels must be bounded")
+
+    def validate(self) -> None:
+        """Recheck mutable nested fields before serialization or durable writes."""
+        self.__post_init__()
 
     def to_dict(self) -> dict[str, Any]:
+        self.validate()
         return asdict(self)
+
+
+def _validate_record_json(value: Any) -> None:
+    """Reject nonportable, cyclic or oversized envelope metadata in linear time."""
+    ancestors: set[int] = set()
+    pending: list[tuple[Any, int, bool]] = [(value, 0, False)]
+    nodes = 0
+    encoded_bytes = 0
+
+    def string_size(text: str) -> int:
+        return len(json.dumps(text, ensure_ascii=False).encode("utf-8"))
+
+    while pending:
+        item, depth, exiting = pending.pop()
+        if exiting:
+            ancestors.remove(id(item))
+            continue
+        nodes += 1
+        if nodes > MAX_RECORD_NODES or depth > MAX_RECORD_DEPTH:
+            raise ValueError("memory record metadata exceeds structural limits")
+        if item is None:
+            encoded_bytes += 4
+        elif type(item) is bool:
+            encoded_bytes += 4 if item else 5
+        elif type(item) is int:
+            if item.bit_length() > 4096:
+                raise ValueError("memory record integer exceeds its encoding bound")
+            encoded_bytes += len(str(item))
+        elif type(item) is float:
+            if not math.isfinite(item):
+                raise ValueError("memory record numbers must be finite")
+            encoded_bytes += len(json.dumps(item, allow_nan=False))
+        elif type(item) is str:
+            encoded_bytes += string_size(item)
+        elif type(item) in (dict, list, tuple):
+            identity = id(item)
+            if identity in ancestors:
+                raise ValueError("memory record metadata cannot contain cycles")
+            if nodes + len(pending) + len(item) > MAX_RECORD_NODES:
+                raise ValueError("memory record metadata exceeds structural limits")
+            ancestors.add(identity)
+            pending.append((item, depth, True))
+            encoded_bytes += 2 + max(0, len(item) - 1)
+            if type(item) is dict:
+                for key, nested in reversed(item.items()):
+                    if not isinstance(key, str):
+                        raise ValueError("memory record object keys must be strings")
+                    encoded_bytes += string_size(key) + 1
+                    if encoded_bytes > MAX_RECORD_BYTES:
+                        raise ValueError("memory record exceeds the one mebibyte wire limit")
+                    pending.append((nested, depth + 1, False))
+            else:
+                for nested in reversed(item):
+                    pending.append((nested, depth + 1, False))
+        else:
+            raise ValueError("memory record metadata must contain JSON values only")
+        if encoded_bytes > MAX_RECORD_BYTES:
+            raise ValueError("memory record exceeds the one mebibyte wire limit")
 
 
 _ATOMIC_FACT_FORMAT = "commontrace.atomic-fact.v1"
@@ -395,19 +473,17 @@ def rerank_profile_results(results: list[dict], preferences: list[dict]) -> list
             continue
         text = preference.get("text")
         weight = preference.get("weight")
-        if (
-            not isinstance(text, str)
-            or type(weight) not in (int, float)
-            or not 0 < weight <= 10000
-            or not math.isfinite(weight)
-        ):
+        if not isinstance(text, str) or type(weight) not in (int, float):
+            continue
+        numeric_weight = float(cast(int | float, weight))
+        if not 0 < numeric_weight <= 10000 or not math.isfinite(numeric_weight):
             continue
         assertion = _PREFERENCE_PREFIX.sub("", text, count=1)
         if assertion == text or _PREFERENCE_NEGATION.search(assertion):
             continue
         tokens = set(terms(assertion)) - _PREFERENCE_STOP_WORDS
         if tokens:
-            weighted_terms.append((tokens, float(weight) / (float(weight) + 1.0)))
+            weighted_terms.append((tokens, numeric_weight / (numeric_weight + 1.0)))
     if not weighted_terms:
         return results
 
@@ -430,15 +506,20 @@ def rerank_profile_results(results: list[dict], preferences: list[dict]) -> list
             default=0.0,
         )
         base_score = row.get("score")
-        try:
-            finite_score = type(base_score) in (int, float) and math.isfinite(float(base_score))
-        except OverflowError:
-            finite_score = False
+        numeric_score = 0.0
+        finite_score = type(base_score) in (int, float)
+        if finite_score:
+            try:
+                numeric_score = float(cast(int | float, base_score))
+            except (OverflowError, TypeError, ValueError):
+                finite_score = False
+            else:
+                finite_score = math.isfinite(numeric_score)
         if not finite_score:
             # Hosted record search exposes an order but no numeric relevance.
             base_score = -position + 0.2 * len(results) * support
         else:
-            base_score = float(base_score) * (1.0 + 0.2 * support)
+            base_score = numeric_score * (1.0 + 0.2 * support)
         ranked.append((-float(base_score), position, row))
 
     ranked.sort(key=lambda item: (item[0], item[1]))

@@ -85,3 +85,12 @@ facts.sqlite3.migrating*
 
 # GitHub Action functional smoke-test store
 .action-smoke/
+
+# Local ROS 2 interface build outputs.
+/ros2/build/
+/ros2/install/
+/ros2/log/
+
+# Native effect prover build products; lockfiles remain tracked.
+/zk/target/
+/zk/methods/guest/target/

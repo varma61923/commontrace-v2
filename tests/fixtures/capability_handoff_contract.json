@@ -1,0 +1,11 @@
+{
+  "source": "https://github.com/openai/openai-agents-python/blob/9abc9182d06dbd28330af888306031269d57a175/src/agents/handoffs/__init__.py",
+  "type": "HandoffInputData",
+  "fields": {
+    "input_history": "str | tuple[TResponseInputItem, ...]",
+    "pre_handoff_items": "tuple[RunItem, ...]",
+    "new_items": "tuple[RunItem, ...]",
+    "run_context": "RunContextWrapper[Any] | None"
+  },
+  "classification": "authored contract fixture checked against pinned source; no live agent execution"
+}

@@ -12,6 +12,16 @@
             "maxItems": 100,
             "type": "array"
           },
+          "fencing_token": {
+            "maximum": 9007199254740991,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "lease_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
           "local": {
             "type": "boolean"
           },
@@ -19,8 +29,79 @@
             "maxLength": 20000,
             "type": "string"
           },
+          "merge": {
+            "type": "boolean"
+          },
+          "read_set": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "transaction_time": {
+                  "maxLength": 68,
+                  "minLength": 68,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "transaction_time"
+              ],
+              "type": "object"
+            },
+            "maxItems": 256,
+            "type": "array"
+          },
+          "source": {
+            "additionalProperties": false,
+            "properties": {
+              "inferred": {
+                "type": "boolean"
+              },
+              "labels": {
+                "items": {
+                  "maxLength": 256,
+                  "type": "string"
+                },
+                "maxItems": 16,
+                "type": "array"
+              },
+              "modality": {
+                "enum": [
+                  "text",
+                  "voice",
+                  "face",
+                  "physiology",
+                  "image",
+                  "video",
+                  "tactile",
+                  "force",
+                  "position",
+                  "temperature",
+                  "system",
+                  "unknown"
+                ],
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "team_space": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
           "text": {
             "maxLength": 20000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "work_item": {
+            "maxLength": 128,
             "minLength": 1,
             "type": "string"
           }
@@ -71,12 +152,93 @@
             "maxItems": 100,
             "type": "array"
           },
+          "fencing_token": {
+            "maximum": 9007199254740991,
+            "minimum": 1,
+            "type": "integer"
+          },
           "items": {
             "items": {
               "type": "object"
             },
             "maxItems": 200,
             "type": "array"
+          },
+          "lease_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "merge": {
+            "type": "boolean"
+          },
+          "read_set": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "transaction_time": {
+                  "maxLength": 68,
+                  "minLength": 68,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "transaction_time"
+              ],
+              "type": "object"
+            },
+            "maxItems": 256,
+            "type": "array"
+          },
+          "source": {
+            "additionalProperties": false,
+            "properties": {
+              "inferred": {
+                "type": "boolean"
+              },
+              "labels": {
+                "items": {
+                  "maxLength": 256,
+                  "type": "string"
+                },
+                "maxItems": 16,
+                "type": "array"
+              },
+              "modality": {
+                "enum": [
+                  "text",
+                  "voice",
+                  "face",
+                  "physiology",
+                  "image",
+                  "video",
+                  "tactile",
+                  "force",
+                  "position",
+                  "temperature",
+                  "system",
+                  "unknown"
+                ],
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "team_space": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "work_item": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
           }
         },
         "required": [
@@ -294,6 +456,40 @@
             "maxLength": 256,
             "minLength": 1,
             "type": "string"
+          },
+          "secondary_metrics": {
+            "additionalProperties": false,
+            "properties": {
+              "accuracy": {
+                "oneOf": [
+                  {
+                    "maximum": 1,
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  }
+                ]
+              },
+              "agreement": {
+                "oneOf": [
+                  {
+                    "maximum": 1,
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "accuracy",
+              "agreement"
+            ],
+            "type": "object"
           },
           "succeeded": {
             "type": "boolean"
@@ -518,6 +714,40 @@
             "type": "array"
           },
           "record": {
+            "type": "object"
+          },
+          "source": {
+            "additionalProperties": false,
+            "properties": {
+              "inferred": {
+                "type": "boolean"
+              },
+              "labels": {
+                "items": {
+                  "maxLength": 256,
+                  "type": "string"
+                },
+                "maxItems": 16,
+                "type": "array"
+              },
+              "modality": {
+                "enum": [
+                  "text",
+                  "voice",
+                  "face",
+                  "physiology",
+                  "image",
+                  "video",
+                  "tactile",
+                  "force",
+                  "position",
+                  "temperature",
+                  "system",
+                  "unknown"
+                ],
+                "type": "string"
+              }
+            },
             "type": "object"
           }
         },
@@ -800,6 +1030,86 @@
         ],
         "type": "object"
       },
+      "TeamReadRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "context": {
+            "items": {
+              "maxLength": 256,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "type": "array"
+          },
+          "identities": {
+            "items": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 256,
+            "type": "array"
+          },
+          "team_space": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "identities"
+        ],
+        "type": "object"
+      },
+      "TeamReadResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "facts": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "level": {
+            "type": "string"
+          },
+          "read_set": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "transaction_time": {
+                  "maxLength": 68,
+                  "minLength": 68,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "transaction_time"
+              ],
+              "type": "object"
+            },
+            "maxItems": 256,
+            "type": "array"
+          },
+          "space": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "space",
+          "level",
+          "facts",
+          "read_set"
+        ],
+        "type": "object"
+      },
       "TurnRequest": {
         "additionalProperties": false,
         "properties": {
@@ -831,6 +1141,40 @@
             "maxLength": 256,
             "minLength": 1,
             "type": "string"
+          },
+          "source": {
+            "additionalProperties": false,
+            "properties": {
+              "inferred": {
+                "type": "boolean"
+              },
+              "labels": {
+                "items": {
+                  "maxLength": 256,
+                  "type": "string"
+                },
+                "maxItems": 16,
+                "type": "array"
+              },
+              "modality": {
+                "enum": [
+                  "text",
+                  "voice",
+                  "face",
+                  "physiology",
+                  "image",
+                  "video",
+                  "tactile",
+                  "force",
+                  "position",
+                  "temperature",
+                  "system",
+                  "unknown"
+                ],
+                "type": "string"
+              }
+            },
+            "type": "object"
           },
           "text": {
             "maxLength": 20000,
@@ -2178,6 +2522,112 @@
           }
         ],
         "summary": "Scoped memory search.",
+        "tags": [
+          "Memory"
+        ]
+      }
+    },
+    "/v1/memory/team-read": {
+      "post": {
+        "operationId": "memory_team_read",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TeamReadRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamReadResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or wrong credential"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Refused by policy or scope"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflicts with recorded state"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Body larger than 1 MiB"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Quota or rate limit"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal error; no details"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Scoped memory team-read.",
         "tags": [
           "Memory"
         ]

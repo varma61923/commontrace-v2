@@ -167,6 +167,30 @@ def _control(op: str, request: dict, errors=(400, 403)) -> Operation:
 
 
 OPERATIONS: dict[tuple[str, str], Operation] = {
+    ("POST", "/v1/tier"): Operation("unimem_tier", "Evidence", obj({
+        "operation": string(enum=["status", "hibernate", "warm", "residency", "reembed", "rollback"]),
+        "request": obj({}),
+    }, required=["operation", "request"]), response=obj({}), errors=(400, 403),
+        description="UniMem explicit managed namespace tier operation; residency violations are refused."),
+    ("GET", "/v1/stream"): Operation("unimem_change_stream", "Evidence", response=string("Resumable SSE belief batch."),
+        query=(("identity", IDENT, True, "Operator-configured subscription"),
+               ("cursor", string(maxLength=8192), False, "Cursor or Last-Event-ID header"),
+               ("context", array(string(maxLength=256)), False, "Scope labels, narrowed by container auth"),
+               ("limit", integer(minimum=1, maximum=256, default=100), False, "Batch event limit")),
+        errors=(400, 403), content_type="text/event-stream",
+        description="UniMem source-admitted bounded SSE batch. Reconnect with Last-Event-ID; "
+                    "erasures require a separate ACK."),
+    ("POST", "/v1/experiment/export-rl"): Operation(
+        "unimem_rl_export", "Evidence", obj({
+            "units": array(IDENT, maxItems=64, minItems=1),
+            "format": string(enum=["dpo", "advantage", "replay"]), "context": LABELS,
+            "kl_budget": number(minimum=0, maximum=100), "alpha": number(minimum=.000001, maximum=.5),
+            "exploitation": number(minimum=0, maximum=1), "exploration": number(minimum=0, maximum=1),
+            "connector": string(enum=["generic", "agent-lightning", "grader"]),
+        }, ("units",), closed=True), string("Canonical JSONL training records."), errors=(400, 403),
+        content_type="application/x-ndjson",
+        description="UniMem operator-authenticated export. X-UniMem-Manifest commits to streamed bytes. "
+                    "Matched occasions are not same-instance counterfactuals. Vendor mappings remain unverified."),
     # -- agents --------------------------------------------------------------------------------------
     ("POST", "/v1/agent/enroll"): Operation(
         "agent_enroll", "Agents", obj({}, closed=True, description="must be the empty object {}"),
@@ -294,6 +318,9 @@ OPERATIONS: dict[tuple[str, str], Operation] = {
     ("POST", "/v1/recall"): Operation(
         "recall", "Measurement", obj({
             "occasion_id": IDENT, "items": array(ref("RecallItem"), "your candidate memories", maxItems=200),
+            "purpose": string("Exact processing purpose bound to the authenticated capability", maxLength=256),
+            "independence": boolean("UniMem lineage-root diversity annotations for admitted delivered IDs"),
+            "read_graph": obj({"output": IDENT, "retention_days": integer(minimum=1, maximum=30)}, ("output",)),
             "query": string("ranks this store's lessons when items is absent", maxLength=2000),
             "top_k": integer(minimum=1, maximum=50, default=5), "agent_id": AGENT_ID, "env": ENV},
             ("occasion_id",)),
@@ -303,6 +330,7 @@ OPERATIONS: dict[tuple[str, str], Operation] = {
                                      "effect": nullable(number())})),
              "protected": array(string()),
              "quarantined": array(obj({"id": string(), "reason": string()})),
+             "independence": ANY_OBJECT, "read_graph": ANY_OBJECT,
              "holdout": obj({"running": boolean(), "rate": number()}, ("running", "rate")),
              "env": string(), "note": string()},
             ("occasion_id", "mode", "deliver", "withheld", "withdrawn", "protected", "quarantined", "holdout")),
@@ -311,7 +339,10 @@ OPERATIONS: dict[tuple[str, str], Operation] = {
         "outcome", "Measurement", obj({
             "occasion_id": IDENT, "succeeded": boolean("give this or signals, not both"),
             "signals": array(ref("Signal"), "evaluated three-valued", minItems=1, maxItems=16),
-            "combine": string(enum=["all", "any"]), "agent_id": AGENT_ID, "env": ENV}, ("occasion_id",)),
+            "combine": string(enum=["all", "any"]), "agent_id": AGENT_ID, "env": ENV,
+            "secondary_metrics": obj({name: {"oneOf": [number(minimum=0, maximum=1), boolean()]}
+                                       for name in ("accuracy", "agreement")}, ("accuracy", "agreement"))},
+            ("occasion_id",)),
         obj({"occasion_id": string(), "recorded": boolean(), "succeeded": boolean(),
              "undecided": boolean(), "reason": string(), "note": string()}, ("occasion_id", "recorded")),
         errors=(400, 409), description="Records nothing while signals are undecided; a different answer "

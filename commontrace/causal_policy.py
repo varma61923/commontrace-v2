@@ -49,13 +49,19 @@ def snipw(rows: Sequence[dict]) -> dict:
         if not 0 <= outcome <= 1:
             raise ValueError("outcome must be in [0, 1]")
         delivered = row["delivered"]
-        weight = 1 / (pi * (p if delivered else 1 - p))
-        arms[delivered].append((weight, outcome))
+        # Scaling each arm's weights by their largest value leaves its Hajek
+        # mean and ESS unchanged. Work in log space first so even a product of
+        # two positive subnormal propensities cannot underflow to zero.
+        log_weight = -math.log(pi) - math.log(p if delivered else 1 - p)
+        arms[delivered].append((log_weight, outcome))
     if not all(arms.values()):
         return {"identified": False, "reason": "both randomised arms required", "effect": None}
-    means = {arm: sum(w * y for w, y in values) / sum(w for w, _ in values)
+    for arm, values in arms.items():
+        largest = max(w for w, _ in values)
+        arms[arm] = [(math.exp(w - largest), y) for w, y in values]
+    means = {arm: math.fsum(w * y for w, y in values) / math.fsum(w for w, _ in values)
              for arm, values in arms.items()}
-    ess = {str(arm): sum(w for w, _ in values) ** 2 / sum(w * w for w, _ in values)
+    ess = {str(arm): math.fsum(w for w, _ in values) ** 2 / math.fsum(w * w for w, _ in values)
            for arm, values in arms.items()}
     return {"identified": True, "effect": means[True] - means[False],
             "treated": means[True], "control": means[False], "effective_sample_size": ess,

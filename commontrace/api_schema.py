@@ -1,10 +1,19 @@
 """Machine-readable requests for the identical local and hosted memory API."""
 from __future__ import annotations
 
+import math
+
 OCCASION = {"type": ["string", "null"], "maxLength": 256}
 TEXT = {"type": "string", "maxLength": 20000}
 CONTEXT = {"type": "array", "items": {"type": "string", "maxLength": 256}, "maxItems": 100}
+SECONDARY_METRICS = {"type": "object", "properties": {
+    name: {"oneOf": [{"type": "number", "minimum": 0, "maximum": 1}, {"type": "boolean"}]}
+    for name in ("accuracy", "agreement")},
+    "required": ["accuracy", "agreement"], "additionalProperties": False}
 FIELDS = {
+    "team-read": ({"identities": {"type": "array", "maxItems": 256,
+                     "items": {"type": "string", "minLength": 1, "maxLength": 256}},
+                   "team_space": {"type": "string", "minLength": 1, "maxLength": 128}}, ["identities"]),
     "record-put": ({"record": {"type": "object"}}, ["record"]),
     "record-search": ({"query": TEXT, "limit": {"type": "integer", "minimum": 0, "maximum": 1000}}, []),
     "record-forget": ({"id": {**TEXT, "minLength": 1, "maxLength": 256},
@@ -29,10 +38,35 @@ FIELDS = {
                  "adaptive_budget": {"type": "boolean"},
                  "exploration_slots": {"type": "integer", "minimum": 0, "maximum": 100}}, ["query"]),
     "outcome": ({"occasion_id": {"type": "string", "minLength": 1, "maxLength": 256},
-                 "succeeded": {"type": "boolean"}}, ["occasion_id", "succeeded"]),
+                 "succeeded": {"type": "boolean"}, "secondary_metrics": SECONDARY_METRICS},
+                ["occasion_id", "succeeded"]),
     "check-action": ({"tool": {**TEXT, "minLength": 1}, "tags": CONTEXT}, ["tool"]),
     "propose": ({"text": {**TEXT, "minLength": 1}, "sources": {**CONTEXT, "minItems": 1}}, ["text", "sources"]),
 }
+
+
+SOURCE = {"type": "object", "properties": {
+    "modality": {"type": "string", "enum": ["text", "voice", "face", "physiology", "image", "video", "tactile",
+                                              "force", "position", "temperature", "system", "unknown"]},
+    "labels": {"type": "array", "maxItems": 16, "items": {"type": "string", "maxLength": 256}},
+    "inferred": {"type": "boolean"}}, "additionalProperties": False}
+for _source_write in ("add", "batch", "record-put", "turn"):
+    FIELDS[_source_write][0]["source"] = SOURCE
+
+
+TEAM_FIELDS = {
+    "read_set": {"type": "array", "maxItems": 256, "items": {"type": "object",
+        "properties": {"id": {"type": "string", "minLength": 1, "maxLength": 256},
+                       "transaction_time": {"type": "string", "minLength": 68, "maxLength": 68}},
+        "required": ["id", "transaction_time"], "additionalProperties": False}},
+    "team_space": {"type": "string", "minLength": 1, "maxLength": 128},
+    "work_item": {"type": "string", "minLength": 1, "maxLength": 128},
+    "fencing_token": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+    "lease_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "merge": {"type": "boolean"},
+}
+for _team_write in ("add", "batch"):
+    FIELDS[_team_write][0].update(TEAM_FIELDS)
 
 
 def request_schema(operation: str) -> dict:
@@ -44,16 +78,33 @@ def request_schema(operation: str) -> dict:
 def validate_request(operation: str, body: dict) -> None:
     """Enforce this contract's bounded structural subset without an extra dependency."""
     def check(value, schema, path):
+        if "oneOf" in schema:
+            matched = 0
+            for candidate in schema["oneOf"]:
+                try:
+                    check(value, candidate, path)
+                except ValueError:
+                    continue
+                matched += 1
+            if matched != 1:
+                raise ValueError(path+" must match exactly one documented type")
+            return
         types = schema["type"] if isinstance(schema["type"], list) else [schema["type"]]
         kind = ("null" if value is None else "boolean" if isinstance(value, bool) else
                 "string" if isinstance(value, str) else "integer" if isinstance(value, int) else
+                "number" if isinstance(value, float) else
                 "array" if isinstance(value, list) else "object" if isinstance(value, dict) else "invalid")
+        if kind == "integer" and "number" in types:
+            kind = "number"
         if kind not in types:
             raise ValueError(path+" has the wrong type")
         if kind == "string" and not schema.get("minLength", 0) <= len(value) <= schema.get("maxLength", 20000):
             raise ValueError(path+" exceeds its text bounds")
         if kind == "integer" and not schema.get("minimum", value) <= value <= schema.get("maximum", value):
             raise ValueError(path+" exceeds its integer bounds")
+        if kind == "number" and (not schema.get("minimum", -1e100) <= value <= schema.get("maximum", 1e100)
+                                  or not math.isfinite(value)):
+            raise ValueError(path+" exceeds its finite numeric bounds")
         if kind == "array":
             if not schema.get("minItems", 0) <= len(value) <= schema.get("maxItems", 1000):
                 raise ValueError(path+" exceeds its item bounds")
@@ -105,6 +156,9 @@ def components() -> dict:
     def array(name):
         return {"type": "array", "items": {"$ref": "#/components/schemas/"+name}}
     responses = {
+        "team-read": {"space": {"type": "string"}, "level": {"type": "string"},
+                      "facts": {"type": "array", "items": obj},
+                      "read_set": TEAM_FIELDS["read_set"]},
         "record-put": {"record": obj},
         "record-search": {"results": {"type": "array", "items": obj}},
         "record-forget": {"deleted": string_array, "reason": {"type": "string"}, "at": {"type": "string"}},

@@ -19,14 +19,12 @@ def test_offline_prior_is_bounded_and_cannot_replace_online_validation():
         )
         == 1
     )
-    assert (
-        bootstrap_priority(
-            MemoryRecord(
-                "candidate", "lesson", 1, {**data, "offline_prior": {"alpha": float("nan"), "beta": 1}}, status="shadow"
-            )
+    with pytest.raises(ValueError, match="finite"):
+        MemoryRecord(
+            "candidate", "lesson", 1,
+            {**data, "offline_prior": {"alpha": float("nan"), "beta": 1}},
+            status="shadow",
         )
-        == 1
-    )
 
 
 def test_always_rules_survive_large_candidate_store(tmp_path):
@@ -175,7 +173,9 @@ def test_broker_offer_only_becomes_exposure_after_delivery_ack(tmp_path):
     holdout_io.configure(str(tmp_path), rate=0.01)
     kit = HookKit(str(tmp_path), "agent", embedder=Embedder())
     kit.journal.put(MemoryRecord("tip", "lesson", 1, {"text": "run pytest"}, scope={"agent": "agent"}))
-    offered = kit.handle("UserPromptSubmit", {"session_id": "delivery", "prompt": "pytest"}, defer_delivery=True)
+    offered = kit.handle(
+        "UserPromptSubmit", {"session_id": "delivery", "prompt": "pytest"}, defer_delivery=True, deadline_ms=1000
+    )
     assert offered["delivery_token"]
     assert holdout_io.read_log(str(tmp_path))[0] == []
     kit.journal.commit_delivery(offered["delivery_token"], scope=kit.scope)

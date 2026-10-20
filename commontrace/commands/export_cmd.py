@@ -53,6 +53,10 @@ def _lesson_rows(root: str, status: str | None, agent_type: str | None):
     import glob
     import os
 
+    from commontrace import policy_io, sentinel_io
+
+    sentinel_io.assert_generalize(root)
+
     for path in sorted(glob.glob(os.path.join(paths.lessons_dir(root), "lesson_*.md"))):
         if os.path.basename(path) == "lesson_template.md":
             continue
@@ -60,6 +64,8 @@ def _lesson_rows(root: str, status: str | None, agent_type: str | None):
         if parsed is None:
             continue
         fm, body = parsed
+        if not policy_io.permits(root, {"memory_type": "lesson", "scopes": fm.get("scopes", [])}, action="export"):
+            continue
         if status is not None and str(fm.get("status") or "") != status:
             continue
         if agent_type is not None and str(fm.get("agent_type") or "") != agent_type:
@@ -74,6 +80,10 @@ def _trace_rows(root: str, agent_type: str | None):
     import glob
     import os
 
+    from commontrace import memory_authority, policy_io, sentinel_io
+
+    sentinel_io.assert_generalize(root)
+
     for path in sorted(glob.glob(os.path.join(paths.traces_dir(root), "*.md"))):
         if os.path.basename(path) == "README.md":
             continue
@@ -81,6 +91,8 @@ def _trace_rows(root: str, agent_type: str | None):
         if parsed is None:
             continue
         inst, _body = parsed
+        if not policy_io.permits(root, memory_authority.trace_record(inst), action="export"):
+            continue
         if agent_type is not None and str(inst.get("agent_type") or "") != agent_type:
             continue
         outcome = inst.get("outcome") or {}

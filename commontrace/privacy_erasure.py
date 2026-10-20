@@ -11,11 +11,28 @@ import hashlib
 import os
 import sqlite3
 
-from commontrace import _jsonl, fact_embeddings, fact_store, hierarchical, memory_authority, memory_guard, paths
+from commontrace import (
+    _jsonl,
+    fact_embeddings,
+    fact_store,
+    hierarchical,
+    memory_authority,
+    memory_guard,
+    otel_memory,
+    paths,
+)
 from commontrace.memory_journal import Journal, now
 
 
+@otel_memory.observed_delete
 def purge_fact(root: str, identity: str, *, reason: str) -> dict:
+    from commontrace import incident
+
+    with incident.protect(root):
+        return _purge_fact(root, identity, reason=reason)
+
+
+def _purge_fact(root: str, identity: str, *, reason: str) -> dict:
     if not isinstance(reason, str) or not reason.strip():
         raise ValueError("hard erasure requires a reason")
     facts = hierarchical.load_facts(root)
@@ -29,29 +46,36 @@ def purge_fact(root: str, identity: str, *, reason: str) -> dict:
             break
         deleted |= derived
     for key in deleted:
+        from commontrace import incident
+
+        incident.assert_unpinned(root, [key])
+    for key in deleted:
         memory_authority.record_forgetting(root, key, forgotten=True)
     digests = {hashlib.sha256(facts[key].statement.encode()).hexdigest() for key in deleted}
-    if fact_store.enabled(root):
-        with fact_store.transaction(root, write=True) as canonical:
-            canonical.connection.execute("PRAGMA secure_delete=ON")
-            for key in deleted:
-                fact_store._remove_projection(canonical.connection, key)
-                canonical.connection.execute("DELETE FROM events WHERE fact_id=?", (key,))
-            canonical.connection.execute("DELETE FROM lexicon WHERE documents=0")
-            canonical.connection.execute("INSERT INTO fact_fts(fact_fts) VALUES('rebuild')")
-        fact_store.close_connections(root)
-        db = sqlite3.connect(fact_store.database_path(root), isolation_level=None)
-        try:
-            db.execute("PRAGMA secure_delete=ON")
-            db.execute("VACUUM")
-            if db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0]:
-                raise RuntimeError("erasure checkpoint blocked by a reader; close readers and retry")
-        finally:
-            db.close()
-    else:
-        with hierarchical.mutate_facts(root) as canonical:
-            for key in deleted:
-                canonical.pop(key, None)
+    from commontrace import team_io
+
+    with team_io.erasure(root, sorted(deleted)):
+        if fact_store.enabled(root):
+            with fact_store.transaction(root, write=True) as canonical:
+                canonical.connection.execute("PRAGMA secure_delete=ON")
+                for key in deleted:
+                    fact_store._remove_projection(canonical.connection, key)
+                    canonical.connection.execute("DELETE FROM events WHERE fact_id=?", (key,))
+                canonical.connection.execute("DELETE FROM lexicon WHERE documents=0")
+                canonical.connection.execute("INSERT INTO fact_fts(fact_fts) VALUES('rebuild')")
+            fact_store.close_connections(root)
+            db = sqlite3.connect(fact_store.database_path(root), isolation_level=None)
+            try:
+                db.execute("PRAGMA secure_delete=ON")
+                db.execute("VACUUM")
+                if db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0]:
+                    raise RuntimeError("erasure checkpoint blocked by a reader; close readers and retry")
+            finally:
+                db.close()
+        else:
+            with hierarchical.mutate_facts(root) as canonical:
+                for key in deleted:
+                    canonical.pop(key, None)
     directory = os.path.join(paths.memory_dir(root), "facts")
     for filename in os.listdir(directory):
         if filename.startswith("embeddings-") and filename.endswith(".db"):
@@ -81,6 +105,9 @@ def purge_fact(root: str, identity: str, *, reason: str) -> dict:
             finally:
                 db.close()
     mirror_deleted = _purge_mirrors(root, deleted)
+    from commontrace import nextwave_store
+
+    managed_deleted = nextwave_store._erase_sources(root, sorted(deleted))
     with fact_embeddings._LOCK:
         for key in list(fact_embeddings._VECTORS):
             if key[1] in digests:
@@ -95,10 +122,12 @@ def purge_fact(root: str, identity: str, *, reason: str) -> dict:
         rows = _jsonl.read_rows(origins)
         if rows:
             _jsonl.write_rows(origins, [row for row in rows if row.get("record", {}).get("id") not in deleted])
-    journal_deleted = set()
+    journal_deleted, unverified_runtime = set(), set()
     journal = Journal(root)
     for key in deleted:
-        journal_deleted.update(journal.forget(key, reason=reason)["deleted"])
+        result = journal.forget(key, reason=reason, _authorized_cascade=True)
+        journal_deleted.update(result["deleted"])
+        unverified_runtime.update(result.get("unverified_cascade", []))
     from commontrace import fact_index
 
     fact_index.clear_cache()
@@ -109,6 +138,7 @@ def purge_fact(root: str, identity: str, *, reason: str) -> dict:
         "at": now(),
         "deleted_facts": sorted(deleted),
         "deleted_runtime_records": sorted(journal_deleted),
+        "unverified_runtime_associations": sorted(unverified_runtime),
         "deleted_derived_mirrors": sorted(mirror_deleted),
         "reason": memory_guard.sanitize_metadata({"reason": reason}, pii=True)[0]["reason"],
         "erased_surfaces": [
@@ -124,6 +154,8 @@ def purge_fact(root: str, identity: str, *, reason: str) -> dict:
         "source_and_backup_erasure": "operator required",
     }
     audit = os.path.join(paths.memory_dir(root), "erasure-audit.jsonl")
+    if managed_deleted:
+        result["deleted_managed_artifacts"] = managed_deleted
     with _jsonl.locked(audit):
         _jsonl.append_row(audit, result)
     return result
@@ -131,7 +163,9 @@ def purge_fact(root: str, identity: str, *, reason: str) -> dict:
 
 def _purge_mirrors(root: str, deleted: set[str]) -> set[str]:
     """Remove structured descendants, including every historical control revision."""
-    from commontrace import frontmatter, graph, memory_control, observations
+    from commontrace import frontmatter, graph, memory_control, observations, retention
+
+    retention.erase_rewrites(root, deleted)
 
     derived = set(deleted)
     revisions = []

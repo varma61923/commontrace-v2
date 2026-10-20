@@ -32,7 +32,7 @@ def relevance(vector: ColumnElement, tsquery: ColumnElement) -> ColumnElement:
     return func.ts_rank(vector, tsquery, RANK_NORMALIZATION, type_=Float)
 
 
-def term_frequency_stmt(org_id: str, query: str, budget: int | None = None):
+def term_frequency_stmt(org_id: str, query: str, budget: int | None = None, *, predicate=None):
     budget = RANK_BUDGET if budget is None else budget
     every = (
         func.unnest(func.tsvector_to_array(func.to_tsvector(TEXT_SEARCH_CONFIG, query)))
@@ -52,6 +52,7 @@ def term_frequency_stmt(org_id: str, query: str, budget: int | None = None):
         .where(
             Trace.org_id == org_id,
             Trace.quarantined.is_(False),
+            predicate if predicate is not None else True,
             Trace.search_vector.op("@@")(
                 cast(literal("'") + _sql_escape(lex.c.lexeme) + literal("'"), TSQUERY)
             ),

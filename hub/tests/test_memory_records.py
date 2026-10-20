@@ -69,6 +69,7 @@ async def test_hosted_dense_candidate_rows_load_in_bounded_queries(monkeypatch):
     from types import SimpleNamespace
 
     import hub.memory_records as memory_records
+    from hub.models import MemoryPolicyState
 
     org = str(uuid.uuid4())
 
@@ -99,12 +100,16 @@ async def test_hosted_dense_candidate_rows_load_in_bounded_queries(monkeypatch):
         def __init__(self):
             self.statements = []
             self.gets = []
+            self.policy_gets = []
 
         async def execute(self, statement):
             self.statements.append(statement)
             return Result([] if len(self.statements) == 1 else list(rows.values()))
 
         async def get(self, _model, key):
+            if _model is MemoryPolicyState:
+                self.policy_gets.append(key)
+                return None
             self.gets.append(key)
             return rows.get(key[1])
 
@@ -124,6 +129,7 @@ async def test_hosted_dense_candidate_rows_load_in_bounded_queries(monkeypatch):
     assert len(session.statements) == 3  # one sparse query and two bounded dense-ID batches
     assert all("memory_records.id IN" in str(statement) for statement in session.statements[1:])
     assert session.gets == []
+    assert session.policy_gets == [org]  # one fixed authorization lookup, never one lookup per candidate
 
 
 @pytest.mark.asyncio

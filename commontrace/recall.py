@@ -211,6 +211,12 @@ def _rule(body: str) -> str:
     return " ".join((m.group(1) if m else body).split())
 
 
+def _memory_id(item_id: str) -> str:
+    """The governed memory id behind a recall item id (`lesson:slug`, `fact:id`)."""
+    kind, sep, rest = item_id.partition(":")
+    return rest if sep and kind in ("lesson", "fact") else item_id
+
+
 def _lessons(root: str, question: str, as_of: str | None, k: int, scope: str = "") -> list[Item]:
     from commontrace import frontmatter, lesson_admission, lesson_cache, retrieval, retrieval_io
 
@@ -221,6 +227,8 @@ def _lessons(root: str, question: str, as_of: str | None, k: int, scope: str = "
     config = retrieval_io.load_config(root)
     ranked = retrieval.rank_lessons(question, active, top_k=k, floor=config.floor, scorer=config.scorer,
                                     term_cache=term_cache)
+    # The label a lexical retrieve logs with its holdout rows (harm-budget scale).
+    label = retrieval_io.rerank_label(config.eligibility_label_for(fused=False), retrieval_io.RERANK_NONE)
     out = []
     for r in ranked:
         try:
@@ -243,6 +251,8 @@ def _lessons(root: str, question: str, as_of: str | None, k: int, scope: str = "
             "admission": "verified" if fm.get(lesson_admission.RECEIPT_FIELD) else "legacy_compatible",
             "revision": lesson_admission.digest_of(fm, body),
         }
+        provenance["relevance"] = r.relevance
+        provenance["scorer"] = label
         out.append(Item("lessons", f"lesson:{r.slug}", text, r.score, provenance=provenance))
     return out
 
@@ -537,8 +547,11 @@ def pack(items: list[Item], budget: int) -> list[Item]:
     """Fill the budget: a floor share first for each channel's best item, then fused
     order; an item that does not fit is cut when at least MIN_CUT_FRACTION of it (or a
     quarter of the budget) fits."""
-    chosen: list[Item] = []
-    used = 0
+    # Reviewed hazards are always delivered, ahead of and outside the budget.
+    order = {i.id: n for n, i in enumerate(items)}
+    chosen: list[Item] = [item for item in items if item.provenance.get("hazard")]
+    used = sum(tokens(item.text) for item in chosen)
+    items = [item for item in items if not item.provenance.get("hazard")]
     channels = list(dict.fromkeys(i.channel for i in items))
     floor = int(budget * FLOOR_SHARE)
     seen: set[str] = set()
@@ -564,7 +577,6 @@ def pack(items: list[Item], budget: int) -> list[Item]:
         if item.id in seen or used >= budget:
             continue
         take(item, budget - used)
-    order = {i.id: n for n, i in enumerate(items)}
     return sorted(chosen, key=lambda i: order[i.id])
 
 
@@ -751,6 +763,29 @@ def recall(root: str, question: str, *, budget: int | None = None, agent: str | 
         elif unavailable:
             result.explain["rerank"] = {"reranker": name, "items": 0, "latency_ms": 0.0, "error": unavailable}
         candidates = diversify(fused)
+        from commontrace import conformal_gate, holdout_io, safety
+
+        hazards = safety.protected(root)
+        for item in candidates:
+            if _memory_id(item.id) in hazards:
+                item.provenance["hazard"] = True
+
+        gate = conformal_gate.current(root)
+        if gate.get("enabled"):
+            # The budget is calibrated on randomized lesson injections, on the
+            # relevance scale and scorer the holdout log records. Only the lessons
+            # channel shares that population; other channels are not randomized
+            # injections and are reported as outside the budget, never gated on
+            # an incomparable fused score.
+            try:
+                context = holdout_io.context_label(agent or "")
+            except ValueError:
+                context = ""
+            candidates = [item for item in candidates if item.channel != "lessons" or conformal_gate.admit(
+                gate, conformal_gate.score(float(item.provenance.get("relevance", 0))), context=context,
+                scorer=item.provenance.get("scorer"), hazard=bool(item.provenance.get("hazard")))]
+            result.explain["harm_budget"] = {**conformal_gate.summary(gate, context),
+                                             "scope": "lessons channel; other channels are not randomized injections"}
         result.items = pack(candidates, total)
         result.assessment = _assess_retrieval(question, result.items, result.errors)
         if decision is not None:

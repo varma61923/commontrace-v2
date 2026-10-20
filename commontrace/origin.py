@@ -27,11 +27,26 @@ class Principal:
     public_key: bytes = b""
 
 
-def bind(record: dict, principal: Principal) -> dict:
+def ed25519_public_bytes(private_key_bytes: bytes) -> bytes:
+    """Return the raw Ed25519 public key across supported cryptography releases."""
+    try:
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    except ImportError:
+        raise RuntimeError("Ed25519 signing requires commontrace[security]") from None
+    public_key = Ed25519PrivateKey.from_private_bytes(private_key_bytes).public_key()
+    raw_method = getattr(public_key, "public_bytes_raw", None)
+    if callable(raw_method):
+        return raw_method()
+    return public_key.public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+
+
+def bind(record: dict, principal: Principal, *, _detached: bool = False) -> dict:
     if len(principal.key) < 32:
         raise ValueError("origin signing key must be at least 32 bytes")
     # Detach shared object identities: strict Markdown frontmatter forbids YAML aliases.
-    body = {"record": json.loads(_bytes(record)), "principal": principal.id, "organization": principal.organization,
+    body = {"record": record if _detached else json.loads(_bytes(record)),
+            "principal": principal.id, "organization": principal.organization,
             "authority": principal.authority, "digest": hashlib.sha256(_bytes(record)).hexdigest()}
     if principal.algorithm == "ed25519":
         import base64

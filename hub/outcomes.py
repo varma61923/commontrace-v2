@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import math
-
 from commontrace import experiment
 
 PROPORTION_METRICS: tuple[tuple[str, str, str], ...] = (
@@ -47,11 +45,9 @@ def _is_bool(value: object) -> bool:
 
 
 def _is_number(value: object) -> bool:
-    return (
-        isinstance(value, (int, float))
-        and not isinstance(value, bool)
-        and math.isfinite(value)
-    )
+    from commontrace.validate import finite_number
+
+    return finite_number(value)
 
 
 KNOWN_OUTCOME_FIELDS: frozenset[str] = frozenset(

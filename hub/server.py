@@ -107,8 +107,10 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
         read_rate_limiter: RateLimiter,
         trusted_proxy_hops: int = 0,
         identity_provider=None,
+        capability_config=None,
     ):
         super().__init__(app)
+        self._capability_config = capability_config
         self._session_factory = session_factory
         self._protected_path = protected_path
         self._auth_rate_limiter = auth_rate_limiter
@@ -177,6 +179,14 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
             scope_token = auth.current_scopes.set(rbac.scopes_of(person.role))
             user_token = auth.current_user.set(person)
             try:
+                if self._capability_config is not None:
+                    from hub import delegation
+
+                    denied = await delegation.admit_request(request, auth.AuthenticatedKey(
+                        person.org_id, f"user:{person.id}", rbac.scopes_of(person.role)),
+                        self._capability_config, self._session_factory)
+                    if denied is not None:
+                        return denied
                 return await call_next(request)
             finally:
                 auth.current_org_id.reset(org_token)
@@ -204,6 +214,13 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
         actor_token = auth.current_actor.set(authenticated.key_prefix)
         scope_token = auth.current_scopes.set(authenticated.scopes)
         try:
+            if self._capability_config is not None:
+                from hub import delegation
+
+                denied = await delegation.admit_request(request, authenticated, self._capability_config,
+                                                       self._session_factory)
+                if denied is not None:
+                    return denied
             return await call_next(request)
         finally:
             auth.current_org_id.reset(org_token)
@@ -1551,6 +1568,9 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
 
 
 def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlette:
+    if config.ledger_signing_key:
+        session_factory.configure(info={"transparency_key": config.ledger_signing_key,
+                                        "transparency_algorithm": config.transparency_algorithm})
     auth.configure_region(config.data_region)
     auth.configure_auth_cache(config.auth_cache_seconds, require_listener=True)
     rate_limiter = make_rate_limiter(config)
@@ -1571,6 +1591,8 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
         streamable_http_path=config.streamable_http_path,
         host=config.host,
         max_request_body_size=config.max_request_body_bytes,
+        stateless_http=bool(config.capability_directory),
+        json_response=bool(config.capability_directory),
     )
 
     if config.admin_token:
@@ -1664,6 +1686,7 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
         read_rate_limiter=make_read_rate_limiter(config),
         trusted_proxy_hops=config.trusted_proxy_hops,
         identity_provider=config.identity_provider(),
+        capability_config=config,
     )
     _previous_lifespan = inner_app.router.lifespan_context
 
@@ -1743,4 +1766,7 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
         )
     inner_app.add_middleware(BodySizeLimitMiddleware, max_bytes=config.max_request_body_bytes)
     inner_app.add_middleware(RequestContextMiddleware)
+    from hub import delegation
+
+    delegation.install(inner_app, config)
     return inner_app

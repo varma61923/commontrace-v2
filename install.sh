@@ -41,7 +41,7 @@ USAGE
   esac
 done
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 
 if [[ "${IN_PLACE}" == "true" ]]; then
   DEST="${SCRIPT_DIR}"
@@ -50,6 +50,11 @@ fi
 DEST_CANONICAL=$(mkdir -p "${DEST}" 2>/dev/null && cd "${DEST}" 2>/dev/null && pwd -P || echo "${DEST}")
 if [[ "${DEST_CANONICAL}" == "/" || "${DEST_CANONICAL}" == "/etc" || "${DEST_CANONICAL}" == "/bin" || "${DEST_CANONICAL}" == "/sbin" || "${DEST_CANONICAL}" == "/usr" || "${DEST_CANONICAL}" == "/var" || "${DEST_CANONICAL}" == "/home" || -z "${DEST}" ]]; then
   echo "[ERROR] Refusing to install into system root or protected directory: ${DEST}" >&2
+  exit 1
+fi
+
+if [[ "${IN_PLACE}" != "true" && ( "${DEST_CANONICAL}" == "${SCRIPT_DIR}" || "${DEST_CANONICAL}" == "${SCRIPT_DIR}/"* ) ]]; then
+  echo "[ERROR] Copy destination must be outside the source tree; use --in-place for the checkout." >&2
   exit 1
 fi
 
@@ -116,11 +121,8 @@ else
       --exclude='.terraform' --exclude='.gradle' --exclude='.intellijPlatform' --exclude='.mypy_cache' \
       --exclude='*.tfstate' --exclude='*.tfstate.*' --exclude='*.tfplan' --exclude='*.tfvars' \
       --exclude='./memory/attention/index.npz' --exclude='./memory/benchmark_reports' -cf - . | tar -C "${DEST}" -xf -
-    rm -f "${DEST}/memory/attention/index.npz" 2>/dev/null || true
-    rm -rf "${DEST}/.git" 2>/dev/null || true
-    find "${DEST}" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
-    find "${DEST}" -name '*.pyc' -delete 2>/dev/null || true
-    find "${DEST}" \( -name '.env' -o -name '.env.*' \) ! -name '.env.example' -exec rm -f {} + 2>/dev/null || true
+    # Exclusions govern the incoming archive. Existing destination credentials,
+    # Git metadata and generated files belong to its owner and must be retained.
   fi
 
   echo "      Done."
@@ -163,7 +165,10 @@ fi
 if [[ "${BUILD_INDEX}" == "true" ]]; then
   echo "[4/4] Building attention index ..."
   LESSONS_DIR="${DEST}/memory/lessons"
-  lesson_count=$(find "${LESSONS_DIR}" -name "lesson_*.md" ! -name "lesson_template.md" 2>/dev/null | wc -l | tr -d ' ')
+  lesson_count=0
+  if [[ -d "${LESSONS_DIR}" ]]; then
+    lesson_count=$(find "${LESSONS_DIR}" -name "lesson_*.md" ! -name "lesson_template.md" | wc -l | tr -d ' ')
+  fi
   if [[ "${lesson_count}" -eq 0 ]]; then
     echo "      No active lessons found — skipping index build."
     echo "      (Re-run later: commontrace index)"

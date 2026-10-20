@@ -1,0 +1,86 @@
+{
+  "provenance": {
+    "authored_fixture": true,
+    "live_sdk_execution": false,
+    "gepa": {
+      "commit": "f1cfdee2856e9dc4b5b4dc5cc2e391d0aa20d819",
+      "path": "src/gepa/core/result.py:GEPAResult.to_dict"
+    },
+    "dspy": {
+      "commit": "c7e9752debcce5715fee62cd5f1ae538c14d5ce4",
+      "paths": [
+        "dspy/primitives/base_module.py:BaseModule.dump_state",
+        "dspy/predict/predict.py:Predict.dump_state",
+        "dspy/signatures/signature.py:Signature.dump_state"
+      ]
+    }
+  },
+  "gepa": {
+    "base_artifact": "release-program-v1",
+    "gepa_result": {
+      "candidates": [
+        {
+          "release": "Check the manifest."
+        },
+        {
+          "release": "Verify manifest and checksum."
+        }
+      ],
+      "parents": [
+        [
+          null
+        ],
+        [
+          0
+        ]
+      ],
+      "val_aggregate_scores": [
+        0.5,
+        0.9
+      ],
+      "per_val_instance_best_candidates": {
+        "example": [
+          1
+        ]
+      }
+    }
+  },
+  "dspy": {
+    "base_artifact": "release-program-v1",
+    "dspy_state": {
+      "predict": {
+        "traces": [],
+        "train": [],
+        "demos": [
+          {
+            "question": "How to verify?",
+            "answer": "Check the checksum."
+          }
+        ],
+        "signature": {
+          "instructions": "Verify the release before deployment.",
+          "fields": [
+            {
+              "prefix": "Question:",
+              "description": "Release question"
+            },
+            {
+              "prefix": "Answer:",
+              "description": "Verification step"
+            }
+          ]
+        },
+        "lm": {
+          "api_key": "must-not-survive",
+          "base_url": "https://untrusted.invalid",
+          "model": "fixture-model"
+        }
+      },
+      "metadata": {
+        "dependency_versions": {
+          "dspy": "fixture-schema-only"
+        }
+      }
+    }
+  }
+}

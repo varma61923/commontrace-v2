@@ -27,6 +27,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
                    help="Print the schedule entry for this runner and exit; installs nothing.")
     p.add_argument("--every", choices=("daily", "weekly"), default="weekly", help="With --recipe.")
     p.add_argument("--dest", default=None)
+    p.add_argument("--causal", action="store_true", help="Report an itemized effect-weighted dream budget.")
     p.add_argument("--max-model-calls", type=int, default=10)
     p.add_argument("--max-tokens", type=int, default=50000)
     p.add_argument("--max-cost-usd", type=float, default=None)
@@ -72,6 +73,13 @@ def _llm_configured() -> bool:
 
 
 def run(args: argparse.Namespace) -> int:
+    if getattr(args, "causal", False):
+        import json
+
+        from commontrace import retention
+
+        print(json.dumps(retention.report(paths.resolve_root(args.dest), tokens=args.max_tokens), indent=2))
+        return 0
     from commontrace import _jsonl
     from commontrace.llm_runtime import Budget, LLMRuntime
 
@@ -97,6 +105,9 @@ def _run_pass(args: argparse.Namespace) -> int:
 
     root = paths.resolve_root(args.dest)
     started = time.monotonic()
+    from commontrace import sentinel_io
+
+    sentinel_io.assert_generalize(root)
     max_seconds = getattr(args, "max_seconds", 120)
     draft = not args.no_draft and _llm_configured()
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -127,15 +138,18 @@ def _run_pass(args: argparse.Namespace) -> int:
     lines += ["## Consolidation", "", "```", out.getvalue().strip(), "```", ""]
 
     from commontrace import graph as graph_mod
-    from commontrace import hierarchical, memory_blocks, store_state
+    from commontrace import hierarchical, memory_blocks, safety, store_state
     from commontrace.commands._traces import load_trace_instances
 
     linked_edges = 0
+    hazards = safety.protected(root)
     with graph_mod.batch(root):
         for trace in load_trace_instances(root):
             if time.monotonic() - started >= max_seconds:
                 break
             tid = str(trace.get("id") or "").strip()
+            if tid in hazards:
+                continue
             tags = trace.get("tags") if isinstance(trace.get("tags"), list) else []
             if not tid or not tags:
                 continue
@@ -149,7 +163,7 @@ def _run_pass(args: argparse.Namespace) -> int:
                 linked_edges += 1
 
     blocks = memory_blocks.list_blocks(root)
-    facts = hierarchical.list_facts(root, status="active")
+    facts = [fact for fact in hierarchical.list_facts(root, status="active") if fact.id not in hazards]
     status = store_state.inspect(root)
 
     lines += ["## Knowledge Graph & Cognitive Consolidation", ""]

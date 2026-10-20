@@ -234,6 +234,10 @@ def learn(
 ) -> dict:
     _input_limit(max_tokens)
     journal = Journal(root)
+    from commontrace import sentinel_io
+    from commontrace.capability_io import scope_labels
+
+    sentinel_io.assert_generalize(root, context=scope_labels(scope))
     with _jsonl.locked(
         os.path.join(paths.memory_dir(root), "learning-" + hashlib.sha256(session.encode()).hexdigest())
     ):

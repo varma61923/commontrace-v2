@@ -280,6 +280,16 @@ def test_future_capture_scope_and_shared_source_erasure(tmp_path):
     assert not journal.buffer("a", scope={"agent": "a"})
 
 
+def test_put_revalidates_record_after_nested_data_was_mutated(tmp_path):
+    import math
+
+    journal = Journal(str(tmp_path))
+    record = MemoryRecord("mutated-before-put", "fact", 1, {"text": "safe"})
+    record.payload["score"] = math.inf
+    with pytest.raises(ValueError, match="finite"):
+        journal.put(record)
+
+
 def test_content_redaction_preserves_principal_and_record_identity(tmp_path):
     journal = Journal(str(tmp_path))
     scope = {"user": "alice@example.com", "agent": "a"}

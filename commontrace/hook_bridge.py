@@ -19,7 +19,7 @@ EVENTS = (
 )
 AGENTS = ("claude", "codex", "cursor", "cline", "gemini", "kimi", "windsurf", "openhands")
 FRAME_LIMIT = 100000
-RESPONSE_SECONDS = 0.025
+RESPONSE_SECONDS = 0.050
 RECEIPT_SECONDS = 0.020
 
 
@@ -144,11 +144,16 @@ def _capture(args, payload):
     import subprocess
     import tempfile
 
+    package_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    bootstrap = (
+        "import sys;sys.path.insert(0," + repr(package_root) + ");"
+        "from commontrace.hook_kit import main;raise SystemExit(main())"
+    )
     with tempfile.TemporaryFile() as stream:
         stream.write(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
         stream.seek(0)
         subprocess.Popen(  # noqa: S603 - interpreter and argv are generated, never a shell
-            [args.python or sys.executable, "-I", "-m", "commontrace.hook_kit", "--capture-only",
+            [args.python or sys.executable, "-I", "-c", bootstrap, "--capture-only",
              "--dest", args.dest, "--agent-id", args.agent_id, "--scope", args.scope,
              "--event", args.event, *(["--format", args.format] if args.format else [])],
             stdin=stream, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,

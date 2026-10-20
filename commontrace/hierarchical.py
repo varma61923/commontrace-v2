@@ -13,7 +13,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from commontrace import _jsonl, lesson_cache, paths
+from commontrace import _jsonl, change_stream, lesson_cache, otel_memory, paths, team_io, team_isolation
 from commontrace.configuration import configured
 from commontrace.configuration import getenv as _configuration_getenv
 from commontrace.fact_evidence import MAX_EVIDENCE, EvidenceError, EvidenceResolver, FactEvidence, claim_revision
@@ -288,7 +288,24 @@ def _clean_scopes(scopes) -> list[str]:
     return sorted({str(s).strip() for s in (scopes or []) if str(s).strip()})
 
 
+def _write_scopes(root: str, scopes) -> list[str]:
+    from commontrace import capabilities
+
+    labels = _clean_scopes(scopes)
+    if capabilities.CURRENT.get() is not None:
+        from commontrace import capability_io
+
+        return capability_io.inherit_labels(root, labels)
+    return labels
+
+
 def _fact_id(statement: str, scopes: list[str]) -> str:
+    from commontrace import capabilities
+
+    if capabilities.CURRENT.get() is not None:
+        import secrets
+
+        return "fact-" + secrets.token_hex(12)
     norm = _normalize_statement(statement)
     h = hashlib.sha256(f"{norm}|{','.join(sorted(scopes))}".encode("utf-8")).hexdigest()[:12]
     return f"fact-{h}"
@@ -395,16 +412,39 @@ def save_facts(root: str, facts: dict[str, AtomicFact]) -> None:
 @contextlib.contextmanager
 def mutate_facts(root: str) -> Iterator[dict[str, AtomicFact]]:
     """Load, lock and save the fact file around one read-modify-write."""
-    from commontrace import fact_store
+    from commontrace import capabilities, fact_store
+
+    @contextlib.contextmanager
+    def admitted(facts):
+        if capabilities.CURRENT.get() is None:
+            yield facts
+        else:
+            from commontrace import capability_io
+
+            with capability_io.fact_view(root, facts) as view:
+                yield view
 
     if fact_store.enabled(root):
         with fact_store.transaction(root, write=True) as facts:
-            yield facts
+            with admitted(facts) as view:
+                yield view
         return
+    with _mutate_legacy_facts(root) as facts:
+        with admitted(facts) as view:
+            yield view
+
+
+@team_io.transactions
+@change_stream.fact_mutations
+@contextlib.contextmanager
+def _mutate_legacy_facts(root: str) -> Iterator[dict[str, AtomicFact]]:
+    from commontrace import policy_io
+
     path = _facts_file(root)
     with _jsonl.locked(path):
         facts = load_facts(root)
-        yield facts
+        with policy_io.fact_mutations(root, facts):
+            yield facts
         save_facts(root, facts)
 
 
@@ -626,9 +666,9 @@ def _detect_conflicts(facts: dict[str, AtomicFact], index: _StatementIndex, fact
     `later` holds ids written after `fact` in the same batch: a fact is only
     ever compared with what came before it.
     """
-    from commontrace import fact_conflicts
+    from commontrace import fact_conflicts, safety
 
-    mode = fact_conflicts.mode()
+    mode = "flag" if team_isolation.REQUEST.get() is not None else fact_conflicts.mode()
     if mode == "off":
         return
     cached_features = getattr(facts, "conflict_features", None)
@@ -678,7 +718,8 @@ def _detect_conflicts(facts: dict[str, AtomicFact], index: _StatementIndex, fact
     now = _now()
     for fid, (older, kind) in sorted(found.items()):
         action = "flagged"
-        if may_supersede and mode == "supersede" and kind in ("negation", "judged"):
+        if may_supersede and mode == "supersede" and kind in ("negation", "judged") \
+                and (not root or fid not in safety.protected(root)):
             try:
                 _supersede_locked(facts, older.id, fact.id, contradiction=True)
                 action = "superseded"
@@ -721,14 +762,17 @@ def _add_locked(
     conflicts: list | None = None,
 ) -> tuple[AtomicFact, str]:
     index = index if index is not None else _statement_index(facts)
+    preflight = team_io.contradictions(root, facts, index, statement, scopes)
     existing = index.exact(statement, scopes)
     decision = {}
-    if existing is None and dedupe in ("near", "semantic") and evidence is None:
+    if existing is None and not preflight and dedupe in ("near", "semantic") and evidence is None:
         # A paraphrase of an active fact reinforces it instead of becoming a second record.
         existing = index.near(statement, scopes)
         if existing is None and dedupe == "semantic":
             existing = _semantic_duplicate(root, facts, statement, scopes, decision)
     if existing is not None:
+        if conflicts is not None:
+            conflicts.extend(team_io.resolved_conflicts(preflight, existing.id))
         if existing.evidence_bound or evidence is not None:
             before = existing.to_dict()
             ledger = {receipt.key: receipt for receipt in existing.evidence}
@@ -795,7 +839,11 @@ def _add_locked(
     facts[fact.id] = fact
     _index_add(index, fact, snapshot)
     if conflicts is not None:
-        _detect_conflicts(facts, index, fact, root, conflicts, may_supersede=True, joint_decision=decision or None)
+        if team_isolation.REQUEST.get() is not None:
+            conflicts.extend(team_io.resolved_conflicts(preflight, fact.id))
+        else:
+            _detect_conflicts(facts, index, fact, root, conflicts, may_supersede=True,
+                              joint_decision=decision or None)
     return fact, "ADD"
 
 
@@ -814,6 +862,7 @@ def prepare_fact(statement: str, category: str, valid_from, valid_until, expires
 
 
 @configured
+@otel_memory.observed("upsert")
 def add_fact(
     root: str,
     statement: str,
@@ -841,7 +890,7 @@ def add_fact(
     _validate_evidence_policy(min_support)
     found: list = []
     with mutate_facts(root) as facts:
-        clean_scopes = _clean_scopes(scopes)
+        clean_scopes = _write_scopes(root, scopes)
         if evidence is not None:
             existing = _matching_active(facts, statement, clean_scopes)
             if existing and any(receipt.kind == "fact" and receipt.source_id == existing.id
@@ -880,7 +929,7 @@ def add_facts(root: str, items: list[dict[str, Any]]) -> list[tuple[AtomicFact, 
         statement, category, valid_from, valid_until, expires_at = prepare_fact(
             item.get("statement", ""), item.get("category", DEFAULT_CATEGORY),
             item.get("valid_from"), item.get("valid_until"), item.get("expires_at"))
-        prepared.append((statement, category, _clean_scopes(item.get("scopes")), valid_from,
+        prepared.append((statement, category, _write_scopes(root, item.get("scopes")), valid_from,
                          valid_until, expires_at, float(item.get("confidence", 0.8)),
                          str(item.get("source_trace_id", "") or ""),
                          _normalize_stability(item.get("stability", "")),
@@ -908,14 +957,17 @@ def add_facts(root: str, items: list[dict[str, Any]]) -> list[tuple[AtomicFact, 
                     raise EvidenceError("a fact cannot support or refute itself")
                 EvidenceResolver(root, facts).validate_receipts(receipts, existing.scopes if existing else sc)
             results.append(_add_locked(facts, s, c, sc, vf, vu, ea, conf, src, stab, created, receipts, minimum,
-                                       index=index, dedupe=mode, root=root))
-        _batch_conflicts(facts, index, [f for f, action in results if action == "ADD"], root, found,
-                         may_supersede=True)
+                                       index=index, dedupe=mode, root=root,
+                                       conflicts=found if team_isolation.REQUEST.get() is not None else None))
+        if team_isolation.REQUEST.get() is None:
+            _batch_conflicts(facts, index, [f for f, action in results if action == "ADD"], root, found,
+                             may_supersede=True)
     _after_conflicts(root, found)
     _link_entities_best_effort(root, [(fact.id, fact.statement) for fact, _ in results])
     return results
 
 
+@otel_memory.observed("create")
 def append_facts(root: str, items: list[dict[str, Any]]) -> list[tuple[AtomicFact, str]]:
     """Strict ADD-only admission: replay never changes an existing fact.
 
@@ -955,7 +1007,11 @@ def append_facts(root: str, items: list[dict[str, Any]]) -> list[tuple[AtomicFac
         labels = item.get("scopes", [])
         if not isinstance(labels, list) or any(not isinstance(s, str) for s in labels):
             raise ValueError("scopes must be a list of strings")
-        prepared.append((statement, category, _clean_scopes(labels), start, end, expiry,
+        if memory_type == "personal-opinion":
+            domains = [label[7:] for label in labels if label.startswith("domain:")]
+            if len(domains) != 1 or not domains[0].strip() or len(domains[0]) > 48:
+                raise ValueError("personal-opinion memory requires exactly one explicit domain scope")
+        prepared.append((statement, category, _write_scopes(root, labels), start, end, expiry,
                          confidence, str(item.get("source_trace_id", "")), item.get("stability", ""), memory_type))
     results = []
     mode = dedup_mode()
@@ -967,13 +1023,15 @@ def append_facts(root: str, items: list[dict[str, Any]]) -> list[tuple[AtomicFac
                 return (not f.forgotten and f.scopes == labels and (start is None or f.valid_from == start)
                         and f.valid_until == end and f.expires_at == expiry)
 
+            preflight = team_io.contradictions(root, facts, index, statement, labels)
             duplicate = next((facts[fid] for fid in index.by_norm.get(_normalize_statement(statement), ())
                               if facts[fid].status == "active" and same_record(facts[fid])), None)
-            if duplicate is None and mode != "exact":
+            if duplicate is None and not preflight and mode != "exact":
                 # ADD-only admission never edits the existing record; a paraphrase is a NOOP.
                 near = index.near(statement, labels)
                 duplicate = near if near is not None and same_record(near) else None
             if duplicate:
+                found.extend(team_io.resolved_conflicts(preflight, duplicate.id))
                 results.append((duplicate, "NOOP"))
                 continue
             # _add_locked reinforces overlapping scope sets. Use a fresh map
@@ -988,10 +1046,12 @@ def append_facts(root: str, items: list[dict[str, Any]]) -> list[tuple[AtomicFac
             fact.revision = _compute_revision(fact.to_dict())
             facts[fact.id] = fact
             index.add(fact)
+            found.extend(team_io.resolved_conflicts(preflight, fact.id))
             results.append((fact, action))
         # ADD-only admission never edits an existing fact: contradictions are flagged for review.
-        _batch_conflicts(facts, index, [f for f, action in results if action == "ADD"], root, found,
-                         may_supersede=False)
+        if team_isolation.REQUEST.get() is None:
+            _batch_conflicts(facts, index, [f for f, action in results if action == "ADD"], root, found,
+                             may_supersede=False)
     _after_conflicts(root, found)
     _link_entities_best_effort(root, [(fact.id, fact.statement) for fact, action in results if action == "ADD"])
     return results
@@ -1000,6 +1060,7 @@ def append_facts(root: str, items: list[dict[str, Any]]) -> list[tuple[AtomicFac
 _UNSET: Any = object()
 
 
+@otel_memory.observed("update")
 def update_fact(
     root: str,
     fact_id: str,
@@ -1018,6 +1079,9 @@ def update_fact(
     tenant's memory into another's view. To change scope, supersede the fact
     with explicit new scopes instead — the old scope stays on record.
     """
+    from commontrace import safety
+
+    safety.assert_mutable(root, [fact_id])
     new_until = _moment(valid_until, "valid_until") if valid_until is not None else None
     new_expiry = _normalize_expires_at(expires_at) if expires_at is not _UNSET else None
     if statement is not None and len(statement.strip()) > MAX_STATEMENT_CHARS:
@@ -1059,9 +1123,16 @@ def supersede_fact(
     as_of: str | None = None,
 ) -> tuple[AtomicFact, AtomicFact]:
     """End an active fact's validity and point it at its replacement."""
+    from commontrace import safety
+
+    safety.assert_mutable(root, [old_fact_id])
     with mutate_facts(root) as facts:
-        return _supersede_locked(facts, old_fact_id, new_fact_id_or_statement,
-                                 scopes=scopes, category=category, as_of=as_of)
+        result = _supersede_locked(facts, old_fact_id, new_fact_id_or_statement,
+                                  scopes=scopes, category=category, as_of=as_of)
+        from commontrace import lineage
+
+        lineage.invalidate(root, old_fact_id)
+        return result
 
 
 def _supersede_locked(
@@ -1207,6 +1278,9 @@ def resolve_contradiction(
     refuses instead of expiring a fact that was true in a different window.
     Guard validation and both state changes share one locked transaction.
     """
+    from commontrace import safety
+
+    safety.assert_mutable(root, [old_fact_id])
     with mutate_facts(root) as facts:
         return _supersede_locked(
             facts, old_fact_id, new_fact_id_or_statement, scopes=scopes,
@@ -1243,6 +1317,9 @@ def invalidate_fact(root: str, fact_id: str, at: str | None = None) -> AtomicFac
     still returns it, which is what makes "what was true in March" answerable.
     An end in the future only schedules the close; the fact stays active until then.
     """
+    from commontrace import safety
+
+    safety.assert_mutable(root, [fact_id])
     end = _moment(at, "at") or _now()
     with mutate_facts(root) as facts:
         if fact_id not in facts:
@@ -1265,6 +1342,9 @@ def invalidate_fact(root: str, fact_id: str, at: str | None = None) -> AtomicFac
 
 def delete_fact(root: str, fact_id: str) -> bool:
     """Soft-delete a fact: its validity ends now and it leaves default listings."""
+    from commontrace import safety
+
+    safety.assert_mutable(root, [fact_id])
     with mutate_facts(root) as facts:
         fact = facts.get(fact_id)
         if fact is None:
@@ -1287,12 +1367,17 @@ def retire_source(root: str, source_id: str, keep: set[str], *, scopes: list[str
     """
     if not source_id:
         return 0
+    from commontrace import safety
+
+    hazards = safety.protected(root)
     ended = 0
     ended_ids: list[str] = []
     required_scopes = _clean_scopes(scopes) if scopes is not None else None
     with mutate_facts(root) as facts:
         now_iso = _now()
         for fact in facts.values():
+            if fact.id in hazards:
+                continue
             if required_scopes is not None and sorted(set(fact.scopes)) != required_scopes:
                 continue
             if fact.id in keep or fact.status != "active" or source_id not in fact.source_traces:
@@ -1405,6 +1490,10 @@ def list_facts(
     from commontrace import memory_authority
 
     for fact in facts.values():
+        from commontrace import capabilities
+
+        if capabilities.CURRENT.get() is not None and not memory_authority.permits(root, fact):
+            continue
         if not include_forgotten and memory_authority.lineage_blocked(root, fact.id):
             continue
         if fact.forgotten and not include_forgotten:

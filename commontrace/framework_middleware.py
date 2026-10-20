@@ -16,21 +16,7 @@ from commontrace.configuration import configured
 from commontrace.hook_kit import HookKit
 from commontrace.memory_journal import Journal, moment, now
 from commontrace.memory_record import MemoryRecord, rerank_profile_results
-
-
-def scope_from_labels(labels: list[str]) -> dict:
-    result, extra = {}, []
-    for label in labels:
-        key, _, value = label.partition(":")
-        if key in ("tenant", "user", "agent", "session", "repo") and value:
-            if key in result and result[key] != value:
-                raise ValueError("ambiguous memory scope dimension: " + key)
-            result[key] = value
-        else:
-            extra.append(label)
-    if extra:
-        result["labels"] = sorted(extra)
-    return result
+from commontrace.record_visibility import scope_from_labels
 
 
 def maintain_preferences(journal: Journal, text: str, scope: dict, *, source_ids=None):
@@ -94,7 +80,10 @@ def turn(
     if text:
         captured = kit.journal.capture(run, "UserMessage", {"text": text, "author": "user"}, scope=scope)
         maintain_preferences(kit.journal, text, scope, source_ids=[captured["id"], event_payload["event_id"]])
-    result = kit.handle(event or "UserPromptSubmit", event_payload)
+    # Framework turns are request/response operations, not the 50 ms native
+    # editor hook. Allow bounded cold-store initialization and governed reads
+    # to complete before discarding the entire context as a hook timeout.
+    result = kit.handle(event or "UserPromptSubmit", event_payload, deadline_ms=1000)
     profile = {"static": [], "dynamic": [], "custom": []}
     preference_rankers = []
     for record in kit.journal.search("", scope=scope, kinds=("profile",), limit=30):

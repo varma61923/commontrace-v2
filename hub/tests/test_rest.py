@@ -7,6 +7,7 @@ import httpx
 import pytest
 from sqlalchemy import select
 from starlette.applications import Starlette
+from starlette.requests import Request
 
 from hub import auth, rest
 from hub.abuse import make_rate_limiter
@@ -33,6 +34,27 @@ def _app(session_factory, config, *, enabled: bool = True, signup_enabled: bool 
 
 def _client(app: Starlette) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
+
+
+@pytest.mark.parametrize("body", [
+    b'{"x":1,"x":2}',
+    b'{"outer":{"x":1,"x":2}}',
+    b'{"x":NaN}',
+    b'{"x":Infinity}',
+    b'{"x":-Infinity}',
+])
+async def test_rest_json_reader_rejects_ambiguous_and_non_finite_json(body):
+    delivered = False
+
+    async def receive():
+        nonlocal delivered
+        if delivered:
+            return {"type": "http.request", "body": b"", "more_body": False}
+        delivered = True
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    request = Request({"type": "http", "method": "POST", "path": "/", "headers": []}, receive)
+    assert await rest._read_json(request) is None
 
 
 async def test_memory_runtime_turn_scopes_and_permission_requirements(session_factory, config):
@@ -443,12 +465,19 @@ class TestContributing:
             )
         assert response.status_code == 400
 
-    async def test_a_malformed_body_is_a_400_not_a_500(self, session_factory, config):
+    @pytest.mark.parametrize("body", [
+        b"{not json at all",
+        b'{"title":"first","title":"second"}',
+        b'{"metadata_json":{"x":1,"x":2}}',
+        b'{"title":NaN}',
+        b'{"title":Infinity}',
+    ])
+    async def test_a_malformed_body_is_a_400_not_a_500(self, session_factory, config, body):
         _org_id, raw_key = await _org_with_key(session_factory)
         async with _client(_app(session_factory, config)) as client:
             response = await client.post(
                 "/api/v1/traces",
-                content=b"{not json at all",
+                content=body,
                 headers={**_key(raw_key), "Content-Type": "application/json"},
             )
         assert response.status_code == 400

@@ -58,6 +58,37 @@ def _market_referees(path: str) -> tuple[tuple[str, str, str], ...]:
     return tuple(out)
 
 
+def _pool_contributors(path: str) -> tuple[dict, ...]:
+    """UniMem operator-managed public identity cards; no private keys accepted."""
+    if not path.strip():
+        return ()
+    import json
+
+    from commontrace import frontier_protocol as fp
+
+    with open(path, "rb") as stream:
+        raw = stream.read(fp.MAX_BYTES + 1)
+    if len(raw) > fp.MAX_BYTES:
+        raise ValueError("UniMem contributor registry exceeds 1 MiB")
+    cards = json.loads(raw)
+    if not isinstance(cards, list):
+        raise ValueError("UniMem contributor registry must be a list")
+    fp.count(len(cards), 0, 128)
+    required = {"tenant", "principal", "organization", "public_key", "group", "stake_cents", "expires_at"}
+    seen = set()
+    for card in cards:
+        if not isinstance(card, dict) or set(card) != required:
+            raise ValueError("invalid UniMem public contributor card")
+        for key in ("tenant", "principal", "organization", "group"):
+            fp.text(card[key], key, 128)
+        fp.count(card["stake_cents"], 1, 100_000_000)
+        fp.moment(card["expires_at"])
+        if len(bytes.fromhex(card["public_key"])) != 32 or card["tenant"] in seen:
+            raise ValueError("UniMem contributor keys must be unique 32-byte Ed25519 public keys")
+        seen.add(card["tenant"])
+    return tuple(cards)
+
+
 def _env_cidr_list(name: str) -> tuple[str, ...]:
     raw = _configuration_getenv(name, "")
     if not raw.strip():
@@ -129,6 +160,9 @@ class HubConfig:
     # Referee public cards (JSON list) whose replicated-lift certificates the
     # marketplace accepts: ((principal_id, organization, base64 Ed25519 key), ...).
     market_referees: tuple[tuple[str, str, str], ...] = ()
+    pool_contributors: tuple[dict, ...] = ()
+    capability_directory: str = ""
+    attestation_config: str = ""
 
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""
@@ -136,6 +170,7 @@ class HubConfig:
     stripe_price_scale: str = ""
 
     ledger_signing_key: str = ""
+    transparency_algorithm: str = "hmac-sha256"
 
     auth_cache_seconds: float = 0.0
     encryption_key: str = ""
@@ -288,11 +323,15 @@ class HubConfig:
             commons_signing_key=env_secret("HUB_COMMONS_SIGNING_KEY"),
             commons_signing_key_id=_configuration_getenv("HUB_COMMONS_SIGNING_KEY_ID", "default"),
             market_referees=_market_referees(_configuration_getenv("HUB_MARKET_REFEREES_FILE", "")),
+            pool_contributors=_pool_contributors(_configuration_getenv("HUB_POOL_CONTRIBUTORS_FILE", "")),
+            capability_directory=_configuration_getenv("HUB_CAPABILITY_DIRECTORY", ""),
+            attestation_config=_configuration_getenv("HUB_ATTESTATION_CONFIG", ""),
             stripe_secret_key=env_secret("HUB_STRIPE_SECRET_KEY"),
             stripe_webhook_secret=env_secret("HUB_STRIPE_WEBHOOK_SECRET"),
             stripe_price_team=_configuration_getenv("HUB_STRIPE_PRICE_TEAM", ""),
             stripe_price_scale=_configuration_getenv("HUB_STRIPE_PRICE_SCALE", ""),
             ledger_signing_key=env_secret("HUB_LEDGER_SIGNING_KEY"),
+            transparency_algorithm=_configuration_getenv("HUB_TRANSPARENCY_ALGORITHM", "hmac-sha256"),
             oidc_issuer=_configuration_getenv("HUB_OIDC_ISSUER", ""),
             oidc_audience=_configuration_getenv("HUB_OIDC_AUDIENCE", ""),
             oidc_jwks=_configuration_getenv("HUB_OIDC_JWKS", ""),

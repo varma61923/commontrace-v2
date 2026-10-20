@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from commontrace.hierarchical import AtomicFact
 
-from commontrace import _jsonl, paths
+from commontrace import _jsonl, change_stream, paths, team_io
 from commontrace.memory_record import MemoryRecord
 from commontrace.sqlite_pool import Connection as _Connection
 from commontrace.sqlite_pool import ConnectionPool
@@ -341,8 +341,9 @@ def _snapshot_matches(fact, snapshot) -> bool:
 class FactMap(MutableMapping):
     """Lazy transaction-local facts. Only loaded/changed rows are inspected at commit."""
 
-    def __init__(self, connection: sqlite3.Connection):
+    def __init__(self, connection: sqlite3.Connection, *, root: str | None = None):
         self.connection = connection
+        self.root = root
         self.loaded: dict[str, Any] = {}
         self.before: dict[str, str | None] = {}
         self.removed: set[str] = set()
@@ -455,6 +456,15 @@ class FactMap(MutableMapping):
                 live.append((key, fact, encoded))
 
         versions = {}
+        if self.root is not None:
+            from commontrace import policy_io
+
+            for identity, _fact, payload, delete in changed:
+                if not delete:
+                    prior = self.before[identity]
+                    if prior is not None:
+                        policy_io.assert_write(self.root, json.loads(prior))
+                    policy_io.assert_write(self.root, payload)
         identities = [identity for identity, _, _, _ in changed]
         for group in _chunks(identities):
             versions.update(self.connection.execute(_EVENT_VERSIONS_SQL, group + [None] * (_BATCH_SIZE - len(group))))
@@ -490,6 +500,8 @@ class FactMap(MutableMapping):
         self.clear_staged()
 
 
+@team_io.transactions
+@change_stream.fact_transactions
 @contextlib.contextmanager
 def transaction(root: str, *, write: bool = False) -> Iterator[FactMap]:
     key, connection, generation = _borrow_connection(root)
@@ -503,7 +515,7 @@ def transaction(root: str, *, write: bool = False) -> Iterator[FactMap]:
             owner = hierarchical._StatementFeatures()
             token = hierarchical._STATEMENT_FEATURES.set(owner)
         connection.execute("BEGIN IMMEDIATE" if write else "BEGIN")
-        facts = FactMap(connection)
+        facts = FactMap(connection, root=root)
         yield facts
         if write:
             facts.flush()
@@ -878,7 +890,7 @@ def read_view(root: str) -> ReadView:
 
 
 def fts_candidates(root: str, query: str, *, context: list[str] | None = None, limit=200,
-                   as_of=None, known_at=None):
+                   as_of=None, known_at=None, allowed_ids=None):
     """Bounded FTS5 BM25 candidates, fresh temporal/proof/scope admission.
 
     This channel uses SQLite's index statistics; the historical ``bm25-v1`` API
@@ -897,12 +909,22 @@ def fts_candidates(root: str, query: str, *, context: list[str] | None = None, l
     moment = lesson_cache.parse_moment(as_of or h._now())
     known = lesson_cache.parse_moment(known_at) if known_at else None
     with transaction(root) as facts:
-        rows = facts.connection.execute(
-            "SELECT f.id,bm25(fact_fts) FROM fact_fts "
-            "JOIN facts f ON f.rowid=fact_fts.rowid WHERE fact_fts MATCH ? "
-            "AND f.forgotten=0 ORDER BY bm25(fact_fts) LIMIT ?",
-            (expression, max(1000, min(10000, limit * 10))),
-        )
+        if allowed_ids is not None:
+            statement = (
+                "SELECT f.id,bm25(fact_fts) FROM fact_fts "
+                "JOIN facts f ON f.rowid=fact_fts.rowid WHERE fact_fts MATCH ? "
+                "AND f.forgotten=0 AND f.id IN (SELECT value FROM json_each(?)) "
+                "ORDER BY bm25(fact_fts) LIMIT ?")
+        else:
+            statement = (
+                "SELECT f.id,bm25(fact_fts) FROM fact_fts "
+                "JOIN facts f ON f.rowid=fact_fts.rowid WHERE fact_fts MATCH ? "
+                "AND f.forgotten=0 ORDER BY bm25(fact_fts) LIMIT ?")
+        parameters = [expression]
+        if allowed_ids is not None:
+            parameters.append(json.dumps(allowed_ids))
+        parameters.append(max(1000, min(10000, limit * 10)))
+        rows = facts.connection.execute(statement, parameters)
         resolver = EvidenceResolver(root, facts, as_of=as_of)
         result = []
         for identity, score in rows:

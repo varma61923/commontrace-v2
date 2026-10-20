@@ -36,6 +36,15 @@ def append_provenance(
         "created_at": _now(),
     }
     _jsonl.append_row(fpath, record)
+    if source_path or run_id:
+        from commontrace import frontier_protocol as fp
+        from commontrace import lineage
+
+        content = {"id": str(target_id), "provenance": record}
+        lineage.attest(root, content, fp.sign(root, content),
+                       inputs=[str(value) for value in ("file:" + source_path if source_path else "",
+                                                       "run:" + run_id if run_id else "") if value],
+                       operation=str(target_kind))
     return record
 
 

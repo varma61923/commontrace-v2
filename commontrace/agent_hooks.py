@@ -26,6 +26,14 @@ def _handle(root: str, operation: str, payload: dict, *, agent_id: str) -> dict:
         query = payload.get("query", "")
         if not isinstance(query, str) or len(query) > 20000:
             raise ValueError("query must be bounded text")
+        if "tier" in payload:
+            from commontrace import tiering
+
+            config = payload["tier"]
+            if not isinstance(config, dict) or set(config) != {"namespace", "region"}:
+                raise ValueError("UniMem session tier needs only namespace and region")
+            tiering.prewarm(root, config["namespace"], region=config["region"], context=memory.context,
+                            trigger="session-start")
         return memory.reflect(query, budget=payload.get("budget", 600), occasion_id=occasion)
     if operation != "end":
         raise ValueError("unknown hook operation")

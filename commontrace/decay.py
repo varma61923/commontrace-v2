@@ -9,7 +9,7 @@ DEFAULT_HORIZON_DAYS = 180
 
 # Explicit type-conditioned half-lives; identity does not decay by default.
 HALF_LIVES_DAYS = {"identity": None, "preference": 365.0, "environment": 30.0,
-                   "temporary": 1.0, "procedure": 180.0, "general": 90.0}
+                   "temporary": 1.0, "procedure": 180.0, "general": 90.0, "personal-opinion": 180.0}
 
 
 def perishability(memory_type: str, age_days: float, *, half_life_days: float | None = None) -> float:

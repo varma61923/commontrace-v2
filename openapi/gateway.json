@@ -42,6 +42,16 @@
             "maxItems": 100,
             "type": "array"
           },
+          "fencing_token": {
+            "maximum": 9007199254740991,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "lease_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
           "local": {
             "type": "boolean"
           },
@@ -49,8 +59,79 @@
             "maxLength": 20000,
             "type": "string"
           },
+          "merge": {
+            "type": "boolean"
+          },
+          "read_set": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "transaction_time": {
+                  "maxLength": 68,
+                  "minLength": 68,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "transaction_time"
+              ],
+              "type": "object"
+            },
+            "maxItems": 256,
+            "type": "array"
+          },
+          "source": {
+            "additionalProperties": false,
+            "properties": {
+              "inferred": {
+                "type": "boolean"
+              },
+              "labels": {
+                "items": {
+                  "maxLength": 256,
+                  "type": "string"
+                },
+                "maxItems": 16,
+                "type": "array"
+              },
+              "modality": {
+                "enum": [
+                  "text",
+                  "voice",
+                  "face",
+                  "physiology",
+                  "image",
+                  "video",
+                  "tactile",
+                  "force",
+                  "position",
+                  "temperature",
+                  "system",
+                  "unknown"
+                ],
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "team_space": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
           "text": {
             "maxLength": 20000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "work_item": {
+            "maxLength": 128,
             "minLength": 1,
             "type": "string"
           }
@@ -189,12 +270,93 @@
             "maxItems": 100,
             "type": "array"
           },
+          "fencing_token": {
+            "maximum": 9007199254740991,
+            "minimum": 1,
+            "type": "integer"
+          },
           "items": {
             "items": {
               "type": "object"
             },
             "maxItems": 200,
             "type": "array"
+          },
+          "lease_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "merge": {
+            "type": "boolean"
+          },
+          "read_set": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "transaction_time": {
+                  "maxLength": 68,
+                  "minLength": 68,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "transaction_time"
+              ],
+              "type": "object"
+            },
+            "maxItems": 256,
+            "type": "array"
+          },
+          "source": {
+            "additionalProperties": false,
+            "properties": {
+              "inferred": {
+                "type": "boolean"
+              },
+              "labels": {
+                "items": {
+                  "maxLength": 256,
+                  "type": "string"
+                },
+                "maxItems": 16,
+                "type": "array"
+              },
+              "modality": {
+                "enum": [
+                  "text",
+                  "voice",
+                  "face",
+                  "physiology",
+                  "image",
+                  "video",
+                  "tactile",
+                  "force",
+                  "position",
+                  "temperature",
+                  "system",
+                  "unknown"
+                ],
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "team_space": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "work_item": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
           }
         },
         "required": [
@@ -846,6 +1008,40 @@
             "minLength": 1,
             "type": "string"
           },
+          "secondary_metrics": {
+            "additionalProperties": true,
+            "properties": {
+              "accuracy": {
+                "oneOf": [
+                  {
+                    "maximum": 1,
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  }
+                ]
+              },
+              "agreement": {
+                "oneOf": [
+                  {
+                    "maximum": 1,
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "accuracy",
+              "agreement"
+            ],
+            "type": "object"
+          },
           "signals": {
             "description": "evaluated three-valued",
             "items": {
@@ -942,6 +1138,40 @@
             "maxLength": 256,
             "minLength": 1,
             "type": "string"
+          },
+          "secondary_metrics": {
+            "additionalProperties": false,
+            "properties": {
+              "accuracy": {
+                "oneOf": [
+                  {
+                    "maximum": 1,
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  }
+                ]
+              },
+              "agreement": {
+                "oneOf": [
+                  {
+                    "maximum": 1,
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "accuracy",
+              "agreement"
+            ],
+            "type": "object"
           },
           "succeeded": {
             "type": "boolean"
@@ -1195,6 +1425,40 @@
             "type": "array"
           },
           "record": {
+            "type": "object"
+          },
+          "source": {
+            "additionalProperties": false,
+            "properties": {
+              "inferred": {
+                "type": "boolean"
+              },
+              "labels": {
+                "items": {
+                  "maxLength": 256,
+                  "type": "string"
+                },
+                "maxItems": 16,
+                "type": "array"
+              },
+              "modality": {
+                "enum": [
+                  "text",
+                  "voice",
+                  "face",
+                  "physiology",
+                  "image",
+                  "video",
+                  "tactile",
+                  "force",
+                  "position",
+                  "temperature",
+                  "system",
+                  "unknown"
+                ],
+                "type": "string"
+              }
+            },
             "type": "object"
           }
         },
@@ -1539,6 +1803,86 @@
         ],
         "type": "object"
       },
+      "TeamReadRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "context": {
+            "items": {
+              "maxLength": 256,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "type": "array"
+          },
+          "identities": {
+            "items": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 256,
+            "type": "array"
+          },
+          "team_space": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "identities"
+        ],
+        "type": "object"
+      },
+      "TeamReadResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "facts": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "level": {
+            "type": "string"
+          },
+          "read_set": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "transaction_time": {
+                  "maxLength": 68,
+                  "minLength": 68,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "transaction_time"
+              ],
+              "type": "object"
+            },
+            "maxItems": 256,
+            "type": "array"
+          },
+          "space": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "space",
+          "level",
+          "facts",
+          "read_set"
+        ],
+        "type": "object"
+      },
       "TurnRequest": {
         "additionalProperties": false,
         "properties": {
@@ -1570,6 +1914,40 @@
             "maxLength": 256,
             "minLength": 1,
             "type": "string"
+          },
+          "source": {
+            "additionalProperties": false,
+            "properties": {
+              "inferred": {
+                "type": "boolean"
+              },
+              "labels": {
+                "items": {
+                  "maxLength": 256,
+                  "type": "string"
+                },
+                "maxItems": 16,
+                "type": "array"
+              },
+              "modality": {
+                "enum": [
+                  "text",
+                  "voice",
+                  "face",
+                  "physiology",
+                  "image",
+                  "video",
+                  "tactile",
+                  "force",
+                  "position",
+                  "temperature",
+                  "system",
+                  "unknown"
+                ],
+                "type": "string"
+              }
+            },
+            "type": "object"
           },
           "text": {
             "maxLength": 20000,
@@ -5135,6 +5513,169 @@
         ]
       }
     },
+    "/v1/experiment/export-rl": {
+      "post": {
+        "description": "UniMem operator-authenticated export. X-UniMem-Manifest commits to streamed bytes. Matched occasions are not same-instance counterfactuals. Vendor mappings remain unverified.",
+        "operationId": "unimem_rl_export",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RequestId"
+          },
+          {
+            "$ref": "#/components/parameters/ContainerTag"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "alpha": {
+                    "maximum": 0.5,
+                    "minimum": 1e-06,
+                    "type": "number"
+                  },
+                  "connector": {
+                    "enum": [
+                      "generic",
+                      "agent-lightning",
+                      "grader"
+                    ],
+                    "type": "string"
+                  },
+                  "context": {
+                    "description": "scope labels",
+                    "items": {
+                      "maxLength": 256,
+                      "type": "string"
+                    },
+                    "maxItems": 100,
+                    "type": "array"
+                  },
+                  "exploitation": {
+                    "maximum": 1,
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  "exploration": {
+                    "maximum": 1,
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  "format": {
+                    "enum": [
+                      "dpo",
+                      "advantage",
+                      "replay"
+                    ],
+                    "type": "string"
+                  },
+                  "kl_budget": {
+                    "maximum": 100,
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  "units": {
+                    "items": {
+                      "description": "1-128 characters, no control characters or surrounding whitespace",
+                      "maxLength": 128,
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "maxItems": 64,
+                    "minItems": 1,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "units"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/x-ndjson": {
+                "schema": {
+                  "description": "Canonical JSONL training records.",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or wrong credential"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Refused by policy or scope"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Body larger than 1 MiB"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal error; no details"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Stream UniMem governed randomized-arm training records as JSONL.",
+        "tags": [
+          "Evidence"
+        ]
+      }
+    },
     "/v1/explore": {
       "post": {
         "description": "Records no occasion and no outcome.",
@@ -7591,6 +8132,39 @@
           },
           {
             "$ref": "#/components/parameters/ContainerTag"
+          },
+          {
+            "description": "Base64url UniMem attenuating token. Enrolled delegates must supply all three UniMem headers in addition to primary authentication; an unconfigured server rejects delegated requests.",
+            "in": "header",
+            "name": "X-UniMem-Capability",
+            "required": false,
+            "schema": {
+              "maxLength": 98304,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Base64url holder signature bound to the token, tenant, exact method/target/body, purpose and fresh nonce. Regenerate for every HTTP request; proofs expire after at most 30 seconds.",
+            "in": "header",
+            "name": "X-UniMem-Capability-Proof",
+            "required": false,
+            "schema": {
+              "maxLength": 8192,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Declared purpose, authorized by the leaf capability and signed by the holder.",
+            "in": "header",
+            "name": "X-UniMem-Purpose",
+            "required": false,
+            "schema": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -7710,6 +8284,39 @@
           },
           {
             "$ref": "#/components/parameters/ContainerTag"
+          },
+          {
+            "description": "Base64url UniMem attenuating token. Enrolled delegates must supply all three UniMem headers in addition to primary authentication; an unconfigured server rejects delegated requests.",
+            "in": "header",
+            "name": "X-UniMem-Capability",
+            "required": false,
+            "schema": {
+              "maxLength": 98304,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Base64url holder signature bound to the token, tenant, exact method/target/body, purpose and fresh nonce. Regenerate for every HTTP request; proofs expire after at most 30 seconds.",
+            "in": "header",
+            "name": "X-UniMem-Capability-Proof",
+            "required": false,
+            "schema": {
+              "maxLength": 8192,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Declared purpose, authorized by the leaf capability and signed by the holder.",
+            "in": "header",
+            "name": "X-UniMem-Purpose",
+            "required": false,
+            "schema": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -8305,6 +8912,39 @@
           },
           {
             "$ref": "#/components/parameters/ContainerTag"
+          },
+          {
+            "description": "Base64url UniMem attenuating token. Enrolled delegates must supply all three UniMem headers in addition to primary authentication; an unconfigured server rejects delegated requests.",
+            "in": "header",
+            "name": "X-UniMem-Capability",
+            "required": false,
+            "schema": {
+              "maxLength": 98304,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Base64url holder signature bound to the token, tenant, exact method/target/body, purpose and fresh nonce. Regenerate for every HTTP request; proofs expire after at most 30 seconds.",
+            "in": "header",
+            "name": "X-UniMem-Capability-Proof",
+            "required": false,
+            "schema": {
+              "maxLength": 8192,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Declared purpose, authorized by the leaf capability and signed by the holder.",
+            "in": "header",
+            "name": "X-UniMem-Purpose",
+            "required": false,
+            "schema": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -8424,6 +9064,39 @@
           },
           {
             "$ref": "#/components/parameters/ContainerTag"
+          },
+          {
+            "description": "Base64url UniMem attenuating token. Enrolled delegates must supply all three UniMem headers in addition to primary authentication; an unconfigured server rejects delegated requests.",
+            "in": "header",
+            "name": "X-UniMem-Capability",
+            "required": false,
+            "schema": {
+              "maxLength": 98304,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Base64url holder signature bound to the token, tenant, exact method/target/body, purpose and fresh nonce. Regenerate for every HTTP request; proofs expire after at most 30 seconds.",
+            "in": "header",
+            "name": "X-UniMem-Capability-Proof",
+            "required": false,
+            "schema": {
+              "maxLength": 8192,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Declared purpose, authorized by the leaf capability and signed by the holder.",
+            "in": "header",
+            "name": "X-UniMem-Purpose",
+            "required": false,
+            "schema": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -8662,6 +9335,39 @@
           },
           {
             "$ref": "#/components/parameters/ContainerTag"
+          },
+          {
+            "description": "Base64url UniMem attenuating token. Enrolled delegates must supply all three UniMem headers in addition to primary authentication; an unconfigured server rejects delegated requests.",
+            "in": "header",
+            "name": "X-UniMem-Capability",
+            "required": false,
+            "schema": {
+              "maxLength": 98304,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Base64url holder signature bound to the token, tenant, exact method/target/body, purpose and fresh nonce. Regenerate for every HTTP request; proofs expire after at most 30 seconds.",
+            "in": "header",
+            "name": "X-UniMem-Capability-Proof",
+            "required": false,
+            "schema": {
+              "maxLength": 8192,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Declared purpose, authorized by the leaf capability and signed by the holder.",
+            "in": "header",
+            "name": "X-UniMem-Purpose",
+            "required": false,
+            "schema": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -8900,6 +9606,39 @@
           },
           {
             "$ref": "#/components/parameters/ContainerTag"
+          },
+          {
+            "description": "Base64url UniMem attenuating token. Enrolled delegates must supply all three UniMem headers in addition to primary authentication; an unconfigured server rejects delegated requests.",
+            "in": "header",
+            "name": "X-UniMem-Capability",
+            "required": false,
+            "schema": {
+              "maxLength": 98304,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Base64url holder signature bound to the token, tenant, exact method/target/body, purpose and fresh nonce. Regenerate for every HTTP request; proofs expire after at most 30 seconds.",
+            "in": "header",
+            "name": "X-UniMem-Capability-Proof",
+            "required": false,
+            "schema": {
+              "maxLength": 8192,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Declared purpose, authorized by the leaf capability and signed by the holder.",
+            "in": "header",
+            "name": "X-UniMem-Purpose",
+            "required": false,
+            "schema": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -9005,6 +9744,158 @@
           }
         ],
         "summary": "Scoped memory search.",
+        "tags": [
+          "Memory"
+        ]
+      }
+    },
+    "/v1/memory/team-read": {
+      "post": {
+        "operationId": "memory_team_read",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RequestId"
+          },
+          {
+            "$ref": "#/components/parameters/ContainerTag"
+          },
+          {
+            "description": "Base64url UniMem attenuating token. Enrolled delegates must supply all three UniMem headers in addition to primary authentication; an unconfigured server rejects delegated requests.",
+            "in": "header",
+            "name": "X-UniMem-Capability",
+            "required": false,
+            "schema": {
+              "maxLength": 98304,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Base64url holder signature bound to the token, tenant, exact method/target/body, purpose and fresh nonce. Regenerate for every HTTP request; proofs expire after at most 30 seconds.",
+            "in": "header",
+            "name": "X-UniMem-Capability-Proof",
+            "required": false,
+            "schema": {
+              "maxLength": 8192,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Declared purpose, authorized by the leaf capability and signed by the holder.",
+            "in": "header",
+            "name": "X-UniMem-Purpose",
+            "required": false,
+            "schema": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TeamReadRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamReadResponse"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or wrong credential"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Refused by policy or scope"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflicts with recorded state"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Body larger than 1 MiB"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Quota or rate limit"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal error; no details"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Scoped memory team-read.",
         "tags": [
           "Memory"
         ]
@@ -9685,6 +10576,10 @@
                     "description": "must equal the store's environment when it has one; simulation and reality are never pooled",
                     "type": "string"
                   },
+                  "independence": {
+                    "description": "UniMem lineage-root diversity annotations for admitted delivered IDs",
+                    "type": "boolean"
+                  },
                   "items": {
                     "description": "your candidate memories",
                     "items": {
@@ -9699,10 +10594,35 @@
                     "minLength": 1,
                     "type": "string"
                   },
+                  "purpose": {
+                    "description": "Exact processing purpose bound to the authenticated capability",
+                    "maxLength": 256,
+                    "type": "string"
+                  },
                   "query": {
                     "description": "ranks this store's lessons when items is absent",
                     "maxLength": 2000,
                     "type": "string"
+                  },
+                  "read_graph": {
+                    "additionalProperties": true,
+                    "properties": {
+                      "output": {
+                        "description": "1-128 characters, no control characters or surrounding whitespace",
+                        "maxLength": 128,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "retention_days": {
+                        "maximum": 30,
+                        "minimum": 1,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "output"
+                    ],
+                    "type": "object"
                   },
                   "top_k": {
                     "default": 5,
@@ -9752,6 +10672,10 @@
                       ],
                       "type": "object"
                     },
+                    "independence": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
                     "mode": {
                       "enum": [
                         "items",
@@ -9785,6 +10709,10 @@
                         "type": "object"
                       },
                       "type": "array"
+                    },
+                    "read_graph": {
+                      "additionalProperties": true,
+                      "type": "object"
                     },
                     "withdrawn": {
                       "items": {
@@ -10139,6 +11067,292 @@
         "summary": "Experiment and proof progress.",
         "tags": [
           "Measurement"
+        ]
+      }
+    },
+    "/v1/stream": {
+      "get": {
+        "description": "UniMem source-admitted bounded SSE batch. Reconnect with Last-Event-ID; erasures require a separate ACK.",
+        "operationId": "unimem_change_stream",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RequestId"
+          },
+          {
+            "$ref": "#/components/parameters/ContainerTag"
+          },
+          {
+            "description": "Base64url UniMem attenuating token. Enrolled delegates must supply all three UniMem headers in addition to primary authentication; an unconfigured server rejects delegated requests.",
+            "in": "header",
+            "name": "X-UniMem-Capability",
+            "required": false,
+            "schema": {
+              "maxLength": 98304,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Base64url holder signature bound to the token, tenant, exact method/target/body, purpose and fresh nonce. Regenerate for every HTTP request; proofs expire after at most 30 seconds.",
+            "in": "header",
+            "name": "X-UniMem-Capability-Proof",
+            "required": false,
+            "schema": {
+              "maxLength": 8192,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Declared purpose, authorized by the leaf capability and signed by the holder.",
+            "in": "header",
+            "name": "X-UniMem-Purpose",
+            "required": false,
+            "schema": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Operator-configured subscription",
+            "in": "query",
+            "name": "identity",
+            "required": true,
+            "schema": {
+              "description": "1-128 characters, no control characters or surrounding whitespace",
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Cursor or Last-Event-ID header",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "maxLength": 8192,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Scope labels, narrowed by container auth",
+            "in": "query",
+            "name": "context",
+            "required": false,
+            "schema": {
+              "items": {
+                "maxLength": 256,
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "description": "Batch event limit",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 256,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "description": "Resumable SSE belief batch.",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or wrong credential"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Refused by policy or scope"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal error; no details"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "UniMem admitted resumable belief changes as SSE.",
+        "tags": [
+          "Evidence"
+        ]
+      }
+    },
+    "/v1/tier": {
+      "post": {
+        "description": "UniMem explicit managed namespace tier operation; residency violations are refused.",
+        "operationId": "unimem_tier",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RequestId"
+          },
+          {
+            "$ref": "#/components/parameters/ContainerTag"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "operation": {
+                    "enum": [
+                      "status",
+                      "hibernate",
+                      "warm",
+                      "residency",
+                      "reembed",
+                      "rollback"
+                    ],
+                    "type": "string"
+                  },
+                  "request": {
+                    "additionalProperties": true,
+                    "properties": {},
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "operation",
+                  "request"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {},
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or wrong credential"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Refused by policy or scope"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Body larger than 1 MiB"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal error; no details"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "UniMem managed namespace residency and hot/cold tier operations.",
+        "tags": [
+          "Evidence"
         ]
       }
     },
@@ -10822,6 +12036,9 @@
     },
     {
       "name": "Conversations"
+    },
+    {
+      "name": "Evidence"
     },
     {
       "name": "History"

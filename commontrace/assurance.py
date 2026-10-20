@@ -19,7 +19,7 @@ def _journal(root: str, name: str) -> str:
 
 
 def _operator():
-    if memory_authority.WRITER.get()[1] != "operator":
+    if not memory_authority.is_operator():
         raise PermissionError("trusted operator evaluator required")
 
 

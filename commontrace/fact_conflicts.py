@@ -123,6 +123,11 @@ def record(root: str, conflicts: list[Conflict]) -> None:
     path = _queue_path(root)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     holdout_io._append_lines(path, [json.dumps(asdict(c), sort_keys=True) for c in conflicts])
+    from commontrace import lineage
+
+    for conflict in conflicts:
+        if conflict.action == "superseded":
+            lineage.invalidate(root, conflict.older)
 
 
 def pending(root: str) -> list[Conflict]:

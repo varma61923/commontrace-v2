@@ -462,6 +462,7 @@ class CausalEffect:
     min_detectable_effect: float | None
     verdict: str
     note: str = ""
+    e_value: float | None = None
 
 
 VERDICT_HELPS = "HELPS"
@@ -699,6 +700,35 @@ def analyze(
             )
         )
 
+    # Shared tasks induce arbitrary cross-memory dependence. A positive claim
+    # (HELPS, which bills and releases) therefore needs e-BH over the family of
+    # helpfulness hypotheses; legacy BH remains a descriptive reading. A harm
+    # verdict keeps the marginal anytime interval: withdrawing a memory is the
+    # conservative action, and weakening its trigger would weaken harm control.
+    from commontrace import eprocess
+
+    e_values = eprocess.report(observations, strict=False)
+    occasions: dict[str, set[str]] = {}
+    for observation in observations:
+        occasions.setdefault(observation.occasion_id, set()).add(observation.lesson_slug)
+    shared = any(len(slugs) > 1 for slugs in occasions.values())
+    # Downward censoring (non-candidates get e = 0) preserves e-validity while
+    # retaining interval/sample-size admission as an additional conservative gate.
+    family = [e_values.get(effect.lesson_slug, {}).get("helps", 0.0)
+              if effect.significant and effect.effect > 0 else 0.0 for effect in out]
+    confirmed = eprocess.ebh(family, alpha) if family else []
+    for i, effect in enumerate(out):
+        evidence = e_values.get(effect.lesson_slug)
+        if evidence is not None:
+            effect.e_value = evidence["helps" if effect.effect > 0 else "hurts"]
+        if not shared:
+            continue
+        if use_fixed:
+            effect.note += " Legacy fixed-horizon BH display; not dependence-robust release evidence."
+        elif effect.verdict == VERDICT_HELPS and not confirmed[i]:
+            effect.significant = False
+            effect.verdict = VERDICT_UNDERPOWERED
+            effect.note = "Shared-task e-BH evidence is insufficient; marginal intervals and BH are display only."
     order = {VERDICT_HURTS: 0, VERDICT_HELPS: 1, VERDICT_NO_EFFECT: 2, VERDICT_UNDERPOWERED: 3}
     out.sort(key=lambda e: (order[e.verdict], -abs(e.effect)))
     return out

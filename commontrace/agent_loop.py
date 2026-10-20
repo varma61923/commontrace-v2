@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import datetime
 import json
+import subprocess
+import sys
+import threading
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -47,7 +50,7 @@ def _clean(text: str) -> bool:
 
 
 def _relevant_lessons(root: str, task: str) -> list[tuple[str, str]]:
-    from commontrace import frontmatter, injection_guard, lesson_cache, retrieval, retrieval_io
+    from commontrace import frontmatter, injection_guard, lesson_cache, memory_ifc, retrieval, retrieval_io
 
     try:
         lessons, term_cache = lesson_cache.load_active_with_terms(root, None, reader=frontmatter.read)
@@ -67,14 +70,20 @@ def _relevant_lessons(root: str, task: str) -> list[tuple[str, str]]:
             ranked_lesson.path, fm, slug=ranked_lesson.slug, body=body, root=root,
         ):
             continue
-        items.append({"slug": ranked_lesson.slug, "description": str(fm.get("description", "")),
+        description = str(fm.get("description", ""))
+        labeled = memory_ifc.safe_label(root, {"id": ranked_lesson.slug, "text": description},
+                                        identity=ranked_lesson.slug)
+        display = (labeled.get("quoted_text", "") if labeled.get("presentation") == "quoted-data"
+                   else description)
+        items.append({"slug": ranked_lesson.slug, "description": display,
                       "applies_when": str(fm.get("applies_when", ""))})
+
     clean, _quarantined = injection_guard.screen(items)
     return [(i["slug"], i["description"]) for i in clean]
 
 
 def _assemble_context(root: str, task_prompt: str) -> str:
-    from commontrace import hierarchical, injection_guard, memory_blocks
+    from commontrace import hierarchical, injection_guard, memory_blocks, memory_ifc
 
     lines = [f"# Task\n{task_prompt}\n"]
     lessons = _relevant_lessons(root, task_prompt)
@@ -87,13 +96,21 @@ def _assemble_context(root: str, task_prompt: str) -> str:
         lines.append("# Working memory\n")
         for b in blocks:
             lines.extend([f"## {b.name} ({b.char_count}/{b.max_chars} chars)", b.content, ""])
-    facts = [f for f in hierarchical.search_facts(root, task_prompt, limit=MAX_FACTS * 2)
-             if _clean(f[0].statement)][:MAX_FACTS]
+    facts = []
+    for fact, score in hierarchical.search_facts(root, task_prompt, limit=MAX_FACTS * 2):
+        if not _clean(fact.statement):
+            continue
+        labeled = memory_ifc.safe_label(root, {"id": fact.id, "text": fact.statement}, identity=fact.id)
+        statement = (labeled.get("quoted_text", "") if labeled.get("presentation") == "quoted-data"
+                     else fact.statement)
+        facts.append((fact, score, statement))
+        if len(facts) >= MAX_FACTS:
+            break
     if facts:
         lines.append("# Key facts\n")
-        for fact, _score in facts:
+        for fact, _score, statement in facts:
             scope_str = f" [{','.join(fact.scopes)}]" if fact.scopes else ""
-            lines.append(f"- {fact.statement} (conf: {fact.confidence:.2f}){scope_str}")
+            lines.append(f"- {statement} (conf: {fact.confidence:.2f}){scope_str}")
         lines.append("")
     try:
         from commontrace import skills
@@ -164,6 +181,7 @@ class AgentLoop:
         self.agent_type = agent_type
         self.dream_every = dream_every
         self._run_count = 0
+        self._lock = threading.Lock()
 
     def run(
         self,
@@ -193,8 +211,10 @@ class AgentLoop:
                 result.success = True
                 break
         result.trace_path = _write_execution_trace(self.root, result, self.agent_type)
-        self._run_count += 1
-        if dream_on_complete or (self.dream_every > 0 and self._run_count % self.dream_every == 0):
+        with self._lock:
+            self._run_count += 1
+            should_dream = dream_on_complete or (self.dream_every > 0 and self._run_count % self.dream_every == 0)
+        if should_dream:
             _trigger_dream(self.root)
         return result
 
@@ -237,13 +257,16 @@ def llm_executor(config=None) -> Executor:
 
 
 def _trigger_dream(root: str) -> None:
-    import io
-    from contextlib import redirect_stderr, redirect_stdout
-
-    from commontrace.commands import dream_cmd
-
-    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-        try:
-            dream_cmd.main_dream(root, draft=False)
-        except Exception:  # noqa: BLE001 - consolidation is best-effort after a run
-            pass
+    # Run the CLI in a child process so its own capture helpers cannot replace
+    # the parent process's stdout/stderr while other agents are writing to them.
+    try:
+        subprocess.run(
+            [sys.executable, "-c",
+             "from commontrace.commands.dream_cmd import main_dream; import sys; "
+             "raise SystemExit(main_dream(sys.argv[1], draft=False))", root],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            check=False, timeout=125,
+        )
+    except (OSError, subprocess.SubprocessError):
+        # Consolidation is best-effort after an agent run.
+        return

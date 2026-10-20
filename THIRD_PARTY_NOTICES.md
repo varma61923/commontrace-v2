@@ -4,6 +4,11 @@ CommonTrace is licensed under AGPL-3.0-only. Parts of it are adapted from the pe
 
 Techniques that are only cited in docstrings (re-implemented from papers or public descriptions, with no code carried over) are not listed here.
 
+The optional `commontrace[crdt]` extra depends on the upstream Automerge Python
+bindings (MIT, pinned development release) and `cryptography`; neither project's
+implementation code is copied into this repository. No Automerge wire format or
+cross-language interoperability claim is made without matching fixture tests.
+
 ---
 
 ## Mem0
