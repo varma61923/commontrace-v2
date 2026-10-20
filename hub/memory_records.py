@@ -7,6 +7,7 @@ Canonical records are revalidated after every ANN lookup, including erasure.
 from __future__ import annotations
 
 import html
+import json
 import logging
 import math
 import uuid
@@ -27,7 +28,7 @@ from commontrace.memory_record import (
     preference_statistics,
     rerank_profile_results,
 )
-from commontrace.record_visibility import bind_capture_sources, now, sanitize_record_content, visible
+from commontrace.record_visibility import GroundingState, bind_capture_sources, now, sanitize_record_content, visible
 from hub import audit, delegation
 from hub.db import session_scope
 from hub.memory_vector_events import append_change, redact_changes
@@ -35,6 +36,36 @@ from hub.models import MemoryRecordEvent, MemoryRecordProjection, MemoryVectorEr
 
 _VECTOR_CANDIDATE_BATCH = 500
 _ATOMIC_FACT_FORMAT = "commontrace.atomic-fact.v1"
+
+
+def _erasure_closure(rows, identity):
+    """Index historical causal edges once, then visit each affected edge once."""
+    dependents, upstream, episodes = {}, {}, set()
+    for row in rows:
+        record = row.record
+        scope = json.dumps(record["scope"], sort_keys=True)
+        if record["kind"] == "episode":
+            episodes.add((row.id, scope))
+        for identities in record["relations"].values():
+            for source in identities:
+                dependents.setdefault(source, set()).add(row.id)
+        if record["provenance"].get("atomic_fact_format") == _ATOMIC_FACT_FORMAT:
+            for receipt in record["payload"].get("evidence", []):
+                if isinstance(receipt, dict):
+                    dependents.setdefault(receipt.get("source_id"), set()).add(row.id)
+        for source in record["payload"].get("source_message_ids", []):
+            upstream.setdefault(row.id, set()).add((source, scope))
+
+    pending, deleted, source_episodes = [identity], set(), set()
+    while pending:
+        current = pending.pop()
+        if current in deleted:
+            continue
+        deleted.add(current)
+        sources = {source for source, scope in upstream.get(current, ()) if (source, scope) in episodes}
+        source_episodes.update(sources)
+        pending.extend((dependents.get(current, set()) | sources) - deleted)
+    return deleted, source_episodes
 
 
 class _HostedEvidenceResolver(EvidenceResolver):
@@ -293,22 +324,20 @@ class PostgresJournal:
         ).order_by(MemoryRecordProjection.id).limit(2001))).scalars().all()
         fp.count(len(rows), 0, 2000, "UniMem scoped Hub capability namespace")
         records = {row.id: MemoryRecord(**row.record) for row in rows}
-        checked = {}
+        grounding = GroundingState()
         def admitted(identity, trail=frozenset()):
-            if identity in trail or len(trail) >= 64:
-                return False
-            if identity in checked:
-                return checked[identity]
+            cached = grounding.enter(identity, trail)
+            if cached is not None:
+                return cached
             record = records.get(identity)
             if (record is None or not visible(record, context, at=reference) or not delegation.readable_record(record)
                     or not policies.permits(policy, runtime_descriptor(record))):
-                return False
-            parents = set(record.relations.get("derives", [])) | set(record.relations.get("caused_by", []))
+                return grounding.remember(identity, trail, False)
+            parents = sorted(set(record.relations.get("derives", [])) | set(record.relations.get("caused_by", [])))
             versions = record.provenance.get("source_versions", {})
             okay = all(admitted(parent, trail | {identity}) and
                        (parent not in versions or versions[parent] == records[parent].version) for parent in parents)
-            checked[identity] = okay
-            return okay
+            return grounding.remember(identity, trail, okay)
         return {identity for identity, record in records.items() if (not kinds or record.kind in kinds)
                 and admitted(identity)}
 
@@ -423,21 +452,23 @@ class PostgresJournal:
             for order in (sparse_order, dense_order):
                 for rank, identity in enumerate(order, 1):
                     ranks[identity] = ranks.get(identity, 0) + 1 / (60 + rank)
-            checked: dict[str, bool] = {}
+            grounding = GroundingState()
 
             async def grounded(record, trail=frozenset()):
-                if (record.id in trail or len(trail) >= 64 or not visible(record, context, at=reference)
-                        or not delegation.readable_record(record)):
-                    return False
+                cached = grounding.enter(record.id, trail)
+                if cached is not None:
+                    return cached
+                if not visible(record, context, at=reference) or not delegation.readable_record(record):
+                    return grounding.remember(record.id, trail, False)
                 if record.provenance.get("atomic_fact_format") == _ATOMIC_FACT_FORMAT:
                     if evidence_resolver is None or record.id in invalid_atomic:
                         return False
                     assessment = evidence_resolver.assess(record.id)
                     if not assessment.eligible:
                         return False
-                if record.id in checked:
-                    return checked[record.id]
-                for identity in record.relations.get("derives", []):
+                for identity in dict.fromkeys(record.relations.get("derives", [])):
+                    if grounding.remaining <= 0:
+                        return False
                     source = found.get(identity)
                     if source is None:
                         row = await session.get(MemoryRecordProjection, (self.org_id, identity))
@@ -451,10 +482,8 @@ class PostgresJournal:
                         )
                         or not await grounded(source, trail | {record.id})
                     ):
-                        checked[record.id] = False
-                        return False
-                checked[record.id] = True
-                return True
+                        return grounding.remember(record.id, trail, False)
+                return grounding.remember(record.id, trail, True)
 
             eligible = []
             for identity in sorted(ranks, key=lambda identity: (-ranks[identity], identity)):
@@ -608,25 +637,28 @@ class PostgresJournal:
             if html.escape(memory_guard.sanitize_metadata({"text": line}, pii=True)[0]["text"]) in rendered:
                 lines.append(line)
                 identities.append(entry["id"])
+        from hub import policies
+
+        context, reference = {**scope, "tenant": self.org_id}, now()
         async with session_scope(self.factory, org_id=self.org_id) as session:
-            rows = (
-                (
-                    await session.execute(
-                        select(MemoryRecordProjection)
-                        .where(
-                            MemoryRecordProjection.org_id == self.org_id,
-                            MemoryRecordProjection.scope.op("<@")({**scope, "tenant": self.org_id}),
-                            MemoryRecordProjection.record["kind"].astext == "episode",
-                            MemoryRecordProjection.record["payload"]["session_id"].astext == session_id,
-                            MemoryRecordProjection.record["status"].astext == "active",
-                        )
-                        .order_by(MemoryRecordProjection.record["created_at"].astext.desc())
-                        .limit(16)
-                    )
-                )
-                .scalars()
-                .all()
+            # Session history is a read surface too. Apply the same policy and
+            # capability admission as search before selecting the recent window.
+            policy = await policies.active(session, self.org_id)
+            statement = select(MemoryRecordProjection).where(
+                MemoryRecordProjection.org_id == self.org_id,
+                delegation.record_predicate(),
+                MemoryRecordProjection.scope.op("<@")(context),
+                MemoryRecordProjection.record["kind"].astext == "episode",
+                MemoryRecordProjection.record["payload"]["session_id"].astext == session_id,
+                MemoryRecordProjection.record.contains({"status": "active", "is_latest": True}),
             )
+            if capabilities.CURRENT.get() is not None or delegation.enrolled() or policy is not None:
+                await self._lock_owner(session)
+                allowed_ids = await self._cap_allowed_ids(session, context, reference, ("episode",))
+                statement = statement.where(MemoryRecordProjection.id.in_(sorted(allowed_ids)))
+            rows = (await session.execute(statement.order_by(
+                MemoryRecordProjection.record["created_at"].astext.desc(), MemoryRecordProjection.id,
+            ).limit(16))).scalars().all()
             buffer = [
                 {
                     "id": row.id,
@@ -635,7 +667,8 @@ class PostgresJournal:
                     "scope": row.scope,
                 }
                 for row in rows
-                if visible(MemoryRecord(**row.record), {**scope, "tenant": self.org_id})
+                if visible(MemoryRecord(**row.record), context, at=reference)
+                and delegation.readable_record(MemoryRecord(**row.record))
             ]
         return {
             "context": render_context(lines, budget=budget),
@@ -649,6 +682,8 @@ class PostgresJournal:
 
     async def reap_due(self, *, limit: int = 16) -> list[dict]:
         """Erase a bounded batch of tenant-owned records whose forget_after has passed."""
+        from commontrace.frontier_protocol import digest
+
         if type(limit) is not int or not 1 <= limit <= 100:
             raise ValueError("expiration batch must be in 1..100")
         expires_at = cast(
@@ -684,7 +719,8 @@ class PostgresJournal:
                 raise ValueError("expiration requires a reason")
             try:
                 results.append(
-                    await self.forget(identity, reason=reason, expected_version=version)
+                    await self.forget(identity, reason=reason, expected_version=version,
+                                      _expected_digest=digest(body))
                 )
             except ValueError as exc:
                 if str(exc) != "expiration record version changed":
@@ -692,7 +728,8 @@ class PostgresJournal:
         return results
 
     async def forget(
-        self, identity: str, *, reason: str, expected_version: int | None = None
+        self, identity: str, *, reason: str, expected_version: int | None = None, scope: dict | None = None,
+        _expected_digest: str | None = None,
     ) -> dict:
         if not isinstance(reason, str) or not reason.strip():
             raise ValueError("erasure requires a reason")
@@ -704,6 +741,12 @@ class PostgresJournal:
             await self._lock_owner(session)
             from hub import retention
 
+            if scope is not None:
+                current = await session.get(MemoryRecordProjection, (self.org_id, identity))
+                if current is None:
+                    raise ValueError("record not found")
+                if current.scope != {**scope, "tenant": self.org_id}:
+                    raise PermissionError("only the owning scoped principal can erase this record")
             if capabilities.CURRENT.get() is not None:
                 from commontrace import capability_io
 
@@ -714,50 +757,34 @@ class PostgresJournal:
                     capability_io.runtime_descriptor(MemoryRecord(**current.record)), namespace="records")
             if await retention.active_holds(session, self.org_id):
                 raise PermissionError("an active legal hold blocks record erasure; release it explicitly")
-            if expected_version is not None:
+            if expected_version is not None or _expected_digest is not None:
+                from commontrace.frontier_protocol import digest
+
                 current = await session.get(
                     MemoryRecordProjection,
                     (self.org_id, identity),
                     with_for_update=True,
                 )
-                if current is None or current.version != expected_version:
+                if (current is None or expected_version is not None and current.version != expected_version
+                        or _expected_digest is not None and digest(current.record) != _expected_digest):
                     raise ValueError("expiration record version changed")
             rows = (
                 (await session.execute(select(MemoryRecordEvent).where(MemoryRecordEvent.org_id == self.org_id)))
                 .scalars()
                 .all()
             )
-            deleted = {identity}
-            while True:
-                # Raw message episodes cited by any historical revision are erased too.
-                source_scopes = [
-                    (source, row.record["scope"])
-                    for row in rows
-                    if row.id in deleted
-                    for source in row.record["payload"].get("source_message_ids", [])
-                ]
-                sources = {
-                    row.id
-                    for row in rows
-                    if row.record["kind"] == "episode" and (row.id, row.record["scope"]) in source_scopes
-                }
-                derived = sources | {
-                    row.id for row in rows if any(set(ids) & deleted for ids in row.record["relations"].values())
-                }
-                # Evidence receipts are causal links too. Retire and erase a
-                # derived fact when any fact or lesson it cites is forgotten.
-                evidence_derived = {
-                    row.id for row in rows
-                    if row.record["provenance"].get("atomic_fact_format") == _ATOMIC_FACT_FORMAT
-                    and any(
-                        isinstance(receipt, dict) and receipt.get("source_id") in deleted
-                        for receipt in row.record["payload"].get("evidence", [])
-                    )
-                }
-                derived |= evidence_derived
-                if derived <= deleted:
-                    break
-                deleted |= derived
+            # Historical revisions, cited episodes and typed evidence receipts
+            # all contribute edges; long chains must not rescan the tenant on
+            # every step while holding its writer fence.
+            deleted, source_episodes = _erasure_closure(rows, identity)
+            if capabilities.CURRENT.get() is not None:
+                # Naming a hidden episode as evidence must not grant permission
+                # to erase that upstream source. Descendant invalidation remains
+                # part of the authorized privacy cascade.
+                for row in rows:
+                    if row.id in source_episodes:
+                        capability_io.assert_forget(delegation.ROOT.get(),
+                            capability_io.runtime_descriptor(MemoryRecord(**row.record)), namespace="records")
             if self.vector_index is not None:
                 await session.execute(
                     insert(MemoryVectorErasure)
@@ -945,12 +972,8 @@ def add_memory_routes(app, session_factory, *, authenticate, require_scope):
                     }
                 )
             if action == "forget":
-                async with session_scope(session_factory, org_id=authenticated.org_id) as session:
-                    row = await session.get(MemoryRecordProjection, (authenticated.org_id, payload["id"]))
-                    context = {**payload.get("scope", {}), "tenant": authenticated.org_id}
-                    if row is not None and row.scope != context:
-                        raise PermissionError("only the owning scoped principal can erase this record")
-                return JSONResponse(await store.forget(payload["id"], reason=payload["reason"]))
+                return JSONResponse(await store.forget(
+                    payload["id"], reason=payload["reason"], scope=payload.get("scope", {})))
             if action == "reap-due":
                 return JSONResponse({"results": await store.reap_due(limit=payload.get("limit", 16))})
             return JSONResponse({"error": "unknown_operation"}, status_code=404)

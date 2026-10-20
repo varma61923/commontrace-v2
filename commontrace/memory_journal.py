@@ -18,7 +18,7 @@ from typing import Any
 
 from commontrace import capabilities, memory_guard, paths
 from commontrace.memory_record import MemoryRecord, facet_observation
-from commontrace.record_visibility import bind_capture_sources, now, sanitize_record_content
+from commontrace.record_visibility import GroundingState, bind_capture_sources, now, sanitize_record_content
 from commontrace.record_visibility import moment as moment
 from commontrace.record_visibility import visible as _visible
 from commontrace.runtime_cache import RuntimeCache
@@ -290,14 +290,16 @@ class Journal:
             clauses.append("(kind='directive' OR (kind='profile' AND json_extract(body,'$.payload.critical')=1) "
                            "OR (kind='lesson' AND json_extract(body,'$.payload.lesson_kind')='directive'))")
         with self.connect() as db:
+            db.execute("BEGIN")  # Keep memoized proofs on one canonical revision.
             rows = db.execute("SELECT body FROM records WHERE " + " AND ".join(clauses) +  # nosec B608
                               " ORDER BY id LIMIT 2001", parameters).fetchall()
             fp.count(len(rows), 0, 2000, "UniMem scoped runtime search namespace")
             admitted = []
+            grounding = GroundingState()
             for row in rows:
                 record = MemoryRecord(**json.loads(row[0]))
                 if (visible(record, scope, statuses=statuses, at=at)
-                        and self._grounded(db, record, scope, statuses=statuses, at=at)):
+                        and self._grounded(db, record, scope, statuses=statuses, at=at, grounding=grounding)):
                     admitted.append(record)
         tokens = list(dict.fromkeys(terms(query)))[:32]
         if not tokens:
@@ -450,7 +452,9 @@ class Journal:
     def current(self, identity: str, *, scope: dict, statuses=("active",), at=None) -> MemoryRecord | None:
         """Indexed canonical lookup with the same evidence checks as search."""
         self._drain_authority()
+        at = at or now()
         with self.connect() as db:
+            db.execute("BEGIN")
             row = db.execute("SELECT body FROM records WHERE id=?", (identity,)).fetchone()
             if row is None:
                 return None
@@ -459,7 +463,16 @@ class Journal:
                 return None
             return record if self._grounded(db, record, scope, statuses=statuses, at=at) else None
 
-    def _grounded(self, db, record, scope, *, statuses, at, seen=None, delegated=None):
+    def _grounded(self, db, record, scope, *, statuses, at, seen=frozenset(), delegated=None, grounding=None):
+        grounding = GroundingState() if grounding is None else grounding
+        cached = grounding.enter(record.id, seen)
+        if cached is not None:
+            return cached
+        eligible = self._grounded_record(db, record, scope, statuses=statuses, at=at,
+                                         seen=seen | {record.id}, delegated=delegated, grounding=grounding)
+        return grounding.remember(record.id, seen, eligible)
+
+    def _grounded_record(self, db, record, scope, *, statuses, at, seen, delegated, grounding):
         if not self._runtime_readable(record):
             return False
         from commontrace import capability_io, policy_io, policy_relations, purpose, subject_policy
@@ -487,11 +500,9 @@ class Journal:
 
             if not code_evidence_current(self.root, record.provenance["code_evidence"]):
                 return False
-        seen = set() if seen is None else seen
-        if record.id in seen or len(seen) >= 64:
-            return False  # cycles and unbounded grounding fail closed
-        seen.add(record.id)
-        for source in record.relations.get("derives", []):
+        for source in dict.fromkeys(record.relations.get("derives", [])):
+            if grounding.remaining <= 0:
+                return False
             row = db.execute("SELECT body FROM records WHERE id=?", (source,)).fetchone()
             if row is None:
                 return False
@@ -500,7 +511,8 @@ class Journal:
             if versions is not None and (not isinstance(versions, dict) or versions.get(source) != parent.version):
                 return False
             if not visible(parent, scope, statuses=("active",), at=at) or not self._grounded(
-                db, parent, scope, statuses=statuses, at=at, seen=set(seen)
+                db, parent, scope, statuses=statuses, at=at, seen=seen, grounding=grounding,
+                delegated=delegated,
             ):
                 return False
         return True
@@ -509,6 +521,7 @@ class Journal:
         self, query: str, *, scope: dict | None = None, kinds=(), statuses=("active",), limit=20, at=None, always=False
     ) -> list[MemoryRecord]:
         self._drain_authority()
+        at = at or now()
         from commontrace.search_recipes import terms
 
         if limit <= 0:
@@ -523,6 +536,7 @@ class Journal:
                                               limit=limit, at=at, always=always)
         tokens = list(dict.fromkeys(terms(query)))[:32]
         with self.connect() as db:
+            db.execute("BEGIN")
             clauses = ["json_extract(r.body,'$.is_latest')=1"]
             parameters = []
             if statuses:
@@ -553,10 +567,12 @@ class Journal:
             rows = db.execute("SELECT r.body FROM " + source + " WHERE " + " AND ".join(clauses) +  # nosec B608
                               " ORDER BY " + order, parameters)
             result = []
+            grounding = GroundingState()
             for row in rows:
                 record = MemoryRecord(**json.loads(row[0]))
                 if (not kinds or record.kind in kinds) and visible(record, scope or {}, statuses=statuses, at=at):
-                    if not self._grounded(db, record, scope or {}, statuses=statuses, at=at, delegated=False):
+                    if not self._grounded(db, record, scope or {}, statuses=statuses, at=at, delegated=False,
+                                          grounding=grounding):
                         continue
                     result.append(record)
                     if len(result) >= limit:
@@ -845,6 +861,8 @@ class Journal:
             return json.loads(row[0]) if row else None
 
     def reap_due(self, *, limit=16) -> list[dict]:
+        from commontrace.frontier_protocol import digest
+
         with self.connect() as db:
             rows = db.execute(
                 "SELECT body FROM records WHERE julianday(json_extract(body,'$.payload.forget_after'))"
@@ -853,25 +871,30 @@ class Journal:
             ).fetchall()
         result = []
         for (body,) in rows:
-            record = MemoryRecord(**json.loads(body))
+            body = json.loads(body)
+            record = MemoryRecord(**body)
             try:
                 result.append(
-                    self.forget(record.id, reason=record.payload["forget_reason"], expected_version=record.version)
+                    self.forget(record.id, reason=record.payload["forget_reason"], expected_version=record.version,
+                                _expected_digest=digest(body))
                 )
             except ValueError:
                 continue
         return result
 
     def forget(self, identity: str, *, reason: str, expected_version: int | None = None,
-               scope: dict | None = None, exact_scope: bool = False, _authorized_cascade: bool = False) -> dict:
+               scope: dict | None = None, exact_scope: bool = False, _authorized_cascade: bool = False,
+               _expected_digest: str | None = None) -> dict:
         from commontrace import incident
 
         with incident.protect(self.root):
             return self._forget(identity, reason=reason, expected_version=expected_version, scope=scope,
-                                exact_scope=exact_scope, _authorized_cascade=_authorized_cascade)
+                                exact_scope=exact_scope, _authorized_cascade=_authorized_cascade,
+                                _expected_digest=_expected_digest)
 
     def _forget(self, identity: str, *, reason: str, expected_version: int | None = None,
-               scope: dict | None = None, exact_scope: bool = False, _authorized_cascade: bool = False) -> dict:
+               scope: dict | None = None, exact_scope: bool = False, _authorized_cascade: bool = False,
+               _expected_digest: str | None = None) -> dict:
         if not reason.strip():
             raise ValueError("erasure requires a reason")
         with self.connect(write=True) as db:
@@ -897,9 +920,13 @@ class Journal:
                     return {"at": now(), "deleted": [], "unverified_cascade": [identity],
                             "reason": "no authenticated native mirror of the authorized canonical fact"}
             db.execute("PRAGMA secure_delete=ON")
-            if expected_version is not None:
+            if expected_version is not None or _expected_digest is not None:
+                from commontrace.frontier_protocol import digest
+
                 current = db.execute("SELECT body FROM records WHERE id=?", (identity,)).fetchone()
-                if current is None or json.loads(current[0])["version"] != expected_version:
+                body = json.loads(current[0]) if current else None
+                if (body is None or expected_version is not None and body["version"] != expected_version
+                        or _expected_digest is not None and digest(body) != _expected_digest):
                     raise ValueError("expiration record version changed")
             direct_capture = db.execute("SELECT scope FROM captures WHERE id=?", (identity,)).fetchone()
             pending, deleted = [identity], set()

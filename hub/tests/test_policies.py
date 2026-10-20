@@ -119,6 +119,33 @@ async def test_missing_signer_and_malformed_policy_request(session_factory, conf
         assert (await post(client, key, "nonexistent", {})).status_code == 404
 
 
+@pytest.mark.parametrize("allow_read", [False, True])
+async def test_turn_buffer_cannot_bypass_episode_read_policy(session_factory, config, allow_read):
+    org, key = await _org_with_key(session_factory)
+    journal = PostgresJournal(session_factory, org)
+    await journal.capture_turn("private-session", "", text_value="Private historical evidence.", scope={})
+    policy = await policy_for(session_factory, org, key)
+    # A capture permission does not grant permission to read prior captures.
+    policy["rules"].append({"id": "capture", "effect": "allow", "actions": ["write"],
+                            "memory_classes": ["episode"]})
+    if allow_read:
+        policy["rules"][0]["memory_classes"].append("episode")
+    cfg = replace(config, ledger_signing_key="test-policy-key-at-least-thirty-two-bytes-long")
+    async with _client(_app(session_factory, cfg)) as client:
+        certificate = await candidate(client, key, policy)
+        review = await reviewed(client, key, certificate)
+        assert (await post(client, key, "activate", {
+            "certificate": certificate, "review_receipt": review})).status_code == 200
+        response = await client.post("/v1/memory/turn", headers=_key(key), json={
+            "session_id": "private-session", "query": "evidence", "text": "New capture."})
+        assert response.status_code == 200, response.text
+        if allow_read:
+            assert {row["payload"]["text"] for row in response.json()["buffer"]} == {
+                "Private historical evidence.", "New capture."}
+        else:
+            assert response.json()["buffer"] == []
+
+
 async def test_policy_migration_forces_tenant_rls_as_non_bypass_reader(session_factory):
     import uuid
 

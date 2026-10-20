@@ -34,7 +34,14 @@ def _env_bool(name: str, default: bool) -> bool:
     raw = _configuration_getenv(name)
     if raw is None or raw == "":
         return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(
+        f"{name} must be a boolean (true/false, yes/no, on/off, or 1/0), got {raw!r}"
+    )
 
 
 def _market_referees(path: str) -> tuple[tuple[str, str, str], ...]:
