@@ -24,7 +24,7 @@ _SECRET_PATTERNS_HIGH: tuple[tuple[str, re.Pattern], ...] = (
     ("Google API key", re.compile(r"\bAIza[0-9A-Za-z\-_]{35}\b")),
     ("Anthropic API key", re.compile(r"\bsk-ant-[A-Za-z0-9\-_]{20,}\b")),
     ("OpenAI-style API key", re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b")),
-    ("UniMem Hub API key", re.compile(r"\bct_live_[A-Za-z0-9_-]{32,}\b")),
+    ("UniMem Hub API key", re.compile(r"\bunimem_live_[A-Za-z0-9_-]{32,}\b")),
     ("PEM private key block", re.compile(
         r"-----BEGIN (?P<pem_kind>(?:RSA |EC |OPENSSH |DSA |ENCRYPTED |PGP )?PRIVATE KEY(?: BLOCK)?)-----"
         r"(?:[ \t]*\r?\n[\s\S]*?(?:-----END (?P=pem_kind)-----|\Z))?"
